@@ -127,7 +127,17 @@ impl SevenZipCli {
                 for (k, v) in cur {
                     map.insert(k.as_str(), v.as_str());
                 }
-                let path = map.get("Path").unwrap_or(&"").to_string();
+                let mut path = map.get("Path").unwrap_or(&"").to_string();
+                if path.starts_with("./") {
+                    path = path[2..].to_string();
+                }
+                path = path.replace('\\', "/");
+                if path.ends_with('/') && path.len() > 1 {
+                    path.pop();
+                    while path.ends_with('/') {
+                        path.pop();
+                    }
+                }
                 let is_dir = match map.get("Folder") {
                     Some(&"+") => true,
                     _ => match map.get("Attributes") {

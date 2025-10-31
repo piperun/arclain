@@ -521,7 +521,7 @@ impl eframe::App for ArchustApp {
                         } else {
                             // Direct navigation to a specific path (not relative)
                             let mut state = self.state.lock();
-                            state.navigation.current_path = path.clone();
+                            state.navigation.set_current_path(&path);
                             state.navigation.forward_stack.clear();
                             self.entries = state.get_current_entries().iter()
                                 .map(convert_to_file_entry)
@@ -614,7 +614,7 @@ impl eframe::App for ArchustApp {
                     if let Some(path) = breadcrumb_nav {
                         // Direct navigation to the clicked path
                         let mut state = self.state.lock();
-                        state.navigation.current_path = path.clone();
+                        state.navigation.set_current_path(&path);
                         state.navigation.forward_stack.clear();
                         self.entries = state.get_current_entries().iter()
                             .map(convert_to_file_entry)

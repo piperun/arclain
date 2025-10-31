@@ -24,13 +24,20 @@ impl NavigationState {
     }
     
     pub fn navigate_to(&mut self, folder: &str) {
-        if !self.current_path.is_empty() {
-            self.path_stack.push(self.current_path.clone());
+        let segment = Self::normalize_path(folder);
+        if segment.is_empty() {
+            return;
         }
-        self.current_path = if !self.current_path.is_empty() {
-            format!("{}/{}", self.current_path, folder)
+
+        let current = Self::normalize_path(&self.current_path);
+        if !current.is_empty() {
+            self.path_stack.push(current.clone());
+        }
+
+        self.current_path = if current.is_empty() {
+            segment
         } else {
-            folder.to_string()
+            format!("{}/{}", current, segment)
         };
         // Clear forward stack when navigating to a new location
         self.forward_stack.clear();
@@ -91,6 +98,10 @@ impl NavigationState {
     pub fn can_go_up(&self) -> bool {
         !self.current_path.is_empty()
     }
+
+    pub fn set_current_path(&mut self, path: &str) {
+        self.current_path = Self::normalize_path(path);
+    }
     
     pub fn get_all_folders(&self, entries: &[ArchiveEntry]) -> Vec<String> {
         let mut folders = std::collections::HashSet::new();
@@ -119,74 +130,126 @@ impl NavigationState {
     }
     
     pub fn filter_entries(&self, entries: &[ArchiveEntry]) -> Vec<ArchiveEntry> {
-        let prefix = if self.current_path.is_empty() {
+        let normalized_current = self.current_path.replace('\\', "/");
+        let prefix = if normalized_current.is_empty() {
             String::new()
         } else {
-            format!("{}/", self.current_path)
+            format!("{}/", normalized_current)
         };
         
-        entries.iter()
+        let items: Vec<ArchiveEntry> = entries.iter()
             .filter_map(|e| {
+                let normalized_path = e.path.replace('\\', "/");
+
                 if self.current_path.is_empty() {
-                    // Root level - show only top-level items
-                    if !e.path.contains('/') && !e.path.contains('\\') {
-                        Some(e.clone())
-                    } else if let Some(pos) = e.path.find('/').or_else(|| e.path.find('\\')) {
-                        // Show as folder
-                        let folder = &e.path[..pos];
-                        if !entries.iter().any(|other| other.path == folder && other.is_dir) {
-                            Some(ArchiveEntry {
-                                path: folder.to_string(),
-                                size: 0,
-                                packed_size: 0,
-                                modified: None,
-                                is_dir: true,
-                                encrypted: false,
-                            })
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
+                    if !normalized_path.contains('/') {
+                        let mut entry = e.clone();
+                        entry.path = normalized_path;
+                        return Some(entry);
                     }
-                } else if e.path.starts_with(&prefix) {
-                    // Inside a folder - show items in this folder
-                    let relative = &e.path[prefix.len()..];
-                    if !relative.contains('/') && !relative.contains('\\') {
-                        Some(ArchiveEntry {
-                            path: relative.to_string(),
-                            size: e.size,
-                            packed_size: e.packed_size,
-                            modified: e.modified.clone(),
-                            is_dir: e.is_dir,
-                            encrypted: e.encrypted,
-                        })
-                    } else if let Some(pos) = relative.find('/').or_else(|| relative.find('\\')) {
-                        let folder = &relative[..pos];
-                        Some(ArchiveEntry {
-                            path: folder.to_string(),
+
+                    if let Some(pos) = normalized_path.find('/') {
+                        let folder = normalized_path[..pos].to_string();
+                        return Some(ArchiveEntry {
+                            path: folder,
                             size: 0,
                             packed_size: 0,
                             modified: None,
                             is_dir: true,
                             encrypted: false,
-                        })
-                    } else {
-                        None
+                        });
                     }
+
+                    None
+                } else if normalized_path.starts_with(&prefix) {
+                    let relative = &normalized_path[prefix.len()..];
+                    if relative.is_empty() {
+                        return None;
+                    }
+
+                    if !relative.contains('/') {
+                        let mut entry = e.clone();
+                        entry.path = relative.to_string();
+                        return Some(entry);
+                    }
+
+                    if let Some(pos) = relative.find('/') {
+                        let folder = relative[..pos].to_string();
+                        return Some(ArchiveEntry {
+                            path: folder,
+                            size: 0,
+                            packed_size: 0,
+                            modified: None,
+                            is_dir: true,
+                            encrypted: false,
+                        });
+                    }
+
+                    None
                 } else {
                     None
                 }
             })
+            .collect();
+
+        use std::collections::BTreeMap;
+
+        let mut map: BTreeMap<String, ArchiveEntry> = BTreeMap::new();
+        for entry in items {
+            map.entry(entry.path.clone())
+                .and_modify(|existing| {
+                    if existing.modified.is_none() && entry.modified.is_some() {
+                        *existing = entry.clone();
+                    }
+                })
+                .or_insert(entry);
+        }
+
+        let mut result: Vec<ArchiveEntry> = map.into_values().collect();
+
+        // Update folder sizes
+        for entry in result.iter_mut().filter(|e| e.is_dir) {
+            let full_path = if normalized_current.is_empty() {
+                entry.path.clone()
+            } else {
+                format!("{}/{}", normalized_current, entry.path)
+            };
+
+            let (size, packed) = Self::compute_folder_totals(entries, &full_path);
+            entry.size = size;
+            entry.packed_size = packed;
+        }
+
+        result
+    }
+}
+
+impl NavigationState {
+    fn compute_folder_totals(entries: &[ArchiveEntry], folder_path: &str) -> (u64, u64) {
+        let normalized_folder = Self::normalize_path(folder_path);
+        let prefix = format!("{}/", normalized_folder.trim_end_matches('/'));
+        let mut size = 0u64;
+        let mut packed = 0u64;
+
+        for entry in entries {
+            if entry.is_dir {
+                continue;
+            }
+            let normalized = entry.path.replace('\\', "/");
+            if normalized == normalized_folder || normalized.starts_with(&prefix) {
+                size = size.saturating_add(entry.size);
+                packed = packed.saturating_add(entry.packed_size);
+            }
+        }
+
+        (size, packed)
+    }
+
+    fn normalize_path(path: &str) -> String {
+        path.split(|c| c == '/' || c == '\\')
+            .filter(|segment| !segment.is_empty())
             .collect::<Vec<_>>()
-            .into_iter()
-            .fold(Vec::new(), |mut acc, e| {
-                // Deduplicate folders
-                if !acc.iter().any(|existing| existing.path == e.path) {
-                    acc.push(e);
-                }
-                acc
-            })
+            .join("/")
     }
 }
 
