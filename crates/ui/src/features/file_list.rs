@@ -25,14 +25,26 @@ pub fn render_breadcrumb(
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
         
         // Root archive button (clickable)
-        let root_btn = egui::Button::new(
+        let root_response = ui.add(egui::Label::new(
             egui::RichText::new(archive_name)
                 .size(14.0)
                 .color(theme.colors.text_primary)
-        )
-        .frame(false);
+        ).sense(egui::Sense::click()));
         
-        if ui.add(root_btn).clicked() {
+        if root_response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            // Draw underline on hover
+            let rect = root_response.rect;
+            ui.painter().line_segment(
+                [
+                    egui::pos2(rect.min.x, rect.max.y),
+                    egui::pos2(rect.max.x, rect.max.y),
+                ],
+                egui::Stroke::new(1.0, theme.colors.text_primary),
+            );
+        }
+        
+        if root_response.clicked() {
             navigate_to = Some(String::new()); // Navigate to root
         }
         
@@ -54,18 +66,33 @@ pub fn render_breadcrumb(
                     );
                 }
                 
-                let segment_btn = egui::Button::new(
+                let is_last = idx == segments.len() - 1;
+                let text_color = if is_last {
+                    theme.colors.text_primary
+                } else {
+                    theme.colors.text_secondary
+                };
+                
+                let segment_response = ui.add(egui::Label::new(
                     egui::RichText::new(*segment)
                         .size(14.0)
-                        .color(if idx == segments.len() - 1 {
-                            theme.colors.text_primary
-                        } else {
-                            theme.colors.text_secondary
-                        })
-                )
-                .frame(false);
+                        .color(text_color)
+                ).sense(egui::Sense::click()));
                 
-                if ui.add(segment_btn).clicked() {
+                if segment_response.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    // Draw underline on hover
+                    let rect = segment_response.rect;
+                    ui.painter().line_segment(
+                        [
+                            egui::pos2(rect.min.x, rect.max.y),
+                            egui::pos2(rect.max.x, rect.max.y),
+                        ],
+                        egui::Stroke::new(1.0, text_color),
+                    );
+                }
+                
+                if segment_response.clicked() {
                     // Build path up to this segment
                     let target_path = segments[..=idx].join("/");
                     navigate_to = Some(target_path);

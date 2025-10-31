@@ -125,7 +125,7 @@ pub fn render(
     // Build tree structure
     let tree = build_tree_structure(folders);
     
-    // Tree view
+    // Tree view with egui_ltreeview
     egui::ScrollArea::vertical()
         .id_salt("tree_scroll")
         .auto_shrink([false; 2])
@@ -217,6 +217,11 @@ fn tree_item(
     let mut toggle_clicked = false;
     
     if ui.is_rect_visible(rect) {
+        // Set cursor to pointer when hovering
+        if response.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        
         // Draw background for selected/hovered state
         let bg_color = if selected {
             theme.colors.selection
