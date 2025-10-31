@@ -96,12 +96,15 @@ impl NavigationState {
         let mut folders = std::collections::HashSet::new();
         
         for entry in entries {
+            // Normalize path separators to forward slashes
+            let normalized_path = entry.path.replace('\\', "/");
+            
             if entry.is_dir {
-                folders.insert(entry.path.clone());
+                folders.insert(normalized_path.clone());
             }
             
             // Extract folder paths from file paths
-            let mut path = entry.path.clone();
+            let mut path = normalized_path;
             while let Some(pos) = path.rfind('/') {
                 path = path[..pos].to_string();
                 if !path.is_empty() {
