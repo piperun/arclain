@@ -9,6 +9,7 @@ pub struct FileEntry {
     pub compressed: String,
     pub ratio: String,
     pub modified: String,
+    pub crc32: String,
     pub encrypted: bool,
     pub is_folder: bool,
     pub selected: bool,
@@ -29,6 +30,7 @@ pub enum SortColumn {
     Compressed,
     Ratio,
     Modified,
+    Crc32,
     Encrypted,
 }
 
@@ -377,6 +379,11 @@ fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
                 ar.cmp(&br)
             }
             SortColumn::Modified => a.modified.cmp(&b.modified),
+            SortColumn::Crc32 => {
+                let an = a.crc32.to_uppercase();
+                let bn = b.crc32.to_uppercase();
+                an.cmp(&bn)
+            }
             SortColumn::Encrypted => (a.encrypted as u8).cmp(&(b.encrypted as u8)),
         };
         if sort.ascending { ord } else { ord.reverse() }
@@ -427,6 +434,7 @@ pub fn render_list_view(
                 .column(Column::exact(110.0)) // Compressed
                 .column(Column::exact(76.0)) // Ratio
                 .column(Column::exact(140.0)) // Modified
+                .column(Column::exact(120.0)) // CRC-32
                 .column(Column::exact(36.0)) // Encrypted
                 .column(Column::exact(84.0)) // Actions (Edit/Delete)
                 .header(28.0, |mut header| {
@@ -491,6 +499,16 @@ pub fn render_list_view(
                                 sort.ascending = !sort.ascending;
                             } else {
                                 sort.column = SortColumn::Modified;
+                                sort.ascending = true;
+                            }
+                        }
+                    });
+                    header.col(|ui| {
+                        if header_sort_label(ui, theme, "CRC-32", sort.column, SortColumn::Crc32, sort.ascending) {
+                            if sort.column == SortColumn::Crc32 {
+                                sort.ascending = !sort.ascending;
+                            } else {
+                                sort.column = SortColumn::Crc32;
                                 sort.ascending = true;
                             }
                         }
@@ -594,6 +612,17 @@ pub fn render_list_view(
                                 );
                             });
 
+                            row.col(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&entry.crc32)
+                                            .size(14.0)
+                                            .color(text_color),
+                                    )
+                                    .selectable(false),
+                                );
+                            });
+                            
                             row.col(|ui| {
                                 if entry.encrypted {
                                     ui.add(

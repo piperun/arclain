@@ -103,6 +103,7 @@ pub fn create_archive_info_group(
     total_files: usize,
     total_size: &str,
     compressed_size: &str,
+    total_crc32: Option<&str>,
     encrypted: bool,
     headers_encrypted: bool,
     encryption_method: Option<&str>,
@@ -113,11 +114,13 @@ pub fn create_archive_info_group(
     } else { ("No".to_string(), None) };
 
     let header_status = if headers_encrypted { "Yes" } else { "No" };
+    let tcrc_display = total_crc32.unwrap_or("—");
 
     let mut props = vec![
         ("Total Files:".to_string(), total_files.to_string()),
         ("Total Size:".to_string(), total_size.to_string()),
         ("Compressed:".to_string(), compressed_size.to_string()),
+        ("Total CRC-32:".to_string(), tcrc_display.to_string()),
         ("Format:".to_string(), format.to_string()),
         ("Data Encrypted:".to_string(), data_enc_label),
     ];
