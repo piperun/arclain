@@ -231,6 +231,10 @@ pub fn render_list_view(
     // selections without conflicting mutable borrows during row rendering.
     let selection_flags: Vec<bool> = entries.iter().map(|e| e.selected).collect();
 
+    // Clip all custom painting to the list area so nothing can overdraw the
+    // properties panel on the right.
+    let list_clip_rect = ui.clip_rect();
+
     egui::Frame::none()
         .fill(egui::Color32::TRANSPARENT)
         .inner_margin(egui::Margin {
@@ -248,7 +252,8 @@ pub fn render_list_view(
 
             TableBuilder::new(ui)
                 .id_salt(table_id)
-                .striped(true)
+                // Disable striped rows to avoid tiny gaps between items.
+                .striped(false)
                 .resizable(!columns_locked)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
@@ -368,11 +373,20 @@ pub fn render_list_view(
 
                             // Paint selection highlight across the full row, clipped to the table area.
                             if entry.selected {
-                                let painter = row_response.ctx.layer_painter(row_response.layer_id);
+                                // Create a painter with the list's clip rect so row decorations cannot
+                                // draw over the properties panel.
+                                let painter = egui::Painter::new(
+                                    row_response.ctx.clone(),
+                                    row_response.layer_id,
+                                    list_clip_rect,
+                                );
 
-                                // Use the full row rect and keep it inside the row bounds to avoid bleeding
-                                // into neighbouring panels. Slight horizontal inset avoids overlapping table edges.
-                                let fill_rect = row_response.rect.shrink2(egui::vec2(2.0, 0.0));
+                                // Slight horizontal inset to avoid touching table edges; expand a hair on Y
+                                // to cover any default row separators that may cause tiny gaps.
+                                let mut fill_rect = row_response.rect.shrink2(egui::vec2(2.0, 0.0));
+                                fill_rect.min.y -= 0.5;
+                                fill_rect.max.y += 0.5;
+
                                 let fill_color = theme.colors.selection.linear_multiply(0.14);
                                 painter.rect_filled(fill_rect, 0.0, fill_color);
 
