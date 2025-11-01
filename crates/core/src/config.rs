@@ -1,12 +1,12 @@
-use serde::{Deserialize, Serialize};
-use std::{fs, path::{PathBuf}, io::Write};
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use regex::Regex;
+use serde::{Deserialize, Serialize};
+use std::{fs, io::Write, path::PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PassRule {
     pub name: String,
-    pub pattern: String,   // regex
+    pub pattern: String, // regex
     pub password: String,
     pub priority: u32,
     pub enabled: bool,

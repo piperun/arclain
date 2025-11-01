@@ -1,10 +1,10 @@
-pub mod sevenzip;
 pub mod config;
 pub mod logging;
+pub mod sevenzip;
 
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use anyhow::Result;
 
 // Add this to lib.rs
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ impl NavigationState {
             forward_stack: vec![],
         }
     }
-    
+
     pub fn navigate_to(&mut self, folder: &str) {
         let segment = Self::normalize_path(folder);
         if segment.is_empty() {
@@ -42,7 +42,7 @@ impl NavigationState {
         // Clear forward stack when navigating to a new location
         self.forward_stack.clear();
     }
-    
+
     pub fn navigate_back(&mut self) -> bool {
         if let Some(prev) = self.path_stack.pop() {
             self.forward_stack.push(self.current_path.clone());
@@ -56,7 +56,7 @@ impl NavigationState {
             false
         }
     }
-    
+
     pub fn navigate_forward(&mut self) -> bool {
         if let Some(next) = self.forward_stack.pop() {
             self.path_stack.push(self.current_path.clone());
@@ -66,12 +66,12 @@ impl NavigationState {
             false
         }
     }
-    
+
     pub fn navigate_up(&mut self) -> bool {
         if self.current_path.is_empty() {
             return false;
         }
-        
+
         // Find the last separator and go to parent
         if let Some(pos) = self.current_path.rfind('/') {
             self.path_stack.push(self.current_path.clone());
@@ -86,15 +86,15 @@ impl NavigationState {
             true
         }
     }
-    
+
     pub fn can_go_back(&self) -> bool {
         !self.path_stack.is_empty() || !self.current_path.is_empty()
     }
-    
+
     pub fn can_go_forward(&self) -> bool {
         !self.forward_stack.is_empty()
     }
-    
+
     pub fn can_go_up(&self) -> bool {
         !self.current_path.is_empty()
     }
@@ -102,18 +102,18 @@ impl NavigationState {
     pub fn set_current_path(&mut self, path: &str) {
         self.current_path = Self::normalize_path(path);
     }
-    
+
     pub fn get_all_folders(&self, entries: &[ArchiveEntry]) -> Vec<String> {
         let mut folders = std::collections::HashSet::new();
-        
+
         for entry in entries {
             // Normalize path separators to forward slashes
             let normalized_path = entry.path.replace('\\', "/");
-            
+
             if entry.is_dir {
                 folders.insert(normalized_path.clone());
             }
-            
+
             // Extract folder paths from file paths
             let mut path = normalized_path;
             while let Some(pos) = path.rfind('/') {
@@ -123,12 +123,12 @@ impl NavigationState {
                 }
             }
         }
-        
+
         let mut folder_vec: Vec<String> = folders.into_iter().collect();
         folder_vec.sort();
         folder_vec
     }
-    
+
     pub fn filter_entries(&self, entries: &[ArchiveEntry]) -> Vec<ArchiveEntry> {
         let normalized_current = self.current_path.replace('\\', "/");
         let prefix = if normalized_current.is_empty() {
@@ -136,8 +136,9 @@ impl NavigationState {
         } else {
             format!("{}/", normalized_current)
         };
-        
-        let items: Vec<ArchiveEntry> = entries.iter()
+
+        let items: Vec<ArchiveEntry> = entries
+            .iter()
             .filter_map(|e| {
                 let normalized_path = e.path.replace('\\', "/");
 
@@ -276,18 +277,25 @@ pub struct ArchiveInfo {
     pub archive_path: PathBuf,
     pub archive_kind: ArchiveKind,
     pub entries: Vec<ArchiveEntry>,
+    pub encrypted: bool,
+    pub headers_encrypted: bool,
+    pub encryption_method: Option<String>,
 }
 
 pub trait ArchiveBackend: Send + Sync {
     fn identify(&self, path: &Path) -> Result<ArchiveKind>;
     fn list(&self, path: &Path, password: Option<&str>) -> Result<ArchiveInfo>;
     fn extract_all(&self, path: &Path, dest: &Path, password: Option<&str>) -> Result<()>;
-    fn extract_files(&self, path: &Path, dest: &Path, files: &[String], password: Option<&str>) -> Result<()>;
+    fn extract_files(
+        &self,
+        path: &Path,
+        dest: &Path,
+        files: &[String],
+        password: Option<&str>,
+    ) -> Result<()>;
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()>;
     fn add_files(&self, archive: &Path, files: &[PathBuf]) -> Result<()>;
     fn create_archive(&self, dest: &Path, files: &[PathBuf], format: &str) -> Result<()>;
 }
 
-pub use config::{Config, PassRule, ConfigStore};
-
-
+pub use config::{Config, ConfigStore, PassRule};

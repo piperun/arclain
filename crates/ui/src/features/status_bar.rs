@@ -1,5 +1,5 @@
-use eframe::egui;
 use super::theme::AppTheme;
+use eframe::egui;
 
 pub struct StatusBarInfo {
     pub message: String,
@@ -26,75 +26,74 @@ impl Default for StatusBarInfo {
 pub fn render(ui: &mut egui::Ui, theme: &AppTheme, info: &StatusBarInfo, archive_loaded: bool) {
     ui.horizontal(|ui| {
         ui.add_space(12.0);
-        
+
         // Left side - status message
         ui.label(
             egui::RichText::new(&info.message)
                 .size(12.0)
-                .color(theme.colors.text_secondary)
+                .color(theme.colors.text_secondary),
         );
-        
+
         if archive_loaded {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(12.0);
-                
+
                 // Right side - archive info
                 ui.label(
                     egui::RichText::new("Ready")
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
-                
+
                 ui.label(
                     egui::RichText::new("|")
                         .size(12.0)
-                        .color(theme.colors.text_muted)
+                        .color(theme.colors.text_muted),
                 );
-                
+
                 ui.label(
                     egui::RichText::new(&info.archive_format)
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
-                
+
                 ui.label(
                     egui::RichText::new("|")
                         .size(12.0)
-                        .color(theme.colors.text_muted)
+                        .color(theme.colors.text_muted),
                 );
-                
+
                 ui.label(
                     egui::RichText::new(format!(
                         "{} ({} compressed)",
-                        info.total_size,
-                        info.compressed_size
+                        info.total_size, info.compressed_size
                     ))
                     .size(12.0)
-                    .color(theme.colors.text_secondary)
+                    .color(theme.colors.text_secondary),
                 );
-                
+
                 ui.label(
                     egui::RichText::new("|")
                         .size(12.0)
-                        .color(theme.colors.text_muted)
+                        .color(theme.colors.text_muted),
                 );
-                
+
                 ui.label(
                     egui::RichText::new(format!("{} folders", info.folder_count))
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
-                
+
                 ui.label(
                     egui::RichText::new("|")
                         .size(12.0)
-                        .color(theme.colors.text_muted)
+                        .color(theme.colors.text_muted),
                 );
-                
+
                 ui.label(
                     egui::RichText::new(format!("{} files", info.file_count))
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
             });
         }

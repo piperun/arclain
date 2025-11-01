@@ -1,5 +1,5 @@
-use eframe::egui;
 use super::theme::AppTheme;
+use eframe::egui;
 
 pub struct PropertyGroup {
     pub title: String,
@@ -9,12 +9,12 @@ pub struct PropertyGroup {
 pub fn render(ui: &mut egui::Ui, theme: &AppTheme, groups: &[PropertyGroup]) {
     ui.vertical(|ui| {
         ui.add_space(4.0);
-        
+
         for (idx, group) in groups.iter().enumerate() {
             if idx > 0 {
                 ui.add_space(8.0);
             }
-            
+
             render_property_group(ui, theme, group);
         }
     });
@@ -26,10 +26,10 @@ fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGr
         .stroke(egui::Stroke::new(1.0, theme.colors.border_light))
         .rounding(4.0)
         .inner_margin(egui::Margin::symmetric(0.0, 12.0));
-    
+
     group_frame.show(ui, |ui| {
         ui.set_min_width(ui.available_width());
-        
+
         // Group title
         ui.horizontal(|ui| {
             ui.add_space(12.0);
@@ -37,34 +37,34 @@ fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGr
                 egui::RichText::new(&group.title)
                     .size(11.0)
                     .strong()
-                    .color(theme.colors.text_muted)
+                    .color(theme.colors.text_muted),
             );
         });
-        
+
         ui.add_space(8.0);
-        
+
         // Properties
         for (label, value) in &group.properties {
             ui.horizontal(|ui| {
                 ui.add_space(12.0);
-                
+
                 ui.label(
                     egui::RichText::new(label)
                         .size(14.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
-                
+
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(12.0);
                     ui.label(
                         egui::RichText::new(value)
                             .size(14.0)
                             .strong()
-                            .color(theme.colors.text_primary)
+                            .color(theme.colors.text_primary),
                     );
                 });
             });
-            
+
             ui.add_space(4.0);
         }
     });
@@ -87,11 +87,7 @@ pub fn create_file_info_group(
     }
 }
 
-pub fn create_attributes_group(
-    modified: &str,
-    crc32: &str,
-    method: &str,
-) -> PropertyGroup {
+pub fn create_attributes_group(modified: &str, crc32: &str, method: &str) -> PropertyGroup {
     PropertyGroup {
         title: "ATTRIBUTES".to_string(),
         properties: vec![
@@ -107,7 +103,22 @@ pub fn create_archive_info_group(
     total_files: usize,
     total_size: &str,
     compressed_size: &str,
+    encrypted: bool,
+    headers_encrypted: bool,
+    encryption_method: Option<&str>,
 ) -> PropertyGroup {
+    let encryption_status = if encrypted {
+        if let Some(method) = encryption_method {
+            format!("Yes ({method})")
+        } else {
+            "Yes".to_string()
+        }
+    } else {
+        "No".to_string()
+    };
+
+    let header_status = if headers_encrypted { "Yes" } else { "No" };
+
     PropertyGroup {
         title: "ARCHIVE INFO".to_string(),
         properties: vec![
@@ -115,6 +126,8 @@ pub fn create_archive_info_group(
             ("Total Size:".to_string(), total_size.to_string()),
             ("Compressed:".to_string(), compressed_size.to_string()),
             ("Format:".to_string(), format.to_string()),
+            ("Encrypted:".to_string(), encryption_status),
+            ("Headers Protected:".to_string(), header_status.to_string()),
         ],
     }
 }

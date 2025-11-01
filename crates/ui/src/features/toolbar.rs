@@ -1,10 +1,11 @@
-use eframe::egui;
 use super::theme::AppTheme;
+use eframe::egui;
 
 pub struct ToolbarState {
     pub show_tree_panel: bool,
     pub show_properties_panel: bool,
     pub grid_view: bool,
+    pub columns_locked: bool,
 }
 
 impl Default for ToolbarState {
@@ -13,6 +14,7 @@ impl Default for ToolbarState {
             show_tree_panel: true,
             show_properties_panel: true,
             grid_view: false,
+            columns_locked: true, // Start with columns locked to ensure proper default widths
         }
     }
 }
@@ -49,14 +51,14 @@ pub fn render(
     archive_loaded: bool,
 ) -> ToolbarActions {
     let mut actions = ToolbarActions::default();
-    
+
     ui.horizontal_centered(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
-        
+
         // Navigation group
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-            
+
             ui.horizontal_centered(|ui| {
                 if toolbar_button(ui, theme, "⬅", can_go_back) {
                     actions.go_back = true;
@@ -69,13 +71,13 @@ pub fn render(
                 }
             });
         });
-        
+
         ui.add_space(4.0);
-        
+
         // File actions group
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-            
+
             ui.horizontal_centered(|ui| {
                 if toolbar_button_with_text(ui, theme, "📂", "Open", true) {
                     actions.open = true;
@@ -88,13 +90,13 @@ pub fn render(
                 }
             });
         });
-        
+
         ui.add_space(4.0);
-        
+
         // View mode group
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-            
+
             ui.horizontal_centered(|ui| {
                 let list_selected = !state.grid_view;
                 if toolbar_button_toggle(ui, theme, "☰", list_selected) {
@@ -105,12 +107,28 @@ pub fn render(
                 }
             });
         });
-        
+
+        ui.add_space(4.0);
+
+        // Column resize toggle (only visible in list view)
+        if !state.grid_view {
+            ui.scope(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
+
+                ui.horizontal_centered(|ui| {
+                    let icon = if state.columns_locked { "🔒" } else { "🔓" };
+                    if toolbar_button_toggle(ui, theme, icon, state.columns_locked) {
+                        state.columns_locked = !state.columns_locked;
+                    }
+                });
+            });
+        }
+
         // Panel toggles - right aligned
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.scope(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
-                
+
                 ui.horizontal_centered(|ui| {
                     if toolbar_button_toggle(ui, theme, "ℹ", state.show_properties_panel) {
                         state.show_properties_panel = !state.show_properties_panel;
@@ -122,7 +140,7 @@ pub fn render(
             });
         });
     });
-    
+
     actions
 }
 
@@ -132,37 +150,39 @@ fn toolbar_button(ui: &mut egui::Ui, theme: &AppTheme, text: &str, enabled: bool
     } else {
         theme.colors.text_muted
     };
-    
-    let button = egui::Button::new(
-        egui::RichText::new(text)
-            .size(16.0)
-            .color(color)
-    )
-    .fill(theme.colors.bg_tertiary)
-    .stroke(egui::Stroke::NONE)
-    .rounding(4.0)
-    .min_size(egui::vec2(36.0, 32.0));
-    
+
+    let button = egui::Button::new(egui::RichText::new(text).size(16.0).color(color))
+        .fill(theme.colors.bg_tertiary)
+        .stroke(egui::Stroke::NONE)
+        .rounding(4.0)
+        .min_size(egui::vec2(36.0, 32.0));
+
     ui.add_enabled(enabled, button).clicked()
 }
 
-fn toolbar_button_with_text(ui: &mut egui::Ui, theme: &AppTheme, icon: &str, label: &str, enabled: bool) -> bool {
+fn toolbar_button_with_text(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    icon: &str,
+    label: &str,
+    enabled: bool,
+) -> bool {
     let color = if enabled {
         theme.colors.text_primary
     } else {
         theme.colors.text_muted
     };
-    
+
     let button = egui::Button::new(
         egui::RichText::new(format!("{} {}", icon, label))
             .size(14.0)
-            .color(color)
+            .color(color),
     )
     .fill(theme.colors.bg_tertiary)
     .stroke(egui::Stroke::NONE)
     .rounding(4.0)
     .min_size(egui::vec2(90.0, 32.0));
-    
+
     ui.add_enabled(enabled, button).clicked()
 }
 
@@ -172,16 +192,16 @@ fn toolbar_button_toggle(ui: &mut egui::Ui, theme: &AppTheme, text: &str, select
     } else {
         theme.colors.bg_tertiary
     };
-    
+
     let button = egui::Button::new(
         egui::RichText::new(text)
             .size(16.0)
-            .color(theme.colors.text_primary)
+            .color(theme.colors.text_primary),
     )
     .fill(bg_fill)
     .stroke(egui::Stroke::NONE)
     .rounding(4.0)
     .min_size(egui::vec2(36.0, 32.0));
-    
+
     ui.add(button).clicked()
 }
