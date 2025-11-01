@@ -48,6 +48,7 @@ pub struct ArchustApp {
     headers_encrypted: bool,
     encryption_method: Option<String>,
     total_crc32: Option<String>,
+    last_window_title: Option<String>,
 }
 
 impl ArchustApp {
@@ -86,6 +87,7 @@ impl ArchustApp {
             headers_encrypted: false,
             encryption_method: None,
             total_crc32: None,
+            last_window_title: None,
         }
     }
 
@@ -385,12 +387,58 @@ impl ArchustApp {
             }
         }
     }
+
+    fn sanitize_window_title(input: &str) -> String {
+        let mut filtered = String::with_capacity(input.len());
+        for ch in input.chars() {
+            if Self::is_forbidden_title_char(ch) { continue; }
+            filtered.push(ch);
+        }
+        let collapsed = filtered.split_whitespace().collect::<Vec<_>>().join(" ");
+        let trimmed = collapsed.trim();
+        let mut s = if trimmed.is_empty() { "Archive".to_string() } else { trimmed.to_string() };
+        if s.chars().count() > 128 {
+            s = s.chars().take(128).collect();
+        }
+        s
+    }
+
+    fn is_forbidden_title_char(c: char) -> bool {
+        c.is_control() || matches!(c,
+            '\u{061C}' |
+            '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{200E}' | '\u{200F}' |
+            '\u{202A}' | '\u{202B}' | '\u{202C}' | '\u{202D}' | '\u{202E}' |
+            '\u{2028}' | '\u{2029}' |
+            '\u{2060}' | '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}' |
+            '\u{FEFF}'
+        )
+    }
 }
 
 impl eframe::App for ArchustApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Apply theme
         self.theme.apply_to_context(ctx);
+
+        // Safely set window title to opened archive name
+        let desired_title = {
+            let state = self.state.lock();
+            if self.archive_loaded {
+                let base = state
+                    .current_archive
+                    .as_ref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Archive");
+                format!("{} - Archust", Self::sanitize_window_title(base))
+            } else {
+                "Archust".to_string()
+            }
+        };
+        if self.last_window_title.as_deref() != Some(desired_title.as_str()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(desired_title.clone()));
+            self.last_window_title = Some(desired_title);
+        }
 
         // Header
         egui::TopBottomPanel::top("header")
