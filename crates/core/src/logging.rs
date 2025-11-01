@@ -1,5 +1,5 @@
 //! Centralized logging configuration for archust
-//! 
+//!
 //! Provides structured logging with four levels:
 //! - ERROR: Critical errors that prevent operation
 //! - WARNING: Non-critical issues that should be noted
@@ -8,13 +8,13 @@
 
 use tracing_subscriber::{
     fmt::{self, format::FmtSpan},
-    EnvFilter,
     layer::SubscriberExt,
     util::SubscriberInitExt,
+    EnvFilter,
 };
 
 /// Initialize the logging system with default configuration
-/// 
+///
 /// Log levels can be controlled via RUST_LOG environment variable:
 /// - RUST_LOG=error - Only errors
 /// - RUST_LOG=warn - Warnings and errors
@@ -22,8 +22,7 @@ use tracing_subscriber::{
 /// - RUST_LOG=debug - Fine/debug level, info, warnings, and errors
 /// - RUST_LOG=trace - All logging
 pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     let fmt_layer = fmt::layer()
         .with_target(true)
