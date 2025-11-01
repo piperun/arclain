@@ -347,6 +347,9 @@ impl ArchiveBackend for SevenZipCli {
         ];
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            // Suppress interactive password prompt; make 7-Zip fail fast (code 2) on encrypted headers
+            args.push(OsString::from("-p"));
         }
         args.push(path.as_os_str().to_os_string());
         let out = self.run(args)?;
@@ -382,9 +385,11 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-scsUTF-8"),  // Charset for list files
         ];
 
-        // Provide password only when available to avoid false 'Wrong password' spam
+        // Provide password flag; use empty to avoid interactive prompt when unknown
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
         }
 
         let mut oarg = OsString::from("-o");
@@ -418,9 +423,11 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-sccUTF-8"),  // Console charset
             OsString::from("-scsUTF-8"),  // Charset for list files
         ];
-        // Provide password only when available to avoid false 'Wrong password' spam
+        // Provide password flag; use empty to avoid interactive prompt when unknown
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
         }
         // Build -o<dest> as a single OsString without leaking
         let mut oarg = OsString::from("-o");
@@ -458,6 +465,8 @@ impl ArchiveBackend for SevenZipCli {
 
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
         }
 
         let mut oarg = OsString::from("-o");
@@ -595,6 +604,8 @@ impl ArchiveBackend for SevenZipCli {
         ];
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
         }
         args.push(archive.as_os_str().to_os_string());
         args.push(OsString::from(path_in_archive));
