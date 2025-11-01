@@ -24,6 +24,7 @@ pub struct ArchustApp {
     // UI State
     header_state: header::HeaderState,
     toolbar_state: toolbar::ToolbarState,
+    sort_state: file_list::SortState,
     tree_state: tree_panel::TreePanelState,
     password_dialog: dialogs::PasswordDialog,
     edit_dialog: dialogs::FileEditDialog,
@@ -64,6 +65,7 @@ impl ArchustApp {
             theme,
             header_state: header::HeaderState::default(),
             toolbar_state: toolbar::ToolbarState::default(),
+            sort_state: file_list::SortState::default(),
             tree_state: tree_panel::TreePanelState::default(),
             password_dialog: dialogs::PasswordDialog::default(),
             edit_dialog: dialogs::FileEditDialog::default(),
@@ -316,6 +318,49 @@ impl ArchustApp {
             }
         }
     }
+
+    fn delete_selected(&mut self) {
+        // Build full paths using current navigation prefix; skip folders for delete
+        let (full_paths, archive_opt) = {
+            let st = self.state.lock();
+            let prefix = st.navigation.current_path.clone();
+            let fulls: Vec<String> = self
+                .entries
+                .iter()
+                .filter(|e| e.selected && !e.is_folder)
+                .map(|e| {
+                    if prefix.is_empty() {
+                        e.name.clone()
+                    } else {
+                        format!("{}/{}", prefix, e.name)
+                    }
+                })
+                .collect();
+            (fulls, st.current_archive.clone())
+        };
+
+        if full_paths.is_empty() {
+            self.status_info.message = "No files selected".to_string();
+            return;
+        }
+
+        if let Some(archive) = archive_opt {
+            let res = { self.state.lock().delete_files(&archive, &full_paths) };
+            if let Err(e) = res {
+                self.status_info.message = format!("Delete failed: {}", e);
+                return;
+            }
+            // Refresh listing
+            let mut st = self.state.lock();
+            if let Some(a) = st.current_archive.clone() {
+                if let Ok(entries) = st.list_archive(&a) {
+                    let current_archive = st.current_archive.clone();
+                    drop(st);
+                    self.load_archive_data(entries, current_archive);
+                }
+            }
+        }
+    }
 }
 
 impl eframe::App for ArchustApp {
@@ -357,6 +402,7 @@ impl eframe::App for ArchustApp {
                 let can_go_up = state.navigation.can_go_up();
                 drop(state);
 
+                let has_selection = self.entries.iter().any(|e| e.selected);
                 let actions = toolbar::render(
                     ui,
                     &self.theme,
@@ -365,6 +411,7 @@ impl eframe::App for ArchustApp {
                     can_go_forward,
                     can_go_up,
                     self.archive_loaded,
+                    has_selection,
                 );
 
                 if actions.open {
@@ -384,6 +431,9 @@ impl eframe::App for ArchustApp {
                 }
                 if actions.add {
                     self.add_files();
+                }
+                if actions.delete_selected {
+                    self.delete_selected();
                 }
             });
 
@@ -598,6 +648,7 @@ impl eframe::App for ArchustApp {
                                         &self.theme,
                                         &mut self.entries,
                                         self.toolbar_state.columns_locked,
+                                        &mut self.sort_state,
                                     ) {
                                         match action {
                                             file_list::FileListAction::Navigate(folder) => {
