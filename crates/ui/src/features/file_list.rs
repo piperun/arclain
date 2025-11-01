@@ -13,6 +13,13 @@ pub struct FileEntry {
     pub selected: bool,
 }
 
+#[derive(Debug, Clone)]
+pub enum FileListAction {
+    Navigate(String),
+    Edit(String),   // full path (relative to current path will be resolved by caller)
+    Delete(String), // same as above
+}
+
 pub fn render_breadcrumb(
     ui: &mut egui::Ui,
     theme: &AppTheme,
@@ -31,6 +38,7 @@ pub fn render_breadcrumb(
                     .size(14.0)
                     .color(theme.colors.text_primary),
             )
+            .selectable(false)
             .sense(egui::Sense::click()),
         );
 
@@ -52,20 +60,26 @@ pub fn render_breadcrumb(
         }
 
         if !current_path.is_empty() {
-            ui.label(
-                egui::RichText::new("/")
-                    .size(14.0)
-                    .color(theme.colors.text_muted),
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new("/")
+                        .size(14.0)
+                        .color(theme.colors.text_muted),
+                )
+                .selectable(false),
             );
 
             // Split path into segments and make each clickable
             let segments: Vec<&str> = current_path.split('/').collect();
             for (idx, segment) in segments.iter().enumerate() {
                 if idx > 0 {
-                    ui.label(
-                        egui::RichText::new("/")
-                            .size(14.0)
-                            .color(theme.colors.text_muted),
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("/")
+                                .size(14.0)
+                                .color(theme.colors.text_muted),
+                        )
+                        .selectable(false),
                     );
                 }
 
@@ -77,8 +91,11 @@ pub fn render_breadcrumb(
                 };
 
                 let segment_response = ui.add(
-                    egui::Label::new(egui::RichText::new(*segment).size(14.0).color(text_color))
-                        .sense(egui::Sense::click()),
+                    egui::Label::new(
+                        egui::RichText::new(*segment).size(14.0).color(text_color),
+                    )
+                    .selectable(false)
+                    .sense(egui::Sense::click()),
                 );
 
                 if segment_response.hovered() {
@@ -222,10 +239,10 @@ pub fn render_list_view(
     theme: &AppTheme,
     entries: &mut [FileEntry],
     columns_locked: bool,
-) -> Option<String> {
+) -> Option<FileListAction> {
     use egui_extras::{Column, TableBuilder};
 
-    let mut navigate_to: Option<String> = None;
+    let mut action: Option<FileListAction> = None;
 
     // Capture selection state up-front so we can merge borders across contiguous
     // selections without conflicting mutable borrows during row rendering.
@@ -264,49 +281,76 @@ pub fn render_list_view(
                 .column(Column::exact(76.0)) // Ratio
                 .column(Column::exact(140.0)) // Modified
                 .column(Column::exact(36.0)) // Encrypted
+                .column(Column::exact(84.0)) // Actions (Edit/Delete)
                 .header(28.0, |mut header| {
                     header.col(|_ui| {});
                     header.col(|ui| {
-                        ui.label(
-                            egui::RichText::new("Name")
-                                .size(12.0)
-                                .strong()
-                                .color(theme.colors.text_secondary),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("Name")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.colors.text_secondary),
+                            )
+                            .selectable(false),
                         );
                     });
                     header.col(|ui| {
-                        ui.label(
-                            egui::RichText::new("Size")
-                                .size(12.0)
-                                .strong()
-                                .color(theme.colors.text_secondary),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("Size")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.colors.text_secondary),
+                            )
+                            .selectable(false),
                         );
                     });
                     header.col(|ui| {
-                        ui.label(
-                            egui::RichText::new("Compressed")
-                                .size(12.0)
-                                .strong()
-                                .color(theme.colors.text_secondary),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("Compressed")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.colors.text_secondary),
+                            )
+                            .selectable(false),
                         );
                     });
                     header.col(|ui| {
-                        ui.label(
-                            egui::RichText::new("Ratio")
-                                .size(12.0)
-                                .strong()
-                                .color(theme.colors.text_secondary),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("Ratio")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.colors.text_secondary),
+                            )
+                            .selectable(false),
                         );
                     });
                     header.col(|ui| {
-                        ui.label(
-                            egui::RichText::new("Modified")
-                                .size(12.0)
-                                .strong()
-                                .color(theme.colors.text_secondary),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("Modified")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.colors.text_secondary),
+                            )
+                            .selectable(false),
                         );
                     });
                     header.col(|_ui| {});
+                    header.col(|ui| {
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new("Actions")
+                                    .size(12.0)
+                                    .strong()
+                                    .color(theme.colors.text_secondary),
+                            )
+                            .selectable(false),
+                        );
+                    });
                 })
                 .body(|mut body| {
                     for (row_index, entry) in entries.iter_mut().enumerate() {
@@ -315,6 +359,7 @@ pub fn render_list_view(
 
                         body.row(32.0, |mut row| {
                             let mut checkbox_clicked = false;
+                            let mut action_clicked = false;
                             let text_color = theme.colors.text_primary;
                             let muted_color = theme.colors.text_secondary;
 
@@ -326,47 +371,111 @@ pub fn render_list_view(
                             row.col(|ui| {
                                 let icon = if is_folder { "📁" } else { "📄" };
                                 let label = format!("{icon} {entry_name}");
-                                ui.label(egui::RichText::new(label).size(14.0).color(text_color));
-                            });
-
-                            row.col(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&entry.size)
-                                        .size(14.0)
-                                        .color(text_color),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(label)
+                                            .size(14.0)
+                                            .color(text_color),
+                                    )
+                                    .selectable(false),
                                 );
                             });
 
                             row.col(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&entry.compressed)
-                                        .size(14.0)
-                                        .color(text_color),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&entry.size)
+                                            .size(14.0)
+                                            .color(text_color),
+                                    )
+                                    .selectable(false),
                                 );
                             });
 
                             row.col(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&entry.ratio)
-                                        .size(14.0)
-                                        .color(text_color),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&entry.compressed)
+                                            .size(14.0)
+                                            .color(text_color),
+                                    )
+                                    .selectable(false),
                                 );
                             });
 
                             row.col(|ui| {
-                                ui.label(
-                                    egui::RichText::new(&entry.modified)
-                                        .size(14.0)
-                                        .color(muted_color),
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&entry.ratio)
+                                            .size(14.0)
+                                            .color(text_color),
+                                    )
+                                    .selectable(false),
+                                );
+                            });
+
+                            row.col(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&entry.modified)
+                                            .size(14.0)
+                                            .color(muted_color),
+                                    )
+                                    .selectable(false),
                                 );
                             });
 
                             row.col(|ui| {
                                 if entry.encrypted {
-                                    ui.label(
-                                        egui::RichText::new("🔒").size(14.0).color(text_color),
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new("🔒")
+                                                .size(14.0)
+                                                .color(text_color),
+                                        )
+                                        .selectable(false),
                                     );
                                 }
+                            });
+
+                            // Actions column (Edit/Delete)
+                            let mut pending_row_action: Option<FileListAction> = None;
+                            row.col(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 6.0;
+                                    
+                                    // Edit button enabled for all files (not folders)
+                                    let can_edit = !is_folder;
+                                    let hover_text = if is_folder {
+                                        "Cannot edit folders"
+                                    } else {
+                                        "Edit file (rename and/or edit content for text files)"
+                                    };
+                                    
+                                    let edit_clicked = ui
+                                        .add_enabled(
+                                            can_edit,
+                                            egui::Button::new("✏").min_size(egui::vec2(28.0, 22.0)),
+                                        )
+                                        .on_hover_text(hover_text)
+                                        .clicked();
+                                    if edit_clicked {
+                                        action_clicked = true;
+                                        pending_row_action = Some(FileListAction::Edit(entry_name.clone()));
+                                    }
+
+                                    let del_clicked = ui
+                                        .add_sized(
+                                            egui::vec2(28.0, 22.0),
+                                            egui::Button::new("🗑"),
+                                        )
+                                        .on_hover_text("Delete (coming soon)")
+                                        .clicked();
+                                    if del_clicked {
+                                        action_clicked = true;
+                                        pending_row_action = Some(FileListAction::Delete(entry_name.clone()));
+                                    }
+                                });
                             });
 
                             let row_response = row.response();
@@ -421,14 +530,20 @@ pub fn render_list_view(
                             }
 
                             if row_response.double_clicked() && is_folder {
-                                navigate_to = Some(entry_name.clone());
-                            } else if !checkbox_clicked && row_response.clicked() {
+                                action = Some(FileListAction::Navigate(entry_name.clone()));
+                            } else if !checkbox_clicked && !action_clicked && row_response.clicked() {
                                 entry.selected = !entry.selected;
+                            }
+
+                            if action.is_none() {
+                                if let Some(a) = pending_row_action.take() {
+                                    action = Some(a);
+                                }
                             }
                         });
                     }
                 });
         });
 
-    navigate_to
+    action
 }

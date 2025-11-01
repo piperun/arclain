@@ -27,6 +27,7 @@ struct AppState {
     archive_encrypted: bool,
     headers_encrypted: bool,
     encryption_method: Option<String>,
+    current_password: Option<String>, // Store the password used to unlock the archive
 }
 
 impl AppState {
@@ -48,6 +49,7 @@ impl AppState {
             archive_encrypted: false,
             headers_encrypted: false,
             encryption_method: None,
+            current_password: None,
         })
     }
 
@@ -64,12 +66,21 @@ impl AppState {
         })?;
 
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
+        
+        // Detect password AFTER we have the entry list
+        let detected_pw = self.cfg.auto_password_for(&self.last_entries);
+        
         self.all_entries = info.entries.clone();
         self.current_archive = Some(path.to_path_buf());
         self.archive_encrypted = info.encrypted;
         self.headers_encrypted = info.headers_encrypted;
         self.encryption_method = info.encryption_method.clone();
         self.navigation = NavigationState::new();
+        self.current_password = detected_pw.clone(); // Store the auto-detected password
+        
+        if detected_pw.is_some() {
+            info!("Auto-detected and stored password for future operations");
+        }
 
         info!(
             "Archive opened successfully with {} entries",
@@ -83,6 +94,7 @@ impl AppState {
         path: &Path,
         password: &str,
     ) -> Result<Vec<archust_core::ArchiveEntry>> {
+        info!("Listing archive with manually provided password");
         let info = self.backend.list(path, Some(password))?;
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         self.all_entries = info.entries.clone();
@@ -91,6 +103,8 @@ impl AppState {
         self.headers_encrypted = info.headers_encrypted;
         self.encryption_method = info.encryption_method.clone();
         self.navigation = NavigationState::new();
+        self.current_password = Some(password.to_string()); // Store the manually entered password
+        debug!("Stored password for future operations");
         Ok(self.all_entries.clone())
     }
 
@@ -124,13 +138,15 @@ impl AppState {
             archive.display(),
             dest.display()
         );
-        let pw = self.cfg.auto_password_for(&self.last_entries);
-        self.backend.extract_all(archive, dest, pw.as_deref())
+        let auto_pw = self.cfg.auto_password_for(&self.last_entries);
+        let pw = self.current_password.as_deref().or(auto_pw.as_deref());
+        self.backend.extract_all(archive, dest, pw)
     }
 
     fn extract_selected(&self, archive: &Path, dest: &Path, files: Vec<String>) -> Result<()> {
         info!("Extracting {} selected files", files.len());
-        let pw = self.cfg.auto_password_for(&self.last_entries);
+        let auto_pw = self.cfg.auto_password_for(&self.last_entries);
+        let pw = self.current_password.as_deref().or(auto_pw.as_deref());
 
         let full_paths: Vec<String> = if !self.navigation.current_path.is_empty() {
             files
@@ -142,11 +158,35 @@ impl AppState {
         };
 
         self.backend
-            .extract_files(archive, dest, &full_paths, pw.as_deref())
+            .extract_files(archive, dest, &full_paths, pw)
     }
 
     fn add_files_to_archive(&self, archive: &Path, files: Vec<PathBuf>) -> Result<()> {
         self.backend.add_files(archive, &files)
+    }
+
+    fn read_text_file(&self, archive: &Path, path_in_archive: &str) -> Result<String> {
+        let auto_pw = self.cfg.auto_password_for(&self.last_entries);
+        let pw = self.current_password.as_deref().or(auto_pw.as_deref());
+        debug!("Current password stored: {}", if self.current_password.is_some() { "yes" } else { "no" });
+        debug!("Auto password found: {}", if auto_pw.is_some() { "yes" } else { "no" });
+        debug!("Reading text file with password: {}", if pw.is_some() { "yes" } else { "no" });
+        self.backend
+            .read_text_file(archive, path_in_archive, pw)
+    }
+
+    fn delete_files(&self, archive: &Path, files: &[String]) -> Result<()> {
+        self.backend.delete_files(archive, files)
+    }
+
+    fn add_or_update_file_from_str(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        content: &str,
+    ) -> Result<()> {
+        self.backend
+            .add_or_update_file_from_str(archive, path_in_archive, content)
     }
 }
 
@@ -195,6 +235,7 @@ struct ArchustApp {
     toolbar_state: toolbar::ToolbarState,
     tree_state: tree_panel::TreePanelState,
     password_dialog: dialogs::PasswordDialog,
+    edit_dialog: dialogs::FileEditDialog,
 
     // Data
     entries: Vec<file_list::FileEntry>,
@@ -202,6 +243,7 @@ struct ArchustApp {
     archive_loaded: bool,
     current_path: String,
     pending_archive_path: Option<PathBuf>,
+    pending_edit_file: Option<String>, // Track file that needs editing after password unlock
 
     // Archive info
     archive_format: String,
@@ -232,11 +274,13 @@ impl ArchustApp {
             toolbar_state: toolbar::ToolbarState::default(),
             tree_state: tree_panel::TreePanelState::default(),
             password_dialog: dialogs::PasswordDialog::default(),
+            edit_dialog: dialogs::FileEditDialog::default(),
             entries: Vec::new(),
             status_info: status_bar::StatusBarInfo::default(),
             archive_loaded: false,
             current_path: String::new(),
             pending_archive_path: None,
+            pending_edit_file: None,
             archive_format: String::new(),
             total_size: 0,
             compressed_size: 0,
@@ -283,8 +327,17 @@ impl ArchustApp {
 
     fn try_open_with_password(&mut self, path: &PathBuf, password: &str) -> bool {
         let mut state = self.state.lock();
+        // Save the current navigation state before re-listing
+        let saved_current_path = state.navigation.current_path.clone();
+        let saved_path_stack = state.navigation.path_stack.clone();
+        
         match state.list_with_password(path, password) {
             Ok(archive_entries) => {
+                // Restore navigation state after re-listing
+                state.navigation.current_path = saved_current_path;
+                state.navigation.path_stack = saved_path_stack;
+                state.navigation.forward_stack.clear(); // Clear forward stack as we're not navigating
+                
                 let current_archive = state.current_archive.clone();
                 drop(state);
                 self.load_archive_data(archive_entries, current_archive);
@@ -685,19 +738,116 @@ impl eframe::App for ArchustApp {
                         egui::ScrollArea::vertical()
                             .id_salt("file_list_scroll")
                             .show(ui, |ui| {
-                                let navigate_to = if self.toolbar_state.grid_view {
-                                    file_list::render_grid_view(ui, &self.theme, &mut self.entries)
+                                if self.toolbar_state.grid_view {
+                                    if let Some(folder) =
+                                        file_list::render_grid_view(ui, &self.theme, &mut self.entries)
+                                    {
+                                        self.navigate_to(&folder);
+                                    }
                                 } else {
-                                    file_list::render_list_view(
+                                    if let Some(action) = file_list::render_list_view(
                                         ui,
                                         &self.theme,
                                         &mut self.entries,
                                         self.toolbar_state.columns_locked,
-                                    )
-                                };
+                                    ) {
+                                        match action {
+                                            file_list::FileListAction::Navigate(folder) => {
+                                                self.navigate_to(&folder)
+                                            }
+                                            file_list::FileListAction::Edit(name) => {
+                                                // Build full path in archive
+                                                let full_path = {
+                                                    let st = self.state.lock();
+                                                    let prefix = st.navigation.current_path.clone();
+                                                    if prefix.is_empty() { name.clone() } else { format!("{}/{}", prefix, name) }
+                                                };
 
-                                if let Some(folder) = navigate_to {
-                                    self.navigate_to(&folder);
+                                                info!("Edit action triggered for file: {}", name);
+                                                
+                                                // Check if file is likely a text file based on extension
+                                                let is_text_file = full_path.to_lowercase().ends_with(".txt")
+                                                    || full_path.to_lowercase().ends_with(".md")
+                                                    || full_path.to_lowercase().ends_with(".json")
+                                                    || full_path.to_lowercase().ends_with(".xml")
+                                                    || full_path.to_lowercase().ends_with(".html")
+                                                    || full_path.to_lowercase().ends_with(".css")
+                                                    || full_path.to_lowercase().ends_with(".js")
+                                                    || full_path.to_lowercase().ends_with(".log")
+                                                    || full_path.to_lowercase().ends_with(".cfg")
+                                                    || full_path.to_lowercase().ends_with(".ini")
+                                                    || full_path.to_lowercase().ends_with(".conf")
+                                                    || full_path.to_lowercase().ends_with(".py")
+                                                    || full_path.to_lowercase().ends_with(".rs")
+                                                    || full_path.to_lowercase().ends_with(".c")
+                                                    || full_path.to_lowercase().ends_with(".cpp")
+                                                    || full_path.to_lowercase().ends_with(".h")
+                                                    || full_path.to_lowercase().ends_with(".hpp");
+                                                
+                                                // Load content (or placeholder for binary files)
+                                                let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
+                                                if let Some(archive) = archive_opt {
+                                                    let content = if is_text_file {
+                                                        match self.state.lock().read_text_file(&archive, &full_path) {
+                                                            Ok(text) => text,
+                                                            Err(e) => {
+                                                                let err_msg = e.to_string();
+                                                                // Check if it's a password error
+                                                                if err_msg.contains("Wrong password") || err_msg.contains("Cannot open encrypted") {
+                                                                    error!("Password required to read file: {}", err_msg);
+                                                                    // Show password dialog and remember which file to edit
+                                                                    self.password_dialog.show = true;
+                                                                    self.password_dialog.password.clear();
+                                                                    self.password_dialog.error.clear();
+                                                                    self.pending_archive_path = Some(archive.clone());
+                                                                    self.pending_edit_file = Some(full_path.clone());
+                                                                    self.status_info.message = "File is encrypted - password required".to_string();
+                                                                    return; // Don't open edit dialog yet
+                                                                } else {
+                                                                    error!("Failed to read file content: {}", err_msg);
+                                                                    self.status_info.message = format!("Failed to open for edit: {}", err_msg);
+                                                                    String::new() // Continue with empty content on other errors
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        "[Binary file - content editing not supported]\n\nYou can still rename this file using the filename field above.".to_string()
+                                                    };
+                                                    
+                                                    // Show edit dialog
+                                                    self.edit_dialog.show = true;
+                                                    self.edit_dialog.full_path_in_archive = full_path.clone();
+                                                    self.edit_dialog.name_input = name.clone();
+                                                    self.edit_dialog.content = content;
+                                                    self.edit_dialog.error.clear();
+                                                }
+                                            }
+                                            file_list::FileListAction::Delete(name) => {
+                                                let full_path = {
+                                                    let st = self.state.lock();
+                                                    let prefix = st.navigation.current_path.clone();
+                                                    if prefix.is_empty() { name.clone() } else { format!("{}/{}", prefix, name) }
+                                                };
+                                                let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
+                                                if let Some(archive) = archive_opt {
+                                                    let del_res = { self.state.lock().delete_files(&archive, &[full_path.clone()]) };
+                                                    if let Err(e) = del_res {
+                                                        self.status_info.message = format!("Delete failed: {}", e);
+                                                    } else {
+                                                        // Refresh listing
+                                                        let mut st = self.state.lock();
+                                                        if let Some(a) = st.current_archive.clone() {
+                                                            if let Ok(entries) = st.list_archive(&a) {
+                                                                let current_archive = st.current_archive.clone();
+                                                                drop(st);
+                                                                self.load_archive_data(entries, current_archive);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             });
                     });
@@ -725,23 +875,88 @@ impl eframe::App for ArchustApp {
             dialogs::render_password_dialog(ctx, &self.theme, &mut self.password_dialog)
         {
             match result {
-                dialogs::PasswordDialogResult::Unlock => {
-                    if let Some(path) = self.pending_archive_path.clone() {
-                        let password = self.password_dialog.password.clone();
-                        if self.try_open_with_password(&path, &password) {
-                            self.password_dialog.show = false;
-                            self.pending_archive_path = None;
-                        } else {
-                            self.password_dialog.error =
-                                "Incorrect password. Please try again.".to_string();
+            dialogs::PasswordDialogResult::Unlock => {
+                if let Some(path) = self.pending_archive_path.clone() {
+                    let password = self.password_dialog.password.clone();
+                    if self.try_open_with_password(&path, &password) {
+                        self.password_dialog.show = false;
+                        self.pending_archive_path = None;
+                        
+                        // If we were trying to edit a file, retry now with password
+                        if let Some(file_path) = self.pending_edit_file.take() {
+                            let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
+                            if let Some(archive) = archive_opt {
+                                match self.state.lock().read_text_file(&archive, &file_path) {
+                                    Ok(text) => {
+                                        // Extract just the filename from full path
+                                        let name = file_path.split('/').last().unwrap_or(&file_path).to_string();
+                                        self.edit_dialog.show = true;
+                                        self.edit_dialog.full_path_in_archive = file_path.clone();
+                                        self.edit_dialog.name_input = name;
+                                        self.edit_dialog.content = text;
+                                        self.edit_dialog.error.clear();
+                                    }
+                                    Err(e) => {
+                                        self.status_info.message = format!("Failed to open for edit: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        self.password_dialog.error =
+                            "Incorrect password. Please try again.".to_string();
+                    }
+                }
+            }
+            dialogs::PasswordDialogResult::Cancel => {
+                self.password_dialog.show = false;
+                self.pending_archive_path = None;
+                self.pending_edit_file = None;
+                self.password_dialog.password.clear();
+                self.password_dialog.error.clear();
+            }
+            }
+        }
+
+        // File Edit dialog
+        if let Some(result) = dialogs::render_file_edit_dialog(ctx, &self.theme, &mut self.edit_dialog) {
+            match result {
+                dialogs::FileEditResult::Save { new_name, content } => {
+                    // Compute destination path in archive (respecting current dir)
+                    let dest_full = {
+                        let st = self.state.lock();
+                        let prefix = st.navigation.current_path.clone();
+                        if prefix.is_empty() { new_name.clone() } else { format!("{}/{}", prefix, new_name) }
+                    };
+
+                    let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
+                    if let Some(archive) = archive_opt {
+                        if dest_full != self.edit_dialog.full_path_in_archive {
+                            let _ = { self.state.lock().delete_files(&archive, &[self.edit_dialog.full_path_in_archive.clone()]) };
+                        }
+                        let update_res = { self.state.lock().add_or_update_file_from_str(&archive, &dest_full, &content) };
+                        match update_res {
+                            Ok(()) => {
+                                self.status_info.message = "Saved changes".to_string();
+                                self.edit_dialog.show = false;
+                                // Reload
+                                let mut st = self.state.lock();
+                                if let Some(a) = st.current_archive.clone() {
+                                    if let Ok(entries) = st.list_archive(&a) {
+                                        let current_archive = st.current_archive.clone();
+                                        drop(st);
+                                        self.load_archive_data(entries, current_archive);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                self.edit_dialog.error = format!("Save failed: {}", e);
+                            }
                         }
                     }
                 }
-                dialogs::PasswordDialogResult::Cancel => {
-                    self.password_dialog.show = false;
-                    self.pending_archive_path = None;
-                    self.password_dialog.password.clear();
-                    self.password_dialog.error.clear();
+                dialogs::FileEditResult::Cancel => {
+                    self.edit_dialog.show = false;
                 }
             }
         }

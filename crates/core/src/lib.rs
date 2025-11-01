@@ -296,6 +296,27 @@ pub trait ArchiveBackend: Send + Sync {
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()>;
     fn add_files(&self, archive: &Path, files: &[PathBuf]) -> Result<()>;
     fn create_archive(&self, dest: &Path, files: &[PathBuf], format: &str) -> Result<()>;
+
+    // New capabilities for inline editing
+    /// Read a single file from the archive as UTF-8 text. Lossy-decoding for non-UTF8.
+    fn read_text_file(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+    ) -> Result<String>;
+
+    /// Delete specific files from the archive.
+    fn delete_files(&self, archive: &Path, files: &[String]) -> Result<()>;
+
+    /// Add or replace a file in the archive from in-memory text content.
+    /// The file will be stored at `path_in_archive`.
+    fn add_or_update_file_from_str(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        content: &str,
+    ) -> Result<()>;
 }
 
 pub use config::{Config, ConfigStore, PassRule};
