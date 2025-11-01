@@ -102,6 +102,34 @@ impl SevenZipCli {
         }
     }
 
+    // Run 7z and feed data to stdin, checking only status.
+    fn run_status_with_stdin<I, S>(&self, args: I, stdin_data: &[u8]) -> Result<()>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        debug!("Executing 7-Zip command (status+stdin): {:?}", self.exe);
+        let mut child = Command::new(&self.exe)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .context("spawning 7z with stdin")?;
+
+        if let Some(stdin) = child.stdin.as_mut() {
+            use std::io::Write;
+            stdin.write_all(stdin_data)?;
+        }
+
+        let status = child.wait().context("waiting for 7z")?;
+        if !status.success() {
+            error!("7-Zip command failed with code {:?}", status.code());
+            return Err(anyhow!("7z failed (code {:?})", status.code()));
+        }
+        Ok(())
+    }
+
     fn run_status<I, S>(&self, args: I) -> Result<()>
     where
         I: IntoIterator<Item = S>,
@@ -526,5 +554,74 @@ impl ArchiveBackend for SevenZipCli {
         self.run_status(args)?;
         info!("Archive created successfully");
         Ok(())
+    }
+
+    fn read_text_file(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+    ) -> Result<String> {
+        info!(
+            "Reading file from archive to text: {} -> {}",
+            archive.display(),
+            path_in_archive
+        );
+        let mut args = vec![
+            OsString::from("e"),
+            OsString::from("-so"),
+            OsString::from("-y"),
+            OsString::from("-bd"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+        match password {
+            Some(p) => args.push(OsString::from(format!("-p{}", p))),
+            None => args.push(OsString::from("-p")),
+        }
+        args.push(archive.as_os_str().to_os_string());
+        args.push(OsString::from(path_in_archive));
+        // Use run() which returns String with UTF-8 (lossy fallback)
+        self.run(args)
+    }
+
+    fn delete_files(&self, archive: &Path, files: &[String]) -> Result<()> {
+        info!("Deleting {} files from {}", files.len(), archive.display());
+        let mut args = vec![
+            OsString::from("d"),
+            OsString::from("-y"),
+            OsString::from("-bd"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+            archive.as_os_str().to_os_string(),
+        ];
+        for f in files {
+            args.push(OsString::from(f));
+        }
+        self.run_status(args)
+    }
+
+    fn add_or_update_file_from_str(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        content: &str,
+    ) -> Result<()> {
+        info!(
+            "Adding/updating file in archive via stdin: {} -> {}",
+            archive.display(),
+            path_in_archive
+        );
+        let args = vec![
+            OsString::from("a"),
+            OsString::from("-y"),
+            OsString::from("-bd"),
+            OsString::from("-mmt=on"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+            archive.as_os_str().to_os_string(),
+            OsString::from(format!("-si{}", path_in_archive)),
+        ];
+        self.run_status_with_stdin(args, content.as_bytes())
     }
 }
