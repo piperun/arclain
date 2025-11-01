@@ -26,6 +26,7 @@ pub struct ToolbarActions {
     pub extract: bool,
     pub add: bool,
     pub open: bool,
+    pub delete_selected: bool,
 }
 
 impl Default for ToolbarActions {
@@ -37,6 +38,7 @@ impl Default for ToolbarActions {
             extract: false,
             add: false,
             open: false,
+            delete_selected: false,
         }
     }
 }
@@ -49,6 +51,7 @@ pub fn render(
     can_go_forward: bool,
     can_go_up: bool,
     archive_loaded: bool,
+    has_selection: bool,
 ) -> ToolbarActions {
     let mut actions = ToolbarActions::default();
 
@@ -87,6 +90,9 @@ pub fn render(
                 }
                 if toolbar_button_with_text(ui, theme, "➕", "Add", archive_loaded) {
                     actions.add = true;
+                }
+                if toolbar_button_with_text(ui, theme, "🗑", "Delete selected", archive_loaded && has_selection) {
+                    actions.delete_selected = true;
                 }
             });
         });

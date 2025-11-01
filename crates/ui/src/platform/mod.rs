@@ -1,3 +1,5 @@
+// Platform-specific utilities
+
 #[cfg(target_os = "windows")]
 pub fn detect_dark_mode() -> bool {
     use winreg::enums::*;

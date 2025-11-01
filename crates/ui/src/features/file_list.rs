@@ -1,5 +1,6 @@
 use super::theme::AppTheme;
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 
 #[derive(Clone)]
 pub struct FileEntry {
@@ -20,6 +21,48 @@ pub enum FileListAction {
     Delete(String), // same as above
     Open(String),   // double-click open file
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortColumn {
+    Name,
+    Size,
+    Compressed,
+    Ratio,
+    Modified,
+    Encrypted,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SortState {
+    pub column: SortColumn,
+    pub ascending: bool,
+}
+impl Default for SortState {
+    fn default() -> Self {
+        Self { column: SortColumn::Name, ascending: true }
+    }
+}
+
+fn parse_size_to_bytes(s: &str) -> u64 {
+    // Expect formats like "123 B", "12.3 KB", "4.5 MB", "1.0 GB"
+    let mut parts = s.split_whitespace();
+    let num_str = parts.next().unwrap_or("0");
+    let unit = parts.next().unwrap_or("B").to_ascii_uppercase();
+    let val: f64 = num_str.parse().unwrap_or(0.0);
+    let mul = match unit.as_str() {
+        "KB" => 1024.0,
+        "MB" => 1024.0 * 1024.0,
+        "GB" => 1024.0 * 1024.0 * 1024.0,
+        _ => 1.0,
+    };
+    (val * mul) as u64
+}
+
+fn parse_ratio_pct(s: &str) -> u64 {
+    s.trim_end_matches('%').parse::<u64>().unwrap_or(0)
+}
+
+// ================= Breadcrumb =================
 
 pub fn render_breadcrumb(
     ui: &mut egui::Ui,
@@ -124,6 +167,8 @@ pub fn render_breadcrumb(
     navigate_to
 }
 
+// ================= Grid View =================
+
 pub fn render_grid_view(
     ui: &mut egui::Ui,
     theme: &AppTheme,
@@ -140,22 +185,28 @@ pub fn render_grid_view(
         .num_columns(columns)
         .spacing([1.0, 1.0])
         .show(ui, |ui| {
-            for (idx, entry) in entries.iter_mut().enumerate() {
+            for idx in 0..entries.len() {
                 if idx > 0 && idx % columns == 0 {
                     ui.end_row();
                 }
 
-                let response = render_grid_item(ui, theme, entry);
+                let (response, row_action) = render_grid_item(ui, theme, &mut entries[idx]);
 
                 if response.clicked() {
-                    entry.selected = !entry.selected;
+                    entries[idx].selected = !entries[idx].selected;
                 }
 
                 if response.double_clicked() {
-                    if entry.is_folder {
-                        action = Some(FileListAction::Navigate(entry.name.clone()));
+                    if entries[idx].is_folder {
+                        action = Some(FileListAction::Navigate(entries[idx].name.clone()));
                     } else {
-                        action = Some(FileListAction::Open(entry.name.clone()));
+                        action = Some(FileListAction::Open(entries[idx].name.clone()));
+                    }
+                }
+
+                if action.is_none() {
+                    if let Some(a) = row_action {
+                        action = Some(a);
                     }
                 }
             }
@@ -164,8 +215,13 @@ pub fn render_grid_view(
     action
 }
 
-fn render_grid_item(ui: &mut egui::Ui, theme: &AppTheme, entry: &FileEntry) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(280.0, 60.0), egui::Sense::click());
+fn render_grid_item(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    entry: &mut FileEntry,
+) -> (egui::Response, Option<FileListAction>) {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(280.0, 80.0), egui::Sense::click());
+    let mut action: Option<FileListAction> = None;
 
     if ui.is_rect_visible(rect) {
         // Background
@@ -176,7 +232,6 @@ fn render_grid_item(ui: &mut egui::Ui, theme: &AppTheme, entry: &FileEntry) -> e
         } else {
             theme.colors.bg_primary
         };
-
         ui.painter().rect_filled(rect, 0.0, bg_color);
 
         // Content
@@ -184,14 +239,11 @@ fn render_grid_item(ui: &mut egui::Ui, theme: &AppTheme, entry: &FileEntry) -> e
 
         // Icon
         let icon_size = 32.0;
-        let icon_rect =
-            egui::Rect::from_min_size(content_rect.min, egui::vec2(icon_size, icon_size));
-
-        ui.painter()
-            .rect_filled(icon_rect, 4.0, theme.colors.bg_tertiary);
+        let icon_rect = egui::Rect::from_min_size(content_rect.min, egui::vec2(icon_size, icon_size));
+        ui.painter().rect_filled(icon_rect, 4.0, theme.colors.bg_tertiary);
 
         let ext = entry.name.split('.').last().unwrap_or("").to_uppercase();
-        let ext_text = if entry.is_folder { "📁" } else { &ext };
+        let ext_text: &str = if entry.is_folder { "📁" } else { &ext };
 
         ui.painter().text(
             icon_rect.center(),
@@ -203,8 +255,8 @@ fn render_grid_item(ui: &mut egui::Ui, theme: &AppTheme, entry: &FileEntry) -> e
 
         // File info
         let text_x = content_rect.min.x + icon_size + 12.0;
-        let name_pos = egui::pos2(text_x, content_rect.min.y + 8.0);
-        let meta_pos = egui::pos2(text_x, content_rect.min.y + 28.0);
+        let name_pos = egui::pos2(text_x, content_rect.min.y + 4.0);
+        let meta_pos = egui::pos2(text_x, content_rect.min.y + 24.0);
 
         // Use selection text color when selected
         let text_color = if entry.selected {
@@ -212,7 +264,6 @@ fn render_grid_item(ui: &mut egui::Ui, theme: &AppTheme, entry: &FileEntry) -> e
         } else {
             theme.colors.text_primary
         };
-
         let meta_color = if entry.selected {
             theme.colors.selection_text
         } else {
@@ -226,7 +277,6 @@ fn render_grid_item(ui: &mut egui::Ui, theme: &AppTheme, entry: &FileEntry) -> e
             egui::FontId::proportional(14.0),
             text_color,
         );
-
         ui.painter().text(
             meta_pos,
             egui::Align2::LEFT_TOP,
@@ -234,9 +284,104 @@ fn render_grid_item(ui: &mut egui::Ui, theme: &AppTheme, entry: &FileEntry) -> e
             egui::FontId::proportional(12.0),
             meta_color,
         );
+
+        // Inline actions (Edit/Delete) aligned to the right
+        let actions_w = 60.0;
+        let actions_h = 24.0;
+        let actions_rect = egui::Rect::from_min_size(
+            egui::pos2(content_rect.max.x - actions_w, content_rect.min.y),
+            egui::vec2(actions_w, actions_h),
+        );
+
+        ui.allocate_ui_at_rect(actions_rect, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+
+                // Edit: only for files
+                let can_edit = !entry.is_folder;
+                let edit_clicked = ui
+                    .add_enabled(
+                        can_edit,
+                        egui::Button::new("✏").min_size(egui::vec2(26.0, 22.0)),
+                    )
+                    .on_hover_text(if can_edit { "Edit file" } else { "Cannot edit folders" })
+                    .clicked();
+                if edit_clicked {
+                    action = Some(FileListAction::Edit(entry.name.clone()));
+                }
+
+                let del_clicked = ui
+                    .add_sized(egui::vec2(26.0, 22.0), egui::Button::new("🗑"))
+                    .on_hover_text("Delete")
+                    .clicked();
+                if del_clicked {
+                    action = Some(FileListAction::Delete(entry.name.clone()));
+                }
+            });
+        });
     }
 
-    response
+    (response, action)
+}
+
+// ================= List View (sortable + select-all) =================
+
+fn header_sort_label(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    label: &str,
+    current: SortColumn,
+    this_col: SortColumn,
+    ascending: bool,
+) -> bool {
+    let mut text = label.to_string();
+    if current == this_col {
+        text.push(' ');
+        text.push(if ascending { '▲' } else { '▼' });
+    }
+    let resp = ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .size(12.0)
+                .strong()
+                .color(theme.colors.text_secondary),
+        )
+        .selectable(false)
+        .sense(egui::Sense::click()),
+    );
+    resp.clicked()
+}
+
+fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
+    let cmp = |a: &FileEntry, b: &FileEntry| -> std::cmp::Ordering {
+        use std::cmp::Ordering::*;
+        let ord = match sort.column {
+            SortColumn::Name => {
+                let an = a.name.to_lowercase();
+                let bn = b.name.to_lowercase();
+                an.cmp(&bn)
+            }
+            SortColumn::Size => {
+                let asz = parse_size_to_bytes(&a.size);
+                let bsz = parse_size_to_bytes(&b.size);
+                asz.cmp(&bsz)
+            }
+            SortColumn::Compressed => {
+                let asz = parse_size_to_bytes(&a.compressed);
+                let bsz = parse_size_to_bytes(&b.compressed);
+                asz.cmp(&bsz)
+            }
+            SortColumn::Ratio => {
+                let ar = parse_ratio_pct(&a.ratio);
+                let br = parse_ratio_pct(&b.ratio);
+                ar.cmp(&br)
+            }
+            SortColumn::Modified => a.modified.cmp(&b.modified),
+            SortColumn::Encrypted => (a.encrypted as u8).cmp(&(b.encrypted as u8)),
+        };
+        if sort.ascending { ord } else { ord.reverse() }
+    };
+    entries.sort_by(cmp);
 }
 
 pub fn render_list_view(
@@ -244,17 +389,14 @@ pub fn render_list_view(
     theme: &AppTheme,
     entries: &mut [FileEntry],
     columns_locked: bool,
+    sort: &mut SortState,
 ) -> Option<FileListAction> {
-    use egui_extras::{Column, TableBuilder};
-
     let mut action: Option<FileListAction> = None;
 
-    // Capture selection state up-front so we can merge borders across contiguous
-    // selections without conflicting mutable borrows during row rendering.
-    let selection_flags: Vec<bool> = entries.iter().map(|e| e.selected).collect();
+    // Header-driven actions to apply before drawing body
+    let mut apply_select_all: Option<bool> = None;
 
-    // Clip all custom painting to the list area so nothing can overdraw the
-    // properties panel on the right.
+    // Clip rectangle for row decorations (compute before building table to avoid borrow conflicts)
     let list_clip_rect = ui.clip_rect();
 
     egui::Frame::none()
@@ -279,7 +421,7 @@ pub fn render_list_view(
                 .resizable(!columns_locked)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::exact(34.0)) // Checkbox
+                .column(Column::exact(34.0)) // Checkbox (+ select all in header)
                 .column(Column::remainder().at_least(220.0)) // Name
                 .column(Column::exact(110.0)) // Size
                 .column(Column::exact(110.0)) // Compressed
@@ -288,61 +430,70 @@ pub fn render_list_view(
                 .column(Column::exact(36.0)) // Encrypted
                 .column(Column::exact(84.0)) // Actions (Edit/Delete)
                 .header(28.0, |mut header| {
-                    header.col(|_ui| {});
+                    // Select all checkbox
                     header.col(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("Name")
-                                    .size(12.0)
-                                    .strong()
-                                    .color(theme.colors.text_secondary),
-                            )
-                            .selectable(false),
-                        );
+                        let all_selected = !entries.is_empty() && entries.iter().all(|e| e.selected);
+                        let some_selected = entries.iter().any(|e| e.selected);
+                        let mut header_check = all_selected;
+                        let resp = ui.checkbox(&mut header_check, "");
+                        if resp.clicked() {
+                            // Toggle to the state of header_check (clicked flips it)
+                            apply_select_all = Some(header_check);
+                        } else if some_selected && !all_selected && resp.hovered() {
+                            // Show hint for partial selection
+                            resp.on_hover_text("Some rows selected — click to toggle select all");
+                        }
+                    });
+
+                    header.col(|ui| {
+                        if header_sort_label(ui, theme, "Name", sort.column, SortColumn::Name, sort.ascending) {
+                            if sort.column == SortColumn::Name {
+                                sort.ascending = !sort.ascending;
+                            } else {
+                                sort.column = SortColumn::Name;
+                                sort.ascending = true;
+                            }
+                        }
                     });
                     header.col(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("Size")
-                                    .size(12.0)
-                                    .strong()
-                                    .color(theme.colors.text_secondary),
-                            )
-                            .selectable(false),
-                        );
+                        if header_sort_label(ui, theme, "Size", sort.column, SortColumn::Size, sort.ascending) {
+                            if sort.column == SortColumn::Size {
+                                sort.ascending = !sort.ascending;
+                            } else {
+                                sort.column = SortColumn::Size;
+                                sort.ascending = true;
+                            }
+                        }
                     });
                     header.col(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("Compressed")
-                                    .size(12.0)
-                                    .strong()
-                                    .color(theme.colors.text_secondary),
-                            )
-                            .selectable(false),
-                        );
+                        if header_sort_label(ui, theme, "Compressed", sort.column, SortColumn::Compressed, sort.ascending) {
+                            if sort.column == SortColumn::Compressed {
+                                sort.ascending = !sort.ascending;
+                            } else {
+                                sort.column = SortColumn::Compressed;
+                                sort.ascending = true;
+                            }
+                        }
                     });
                     header.col(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("Ratio")
-                                    .size(12.0)
-                                    .strong()
-                                    .color(theme.colors.text_secondary),
-                            )
-                            .selectable(false),
-                        );
+                        if header_sort_label(ui, theme, "Ratio", sort.column, SortColumn::Ratio, sort.ascending) {
+                            if sort.column == SortColumn::Ratio {
+                                sort.ascending = !sort.ascending;
+                            } else {
+                                sort.column = SortColumn::Ratio;
+                                sort.ascending = true;
+                            }
+                        }
                     });
                     header.col(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new("Modified")
-                                    .size(12.0)
-                                    .strong()
-                                    .color(theme.colors.text_secondary),
-                            )
-                            .selectable(false),
-                        );
+                        if header_sort_label(ui, theme, "Modified", sort.column, SortColumn::Modified, sort.ascending) {
+                            if sort.column == SortColumn::Modified {
+                                sort.ascending = !sort.ascending;
+                            } else {
+                                sort.column = SortColumn::Modified;
+                                sort.ascending = true;
+                            }
+                        }
                     });
                     header.col(|_ui| {});
                     header.col(|ui| {
@@ -358,6 +509,19 @@ pub fn render_list_view(
                     });
                 })
                 .body(|mut body| {
+                    // Apply select-all toggle if requested
+                    if let Some(v) = apply_select_all.take() {
+                        for e in entries.iter_mut() {
+                            e.selected = v;
+                        }
+                    }
+
+                    // Sort entries based on current sort state
+                    sort_entries(entries, sort);
+
+                    // Capture selection flags after sorting (for contiguous selection painting)
+                    let selection_flags: Vec<bool> = entries.iter().map(|e| e.selected).collect();
+
                     for (row_index, entry) in entries.iter_mut().enumerate() {
                         let entry_name = entry.name.clone();
                         let is_folder = entry.is_folder;
@@ -448,7 +612,7 @@ pub fn render_list_view(
                             row.col(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 6.0;
-                                    
+
                                     // Edit button enabled for all files (not folders)
                                     let can_edit = !is_folder;
                                     let hover_text = if is_folder {
@@ -456,7 +620,7 @@ pub fn render_list_view(
                                     } else {
                                         "Edit file (rename and/or edit content for text files)"
                                     };
-                                    
+
                                     let edit_clicked = ui
                                         .add_enabled(
                                             can_edit,
@@ -474,7 +638,7 @@ pub fn render_list_view(
                                             egui::vec2(28.0, 22.0),
                                             egui::Button::new("🗑"),
                                         )
-                                        .on_hover_text("Delete (coming soon)")
+                                        .on_hover_text("Delete")
                                         .clicked();
                                     if del_clicked {
                                         action_clicked = true;
