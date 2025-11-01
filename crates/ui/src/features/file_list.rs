@@ -18,6 +18,7 @@ pub enum FileListAction {
     Navigate(String),
     Edit(String),   // full path (relative to current path will be resolved by caller)
     Delete(String), // same as above
+    Open(String),   // double-click open file
 }
 
 pub fn render_breadcrumb(
@@ -127,8 +128,8 @@ pub fn render_grid_view(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     entries: &mut [FileEntry],
-) -> Option<String> {
-    let mut navigate_to: Option<String> = None;
+) -> Option<FileListAction> {
+    let mut action: Option<FileListAction> = None;
     let available_width = ui.available_width();
     let item_width = 280.0;
     let columns = (available_width / item_width).floor().max(1.0) as usize;
@@ -150,13 +151,17 @@ pub fn render_grid_view(
                     entry.selected = !entry.selected;
                 }
 
-                if response.double_clicked() && entry.is_folder {
-                    navigate_to = Some(entry.name.clone());
+                if response.double_clicked() {
+                    if entry.is_folder {
+                        action = Some(FileListAction::Navigate(entry.name.clone()));
+                    } else {
+                        action = Some(FileListAction::Open(entry.name.clone()));
+                    }
                 }
             }
         });
 
-    navigate_to
+    action
 }
 
 fn render_grid_item(ui: &mut egui::Ui, theme: &AppTheme, entry: &FileEntry) -> egui::Response {
@@ -529,8 +534,12 @@ pub fn render_list_view(
                                     .set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
 
-                            if row_response.double_clicked() && is_folder {
-                                action = Some(FileListAction::Navigate(entry_name.clone()));
+                            if row_response.double_clicked() {
+                                if is_folder {
+                                    action = Some(FileListAction::Navigate(entry_name.clone()));
+                                } else {
+                                    action = Some(FileListAction::Open(entry_name.clone()));
+                                }
                             } else if !checkbox_clicked && !action_clicked && row_response.clicked() {
                                 entry.selected = !entry.selected;
                             }

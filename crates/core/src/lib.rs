@@ -1,4 +1,5 @@
 pub mod config;
+pub mod file_opener;
 pub mod logging;
 pub mod sevenzip;
 
@@ -291,6 +292,13 @@ pub trait ArchiveBackend: Send + Sync {
         path: &Path,
         dest: &Path,
         files: &[String],
+        password: Option<&str>,
+    ) -> Result<()>;
+    fn extract_directory(
+        &self,
+        path: &Path,
+        dest: &Path,
+        dir_path: &str,
         password: Option<&str>,
     ) -> Result<()>;
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()>;

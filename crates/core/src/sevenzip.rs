@@ -50,11 +50,6 @@ impl SevenZipCli {
         S: AsRef<OsStr>,
     {
         let args_vec: Vec<_> = args.into_iter().collect();
-        debug!("Executing 7-Zip command: {:?}", self.exe);
-        debug!(
-            "Command arguments: {:?}",
-            args_vec.iter().map(|a| a.as_ref()).collect::<Vec<_>>()
-        );
 
         let out = Command::new(&self.exe)
             .args(&args_vec)
@@ -80,25 +75,9 @@ impl SevenZipCli {
             ));
         }
 
-        debug!("7-Zip command completed successfully");
-        
-        // Log raw bytes for Unicode debugging
-        debug!("Output byte length: {}", out.stdout.len());
-        if !out.stdout.is_empty() {
-            debug!("First 100 bytes (hex): {:x?}", &out.stdout[..out.stdout.len().min(100)]);
-        }
-        
-        // Try to decode as UTF-8
-        match String::from_utf8(out.stdout.clone()) {
-            Ok(s) => {
-                debug!("Successfully decoded output as UTF-8");
-                Ok(s)
-            }
-            Err(e) => {
-                error!("UTF-8 decoding failed at byte {}: {:?}", e.utf8_error().valid_up_to(), e);
-                debug!("Falling back to lossy UTF-8 conversion (will replace invalid chars with �)");
-                Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-            }
+        match String::from_utf8(out.stdout) {
+            Ok(s) => Ok(s),
+            Err(e) => Ok(String::from_utf8_lossy(e.as_bytes()).into_owned()),
         }
     }
 
@@ -113,7 +92,7 @@ impl SevenZipCli {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .context("spawning 7z with stdin")?;
 
@@ -139,7 +118,7 @@ impl SevenZipCli {
         let status = Command::new(&self.exe)
             .args(args)
             .stdout(Stdio::null())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .status()
             .context("spawning 7z")?;
 
@@ -366,11 +345,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-sccUTF-8"),  // Console charset for output
             OsString::from("-scsUTF-8"),  // Charset for list files
         ];
-        // Always provide password flag to avoid interactive prompts
-        // If no password provided, use empty string which will fail cleanly for encrypted archives
-        match password {
-            Some(p) => args.push(OsString::from(format!("-p{}", p))),
-            None => args.push(OsString::from("-p")), // Empty password to prevent interactive prompt
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
         }
         args.push(path.as_os_str().to_os_string());
         let out = self.run(args)?;
@@ -406,13 +382,9 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-scsUTF-8"),  // Charset for list files
         ];
 
-        // Always provide password flag to avoid interactive prompts
-        match password {
-            Some(p) => {
-                debug!("Using password for extraction");
-                args.push(OsString::from(format!("-p{}", p)));
-            }
-            None => args.push(OsString::from("-p")), // Empty password to prevent interactive prompt
+        // Provide password only when available to avoid false 'Wrong password' spam
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
         }
 
         let mut oarg = OsString::from("-o");
@@ -446,13 +418,9 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-sccUTF-8"),  // Console charset
             OsString::from("-scsUTF-8"),  // Charset for list files
         ];
-        // Always provide password flag to avoid interactive prompts
-        match password {
-            Some(p) => {
-                debug!("Using password for extraction");
-                args.push(OsString::from(format!("-p{}", p)));
-            }
-            None => args.push(OsString::from("-p")), // Empty password to prevent interactive prompt
+        // Provide password only when available to avoid false 'Wrong password' spam
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
         }
         // Build -o<dest> as a single OsString without leaking
         let mut oarg = OsString::from("-o");
@@ -462,6 +430,56 @@ impl ArchiveBackend for SevenZipCli {
         args.push(path.as_os_str().to_os_string());
         self.run_status(args)?;
         info!("All files extracted successfully");
+        Ok(())
+    }
+
+    fn extract_directory(
+        &self,
+        path: &Path,
+        dest: &Path,
+        dir_path: &str,
+        password: Option<&str>,
+    ) -> Result<()> {
+        info!(
+            "Extracting directory {} from {} to {}",
+            dir_path,
+            path.display(),
+            dest.display()
+        );
+
+        let mut args = vec![
+            OsString::from("x"),  // Use 'x' to preserve directory structure
+            OsString::from("-y"),
+            OsString::from("-mmt=on"),
+            OsString::from("-bd"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        }
+
+        let mut oarg = OsString::from("-o");
+        oarg.push(dest.as_os_str());
+        args.push(oarg);
+
+        args.push(path.as_os_str().to_os_string());
+
+        // Add wildcard pattern to extract directory and its contents
+        // If dir_path is empty, extract everything; otherwise extract dir/*
+        if dir_path.is_empty() {
+            // Extract everything
+            debug!("Extracting all files (empty directory path)");
+        } else {
+            // Extract specific directory with wildcard
+            let pattern = format!("{}/*", dir_path.trim_end_matches('/'));
+            debug!("Using extraction pattern: {}", pattern);
+            args.push(OsString::from(pattern));
+        }
+
+        self.run_status(args)?;
+        info!("Directory extracted successfully");
         Ok(())
     }
 
@@ -575,9 +593,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-sccUTF-8"),
             OsString::from("-scsUTF-8"),
         ];
-        match password {
-            Some(p) => args.push(OsString::from(format!("-p{}", p))),
-            None => args.push(OsString::from("-p")),
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
         }
         args.push(archive.as_os_str().to_os_string());
         args.push(OsString::from(path_in_archive));
