@@ -33,8 +33,9 @@ pub fn render_password_dialog(
     // Modal dialog on the foreground layer
     egui::Area::new(egui::Id::new("password_modal")).order(egui::Order::Foreground).show(ctx, |ui| {
         let screen = ctx.screen_rect();
-        let width = 420.0;
-        let height = if dialog.error.is_empty() { 220.0 } else { 260.0 };
+        // Slightly larger modal to avoid button overflow
+        let width = 520.0;
+        let height = if dialog.error.is_empty() { 300.0 } else { 340.0 };
         let pos = egui::pos2((screen.width() - width) / 2.0, (screen.height() - height) / 2.0);
         let rect = egui::Rect::from_min_size(pos, egui::vec2(width, height));
 
