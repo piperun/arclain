@@ -56,7 +56,14 @@ pub fn render_password_dialog(
 
             let password_response = ui.add_sized([content.width(), 40.0], egui::TextEdit::singleline(&mut dialog.password).password(true).hint_text("Enter password...").font(egui::TextStyle::Body));
             password_response.request_focus();
-            if password_response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !dialog.password.is_empty() { result = Some(PasswordDialogResult::Unlock); }
+            // Press Enter to unlock while the field is focused
+            if password_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !dialog.password.is_empty() {
+                result = Some(PasswordDialogResult::Unlock);
+            }
+            // Optional: ESC cancels
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                result = Some(PasswordDialogResult::Cancel);
+            }
 
             if !dialog.error.is_empty() { ui.colored_label(egui::Color32::from_rgb(220, 53, 69), &dialog.error); }
             ui.add_space(8.0);

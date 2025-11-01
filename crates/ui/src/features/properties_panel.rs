@@ -107,15 +107,10 @@ pub fn create_archive_info_group(
     headers_encrypted: bool,
     encryption_method: Option<&str>,
 ) -> PropertyGroup {
-    let (encryption_label, extra_line): (String, Option<String>) = if encrypted {
-        if let Some(method) = encryption_method {
-            ("Yes".to_string(), Some(method.to_string()))
-        } else {
-            ("Yes".to_string(), None)
-        }
-    } else {
-        ("No".to_string(), None)
-    };
+    // Data vs header encryption clarity
+    let (data_enc_label, method_line): (String, Option<String>) = if encrypted {
+        if let Some(method) = encryption_method { ("Yes".to_string(), Some(method.to_string())) } else { ("Yes".to_string(), None) }
+    } else { ("No".to_string(), None) };
 
     let header_status = if headers_encrypted { "Yes" } else { "No" };
 
@@ -124,12 +119,10 @@ pub fn create_archive_info_group(
         ("Total Size:".to_string(), total_size.to_string()),
         ("Compressed:".to_string(), compressed_size.to_string()),
         ("Format:".to_string(), format.to_string()),
-        ("Encrypted:".to_string(), encryption_label),
+        ("Data Encrypted:".to_string(), data_enc_label),
     ];
-    if let Some(detail) = extra_line {
-        props.push(("".to_string(), detail));
-    }
-    props.push(("Headers Protected:".to_string(), header_status.to_string()));
+    if let Some(detail) = method_line { props.push(("".to_string(), detail)); }
+    props.push(("Headers Encrypted:".to_string(), header_status.to_string()));
 
     PropertyGroup { title: "ARCHIVE INFO".to_string(), properties: props }
 }

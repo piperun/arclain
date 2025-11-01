@@ -1,6 +1,7 @@
 mod features;
 
 use anyhow::Result;
+use archust_core::file_opener::{FileOpener, OpenStrategy};
 use archust_core::logging::init_logging;
 use archust_core::sevenzip::SevenZipCli;
 use archust_core::{ArchiveBackend, ConfigStore, NavigationState};
@@ -56,19 +57,38 @@ impl AppState {
     fn list_archive(&mut self, path: &Path) -> Result<Vec<archust_core::ArchiveEntry>> {
         info!("Opening archive: {}", path.display());
 
-        let info = self.backend.list(path, None).or_else(|e| {
-            debug!("Initial listing failed, trying with auto-password: {}", e);
-            let pw = self.cfg.auto_password_for(&self.last_entries);
-            if pw.is_some() {
-                info!("Attempting to open archive with auto-detected password");
+        // Try without password first
+        let info = match self.backend.list(path, None) {
+            Ok(info) => {
+                debug!("Archive opened without password (may have encrypted files inside)");
+                info
             }
-            self.backend.list(path, pw.as_deref())
-        })?;
+            Err(e) => {
+                debug!("Initial listing failed, trying with auto-password: {}", e);
+                let pw = self.cfg.auto_password_for(&self.last_entries);
+                if let Some(ref password) = pw {
+                    info!("Attempting to open archive with auto-detected password");
+                    let info = self.backend.list(path, Some(password))?;
+                    // Store this password immediately since we know it worked for listing
+                    self.current_password = Some(password.clone());
+                    info
+                } else {
+                    debug!("No auto-password found");
+                    return Err(e);
+                }
+            }
+        };
 
+        // Update entry list
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         
-        // Detect password AFTER we have the entry list
-        let detected_pw = self.cfg.auto_password_for(&self.last_entries);
+        // Now detect password from the entry list (for archives that list without password but have encrypted files)
+        if self.current_password.is_none() {
+            let detected_pw = self.cfg.auto_password_for(&self.last_entries);
+            if let Some(pwd) = detected_pw {
+                self.current_password = Some(pwd);
+            }
+        }
         
         self.all_entries = info.entries.clone();
         self.current_archive = Some(path.to_path_buf());
@@ -76,11 +96,7 @@ impl AppState {
         self.headers_encrypted = info.headers_encrypted;
         self.encryption_method = info.encryption_method.clone();
         self.navigation = NavigationState::new();
-        self.current_password = detected_pw.clone(); // Store the auto-detected password
         
-        if detected_pw.is_some() {
-            info!("Auto-detected and stored password for future operations");
-        }
 
         info!(
             "Archive opened successfully with {} entries",
@@ -104,7 +120,6 @@ impl AppState {
         self.encryption_method = info.encryption_method.clone();
         self.navigation = NavigationState::new();
         self.current_password = Some(password.to_string()); // Store the manually entered password
-        debug!("Stored password for future operations");
         Ok(self.all_entries.clone())
     }
 
@@ -161,6 +176,31 @@ impl AppState {
             .extract_files(archive, dest, &full_paths, pw)
     }
 
+    // Extract using exact full archive paths provided (no prefixing with navigation path)
+    fn extract_specific(&self, archive: &Path, dest: &Path, full_paths: Vec<String>) -> Result<()> {
+        info!("Extracting {} file(s) (exact paths)", full_paths.len());
+        let auto_pw = self.cfg.auto_password_for(&self.last_entries);
+        let pw = self.current_password.as_deref().or(auto_pw.as_deref());
+        // If we have too many files (>100), extract by directory pattern instead
+        if full_paths.len() > 100 {
+            // Find the common directory
+            let dir_path = if let Some(first) = full_paths.first() {
+                if let Some(idx) = first.rfind('/') {
+                    &first[..idx]
+                } else {
+                    ""
+                }
+            } else {
+                ""
+            };
+            info!("Too many files ({}), extracting entire directory: {}", full_paths.len(), if dir_path.is_empty() { "<root>" } else { dir_path });
+            self.backend.extract_directory(archive, dest, dir_path, pw)
+        } else {
+            debug!("Files to extract: {:?}", full_paths);
+            self.backend.extract_files(archive, dest, &full_paths, pw)
+        }
+    }
+
     fn add_files_to_archive(&self, archive: &Path, files: Vec<PathBuf>) -> Result<()> {
         self.backend.add_files(archive, &files)
     }
@@ -168,9 +208,6 @@ impl AppState {
     fn read_text_file(&self, archive: &Path, path_in_archive: &str) -> Result<String> {
         let auto_pw = self.cfg.auto_password_for(&self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
-        debug!("Current password stored: {}", if self.current_password.is_some() { "yes" } else { "no" });
-        debug!("Auto password found: {}", if auto_pw.is_some() { "yes" } else { "no" });
-        debug!("Reading text file with password: {}", if pw.is_some() { "yes" } else { "no" });
         self.backend
             .read_text_file(archive, path_in_archive, pw)
     }
@@ -244,6 +281,7 @@ struct ArchustApp {
     current_path: String,
     pending_archive_path: Option<PathBuf>,
     pending_edit_file: Option<String>, // Track file that needs editing after password unlock
+    pending_open_file: Option<String>, // Track file that needs opening after password unlock
 
     // Archive info
     archive_format: String,
@@ -281,6 +319,7 @@ impl ArchustApp {
             current_path: String::new(),
             pending_archive_path: None,
             pending_edit_file: None,
+            pending_open_file: None,
             archive_format: String::new(),
             total_size: 0,
             compressed_size: 0,
@@ -739,10 +778,63 @@ impl eframe::App for ArchustApp {
                             .id_salt("file_list_scroll")
                             .show(ui, |ui| {
                                 if self.toolbar_state.grid_view {
-                                    if let Some(folder) =
-                                        file_list::render_grid_view(ui, &self.theme, &mut self.entries)
-                                    {
-                                        self.navigate_to(&folder);
+                                    if let Some(action) = file_list::render_grid_view(ui, &self.theme, &mut self.entries) {
+                                        match action {
+                                            file_list::FileListAction::Navigate(folder) => self.navigate_to(&folder),
+                                            file_list::FileListAction::Open(name) => {
+                                                // Reuse the list-view handler by constructing the same flow via the same block below.
+                                                // To avoid duplication, we call the same code path by pushing this action to be handled in place.
+                                                // Inline the same open code here for clarity.
+                                                let full_path = {
+                                                    let st = self.state.lock();
+                                                    let prefix = st.navigation.current_path.clone();
+                                                    if prefix.is_empty() { name.clone() } else { format!("{}/{}", prefix, name) }
+                                                };
+                                                // Pre-check encryption and prompt before attempting extraction
+                                                let need_pw = {
+                                                    let st = self.state.lock();
+                                                    let is_encrypted = st.all_entries.iter().any(|e| e.path == full_path && e.encrypted);
+                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(&st.last_entries).is_some();
+                                                    is_encrypted && !have_pw
+                                                };
+                                                if need_pw {
+                                                    self.password_dialog.show = true;
+                                                    self.password_dialog.password.clear();
+                                                    self.password_dialog.error.clear();
+                                                    self.pending_archive_path = { let st = self.state.lock(); st.current_archive.clone() };
+                                                    self.pending_open_file = Some(full_path.clone());
+                                                    self.status_info.message = "Password required to open file".to_string();
+                                                    return;
+                                                }
+                                                let tmp_dir = match tempfile::tempdir() { Ok(d) => d, Err(e) => { self.status_info.message = format!("Open failed: {}", e); return; } };
+                                                let dest_path = tmp_dir.path().to_path_buf();
+                                                let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
+                                                if let Some(archive) = archive_opt {
+                                                    let res = { self.state.lock().extract_specific(&archive, &dest_path, vec![full_path.clone()]) };
+                                                    match res {
+                                                        Ok(()) => {
+                                                            let extracted = dest_path.join(&name);
+                                                            if let Err(e) = open::that(&extracted) {
+                                                                self.status_info.message = format!("Failed to open file: {}", e);
+                                                            }
+                                                            std::mem::forget(tmp_dir);
+                                                        }
+                                                        Err(e) => {
+                                                            let err_msg = e.to_string();
+                                                            if err_msg.contains("Wrong password")
+                                                                || err_msg.contains("Cannot open encrypted")
+                                                                || err_msg.contains("code Some(2)") {
+                                                                self.password_dialog.show = true; self.password_dialog.password.clear(); self.password_dialog.error.clear();
+                                                                self.pending_archive_path = { let st = self.state.lock(); st.current_archive.clone() };
+                                                                self.pending_open_file = Some(full_path.clone());
+                                                                self.status_info.message = "Password required to open file".to_string();
+                                                            } else { self.status_info.message = format!("Open failed: {}", err_msg); }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
                                     }
                                 } else {
                                     if let Some(action) = file_list::render_list_view(
@@ -762,6 +854,23 @@ impl eframe::App for ArchustApp {
                                                     let prefix = st.navigation.current_path.clone();
                                                     if prefix.is_empty() { name.clone() } else { format!("{}/{}", prefix, name) }
                                                 };
+ 
+                                                // Pre-check encryption and prompt before reading encrypted file
+                                                let need_pw = {
+                                                    let st = self.state.lock();
+                                                    let is_encrypted = st.all_entries.iter().any(|e| e.path == full_path && e.encrypted);
+                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(&st.last_entries).is_some();
+                                                    is_encrypted && !have_pw
+                                                };
+                                                if need_pw {
+                                                    self.password_dialog.show = true;
+                                                    self.password_dialog.password.clear();
+                                                    self.password_dialog.error.clear();
+                                                    self.pending_archive_path = { let st = self.state.lock(); st.current_archive.clone() };
+                                                    self.pending_edit_file = Some(full_path.clone());
+                                                    self.status_info.message = "File is encrypted - password required".to_string();
+                                                    return;
+                                                }
 
                                                 info!("Edit action triggered for file: {}", name);
                                                 
@@ -822,6 +931,108 @@ impl eframe::App for ArchustApp {
                                                     self.edit_dialog.error.clear();
                                                 }
                                             }
+                                            file_list::FileListAction::Open(name) => {
+                                                // Build full path within archive
+                                                let full_path = {
+                                                    let st = self.state.lock();
+                                                    let prefix = st.navigation.current_path.clone();
+                                                    if prefix.is_empty() { name.clone() } else { format!("{}/{}", prefix, name) }
+                                                };
+ 
+                                                // Pre-check encryption and prompt before attempting extraction
+                                                let need_pw = {
+                                                    let st = self.state.lock();
+                                                    let is_encrypted = st.all_entries.iter().any(|e| e.path == full_path && e.encrypted);
+                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(&st.last_entries).is_some();
+                                                    is_encrypted && !have_pw
+                                                };
+                                                if need_pw {
+                                                    self.password_dialog.show = true;
+                                                    self.password_dialog.password.clear();
+                                                    self.password_dialog.error.clear();
+                                                    self.pending_archive_path = { let st = self.state.lock(); st.current_archive.clone() };
+                                                    self.pending_open_file = Some(full_path.clone());
+                                                    self.status_info.message = "Password required to open file".to_string();
+                                                    return;
+                                                }
+
+                                                // Create FileOpener for smart extraction
+                                                let opener = match FileOpener::new() {
+                                                    Ok(o) => o,
+                                                    Err(e) => {
+                                                        error!("Failed to create FileOpener: {}", e);
+                                                        self.status_info.message = format!("Open failed: {}", e);
+                                                        return;
+                                                    }
+                                                };
+
+                                                // Determine which files to extract (same directory strategy)
+                                                let all_entry_paths: Vec<String> = {
+                                                    let st = self.state.lock();
+                                                    st.all_entries.iter().map(|e| e.path.clone()).collect()
+                                                };
+                                                
+                                                let files_to_extract = opener.get_files_to_extract(
+                                                    &full_path,
+                                                    &all_entry_paths,
+                                                    OpenStrategy::SameDirectory,
+                                                );
+                                                
+                                                info!("Opening file: {} (extracting {} related files)", name, files_to_extract.len());
+
+                                                // Extract files
+                                                let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
+                                                if let Some(archive) = archive_opt {
+                                                    let res = { self.state.lock().extract_specific(&archive, opener.temp_dir(), files_to_extract) };
+                                                    match res {
+                                                        Ok(()) => {
+                                                            info!("Extraction completed successfully, preparing to open {}", full_path);
+                                                            let normalized_full_path = full_path.replace('/', std::path::MAIN_SEPARATOR.to_string().as_str());
+                                                            let file_to_open = opener.temp_dir().join(&normalized_full_path);
+                                                            
+                                                            if !file_to_open.exists() {
+                                                                error!("Extracted file missing: {}", file_to_open.display());
+                                                                self.status_info.message = "File not found after extraction".to_string();
+                                                                return;
+                                                            }
+                                                            
+                                                            info!("Launching extracted file: {}", file_to_open.display());
+                                                            match open::that(&file_to_open) {
+                                                                Ok(()) => {
+                                                                    info!("Successfully opened {}", file_to_open.display());
+                                                                    self.status_info.message = format!("Opened {}", name);
+                                                                    std::mem::forget(opener);
+                                                                }
+                                                                Err(e) => {
+                                                                    error!("Failed to launch {}: {}", file_to_open.display(), e);
+                                                                    self.status_info.message = format!("Failed to open file: {}", e);
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            let err_msg = e.to_string();
+                                                            error!("Extraction failed: {}", err_msg);
+                                                            // Check if it's a password error - 7z returns exit code 2 for password errors
+                                                            if err_msg.contains("Wrong password")
+                                                                || err_msg.contains("Cannot open encrypted")
+                                                                || err_msg.contains("code Some(2)") {
+                                                                // Prompt for password, then retry open
+                                                                info!("Showing password dialog for encrypted file (detected password error)");
+                                                                self.password_dialog.show = true;
+                                                                self.password_dialog.password.clear();
+                                                                self.password_dialog.error.clear();
+                                                                self.pending_archive_path = { let st = self.state.lock(); st.current_archive.clone() };
+                                                                // Remember target to open after unlock
+                                                                self.pending_open_file = Some(full_path.clone());
+                                                                info!("Stored pending_open_file: {}", full_path);
+                                                                self.status_info.message = "Password required to open file".to_string();
+                                                            } else {
+                                                                self.status_info.message = format!("Open failed: {}", err_msg);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             file_list::FileListAction::Delete(name) => {
                                                 let full_path = {
                                                     let st = self.state.lock();
@@ -876,14 +1087,18 @@ impl eframe::App for ArchustApp {
         {
             match result {
             dialogs::PasswordDialogResult::Unlock => {
+                info!("Password dialog unlock clicked");
                 if let Some(path) = self.pending_archive_path.clone() {
                     let password = self.password_dialog.password.clone();
+                    info!("Attempting to unlock archive with provided password (length: {})", password.len());
                     if self.try_open_with_password(&path, &password) {
+                        info!("Archive unlocked successfully");
                         self.password_dialog.show = false;
                         self.pending_archive_path = None;
                         
                         // If we were trying to edit a file, retry now with password
                         if let Some(file_path) = self.pending_edit_file.take() {
+                            info!("Retrying edit for file: {}", file_path);
                             let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
                             if let Some(archive) = archive_opt {
                                 match self.state.lock().read_text_file(&archive, &file_path) {
@@ -902,6 +1117,69 @@ impl eframe::App for ArchustApp {
                                 }
                             }
                         }
+                        
+                        // If we were trying to open a file, retry now with password
+                        if let Some(full_path) = self.pending_open_file.take() {
+                            info!("Found pending_open_file, retrying: {}", full_path);
+                            let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
+                            if let Some(archive) = archive_opt {
+                                // Create FileOpener for smart extraction
+                                let opener = match FileOpener::new() {
+                                    Ok(o) => o,
+                                    Err(e) => {
+                                        self.status_info.message = format!("Open failed: {}", e);
+                                        return;
+                                    }
+                                };
+
+                                // Determine which files to extract (same directory strategy)
+                                let all_entry_paths: Vec<String> = {
+                                    let st = self.state.lock();
+                                    st.all_entries.iter().map(|e| e.path.clone()).collect()
+                                };
+                                
+                                let files_to_extract = opener.get_files_to_extract(
+                                    &full_path,
+                                    &all_entry_paths,
+                                    OpenStrategy::SameDirectory,
+                                );
+                                
+                                info!("Retrying open: {} (extracting {} related files)", full_path, files_to_extract.len());
+                                
+                                match self.state.lock().extract_specific(&archive, opener.temp_dir(), files_to_extract) {
+                                    Ok(()) => {
+                                        info!("Extraction completed successfully, opening file {}", full_path);
+                                        let normalized_full_path = full_path.replace('/', std::path::MAIN_SEPARATOR.to_string().as_str());
+                                        let file_to_open = opener.temp_dir().join(&normalized_full_path);
+                                        
+                                        info!("Looking for extracted file at: {}", file_to_open.display());
+                                        
+                                        if !file_to_open.exists() {
+                                            error!("Extracted file missing: {}", file_to_open.display());
+                                            self.status_info.message = "File not found after extraction".to_string();
+                                            return;
+                                        }
+                                        
+                                        match open::that(&file_to_open) {
+                                            Ok(()) => {
+                                                let file_name = full_path.split('/').last().unwrap_or(&full_path);
+                                                info!("Successfully opened {}", file_name);
+                                                self.status_info.message = format!("Opened {}", file_name);
+                                                std::mem::forget(opener);
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to launch {}: {}", file_to_open.display(), e);
+                                                self.status_info.message = format!("Failed to open file: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("Extraction failed: {}", e);
+                                        self.status_info.message = format!("Failed to extract file: {}", e);
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         self.password_dialog.error =
                             "Incorrect password. Please try again.".to_string();
@@ -912,6 +1190,7 @@ impl eframe::App for ArchustApp {
                 self.password_dialog.show = false;
                 self.pending_archive_path = None;
                 self.pending_edit_file = None;
+                self.pending_open_file = None;
                 self.password_dialog.password.clear();
                 self.password_dialog.error.clear();
             }
