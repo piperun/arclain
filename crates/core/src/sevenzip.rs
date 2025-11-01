@@ -92,7 +92,7 @@ impl SevenZipCli {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()
             .context("spawning 7z with stdin")?;
 
@@ -118,7 +118,7 @@ impl SevenZipCli {
         let status = Command::new(&self.exe)
             .args(args)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .status()
             .context("spawning 7z")?;
 
@@ -200,6 +200,10 @@ impl SevenZipCli {
                 .and_then(|s| s.parse::<u64>().ok())
                 .unwrap_or(0);
             let modified = map.get("Modified").map(|s| s.to_string());
+            let crc32 = map
+                .get("CRC")
+                .map(|s| s.trim().to_uppercase())
+                .filter(|s| !s.is_empty());
             let encrypted = matches!(map.get("Encrypted"), Some(&"+"));
 
             if encrypted {
@@ -217,6 +221,7 @@ impl SevenZipCli {
                 modified,
                 is_dir,
                 encrypted,
+                crc32,
             });
         };
 
@@ -228,30 +233,44 @@ impl SevenZipCli {
                 continue;
             }
 
-            // Check if this looks like an entry line (has " = " separator)
+            // Key/value line
             if let Some((k, v)) = line.split_once(" = ") {
                 let key = k.trim();
                 let value = v.trim();
-                
-                // If we see "Path = ", we're definitely in entries section
-                if key == "Path" && !in_entries {
+
+                // Starting a new entry block on Path
+                if key == "Path" {
+                    if !cur.is_empty() {
+                        flush(&cur, &mut entries, &mut encrypted_methods);
+                        cur.clear();
+                    }
                     in_entries = true;
+                    cur.push((key.to_string(), value.to_string()));
+                    continue;
                 }
-                
-                if in_entries {
-                    // This is an entry field
+
+                // Header-level keys that may appear after entries too
+                let is_header_key = matches!(
+                    key,
+                    "Headers Encrypted" | "Encryption" | "Encrypted" | "Header Encryption" | "Characteristics"
+                );
+
+                if in_entries && !cur.is_empty() && !is_header_key {
+                    // Entry field while inside an entry block
                     cur.push((key.to_string(), value.to_string()));
                 } else {
-                    // This is a header property
+                    // Treat as header property (also captures footer header lines)
                     header_props.insert(key.to_string(), value.to_string());
                 }
                 continue;
             }
 
-            // Empty line marks the end of an entry
-            if line.is_empty() && in_entries {
-                flush(&cur, &mut entries, &mut encrypted_methods);
-                cur.clear();
+            // Empty line: end current entry block if any
+            if line.is_empty() {
+                if !cur.is_empty() {
+                    flush(&cur, &mut entries, &mut encrypted_methods);
+                    cur.clear();
+                }
                 continue;
             }
         }
@@ -280,16 +299,25 @@ impl SevenZipCli {
             }
         }
 
-        let headers_encrypted = matches!(
+        // Detect header encryption across variants
+        let mut headers_encrypted = matches!(
             header_props.get("Headers Encrypted"),
             Some(value) if value == "+" || value.eq_ignore_ascii_case("yes")
         );
 
-        if headers_encrypted {
-            if let Some(value) = header_props.get("Header Encryption") {
-                if !value.trim().is_empty() {
-                    encrypted_methods.insert(value.trim().to_string());
-                }
+        // Some formats expose explicit header encryption method without a boolean flag
+        if let Some(value) = header_props.get("Header Encryption") {
+            if !value.trim().is_empty() {
+                headers_encrypted = true;
+                encrypted_methods.insert(value.trim().to_string());
+            }
+        }
+
+        // Fallback: some variants put hints in Characteristics
+        if let Some(value) = header_props.get("Characteristics") {
+            let lc = value.to_lowercase();
+            if lc.contains("headers encrypted") || lc.contains("encrypted headers") {
+                headers_encrypted = true;
             }
         }
 
@@ -377,7 +405,7 @@ impl ArchiveBackend for SevenZipCli {
         debug!("Files to extract: {:?}", files);
 
         let mut args = vec![
-            OsString::from("e"), // Note: 'e' extracts without paths, use 'x' to preserve paths
+            OsString::from("x"), // Use 'x' to preserve directory structure (matches UI path expectations)
             OsString::from("-y"),
             OsString::from("-mmt=on"),
             OsString::from("-bd"),

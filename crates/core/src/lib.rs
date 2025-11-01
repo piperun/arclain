@@ -159,6 +159,7 @@ impl NavigationState {
                             modified: None,
                             is_dir: true,
                             encrypted: false,
+                            crc32: None,
                         });
                     }
 
@@ -184,6 +185,7 @@ impl NavigationState {
                             modified: None,
                             is_dir: true,
                             encrypted: false,
+                            crc32: None,
                         });
                     }
 
@@ -209,7 +211,7 @@ impl NavigationState {
 
         let mut result: Vec<ArchiveEntry> = map.into_values().collect();
 
-        // Update folder sizes
+        // Update folder sizes and CRC
         for entry in result.iter_mut().filter(|e| e.is_dir) {
             let full_path = if normalized_current.is_empty() {
                 entry.path.clone()
@@ -220,6 +222,9 @@ impl NavigationState {
             let (size, packed) = Self::compute_folder_totals(entries, &full_path);
             entry.size = size;
             entry.packed_size = packed;
+
+            // Compute aggregated CRC-32 over descendant file CRCs
+            entry.crc32 = Self::compute_folder_crc(entries, &full_path);
         }
 
         result
@@ -247,6 +252,40 @@ impl NavigationState {
         (size, packed)
     }
 
+    fn compute_folder_crc(entries: &[ArchiveEntry], folder_path: &str) -> Option<String> {
+        use crc32fast::Hasher;
+        let normalized_folder = Self::normalize_path(folder_path);
+        let prefix = format!("{}/", normalized_folder.trim_end_matches('/'));
+        let mut items: Vec<(String, String)> = Vec::new();
+
+        for entry in entries {
+            if entry.is_dir {
+                continue;
+            }
+            let normalized = entry.path.replace('\\', "/");
+            if normalized == normalized_folder || normalized.starts_with(&prefix) {
+                if let Some(crc) = &entry.crc32 {
+                    items.push((normalized.clone(), crc.to_uppercase()));
+                }
+            }
+        }
+
+        if items.is_empty() {
+            return None;
+        }
+
+        items.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut hasher = Hasher::new();
+        for (p, c) in items {
+            hasher.update(p.as_bytes());
+            hasher.update(b":");
+            hasher.update(c.as_bytes());
+            hasher.update(b"\n");
+        }
+        let sum = hasher.finalize();
+        Some(format!("{:08X}", sum))
+    }
+
     fn normalize_path(path: &str) -> String {
         path.split(|c| c == '/' || c == '\\')
             .filter(|segment| !segment.is_empty())
@@ -271,6 +310,7 @@ pub struct ArchiveEntry {
     pub modified: Option<String>,
     pub is_dir: bool,
     pub encrypted: bool,
+    pub crc32: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

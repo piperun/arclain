@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info};
+use crc32fast::Hasher;
 
 pub struct ArchustApp {
     state: Arc<Mutex<AppState>>,
@@ -46,6 +47,7 @@ pub struct ArchustApp {
     archive_encrypted: bool,
     headers_encrypted: bool,
     encryption_method: Option<String>,
+    total_crc32: Option<String>,
 }
 
 impl ArchustApp {
@@ -83,6 +85,7 @@ impl ArchustApp {
             archive_encrypted: false,
             headers_encrypted: false,
             encryption_method: None,
+            total_crc32: None,
         }
     }
 
@@ -172,6 +175,27 @@ impl ArchustApp {
                 .and_then(|e| e.to_str())
                 .map(|s| s.to_uppercase())
                 .unwrap_or_else(|| "Archive".to_string());
+        }
+
+        // Compute archive total CRC-32 over sorted "path:CRC" pairs (files with CRC present)
+        let mut pairs: Vec<(String, String)> = archive_entries
+            .iter()
+            .filter(|e| !e.is_dir)
+            .filter_map(|e| e.crc32.as_ref().map(|c| (e.path.replace('\\', "/"), c.to_uppercase())))
+            .collect();
+        if pairs.is_empty() {
+            self.total_crc32 = None;
+        } else {
+            pairs.sort_by(|a, b| a.0.cmp(&b.0));
+            let mut hasher = Hasher::new();
+            for (p, c) in pairs {
+                hasher.update(p.as_bytes());
+                hasher.update(b":");
+                hasher.update(c.as_bytes());
+                hasher.update(b"\n");
+            }
+            let sum = hasher.finalize();
+            self.total_crc32 = Some(format!("{:08X}", sum));
         }
 
         self.archive_loaded = true;
@@ -522,6 +546,7 @@ impl eframe::App for ArchustApp {
                         self.file_count,
                         &format_size(self.total_size),
                         &format_size(self.compressed_size),
+                        self.total_crc32.as_deref(),
                         self.archive_encrypted,
                         self.headers_encrypted,
                         self.encryption_method.as_deref(),

@@ -30,6 +30,7 @@ pub fn convert_to_file_entry(entry: &archust_core::ArchiveEntry) -> FileEntry {
         compressed: format_size(entry.packed_size),
         ratio,
         modified: entry.modified.clone().unwrap_or_default(),
+        crc32: entry.crc32.clone().unwrap_or_default(),
         encrypted: entry.encrypted,
         is_folder: entry.is_dir,
         selected: false,
