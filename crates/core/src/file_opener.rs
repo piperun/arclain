@@ -22,7 +22,7 @@ pub struct FileOpener {
 impl FileOpener {
     /// Create a new FileOpener with a temporary directory
     pub fn new() -> Result<Self> {
-        let temp_dir = std::env::temp_dir().join(format!("archust_{}", std::process::id()));
+        let temp_dir = std::env::temp_dir().join(format!("arclain_{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
         info!("Created temporary directory: {}", temp_dir.display());
         

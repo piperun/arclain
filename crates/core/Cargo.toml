@@ -1,5 +1,5 @@
 [package]
-name = "archust_core"
+name = "arclain_core"
 version = "0.1.0"
 edition = "2021"
 
@@ -16,3 +16,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 fs_extra = "1"
 crc32fast = "1"
+arclain_db = { path = "../db" }

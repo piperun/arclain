@@ -9,11 +9,10 @@ use crate::features::{
 };
 use crate::platform::detect_dark_mode;
 
-use anyhow::Result;
-use archust_core::file_opener::{FileOpener, OpenStrategy};
+use arclain_core::file_opener::{FileOpener, OpenStrategy};
 use eframe::egui;
 use parking_lot::Mutex;
-use std::path::{Path, PathBuf};
+use std::path::{PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info};
 use crc32fast::Hasher;
@@ -29,6 +28,8 @@ pub struct ArchustApp {
     tree_state: tree_panel::TreePanelState,
     password_dialog: dialogs::PasswordDialog,
     edit_dialog: dialogs::FileEditDialog,
+    preferences_dialog: dialogs::PreferencesDialog,
+    password_rules_dialog: dialogs::PasswordRulesDialog,
 
     // Data
     entries: Vec<file_list::FileEntry>,
@@ -72,6 +73,8 @@ impl ArchustApp {
             tree_state: tree_panel::TreePanelState::default(),
             password_dialog: dialogs::PasswordDialog::default(),
             edit_dialog: dialogs::FileEditDialog::default(),
+            preferences_dialog: dialogs::PreferencesDialog::default(),
+            password_rules_dialog: dialogs::PasswordRulesDialog::default(),
             entries: Vec::new(),
             status_info: status_bar::StatusBarInfo::default(),
             archive_loaded: false,
@@ -153,23 +156,82 @@ impl ArchustApp {
 
     fn load_archive_data(
         &mut self,
-        archive_entries: Vec<archust_core::ArchiveEntry>,
+        _archive_entries: Vec<arclain_core::ArchiveEntry>,
         current_archive: Option<PathBuf>,
     ) {
-        let state = self.state.lock();
-        self.entries = state
-            .get_current_entries()
-            .iter()
-            .map(convert_to_file_entry)
-            .collect();
-        self.archive_encrypted = state.archive_encrypted;
-        self.headers_encrypted = state.headers_encrypted;
-        self.encryption_method = state.encryption_method.clone();
-        drop(state);
+        // Optionally compute missing CRC-32 for encrypted entries by streaming bytes via 7z -so
+        // Behavior is controlled by AppState.encrypted_crc_policy:
+        // - "lazy_prompt": compute if a password is available (no prompt)
+        // - "auto_prompt": prompt for password if any encrypted entries and none available
+        // - "per_file": do not bulk-compute here (compute on demand elsewhere)
+        let (policy, have_pw, pending_archive) = {
+            let st = self.state.lock();
+            (
+                st.encrypted_crc_policy.clone(),
+                st.current_password.is_some() || st.cfg.auto_password_for(&st.last_entries).is_some(),
+                st.current_archive.clone(),
+            )
+        };
 
-        self.total_size = archive_entries.iter().map(|e| e.size).sum();
-        self.compressed_size = archive_entries.iter().map(|e| e.packed_size).sum();
-        self.file_count = archive_entries.len();
+        if have_pw && policy != "on_access" {
+            // Snapshot dependencies outside of the mutable borrow to avoid borrow conflicts
+            let (backend, archive_path, password, paths_to_compute) = {
+                let st = self.state.lock();
+                let pw_opt = st
+                    .current_password
+                    .clone()
+                    .or_else(|| st.cfg.auto_password_for(&st.last_entries));
+                let arc = st.current_archive.clone();
+                let paths: Vec<String> = st
+                    .all_entries
+                    .iter()
+                    .filter(|e| !e.is_dir && e.encrypted && e.crc32.is_none())
+                    .map(|e| e.path.clone())
+                    .collect();
+                (st.backend.clone(), arc, pw_opt, paths)
+            };
+
+            if let (Some(pw), Some(arc_path)) = (password, archive_path) {
+                let mut computed: Vec<(String, String)> = Vec::new();
+                for p in paths_to_compute {
+                    if let Ok(sum) = backend.crc32_of_entry(&arc_path, &p, Some(&pw)) {
+                        computed.push((p, sum));
+                    }
+                }
+                if !computed.is_empty() {
+                    let mut st = self.state.lock();
+                    for (p, sum) in computed {
+                        if let Some(e) = st
+                            .all_entries
+                            .iter_mut()
+                            .find(|e| e.path == p && e.encrypted && e.crc32.is_none())
+                        {
+                            e.crc32 = Some(sum);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Build UI rows from potentially updated entries
+        {
+            let st = self.state.lock();
+            self.entries = st
+                .get_current_entries()
+                .iter()
+                .map(convert_to_file_entry)
+                .collect();
+            self.archive_encrypted = st.archive_encrypted;
+            self.headers_encrypted = st.headers_encrypted;
+            self.encryption_method = st.encryption_method.clone();
+        }
+
+        // Use the latest state entries for totals/CRC aggregation
+        let ents: Vec<arclain_core::ArchiveEntry> = { let st = self.state.lock(); st.all_entries.clone() };
+
+        self.total_size = ents.iter().map(|e| e.size).sum();
+        self.compressed_size = ents.iter().map(|e| e.packed_size).sum();
+        self.file_count = ents.len();
 
         if let Some(archive_path) = &current_archive {
             self.archive_format = archive_path
@@ -180,7 +242,7 @@ impl ArchustApp {
         }
 
         // Compute archive total CRC-32 over sorted "path:CRC" pairs (files with CRC present)
-        let mut pairs: Vec<(String, String)> = archive_entries
+        let mut pairs: Vec<(String, String)> = ents
             .iter()
             .filter(|e| !e.is_dir)
             .filter_map(|e| e.crc32.as_ref().map(|c| (e.path.replace('\\', "/"), c.to_uppercase())))
@@ -198,6 +260,18 @@ impl ArchustApp {
             }
             let sum = hasher.finalize();
             self.total_crc32 = Some(format!("{:08X}", sum));
+        }
+
+        // Auto-prompt if requested and no password is available but encrypted entries exist
+        if policy == "prompt_on_open" && !have_pw {
+            let any_encrypted = ents.iter().any(|e| e.encrypted);
+            if any_encrypted {
+                self.password_dialog.show = true;
+                self.password_dialog.password.clear();
+                self.password_dialog.error.clear();
+                self.pending_archive_path = pending_archive;
+                self.status_info.message = "Password required to access encrypted content".to_string();
+            }
         }
 
         self.archive_loaded = true;
@@ -430,9 +504,9 @@ impl eframe::App for ArchustApp {
                     .and_then(|p| p.file_name())
                     .and_then(|n| n.to_str())
                     .unwrap_or("Archive");
-                format!("{} - Archust", Self::sanitize_window_title(base))
+                format!("{} - Arclain", Self::sanitize_window_title(base))
             } else {
-                "Archust".to_string()
+                "Arclain".to_string()
             }
         };
         if self.last_window_title.as_deref() != Some(desired_title.as_str()) {
@@ -506,6 +580,28 @@ impl eframe::App for ArchustApp {
                 }
                 if actions.delete_selected {
                     self.delete_selected();
+                }
+                if actions.settings {
+                    self.preferences_dialog.show = true;
+                    // Prefill from current state if available
+                    let st = self.state.lock();
+                    if let Some(paths) = &st.db_paths {
+                        self.preferences_dialog.key_file_path = paths
+                            .key_file
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        self.preferences_dialog.secrets_db_path = paths.secrets_db.to_string_lossy().to_string();
+                    } else {
+                        self.preferences_dialog.key_file_path.clear();
+                        self.preferences_dialog.secrets_db_path.clear();
+                    }
+                    // Prefill encrypted CRC policy from AppState
+                    self.preferences_dialog.encrypted_crc_policy = match st.encrypted_crc_policy.as_str() {
+                        "prompt_on_open" => dialogs::EncryptedCrcPolicy::PromptOnOpen,
+                        "on_access" => dialogs::EncryptedCrcPolicy::OnAccess,
+                        _ => dialogs::EncryptedCrcPolicy::OnOpen,
+                    };
                 }
             });
 
@@ -1087,6 +1183,76 @@ impl eframe::App for ArchustApp {
             }
         }
 
+        // Preferences dialog
+        if let Some(result) = dialogs::render_preferences_dialog(ctx, &self.theme, &mut self.preferences_dialog) {
+            match result {
+                dialogs::PreferencesDialogResult::Save { key_file_path, secrets_db_path, encrypted_crc_policy } => {
+                    let res = { self.state.lock().apply_preferences(key_file_path, secrets_db_path, encrypted_crc_policy) };
+                    match res {
+                        Ok(()) => {
+                            self.preferences_dialog.show = false;
+                            self.preferences_dialog.info.clear();
+                            self.preferences_dialog.error.clear();
+                            self.status_info.message = "Preferences saved".to_string();
+                        }
+                        Err(e) => {
+                            self.preferences_dialog.error = format!("Failed to save preferences: {}", e);
+                        }
+                    }
+                }
+                dialogs::PreferencesDialogResult::MoveVault { dest_path } => {
+                    let res = { self.state.lock().move_vault(&dest_path) };
+                    match res {
+                        Ok(()) => {
+                            self.preferences_dialog.show = false;
+                            self.preferences_dialog.info.clear();
+                            self.preferences_dialog.error.clear();
+                            self.status_info.message = format!("Vault moved to {}", dest_path);
+                        }
+                        Err(e) => {
+                            self.preferences_dialog.error = format!("Failed to move vault: {}", e);
+                        }
+                    }
+                }
+                dialogs::PreferencesDialogResult::RekeyVault { new_key_file_path } => {
+                    let res = { self.state.lock().rekey_vault(&new_key_file_path) };
+                    match res {
+                        Ok(()) => {
+                            self.preferences_dialog.show = false;
+                            self.preferences_dialog.info.clear();
+                            self.preferences_dialog.error.clear();
+                            self.status_info.message = "Vault rekeyed".to_string();
+                        }
+                        Err(e) => {
+                            self.preferences_dialog.error = format!("Failed to rekey vault: {}", e);
+                        }
+                    }
+                }
+                dialogs::PreferencesDialogResult::ManagePasswords => {
+                    // Load current password rules from state
+                    let st = self.state.lock();
+                    self.password_rules_dialog.rules = st.cfg.cfg.pass_rules.iter().map(|r| {
+                        dialogs::PasswordRule {
+                            name: r.name.clone(),
+                            pattern: r.pattern.clone(),
+                            password: r.password.clone(),
+                            priority: r.priority,
+                            enabled: r.enabled,
+                        }
+                    }).collect();
+                    drop(st);
+                    
+                    self.password_rules_dialog.show = true;
+                    self.password_rules_dialog.error.clear();
+                }
+                dialogs::PreferencesDialogResult::Cancel => {
+                    self.preferences_dialog.show = false;
+                    self.preferences_dialog.info.clear();
+                    self.preferences_dialog.error.clear();
+                }
+            }
+        }
+
         // File Edit dialog
         if let Some(result) = dialogs::render_file_edit_dialog(ctx, &self.theme, &mut self.edit_dialog) {
             match result {
@@ -1126,6 +1292,41 @@ impl eframe::App for ArchustApp {
                 }
                 dialogs::FileEditResult::Cancel => {
                     self.edit_dialog.show = false;
+                }
+            }
+        }
+
+        // Password Rules dialog
+        if let Some(result) = dialogs::render_password_rules_dialog(ctx, &self.theme, &mut self.password_rules_dialog) {
+            match result {
+                dialogs::PasswordRulesResult::Save { rules } => {
+                    // Convert UI rules to core PassRule format
+                    let pass_rules: Vec<arclain_core::PassRule> = rules.iter().map(|r| {
+                        arclain_core::PassRule {
+                            name: r.name.clone(),
+                            pattern: r.pattern.clone(),
+                            password: r.password.clone(),
+                            priority: r.priority,
+                            enabled: r.enabled,
+                        }
+                    }).collect();
+                    
+                    // Save to database via state
+                    let res = { self.state.lock().save_password_rules(pass_rules) };
+                    match res {
+                        Ok(()) => {
+                            self.password_rules_dialog.show = false;
+                            self.password_rules_dialog.error.clear();
+                            self.status_info.message = "Password rules saved".to_string();
+                        }
+                        Err(e) => {
+                            self.password_rules_dialog.error = format!("Failed to save: {}", e);
+                        }
+                    }
+                }
+                dialogs::PasswordRulesResult::Cancel => {
+                    self.password_rules_dialog.show = false;
+                    self.password_rules_dialog.error.clear();
                 }
             }
         }

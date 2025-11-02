@@ -341,6 +341,75 @@ impl SevenZipCli {
             encryption_method,
         }
     }
+
+    // Stream bytes to compute CRC-32 without materializing to disk
+    pub fn crc32_of_entry(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+    ) -> Result<String> {
+        info!(
+            "Computing CRC-32 via streaming: {} -> {}",
+            archive.display(),
+            path_in_archive
+        );
+
+        let mut args = vec![
+            OsString::from("e"),
+            OsString::from("-so"),
+            OsString::from("-y"),
+            OsString::from("-bd"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            // Avoid interactive prompt; fail fast if password is required
+            args.push(OsString::from("-p"));
+        }
+        args.push(archive.as_os_str().to_os_string());
+        args.push(OsString::from(path_in_archive));
+
+        let mut child = Command::new(&self.exe)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawning 7z for crc")?;
+
+        let mut hasher = crc32fast::Hasher::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            use std::io::Read;
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = stdout.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+        }
+
+        let output = child.wait_with_output().context("waiting for 7z output")?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            error!(
+                "7-Zip stream CRC failed with code {:?}: {}",
+                output.status.code(),
+                err.trim()
+            );
+            return Err(anyhow!(
+                "7z failed (code {:?}): {}",
+                output.status.code(),
+                err.trim()
+            ));
+        }
+
+        let sum = hasher.finalize();
+        Ok(format!("{:08X}", sum))
+    }
 }
 
 impl ArchiveBackend for SevenZipCli {
@@ -640,6 +709,7 @@ impl ArchiveBackend for SevenZipCli {
         // Use run() which returns String with UTF-8 (lossy fallback)
         self.run(args)
     }
+
 
     fn delete_files(&self, archive: &Path, files: &[String]) -> Result<()> {
         info!("Deleting {} files from {}", files.len(), archive.display());

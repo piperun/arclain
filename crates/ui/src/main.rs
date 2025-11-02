@@ -3,7 +3,7 @@ mod app;
 mod platform;
 
 use anyhow::Result;
-use archust_core::logging::init_logging;
+use arclain_core::logging::init_logging;
 use eframe::egui;
 use tracing::info;
 
@@ -12,12 +12,12 @@ fn main() -> Result<()> {
         eprintln!("Failed to initialize logging: {}", e);
     }
 
-    info!("Starting Archust application");
+    info!("Starting Arclain application");
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 800.0])
-            .with_title("Archust - Archive Viewer")
+            .with_title("Arclain - Archive Viewer")
             .with_visible(true)
             .with_resizable(true)
             .with_decorations(true),
@@ -25,7 +25,7 @@ fn main() -> Result<()> {
     };
 
     eframe::run_native(
-        "Archust",
+        "Arclain",
         options,
         Box::new(|cc| Ok(Box::new(app::ArchustApp::new(cc)))),
     )

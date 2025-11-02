@@ -1,4 +1,4 @@
-//! Centralized logging configuration for archust
+//! Centralized logging configuration for arclain
 //!
 //! Provides structured logging with four levels:
 //! - ERROR: Critical errors that prevent operation
