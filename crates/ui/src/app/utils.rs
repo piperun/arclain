@@ -17,7 +17,7 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-pub fn convert_to_file_entry(entry: &archust_core::ArchiveEntry) -> FileEntry {
+pub fn convert_to_file_entry(entry: &arclain_core::ArchiveEntry) -> FileEntry {
     let ratio = if entry.size > 0 {
         format!("{}%", (entry.packed_size * 100 / entry.size))
     } else {

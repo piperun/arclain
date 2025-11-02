@@ -27,6 +27,7 @@ pub struct ToolbarActions {
     pub add: bool,
     pub open: bool,
     pub delete_selected: bool,
+    pub settings: bool,
 }
 
 impl Default for ToolbarActions {
@@ -39,6 +40,7 @@ impl Default for ToolbarActions {
             add: false,
             open: false,
             delete_selected: false,
+            settings: false,
         }
     }
 }
@@ -136,6 +138,9 @@ pub fn render(
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
                 ui.horizontal_centered(|ui| {
+                    if toolbar_button_with_text(ui, theme, "⚙", "Settings", true) {
+                        actions.settings = true;
+                    }
                     if toolbar_button_toggle(ui, theme, "ℹ", state.show_properties_panel) {
                         state.show_properties_panel = !state.show_properties_panel;
                     }

@@ -1,4 +1,5 @@
 pub mod config;
+pub mod config_db;
 pub mod file_opener;
 pub mod logging;
 pub mod sevenzip;
@@ -368,3 +369,7 @@ pub trait ArchiveBackend: Send + Sync {
 }
 
 pub use config::{Config, ConfigStore, PassRule};
+pub use config_db::{
+    open_config_db, open_databases, ConfigDbs,
+    DbPaths, SecretsKey, SecretsDb,
+};

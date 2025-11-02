@@ -3,13 +3,26 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, path::PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PassRule {
     pub name: String,
     pub pattern: String, // regex
     pub password: String,
     pub priority: u32,
     pub enabled: bool,
+}
+
+// Custom Debug implementation to avoid logging passwords
+impl std::fmt::Debug for PassRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PassRule")
+            .field("name", &self.name)
+            .field("pattern", &self.pattern)
+            .field("password", &"[REDACTED]")
+            .field("priority", &self.priority)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 impl PassRule {
