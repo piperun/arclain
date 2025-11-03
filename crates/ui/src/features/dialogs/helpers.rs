@@ -37,7 +37,7 @@ pub fn show_dimmed_modal(
     mut content_ui: impl FnMut(&mut egui::Ui, egui::Rect),
     mut bottom_bar_ui: impl FnMut(&mut egui::Ui),
 ) {
-    // Visual-only overlay (do not capture input)
+    // Overlay that captures all input to block background interaction
     egui::Area::new(egui::Id::new(format!("{id_prefix}_overlay")))
         .order(params.overlay_order)
         .show(ctx, |ui| {
@@ -47,6 +47,8 @@ pub fn show_dimmed_modal(
                 0.0,
                 egui::Color32::from_black_alpha(params.overlay_alpha),
             );
+            // Sense all input on the overlay to block interaction with content behind it
+            ui.allocate_rect(screen, egui::Sense::click_and_drag());
         });
 
     // Modal area
