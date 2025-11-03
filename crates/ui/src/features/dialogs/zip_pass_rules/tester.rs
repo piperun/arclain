@@ -58,14 +58,14 @@ pub fn render_regex_tester_modal(
             let bottom_bar_h = 44.0;
             let scroll_rect = egui::Rect::from_min_max(
                 content.min,
-                egui::pos2(content.max.x, content.max.y - bottom_bar_h - 6.0),
+                egui::pos2(content.max.x, content.max.y - bottom_bar_h - 8.0),
             );
             let bottom_rect = egui::Rect::from_min_max(
                 egui::pos2(content.min.x, content.max.y - bottom_bar_h),
                 content.max,
             );
-            // Ensure the content rect participates in input so wheel events can be captured by children
-            let _content_resp = ui.allocate_rect(content, egui::Sense::hover());
+            // Ensure the scroll viewport participates in input so wheel events can be captured by children
+            let _content_resp = ui.allocate_rect(scroll_rect, egui::Sense::hover());
             // Main scrollable content area
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
@@ -73,6 +73,8 @@ pub fn render_regex_tester_modal(
                     .layout(egui::Layout::top_down(egui::Align::LEFT)),
             );
  
+            // Clip content strictly to the scroll viewport so it cannot draw into the bottom bar
+            child.set_clip_rect(scroll_rect);
             child.vertical(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
  
@@ -211,15 +213,15 @@ pub fn render_regex_tester_modal(
                     .color(theme.colors.text_secondary),
                 );
  
-                ui.allocate_ui_with_layout(
-                    egui::vec2(scroll_rect.width(), scroll_rect.height()),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .id_source("regex_tester_results_scroll")
-                            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
-                            .show(ui, |ui| {
+                // Calculate available height for scroll area (remaining height in scroll_rect)
+                let available_height = scroll_rect.height() - ui.min_rect().height() + scroll_rect.min.y;
+ 
+                egui::ScrollArea::vertical()
+                    .max_height(available_height)
+                    .auto_shrink([false, false])
+                    .id_salt("regex_tester_results_scroll")
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                    .show(ui, |ui| {
                                 // Disable text wrapping within this scroll area so long
                                 // lines produce horizontal scrolling instead of spilling
                                 // out or wrapping unexpectedly.
@@ -261,9 +263,9 @@ pub fn render_regex_tester_modal(
                                         });
                                     }
                                 }
+// small end padding to avoid tight edge at bottom of the viewport
+ui.add_space(4.0);
                             });
-                    }
-                );
             });
  
             // Fixed bottom action bar
@@ -274,10 +276,12 @@ pub fn render_regex_tester_modal(
             );
             bar.horizontal(|ui| {
                 let bar_rect = ui.max_rect();
+                // solid background for fixed bar
+                ui.painter().rect_filled(bar_rect, 0.0, theme.colors.bg_primary);
                 // subtle top separator
                 let sep_rect = egui::Rect::from_min_max(
-                    egui::pos2(bar_rect.min.x, bar_rect.min.y - 6.0),
-                    egui::pos2(bar_rect.max.x, bar_rect.min.y - 5.0),
+                    egui::pos2(bar_rect.min.x, bar_rect.min.y),
+                    egui::pos2(bar_rect.max.x, bar_rect.min.y + 1.0),
                 );
                 ui.painter()
                     .rect_filled(sep_rect, 0.0, theme.colors.border_color);
