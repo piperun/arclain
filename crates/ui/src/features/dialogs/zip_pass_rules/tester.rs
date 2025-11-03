@@ -19,7 +19,8 @@ pub fn render_regex_tester_modal(
             ui.painter()
                 .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(200));
             // Sense all input on the overlay to block interaction with content behind it
-            ui.allocate_rect(screen, egui::Sense::click_and_drag());
+            // Use hover so it doesn't capture drags/wheel unnecessarily
+            ui.allocate_rect(screen, egui::Sense::hover());
         });
 
     // Regex tester modal
@@ -28,7 +29,8 @@ pub fn render_regex_tester_modal(
         // the modal appears above the dim. The overlay is painted first (see
         // above), then this modal is painted second on the same layer, which
         // ensures it is visually on top.
-        .order(egui::Order::Tooltip)
+        .order(egui::Order::Foreground)
+        .interactable(true)
         .show(ctx, |ui| {
             let screen = ctx.screen_rect();
             let width = (screen.width() * 0.5).clamp(500.0, 700.0);
@@ -46,16 +48,34 @@ pub fn render_regex_tester_modal(
                 egui::Stroke::new(1.0, theme.colors.border_color),
             );
 
+            // Make modal rect interactive to receive hover/wheel
+            let _modal_rect_resp = ui.allocate_rect(rect, egui::Sense::hover());
+            // Clip all modal content to the modal rectangle so hover/scroll goes to it
+            ui.set_clip_rect(rect);
+
             let content = rect.shrink2(egui::vec2(20.0, 16.0));
+            // Reserve space for a non-scrollable bottom bar
+            let bottom_bar_h = 44.0;
+            let scroll_rect = egui::Rect::from_min_max(
+                content.min,
+                egui::pos2(content.max.x, content.max.y - bottom_bar_h - 6.0),
+            );
+            let bottom_rect = egui::Rect::from_min_max(
+                egui::pos2(content.min.x, content.max.y - bottom_bar_h),
+                content.max,
+            );
+            // Ensure the content rect participates in input so wheel events can be captured by children
+            let _content_resp = ui.allocate_rect(content, egui::Sense::hover());
+            // Main scrollable content area
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(content)
+                    .max_rect(scroll_rect)
                     .layout(egui::Layout::top_down(egui::Align::LEFT)),
             );
-
+ 
             child.vertical(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
-
+ 
                 // Title
                 ui.label(
                     egui::RichText::new("🧪 Regex Pattern Tester")
@@ -63,9 +83,9 @@ pub fn render_regex_tester_modal(
                         .strong()
                         .color(theme.colors.text_primary),
                 );
-
+ 
                 ui.add_space(8.0);
-
+ 
                 // Pattern display
                 ui.label(
                     egui::RichText::new("Testing pattern:")
@@ -79,9 +99,9 @@ pub fn render_regex_tester_modal(
                         .color(theme.colors.text_primary)
                         .background_color(theme.colors.bg_tertiary),
                 );
-
+ 
                 ui.add_space(8.0);
-
+ 
                 // Folder picker
                 ui.horizontal(|ui| {
                     ui.label(
@@ -104,23 +124,23 @@ pub fn render_regex_tester_modal(
                         );
                     }
                 });
-
+ 
                 ui.horizontal(|ui| {
                     if ui.button("📁 Pick Folder").clicked() {
                         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                             dialog.regex_test_folder = Some(folder.clone());
-
+ 
                             // Test the regex against all files in the folder
                             if let Ok(entries) = std::fs::read_dir(&folder) {
                                 dialog.regex_test_results.clear();
-
+ 
                                 // Convert glob pattern to regex
                                 let pattern_str = dialog
                                     .regex_test_pattern
                                     .replace(".", "\\.")
                                     .replace("*", ".*")
                                     .replace("?", ".");
-
+ 
                                 if let Ok(re) = regex::Regex::new(&pattern_str) {
                                     for entry in entries.flatten() {
                                         if let Ok(file_type) = entry.file_type() {
@@ -129,7 +149,7 @@ pub fn render_regex_tester_modal(
                                                 let file_name_str =
                                                     file_name.to_string_lossy().to_string();
                                                 let matched = re.is_match(&file_name_str);
-
+ 
                                                 dialog.regex_test_results.push(
                                                     super::types::RegexTestResult {
                                                         file_path: file_name_str,
@@ -143,18 +163,18 @@ pub fn render_regex_tester_modal(
                             }
                         }
                     }
-
+ 
                     if ui.button("🔄 Refresh").clicked() {
                         if let Some(folder) = &dialog.regex_test_folder {
                             if let Ok(entries) = std::fs::read_dir(folder) {
                                 dialog.regex_test_results.clear();
-
+ 
                                 let pattern_str = dialog
                                     .regex_test_pattern
                                     .replace(".", "\\.")
                                     .replace("*", ".*")
                                     .replace("?", ".");
-
+ 
                                 if let Ok(re) = regex::Regex::new(&pattern_str) {
                                     for entry in entries.flatten() {
                                         if let Ok(file_type) = entry.file_type() {
@@ -163,7 +183,7 @@ pub fn render_regex_tester_modal(
                                                 let file_name_str =
                                                     file_name.to_string_lossy().to_string();
                                                 let matched = re.is_match(&file_name_str);
-
+ 
                                                 dialog.regex_test_results.push(
                                                     super::types::RegexTestResult {
                                                         file_path: file_name_str,
@@ -178,9 +198,9 @@ pub fn render_regex_tester_modal(
                         }
                     }
                 });
-
+ 
                 ui.add_space(8.0);
-
+ 
                 // Results
                 ui.label(
                     egui::RichText::new(format!(
@@ -190,68 +210,85 @@ pub fn render_regex_tester_modal(
                     .size(12.0)
                     .color(theme.colors.text_secondary),
                 );
-
-                egui::ScrollArea::both()
-                    .max_height(content.height() - 200.0)
-                    .show(ui, |ui| {
-                        // Disable text wrapping within this scroll area so long
-                        // lines produce horizontal scrolling instead of spilling
-                        // out or wrapping unexpectedly.
-                        // Use wrap_mode to disable wrapping for labels in this area
-                        ui.style_mut().wrap_mode =
-                            Some(eframe::egui::TextWrapMode::Extend);
-                        if dialog.regex_test_results.is_empty() {
-                            ui.label(
-                                egui::RichText::new(
-                                    "Pick a folder to test the pattern",
-                                )
-                                .size(12.0)
-                                .italics()
-                                .color(theme.colors.text_secondary),
-                            );
-                        } else {
-                            for result in &dialog.regex_test_results {
-                                ui.horizontal(|ui| {
-                                    let (icon, color) = if result.matched {
-                                        ("✓", egui::Color32::from_rgb(76, 175, 80))
-                                    } else {
-                                        ("✗", egui::Color32::from_rgb(244, 67, 54))
-                                    };
-
+ 
+                ui.allocate_ui_with_layout(
+                    egui::vec2(scroll_rect.width(), scroll_rect.height()),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .id_source("regex_tester_results_scroll")
+                            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
+                            .show(ui, |ui| {
+                                // Disable text wrapping within this scroll area so long
+                                // lines produce horizontal scrolling instead of spilling
+                                // out or wrapping unexpectedly.
+                                ui.style_mut().wrap_mode =
+                                    Some(eframe::egui::TextWrapMode::Extend);
+                                if dialog.regex_test_results.is_empty() {
                                     ui.label(
-                                        egui::RichText::new(icon)
-                                            .size(12.0)
-                                            .color(color),
+                                        egui::RichText::new(
+                                            "Pick a folder to test the pattern",
+                                        )
+                                        .size(12.0)
+                                        .italics()
+                                        .color(theme.colors.text_secondary),
                                     );
-                                    ui.label(
-                                        egui::RichText::new(&result.file_path)
-                                            .size(11.0)
-                                            .family(
-                                                egui::FontFamily::Monospace,
-                                            )
-                                            .color(if result.matched {
-                                                theme.colors.text_primary
+                                } else {
+                                    for result in &dialog.regex_test_results {
+                                        ui.horizontal(|ui| {
+                                            let (icon, color) = if result.matched {
+                                                ("✓", egui::Color32::from_rgb(76, 175, 80))
                                             } else {
-                                                theme.colors.text_secondary
-                                            }),
-                                    );
-                                });
-                            }
-                        }
-                    });
-
-                ui.add_space(10.0);
-
-                // Close button
+                                                ("✗", egui::Color32::from_rgb(244, 67, 54))
+                                            };
+ 
+                                            ui.label(
+                                                egui::RichText::new(icon)
+                                                    .size(12.0)
+                                                    .color(color),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(&result.file_path)
+                                                    .size(11.0)
+                                                    .family(egui::FontFamily::Monospace)
+                                                    .color(if result.matched {
+                                                        theme.colors.text_primary
+                                                    } else {
+                                                        theme.colors.text_secondary
+                                                    }),
+                                            );
+                                        });
+                                    }
+                                }
+                            });
+                    }
+                );
+            });
+ 
+            // Fixed bottom action bar
+            let mut bar = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(bottom_rect)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            );
+            bar.horizontal(|ui| {
+                let bar_rect = ui.max_rect();
+                // subtle top separator
+                let sep_rect = egui::Rect::from_min_max(
+                    egui::pos2(bar_rect.min.x, bar_rect.min.y - 6.0),
+                    egui::pos2(bar_rect.max.x, bar_rect.min.y - 5.0),
+                );
+                ui.painter()
+                    .rect_filled(sep_rect, 0.0, theme.colors.border_color);
+ 
                 ui.with_layout(
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
                         if ui
                             .add(
-                                egui::Button::new(
-                                    egui::RichText::new("Close").strong(),
-                                )
-                                .min_size(egui::vec2(100.0, 32.0)),
+                                egui::Button::new(egui::RichText::new("Close").strong())
+                                    .min_size(egui::vec2(100.0, 32.0)),
                             )
                             .clicked()
                         {
