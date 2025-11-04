@@ -1,18 +1,20 @@
+pub mod navigation;
 pub mod state;
 pub mod utils;
 
+use crate::app::navigation::{AppPage, PageNavigator, SettingsPage};
 use crate::app::state::AppState;
 use crate::app::utils::{convert_to_file_entry, format_size};
 use crate::features::{
-    dialogs, file_list, header, properties_panel, status_bar, toolbar, tree_panel, AppTheme,
-    load_cjk_fonts,
+    dialogs, file_list, header, properties_panel, settings_content, settings_page, status_bar,
+    toolbar, tree_panel, AppTheme, load_cjk_fonts,
 };
 use crate::platform::detect_dark_mode;
 
 use arclain_core::file_opener::{FileOpener, OpenStrategy};
 use eframe::egui;
 use parking_lot::Mutex;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, error, info};
 use crc32fast::Hasher;
@@ -21,6 +23,9 @@ pub struct ArchustApp {
     state: Arc<Mutex<AppState>>,
     theme: AppTheme,
 
+    // Navigation
+    page_navigator: PageNavigator,
+
     // UI State
     header_state: header::HeaderState,
     toolbar_state: toolbar::ToolbarState,
@@ -28,8 +33,10 @@ pub struct ArchustApp {
     tree_state: tree_panel::TreePanelState,
     password_dialog: dialogs::PasswordDialog,
     edit_dialog: dialogs::FileEditDialog,
-    preferences_dialog: dialogs::PreferencesDialog,
     password_rules_dialog: dialogs::PasswordRulesDialog,
+
+    // Settings state
+    security_settings_state: settings_content::SecuritySettingsState,
 
     // Data
     entries: Vec<file_list::FileEntry>,
@@ -37,8 +44,8 @@ pub struct ArchustApp {
     archive_loaded: bool,
     current_path: String,
     pending_archive_path: Option<PathBuf>,
-    pending_edit_file: Option<String>, // Track file that needs editing after password unlock
-    pending_open_file: Option<String>, // Track file that needs opening after password unlock
+    pending_edit_file: Option<String>,
+    pending_open_file: Option<String>,
 
     // Archive info
     archive_format: String,
@@ -67,14 +74,15 @@ impl ArchustApp {
         Self {
             state,
             theme,
+            page_navigator: PageNavigator::new(),
             header_state: header::HeaderState::default(),
             toolbar_state: toolbar::ToolbarState::default(),
             sort_state: file_list::SortState::default(),
             tree_state: tree_panel::TreePanelState::default(),
             password_dialog: dialogs::PasswordDialog::default(),
             edit_dialog: dialogs::FileEditDialog::default(),
-            preferences_dialog: dialogs::PreferencesDialog::default(),
             password_rules_dialog: dialogs::PasswordRulesDialog::default(),
+            security_settings_state: settings_content::SecuritySettingsState::default(),
             entries: Vec::new(),
             status_info: status_bar::StatusBarInfo::default(),
             archive_loaded: false,
@@ -525,10 +533,28 @@ impl eframe::App for ArchustApp {
             )
             .show(ctx, |ui| {
                 let mut toggle_theme = false;
-                header::render(ui, &self.theme, &mut self.header_state, &mut toggle_theme);
+                let show_nav_buttons = !self.page_navigator.is_on_main();
+                let can_go_back = self.page_navigator.can_go_back();
+                
+                let header_actions = header::render(
+                    ui,
+                    &self.theme,
+                    &mut self.header_state,
+                    &mut toggle_theme,
+                    show_nav_buttons,
+                    can_go_back,
+                );
 
                 if toggle_theme {
                     self.theme.toggle();
+                }
+
+                // Handle navigation from header
+                if header_actions.navigate_home {
+                    self.page_navigator.navigate_to_main();
+                }
+                if header_actions.navigate_back {
+                    self.page_navigator.navigate_back();
                 }
             });
 
@@ -582,22 +608,23 @@ impl eframe::App for ArchustApp {
                     self.delete_selected();
                 }
                 if actions.settings {
-                    self.preferences_dialog.show = true;
-                    // Prefill from current state if available
+                    // Navigate to settings page instead of showing modal
+                    self.page_navigator.navigate_to(AppPage::Settings(SettingsPage::Overview));
+                    
+                    // Prefill security settings from current state
                     let st = self.state.lock();
                     if let Some(paths) = &st.db_paths {
-                        self.preferences_dialog.key_file_path = paths
+                        self.security_settings_state.key_file_path = paths
                             .key_file
                             .as_ref()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_default();
-                        self.preferences_dialog.secrets_db_path = paths.secrets_db.to_string_lossy().to_string();
+                        self.security_settings_state.secrets_db_path = paths.secrets_db.to_string_lossy().to_string();
                     } else {
-                        self.preferences_dialog.key_file_path.clear();
-                        self.preferences_dialog.secrets_db_path.clear();
+                        self.security_settings_state.key_file_path.clear();
+                        self.security_settings_state.secrets_db_path.clear();
                     }
-                    // Prefill encrypted CRC policy from AppState
-                    self.preferences_dialog.encrypted_crc_policy = match st.encrypted_crc_policy.as_str() {
+                    self.security_settings_state.encrypted_crc_policy = match st.encrypted_crc_policy.as_str() {
                         "prompt_on_open" => dialogs::EncryptedCrcPolicy::PromptOnOpen,
                         "on_access" => dialogs::EncryptedCrcPolicy::OnAccess,
                         _ => dialogs::EncryptedCrcPolicy::OnOpen,
@@ -617,6 +644,24 @@ impl eframe::App for ArchustApp {
                 status_bar::render(ui, &self.theme, &self.status_info, self.archive_loaded);
             });
 
+        // Render based on current page
+        match &self.page_navigator.current_page {
+            AppPage::Main => {
+                self.render_main_page(ctx);
+            }
+            AppPage::Settings(settings_page) => {
+                self.render_settings_page(ctx, settings_page.clone());
+            }
+        }
+
+        // Dialogs (shown on top of everything)
+        self.render_dialogs(ctx);
+    }
+}
+
+impl ArchustApp {
+    /// Render the main archive viewer page
+    fn render_main_page(&mut self, ctx: &egui::Context) {
         // Left panel - Tree view
         if self.toolbar_state.show_tree_panel && self.archive_loaded {
             egui::SidePanel::left("tree_panel")
@@ -1066,7 +1111,183 @@ impl eframe::App for ArchustApp {
                     }
                 }
             });
+    }
 
+    /// Render the settings page
+    fn render_settings_page(&mut self, ctx: &egui::Context, settings_page: SettingsPage) {
+        // Load password rules when entering Password Rules page
+        if matches!(settings_page, SettingsPage::PasswordRules) {
+            let st = self.state.lock();
+            self.password_rules_dialog.rules = st.cfg.cfg.pass_rules.iter().map(|r| {
+                dialogs::PasswordRule {
+                    name: r.name.clone(),
+                    pattern: r.pattern.clone(),
+                    password: r.password.clone(),
+                    priority: r.priority,
+                    enabled: r.enabled,
+                }
+            }).collect();
+        }
+
+        // Left panel - Settings navigator
+        egui::SidePanel::left("settings_navigator")
+            .exact_width(240.0)
+            .frame(egui::Frame::none().fill(self.theme.colors.bg_secondary))
+            .show(ctx, |ui| {
+                if let Some(selected) = settings_page::render_settings_navigator(
+                    ui,
+                    &self.theme,
+                    &settings_page,
+                ) {
+                    self.page_navigator.navigate_to(AppPage::Settings(selected));
+                }
+            });
+
+        // Central panel - Settings content
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(self.theme.colors.bg_primary))
+            .show(ctx, |ui| {
+                ui.add_space(16.0);
+
+                match &settings_page {
+                    SettingsPage::Overview => {
+                        // Show settings overview with category cards
+                        if let Some(selected) = settings_page::render_settings_overview(ui, &self.theme) {
+                            self.page_navigator.navigate_to(AppPage::Settings(selected));
+                        }
+                    }
+                    _ => {
+                        // Show category header with back button
+                        let mut should_go_back = false;
+                        egui::Frame::none()
+                            .fill(self.theme.colors.bg_secondary)
+                            .inner_margin(egui::Margin::symmetric(20.0, 16.0))
+                            .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color))
+                            .show(ui, |ui| {
+                                settings_page::render_settings_header(
+                                    ui,
+                                    &self.theme,
+                                    &settings_page,
+                                    &mut should_go_back,
+                                );
+                            });
+
+                        if should_go_back {
+                            self.page_navigator.navigate_back();
+                        }
+
+                        ui.add_space(16.0);
+
+                        // Render settings content
+                        egui::ScrollArea::vertical()
+                            .id_salt("settings_content_scroll")
+                            .show(ui, |ui| {
+                                ui.add_space(8.0);
+                                
+                                let action = settings_content::render_settings_content(
+                                    ui,
+                                    &self.theme,
+                                    &settings_page,
+                                    &mut self.security_settings_state,
+                                    &mut self.password_rules_dialog,
+                                );
+
+                                // Handle settings actions
+                                if let Some(action) = action {
+                                    self.handle_settings_action(action);
+                                }
+                                
+                                // For password rules page, save changes when modified
+                                if matches!(settings_page, SettingsPage::PasswordRules) {
+                                    // Check if we need to save (rules have been modified in the UI)
+                                    // This will be handled by adding a save button or auto-save mechanism
+                                }
+                            });
+                    }
+                }
+            });
+    }
+
+    /// Handle actions from settings pages
+    fn handle_settings_action(&mut self, action: settings_content::SettingsAction) {
+        match action {
+            settings_content::SettingsAction::SavePasswordRules { rules } => {
+                // Convert UI rules to core PassRule format
+                let pass_rules: Vec<arclain_core::PassRule> = rules.iter().map(|r| {
+                    arclain_core::PassRule {
+                        name: r.name.clone(),
+                        pattern: r.pattern.clone(),
+                        password: r.password.clone(),
+                        priority: r.priority,
+                        enabled: r.enabled,
+                    }
+                }).collect();
+                
+                // Save to database via state
+                let res = { self.state.lock().save_password_rules(pass_rules) };
+                match res {
+                    Ok(()) => {
+                        self.password_rules_dialog.error.clear();
+                        self.status_info.message = "Password rules saved successfully".to_string();
+                    }
+                    Err(e) => {
+                        self.password_rules_dialog.error = format!("Failed to save: {}", e);
+                        self.status_info.message = format!("Failed to save password rules: {}", e);
+                    }
+                }
+            }
+            settings_content::SettingsAction::SaveSecurity {
+                key_file_path,
+                secrets_db_path,
+                encrypted_crc_policy,
+            } => {
+                let res = self.state.lock().apply_preferences(
+                    key_file_path,
+                    secrets_db_path,
+                    encrypted_crc_policy,
+                );
+                match res {
+                    Ok(()) => {
+                        self.security_settings_state.error.clear();
+                        self.security_settings_state.info = "Settings saved successfully".to_string();
+                        self.status_info.message = "Security settings saved".to_string();
+                    }
+                    Err(e) => {
+                        self.security_settings_state.error = format!("Failed to save: {}", e);
+                    }
+                }
+            }
+            settings_content::SettingsAction::MoveVault { dest_path } => {
+                let res = self.state.lock().move_vault(&dest_path);
+                match res {
+                    Ok(()) => {
+                        self.security_settings_state.error.clear();
+                        self.security_settings_state.info = format!("Vault moved to {}", dest_path);
+                        self.status_info.message = "Vault moved successfully".to_string();
+                    }
+                    Err(e) => {
+                        self.security_settings_state.error = format!("Failed to move vault: {}", e);
+                    }
+                }
+            }
+            settings_content::SettingsAction::RekeyVault { new_key_file_path } => {
+                let res = self.state.lock().rekey_vault(&new_key_file_path);
+                match res {
+                    Ok(()) => {
+                        self.security_settings_state.error.clear();
+                        self.security_settings_state.info = "Vault rekeyed successfully".to_string();
+                        self.status_info.message = "Vault rekeyed".to_string();
+                    }
+                    Err(e) => {
+                        self.security_settings_state.error = format!("Failed to rekey vault: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Render all dialogs
+    fn render_dialogs(&mut self, ctx: &egui::Context) {
         // Password dialog
         if let Some(result) =
             dialogs::render_password_dialog(ctx, &self.theme, &mut self.password_dialog)
@@ -1179,76 +1400,6 @@ impl eframe::App for ArchustApp {
                     self.pending_open_file = None;
                     self.password_dialog.password.clear();
                     self.password_dialog.error.clear();
-                }
-            }
-        }
-
-        // Preferences dialog
-        if let Some(result) = dialogs::render_preferences_dialog(ctx, &self.theme, &mut self.preferences_dialog) {
-            match result {
-                dialogs::PreferencesDialogResult::Save { key_file_path, secrets_db_path, encrypted_crc_policy } => {
-                    let res = { self.state.lock().apply_preferences(key_file_path, secrets_db_path, encrypted_crc_policy) };
-                    match res {
-                        Ok(()) => {
-                            self.preferences_dialog.show = false;
-                            self.preferences_dialog.info.clear();
-                            self.preferences_dialog.error.clear();
-                            self.status_info.message = "Preferences saved".to_string();
-                        }
-                        Err(e) => {
-                            self.preferences_dialog.error = format!("Failed to save preferences: {}", e);
-                        }
-                    }
-                }
-                dialogs::PreferencesDialogResult::MoveVault { dest_path } => {
-                    let res = { self.state.lock().move_vault(&dest_path) };
-                    match res {
-                        Ok(()) => {
-                            self.preferences_dialog.show = false;
-                            self.preferences_dialog.info.clear();
-                            self.preferences_dialog.error.clear();
-                            self.status_info.message = format!("Vault moved to {}", dest_path);
-                        }
-                        Err(e) => {
-                            self.preferences_dialog.error = format!("Failed to move vault: {}", e);
-                        }
-                    }
-                }
-                dialogs::PreferencesDialogResult::RekeyVault { new_key_file_path } => {
-                    let res = { self.state.lock().rekey_vault(&new_key_file_path) };
-                    match res {
-                        Ok(()) => {
-                            self.preferences_dialog.show = false;
-                            self.preferences_dialog.info.clear();
-                            self.preferences_dialog.error.clear();
-                            self.status_info.message = "Vault rekeyed".to_string();
-                        }
-                        Err(e) => {
-                            self.preferences_dialog.error = format!("Failed to rekey vault: {}", e);
-                        }
-                    }
-                }
-                dialogs::PreferencesDialogResult::ManagePasswords => {
-                    // Load current password rules from state
-                    let st = self.state.lock();
-                    self.password_rules_dialog.rules = st.cfg.cfg.pass_rules.iter().map(|r| {
-                        dialogs::PasswordRule {
-                            name: r.name.clone(),
-                            pattern: r.pattern.clone(),
-                            password: r.password.clone(),
-                            priority: r.priority,
-                            enabled: r.enabled,
-                        }
-                    }).collect();
-                    drop(st);
-                    
-                    self.password_rules_dialog.show = true;
-                    self.password_rules_dialog.error.clear();
-                }
-                dialogs::PreferencesDialogResult::Cancel => {
-                    self.preferences_dialog.show = false;
-                    self.preferences_dialog.info.clear();
-                    self.preferences_dialog.error.clear();
                 }
             }
         }

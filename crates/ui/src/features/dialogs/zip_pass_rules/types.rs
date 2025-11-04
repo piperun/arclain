@@ -1,5 +1,5 @@
 // Types for Password Rules feature
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PasswordRule {
     pub name: String,
     pub pattern: String,
@@ -8,7 +8,7 @@ pub struct PasswordRule {
     pub enabled: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct RegexTestResult {
     pub file_path: String,
     pub matched: bool,

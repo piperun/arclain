@@ -1,7 +1,7 @@
 // Zip password rules feature root module: thin re-export shim
 mod types;
 mod state;
-mod tester;
+pub mod tester;
 mod view;
 
 pub use types::{PasswordRule, RegexTestResult};
