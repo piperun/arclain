@@ -13,24 +13,77 @@ impl Default for HeaderState {
     }
 }
 
+pub struct HeaderActions {
+    pub navigate_home: bool,
+    pub navigate_back: bool,
+}
+
+impl Default for HeaderActions {
+    fn default() -> Self {
+        Self {
+            navigate_home: false,
+            navigate_back: false,
+        }
+    }
+}
+
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut HeaderState,
     on_theme_toggle: &mut bool,
-) {
+    show_nav_buttons: bool,
+    can_go_back: bool,
+) -> HeaderActions {
+    let mut actions = HeaderActions::default();
+
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(16.0, 0.0);
+        ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
+
+        // Navigation buttons (shown when not on main page)
+        if show_nav_buttons {
+            // Home button
+            let home_btn = egui::Button::new(
+                egui::RichText::new("🏠")
+                    .size(16.0)
+            )
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+            .min_size(egui::vec2(32.0, 32.0));
+
+            if ui.add(home_btn).clicked() {
+                actions.navigate_home = true;
+            }
+
+            // Back button
+            let back_btn = egui::Button::new(
+                egui::RichText::new("←")
+                    .size(16.0)
+            )
+            .fill(if can_go_back {
+                egui::Color32::TRANSPARENT
+            } else {
+                theme.colors.bg_secondary
+            })
+            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+            .min_size(egui::vec2(32.0, 32.0));
+
+            if ui.add_enabled(can_go_back, back_btn).clicked() {
+                actions.navigate_back = true;
+            }
+
+            ui.add_space(8.0);
+        }
 
         // Title - matching mockup style
         ui.label(
-            egui::RichText::new("ARCHIVE VIEWER")
+            egui::RichText::new("ARCLAIN")
                 .size(14.0)
                 .color(theme.colors.text_secondary)
                 .strong(),
         );
 
-        ui.add_space(ui.available_width() - 380.0);
+        ui.add_space(ui.available_width() - if show_nav_buttons { 460.0 } else { 380.0 });
 
         // Search box with proper theming
         let search_frame = egui::Frame::none()
@@ -85,4 +138,6 @@ pub fn render(
                 .circle_filled(circle_center, circle_radius, theme.colors.accent);
         }
     });
+
+    actions
 }
