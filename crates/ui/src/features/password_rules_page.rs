@@ -60,10 +60,10 @@ pub fn render_password_rules_page(
             let mut enable_toggles: Vec<(usize, bool)> = Vec::new();
 
             if dialog.rules.is_empty() {
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(theme.colors.bg_secondary)
                     .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-                    .rounding(8.0)
+                    .corner_radius(8.0)
                     .inner_margin(20.0)
                     .show(ui, |ui| {
                         ui.label(
@@ -77,13 +77,13 @@ pub fn render_password_rules_page(
                     });
             } else {
                 // Table container
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(theme.colors.bg_secondary)
                     .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-                    .rounding(8.0)
+                    .corner_radius(8.0)
                     .show(ui, |ui| {
                         // Table header
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(theme.colors.bg_tertiary)
                             .inner_margin(egui::Margin::symmetric(12, 8))
                             .show(ui, |ui| {
@@ -148,7 +148,7 @@ pub fn render_password_rules_page(
                             } else {
                                 theme.colors.bg_secondary
                             };
-                            egui::Frame::none()
+                            egui::Frame::NONE
                                 .fill(bg_color)
                                 .inner_margin(egui::Margin::symmetric(12, 8))
                                 .stroke(egui::Stroke::new(0.5, theme.colors.border_color))
@@ -249,10 +249,10 @@ pub fn render_password_rules_page(
             ui.add_space(16.0);
 
             // Edit form
-            egui::Frame::none()
+            egui::Frame::NONE
                 .fill(theme.colors.bg_secondary)
                 .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-                .rounding(8.0)
+                .corner_radius(8.0)
                 .inner_margin(20.0)
                 .show(ui, |ui| {
                     let form_title = if dialog.editing_index.is_some() {

@@ -609,7 +609,7 @@ impl eframe::App for ArchustApp {
         egui::TopBottomPanel::top("header")
             .exact_height(52.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(self.theme.colors.bg_secondary)
                     .inner_margin(egui::Margin::symmetric(16, 12))
                     .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color)),
@@ -671,7 +671,7 @@ impl eframe::App for ArchustApp {
         egui::TopBottomPanel::top("toolbar")
             .exact_height(52.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(self.theme.colors.bg_secondary)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color)),
@@ -725,7 +725,7 @@ impl eframe::App for ArchustApp {
         egui::TopBottomPanel::bottom("status")
             .exact_height(32.0)
             .frame(
-                egui::Frame::none()
+                egui::Frame::NONE
                     .fill(self.theme.colors.bg_secondary)
                     .inner_margin(egui::Margin::symmetric(0, 8)),
             )
@@ -838,7 +838,7 @@ impl ArchustApp {
         if self.toolbar_state.show_tree_panel && self.archive_loaded {
             egui::SidePanel::left("tree_panel")
                 .exact_width(240.0)
-                .frame(egui::Frame::none().fill(self.theme.colors.bg_secondary))
+                .frame(egui::Frame::NONE.fill(self.theme.colors.bg_secondary))
                 .show(ctx, |ui| {
                     let state = self.state.lock();
                     let archive_name = state
@@ -897,7 +897,7 @@ impl ArchustApp {
             egui::SidePanel::right("properties_panel")
                 .exact_width(280.0)
                 .frame(
-                    egui::Frame::none()
+                    egui::Frame::NONE
                         .fill(self.theme.colors.bg_secondary)
                         .inner_margin(egui::Margin::symmetric(16, 16)),
                 )
@@ -919,7 +919,7 @@ impl ArchustApp {
 
         // Central panel - File list
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(self.theme.colors.bg_primary))
+            .frame(egui::Frame::NONE.fill(self.theme.colors.bg_primary))
             .show(ctx, |ui| {
                 if !self.archive_loaded {
                     ui.centered_and_justified(|ui| {
@@ -944,7 +944,7 @@ impl ArchustApp {
 
                     ui.vertical(|ui| {
                         // Breadcrumb
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(self.theme.colors.bg_secondary)
                             .inner_margin(egui::Margin::symmetric(16, 10))
                             .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color))
@@ -1285,7 +1285,7 @@ impl ArchustApp {
         // Left panel - Settings navigator
         egui::SidePanel::left("settings_navigator")
             .exact_width(240.0)
-            .frame(egui::Frame::none().fill(self.theme.colors.bg_secondary))
+            .frame(egui::Frame::NONE.fill(self.theme.colors.bg_secondary))
             .show(ctx, |ui| {
                 if let Some(selected) = settings_page::render_settings_navigator(
                     ui,
@@ -1298,7 +1298,7 @@ impl ArchustApp {
 
         // Central panel - Settings content
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(self.theme.colors.bg_primary))
+            .frame(egui::Frame::NONE.fill(self.theme.colors.bg_primary))
             .show(ctx, |ui| {
                 ui.add_space(16.0);
 
@@ -1312,7 +1312,7 @@ impl ArchustApp {
                     _ => {
                         // Show category header with back button
                         let mut should_go_back = false;
-                        egui::Frame::none()
+                        egui::Frame::NONE
                             .fill(self.theme.colors.bg_secondary)
                             .inner_margin(egui::Margin::symmetric(20, 16))
                             .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color))

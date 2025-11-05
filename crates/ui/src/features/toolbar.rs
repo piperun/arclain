@@ -165,7 +165,7 @@ fn toolbar_button(ui: &mut egui::Ui, theme: &AppTheme, text: &str, enabled: bool
     let button = egui::Button::new(egui::RichText::new(text).size(16.0).color(color))
         .fill(theme.colors.bg_tertiary)
         .stroke(egui::Stroke::NONE)
-        .rounding(4.0)
+        .corner_radius(4.0)
         .min_size(egui::vec2(36.0, 32.0));
 
     ui.add_enabled(enabled, button).clicked()
@@ -191,7 +191,7 @@ fn toolbar_button_with_text(
     )
     .fill(theme.colors.bg_tertiary)
     .stroke(egui::Stroke::NONE)
-    .rounding(4.0)
+    .corner_radius(4.0)
     .min_size(egui::vec2(90.0, 32.0));
 
     ui.add_enabled(enabled, button).clicked()
@@ -211,7 +211,7 @@ fn toolbar_button_toggle(ui: &mut egui::Ui, theme: &AppTheme, text: &str, select
     )
     .fill(bg_fill)
     .stroke(egui::Stroke::NONE)
-    .rounding(4.0)
+    .corner_radius(4.0)
     .min_size(egui::vec2(36.0, 32.0));
 
     ui.add(button).clicked()

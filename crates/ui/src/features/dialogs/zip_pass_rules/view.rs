@@ -26,7 +26,7 @@ pub fn render_password_rules_dialog(
     egui::Area::new(egui::Id::new("pass_rules_overlay_dim"))
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             ui.painter()
                 .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(160));
             // Sense all input on the overlay to block interaction with content behind it
@@ -37,7 +37,7 @@ pub fn render_password_rules_dialog(
     egui::Area::new(egui::Id::new("pass_rules_modal"))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             let width = (screen.width() * 0.75).clamp(800.0, 1200.0);
             let height = (screen.height() * 0.8).clamp(600.0, 900.0);
             let pos = egui::pos2(
@@ -127,7 +127,7 @@ pub fn render_password_rules_dialog(
                             );
                         } else {
                             // Table header
-                            egui::Frame::none()
+                            egui::Frame::NONE
                                 .fill(theme.colors.bg_tertiary)
                                 .inner_margin(egui::Margin::symmetric(8, 6))
                                 .show(ui, |ui| {
@@ -202,7 +202,7 @@ pub fn render_password_rules_dialog(
                                 } else {
                                     theme.colors.bg_primary
                                 };
-                                egui::Frame::none()
+                                egui::Frame::NONE
                                     .fill(bg_color)
                                     .inner_margin(egui::Margin::symmetric(
                                         8, 6,

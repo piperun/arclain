@@ -41,7 +41,7 @@ pub fn show_dimmed_modal(
     egui::Area::new(egui::Id::new(format!("{id_prefix}_overlay")))
         .order(params.overlay_order)
         .show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             ui.painter().rect_filled(
                 screen,
                 0.0,
@@ -55,7 +55,7 @@ pub fn show_dimmed_modal(
     egui::Area::new(egui::Id::new(format!("{id_prefix}_modal")))
         .order(params.modal_order)
         .show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             let width = (screen.width() * params.width_frac).clamp(params.min.x, params.max.x);
             let height = (screen.height() * params.height_frac).clamp(params.min.y, params.max.y);
             let pos = egui::pos2((screen.width() - width) / 2.0, (screen.height() - height) / 2.0);
