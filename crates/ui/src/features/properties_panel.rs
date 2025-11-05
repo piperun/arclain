@@ -21,10 +21,10 @@ pub fn render(ui: &mut egui::Ui, theme: &AppTheme, groups: &[PropertyGroup]) {
 }
 
 fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGroup) {
-    let group_frame = egui::Frame::none()
+    let group_frame = egui::Frame::NONE
         .fill(theme.colors.bg_primary)
         .stroke(egui::Stroke::new(1.0, theme.colors.border_light))
-        .rounding(4.0)
+        .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(0, 12));
 
     group_frame.show(ui, |ui| {

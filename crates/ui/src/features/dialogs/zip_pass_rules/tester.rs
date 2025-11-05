@@ -15,7 +15,7 @@ pub fn render_regex_tester_modal(
     egui::Area::new(egui::Id::new("regex_tester_overlay"))
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             ui.painter()
                 .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(200));
             // Sense all input on the overlay to block interaction with content behind it
@@ -32,7 +32,7 @@ pub fn render_regex_tester_modal(
         .order(egui::Order::Foreground)
         .interactable(true)
         .show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             let width = (screen.width() * 0.5).clamp(500.0, 700.0);
             let height = (screen.height() * 0.6).clamp(400.0, 600.0);
             let pos = egui::pos2(

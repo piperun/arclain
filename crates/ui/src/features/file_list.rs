@@ -295,7 +295,7 @@ fn render_grid_item(
             egui::vec2(actions_w, actions_h),
         );
 
-        ui.allocate_ui_at_rect(actions_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(actions_rect), |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
 
@@ -406,7 +406,7 @@ pub fn render_list_view(
     // Clip rectangle for row decorations (compute before building table to avoid borrow conflicts)
     let list_clip_rect = ui.clip_rect();
 
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(egui::Color32::TRANSPARENT)
         .inner_margin(egui::Margin {
             left: 16,

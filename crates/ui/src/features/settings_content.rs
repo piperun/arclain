@@ -311,10 +311,10 @@ fn render_settings_section<R>(
     title: &str,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
-    egui::Frame::none()
+    egui::Frame::NONE
         .fill(theme.colors.bg_secondary)
         .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-        .rounding(8.0)
+        .corner_radius(8.0)
         .inner_margin(20.0)
         .show(ui, |ui| {
             ui.vertical(|ui| {

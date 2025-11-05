@@ -101,10 +101,10 @@ pub fn render(
         ui.add_space(ui.available_width() - if show_nav_buttons { 460.0 } else { 380.0 });
 
         // Search box with proper theming
-        let search_frame = egui::Frame::none()
+        let search_frame = egui::Frame::NONE
             .fill(theme.colors.bg_primary)
             .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-            .rounding(4.0)
+            .corner_radius(4.0)
             .inner_margin(egui::Margin::symmetric(8, 4));
 
         search_frame.show(ui, |ui| {

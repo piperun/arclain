@@ -36,7 +36,7 @@ pub fn render_password_dialog(
     egui::Area::new(egui::Id::new("password_overlay_dim"))
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(180));
             // Visual-only overlay; don't capture input so the modal receives scroll.
         });
@@ -45,7 +45,7 @@ pub fn render_password_dialog(
     egui::Area::new(egui::Id::new("password_modal"))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            let screen = ctx.screen_rect();
+            let screen = ctx.viewport_rect();
             // Slightly larger modal to avoid button overflow
             let width = 520.0;
             let height = if dialog.error.is_empty() { 300.0 } else { 340.0 };
@@ -120,7 +120,7 @@ pub fn render_password_dialog(
                     )
                     .fill(theme.colors.bg_tertiary)
                     .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-                    .rounding(4.0)
+                    .corner_radius(4.0)
                     .min_size(egui::vec2(100.0, 36.0));
                     
                     if ui.add(cancel_btn).clicked() { 
@@ -140,12 +140,12 @@ pub fn render_password_dialog(
                                 egui::Color32::WHITE 
                             })
                     )
-                    .fill(if theme.dark_mode { 
-                        egui::Color32::WHITE 
-                    } else { 
-                        egui::Color32::BLACK 
+                    .fill(if theme.dark_mode {
+                        egui::Color32::WHITE
+                    } else {
+                        egui::Color32::BLACK
                     })
-                    .rounding(4.0)
+                    .corner_radius(4.0)
                     .min_size(egui::vec2(100.0, 36.0));
                     
                     if ui.add_enabled(unlock_enabled, unlock_btn).clicked() { 
