@@ -8,6 +8,8 @@ use std::{
 };
 use tracing::{debug, error, info};
 use which::which;
+use std::io::{BufRead, BufReader};
+use std::sync::mpsc;
 
 #[derive(Clone)]
 pub struct SevenZipCli {
@@ -33,6 +35,95 @@ impl SevenZipCli {
         Err(anyhow!(
             "7z/7za/7zz not found on PATH. Please install 7-Zip (or provide path in settings)."
         ))
+    }
+
+    /// Spawn 7-Zip with the given args and stream percentage progress via a channel.
+    /// Returns the running child process and a receiver for `ProgressUpdate` events.
+    fn spawn_with_progress<I, S>(&self, args: I) -> Result<ChildWithProgress>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<OsStr>,
+    {
+        // Ensure we use progress to stderr to keep stdout available for logs
+        let mut argv: Vec<OsString> = args.into_iter().map(|s| s.as_ref().to_os_string()).collect();
+        // Add progress flags if not present already
+        if !argv.iter().any(|a| a.to_string_lossy().starts_with("-bsp")) {
+            argv.push(OsString::from("-bsp2")); // progress to stderr
+        }
+        // Keep logging minimal to reduce noise
+        if !argv.iter().any(|a| a.to_string_lossy().starts_with("-bb")) {
+            argv.push(OsString::from("-bb0"));
+        }
+
+        debug!("Spawning 7z with progress: {:?} {:?}", self.exe, argv);
+        let mut child = Command::new(&self.exe)
+            .args(&argv)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawning 7z (progress)")?;
+
+        let stdout = child.stdout.take();
+        let (tx, rx) = mpsc::channel::<ProgressUpdate>();
+
+        // Reader thread 1: stdout lines -> log messages
+        if let Some(out) = stdout {
+            let tx_logs = tx.clone();
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(out);
+                let mut line = String::new();
+                while let Ok(n) = reader.read_line(&mut line) {
+                    if n == 0 { break; }
+                    let msg = line.trim_end_matches(['\r', '\n']).to_string();
+                    if !msg.is_empty() {
+                        let _ = tx_logs.send(ProgressUpdate { percent: 0, message: Some(msg) });
+                    }
+                    line.clear();
+                }
+            });
+        }
+
+        // Reader thread 2: parse percentages from stderr stream (carriage-return updated)
+        if let Some(err) = child.stderr.take() {
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(err);
+                let mut buf: Vec<u8> = Vec::with_capacity(256);
+                let mut last_sent: Option<u8> = None;
+                loop {
+                    match reader.read_until(b'%', &mut buf) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            if let Some(pos) = buf.iter().rposition(|&b| b == b'%') {
+                                let digits_rev: Vec<u8> = buf[..pos]
+                                    .iter()
+                                    .rev()
+                                    .take_while(|b| b.is_ascii_digit())
+                                    .copied()
+                                    .collect();
+                                if !digits_rev.is_empty() {
+                                    let mut digits = digits_rev;
+                                    digits.reverse();
+                                    if let Ok(s) = std::str::from_utf8(&digits) {
+                                        if let Ok(mut p) = s.parse::<u8>() {
+                                            if p > 100 { p = 100; }
+                                            if last_sent != Some(p) {
+                                                let _ = tx.send(ProgressUpdate { percent: p, message: None });
+                                                last_sent = Some(p);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            buf.clear();
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let _ = tx.send(ProgressUpdate { percent: 100, message: None });
+            });
+        }
+
+        Ok(ChildWithProgress { child, rx })
     }
 
     fn candidates() -> &'static [&'static str] {
@@ -505,6 +596,7 @@ impl ArchiveBackend for SevenZipCli {
         Ok(())
     }
 
+
     fn extract_all(&self, path: &Path, dest: &Path, password: Option<&str>) -> Result<()> {
         info!(
             "Extracting all files from {} to {}",
@@ -536,6 +628,7 @@ impl ArchiveBackend for SevenZipCli {
         info!("All files extracted successfully");
         Ok(())
     }
+
 
     fn extract_directory(
         &self,
@@ -588,6 +681,7 @@ impl ArchiveBackend for SevenZipCli {
         info!("Directory extracted successfully");
         Ok(())
     }
+
 
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()> {
         info!(
@@ -750,4 +844,86 @@ impl ArchiveBackend for SevenZipCli {
         ];
         self.run_status_with_stdin(args, content.as_bytes())
     }
+}
+
+impl SevenZipCli {
+    /// Like `extract_files`, but returns a running process with progress updates.
+    pub fn spawn_extract_files_with_progress(
+        &self,
+        path: &Path,
+        dest: &Path,
+        files: &[String],
+        password: Option<&str>,
+    ) -> Result<ChildWithProgress> {
+        let mut args = vec![
+            OsString::from("x"),
+            OsString::from("-y"),
+            OsString::from("-mmt=on"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+        if let Some(p) = password { args.push(OsString::from(format!("-p{}", p))); } else { args.push(OsString::from("-p")); }
+        let mut oarg = OsString::from("-o"); oarg.push(dest.as_os_str()); args.push(oarg);
+        args.push(path.as_os_str().to_os_string());
+        for f in files { args.push(OsString::from(f)); }
+        self.spawn_with_progress(args)
+    }
+
+    /// Like `extract_all`, but returns a running process with progress updates.
+    pub fn spawn_extract_all_with_progress(
+        &self,
+        path: &Path,
+        dest: &Path,
+        password: Option<&str>,
+    ) -> Result<ChildWithProgress> {
+        let mut args = vec![
+            OsString::from("x"),
+            OsString::from("-y"),
+            OsString::from("-mmt=on"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+        if let Some(p) = password { args.push(OsString::from(format!("-p{}", p))); } else { args.push(OsString::from("-p")); }
+        let mut oarg = OsString::from("-o"); oarg.push(dest.as_os_str()); args.push(oarg);
+        args.push(path.as_os_str().to_os_string());
+        self.spawn_with_progress(args)
+    }
+
+    /// Like `extract_directory`, but returns a running process with progress updates.
+    pub fn spawn_extract_directory_with_progress(
+        &self,
+        path: &Path,
+        dest: &Path,
+        dir_path: &str,
+        password: Option<&str>,
+    ) -> Result<ChildWithProgress> {
+        let mut args = vec![
+            OsString::from("x"),
+            OsString::from("-y"),
+            OsString::from("-mmt=on"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+        if let Some(p) = password { args.push(OsString::from(format!("-p{}", p))); } else { args.push(OsString::from("-p")); }
+        let mut oarg = OsString::from("-o"); oarg.push(dest.as_os_str()); args.push(oarg);
+        args.push(path.as_os_str().to_os_string());
+        if !dir_path.is_empty() {
+            let pattern = format!("{}/*", dir_path.trim_end_matches('/'));
+            args.push(OsString::from(pattern));
+        }
+        self.spawn_with_progress(args)
+    }
+}
+
+/// Progress event from 7-Zip streaming output.
+#[derive(Debug, Clone)]
+pub struct ProgressUpdate {
+    pub percent: u8,              // 0..=100
+    pub message: Option<String>,  // reserved for future use
+}
+
+/// Handle for a running 7-Zip process with progress updates.
+pub struct ChildWithProgress {
+    pub child: std::process::Child,
+    pub rx: mpsc::Receiver<ProgressUpdate>,
 }

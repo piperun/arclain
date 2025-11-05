@@ -16,6 +16,7 @@ impl Default for HeaderState {
 pub struct HeaderActions {
     pub navigate_home: bool,
     pub navigate_back: bool,
+    pub navigate_settings: bool,
 }
 
 impl Default for HeaderActions {
@@ -23,6 +24,7 @@ impl Default for HeaderActions {
         Self {
             navigate_home: false,
             navigate_back: false,
+            navigate_settings: false,
         }
     }
 }
@@ -75,6 +77,19 @@ pub fn render(
             ui.add_space(8.0);
         }
 
+        // Settings button (always at the top row, same style as nav)
+        let settings_btn = egui::Button::new(
+            egui::RichText::new("⚙")
+                .size(16.0)
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+        .min_size(egui::vec2(32.0, 32.0));
+        if ui.add(settings_btn).clicked() {
+            actions.navigate_settings = true;
+        }
+        ui.add_space(8.0);
+
         // Title - matching mockup style
         ui.label(
             egui::RichText::new("ARCLAIN")
@@ -90,7 +105,7 @@ pub fn render(
             .fill(theme.colors.bg_primary)
             .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
             .rounding(4.0)
-            .inner_margin(egui::Margin::symmetric(8.0, 4.0));
+            .inner_margin(egui::Margin::symmetric(8, 4));
 
         search_frame.show(ui, |ui| {
             ui.add_sized(
@@ -121,8 +136,9 @@ pub fn render(
             // Border
             ui.painter().rect_stroke(
                 rect,
-                radius,
+                egui::CornerRadius::same(radius as u8),
                 egui::Stroke::new(1.0, theme.colors.border_color),
+                egui::StrokeKind::Outside,
             );
 
             // Slider circle
@@ -140,4 +156,17 @@ pub fn render(
     });
 
     actions
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_actions_default_is_clean() {
+        let a = HeaderActions::default();
+        assert!(!a.navigate_home);
+        assert!(!a.navigate_back);
+        assert!(!a.navigate_settings);
+    }
 }

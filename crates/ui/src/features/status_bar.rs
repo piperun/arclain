@@ -99,3 +99,15 @@ pub fn render(ui: &mut egui::Ui, theme: &AppTheme, info: &StatusBarInfo, archive
         }
     });
 }
+
+// Lightweight pill button for background tasks
+pub fn progress_chip(ui: &mut egui::Ui, theme: &AppTheme, label: &str) -> egui::Response {
+    let frame = egui::Frame::none()
+        .fill(theme.colors.bg_tertiary)
+        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+        .rounding(12.0)
+        .inner_margin(egui::Margin::symmetric(10, 4));
+    frame.show(ui, |ui| {
+        ui.label(egui::RichText::new(label).size(12.0).color(theme.colors.text_primary));
+    }).response
+}

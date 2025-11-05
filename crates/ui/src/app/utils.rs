@@ -1,4 +1,5 @@
 use crate::features::file_list::FileEntry;
+use tracing::error;
 
 pub fn format_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB"];
@@ -34,5 +35,26 @@ pub fn convert_to_file_entry(entry: &arclain_core::ArchiveEntry) -> FileEntry {
         encrypted: entry.encrypted,
         is_folder: entry.is_dir,
         selected: false,
+    }
+}
+
+/// Log an error in a consistent format for failure cases.
+/// This keeps our tests simple and ensures a single message shape.
+#[allow(dead_code)]
+pub fn log_failure(context: &str, message: impl std::fmt::Display) {
+    error!("{}: {}", context, message);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_test::traced_test;
+
+    // Verifies that our failure logging helper actually emits a log line we can assert on.
+    #[traced_test]
+    #[test]
+    fn logs_on_failure() {
+        log_failure("Settings", "failed to save");
+        assert!(logs_contain("Settings: failed to save"));
     }
 }

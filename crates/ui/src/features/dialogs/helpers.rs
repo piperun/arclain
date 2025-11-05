@@ -62,7 +62,7 @@ pub fn show_dimmed_modal(
             let rect = egui::Rect::from_min_size(pos, egui::vec2(width, height));
 
             ui.painter().rect_filled(rect, 8.0, theme.colors.bg_primary);
-            ui.painter().rect_stroke(rect, 8.0, egui::Stroke::new(1.0, theme.colors.border_color));
+            ui.painter().rect_stroke(rect, egui::CornerRadius::same(8), egui::Stroke::new(1.0, theme.colors.border_color), egui::StrokeKind::Outside);
             ui.set_clip_rect(rect);
 
             let content = rect.shrink2(params.padding);

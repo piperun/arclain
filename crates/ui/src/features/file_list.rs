@@ -409,10 +409,10 @@ pub fn render_list_view(
     egui::Frame::none()
         .fill(egui::Color32::TRANSPARENT)
         .inner_margin(egui::Margin {
-            left: 16.0,
-            right: 16.0,
-            top: 0.0,
-            bottom: 0.0,
+            left: 16,
+            right: 16,
+            top: 0,
+            bottom: 0,
         })
         .show(ui, |ui| {
             let table_id = if columns_locked {
