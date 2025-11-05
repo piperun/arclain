@@ -25,7 +25,7 @@ fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGr
         .fill(theme.colors.bg_primary)
         .stroke(egui::Stroke::new(1.0, theme.colors.border_light))
         .rounding(4.0)
-        .inner_margin(egui::Margin::symmetric(0.0, 12.0));
+        .inner_margin(egui::Margin::symmetric(0, 12));
 
     group_frame.show(ui, |ui| {
         ui.set_min_width(ui.available_width());

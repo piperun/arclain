@@ -44,8 +44,9 @@ pub fn render_regex_tester_modal(
             ui.painter().rect_filled(rect, 8.0, theme.colors.bg_primary);
             ui.painter().rect_stroke(
                 rect,
-                8.0,
+                egui::CornerRadius::same(8),
                 egui::Stroke::new(1.0, theme.colors.border_color),
+                egui::StrokeKind::Outside,
             );
 
             // Make modal rect interactive to receive hover/wheel

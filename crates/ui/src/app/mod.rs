@@ -12,12 +12,15 @@ use crate::features::{
 use crate::platform::detect_dark_mode;
 
 use arclain_core::file_opener::{FileOpener, OpenStrategy};
+use arclain_core::sevenzip::ProgressUpdate;
 use eframe::egui;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 use crc32fast::Hasher;
+use std::time::{Duration, Instant};
+use std::sync::mpsc::Receiver;
 
 pub struct ArchustApp {
     state: Arc<Mutex<AppState>>,
@@ -57,9 +60,23 @@ pub struct ArchustApp {
     encryption_method: Option<String>,
     total_crc32: Option<String>,
     last_window_title: Option<String>,
+
+    // Extraction progress state
+    extraction_dialog: dialogs::ExtractionProgressDialog,
+    extraction_rx: Option<Receiver<ProgressUpdate>>,
+    extraction_child: Option<std::process::Child>,
+    extraction_minimized: bool,
+    extraction_started: Option<Instant>,
 }
 
 impl ArchustApp {
+    fn format_two_digits(v: u64) -> String { if v < 10 { format!("0{}", v) } else { v.to_string() } }
+
+    fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    let h = secs / 3600; let m = (secs % 3600) / 60; let s = secs % 60;
+        if h > 0 { format!("{}:{}:{}", h, Self::format_two_digits(m), Self::format_two_digits(s)) } else { format!("{}:{:02}", m, s) }
+    }
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let dark_mode = detect_dark_mode();
         let theme = AppTheme::new(dark_mode);
@@ -99,6 +116,11 @@ impl ArchustApp {
             encryption_method: None,
             total_crc32: None,
             last_window_title: None,
+            extraction_dialog: dialogs::ExtractionProgressDialog::default(),
+            extraction_rx: None,
+            extraction_child: None,
+            extraction_minimized: false,
+            extraction_started: None,
         }
     }
 
@@ -374,6 +396,11 @@ impl ArchustApp {
     }
 
     fn extract_selected(&mut self) {
+        if self.extraction_child.is_some() {
+            self.status_info.message = "Another extraction is already running".to_string();
+            return;
+        }
+
         let state = self.state.lock();
         if let Some(archive) = &state.current_archive {
             let selected_files: Vec<String> = self
@@ -388,18 +415,39 @@ impl ArchustApp {
                 return;
             }
 
+            // Build full paths using navigation prefix
+            let full_paths: Vec<String> = if !state.navigation.current_path.is_empty() {
+                selected_files
+                    .iter()
+                    .map(|f| format!("{}/{}", state.navigation.current_path, f))
+                    .collect()
+            } else {
+                selected_files
+            };
+
             let archive_clone = archive.clone();
+            let backend = state.backend.clone();
+            let auto_pw = state.cfg.auto_password_for(&state.last_entries);
+            let pw_opt = state.current_password.as_deref().or(auto_pw.as_deref()).map(|s| s.to_string());
             drop(state);
 
             if let Some(dest) = rfd::FileDialog::new().pick_folder() {
-                self.status_info.message = format!("Extracting {} files...", selected_files.len());
-                let state = self.state.lock();
-                match state.extract_selected(&archive_clone, &dest, selected_files) {
-                    Ok(()) => {
-                        self.status_info.message = format!("Extracted to {}", dest.display());
+                // Spawn with progress
+                match backend.spawn_extract_files_with_progress(&archive_clone, &dest, &full_paths, pw_opt.as_deref()) {
+                    Ok(handle) => {
+                        self.extraction_dialog = dialogs::ExtractionProgressDialog::default();
+                        self.extraction_dialog.show = true;
+                        self.extraction_dialog.title = format!("Extracting to {}", dest.display());
+                        self.extraction_dialog.file_action = "Extracting selected files".to_string();
+                        #[cfg(target_os = "windows")] { self.extraction_dialog.can_pause = true; }
+                        self.extraction_rx = Some(handle.rx);
+                        self.extraction_child = Some(handle.child);
+                        self.extraction_minimized = false;
+                        self.extraction_started = Some(Instant::now());
+                        self.status_info.message = "Extraction started".to_string();
                     }
                     Err(e) => {
-                        self.status_info.message = format!("Extract failed: {}", e);
+                        self.status_info.message = format!("Failed to start extraction: {}", e);
                     }
                 }
             }
@@ -421,6 +469,41 @@ impl ArchustApp {
                     }
                     Err(e) => {
                         self.status_info.message = format!("Add files failed: {}", e);
+                    }
+                }
+            }
+        }
+    }
+
+    fn extract_all(&mut self) {
+        if self.extraction_child.is_some() { 
+            self.status_info.message = "Another extraction is already running".to_string();
+            return; 
+        }
+        let state = self.state.lock();
+        if let Some(archive) = &state.current_archive {
+            let archive_clone = archive.clone();
+            let backend = state.backend.clone();
+            let auto_pw = state.cfg.auto_password_for(&state.last_entries);
+            let pw_opt = state.current_password.as_deref().or(auto_pw.as_deref()).map(|s| s.to_string());
+            drop(state);
+
+            if let Some(dest) = rfd::FileDialog::new().pick_folder() {
+                match backend.spawn_extract_all_with_progress(&archive_clone, &dest, pw_opt.as_deref()) {
+                    Ok(handle) => {
+                        self.extraction_dialog = dialogs::ExtractionProgressDialog::default();
+                        self.extraction_dialog.show = true;
+                        self.extraction_dialog.title = format!("Extracting all to {}", dest.display());
+                        self.extraction_dialog.file_action = "Extracting all files".to_string();
+                        #[cfg(target_os = "windows")] { self.extraction_dialog.can_pause = true; }
+                        self.extraction_rx = Some(handle.rx);
+                        self.extraction_child = Some(handle.child);
+                        self.extraction_minimized = false;
+                        self.extraction_started = Some(Instant::now());
+                        self.status_info.message = "Extraction started".to_string();
+                    }
+                    Err(e) => {
+                        self.status_info.message = format!("Failed to start extraction: {}", e);
                     }
                 }
             }
@@ -498,7 +581,7 @@ impl ArchustApp {
 }
 
 impl eframe::App for ArchustApp {
-    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Apply theme
         self.theme.apply_to_context(ctx);
 
@@ -528,7 +611,7 @@ impl eframe::App for ArchustApp {
             .frame(
                 egui::Frame::none()
                     .fill(self.theme.colors.bg_secondary)
-                    .inner_margin(egui::Margin::symmetric(16.0, 12.0))
+                    .inner_margin(egui::Margin::symmetric(16, 12))
                     .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color)),
             )
             .show(ctx, |ui| {
@@ -556,6 +639,32 @@ impl eframe::App for ArchustApp {
                 if header_actions.navigate_back {
                     self.page_navigator.navigate_back();
                 }
+                if header_actions.navigate_settings {
+                    self.page_navigator
+                        .navigate_to(AppPage::Settings(SettingsPage::Overview));
+                    // Prefill security settings from current state
+                    let st = self.state.lock();
+                    if let Some(paths) = &st.db_paths {
+                        self.security_settings_state.key_file_path = paths
+                            .key_file
+                            .as_ref()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        self.security_settings_state.secrets_db_path =
+                            paths.secrets_db.to_string_lossy().to_string();
+                    } else {
+                        self.security_settings_state.key_file_path.clear();
+                        self.security_settings_state.secrets_db_path.clear();
+                    }
+                    self.security_settings_state.encrypted_crc_policy = match st
+                        .encrypted_crc_policy
+                        .as_str()
+                    {
+                        "prompt_on_open" => dialogs::EncryptedCrcPolicy::PromptOnOpen,
+                        "on_access" => dialogs::EncryptedCrcPolicy::OnAccess,
+                        _ => dialogs::EncryptedCrcPolicy::OnOpen,
+                    };
+                }
             });
 
         // Toolbar
@@ -564,7 +673,7 @@ impl eframe::App for ArchustApp {
             .frame(
                 egui::Frame::none()
                     .fill(self.theme.colors.bg_secondary)
-                    .inner_margin(egui::Margin::symmetric(12.0, 10.0))
+                    .inner_margin(egui::Margin::symmetric(12, 10))
                     .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color)),
             )
             .show(ctx, |ui| {
@@ -601,34 +710,14 @@ impl eframe::App for ArchustApp {
                 if actions.extract {
                     self.extract_selected();
                 }
+                if actions.extract_all {
+                    self.extract_all();
+                }
                 if actions.add {
                     self.add_files();
                 }
                 if actions.delete_selected {
                     self.delete_selected();
-                }
-                if actions.settings {
-                    // Navigate to settings page instead of showing modal
-                    self.page_navigator.navigate_to(AppPage::Settings(SettingsPage::Overview));
-                    
-                    // Prefill security settings from current state
-                    let st = self.state.lock();
-                    if let Some(paths) = &st.db_paths {
-                        self.security_settings_state.key_file_path = paths
-                            .key_file
-                            .as_ref()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        self.security_settings_state.secrets_db_path = paths.secrets_db.to_string_lossy().to_string();
-                    } else {
-                        self.security_settings_state.key_file_path.clear();
-                        self.security_settings_state.secrets_db_path.clear();
-                    }
-                    self.security_settings_state.encrypted_crc_policy = match st.encrypted_crc_policy.as_str() {
-                        "prompt_on_open" => dialogs::EncryptedCrcPolicy::PromptOnOpen,
-                        "on_access" => dialogs::EncryptedCrcPolicy::OnAccess,
-                        _ => dialogs::EncryptedCrcPolicy::OnOpen,
-                    };
                 }
             });
 
@@ -638,10 +727,23 @@ impl eframe::App for ArchustApp {
             .frame(
                 egui::Frame::none()
                     .fill(self.theme.colors.bg_secondary)
-                    .inner_margin(egui::Margin::symmetric(0.0, 8.0)),
+                    .inner_margin(egui::Margin::symmetric(0, 8)),
             )
             .show(ctx, |ui| {
+                // Left area: main status
                 status_bar::render(ui, &self.theme, &self.status_info, self.archive_loaded);
+
+                // Right-aligned: background progress chip when minimized
+                if self.extraction_minimized {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if self.extraction_dialog.percent >= 100 { "Extraction done".to_string() } else { format!("Extracting… {}%", self.extraction_dialog.percent) };
+                        let resp = status_bar::progress_chip(ui, &self.theme, &label);
+                        if resp.clicked() {
+                            self.extraction_dialog.show = true;
+                            self.extraction_minimized = false;
+                        }
+                    });
+                }
             });
 
         // Render based on current page
@@ -656,6 +758,76 @@ impl eframe::App for ArchustApp {
 
         // Dialogs (shown on top of everything)
         self.render_dialogs(ctx);
+
+        // Background pump for extraction progress
+        if let Some(rx) = &self.extraction_rx {
+            for upd in rx.try_iter() {
+                if upd.percent > 0 { self.extraction_dialog.percent = upd.percent; }
+                if let Some(msg) = upd.message {
+                    // Keep last ~500 lines
+                    if self.extraction_dialog.log_lines.len() > 500 { 
+                        let overflow = self.extraction_dialog.log_lines.len() - 500; 
+                        self.extraction_dialog.log_lines.drain(0..overflow); 
+                    }
+                    self.extraction_dialog.log_lines.push(msg);
+                }
+                if let Some(start) = self.extraction_started {
+                    let elapsed = start.elapsed();
+                    self.extraction_dialog.elapsed_text = Self::format_duration(elapsed);
+                    if upd.percent > 0 && upd.percent < 100 {
+                        let total_est = elapsed.mul_f64(100.0 / upd.percent as f64);
+                        let left = total_est.saturating_sub(elapsed);
+                        self.extraction_dialog.time_left_text = Self::format_duration(left);
+                        self.extraction_dialog.processed_text = format!("{}%", upd.percent);
+                    }
+                }
+                ctx.request_repaint();
+            }
+        }
+
+        // Check child completion
+        if let Some(child) = self.extraction_child.as_mut() {
+            if let Ok(Some(status)) = child.try_wait() {
+                if status.success() && self.extraction_dialog.percent >= 100 {
+                    self.extraction_dialog.status = dialogs::ExtractionStatus::Completed;
+                    self.status_info.message = "Extraction completed".to_string();
+                    
+                    // If we were opening a file, do it now
+                    if let Some(full_path) = self.pending_open_file.take() {
+                        info!("Extraction complete, opening file: {}", full_path);
+                        let temp_base = std::env::temp_dir().join(format!("arclain_{}", std::process::id()));
+                        let normalized_full_path = full_path.replace('/', std::path::MAIN_SEPARATOR.to_string().as_str());
+                        let file_to_open = temp_base.join(&normalized_full_path);
+                        
+                        if file_to_open.exists() {
+                            match open::that(&file_to_open) {
+                                Ok(()) => {
+                                    let file_name = full_path.split('/').last().unwrap_or(&full_path);
+                                    self.status_info.message = format!("Opened {}", file_name);
+                                }
+                                Err(e) => {
+                                    error!("Failed to open file: {}", e);
+                                    self.status_info.message = format!("Failed to open file: {}", e);
+                                }
+                            }
+                        } else {
+                            error!("Extracted file not found: {}", file_to_open.display());
+                            self.status_info.message = "File not found after extraction".to_string();
+                        }
+                    }
+                } else {
+                    self.extraction_dialog.status = dialogs::ExtractionStatus::Failed;
+                    self.status_info.message = format!("Extraction ended with status: {:?}", status.code());
+                }
+                // Auto-hide when completed unless minimized
+                if !self.extraction_minimized {
+                    self.extraction_dialog.show = false;
+                }
+                self.extraction_child = None;
+                self.extraction_rx = None;
+                self.extraction_started = None;
+            }
+        }
     }
 }
 
@@ -727,7 +899,7 @@ impl ArchustApp {
                 .frame(
                     egui::Frame::none()
                         .fill(self.theme.colors.bg_secondary)
-                        .inner_margin(egui::Margin::symmetric(16.0, 16.0)),
+                        .inner_margin(egui::Margin::symmetric(16, 16)),
                 )
                 .show(ctx, |ui| {
                     let groups = vec![properties_panel::create_archive_info_group(
@@ -774,7 +946,7 @@ impl ArchustApp {
                         // Breadcrumb
                         egui::Frame::none()
                             .fill(self.theme.colors.bg_secondary)
-                            .inner_margin(egui::Margin::symmetric(16.0, 10.0))
+                            .inner_margin(egui::Margin::symmetric(16, 10))
                             .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color))
                             .show(ui, |ui| {
                                 let state = self.state.lock();
@@ -1011,55 +1183,36 @@ impl ArchustApp {
 
                                                 info!("Opening file: {} (extracting {} related files)", name, files_to_extract.len());
 
-                                                // Extract files
+                                                // Check if extraction is already running
+                                                if self.extraction_child.is_some() {
+                                                    self.status_info.message = "Another extraction is already running".to_string();
+                                                    return;
+                                                }
+
+                                                // Extract files with progress dialog
                                                 let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
                                                 if let Some(archive) = archive_opt {
-                                                    let res = { self.state.lock().extract_specific(&archive, opener.temp_dir(), files_to_extract) };
-                                                    match res {
-                                                        Ok(()) => {
-                                                            info!("Extraction completed successfully, preparing to open {}", full_path);
-                                                            let normalized_full_path = full_path.replace('/', std::path::MAIN_SEPARATOR.to_string().as_str());
-                                                            let file_to_open = opener.temp_dir().join(&normalized_full_path);
-
-                                                            if !file_to_open.exists() {
-                                                                error!("Extracted file missing: {}", file_to_open.display());
-                                                                self.status_info.message = "File not found after extraction".to_string();
-                                                                return;
-                                                            }
-
-                                                            info!("Launching extracted file: {}", file_to_open.display());
-                                                            match open::that(&file_to_open) {
-                                                                Ok(()) => {
-                                                                    info!("Successfully opened {}", file_to_open.display());
-                                                                    self.status_info.message = format!("Opened {}", name);
-                                                                    std::mem::forget(opener);
-                                                                }
-                                                                Err(e) => {
-                                                                    error!("Failed to launch {}: {}", file_to_open.display(), e);
-                                                                    self.status_info.message = format!("Failed to open file: {}", e);
-                                                                }
-                                                            }
+                                                    let backend = { let st = self.state.lock(); st.backend.clone() };
+                                                    let auto_pw = { let st = self.state.lock(); st.cfg.auto_password_for(&st.last_entries) };
+                                                    let pw_opt = { let st = self.state.lock(); st.current_password.as_deref().or(auto_pw.as_deref()).map(|s| s.to_string()) };
+                                                    
+                                                    match backend.spawn_extract_files_with_progress(&archive, opener.temp_dir(), &files_to_extract, pw_opt.as_deref()) {
+                                                        Ok(handle) => {
+                                                            self.extraction_dialog = dialogs::ExtractionProgressDialog::default();
+                                                            self.extraction_dialog.show = true;
+                                                            self.extraction_dialog.title = format!("Opening {}", name);
+                                                            self.extraction_dialog.file_action = format!("Extracting {} related files", files_to_extract.len());
+                                                            #[cfg(target_os = "windows")] { self.extraction_dialog.can_pause = true; }
+                                                            self.extraction_rx = Some(handle.rx);
+                                                            self.extraction_child = Some(handle.child);
+                                                            self.extraction_minimized = false;
+                                                            self.extraction_started = Some(Instant::now());
+                                                            self.pending_open_file = Some(full_path.clone());
+                                                            self.status_info.message = "Extracting files...".to_string();
+                                                            std::mem::forget(opener);
                                                         }
                                                         Err(e) => {
-                                                            let err_msg = e.to_string();
-                                                            error!("Extraction failed: {}", err_msg);
-                                                            // Check if it's a password error - 7z returns exit code 2 for password errors
-                                                            if err_msg.contains("Wrong password")
-                                                                || err_msg.contains("Cannot open encrypted")
-                                                                || err_msg.contains("code Some(2)") {
-                                                                // Prompt for password, then retry open
-                                                                info!("Showing password dialog for encrypted file (detected password error)");
-                                                                self.password_dialog.show = true;
-                                                                self.password_dialog.password.clear();
-                                                                self.password_dialog.error.clear();
-                                                                self.pending_archive_path = { let st = self.state.lock(); st.current_archive.clone() };
-                                                                // Remember target to open after unlock
-                                                                self.pending_open_file = Some(full_path.clone());
-                                                                info!("Stored pending_open_file: {}", full_path);
-                                                                self.status_info.message = "Password required to open file".to_string();
-                                                            } else {
-                                                                self.status_info.message = format!("Open failed: {}", err_msg);
-                                                            }
+                                                            self.status_info.message = format!("Failed to start extraction: {}", e);
                                                         }
                                                     }
                                                 }
@@ -1161,7 +1314,7 @@ impl ArchustApp {
                         let mut should_go_back = false;
                         egui::Frame::none()
                             .fill(self.theme.colors.bg_secondary)
-                            .inner_margin(egui::Margin::symmetric(20.0, 16.0))
+                            .inner_margin(egui::Margin::symmetric(20, 16))
                             .stroke(egui::Stroke::new(1.0, self.theme.colors.border_color))
                             .show(ui, |ui| {
                                 settings_page::render_settings_header(
@@ -1231,6 +1384,7 @@ impl ArchustApp {
                         self.status_info.message = "Password rules saved successfully".to_string();
                     }
                     Err(e) => {
+                        error!("Failed to save password rules: {}", e);
                         self.password_rules_dialog.error = format!("Failed to save: {}", e);
                         self.status_info.message = format!("Failed to save password rules: {}", e);
                     }
@@ -1253,6 +1407,7 @@ impl ArchustApp {
                         self.status_info.message = "Security settings saved".to_string();
                     }
                     Err(e) => {
+                        error!("Failed to save security settings: {}", e);
                         self.security_settings_state.error = format!("Failed to save: {}", e);
                     }
                 }
@@ -1266,6 +1421,7 @@ impl ArchustApp {
                         self.status_info.message = "Vault moved successfully".to_string();
                     }
                     Err(e) => {
+                        error!("Failed to move vault: {}", e);
                         self.security_settings_state.error = format!("Failed to move vault: {}", e);
                     }
                 }
@@ -1279,6 +1435,7 @@ impl ArchustApp {
                         self.status_info.message = "Vault rekeyed".to_string();
                     }
                     Err(e) => {
+                        error!("Failed to rekey vault: {}", e);
                         self.security_settings_state.error = format!("Failed to rekey vault: {}", e);
                     }
                 }
@@ -1288,24 +1445,55 @@ impl ArchustApp {
 
     /// Render all dialogs
     fn render_dialogs(&mut self, ctx: &egui::Context) {
+        // Extraction progress dialog
+        if self.extraction_dialog.show {
+            if let Some(result) = dialogs::render_extraction_progress_dialog(ctx, &self.theme, &mut self.extraction_dialog) {
+                match result {
+                    dialogs::ExtractionDialogResult::Minimized => {
+                        self.extraction_minimized = true;
+                        self.extraction_dialog.show = false;
+                        self.status_info.message = "Extraction running in background".to_string();
+                    }
+                    dialogs::ExtractionDialogResult::Paused => {
+                        if let Some(child) = &self.extraction_child {
+                            #[cfg(target_os = "windows")] { let _ = crate::platform::suspend_process(child.id()); }
+                            self.extraction_dialog.status = dialogs::ExtractionStatus::Paused;
+                        }
+                    }
+                    dialogs::ExtractionDialogResult::Resumed => {
+                        if let Some(child) = &self.extraction_child {
+                            #[cfg(target_os = "windows")] { let _ = crate::platform::resume_process(child.id()); }
+                            self.extraction_dialog.status = dialogs::ExtractionStatus::Running;
+                        }
+                    }
+                    dialogs::ExtractionDialogResult::Cancelled => {
+                        if let Some(mut child) = self.extraction_child.take() {
+                            let _ = child.kill();
+                        }
+                        self.extraction_rx = None;
+                        self.extraction_started = None;
+                        self.extraction_dialog.status = dialogs::ExtractionStatus::Cancelled;
+                        self.extraction_dialog.show = false;
+                        self.status_info.message = "Extraction cancelled".to_string();
+                    }
+                    dialogs::ExtractionDialogResult::None => {}
+                }
+            }
+        }
         // Password dialog
         if let Some(result) =
             dialogs::render_password_dialog(ctx, &self.theme, &mut self.password_dialog)
         {
             match result {
                 dialogs::PasswordDialogResult::Unlock => {
-                    info!("Password dialog unlock clicked");
                     if let Some(path) = self.pending_archive_path.clone() {
                         let password = self.password_dialog.password.clone();
-                        info!("Attempting to unlock archive with provided password (length: {})", password.len());
                         if self.try_open_with_password(&path, &password) {
-                            info!("Archive unlocked successfully");
                             self.password_dialog.show = false;
                             self.pending_archive_path = None;
 
                             // If we were trying to edit a file, retry now with password
                             if let Some(file_path) = self.pending_edit_file.take() {
-                                info!("Retrying edit for file: {}", file_path);
                                 let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
                                 if let Some(archive) = archive_opt {
                                     match self.state.lock().read_text_file(&archive, &file_path) {
@@ -1327,7 +1515,6 @@ impl ArchustApp {
 
                             // If we were trying to open a file, retry now with password
                             if let Some(full_path) = self.pending_open_file.take() {
-                                info!("Found pending_open_file, retrying: {}", full_path);
                                 let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
                                 if let Some(archive) = archive_opt {
                                     // Create FileOpener for smart extraction
@@ -1351,15 +1538,10 @@ impl ArchustApp {
                                         OpenStrategy::SameDirectory,
                                     );
 
-                                    info!("Retrying open: {} (extracting {} related files)", full_path, files_to_extract.len());
-
                                     match self.state.lock().extract_specific(&archive, opener.temp_dir(), files_to_extract) {
                                         Ok(()) => {
-                                            info!("Extraction completed successfully, opening file {}", full_path);
                                             let normalized_full_path = full_path.replace('/', std::path::MAIN_SEPARATOR.to_string().as_str());
                                             let file_to_open = opener.temp_dir().join(&normalized_full_path);
-
-                                            info!("Looking for extracted file at: {}", file_to_open.display());
 
                                             if !file_to_open.exists() {
                                                 error!("Extracted file missing: {}", file_to_open.display());
@@ -1370,7 +1552,6 @@ impl ArchustApp {
                                             match open::that(&file_to_open) {
                                                 Ok(()) => {
                                                     let file_name = full_path.split('/').last().unwrap_or(&full_path);
-                                                    info!("Successfully opened {}", file_name);
                                                     self.status_info.message = format!("Opened {}", file_name);
                                                     std::mem::forget(opener);
                                                 }

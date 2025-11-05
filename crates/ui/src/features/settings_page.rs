@@ -14,9 +14,9 @@ pub fn render_settings_navigator(
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
         
         // Title
-        ui.add_space(8.0);
+        ui.add_space(12.0);
         ui.horizontal(|ui| {
-            ui.add_space(16.0);
+            ui.add_space(20.0);
             ui.label(
                 egui::RichText::new("SETTINGS")
                     .size(11.0)
@@ -24,7 +24,7 @@ pub fn render_settings_navigator(
                     .color(theme.colors.text_secondary)
             );
         });
-        ui.add_space(12.0);
+        ui.add_space(16.0);
 
         // Navigation items
         for page in SettingsPage::all_pages() {
@@ -32,7 +32,7 @@ pub fn render_settings_navigator(
             
             let item_response = ui.add(
                 egui::Button::new(
-                    egui::RichText::new(format!("{} {}", page.icon(), page.display_name()))
+                    egui::RichText::new(format!("{}  {}", page.icon(), page.display_name()))
                         .size(14.0)
                         .color(if is_selected {
                             theme.colors.accent
@@ -40,11 +40,7 @@ pub fn render_settings_navigator(
                             theme.colors.text_primary
                         })
                 )
-                .fill(if is_selected {
-                    theme.colors.bg_primary
-                } else {
-                    egui::Color32::TRANSPARENT
-                })
+                .fill(if is_selected { theme.colors.bg_primary } else { egui::Color32::TRANSPARENT })
                 .stroke(egui::Stroke::NONE)
                 .frame(false)
                 .min_size(egui::vec2(240.0, 36.0))
@@ -56,11 +52,10 @@ pub fn render_settings_navigator(
 
             // Hover effect
             if item_response.hovered() && !is_selected {
-                ui.painter().rect_filled(
-                    item_response.rect,
-                    0.0,
-                    theme.colors.bg_primary.linear_multiply(0.5),
-                );
+                let mut hover_rect = item_response.rect;
+                hover_rect.set_left(hover_rect.left() + 12.0);
+                hover_rect.set_right(hover_rect.right() - 8.0);
+                ui.painter().rect_filled(hover_rect, 6.0, theme.colors.bg_primary.linear_multiply(0.5));
             }
         }
     });
@@ -218,7 +213,23 @@ pub fn render_settings_overview(
     selected_page
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_settings_pages_present() {
+        let pages = SettingsPage::all_pages();
+        assert_eq!(pages.len(), 4);
+        assert!(pages.contains(&SettingsPage::General));
+        assert!(pages.contains(&SettingsPage::Archives));
+        assert!(pages.contains(&SettingsPage::PasswordRules));
+        assert!(pages.contains(&SettingsPage::Security));
+    }
+}
+
 /// Render breadcrumb navigation for settings
+#[allow(dead_code)]
 pub fn render_breadcrumb(
     ui: &mut egui::Ui,
     theme: &AppTheme,

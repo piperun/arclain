@@ -49,8 +49,9 @@ pub fn render_password_rules_dialog(
             ui.painter().rect_filled(rect, 8.0, theme.colors.bg_primary);
             ui.painter().rect_stroke(
                 rect,
-                8.0,
+                egui::CornerRadius::same(8),
                 egui::Stroke::new(1.0, theme.colors.border_color),
+                egui::StrokeKind::Outside,
             );
 
             // Clip all content to the modal rectangle so nothing spills out.
@@ -128,7 +129,7 @@ pub fn render_password_rules_dialog(
                             // Table header
                             egui::Frame::none()
                                 .fill(theme.colors.bg_tertiary)
-                                .inner_margin(egui::Margin::symmetric(8.0, 6.0))
+                                .inner_margin(egui::Margin::symmetric(8, 6))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.set_min_width(content.width() - 20.0);
@@ -204,7 +205,7 @@ pub fn render_password_rules_dialog(
                                 egui::Frame::none()
                                     .fill(bg_color)
                                     .inner_margin(egui::Margin::symmetric(
-                                        8.0, 6.0,
+                                        8, 6,
                                     ))
                                     .stroke(egui::Stroke::new(
                                         0.5,

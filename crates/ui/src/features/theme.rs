@@ -137,7 +137,7 @@ impl AppTheme {
         visuals.extreme_bg_color = self.colors.bg_secondary;
 
         visuals.window_stroke = egui::Stroke::new(1.0, self.colors.border_color);
-        visuals.window_rounding = egui::Rounding::same(8.0);
+        visuals.window_corner_radius = egui::CornerRadius::same(8);
 
         // Override text colors
         visuals.override_text_color = Some(self.colors.text_primary);
@@ -153,7 +153,7 @@ impl AppTheme {
             weak_bg_fill: self.colors.bg_secondary,
             bg_stroke: egui::Stroke::NONE,
             fg_stroke: egui::Stroke::new(1.0, self.colors.text_secondary),
-            rounding: egui::Rounding::same(4.0),
+            corner_radius: egui::CornerRadius::same(4),
             expansion: 0.0,
         }
     }
@@ -167,7 +167,7 @@ pub fn load_cjk_fonts(ctx: &egui::Context) {
         
         fonts.font_data.insert(
             "cjk_font".to_string(),
-            egui::FontData::from_owned(font_bytes),
+            std::sync::Arc::new(egui::FontData::from_owned(font_bytes)),
         );
 
         // Insert CJK font at the beginning of the proportional family

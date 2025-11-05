@@ -24,10 +24,10 @@ pub struct ToolbarActions {
     pub go_forward: bool,
     pub go_up: bool,
     pub extract: bool,
+    pub extract_all: bool,
     pub add: bool,
     pub open: bool,
     pub delete_selected: bool,
-    pub settings: bool,
 }
 
 impl Default for ToolbarActions {
@@ -37,10 +37,10 @@ impl Default for ToolbarActions {
             go_forward: false,
             go_up: false,
             extract: false,
+            extract_all: false,
             add: false,
             open: false,
             delete_selected: false,
-            settings: false,
         }
     }
 }
@@ -87,8 +87,11 @@ pub fn render(
                 if toolbar_button_with_text(ui, theme, "📂", "Open", true) {
                     actions.open = true;
                 }
-                if toolbar_button_with_text(ui, theme, "⛏", "Extract", archive_loaded) {
+                if toolbar_button_with_text(ui, theme, "⛏", "Extract", archive_loaded && has_selection) {
                     actions.extract = true;
+                }
+                if toolbar_button_with_text(ui, theme, "⛏", "Extract all", archive_loaded) {
+                    actions.extract_all = true;
                 }
                 if toolbar_button_with_text(ui, theme, "➕", "Add", archive_loaded) {
                     actions.add = true;
@@ -138,9 +141,6 @@ pub fn render(
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
                 ui.horizontal_centered(|ui| {
-                    if toolbar_button_with_text(ui, theme, "⚙", "Settings", true) {
-                        actions.settings = true;
-                    }
                     if toolbar_button_toggle(ui, theme, "ℹ", state.show_properties_panel) {
                         state.show_properties_panel = !state.show_properties_panel;
                     }

@@ -140,6 +140,7 @@ impl PageNavigator {
     }
 
     /// Get breadcrumb path for current page
+    #[allow(dead_code)]
     pub fn get_breadcrumb(&self) -> Vec<(&'static str, AppPage)> {
         match &self.current_page {
             AppPage::Main => vec![],
@@ -161,11 +162,13 @@ impl PageNavigator {
     }
 
     /// Check if currently on settings
+    #[allow(dead_code)]
     pub fn is_on_settings(&self) -> bool {
         matches!(self.current_page, AppPage::Settings(_))
     }
 
     /// Get current settings page if on settings
+    #[allow(dead_code)]
     pub fn current_settings_page(&self) -> Option<&SettingsPage> {
         match &self.current_page {
             AppPage::Settings(page) => Some(page),
@@ -216,5 +219,22 @@ mod tests {
         // Settings category
         nav.navigate_to(AppPage::Settings(SettingsPage::General));
         assert_eq!(nav.get_breadcrumb().len(), 2);
+    }
+
+    #[test]
+    fn settings_breadcrumb_has_overview_and_leaf() {
+        let mut nav = PageNavigator::new();
+        nav.navigate_to(AppPage::Settings(SettingsPage::Archives));
+        let bc = nav.get_breadcrumb();
+        assert_eq!(bc.len(), 2);
+        assert_eq!(bc[0].0, "Settings");
+        assert_eq!(bc[1].0, SettingsPage::Archives.display_name());
+    }
+
+    #[test]
+    fn settings_pages_list_has_all() {
+        let pages = SettingsPage::all_pages();
+        assert_eq!(pages.len(), 4);
+        assert!(pages.contains(&SettingsPage::Security));
     }
 }

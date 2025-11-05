@@ -85,7 +85,7 @@ pub fn render_password_rules_page(
                         // Table header
                         egui::Frame::none()
                             .fill(theme.colors.bg_tertiary)
-                            .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                            .inner_margin(egui::Margin::symmetric(12, 8))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.set_min_width(ui.available_width());
@@ -150,7 +150,7 @@ pub fn render_password_rules_page(
                             };
                             egui::Frame::none()
                                 .fill(bg_color)
-                                .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                                .inner_margin(egui::Margin::symmetric(12, 8))
                                 .stroke(egui::Stroke::new(0.5, theme.colors.border_color))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
