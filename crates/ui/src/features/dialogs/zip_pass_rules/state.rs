@@ -1,6 +1,6 @@
 // Dialog state for Password Rules
-use std::path::PathBuf;
 use super::types::{PasswordRule, RegexTestResult};
+use std::path::PathBuf;
 
 pub struct PasswordRulesDialog {
     pub show: bool,

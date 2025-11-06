@@ -95,11 +95,9 @@ pub fn render_password_rules_dialog(
                                     .color(theme.colors.text_primary),
                             );
                             ui.label(
-                                egui::RichText::new(
-                                    "— manage encrypted archive passwords",
-                                )
-                                .size(12.0)
-                                .color(theme.colors.text_secondary),
+                                egui::RichText::new("— manage encrypted archive passwords")
+                                    .size(12.0)
+                                    .color(theme.colors.text_secondary),
                             );
                         });
 
@@ -118,12 +116,10 @@ pub fn render_password_rules_dialog(
 
                         if dialog.rules.is_empty() {
                             ui.label(
-                                egui::RichText::new(
-                                    "No password rules configured yet",
-                                )
-                                .size(12.0)
-                                .color(theme.colors.text_secondary)
-                                .italics(),
+                                egui::RichText::new("No password rules configured yet")
+                                    .size(12.0)
+                                    .color(theme.colors.text_secondary)
+                                    .italics(),
                             );
                         } else {
                             // Table header
@@ -133,30 +129,20 @@ pub fn render_password_rules_dialog(
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
                                         ui.set_min_width(content.width() - 20.0);
-                                        ui.label(
-                                            egui::RichText::new("✓")
-                                                .size(12.0)
-                                                .strong(),
-                                        );
+                                        ui.label(egui::RichText::new("✓").size(12.0).strong());
                                         ui.add_space(12.0);
                                         ui.allocate_ui_with_layout(
                                             egui::vec2(200.0, 20.0),
-                                            egui::Layout::left_to_right(
-                                                egui::Align::Center,
-                                            ),
+                                            egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
                                                 ui.label(
-                                                    egui::RichText::new("Name")
-                                                        .size(12.0)
-                                                        .strong(),
+                                                    egui::RichText::new("Name").size(12.0).strong(),
                                                 );
                                             },
                                         );
                                         ui.allocate_ui_with_layout(
                                             egui::vec2(250.0, 20.0),
-                                            egui::Layout::left_to_right(
-                                                egui::Align::Center,
-                                            ),
+                                            egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
                                                 ui.label(
                                                     egui::RichText::new("Pattern")
@@ -167,9 +153,7 @@ pub fn render_password_rules_dialog(
                                         );
                                         ui.allocate_ui_with_layout(
                                             egui::vec2(80.0, 20.0),
-                                            egui::Layout::left_to_right(
-                                                egui::Align::Center,
-                                            ),
+                                            egui::Layout::left_to_right(egui::Align::Center),
                                             |ui| {
                                                 ui.label(
                                                     egui::RichText::new("Priority")
@@ -179,9 +163,7 @@ pub fn render_password_rules_dialog(
                                             },
                                         );
                                         ui.with_layout(
-                                            egui::Layout::right_to_left(
-                                                egui::Align::Center,
-                                            ),
+                                            egui::Layout::right_to_left(egui::Align::Center),
                                             |ui| {
                                                 ui.label(
                                                     egui::RichText::new("Actions")
@@ -204,18 +186,11 @@ pub fn render_password_rules_dialog(
                                 };
                                 egui::Frame::NONE
                                     .fill(bg_color)
-                                    .inner_margin(egui::Margin::symmetric(
-                                        8, 6,
-                                    ))
-                                    .stroke(egui::Stroke::new(
-                                        0.5,
-                                        theme.colors.border_color,
-                                    ))
+                                    .inner_margin(egui::Margin::symmetric(8, 6))
+                                    .stroke(egui::Stroke::new(0.5, theme.colors.border_color))
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
-                                            ui.set_min_width(
-                                                content.width() - 20.0,
-                                            );
+                                            ui.set_min_width(content.width() - 20.0);
                                             let mut enabled = rule.enabled;
                                             if ui.checkbox(&mut enabled, "").changed() {
                                                 enable_toggles.push((idx, enabled));
@@ -223,46 +198,34 @@ pub fn render_password_rules_dialog(
                                             ui.add_space(12.0);
                                             ui.allocate_ui_with_layout(
                                                 egui::vec2(200.0, 20.0),
-                                                egui::Layout::left_to_right(
-                                                    egui::Align::Center,
-                                                ),
+                                                egui::Layout::left_to_right(egui::Align::Center),
                                                 |ui| {
                                                     ui.label(
                                                         egui::RichText::new(&rule.name)
                                                             .size(12.0)
-                                                            .color(
-                                                                if rule.enabled {
-                                                                    theme.colors.text_primary
-                                                                } else {
-                                                                    theme.colors.text_secondary
-                                                                },
-                                                            ),
+                                                            .color(if rule.enabled {
+                                                                theme.colors.text_primary
+                                                            } else {
+                                                                theme.colors.text_secondary
+                                                            }),
                                                     );
                                                 },
                                             );
                                             ui.allocate_ui_with_layout(
                                                 egui::vec2(250.0, 20.0),
-                                                egui::Layout::left_to_right(
-                                                    egui::Align::Center,
-                                                ),
+                                                egui::Layout::left_to_right(egui::Align::Center),
                                                 |ui| {
                                                     ui.label(
-                                                        egui::RichText::new(
-                                                            &rule.pattern,
-                                                        )
-                                                        .size(11.0)
-                                                        .family(
-                                                            egui::FontFamily::Monospace,
-                                                        )
-                                                        .color(theme.colors.text_secondary),
+                                                        egui::RichText::new(&rule.pattern)
+                                                            .size(11.0)
+                                                            .family(egui::FontFamily::Monospace)
+                                                            .color(theme.colors.text_secondary),
                                                     );
                                                 },
                                             );
                                             ui.allocate_ui_with_layout(
                                                 egui::vec2(80.0, 20.0),
-                                                egui::Layout::left_to_right(
-                                                    egui::Align::Center,
-                                                ),
+                                                egui::Layout::left_to_right(egui::Align::Center),
                                                 |ui| {
                                                     ui.label(
                                                         egui::RichText::new(
@@ -274,15 +237,10 @@ pub fn render_password_rules_dialog(
                                                 },
                                             );
                                             ui.with_layout(
-                                                egui::Layout::right_to_left(
-                                                    egui::Align::Center,
-                                                ),
+                                                egui::Layout::right_to_left(egui::Align::Center),
                                                 |ui| {
                                                     if ui
-                                                        .button(
-                                                            egui::RichText::new("🗑")
-                                                                .size(14.0),
-                                                        )
+                                                        .button(egui::RichText::new("🗑").size(14.0))
                                                         .on_hover_text("Delete rule")
                                                         .clicked()
                                                     {
@@ -290,10 +248,7 @@ pub fn render_password_rules_dialog(
                                                     }
                                                     ui.add_space(4.0);
                                                     if ui
-                                                        .button(
-                                                            egui::RichText::new("✏")
-                                                                .size(14.0),
-                                                        )
+                                                        .button(egui::RichText::new("✏").size(14.0))
                                                         .on_hover_text("Edit rule")
                                                         .clicked()
                                                     {
@@ -356,10 +311,8 @@ pub fn render_password_rules_dialog(
                                 );
                                 ui.add_sized(
                                     [content.width() - 120.0, 28.0],
-                                    egui::TextEdit::singleline(
-                                        &mut dialog.edit_name,
-                                    )
-                                    .hint_text("e.g., Work archives"),
+                                    egui::TextEdit::singleline(&mut dialog.edit_name)
+                                        .hint_text("e.g., Work archives"),
                                 );
                                 ui.end_row();
 
@@ -371,16 +324,13 @@ pub fn render_password_rules_dialog(
                                 ui.horizontal(|ui| {
                                     ui.add_sized(
                                         [content.width() - 240.0, 28.0],
-                                        egui::TextEdit::singleline(
-                                            &mut dialog.edit_pattern,
-                                        )
-                                        .hint_text("e.g., work/*.7z")
-                                        .font(egui::TextStyle::Monospace),
+                                        egui::TextEdit::singleline(&mut dialog.edit_pattern)
+                                            .hint_text("e.g., work/*.7z")
+                                            .font(egui::TextStyle::Monospace),
                                     );
                                     if ui.button("🧪 Test Regex").clicked() {
                                         dialog.show_regex_tester = true;
-                                        dialog.regex_test_pattern =
-                                            dialog.edit_pattern.clone();
+                                        dialog.regex_test_pattern = dialog.edit_pattern.clone();
                                         dialog.regex_test_results.clear();
                                     }
                                 });
@@ -393,11 +343,9 @@ pub fn render_password_rules_dialog(
                                 );
                                 ui.add_sized(
                                     [content.width() - 120.0, 28.0],
-                                    egui::TextEdit::singleline(
-                                        &mut dialog.edit_password,
-                                    )
-                                    .password(true)
-                                    .hint_text("Archive password"),
+                                    egui::TextEdit::singleline(&mut dialog.edit_password)
+                                        .password(true)
+                                        .hint_text("Archive password"),
                                 );
                                 ui.end_row();
 
@@ -409,10 +357,8 @@ pub fn render_password_rules_dialog(
                                 ui.horizontal(|ui| {
                                     ui.add_sized(
                                         [80.0, 28.0],
-                                        egui::TextEdit::singleline(
-                                            &mut dialog.edit_priority,
-                                        )
-                                        .hint_text("10"),
+                                        egui::TextEdit::singleline(&mut dialog.edit_priority)
+                                            .hint_text("10"),
                                     );
                                     ui.add_space(20.0);
                                     ui.checkbox(&mut dialog.edit_enabled, "Enabled");
@@ -429,10 +375,7 @@ pub fn render_password_rules_dialog(
                                 .add_enabled(
                                     can_save,
                                     egui::Button::new(
-                                        egui::RichText::new(if dialog
-                                            .editing_index
-                                            .is_some()
-                                        {
+                                        egui::RichText::new(if dialog.editing_index.is_some() {
                                             "Update Rule"
                                         } else {
                                             "Add Rule"
@@ -443,8 +386,7 @@ pub fn render_password_rules_dialog(
                                 )
                                 .clicked()
                             {
-                                let priority =
-                                    dialog.edit_priority.parse::<u32>().unwrap_or(10);
+                                let priority = dialog.edit_priority.parse::<u32>().unwrap_or(10);
                                 let new_rule = PasswordRule {
                                     name: if dialog.edit_name.trim().is_empty() {
                                         dialog.edit_pattern.clone()
@@ -488,10 +430,7 @@ pub fn render_password_rules_dialog(
                         });
 
                         if !dialog.error.is_empty() {
-                            ui.colored_label(
-                                egui::Color32::from_rgb(220, 53, 69),
-                                &dialog.error,
-                            );
+                            ui.colored_label(egui::Color32::from_rgb(220, 53, 69), &dialog.error);
                         }
                     });
             });
@@ -512,26 +451,20 @@ pub fn render_password_rules_dialog(
                 ui.painter()
                     .rect_filled(sep_rect, 0.0, theme.colors.border_color);
 
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        let save_btn = egui::Button::new(
-                            egui::RichText::new("Save All").strong(),
-                        )
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let save_btn = egui::Button::new(egui::RichText::new("Save All").strong())
                         .min_size(egui::vec2(120.0, 36.0));
-                        let cancel_btn =
-                            egui::Button::new("Cancel").min_size(egui::vec2(120.0, 36.0));
+                    let cancel_btn = egui::Button::new("Cancel").min_size(egui::vec2(120.0, 36.0));
 
-                        if ui.add(cancel_btn).clicked() {
-                            result = Some(PasswordRulesResult::Cancel);
-                        }
-                        if ui.add(save_btn).clicked() {
-                            result = Some(PasswordRulesResult::Save {
-                                rules: dialog.rules.clone(),
-                            });
-                        }
-                    },
-                );
+                    if ui.add(cancel_btn).clicked() {
+                        result = Some(PasswordRulesResult::Cancel);
+                    }
+                    if ui.add(save_btn).clicked() {
+                        result = Some(PasswordRulesResult::Save {
+                            rules: dialog.rules.clone(),
+                        });
+                    }
+                });
             });
         });
 

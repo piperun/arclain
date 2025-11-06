@@ -58,18 +58,29 @@ pub fn show_dimmed_modal(
             let screen = ctx.viewport_rect();
             let width = (screen.width() * params.width_frac).clamp(params.min.x, params.max.x);
             let height = (screen.height() * params.height_frac).clamp(params.min.y, params.max.y);
-            let pos = egui::pos2((screen.width() - width) / 2.0, (screen.height() - height) / 2.0);
+            let pos = egui::pos2(
+                (screen.width() - width) / 2.0,
+                (screen.height() - height) / 2.0,
+            );
             let rect = egui::Rect::from_min_size(pos, egui::vec2(width, height));
 
             ui.painter().rect_filled(rect, 8.0, theme.colors.bg_primary);
-            ui.painter().rect_stroke(rect, egui::CornerRadius::same(8), egui::Stroke::new(1.0, theme.colors.border_color), egui::StrokeKind::Outside);
+            ui.painter().rect_stroke(
+                rect,
+                egui::CornerRadius::same(8),
+                egui::Stroke::new(1.0, theme.colors.border_color),
+                egui::StrokeKind::Outside,
+            );
             ui.set_clip_rect(rect);
 
             let content = rect.shrink2(params.padding);
 
             let scroll_rect = egui::Rect::from_min_max(
                 content.min,
-                egui::pos2(content.max.x, content.max.y - params.bottom_bar_height - 6.0),
+                egui::pos2(
+                    content.max.x,
+                    content.max.y - params.bottom_bar_height - 6.0,
+                ),
             );
             let bottom_rect = egui::Rect::from_min_max(
                 egui::pos2(content.min.x, content.max.y - params.bottom_bar_height),
@@ -103,7 +114,8 @@ pub fn show_dimmed_modal(
                     egui::pos2(bar_rect.min.x, bar_rect.min.y - 6.0),
                     egui::pos2(bar_rect.max.x, bar_rect.min.y - 5.0),
                 );
-                ui.painter().rect_filled(sep_rect, 0.0, theme.colors.border_color);
+                ui.painter()
+                    .rect_filled(sep_rect, 0.0, theme.colors.border_color);
 
                 bottom_bar_ui(ui);
             });

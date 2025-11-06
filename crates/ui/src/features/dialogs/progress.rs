@@ -1,5 +1,5 @@
-use crate::features::theme::AppTheme;
 use super::helpers::{show_dimmed_modal, ModalParams};
+use crate::features::theme::AppTheme;
 use eframe::egui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +49,6 @@ impl Default for ExtractionProgressDialog {
         }
     }
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtractionDialogResult {
@@ -141,8 +140,19 @@ pub fn render_extraction_progress_dialog(
             });
 
             ui.add_space(8.0);
-            let header = if dlg.show_log { "▼ Details" } else { "▶ Details" };
-            if ui.button(egui::RichText::new(header).strong().color(theme.colors.text_secondary)).clicked() {
+            let header = if dlg.show_log {
+                "▼ Details"
+            } else {
+                "▶ Details"
+            };
+            if ui
+                .button(
+                    egui::RichText::new(header)
+                        .strong()
+                        .color(theme.colors.text_secondary),
+                )
+                .clicked()
+            {
                 dlg.show_log = !dlg.show_log;
             }
             ui.add_space(4.0);
@@ -159,7 +169,9 @@ pub fn render_extraction_progress_dialog(
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
                             for line in &dlg.log_lines {
-                                ui.label(egui::RichText::new(line).color(theme.colors.text_secondary));
+                                ui.label(
+                                    egui::RichText::new(line).color(theme.colors.text_secondary),
+                                );
                             }
                         });
                 });
@@ -167,17 +179,19 @@ pub fn render_extraction_progress_dialog(
 
             if !dlg.error.is_empty() {
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(&dlg.error)
-                        .color(egui::Color32::RED),
-                );
+                ui.label(egui::RichText::new(&dlg.error).color(egui::Color32::RED));
             }
         },
         |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Cancel
-                let cancel_enabled = dlg.can_cancel && matches!(dlg.status, ExtractionStatus::Running | ExtractionStatus::Paused);
-                let cancel = egui::Button::new(egui::RichText::new("Cancel")).min_size(egui::vec2(100.0, 32.0));
+                let cancel_enabled = dlg.can_cancel
+                    && matches!(
+                        dlg.status,
+                        ExtractionStatus::Running | ExtractionStatus::Paused
+                    );
+                let cancel = egui::Button::new(egui::RichText::new("Cancel"))
+                    .min_size(egui::vec2(100.0, 32.0));
                 if ui.add_enabled(cancel_enabled, cancel).clicked() {
                     result = ExtractionDialogResult::Cancelled;
                 }
@@ -185,18 +199,36 @@ pub fn render_extraction_progress_dialog(
                 ui.add_space(8.0);
 
                 // Pause/Resume
-                let pause_enabled = dlg.can_pause && matches!(dlg.status, ExtractionStatus::Running | ExtractionStatus::Paused);
-                let label = if dlg.status == ExtractionStatus::Paused { "Resume" } else { "Pause" };
-                let pause_btn = egui::Button::new(egui::RichText::new(label)).min_size(egui::vec2(100.0, 32.0));
+                let pause_enabled = dlg.can_pause
+                    && matches!(
+                        dlg.status,
+                        ExtractionStatus::Running | ExtractionStatus::Paused
+                    );
+                let label = if dlg.status == ExtractionStatus::Paused {
+                    "Resume"
+                } else {
+                    "Pause"
+                };
+                let pause_btn =
+                    egui::Button::new(egui::RichText::new(label)).min_size(egui::vec2(100.0, 32.0));
                 if ui.add_enabled(pause_enabled, pause_btn).clicked() {
-                    result = if dlg.status == ExtractionStatus::Paused { ExtractionDialogResult::Resumed } else { ExtractionDialogResult::Paused };
+                    result = if dlg.status == ExtractionStatus::Paused {
+                        ExtractionDialogResult::Resumed
+                    } else {
+                        ExtractionDialogResult::Paused
+                    };
                 }
 
                 ui.add_space(8.0);
 
                 // Minimize (background)
-                let minimize_enabled = dlg.can_minimize && matches!(dlg.status, ExtractionStatus::Running | ExtractionStatus::Paused);
-                let minimize_btn = egui::Button::new(egui::RichText::new("Minimize")).min_size(egui::vec2(112.0, 32.0));
+                let minimize_enabled = dlg.can_minimize
+                    && matches!(
+                        dlg.status,
+                        ExtractionStatus::Running | ExtractionStatus::Paused
+                    );
+                let minimize_btn = egui::Button::new(egui::RichText::new("Minimize"))
+                    .min_size(egui::vec2(112.0, 32.0));
                 if ui.add_enabled(minimize_enabled, minimize_btn).clicked() {
                     result = ExtractionDialogResult::Minimized;
                 }
@@ -204,5 +236,9 @@ pub fn render_extraction_progress_dialog(
         },
     );
 
-    if result != ExtractionDialogResult::None { Some(result) } else { None }
+    if result != ExtractionDialogResult::None {
+        Some(result)
+    } else {
+        None
+    }
 }

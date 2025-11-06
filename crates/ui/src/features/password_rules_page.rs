@@ -1,6 +1,6 @@
 // Full-page view for password rules management (non-modal)
-use crate::features::theme::AppTheme;
 use crate::features::dialogs::zip_pass_rules::{PasswordRule, PasswordRulesDialog};
+use crate::features::theme::AppTheme;
 use eframe::egui;
 
 /// Result from rendering the password rules page

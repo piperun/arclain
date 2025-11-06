@@ -50,8 +50,8 @@ impl SecretsDb {
             .with_context(|| format!("opening redb at {}", path.display()))?;
 
         // Initialize cipher with the key
-        let cipher = Aes256Gcm::new_from_slice(key)
-            .map_err(|e| anyhow!("Invalid encryption key: {}", e))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(key).map_err(|e| anyhow!("Invalid encryption key: {}", e))?;
 
         // Initialize tables
         let write_txn = db.begin_write()?;
@@ -111,10 +111,10 @@ impl SecretsDb {
         for item in table.iter()? {
             let (_id, encrypted_data) = item?;
             let decrypted = self.decrypt(encrypted_data.value())?;
-            
+
             // Deserialize the encrypted payload
-            let payload: RulePayload = serde_json::from_slice(&decrypted)
-                .context("Failed to deserialize rule")?;
+            let payload: RulePayload =
+                serde_json::from_slice(&decrypted).context("Failed to deserialize rule")?;
 
             rules.push(PassRule {
                 name: payload.name,
@@ -140,7 +140,7 @@ impl SecretsDb {
         let write_txn = self.db.begin_write()?;
         {
             let mut table = write_txn.open_table(PASS_RULES_TABLE)?;
-            
+
             // Clear existing rules
             let keys: Vec<u32> = table.iter()?.map(|item| item.unwrap().0.value()).collect();
             for key in keys {
@@ -197,7 +197,7 @@ mod tests {
     fn test_secrets_db_create() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("secrets.redb");
-        
+
         let db = SecretsDb::open(&db_path, &test_key()).unwrap();
         assert!(db_path.exists());
     }
@@ -246,12 +246,12 @@ mod tests {
         // Read back
         let loaded = db.list_pass_rules().unwrap();
         assert_eq!(loaded.len(), 2);
-        
+
         // Should be sorted by priority (desc)
         assert_eq!(loaded[0].name, "Work");
         assert_eq!(loaded[0].priority, 10);
         assert_eq!(loaded[0].password, "work_pass_123");
-        
+
         assert_eq!(loaded[1].name, "Personal");
         assert_eq!(loaded[1].priority, 5);
         assert_eq!(loaded[1].password, "personal_pass_456");
@@ -261,7 +261,7 @@ mod tests {
     fn test_wrong_key_fails() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("secrets.redb");
-        
+
         // Create with one key
         {
             let db = SecretsDb::open(&db_path, &test_key()).unwrap();
@@ -278,7 +278,7 @@ mod tests {
         // Try to open with different key
         let wrong_key = [99u8; 32];
         let db = SecretsDb::open(&db_path, &wrong_key).unwrap();
-        
+
         // Reading should fail due to decryption error
         let result = db.list_pass_rules();
         assert!(result.is_err());

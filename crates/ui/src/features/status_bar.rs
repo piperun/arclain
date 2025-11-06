@@ -107,7 +107,13 @@ pub fn progress_chip(ui: &mut egui::Ui, theme: &AppTheme, label: &str) -> egui::
         .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
         .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(10, 4));
-    frame.show(ui, |ui| {
-        ui.label(egui::RichText::new(label).size(12.0).color(theme.colors.text_primary));
-    }).response
+    frame
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(label)
+                    .size(12.0)
+                    .color(theme.colors.text_primary),
+            );
+        })
+        .response
 }

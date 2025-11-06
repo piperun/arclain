@@ -1,6 +1,9 @@
-use super::theme::AppTheme;
-use super::dialogs::{EncryptedCrcPolicy, zip_pass_rules::{PasswordRule, PasswordRulesDialog}};
+use super::dialogs::{
+    zip_pass_rules::{PasswordRule, PasswordRulesDialog},
+    EncryptedCrcPolicy,
+};
 use super::password_rules_page;
+use super::theme::AppTheme;
 use crate::app::navigation::SettingsPage;
 use eframe::egui;
 
@@ -32,10 +35,7 @@ pub struct SecuritySettingsState {
 }
 
 /// Render the General settings page
-pub fn render_general_settings(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-) {
+pub fn render_general_settings(ui: &mut egui::Ui, theme: &AppTheme) {
     egui::ScrollArea::vertical()
         .id_salt("general_settings_scroll")
         .show(ui, |ui| {
@@ -46,10 +46,10 @@ pub fn render_general_settings(
                 ui.label(
                     egui::RichText::new("Theme settings and visual preferences")
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
                 ui.add_space(8.0);
-                
+
                 ui.label("Coming soon: Theme customization options");
             });
 
@@ -60,20 +60,17 @@ pub fn render_general_settings(
                 ui.label(
                     egui::RichText::new("Application behavior and default actions")
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
                 ui.add_space(8.0);
-                
+
                 ui.label("Coming soon: Default extraction location, file associations");
             });
         });
 }
 
 /// Render the Archives settings page
-pub fn render_archives_settings(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-) {
+pub fn render_archives_settings(ui: &mut egui::Ui, theme: &AppTheme) {
     egui::ScrollArea::vertical()
         .id_salt("archives_settings_scroll")
         .show(ui, |ui| {
@@ -84,10 +81,10 @@ pub fn render_archives_settings(
                 ui.label(
                     egui::RichText::new("Configure how files are extracted from archives")
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
                 ui.add_space(8.0);
-                
+
                 ui.label("Coming soon: Default extraction directory, overwrite policy");
             });
 
@@ -98,10 +95,10 @@ pub fn render_archives_settings(
                 ui.label(
                     egui::RichText::new("Settings for creating and modifying archives")
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
                 ui.add_space(8.0);
-                
+
                 ui.label("Coming soon: Compression level, format preferences");
             });
         });
@@ -125,7 +122,7 @@ pub fn render_security_settings(
                 ui.label(
                     egui::RichText::new("Master key and secrets database configuration")
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
                 ui.add_space(12.0);
 
@@ -134,14 +131,17 @@ pub fn render_security_settings(
                     egui::RichText::new("Master key file (32-byte raw / hex / base64)")
                         .size(12.0)
                         .strong()
-                        .color(theme.colors.text_primary)
+                        .color(theme.colors.text_primary),
                 );
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let te = egui::TextEdit::singleline(&mut state.key_file_path)
                         .hint_text("Select a key file...");
                     ui.add_sized([ui.available_width() - 110.0, 28.0], te);
-                    if ui.add(egui::Button::new("Browse…").min_size(egui::vec2(100.0, 28.0))).clicked() {
+                    if ui
+                        .add(egui::Button::new("Browse…").min_size(egui::vec2(100.0, 28.0)))
+                        .clicked()
+                    {
                         if let Some(file) = rfd::FileDialog::new().pick_file() {
                             state.key_file_path = file.to_string_lossy().to_string();
                         }
@@ -155,14 +155,17 @@ pub fn render_security_settings(
                     egui::RichText::new("Secrets database (redb with AES-256-GCM)")
                         .size(12.0)
                         .strong()
-                        .color(theme.colors.text_primary)
+                        .color(theme.colors.text_primary),
                 );
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     let te = egui::TextEdit::singleline(&mut state.secrets_db_path)
                         .hint_text("Path to pass.redb...");
                     ui.add_sized([ui.available_width() - 110.0, 28.0], te);
-                    if ui.add(egui::Button::new("Browse…").min_size(egui::vec2(100.0, 28.0))).clicked() {
+                    if ui
+                        .add(egui::Button::new("Browse…").min_size(egui::vec2(100.0, 28.0)))
+                        .clicked()
+                    {
                         if let Some(file) = rfd::FileDialog::new().pick_file() {
                             state.secrets_db_path = file.to_string_lossy().to_string();
                         }
@@ -177,7 +180,7 @@ pub fn render_security_settings(
                 ui.label(
                     egui::RichText::new("When to compute CRC checksums for encrypted files")
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
                 ui.add_space(8.0);
 
@@ -187,17 +190,17 @@ pub fn render_security_settings(
                         ui.selectable_value(
                             &mut state.encrypted_crc_policy,
                             EncryptedCrcPolicy::OnOpen,
-                            EncryptedCrcPolicy::OnOpen.display_name()
+                            EncryptedCrcPolicy::OnOpen.display_name(),
                         );
                         ui.selectable_value(
                             &mut state.encrypted_crc_policy,
                             EncryptedCrcPolicy::PromptOnOpen,
-                            EncryptedCrcPolicy::PromptOnOpen.display_name()
+                            EncryptedCrcPolicy::PromptOnOpen.display_name(),
                         );
                         ui.selectable_value(
                             &mut state.encrypted_crc_policy,
                             EncryptedCrcPolicy::OnAccess,
-                            EncryptedCrcPolicy::OnAccess.display_name()
+                            EncryptedCrcPolicy::OnAccess.display_name(),
                         );
                     });
             });
@@ -209,13 +212,13 @@ pub fn render_security_settings(
                 ui.label(
                     egui::RichText::new("Move or rekey your encrypted secrets vault")
                         .size(12.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.text_secondary),
                 );
                 ui.add_space(12.0);
 
                 ui.horizontal(|ui| {
-                    let move_btn = egui::Button::new("Move vault…")
-                        .min_size(egui::vec2(120.0, 32.0));
+                    let move_btn =
+                        egui::Button::new("Move vault…").min_size(egui::vec2(120.0, 32.0));
                     if ui.add(move_btn).clicked() {
                         if let Some(path) = rfd::FileDialog::new()
                             .set_file_name("pass.redb")
@@ -229,8 +232,8 @@ pub fn render_security_settings(
 
                     ui.add_space(8.0);
 
-                    let rekey_btn = egui::Button::new("Rekey vault…")
-                        .min_size(egui::vec2(120.0, 32.0));
+                    let rekey_btn =
+                        egui::Button::new("Rekey vault…").min_size(egui::vec2(120.0, 32.0));
                     if ui.add(rekey_btn).clicked() {
                         if let Some(file) = rfd::FileDialog::new().pick_file() {
                             action = Some(SettingsAction::RekeyVault {
@@ -255,11 +258,8 @@ pub fn render_security_settings(
 
             // Save button
             ui.horizontal(|ui| {
-                let save_btn = egui::Button::new(
-                    egui::RichText::new("💾 Save Changes")
-                        .strong()
-                )
-                .min_size(egui::vec2(140.0, 36.0));
+                let save_btn = egui::Button::new(egui::RichText::new("💾 Save Changes").strong())
+                    .min_size(egui::vec2(140.0, 36.0));
 
                 if ui.add(save_btn).clicked() {
                     let key_opt = if state.key_file_path.trim().is_empty() {
@@ -273,7 +273,7 @@ pub fn render_security_settings(
                         Some(state.secrets_db_path.trim().to_string())
                     };
                     let policy_opt = Some(state.encrypted_crc_policy.as_str().to_string());
-                    
+
                     action = Some(SettingsAction::SaveSecurity {
                         key_file_path: key_opt,
                         secrets_db_path: db_opt,
@@ -322,7 +322,7 @@ fn render_settings_section<R>(
                     egui::RichText::new(title)
                         .size(15.0)
                         .strong()
-                        .color(theme.colors.text_primary)
+                        .color(theme.colors.text_primary),
                 );
                 ui.add_space(8.0);
                 content(ui)
@@ -354,6 +354,8 @@ pub fn render_settings_content(
             None
         }
         SettingsPage::Security => render_security_settings(ui, theme, security_state),
-        SettingsPage::PasswordRules => render_password_rules_settings(ui, theme, password_rules_dialog),
+        SettingsPage::PasswordRules => {
+            render_password_rules_settings(ui, theme, password_rules_dialog)
+        }
     }
 }

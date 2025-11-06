@@ -33,13 +33,13 @@ impl DbPaths {
             .unwrap_or_else(|| PathBuf::from("."))
             .join(app_name);
         let secrets_dir = base.join("secrets");
-        
+
         // Create directories with secure permissions
         fs::create_dir_all(&base)
             .with_context(|| format!("creating config dir {}", base.display()))?;
         fs::create_dir_all(&secrets_dir)
             .with_context(|| format!("creating secrets dir {}", secrets_dir.display()))?;
-        
+
         // Set directory permissions to 700 (user-only) on Unix
         #[cfg(unix)]
         {
@@ -82,12 +82,12 @@ impl SecretsKey {
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
         // Validate path to prevent directory traversal
         validate_path(path)?;
-        
+
         // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating directory {}", parent.display()))?;
-            
+
             // Set directory permissions to 700 (user-only) on Unix
             #[cfg(unix)]
             {
@@ -96,12 +96,12 @@ impl SecretsKey {
                     .with_context(|| format!("setting permissions on {}", parent.display()))?;
             }
         }
-        
+
         // Encode key as base64 and write to file
         let encoded = B64.encode(&*self.0);
         fs::write(path, encoded.as_bytes())
             .with_context(|| format!("writing key file {}", path.display()))?;
-        
+
         // Set file permissions to 600 (user-only read/write) on Unix
         #[cfg(unix)]
         {
@@ -109,7 +109,7 @@ impl SecretsKey {
             fs::set_permissions(path, perms)
                 .with_context(|| format!("setting permissions on {}", path.display()))?;
         }
-        
+
         Ok(())
     }
 
@@ -117,9 +117,10 @@ impl SecretsKey {
     pub fn from_file(path: &Path) -> Result<Self> {
         // Validate path to prevent directory traversal
         validate_path(path)?;
-        
-        let data = fs::read(path).with_context(|| format!("reading key file {}", path.display()))?;
-        
+
+        let data =
+            fs::read(path).with_context(|| format!("reading key file {}", path.display()))?;
+
         // Set file permissions to 600 (user-only read/write) on Unix
         #[cfg(unix)]
         {
@@ -180,14 +181,17 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
 
     let sec = SecretsDb::open(&paths.secrets_db, &key.as_bytes())?;
 
-    Ok(ConfigDbs { config: cfg, secrets: sec })
+    Ok(ConfigDbs {
+        config: cfg,
+        secrets: sec,
+    })
 }
 
 /// Plain SQLite for config.sqlite
 pub fn open_config_db(path: &Path) -> Result<Connection> {
-    let conn = Connection::open(path)
-        .with_context(|| format!("opening config db {}", path.display()))?;
-    
+    let conn =
+        Connection::open(path).with_context(|| format!("opening config db {}", path.display()))?;
+
     // Set file permissions to 600 (user-only read/write) on Unix
     #[cfg(unix)]
     {
@@ -199,7 +203,7 @@ pub fn open_config_db(path: &Path) -> Result<Connection> {
             }
         }
     }
-    
+
     // Pragmas safe for plain sqlite
     conn.execute_batch(
         "\
@@ -236,7 +240,9 @@ fn init_config_schema(conn: &Connection) -> Result<()> {
 /// Simple K/V config helpers (stored in plain config.sqlite)
 pub fn get_config(conn: &Connection, key: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare("SELECT value FROM app_config WHERE key = ?1")?;
-    let val = stmt.query_row([key], |row| row.get::<_, String>(0)).optional()?;
+    let val = stmt
+        .query_row([key], |row| row.get::<_, String>(0))
+        .optional()?;
     Ok(val)
 }
 
@@ -295,28 +301,35 @@ fn validate_path(path: &Path) -> Result<()> {
     // Ensure path is valid UTF-8
     path.to_str()
         .ok_or_else(|| anyhow!("path contains invalid UTF-8: {}", path.display()))?;
-    
+
     // Check for directory traversal attempts
     let path_str = path.to_string_lossy();
     if path_str.contains("..") {
-        return Err(anyhow!("path contains directory traversal: {}", path.display()));
+        return Err(anyhow!(
+            "path contains directory traversal: {}",
+            path.display()
+        ));
     }
-    
+
     // Additional platform-specific checks
     #[cfg(windows)]
     {
         // Check for Windows reserved names
-        let forbidden = ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4",
-                        "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2",
-                        "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"];
+        let forbidden = [
+            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
+            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        ];
         if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
             let name_upper = file_name.to_uppercase();
             if forbidden.iter().any(|&f| name_upper.starts_with(f)) {
-                return Err(anyhow!("path uses Windows reserved name: {}", path.display()));
+                return Err(anyhow!(
+                    "path uses Windows reserved name: {}",
+                    path.display()
+                ));
             }
         }
     }
-    
+
     Ok(())
 }
 

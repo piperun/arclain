@@ -1,5 +1,7 @@
 use crate::{ArchiveBackend, ArchiveEntry, ArchiveInfo, ArchiveKind};
 use anyhow::{anyhow, Context, Result};
+use std::io::{BufRead, BufReader};
+use std::sync::mpsc;
 use std::{
     collections::{BTreeSet, HashMap},
     ffi::{OsStr, OsString},
@@ -8,8 +10,6 @@ use std::{
 };
 use tracing::{debug, error, info};
 use which::which;
-use std::io::{BufRead, BufReader};
-use std::sync::mpsc;
 
 #[derive(Clone)]
 pub struct SevenZipCli {
@@ -45,7 +45,10 @@ impl SevenZipCli {
         S: AsRef<OsStr>,
     {
         // Ensure we use progress to stderr to keep stdout available for logs
-        let mut argv: Vec<OsString> = args.into_iter().map(|s| s.as_ref().to_os_string()).collect();
+        let mut argv: Vec<OsString> = args
+            .into_iter()
+            .map(|s| s.as_ref().to_os_string())
+            .collect();
         // Add progress flags if not present already
         if !argv.iter().any(|a| a.to_string_lossy().starts_with("-bsp")) {
             argv.push(OsString::from("-bsp2")); // progress to stderr
@@ -73,10 +76,15 @@ impl SevenZipCli {
                 let mut reader = BufReader::new(out);
                 let mut line = String::new();
                 while let Ok(n) = reader.read_line(&mut line) {
-                    if n == 0 { break; }
+                    if n == 0 {
+                        break;
+                    }
                     let msg = line.trim_end_matches(['\r', '\n']).to_string();
                     if !msg.is_empty() {
-                        let _ = tx_logs.send(ProgressUpdate { percent: 0, message: Some(msg) });
+                        let _ = tx_logs.send(ProgressUpdate {
+                            percent: 0,
+                            message: Some(msg),
+                        });
                     }
                     line.clear();
                 }
@@ -105,9 +113,14 @@ impl SevenZipCli {
                                     digits.reverse();
                                     if let Ok(s) = std::str::from_utf8(&digits) {
                                         if let Ok(mut p) = s.parse::<u8>() {
-                                            if p > 100 { p = 100; }
+                                            if p > 100 {
+                                                p = 100;
+                                            }
                                             if last_sent != Some(p) {
-                                                let _ = tx.send(ProgressUpdate { percent: p, message: None });
+                                                let _ = tx.send(ProgressUpdate {
+                                                    percent: p,
+                                                    message: None,
+                                                });
                                                 last_sent = Some(p);
                                             }
                                         }
@@ -119,7 +132,10 @@ impl SevenZipCli {
                         Err(_) => break,
                     }
                 }
-                let _ = tx.send(ProgressUpdate { percent: 100, message: None });
+                let _ = tx.send(ProgressUpdate {
+                    percent: 100,
+                    message: None,
+                });
             });
         }
 
@@ -257,7 +273,7 @@ impl SevenZipCli {
 
             let has_path = map.contains_key("Path");
             let has_attributes = map.contains_key("Attributes") || map.contains_key("Folder");
-            
+
             if !has_path || !has_attributes {
                 return;
             }
@@ -343,7 +359,11 @@ impl SevenZipCli {
                 // Header-level keys that may appear after entries too
                 let is_header_key = matches!(
                     key,
-                    "Headers Encrypted" | "Encryption" | "Encrypted" | "Header Encryption" | "Characteristics"
+                    "Headers Encrypted"
+                        | "Encryption"
+                        | "Encrypted"
+                        | "Header Encryption"
+                        | "Characteristics"
                 );
 
                 if in_entries && !cur.is_empty() && !is_header_key {
@@ -365,7 +385,7 @@ impl SevenZipCli {
                 continue;
             }
         }
-        
+
         // Don't forget to flush the last entry
         flush(&cur, &mut entries, &mut encrypted_methods);
 
@@ -510,8 +530,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("l"),
             OsString::from("-ba"),
             OsString::from("-slt"),
-            OsString::from("-sccUTF-8"),  // Console charset for output
-            OsString::from("-scsUTF-8"),  // Charset for list files
+            OsString::from("-sccUTF-8"), // Console charset for output
+            OsString::from("-scsUTF-8"), // Charset for list files
             path.as_os_str().to_os_string(),
         ];
         let out = self.run(args)?;
@@ -530,8 +550,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("l"),
             OsString::from("-ba"),
             OsString::from("-slt"),
-            OsString::from("-sccUTF-8"),  // Console charset for output
-            OsString::from("-scsUTF-8"),  // Charset for list files
+            OsString::from("-sccUTF-8"), // Console charset for output
+            OsString::from("-scsUTF-8"), // Charset for list files
         ];
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
@@ -569,8 +589,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-y"),
             OsString::from("-mmt=on"),
             OsString::from("-bd"),
-            OsString::from("-sccUTF-8"),  // Console charset
-            OsString::from("-scsUTF-8"),  // Charset for list files
+            OsString::from("-sccUTF-8"), // Console charset
+            OsString::from("-scsUTF-8"), // Charset for list files
         ];
 
         // Provide password flag; use empty to avoid interactive prompt when unknown
@@ -596,7 +616,6 @@ impl ArchiveBackend for SevenZipCli {
         Ok(())
     }
 
-
     fn extract_all(&self, path: &Path, dest: &Path, password: Option<&str>) -> Result<()> {
         info!(
             "Extracting all files from {} to {}",
@@ -609,8 +628,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-y"),
             OsString::from("-mmt=on"),
             OsString::from("-bd"),
-            OsString::from("-sccUTF-8"),  // Console charset
-            OsString::from("-scsUTF-8"),  // Charset for list files
+            OsString::from("-sccUTF-8"), // Console charset
+            OsString::from("-scsUTF-8"), // Charset for list files
         ];
         // Provide password flag; use empty to avoid interactive prompt when unknown
         if let Some(p) = password {
@@ -629,7 +648,6 @@ impl ArchiveBackend for SevenZipCli {
         Ok(())
     }
 
-
     fn extract_directory(
         &self,
         path: &Path,
@@ -645,7 +663,7 @@ impl ArchiveBackend for SevenZipCli {
         );
 
         let mut args = vec![
-            OsString::from("x"),  // Use 'x' to preserve directory structure
+            OsString::from("x"), // Use 'x' to preserve directory structure
             OsString::from("-y"),
             OsString::from("-mmt=on"),
             OsString::from("-bd"),
@@ -682,7 +700,6 @@ impl ArchiveBackend for SevenZipCli {
         Ok(())
     }
 
-
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()> {
         info!(
             "Recompressing {} to 7z format: {}",
@@ -701,8 +718,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-ms=on"),
             OsString::from("-mmt=on"),
             OsString::from("-bd"),
-            OsString::from("-sccUTF-8"),  // Console charset
-            OsString::from("-scsUTF-8"),  // Charset for list files
+            OsString::from("-sccUTF-8"), // Console charset
+            OsString::from("-scsUTF-8"), // Charset for list files
             dest_7z.as_os_str().to_os_string(),
             source.as_os_str().to_os_string(),
         ];
@@ -723,8 +740,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-y"),
             OsString::from("-mmt=on"),
             OsString::from("-bd"),
-            OsString::from("-sccUTF-8"),  // Console charset
-            OsString::from("-scsUTF-8"),  // Charset for list files
+            OsString::from("-sccUTF-8"), // Console charset
+            OsString::from("-scsUTF-8"), // Charset for list files
             archive.as_os_str().to_os_string(),
         ];
 
@@ -752,8 +769,8 @@ impl ArchiveBackend for SevenZipCli {
             OsString::from("-y"),
             OsString::from("-mmt=on"),
             OsString::from("-bd"),
-            OsString::from("-sccUTF-8"),  // Console charset
-            OsString::from("-scsUTF-8"),  // Charset for list files
+            OsString::from("-sccUTF-8"), // Console charset
+            OsString::from("-scsUTF-8"), // Charset for list files
         ];
 
         // Add compression settings for 7z
@@ -803,7 +820,6 @@ impl ArchiveBackend for SevenZipCli {
         // Use run() which returns String with UTF-8 (lossy fallback)
         self.run(args)
     }
-
 
     fn delete_files(&self, archive: &Path, files: &[String]) -> Result<()> {
         info!("Deleting {} files from {}", files.len(), archive.display());
@@ -862,10 +878,18 @@ impl SevenZipCli {
             OsString::from("-sccUTF-8"),
             OsString::from("-scsUTF-8"),
         ];
-        if let Some(p) = password { args.push(OsString::from(format!("-p{}", p))); } else { args.push(OsString::from("-p")); }
-        let mut oarg = OsString::from("-o"); oarg.push(dest.as_os_str()); args.push(oarg);
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
+        }
+        let mut oarg = OsString::from("-o");
+        oarg.push(dest.as_os_str());
+        args.push(oarg);
         args.push(path.as_os_str().to_os_string());
-        for f in files { args.push(OsString::from(f)); }
+        for f in files {
+            args.push(OsString::from(f));
+        }
         self.spawn_with_progress(args)
     }
 
@@ -883,8 +907,14 @@ impl SevenZipCli {
             OsString::from("-sccUTF-8"),
             OsString::from("-scsUTF-8"),
         ];
-        if let Some(p) = password { args.push(OsString::from(format!("-p{}", p))); } else { args.push(OsString::from("-p")); }
-        let mut oarg = OsString::from("-o"); oarg.push(dest.as_os_str()); args.push(oarg);
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
+        }
+        let mut oarg = OsString::from("-o");
+        oarg.push(dest.as_os_str());
+        args.push(oarg);
         args.push(path.as_os_str().to_os_string());
         self.spawn_with_progress(args)
     }
@@ -904,8 +934,14 @@ impl SevenZipCli {
             OsString::from("-sccUTF-8"),
             OsString::from("-scsUTF-8"),
         ];
-        if let Some(p) = password { args.push(OsString::from(format!("-p{}", p))); } else { args.push(OsString::from("-p")); }
-        let mut oarg = OsString::from("-o"); oarg.push(dest.as_os_str()); args.push(oarg);
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
+        }
+        let mut oarg = OsString::from("-o");
+        oarg.push(dest.as_os_str());
+        args.push(oarg);
         args.push(path.as_os_str().to_os_string());
         if !dir_path.is_empty() {
             let pattern = format!("{}/*", dir_path.trim_end_matches('/'));
@@ -918,8 +954,8 @@ impl SevenZipCli {
 /// Progress event from 7-Zip streaming output.
 #[derive(Debug, Clone)]
 pub struct ProgressUpdate {
-    pub percent: u8,              // 0..=100
-    pub message: Option<String>,  // reserved for future use
+    pub percent: u8,             // 0..=100
+    pub message: Option<String>, // reserved for future use
 }
 
 /// Handle for a running 7-Zip process with progress updates.

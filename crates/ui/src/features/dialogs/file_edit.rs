@@ -1,5 +1,5 @@
-use crate::features::theme::AppTheme;
 use super::helpers::{show_dimmed_modal, ModalParams};
+use crate::features::theme::AppTheme;
 use eframe::egui;
 
 // ================= File Edit Dialog =================
@@ -13,20 +13,20 @@ pub struct FileEditDialog {
 }
 
 impl Default for FileEditDialog {
-    fn default() -> Self { 
-        Self { 
-            show: false, 
-            full_path_in_archive: String::new(), 
-            name_input: String::new(), 
-            content: String::new(), 
-            error: String::new() 
-        } 
+    fn default() -> Self {
+        Self {
+            show: false,
+            full_path_in_archive: String::new(),
+            name_input: String::new(),
+            content: String::new(),
+            error: String::new(),
+        }
     }
 }
 
-pub enum FileEditResult { 
-    Save { new_name: String, content: String }, 
-    Cancel 
+pub enum FileEditResult {
+    Save { new_name: String, content: String },
+    Cancel,
 }
 
 pub fn render_file_edit_dialog(
@@ -34,7 +34,9 @@ pub fn render_file_edit_dialog(
     theme: &AppTheme,
     dialog: &mut FileEditDialog,
 ) -> Option<FileEditResult> {
-    if !dialog.show { return None; }
+    if !dialog.show {
+        return None;
+    }
     let mut result = None;
 
     let params = ModalParams {
@@ -53,62 +55,75 @@ pub fn render_file_edit_dialog(
     let mut want_save = false;
     let mut want_cancel = false;
 
-    show_dimmed_modal(ctx, theme, "file_edit", &params, |ui, content_rect| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
+    show_dimmed_modal(
+        ctx,
+        theme,
+        "file_edit",
+        &params,
+        |ui, content_rect| {
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
 
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("✏ Edit File").size(18.0).strong());
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("✏ Edit File").size(18.0).strong());
+                ui.label(
+                    egui::RichText::new("— inline editor")
+                        .size(12.0)
+                        .color(theme.colors.text_secondary),
+                );
+            });
+
             ui.label(
-                egui::RichText::new("— inline editor")
+                egui::RichText::new("File name")
                     .size(12.0)
-                    .color(theme.colors.text_secondary)
+                    .color(theme.colors.text_secondary),
             );
-        });
-
-        ui.label(
-            egui::RichText::new("File name")
-                .size(12.0)
-                .color(theme.colors.text_secondary)
-        );
-        ui.add_sized(
-            [content_rect.width(), 32.0], 
-            egui::TextEdit::singleline(&mut dialog.name_input)
-        );
-
-        ui.label(
-            egui::RichText::new("Content")
-                .size(12.0)
-                .color(theme.colors.text_secondary)
-        );
-        ui.add_sized(
-            [content_rect.width(), content_rect.height() - 140.0], 
-            egui::TextEdit::multiline(&mut dialog.content)
-                .font(egui::TextStyle::Monospace)
-                .code_editor()
-        );
-
-        if !dialog.error.is_empty() { 
-            ui.colored_label(egui::Color32::from_rgb(220, 53, 69), &dialog.error); 
-        }
-    }, |ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let save = ui.add(
-                egui::Button::new(egui::RichText::new("Save").strong())
-                    .min_size(egui::vec2(100.0, 32.0))
+            ui.add_sized(
+                [content_rect.width(), 32.0],
+                egui::TextEdit::singleline(&mut dialog.name_input),
             );
-            let cancel = ui.add(
-                egui::Button::new("Cancel")
-                    .min_size(egui::vec2(100.0, 32.0))
+
+            ui.label(
+                egui::RichText::new("Content")
+                    .size(12.0)
+                    .color(theme.colors.text_secondary),
             );
-            if save.clicked() { want_save = true; }
-            if cancel.clicked() { want_cancel = true; }
-        });
-    });
+            ui.add_sized(
+                [content_rect.width(), content_rect.height() - 140.0],
+                egui::TextEdit::multiline(&mut dialog.content)
+                    .font(egui::TextStyle::Monospace)
+                    .code_editor(),
+            );
+
+            if !dialog.error.is_empty() {
+                ui.colored_label(egui::Color32::from_rgb(220, 53, 69), &dialog.error);
+            }
+        },
+        |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let save = ui.add(
+                    egui::Button::new(egui::RichText::new("Save").strong())
+                        .min_size(egui::vec2(100.0, 32.0)),
+                );
+                let cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(100.0, 32.0)));
+                if save.clicked() {
+                    want_save = true;
+                }
+                if cancel.clicked() {
+                    want_cancel = true;
+                }
+            });
+        },
+    );
 
     if want_save {
-        result = Some(FileEditResult::Save { new_name: dialog.name_input.clone(), content: dialog.content.clone() });
+        result = Some(FileEditResult::Save {
+            new_name: dialog.name_input.clone(),
+            content: dialog.content.clone(),
+        });
     }
-    if want_cancel { result = Some(FileEditResult::Cancel); }
+    if want_cancel {
+        result = Some(FileEditResult::Cancel);
+    }
 
     result
 }

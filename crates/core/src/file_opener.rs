@@ -25,7 +25,7 @@ impl FileOpener {
         let temp_dir = std::env::temp_dir().join(format!("arclain_{}", std::process::id()));
         std::fs::create_dir_all(&temp_dir).context("Failed to create temp directory")?;
         info!("Created temporary directory: {}", temp_dir.display());
-        
+
         Ok(Self { temp_dir })
     }
 
@@ -40,9 +40,7 @@ impl FileOpener {
             OpenStrategy::FileOnly => {
                 vec![target_file.to_string()]
             }
-            OpenStrategy::SameDirectory => {
-                self.get_same_directory_files(target_file, all_entries)
-            }
+            OpenStrategy::SameDirectory => self.get_same_directory_files(target_file, all_entries),
             OpenStrategy::WithDependencies => {
                 self.get_files_with_dependencies(target_file, all_entries)
             }
@@ -53,7 +51,7 @@ impl FileOpener {
     fn get_same_directory_files(&self, target_file: &str, all_entries: &[String]) -> Vec<String> {
         // Normalize path separators
         let target = target_file.replace('\\', "/");
-        
+
         // Get the directory of the target file
         let dir = if let Some(idx) = target.rfind('/') {
             &target[..idx]
@@ -61,14 +59,17 @@ impl FileOpener {
             "" // Root directory
         };
 
-        debug!("Extracting all files from directory: {}", if dir.is_empty() { "<root>" } else { dir });
+        debug!(
+            "Extracting all files from directory: {}",
+            if dir.is_empty() { "<root>" } else { dir }
+        );
 
         // Filter entries that are in the same directory
         all_entries
             .iter()
             .filter(|entry| {
                 let entry_normalized = entry.replace('\\', "/");
-                
+
                 // Get the directory of this entry
                 let entry_dir = if let Some(idx) = entry_normalized.rfind('/') {
                     &entry_normalized[..idx]
@@ -84,13 +85,17 @@ impl FileOpener {
     }
 
     /// Get files with dependencies (advanced strategy)
-    fn get_files_with_dependencies(&self, target_file: &str, all_entries: &[String]) -> Vec<String> {
+    fn get_files_with_dependencies(
+        &self,
+        target_file: &str,
+        all_entries: &[String],
+    ) -> Vec<String> {
         // Start with same directory files
         let mut files = self.get_same_directory_files(target_file, all_entries);
 
         // Determine file type and look for common dependencies
         let ext = target_file.rsplit('.').next().unwrap_or("").to_lowercase();
-        
+
         match ext.as_str() {
             "exe" | "dll" => {
                 // For Windows executables, include common DLL patterns
@@ -121,7 +126,7 @@ impl FileOpener {
     /// Open a file from the temporary directory
     pub fn open_extracted_file(&self, relative_path: &str) -> Result<()> {
         let file_path = self.temp_dir.join(relative_path);
-        
+
         if !file_path.exists() {
             anyhow::bail!("File not found in temp directory: {}", file_path.display());
         }
@@ -163,9 +168,11 @@ impl FileOpener {
     /// Clean up the temporary directory
     pub fn cleanup(&self) -> Result<()> {
         if self.temp_dir.exists() {
-            info!("Cleaning up temporary directory: {}", self.temp_dir.display());
-            std::fs::remove_dir_all(&self.temp_dir)
-                .context("Failed to remove temp directory")?;
+            info!(
+                "Cleaning up temporary directory: {}",
+                self.temp_dir.display()
+            );
+            std::fs::remove_dir_all(&self.temp_dir).context("Failed to remove temp directory")?;
         }
         Ok(())
     }
@@ -193,11 +200,8 @@ mod tests {
             "readme.txt".to_string(),
         ];
 
-        let files = opener.get_files_to_extract(
-            "game/game.exe",
-            &all_files,
-            OpenStrategy::SameDirectory,
-        );
+        let files =
+            opener.get_files_to_extract("game/game.exe", &all_files, OpenStrategy::SameDirectory);
 
         // Should include all files in game/ and its subdirectories
         assert!(files.contains(&"game/game.exe".to_string()));
@@ -217,11 +221,7 @@ mod tests {
             "folder/file.dat".to_string(),
         ];
 
-        let files = opener.get_files_to_extract(
-            "app.exe",
-            &all_files,
-            OpenStrategy::SameDirectory,
-        );
+        let files = opener.get_files_to_extract("app.exe", &all_files, OpenStrategy::SameDirectory);
 
         // Should include all files since target is in root
         assert_eq!(files.len(), 3);

@@ -110,8 +110,14 @@ pub fn create_archive_info_group(
 ) -> PropertyGroup {
     // Data vs header encryption clarity
     let (data_enc_label, method_line): (String, Option<String>) = if encrypted {
-        if let Some(method) = encryption_method { ("Yes".to_string(), Some(method.to_string())) } else { ("Yes".to_string(), None) }
-    } else { ("No".to_string(), None) };
+        if let Some(method) = encryption_method {
+            ("Yes".to_string(), Some(method.to_string()))
+        } else {
+            ("Yes".to_string(), None)
+        }
+    } else {
+        ("No".to_string(), None)
+    };
 
     let header_status = if headers_encrypted { "Yes" } else { "No" };
     let tcrc_display = total_crc32.unwrap_or("—");
@@ -124,8 +130,13 @@ pub fn create_archive_info_group(
         ("Format:".to_string(), format.to_string()),
         ("Data Encrypted:".to_string(), data_enc_label),
     ];
-    if let Some(detail) = method_line { props.push(("".to_string(), detail)); }
+    if let Some(detail) = method_line {
+        props.push(("".to_string(), detail));
+    }
     props.push(("Headers Encrypted:".to_string(), header_status.to_string()));
 
-    PropertyGroup { title: "ARCHIVE INFO".to_string(), properties: props }
+    PropertyGroup {
+        title: "ARCHIVE INFO".to_string(),
+        properties: props,
+    }
 }

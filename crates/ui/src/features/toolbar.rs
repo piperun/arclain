@@ -87,7 +87,13 @@ pub fn render(
                 if toolbar_button_with_text(ui, theme, "📂", "Open", true) {
                     actions.open = true;
                 }
-                if toolbar_button_with_text(ui, theme, "⛏", "Extract", archive_loaded && has_selection) {
+                if toolbar_button_with_text(
+                    ui,
+                    theme,
+                    "⛏",
+                    "Extract",
+                    archive_loaded && has_selection,
+                ) {
                     actions.extract = true;
                 }
                 if toolbar_button_with_text(ui, theme, "⛏", "Extract all", archive_loaded) {
@@ -96,7 +102,13 @@ pub fn render(
                 if toolbar_button_with_text(ui, theme, "➕", "Add", archive_loaded) {
                     actions.add = true;
                 }
-                if toolbar_button_with_text(ui, theme, "🗑", "Delete selected", archive_loaded && has_selection) {
+                if toolbar_button_with_text(
+                    ui,
+                    theme,
+                    "🗑",
+                    "Delete selected",
+                    archive_loaded && has_selection,
+                ) {
                     actions.delete_selected = true;
                 }
             });

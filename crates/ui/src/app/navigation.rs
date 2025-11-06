@@ -108,13 +108,13 @@ impl PageNavigator {
         if self.current_page != page {
             // Add current page to history
             self.history.push(self.current_page.clone());
-            
+
             // Limit history size
             if self.history.len() > self.max_history {
                 self.history.remove(0);
             }
         }
-        
+
         self.current_page = page;
     }
 
@@ -146,11 +146,11 @@ impl PageNavigator {
             AppPage::Main => vec![],
             AppPage::Settings(category) => {
                 let mut breadcrumb = vec![("Settings", AppPage::Settings(SettingsPage::Overview))];
-                
+
                 if *category != SettingsPage::Overview {
                     breadcrumb.push((category.display_name(), self.current_page.clone()));
                 }
-                
+
                 breadcrumb
             }
         }
@@ -185,11 +185,11 @@ mod tests {
     fn test_navigation_basic() {
         let mut nav = PageNavigator::new();
         assert!(nav.is_on_main());
-        
+
         nav.navigate_to(AppPage::Settings(SettingsPage::General));
         assert!(nav.is_on_settings());
         assert!(nav.can_go_back());
-        
+
         nav.navigate_back();
         assert!(nav.is_on_main());
     }
@@ -197,10 +197,10 @@ mod tests {
     #[test]
     fn test_navigation_history() {
         let mut nav = PageNavigator::new();
-        
+
         nav.navigate_to(AppPage::Settings(SettingsPage::General));
         nav.navigate_to(AppPage::Settings(SettingsPage::Security));
-        
+
         assert_eq!(nav.history.len(), 2);
         assert!(nav.can_go_back());
     }
@@ -208,14 +208,14 @@ mod tests {
     #[test]
     fn test_breadcrumb() {
         let mut nav = PageNavigator::new();
-        
+
         // Main page has no breadcrumb
         assert_eq!(nav.get_breadcrumb().len(), 0);
-        
+
         // Settings overview
         nav.navigate_to(AppPage::Settings(SettingsPage::Overview));
         assert_eq!(nav.get_breadcrumb().len(), 1);
-        
+
         // Settings category
         nav.navigate_to(AppPage::Settings(SettingsPage::General));
         assert_eq!(nav.get_breadcrumb().len(), 2);

@@ -41,7 +41,10 @@ pub struct SortState {
 }
 impl Default for SortState {
     fn default() -> Self {
-        Self { column: SortColumn::Name, ascending: true }
+        Self {
+            column: SortColumn::Name,
+            ascending: true,
+        }
     }
 }
 
@@ -137,11 +140,9 @@ pub fn render_breadcrumb(
                 };
 
                 let segment_response = ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(*segment).size(14.0).color(text_color),
-                    )
-                    .selectable(false)
-                    .sense(egui::Sense::click()),
+                    egui::Label::new(egui::RichText::new(*segment).size(14.0).color(text_color))
+                        .selectable(false)
+                        .sense(egui::Sense::click()),
                 );
 
                 if segment_response.hovered() {
@@ -241,8 +242,10 @@ fn render_grid_item(
 
         // Icon
         let icon_size = 32.0;
-        let icon_rect = egui::Rect::from_min_size(content_rect.min, egui::vec2(icon_size, icon_size));
-        ui.painter().rect_filled(icon_rect, 4.0, theme.colors.bg_tertiary);
+        let icon_rect =
+            egui::Rect::from_min_size(content_rect.min, egui::vec2(icon_size, icon_size));
+        ui.painter()
+            .rect_filled(icon_rect, 4.0, theme.colors.bg_tertiary);
 
         let ext = entry.name.split('.').last().unwrap_or("").to_uppercase();
         let ext_text: &str = if entry.is_folder { "📁" } else { &ext };
@@ -306,7 +309,11 @@ fn render_grid_item(
                         can_edit,
                         egui::Button::new("✏").min_size(egui::vec2(26.0, 22.0)),
                     )
-                    .on_hover_text(if can_edit { "Edit file" } else { "Cannot edit folders" })
+                    .on_hover_text(if can_edit {
+                        "Edit file"
+                    } else {
+                        "Cannot edit folders"
+                    })
                     .clicked();
                 if edit_clicked {
                     action = Some(FileListAction::Edit(entry.name.clone()));
@@ -386,7 +393,11 @@ fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
             }
             SortColumn::Encrypted => (a.encrypted as u8).cmp(&(b.encrypted as u8)),
         };
-        if sort.ascending { ord } else { ord.reverse() }
+        if sort.ascending {
+            ord
+        } else {
+            ord.reverse()
+        }
     };
     entries.sort_by(cmp);
 }
@@ -440,7 +451,8 @@ pub fn render_list_view(
                 .header(28.0, |mut header| {
                     // Select all checkbox
                     header.col(|ui| {
-                        let all_selected = !entries.is_empty() && entries.iter().all(|e| e.selected);
+                        let all_selected =
+                            !entries.is_empty() && entries.iter().all(|e| e.selected);
                         let some_selected = entries.iter().any(|e| e.selected);
                         let mut header_check = all_selected;
                         let resp = ui.checkbox(&mut header_check, "");
@@ -454,7 +466,14 @@ pub fn render_list_view(
                     });
 
                     header.col(|ui| {
-                        if header_sort_label(ui, theme, "Name", sort.column, SortColumn::Name, sort.ascending) {
+                        if header_sort_label(
+                            ui,
+                            theme,
+                            "Name",
+                            sort.column,
+                            SortColumn::Name,
+                            sort.ascending,
+                        ) {
                             if sort.column == SortColumn::Name {
                                 sort.ascending = !sort.ascending;
                             } else {
@@ -464,7 +483,14 @@ pub fn render_list_view(
                         }
                     });
                     header.col(|ui| {
-                        if header_sort_label(ui, theme, "Size", sort.column, SortColumn::Size, sort.ascending) {
+                        if header_sort_label(
+                            ui,
+                            theme,
+                            "Size",
+                            sort.column,
+                            SortColumn::Size,
+                            sort.ascending,
+                        ) {
                             if sort.column == SortColumn::Size {
                                 sort.ascending = !sort.ascending;
                             } else {
@@ -474,7 +500,14 @@ pub fn render_list_view(
                         }
                     });
                     header.col(|ui| {
-                        if header_sort_label(ui, theme, "Compressed", sort.column, SortColumn::Compressed, sort.ascending) {
+                        if header_sort_label(
+                            ui,
+                            theme,
+                            "Compressed",
+                            sort.column,
+                            SortColumn::Compressed,
+                            sort.ascending,
+                        ) {
                             if sort.column == SortColumn::Compressed {
                                 sort.ascending = !sort.ascending;
                             } else {
@@ -484,7 +517,14 @@ pub fn render_list_view(
                         }
                     });
                     header.col(|ui| {
-                        if header_sort_label(ui, theme, "Ratio", sort.column, SortColumn::Ratio, sort.ascending) {
+                        if header_sort_label(
+                            ui,
+                            theme,
+                            "Ratio",
+                            sort.column,
+                            SortColumn::Ratio,
+                            sort.ascending,
+                        ) {
                             if sort.column == SortColumn::Ratio {
                                 sort.ascending = !sort.ascending;
                             } else {
@@ -494,7 +534,14 @@ pub fn render_list_view(
                         }
                     });
                     header.col(|ui| {
-                        if header_sort_label(ui, theme, "Modified", sort.column, SortColumn::Modified, sort.ascending) {
+                        if header_sort_label(
+                            ui,
+                            theme,
+                            "Modified",
+                            sort.column,
+                            SortColumn::Modified,
+                            sort.ascending,
+                        ) {
                             if sort.column == SortColumn::Modified {
                                 sort.ascending = !sort.ascending;
                             } else {
@@ -504,7 +551,14 @@ pub fn render_list_view(
                         }
                     });
                     header.col(|ui| {
-                        if header_sort_label(ui, theme, "CRC-32", sort.column, SortColumn::Crc32, sort.ascending) {
+                        if header_sort_label(
+                            ui,
+                            theme,
+                            "CRC-32",
+                            sort.column,
+                            SortColumn::Crc32,
+                            sort.ascending,
+                        ) {
                             if sort.column == SortColumn::Crc32 {
                                 sort.ascending = !sort.ascending;
                             } else {
@@ -560,9 +614,7 @@ pub fn render_list_view(
                                 let label = format!("{icon} {entry_name}");
                                 ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(label)
-                                            .size(14.0)
-                                            .color(text_color),
+                                        egui::RichText::new(label).size(14.0).color(text_color),
                                     )
                                     .selectable(false),
                                 );
@@ -622,14 +674,12 @@ pub fn render_list_view(
                                     .selectable(false),
                                 );
                             });
-                            
+
                             row.col(|ui| {
                                 if entry.encrypted {
                                     ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new("🔒")
-                                                .size(14.0)
-                                                .color(text_color),
+                                            egui::RichText::new("🔒").size(14.0).color(text_color),
                                         )
                                         .selectable(false),
                                     );
@@ -659,19 +709,18 @@ pub fn render_list_view(
                                         .clicked();
                                     if edit_clicked {
                                         action_clicked = true;
-                                        pending_row_action = Some(FileListAction::Edit(entry_name.clone()));
+                                        pending_row_action =
+                                            Some(FileListAction::Edit(entry_name.clone()));
                                     }
 
                                     let del_clicked = ui
-                                        .add_sized(
-                                            egui::vec2(28.0, 22.0),
-                                            egui::Button::new("🗑"),
-                                        )
+                                        .add_sized(egui::vec2(28.0, 22.0), egui::Button::new("🗑"))
                                         .on_hover_text("Delete")
                                         .clicked();
                                     if del_clicked {
                                         action_clicked = true;
-                                        pending_row_action = Some(FileListAction::Delete(entry_name.clone()));
+                                        pending_row_action =
+                                            Some(FileListAction::Delete(entry_name.clone()));
                                     }
                                 });
                             });
@@ -700,23 +749,28 @@ pub fn render_list_view(
                                 // Merge borders when adjacent rows are also selected: draw only the outer
                                 // top/bottom separators where neighbours are NOT selected.
                                 let prev_selected = row_index > 0 && selection_flags[row_index - 1];
-                                let next_selected =
-                                    row_index + 1 < selection_flags.len()
-                                        && selection_flags[row_index + 1];
+                                let next_selected = row_index + 1 < selection_flags.len()
+                                    && selection_flags[row_index + 1];
                                 let stroke_color = theme.colors.selection.linear_multiply(0.35);
                                 let stroke = egui::Stroke::new(1.0, stroke_color);
 
                                 if !prev_selected {
                                     let y = fill_rect.min.y + 0.5;
                                     painter.line_segment(
-                                        [egui::pos2(fill_rect.min.x, y), egui::pos2(fill_rect.max.x, y)],
+                                        [
+                                            egui::pos2(fill_rect.min.x, y),
+                                            egui::pos2(fill_rect.max.x, y),
+                                        ],
                                         stroke,
                                     );
                                 }
                                 if !next_selected {
                                     let y = fill_rect.max.y - 0.5;
                                     painter.line_segment(
-                                        [egui::pos2(fill_rect.min.x, y), egui::pos2(fill_rect.max.x, y)],
+                                        [
+                                            egui::pos2(fill_rect.min.x, y),
+                                            egui::pos2(fill_rect.max.x, y),
+                                        ],
                                         stroke,
                                     );
                                 }
@@ -733,7 +787,8 @@ pub fn render_list_view(
                                 } else {
                                     action = Some(FileListAction::Open(entry_name.clone()));
                                 }
-                            } else if !checkbox_clicked && !action_clicked && row_response.clicked() {
+                            } else if !checkbox_clicked && !action_clicked && row_response.clicked()
+                            {
                                 entry.selected = !entry.selected;
                             }
 

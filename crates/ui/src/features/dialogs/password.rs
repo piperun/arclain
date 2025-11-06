@@ -10,18 +10,18 @@ pub struct PasswordDialog {
 }
 
 impl Default for PasswordDialog {
-    fn default() -> Self { 
-        Self { 
-            show: false, 
-            password: String::new(), 
-            error: String::new() 
-        } 
+    fn default() -> Self {
+        Self {
+            show: false,
+            password: String::new(),
+            error: String::new(),
+        }
     }
 }
 
-pub enum PasswordDialogResult { 
-    Unlock, 
-    Cancel 
+pub enum PasswordDialogResult {
+    Unlock,
+    Cancel,
 }
 
 pub fn render_password_dialog(
@@ -29,7 +29,9 @@ pub fn render_password_dialog(
     theme: &AppTheme,
     dialog: &mut PasswordDialog,
 ) -> Option<PasswordDialogResult> {
-    if !dialog.show { return None; }
+    if !dialog.show {
+        return None;
+    }
     let mut result = None;
 
     // Dim overlay on a lower layer so it never covers the dialog
@@ -37,7 +39,8 @@ pub fn render_password_dialog(
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
             let screen = ctx.viewport_rect();
-            ui.painter().rect_filled(screen, 0.0, egui::Color32::from_black_alpha(180));
+            ui.painter()
+                .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(180));
             // Visual-only overlay; don't capture input so the modal receives scroll.
         });
 
