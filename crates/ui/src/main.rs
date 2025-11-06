@@ -1,5 +1,5 @@
-mod features;
 mod app;
+mod features;
 mod platform;
 
 use anyhow::Result;
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     eframe::run_native(
         "Arclain",
         options,
-        Box::new(|cc| Ok(Box::new(app::ArchustApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(app::ArclainApp::new(cc)))),
     )
     .map_err(|e| anyhow::anyhow!("Failed to run app: {}", e))?;
 

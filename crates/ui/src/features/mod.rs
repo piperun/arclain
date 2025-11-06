@@ -12,4 +12,4 @@ pub mod toolbar;
 pub mod tree_panel;
 
 // Re-export commonly used types
-pub use theme::{AppTheme, ThemeColors, load_cjk_fonts};
+pub use theme::{load_cjk_fonts, AppTheme, ThemeColors};

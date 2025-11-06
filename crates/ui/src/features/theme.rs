@@ -164,7 +164,7 @@ impl AppTheme {
 pub fn load_cjk_fonts(ctx: &egui::Context) {
     if let Some((font_bytes, source)) = load_system_cjk_font() {
         let mut fonts = egui::FontDefinitions::default();
-        
+
         fonts.font_data.insert(
             "cjk_font".to_string(),
             std::sync::Arc::new(egui::FontData::from_owned(font_bytes)),
@@ -172,13 +172,15 @@ pub fn load_cjk_fonts(ctx: &egui::Context) {
 
         // Insert CJK font at the beginning of the proportional family
         // so it's used as a fallback for missing glyphs
-        fonts.families
+        fonts
+            .families
             .entry(egui::FontFamily::Proportional)
             .or_default()
             .insert(0, "cjk_font".to_string());
-        
+
         // Also add to monospace family
-        fonts.families
+        fonts
+            .families
             .entry(egui::FontFamily::Monospace)
             .or_default()
             .push("cjk_font".to_string());

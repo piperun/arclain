@@ -73,12 +73,12 @@ pub fn render_regex_tester_modal(
                     .max_rect(scroll_rect)
                     .layout(egui::Layout::top_down(egui::Align::LEFT)),
             );
- 
+
             // Clip content strictly to the scroll viewport so it cannot draw into the bottom bar
             child.set_clip_rect(scroll_rect);
             child.vertical(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
- 
+
                 // Title
                 ui.label(
                     egui::RichText::new("🧪 Regex Pattern Tester")
@@ -86,9 +86,9 @@ pub fn render_regex_tester_modal(
                         .strong()
                         .color(theme.colors.text_primary),
                 );
- 
+
                 ui.add_space(8.0);
- 
+
                 // Pattern display
                 ui.label(
                     egui::RichText::new("Testing pattern:")
@@ -102,9 +102,9 @@ pub fn render_regex_tester_modal(
                         .color(theme.colors.text_primary)
                         .background_color(theme.colors.bg_tertiary),
                 );
- 
+
                 ui.add_space(8.0);
- 
+
                 // Folder picker
                 ui.horizontal(|ui| {
                     ui.label(
@@ -127,23 +127,23 @@ pub fn render_regex_tester_modal(
                         );
                     }
                 });
- 
+
                 ui.horizontal(|ui| {
                     if ui.button("📁 Pick Folder").clicked() {
                         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                             dialog.regex_test_folder = Some(folder.clone());
- 
+
                             // Test the regex against all files in the folder
                             if let Ok(entries) = std::fs::read_dir(&folder) {
                                 dialog.regex_test_results.clear();
- 
+
                                 // Convert glob pattern to regex
                                 let pattern_str = dialog
                                     .regex_test_pattern
                                     .replace(".", "\\.")
                                     .replace("*", ".*")
                                     .replace("?", ".");
- 
+
                                 if let Ok(re) = regex::Regex::new(&pattern_str) {
                                     for entry in entries.flatten() {
                                         if let Ok(file_type) = entry.file_type() {
@@ -152,7 +152,7 @@ pub fn render_regex_tester_modal(
                                                 let file_name_str =
                                                     file_name.to_string_lossy().to_string();
                                                 let matched = re.is_match(&file_name_str);
- 
+
                                                 dialog.regex_test_results.push(
                                                     super::types::RegexTestResult {
                                                         file_path: file_name_str,
@@ -166,18 +166,18 @@ pub fn render_regex_tester_modal(
                             }
                         }
                     }
- 
+
                     if ui.button("🔄 Refresh").clicked() {
                         if let Some(folder) = &dialog.regex_test_folder {
                             if let Ok(entries) = std::fs::read_dir(folder) {
                                 dialog.regex_test_results.clear();
- 
+
                                 let pattern_str = dialog
                                     .regex_test_pattern
                                     .replace(".", "\\.")
                                     .replace("*", ".*")
                                     .replace("?", ".");
- 
+
                                 if let Ok(re) = regex::Regex::new(&pattern_str) {
                                     for entry in entries.flatten() {
                                         if let Ok(file_type) = entry.file_type() {
@@ -186,7 +186,7 @@ pub fn render_regex_tester_modal(
                                                 let file_name_str =
                                                     file_name.to_string_lossy().to_string();
                                                 let matched = re.is_match(&file_name_str);
- 
+
                                                 dialog.regex_test_results.push(
                                                     super::types::RegexTestResult {
                                                         file_path: file_name_str,
@@ -201,9 +201,9 @@ pub fn render_regex_tester_modal(
                         }
                     }
                 });
- 
+
                 ui.add_space(8.0);
- 
+
                 // Results
                 ui.label(
                     egui::RichText::new(format!(
@@ -213,62 +213,56 @@ pub fn render_regex_tester_modal(
                     .size(12.0)
                     .color(theme.colors.text_secondary),
                 );
- 
+
                 // Calculate available height for scroll area (remaining height in scroll_rect)
-                let available_height = scroll_rect.height() - ui.min_rect().height() + scroll_rect.min.y;
- 
+                let available_height =
+                    scroll_rect.height() - ui.min_rect().height() + scroll_rect.min.y;
+
                 egui::ScrollArea::vertical()
                     .max_height(available_height)
                     .auto_shrink([false, false])
                     .id_salt("regex_tester_results_scroll")
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible)
                     .show(ui, |ui| {
-                                // Disable text wrapping within this scroll area so long
-                                // lines produce horizontal scrolling instead of spilling
-                                // out or wrapping unexpectedly.
-                                ui.style_mut().wrap_mode =
-                                    Some(eframe::egui::TextWrapMode::Extend);
-                                if dialog.regex_test_results.is_empty() {
+                        // Disable text wrapping within this scroll area so long
+                        // lines produce horizontal scrolling instead of spilling
+                        // out or wrapping unexpectedly.
+                        ui.style_mut().wrap_mode = Some(eframe::egui::TextWrapMode::Extend);
+                        if dialog.regex_test_results.is_empty() {
+                            ui.label(
+                                egui::RichText::new("Pick a folder to test the pattern")
+                                    .size(12.0)
+                                    .italics()
+                                    .color(theme.colors.text_secondary),
+                            );
+                        } else {
+                            for result in &dialog.regex_test_results {
+                                ui.horizontal(|ui| {
+                                    let (icon, color) = if result.matched {
+                                        ("✓", egui::Color32::from_rgb(76, 175, 80))
+                                    } else {
+                                        ("✗", egui::Color32::from_rgb(244, 67, 54))
+                                    };
+
+                                    ui.label(egui::RichText::new(icon).size(12.0).color(color));
                                     ui.label(
-                                        egui::RichText::new(
-                                            "Pick a folder to test the pattern",
-                                        )
-                                        .size(12.0)
-                                        .italics()
-                                        .color(theme.colors.text_secondary),
-                                    );
-                                } else {
-                                    for result in &dialog.regex_test_results {
-                                        ui.horizontal(|ui| {
-                                            let (icon, color) = if result.matched {
-                                                ("✓", egui::Color32::from_rgb(76, 175, 80))
+                                        egui::RichText::new(&result.file_path)
+                                            .size(11.0)
+                                            .family(egui::FontFamily::Monospace)
+                                            .color(if result.matched {
+                                                theme.colors.text_primary
                                             } else {
-                                                ("✗", egui::Color32::from_rgb(244, 67, 54))
-                                            };
- 
-                                            ui.label(
-                                                egui::RichText::new(icon)
-                                                    .size(12.0)
-                                                    .color(color),
-                                            );
-                                            ui.label(
-                                                egui::RichText::new(&result.file_path)
-                                                    .size(11.0)
-                                                    .family(egui::FontFamily::Monospace)
-                                                    .color(if result.matched {
-                                                        theme.colors.text_primary
-                                                    } else {
-                                                        theme.colors.text_secondary
-                                                    }),
-                                            );
-                                        });
-                                    }
-                                }
-// small end padding to avoid tight edge at bottom of the viewport
-ui.add_space(4.0);
-                            });
+                                                theme.colors.text_secondary
+                                            }),
+                                    );
+                                });
+                            }
+                        }
+                        // small end padding to avoid tight edge at bottom of the viewport
+                        ui.add_space(4.0);
+                    });
             });
- 
+
             // Fixed bottom action bar
             let mut bar = ui.new_child(
                 egui::UiBuilder::new()
@@ -278,7 +272,8 @@ ui.add_space(4.0);
             bar.horizontal(|ui| {
                 let bar_rect = ui.max_rect();
                 // solid background for fixed bar
-                ui.painter().rect_filled(bar_rect, 0.0, theme.colors.bg_primary);
+                ui.painter()
+                    .rect_filled(bar_rect, 0.0, theme.colors.bg_primary);
                 // subtle top separator
                 let sep_rect = egui::Rect::from_min_max(
                     egui::pos2(bar_rect.min.x, bar_rect.min.y),
@@ -286,22 +281,19 @@ ui.add_space(4.0);
                 );
                 ui.painter()
                     .rect_filled(sep_rect, 0.0, theme.colors.border_color);
- 
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new("Close").strong())
-                                    .min_size(egui::vec2(100.0, 32.0)),
-                            )
-                            .clicked()
-                        {
-                            dialog.show_regex_tester = false;
-                            dialog.regex_test_results.clear();
-                        }
-                    },
-                );
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            egui::Button::new(egui::RichText::new("Close").strong())
+                                .min_size(egui::vec2(100.0, 32.0)),
+                        )
+                        .clicked()
+                    {
+                        dialog.show_regex_tester = false;
+                        dialog.regex_test_results.clear();
+                    }
+                });
             });
         });
 }

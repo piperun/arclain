@@ -45,30 +45,24 @@ pub fn render(
         // Navigation buttons (shown when not on main page)
         if show_nav_buttons {
             // Home button
-            let home_btn = egui::Button::new(
-                egui::RichText::new("🏠")
-                    .size(16.0)
-            )
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-            .min_size(egui::vec2(32.0, 32.0));
+            let home_btn = egui::Button::new(egui::RichText::new("🏠").size(16.0))
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                .min_size(egui::vec2(32.0, 32.0));
 
             if ui.add(home_btn).clicked() {
                 actions.navigate_home = true;
             }
 
             // Back button
-            let back_btn = egui::Button::new(
-                egui::RichText::new("←")
-                    .size(16.0)
-            )
-            .fill(if can_go_back {
-                egui::Color32::TRANSPARENT
-            } else {
-                theme.colors.bg_secondary
-            })
-            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-            .min_size(egui::vec2(32.0, 32.0));
+            let back_btn = egui::Button::new(egui::RichText::new("←").size(16.0))
+                .fill(if can_go_back {
+                    egui::Color32::TRANSPARENT
+                } else {
+                    theme.colors.bg_secondary
+                })
+                .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                .min_size(egui::vec2(32.0, 32.0));
 
             if ui.add_enabled(can_go_back, back_btn).clicked() {
                 actions.navigate_back = true;
@@ -78,13 +72,10 @@ pub fn render(
         }
 
         // Settings button (always at the top row, same style as nav)
-        let settings_btn = egui::Button::new(
-            egui::RichText::new("⚙")
-                .size(16.0)
-        )
-        .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-        .min_size(egui::vec2(32.0, 32.0));
+        let settings_btn = egui::Button::new(egui::RichText::new("⚙").size(16.0))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+            .min_size(egui::vec2(32.0, 32.0));
         if ui.add(settings_btn).clicked() {
             actions.navigate_settings = true;
         }

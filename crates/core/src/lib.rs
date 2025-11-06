@@ -369,7 +369,4 @@ pub trait ArchiveBackend: Send + Sync {
 }
 
 pub use config::{Config, ConfigStore, PassRule};
-pub use config_db::{
-    open_config_db, open_databases, ConfigDbs,
-    DbPaths, SecretsKey, SecretsDb,
-};
+pub use config_db::{open_config_db, open_databases, ConfigDbs, DbPaths, SecretsDb, SecretsKey};

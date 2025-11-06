@@ -1,8 +1,14 @@
 use anyhow::Result;
+use arclain_core::config_db::{
+    get_config, list_pass_rules, open_config_db, open_databases, replace_pass_rules, set_config,
+    ConfigDbs, DbPaths, SecretsDb, SecretsKey,
+};
 use arclain_core::sevenzip::SevenZipCli;
 use arclain_core::{ArchiveBackend, ConfigStore, NavigationState};
-use arclain_core::config_db::{DbPaths, SecretsKey, ConfigDbs, open_config_db, open_databases, get_config, set_config, list_pass_rules, replace_pass_rules, SecretsDb};
-use std::{env, path::{Path, PathBuf}};
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 use tracing::{debug, info, warn};
 
 pub struct AppState {
@@ -74,7 +80,10 @@ impl AppState {
             // Auto-generate key if it doesn't exist yet
             if let Some(ref key_path) = paths.key_file {
                 if !key_path.exists() {
-                    info!("Master key file not found, generating new key at: {}", key_path.display());
+                    info!(
+                        "Master key file not found, generating new key at: {}",
+                        key_path.display()
+                    );
                     let new_key = SecretsKey::generate();
                     if let Err(e) = new_key.save_to_file(key_path) {
                         warn!("Failed to save generated key file: {}", e);
@@ -89,51 +98,87 @@ impl AppState {
                 if let Ok(key) = SecretsKey::from_file(key_path) {
                     match open_databases(&paths, &key) {
                         Ok(mut dbs) => {
-                        // Persist current paths into config DB
-                        let _ = set_config(&dbs.config, "secrets_db_path", &paths.secrets_db.to_string_lossy());
-                        let _ = set_config(&dbs.config, "key_file_path", &key_path.to_string_lossy());
+                            // Persist current paths into config DB
+                            let _ = set_config(
+                                &dbs.config,
+                                "secrets_db_path",
+                                &paths.secrets_db.to_string_lossy(),
+                            );
+                            let _ = set_config(
+                                &dbs.config,
+                                "key_file_path",
+                                &key_path.to_string_lossy(),
+                            );
 
-                        // Migrate plain JSON settings -> config.sqlite if not present
-                        if get_config(&dbs.config, "sevenzip_path").unwrap_or(None).is_none() {
-                            if let Some(p) = me.cfg.cfg.sevenzip_path.clone() {
-                                let _ = set_config(&dbs.config, "sevenzip_path", &p.to_string_lossy());
-                            }
-                        }
-                        if get_config(&dbs.config, "transfer_dir").unwrap_or(None).is_none() {
-                            if let Some(p) = me.cfg.cfg.transfer_dir.clone() {
-                                let _ = set_config(&dbs.config, "transfer_dir", &p.to_string_lossy());
-                            }
-                        }
-
-                        // Migrate JSON pass_rules -> secrets DB (first run)
-                        let migrated = get_config(&dbs.config, "pass_rules_migrated").unwrap_or(None);
-                        if migrated.as_deref() != Some("1") {
-                            if let Ok(existing) = list_pass_rules(&dbs.secrets) {
-                                if existing.is_empty() && !me.cfg.cfg.pass_rules.is_empty() {
-                                    if let Err(e) = replace_pass_rules(&mut dbs.secrets, &me.cfg.cfg.pass_rules) {
-                                        info!("Pass rules migration failed: {}", e);
-                                    } else {
-                                        let _ = set_config(&dbs.config, "pass_rules_migrated", "1");
-                                        info!("Migrated {} pass rules into secrets DB", me.cfg.cfg.pass_rules.len());
-                                    }
-                                } else if !existing.is_empty() {
-                                    let _ = set_config(&dbs.config, "pass_rules_migrated", "1");
+                            // Migrate plain JSON settings -> config.sqlite if not present
+                            if get_config(&dbs.config, "sevenzip_path")
+                                .unwrap_or(None)
+                                .is_none()
+                            {
+                                if let Some(p) = me.cfg.cfg.sevenzip_path.clone() {
+                                    let _ = set_config(
+                                        &dbs.config,
+                                        "sevenzip_path",
+                                        &p.to_string_lossy(),
+                                    );
                                 }
                             }
-                        }
+                            if get_config(&dbs.config, "transfer_dir")
+                                .unwrap_or(None)
+                                .is_none()
+                            {
+                                if let Some(p) = me.cfg.cfg.transfer_dir.clone() {
+                                    let _ = set_config(
+                                        &dbs.config,
+                                        "transfer_dir",
+                                        &p.to_string_lossy(),
+                                    );
+                                }
+                            }
 
-                        // Load pass rules from secrets DB and replace in-memory rules
-                        if let Ok(rules) = list_pass_rules(&dbs.secrets) {
-                            me.cfg.cfg.pass_rules = rules;
-                            info!("Loaded {} pass rules from encrypted secrets DB", me.cfg.cfg.pass_rules.len());
-                        }
+                            // Migrate JSON pass_rules -> secrets DB (first run)
+                            let migrated =
+                                get_config(&dbs.config, "pass_rules_migrated").unwrap_or(None);
+                            if migrated.as_deref() != Some("1") {
+                                if let Ok(existing) = list_pass_rules(&dbs.secrets) {
+                                    if existing.is_empty() && !me.cfg.cfg.pass_rules.is_empty() {
+                                        if let Err(e) = replace_pass_rules(
+                                            &mut dbs.secrets,
+                                            &me.cfg.cfg.pass_rules,
+                                        ) {
+                                            info!("Pass rules migration failed: {}", e);
+                                        } else {
+                                            let _ =
+                                                set_config(&dbs.config, "pass_rules_migrated", "1");
+                                            info!(
+                                                "Migrated {} pass rules into secrets DB",
+                                                me.cfg.cfg.pass_rules.len()
+                                            );
+                                        }
+                                    } else if !existing.is_empty() {
+                                        let _ = set_config(&dbs.config, "pass_rules_migrated", "1");
+                                    }
+                                }
+                            }
+
+                            // Load pass rules from secrets DB and replace in-memory rules
+                            if let Ok(rules) = list_pass_rules(&dbs.secrets) {
+                                me.cfg.cfg.pass_rules = rules;
+                                info!(
+                                    "Loaded {} pass rules from encrypted secrets DB",
+                                    me.cfg.cfg.pass_rules.len()
+                                );
+                            }
 
                             // Store connections and paths
                             me.db_paths = Some(paths.clone());
                             me.dbs = Some(dbs);
                         }
                         Err(e) => {
-                            warn!("Failed to open secrets DB: {}; falling back to JSON config", e);
+                            warn!(
+                                "Failed to open secrets DB: {}; falling back to JSON config",
+                                e
+                            );
                             info!("Database path: {}", paths.secrets_db.display());
                             info!("Key file: {}", key_path.display());
                         }
@@ -258,7 +303,12 @@ impl AppState {
         self.backend.extract_files(archive, dest, &full_paths, pw)
     }
 
-    pub fn extract_specific(&self, archive: &Path, dest: &Path, full_paths: Vec<String>) -> Result<()> {
+    pub fn extract_specific(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        full_paths: Vec<String>,
+    ) -> Result<()> {
         info!("Extracting {} file(s) (exact paths)", full_paths.len());
         let auto_pw = self.cfg.auto_password_for(&self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
@@ -275,7 +325,11 @@ impl AppState {
             info!(
                 "Too many files ({}), extracting entire directory: {}",
                 full_paths.len(),
-                if dir_path.is_empty() { "<root>" } else { dir_path }
+                if dir_path.is_empty() {
+                    "<root>"
+                } else {
+                    dir_path
+                }
             );
             self.backend.extract_directory(archive, dest, dir_path, pw)
         } else {
@@ -304,7 +358,8 @@ impl AppState {
         path_in_archive: &str,
         content: &str,
     ) -> Result<()> {
-        self.backend.add_or_update_file_from_str(archive, path_in_archive, content)
+        self.backend
+            .add_or_update_file_from_str(archive, path_in_archive, content)
     }
 
     /// Apply Preferences changes: persist overrides and (re)open SQLCipher DBs.
@@ -367,9 +422,9 @@ impl AppState {
     }
 
     pub fn move_vault(&mut self, dest_path: &str) -> Result<()> {
-        use std::path::PathBuf;
         use std::fs;
-        
+        use std::path::PathBuf;
+
         // Establish paths
         let mut paths = if let Some(p) = self.db_paths.clone() {
             p
@@ -384,13 +439,13 @@ impl AppState {
 
         let src = paths.secrets_db.clone();
         let dst = PathBuf::from(dest_path);
-        
+
         // Simple file copy for redb
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::copy(&src, &dst)?;
-        
+
         // Set secure permissions on Unix
         #[cfg(unix)]
         {
@@ -424,7 +479,7 @@ impl AppState {
 
     pub fn rekey_vault(&mut self, new_key_file_path: &str) -> Result<()> {
         use std::path::PathBuf;
-        
+
         // Resolve paths
         let mut paths = if let Some(p) = self.db_paths.clone() {
             p
@@ -444,7 +499,7 @@ impl AppState {
         // 1. Read all data with old key
         // 2. Create new database with new key
         // 3. Write all data with new key
-        
+
         // Read all rules with old key
         let rules = if let Some(ref dbs) = self.dbs {
             list_pass_rules(&dbs.secrets)?
@@ -452,23 +507,23 @@ impl AppState {
             let old_db = SecretsDb::open(&paths.secrets_db, &old_key.as_bytes())?;
             list_pass_rules(&old_db)?
         };
-        
+
         // Close old database
         if let Some(_) = self.dbs.take() {
             // dropped
         }
-        
+
         // Create backup
         let backup_path = paths.secrets_db.with_extension("redb.backup");
         std::fs::copy(&paths.secrets_db, &backup_path)?;
-        
+
         // Remove old database and create new one with new key
         std::fs::remove_file(&paths.secrets_db)?;
         let new_dbs = open_databases(&paths, &new_key)?;
-        
+
         // Write rules to new database
         replace_pass_rules(&new_dbs.secrets, &rules)?;
-        
+
         // Persist new key file path
         let cfg_conn = open_config_db(&paths.config_db)?;
         let _ = set_config(&cfg_conn, "key_file_path", new_key_file_path);
@@ -492,17 +547,23 @@ impl AppState {
     pub fn save_password_rules(&mut self, rules: Vec<arclain_core::PassRule>) -> Result<()> {
         // Update in-memory cache
         self.cfg.cfg.pass_rules = rules.clone();
-        
+
         // Persist to secrets DB if available
         if let Some(ref dbs) = self.dbs {
             replace_pass_rules(&dbs.secrets, &rules)?;
-            info!("Saved {} password rules to encrypted secrets DB", rules.len());
+            info!(
+                "Saved {} password rules to encrypted secrets DB",
+                rules.len()
+            );
         } else {
             // Fall back to JSON if DB not available
             self.cfg.save()?;
-            warn!("Saved {} password rules to JSON config (DB not available)", rules.len());
+            warn!(
+                "Saved {} password rules to JSON config (DB not available)",
+                rules.len()
+            );
         }
-        
+
         Ok(())
     }
 }
