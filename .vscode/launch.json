@@ -5,38 +5,38 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug unit tests in library 'archust_core'",
+            "name": "Debug unit tests in library 'Arclain_core'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "test",
-                    "--package=archust_core"
+                    "--package=Arclain_core"
                 ]
             }
         },
         {
-            "name": "Debug executable 'archust_ui'",
+            "name": "Debug executable 'Arclain_ui'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "run",
-                    "--bin=archust_ui",
-                    "--package=archust_ui"
+                    "--bin=Arclain_ui",
+                    "--package=Arclain_ui"
                 ]
             },
             "args": []
         },
         {
-            "name": "Debug unit tests in executable 'archust_ui'",
+            "name": "Debug unit tests in executable 'Arclain_ui'",
             "type": "lldb",
             "request": "launch",
             "cargo": {
                 "args": [
                     "test",
-                    "--bin=archust_ui",
-                    "--package=archust_ui"
+                    "--bin=Arclain_ui",
+                    "--package=Arclain_ui"
                 ]
             }
         }
