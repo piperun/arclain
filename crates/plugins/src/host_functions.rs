@@ -139,6 +139,8 @@ pub struct HostFunctions {
     pub current_archive: Arc<Mutex<Option<String>>>,
     /// Current archive password (if any)
     pub current_password: Arc<Mutex<Option<String>>>,
+    /// Heap pointer for simple bump allocator
+    pub heap_ptr: Arc<Mutex<u32>>,
 }
 
 impl HostFunctions {
@@ -160,6 +162,7 @@ impl HostFunctions {
             archive_backend: None,
             current_archive: Arc::new(Mutex::new(None)),
             current_password: Arc::new(Mutex::new(None)),
+            heap_ptr: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -761,10 +764,98 @@ pub fn host_archive_metadata_set(
     // Note: Currently 7-Zip doesn't support arbitrary metadata modification
     // This would require extended attributes or custom comment fields
     // For now, we log the request and return success to not break plugin workflow
-    info!("[Plugin] Metadata modification logged (7-Zip has limited metadata support)");
     info!("[Plugin] To implement: use archive comments or extended attributes");
 
     0
+}
+
+/// Host function: Deallocate memory
+///
+/// Parameters:
+/// - ptr: pointer to memory
+/// - size: size of memory
+/// - align: alignment of memory
+pub fn host_dealloc(_caller: Caller<'_, HostFunctions>, ptr: u32, size: u32, align: u32) {
+    trace!(
+        "[Plugin] __rust_dealloc called: ptr={}, size={}, align={}",
+        ptr,
+        size,
+        align
+    );
+    // No-op: We use a simple bump allocator that does not support deallocation.
+    // Memory is reclaimed only when the plugin instance is dropped.
+}
+
+/// Host function: Allocate memory
+///
+/// Implements a simple bump allocator that grows the WASM memory as needed.
+///
+/// Parameters:
+/// - size: size of memory
+/// - align: alignment of memory
+///
+/// Returns:
+/// - Pointer to allocated memory (0 on failure)
+pub fn host_alloc(mut caller: Caller<'_, HostFunctions>, size: u32, align: u32) -> u32 {
+    debug!(
+        "[Plugin] __rust_alloc called: size={}, align={}",
+        size, align
+    );
+
+    // Get heap pointer state
+    let heap_ptr_lock = caller.data().heap_ptr.clone();
+    let mut heap_ptr = heap_ptr_lock.lock();
+
+    // Lazy initialization of heap pointer
+    if *heap_ptr == 0 {
+        // Try to find __heap_base export
+        let base = if let Some(export) = caller.get_export("__heap_base") {
+            if let Some(global) = export.into_global() {
+                global.get(&mut caller).i32().unwrap_or(1024 * 1024) as u32
+            } else {
+                1024 * 1024 // Default to 1MB
+            }
+        } else {
+            1024 * 1024 // Default to 1MB
+        };
+        *heap_ptr = base;
+        debug!("[Plugin] Initialized heap pointer to {}", base);
+    }
+
+    // Calculate new pointer with alignment
+    let current = *heap_ptr;
+    let padding = (align - (current % align)) % align;
+    let start = current + padding;
+    let end = start + size;
+
+    // Get memory export
+    let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
+        Some(m) => m,
+        None => {
+            error!("[Plugin] No memory export found");
+            return 0;
+        }
+    };
+
+    // Check if we need to grow memory
+    let current_pages = memory.size(&caller);
+    let current_bytes = current_pages * 65536;
+
+    if end as u64 > current_bytes {
+        let needed_bytes = (end as u64) - current_bytes;
+        let needed_pages = (needed_bytes + 65535) / 65536;
+        debug!("[Plugin] Growing memory by {} pages", needed_pages);
+
+        if memory.grow(&mut caller, needed_pages).is_err() {
+            error!("[Plugin] Failed to grow memory");
+            return 0;
+        }
+    }
+
+    // Update heap pointer
+    *heap_ptr = end;
+
+    start
 }
 
 #[cfg(test)]
