@@ -22,6 +22,8 @@ pub enum SettingsPage {
     PasswordRules,
     /// Security and encryption settings
     Security,
+    /// Plugin management
+    Plugins,
 }
 
 impl SettingsPage {
@@ -33,6 +35,7 @@ impl SettingsPage {
             SettingsPage::Archives => "Archives",
             SettingsPage::PasswordRules => "Password Rules",
             SettingsPage::Security => "Security",
+            SettingsPage::Plugins => "Plugins",
         }
     }
 
@@ -44,6 +47,7 @@ impl SettingsPage {
             SettingsPage::Archives => "📦",
             SettingsPage::PasswordRules => "🔐",
             SettingsPage::Security => "🛡",
+            SettingsPage::Plugins => "⬢",
         }
     }
 
@@ -55,6 +59,7 @@ impl SettingsPage {
             SettingsPage::Archives => "Archive handling and extraction options",
             SettingsPage::PasswordRules => "Manage password rules and patterns",
             SettingsPage::Security => "Encryption and security settings",
+            SettingsPage::Plugins => "Manage and configure plugins",
         }
     }
 
@@ -65,6 +70,7 @@ impl SettingsPage {
             SettingsPage::Archives,
             SettingsPage::PasswordRules,
             SettingsPage::Security,
+            SettingsPage::Plugins,
         ]
     }
 }

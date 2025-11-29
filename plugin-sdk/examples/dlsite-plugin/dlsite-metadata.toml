@@ -1,0 +1,17 @@
+[plugin]
+id = "dlsite-metadata"
+name = "DLSite Metadata Enricher"
+version = "1.0.0"
+author = "Archust Team"
+description = "Extracts DLSite product codes (RJ/VJ/BJ) from archive names and enriches them with metadata from DLSite API"
+
+[capabilities]
+network = true
+archive_metadata_read = true
+archive_metadata_write = true
+archive_modify = true
+file_read = false
+file_write = false
+
+[rate_limits]
+http_requests_per_minute = 10

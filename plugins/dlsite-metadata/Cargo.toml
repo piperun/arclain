@@ -1,0 +1,23 @@
+[package]
+name = "dlsite-metadata"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+archust-plugin-sdk = { path = "../../plugin-sdk" }
+serde = { version = "1", features = ["derive", "alloc"], default-features = false }
+serde_json = { version = "1", features = ["alloc"], default-features = false }
+
+# Exclude from workspace build (build manually with wasm target)
+[package.metadata.workspaces]
+independent = true
+
+[profile.release]
+opt-level = "z"         # Optimize for size
+lto = true              # Link-time optimization
+strip = true            # Strip debug symbols
+panic = "abort"         # Smaller panic handler
+codegen-units = 1       # Better optimization (slower compile, smaller binary)

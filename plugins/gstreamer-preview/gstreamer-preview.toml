@@ -1,0 +1,22 @@
+[plugin]
+id = "gstreamer-preview"
+name = "GStreamer Media Preview"
+version = "0.1.0"
+author = "Archust Team"
+description = "Provides media file previews and thumbnail generation using GStreamer (hybrid WASM/native approach)"
+
+[capabilities]
+file_read = true
+archive_metadata_read = true
+video_preview = true
+audio_preview = true
+
+[rate_limits]
+http_requests_per_minute = 0
+
+[config]
+# Native service communication
+native_service_enabled = true
+native_service_port = 9876
+thumbnail_size = 256
+cache_thumbnails = true

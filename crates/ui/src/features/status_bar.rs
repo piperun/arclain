@@ -10,6 +10,22 @@ pub struct StatusBarInfo {
     pub archive_format: String,
 }
 
+pub struct PluginStatusInfo {
+    pub total_plugins: usize,
+    pub enabled_plugins: usize,
+    pub has_metadata: bool,
+}
+
+impl Default for PluginStatusInfo {
+    fn default() -> Self {
+        Self {
+            total_plugins: 0,
+            enabled_plugins: 0,
+            has_metadata: false,
+        }
+    }
+}
+
 impl Default for StatusBarInfo {
     fn default() -> Self {
         Self {
@@ -23,7 +39,13 @@ impl Default for StatusBarInfo {
     }
 }
 
-pub fn render(ui: &mut egui::Ui, theme: &AppTheme, info: &StatusBarInfo, archive_loaded: bool) {
+pub fn render(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    info: &StatusBarInfo,
+    archive_loaded: bool,
+    plugin_info: Option<&PluginStatusInfo>,
+) {
     ui.horizontal(|ui| {
         ui.add_space(12.0);
 
@@ -33,6 +55,14 @@ pub fn render(ui: &mut egui::Ui, theme: &AppTheme, info: &StatusBarInfo, archive
                 .size(12.0)
                 .color(theme.colors.text_secondary),
         );
+
+        // Plugin status indicator (if plugins are loaded)
+        if let Some(pinfo) = plugin_info {
+            if pinfo.total_plugins > 0 {
+                ui.add_space(8.0);
+                render_plugin_indicator(ui, theme, pinfo);
+            }
+        }
 
         if archive_loaded {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -97,6 +127,48 @@ pub fn render(ui: &mut egui::Ui, theme: &AppTheme, info: &StatusBarInfo, archive
                 );
             });
         }
+    });
+}
+
+/// Render a small plugin status indicator
+fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginStatusInfo) {
+    let icon = if info.has_metadata { "🔌✓" } else { "🔌" };
+    let text = if info.enabled_plugins == info.total_plugins {
+        format!("{} {}/{}", icon, info.enabled_plugins, info.total_plugins)
+    } else {
+        format!("{} {}/{} active", icon, info.enabled_plugins, info.total_plugins)
+    };
+    
+    let color = if info.enabled_plugins > 0 {
+        egui::Color32::from_rgb(76, 175, 80) // Green when plugins are active
+    } else {
+        theme.colors.text_muted
+    };
+
+    let frame = egui::Frame::NONE
+        .fill(theme.colors.bg_tertiary)
+        .stroke(egui::Stroke::new(1.0, color))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(8, 2));
+    
+    let response = frame
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .size(11.0)
+                    .color(color),
+            );
+        })
+        .response;
+    
+    response.on_hover_ui(|ui| {
+        ui.label(egui::RichText::new("Plugin System").strong());
+        ui.label(format!("Total plugins: {}", info.total_plugins));
+        ui.label(format!("Enabled: {}", info.enabled_plugins));
+        if info.has_metadata {
+            ui.label(egui::RichText::new("✓ Metadata available").color(egui::Color32::from_rgb(76, 175, 80)));
+        }
+        ui.label(egui::RichText::new("Click Settings → Plugins to manage").size(10.0).italics());
     });
 }
 

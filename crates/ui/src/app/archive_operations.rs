@@ -121,7 +121,10 @@ pub fn load_archive_data(
         let st = state.lock();
         (
             st.encrypted_crc_policy.clone(),
-            st.current_password.is_some() || st.cfg.auto_password_for(&st.last_entries).is_some(),
+            {
+                let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
+                st.current_password.is_some() || st.cfg.auto_password_for(archive_name, &st.last_entries).is_some()
+            },
             st.current_archive.clone(),
         )
     };
@@ -132,7 +135,10 @@ pub fn load_archive_data(
             let pw_opt = st
                 .current_password
                 .clone()
-                .or_else(|| st.cfg.auto_password_for(&st.last_entries));
+                .or_else(|| {
+                    let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
+                    st.cfg.auto_password_for(archive_name, &st.last_entries)
+                });
             let arc = st.current_archive.clone();
             let paths: Vec<String> = st
                 .all_entries
@@ -234,12 +240,39 @@ pub fn load_archive_data(
         }
     }
 
+    // Dispatch event to plugins for metadata enrichment
+    if let Some(archive_path) = &current_archive {
+        let plugin_metadata = dispatch_metadata_event(state, archive_path);
+        archive_info.plugin_metadata = plugin_metadata;
+    }
+
     archive_info.archive_loaded = true;
     status_info.message = "Archive loaded successfully".to_string();
     status_info.file_count = archive_info.file_count;
     status_info.total_size = format_size(archive_info.total_size);
     status_info.compressed_size = format_size(archive_info.compressed_size);
     status_info.archive_format = archive_info.archive_format.clone();
+}
+
+/// Dispatch metadata display event to plugins
+fn dispatch_metadata_event(
+    state: &Arc<Mutex<AppState>>,
+    archive_path: &PathBuf,
+) -> Option<serde_json::Value> {
+    let st = state.lock();
+    let _plugin_manager = st.plugin_manager.as_ref()?;
+    drop(st);
+
+    let _event = arclain_plugins::PluginEvent::OnMetadataDisplay {
+        archive: archive_path.to_string_lossy().to_string(),
+    };
+
+    // Note: dispatch_event requires &mut self, but we have Arc<PluginManager>
+    // For now, we'll return None. This will be fixed when we add interior mutability to dispatch_event
+    // or restructure to allow mutable access
+    
+    tracing::debug!("Would dispatch metadata event for: {}", archive_path.display());
+    None
 }
 
 /// Archive information state
@@ -254,4 +287,5 @@ pub struct ArchiveInfo {
     pub encryption_method: Option<String>,
     pub total_crc32: Option<String>,
     pub archive_loaded: bool,
+    pub plugin_metadata: Option<serde_json::Value>,
 }

@@ -70,12 +70,12 @@ impl SecretsDb {
         let mut nonce_bytes = [0u8; 12];
         use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         // Encrypt
         let ciphertext = self
             .cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(&nonce, plaintext)
             .map_err(|e| anyhow!("Encryption failed: {}", e))?;
 
         // Prepend nonce to ciphertext (nonce is not secret)
@@ -90,13 +90,15 @@ impl SecretsDb {
             return Err(anyhow!("Invalid encrypted data: too short"));
         }
 
-        // Extract nonce (first 12 bytes)
-        let nonce = Nonce::from_slice(&data[..12]);
+        // Extract nonce (first 12 bytes) and convert to array
+        let mut nonce_bytes = [0u8; 12];
+        nonce_bytes.copy_from_slice(&data[..12]);
+        let nonce = Nonce::from(nonce_bytes);
 
         // Decrypt remaining data
         let plaintext = self
             .cipher
-            .decrypt(nonce, &data[12..])
+            .decrypt(&nonce, &data[12..])
             .map_err(|e| anyhow!("Decryption failed: {}", e))?;
 
         Ok(Zeroizing::new(plaintext))

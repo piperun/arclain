@@ -1,0 +1,201 @@
+//! Integration tests for the plugin system
+//! 
+//! These tests verify the end-to-end functionality of the plugin system.
+
+use arclain_plugins::{PluginManager, PluginEvent, PluginResponse};
+use std::fs;
+use std::path::PathBuf;
+use tempfile::TempDir;
+
+/// Helper to create a test plugins directory with a manifest
+fn create_test_plugin_dir() -> TempDir {
+    let temp_dir = TempDir::new().unwrap();
+    let plugin_dir = temp_dir.path().join("test-plugin");
+    fs::create_dir(&plugin_dir).unwrap();
+    
+    // Create a minimal plugin manifest
+    let manifest = r#"
+[plugin]
+id = "test-plugin"
+name = "Test Plugin"
+version = "1.0.0"
+author = "Test Author"
+description = "A test plugin"
+
+[capabilities]
+network = false
+file_read = false
+file_write = false
+archive_metadata_read = false
+archive_metadata_write = false
+archive_modify = false
+
+[rate_limits]
+http_requests_per_minute = 10
+"#;
+    
+    fs::write(plugin_dir.join("plugin.toml"), manifest).unwrap();
+    
+    // Note: We would also need to create a .wasm file for full integration testing
+    // For now, this tests the discovery and manifest loading
+    
+    temp_dir
+}
+
+#[test]
+fn test_plugin_manager_creation() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = PluginManager::new(temp_dir.path().to_path_buf());
+    
+    assert!(manager.is_ok(), "Failed to create plugin manager");
+}
+
+#[test]
+fn test_plugin_manager_init_empty_directory() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    
+    // Initialize with empty directory should succeed
+    let result = manager.init();
+    assert!(result.is_ok(), "Failed to initialize plugin manager: {:?}", result);
+    
+    // Should have no plugins
+    assert_eq!(manager.list_plugins().len(), 0);
+}
+
+#[test]
+fn test_plugin_discovery() {
+    let temp_dir = create_test_plugin_dir();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    
+    // Note: This will fail to load the plugin since there's no .wasm file,
+    // but it should discover the manifest
+    let _ = manager.init();
+    
+    // The plugin won't be loaded (no .wasm), but discovery should work
+    // In a full test, we'd create a valid .wasm file
+}
+
+#[test]
+fn test_plugin_enable_disable() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    manager.init().unwrap();
+    
+    // Try to enable non-existent plugin
+    let result = manager.enable_plugin("nonexistent");
+    assert!(result.is_err(), "Should fail to enable nonexistent plugin");
+    
+    // Try to disable non-existent plugin
+    let result = manager.disable_plugin("nonexistent");
+    assert!(result.is_err(), "Should fail to disable nonexistent plugin");
+}
+
+#[test]
+fn test_event_dispatch_empty() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    manager.init().unwrap();
+    
+    // Dispatch event to empty plugin set
+    let event = PluginEvent::OnArchiveOpen {
+        path: "test.zip".to_string(),
+        kind: arclain_core::ArchiveKind::Zip,
+    };
+    
+    let responses = manager.dispatch_event(&event);
+    assert_eq!(responses.len(), 0, "Should have no responses from empty plugin set");
+}
+
+#[test]
+fn test_get_plugin_metadata_nonexistent() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    
+    let metadata = manager.get_plugin_metadata("nonexistent");
+    assert!(metadata.is_none(), "Should return None for nonexistent plugin");
+}
+
+#[test]
+fn test_plugins_directory_path() {
+    let temp_dir = TempDir::new().unwrap();
+    let expected_path = temp_dir.path().to_path_buf();
+    let manager = PluginManager::new(expected_path.clone()).unwrap();
+    
+    assert_eq!(manager.plugins_dir(), expected_path.as_path());
+}
+
+#[test]
+fn test_unload_nonexistent_plugin() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    manager.init().unwrap();
+    
+    let result = manager.unload_plugin("nonexistent");
+    assert!(result.is_err(), "Should fail to unload nonexistent plugin");
+}
+
+#[test]
+fn test_reload_nonexistent_plugin() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    manager.init().unwrap();
+    
+    let result = manager.reload_plugin("nonexistent");
+    assert!(result.is_err(), "Should fail to reload nonexistent plugin");
+}
+
+#[test]
+fn test_dispatch_to_specific_plugin() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    manager.init().unwrap();
+    
+    let event = PluginEvent::OnArchiveOpen {
+        path: "test.zip".to_string(),
+        kind: arclain_core::ArchiveKind::Zip,
+    };
+    
+    // Should fail for nonexistent plugin
+    let result = manager.dispatch_event_to_plugin("nonexistent", &event);
+    assert!(result.is_err(), "Should fail for nonexistent plugin");
+}
+
+#[test]
+fn test_is_plugin_enabled_nonexistent() {
+    let temp_dir = TempDir::new().unwrap();
+    let manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    
+    // Nonexistent plugin should return false
+    assert!(!manager.is_plugin_enabled("nonexistent"));
+}
+
+#[test]
+fn test_multiple_event_types() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    manager.init().unwrap();
+    
+    // Test various event types
+    let events = vec![
+        PluginEvent::OnArchiveOpen {
+            path: "test.zip".to_string(),
+            kind: arclain_core::ArchiveKind::Zip,
+        },
+        PluginEvent::OnArchiveClose {
+            path: "test.zip".to_string(),
+        },
+        PluginEvent::OnFileExtract {
+            archive: "test.zip".to_string(),
+            file_path: "file.txt".to_string(),
+        },
+        PluginEvent::OnMetadataDisplay {
+            archive: "test.zip".to_string(),
+        },
+    ];
+    
+    for event in events {
+        let responses = manager.dispatch_event(&event);
+        assert_eq!(responses.len(), 0, "Should have no responses from empty plugin set");
+    }
+}

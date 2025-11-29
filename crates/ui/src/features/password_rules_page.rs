@@ -4,6 +4,7 @@ use crate::features::theme::AppTheme;
 use eframe::egui;
 
 /// Result from rendering the password rules page
+#[allow(dead_code)]
 pub enum PasswordRulesPageResult {
     /// User clicked save
     Save,
@@ -291,8 +292,10 @@ pub fn render_password_rules_page(
                                     .color(theme.colors.text_secondary),
                             );
                             ui.horizontal(|ui| {
+                                // Ensure minimum positive width for text edit
+                                let pattern_width = (ui.available_width() - 130.0).max(100.0);
                                 ui.add_sized(
-                                    [ui.available_width() - 120.0, 28.0],
+                                    [pattern_width, 28.0],
                                     egui::TextEdit::singleline(&mut dialog.edit_pattern)
                                         .hint_text("e.g., work/*.7z")
                                         .font(egui::TextStyle::Monospace),

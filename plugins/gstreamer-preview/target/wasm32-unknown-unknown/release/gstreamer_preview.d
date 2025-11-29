@@ -1,0 +1,1 @@
+D:\Programming\rust\archust\plugins\gstreamer-preview\target\wasm32-unknown-unknown\release\gstreamer_preview.wasm: D:\Programming\rust\archust\plugin-sdk\src\lib.rs D:\Programming\rust\archust\plugins\gstreamer-preview\src\lib.rs
