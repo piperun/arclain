@@ -27,7 +27,7 @@ pub fn render(
         .frame(egui::Frame::NONE.fill(theme.colors.bg_secondary))
         .show(ctx, |ui| {
             ui.add_space(8.0);
-            
+
             ui.heading("Installed Plugins");
             ui.add_space(12.0);
 
@@ -70,19 +70,30 @@ pub fn render(
                                             .color(theme.colors.text_primary),
                                     );
                                     ui.label(
-                                        egui::RichText::new(format!("v{}", plugin.manifest.plugin.version))
-                                            .size(11.0)
-                                            .color(theme.colors.text_secondary),
+                                        egui::RichText::new(format!(
+                                            "v{}",
+                                            plugin.manifest.plugin.version
+                                        ))
+                                        .size(11.0)
+                                        .color(theme.colors.text_secondary),
                                     );
-                                    
+
                                     // Status indicator
-                                    let status_text = if plugin.enabled { "✓ Enabled" } else { "○ Disabled" };
-                                    let status_color = if plugin.enabled { 
-                                        egui::Color32::from_rgb(34, 197, 94) 
-                                    } else { 
-                                        theme.colors.text_secondary 
+                                    let status_text = if plugin.enabled {
+                                        "✓ Enabled"
+                                    } else {
+                                        "○ Disabled"
                                     };
-                                    ui.label(egui::RichText::new(status_text).size(11.0).color(status_color));
+                                    let status_color = if plugin.enabled {
+                                        egui::Color32::from_rgb(34, 197, 94)
+                                    } else {
+                                        theme.colors.text_secondary
+                                    };
+                                    ui.label(
+                                        egui::RichText::new(status_text)
+                                            .size(11.0)
+                                            .color(status_color),
+                                    );
                                 });
                             });
 
@@ -105,12 +116,20 @@ pub fn render(
 
     // Central panel - Plugin details
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(theme.colors.bg_primary).inner_margin(16.0))
+        .frame(
+            egui::Frame::NONE
+                .fill(theme.colors.bg_primary)
+                .inner_margin(16.0),
+        )
         .show(ctx, |ui| {
             if let Some(selected_id) = &state.selected_plugin_id {
                 if let Some(manager_arc) = plugin_manager {
                     let manager = manager_arc.lock();
-                    if let Some(plugin) = manager.list_plugins().iter().find(|p| &p.manifest.plugin.id == selected_id) {
+                    if let Some(plugin) = manager
+                        .list_plugins()
+                        .iter()
+                        .find(|p| &p.manifest.plugin.id == selected_id)
+                    {
                         // Plugin header
                         ui.heading(&plugin.manifest.plugin.name);
                         ui.label(
@@ -125,27 +144,59 @@ pub fn render(
                         ui.add_space(16.0);
 
                         // Plugin UI (if provided)
-                        // For now, we'll just show a placeholder since we don't have plugin instances here
-                        ui.label(
-                            egui::RichText::new("Plugin UI")
-                                .size(16.0)
-                                .strong(),
-                        );
+                        ui.label(egui::RichText::new("Settings").size(16.0).strong());
                         ui.add_space(8.0);
-                        
-                        // Placeholder UI - in a real implementation, we'd call plugin_instance.get_ui_layout()
-                        ui.label(
-                            egui::RichText::new("Plugin UI will be rendered here when plugin instances are available.")
-                                .color(theme.colors.text_secondary),
-                        );
-                        
-                        // Example of how the UI renderer would be used:
-                        // let ui_elements = plugin_instance.get_ui_layout(PluginExtensionPoint::MainPage)?;
-                        // let mut event_callback = Box::new(|id: &str, value: Option<String>| {
-                        //     // Send event to plugin
-                        //     plugin_instance.send_ui_event(id, value);
-                        // });
-                        // plugin_ui::render_ui_elements(ui, &ui_elements, &mut event_callback);
+
+                        // Drop the manager lock before accessing plugin instance
+                        drop(manager);
+
+                        // Get plugin UI layout for MainPage
+                        let ui_result =
+                            manager_arc
+                                .lock()
+                                .with_plugin_instance(selected_id, |instance| {
+                                    instance.get_ui_layout(
+                                        arclain_plugins::types::PluginExtensionPoint::MainPage,
+                                    )
+                                });
+
+                        if let Some(Ok(ui_elements)) = ui_result {
+                            if ui_elements.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "This plugin does not provide a settings UI.",
+                                    )
+                                    .color(theme.colors.text_secondary),
+                                );
+                            } else {
+                                // Create event callback
+                                let plugin_id_clone = selected_id.clone();
+                                let manager_clone = manager_arc.clone();
+                                let mut event_callback =
+                                    Box::new(move |id: &str, value: Option<String>| {
+                                        manager_clone.lock().with_plugin_instance(
+                                            &plugin_id_clone,
+                                            |instance| {
+                                                let _ = instance.send_ui_event(id, value);
+                                            },
+                                        );
+                                    })
+                                        as crate::features::plugin_ui::UiEventCallback;
+
+                                // Render the UI elements
+                                crate::features::plugin_ui::render_ui_elements(
+                                    ui,
+                                    &ui_elements,
+                                    &mut event_callback,
+                                );
+                                needs_repaint = true;
+                            }
+                        } else {
+                            ui.label(
+                                egui::RichText::new("Failed to load plugin UI.")
+                                    .color(egui::Color32::from_rgb(239, 68, 68)),
+                            );
+                        }
                     }
                 }
             } else {

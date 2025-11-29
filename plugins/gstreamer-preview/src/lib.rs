@@ -29,6 +29,140 @@ plugin_metadata!(
 plugin_init!();
 plugin_cleanup!();
 
+// UI Layout for extension points
+plugin_ui_layout!(|extension_point| {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    match extension_point {
+        PluginExtensionPoint::MainPage => {
+            vec![
+                PluginUiElement::Label {
+                    text: "GStreamer Media Preview Settings".to_string(),
+                    bold: true,
+                    size: Some(18.0),
+                },
+                PluginUiElement::Space { size: 12.0 },
+                PluginUiElement::Separator,
+                PluginUiElement::Space { size: 12.0 },
+                PluginUiElement::Label {
+                    text: "Supported Formats".to_string(),
+                    bold: true,
+                    size: Some(14.0),
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Checkbox {
+                    id: "enable_video".to_string(),
+                    label: "Video files (MP4, MKV, AVI, etc.)".to_string(),
+                    checked: true,
+                },
+                PluginUiElement::Space { size: 4.0 },
+                PluginUiElement::Checkbox {
+                    id: "enable_audio".to_string(),
+                    label: "Audio files (MP3, FLAC, WAV, etc.)".to_string(),
+                    checked: true,
+                },
+                PluginUiElement::Space { size: 16.0 },
+                PluginUiElement::Label {
+                    text: "Thumbnail Generation".to_string(),
+                    bold: true,
+                    size: Some(14.0),
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Checkbox {
+                    id: "auto_generate".to_string(),
+                    label: "Automatically generate thumbnails on archive open".to_string(),
+                    checked: false,
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Label {
+                    text: "Note: Automatic generation may slow down archive opening.".to_string(),
+                    bold: false,
+                    size: Some(12.0),
+                },
+            ]
+        }
+        PluginExtensionPoint::Sidebar => {
+            vec![
+                PluginUiElement::Label {
+                    text: "Media Preview".to_string(),
+                    bold: true,
+                    size: Some(14.0),
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Separator,
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Row {
+                    children: vec![
+                        PluginUiElement::Label {
+                            text: "Media files:".to_string(),
+                            bold: true,
+                            size: None,
+                        },
+                        PluginUiElement::Space { size: 4.0 },
+                        PluginUiElement::Label {
+                            text: "0 found".to_string(),
+                            bold: false,
+                            size: None,
+                        },
+                    ],
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Button {
+                    id: "generate_thumbnails".to_string(),
+                    label: "Generate Thumbnails".to_string(),
+                },
+            ]
+        }
+        _ => Vec::new(),
+    }
+});
+
+// UI Event handler
+plugin_ui_event!(|id, value| {
+    log(
+        LogLevel::Info,
+        &format!("GStreamer UI event: {} = {:?}", id, value),
+    );
+
+    match id {
+        "generate_thumbnails" => {
+            log(LogLevel::Info, "Generating thumbnails...");
+            // TODO: Implement thumbnail generation
+        }
+        "enable_video" => {
+            if let Some(val) = value {
+                log(
+                    LogLevel::Info,
+                    &format!("Video support changed to: {}", val),
+                );
+                // TODO: Update video support setting
+            }
+        }
+        "enable_audio" => {
+            if let Some(val) = value {
+                log(
+                    LogLevel::Info,
+                    &format!("Audio support changed to: {}", val),
+                );
+                // TODO: Update audio support setting
+            }
+        }
+        "auto_generate" => {
+            if let Some(val) = value {
+                log(
+                    LogLevel::Info,
+                    &format!("Auto-generate thumbnails changed to: {}", val),
+                );
+                // TODO: Update auto-generate setting
+            }
+        }
+        _ => {
+            log(LogLevel::Debug, &format!("Unknown UI event: {}", id));
+        }
+    }
+});
+
 /// Supported media file extensions
 const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg",
