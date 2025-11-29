@@ -35,43 +35,24 @@ pub enum PluginCapability {
 #[serde(tag = "type")]
 pub enum PluginEvent {
     /// Archive was opened
-    OnArchiveOpen {
-        path: String,
-        kind: ArchiveKind,
-    },
+    OnArchiveOpen { path: String, kind: ArchiveKind },
     /// Archive was closed
-    OnArchiveClose {
-        path: String,
-    },
+    OnArchiveClose { path: String },
     /// Archive contents were listed
     OnArchiveList {
         path: String,
         entries: Vec<ArchiveEntry>,
     },
     /// File was extracted from archive
-    OnFileExtract {
-        archive: String,
-        file_path: String,
-    },
+    OnFileExtract { archive: String, file_path: String },
     /// File was opened from archive
-    OnFileOpen {
-        archive: String,
-        file_path: String,
-    },
+    OnFileOpen { archive: String, file_path: String },
     /// File was added to archive
-    OnFileAdd {
-        archive: String,
-        file_path: String,
-    },
+    OnFileAdd { archive: String, file_path: String },
     /// File was deleted from archive
-    OnFileDelete {
-        archive: String,
-        file_path: String,
-    },
+    OnFileDelete { archive: String, file_path: String },
     /// Metadata display requested
-    OnMetadataDisplay {
-        archive: String,
-    },
+    OnMetadataDisplay { archive: String },
 }
 
 /// Response from a plugin after handling an event
@@ -81,13 +62,9 @@ pub enum PluginResponse {
     /// No response needed
     None,
     /// Plugin provided metadata
-    Metadata {
-        data: serde_json::Value,
-    },
+    Metadata { data: serde_json::Value },
     /// Plugin encountered an error
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 /// Plugin manifest loaded from plugin.toml
@@ -176,36 +153,96 @@ pub struct PluginInfo {
     pub wasm_path: std::path::PathBuf,
 }
 
+/// Extension point where a plugin provides UI
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PluginExtensionPoint {
+    /// Main page when plugin is selected in Plugins page
+    MainPage,
+    /// Widget to inject into archive properties sidebar
+    Sidebar,
+    /// Future: context menu items
+    ContextMenu,
+}
+
+/// UI element that a plugin can define
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PluginUiElement {
+    /// Vertical layout container
+    Column {
+        #[serde(default)]
+        children: Vec<PluginUiElement>,
+    },
+    /// Horizontal layout container
+    Row {
+        #[serde(default)]
+        children: Vec<PluginUiElement>,
+    },
+    /// Text label
+    Label {
+        text: String,
+        #[serde(default)]
+        bold: bool,
+        #[serde(default)]
+        size: Option<f32>,
+    },
+    /// Button
+    Button { id: String, label: String },
+    /// Text input
+    TextInput {
+        id: String,
+        label: String,
+        value: String,
+    },
+    /// Checkbox
+    Checkbox {
+        id: String,
+        label: String,
+        checked: bool,
+    },
+    /// Separator line
+    Separator,
+    /// Spacing
+    Space {
+        #[serde(default = "default_space_size")]
+        size: f32,
+    },
+}
+
+fn default_space_size() -> f32 {
+    8.0
+}
+
 /// Error types for plugin system
 #[derive(Debug, thiserror::Error)]
 pub enum PluginError {
     #[error("Failed to load plugin: {0}")]
     LoadError(String),
-    
+
     #[error("Failed to initialize plugin: {0}")]
     InitError(String),
-    
+
     #[error("Plugin execution failed: {0}")]
     ExecutionError(String),
-    
+
     #[error("Capability denied: {0:?}")]
     CapabilityDenied(PluginCapability),
-    
+
     #[error("Invalid manifest: {0}")]
     InvalidManifest(String),
-    
+
     #[error("Plugin not found: {0}")]
     NotFound(String),
-    
+
     #[error("WASM error: {0}")]
     WasmError(String),
-    
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
-    
+
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    
+
     #[error("TOML parse error: {0}")]
     TomlError(#[from] toml::de::Error),
 }

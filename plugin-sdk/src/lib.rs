@@ -1,5 +1,5 @@
 //! Archust Plugin SDK
-//! 
+//!
 //! This SDK provides types and host function wrappers for building Archust plugins.
 
 #![no_std]
@@ -12,6 +12,14 @@ use serde::{Deserialize, Serialize};
 
 // Re-export commonly used types
 pub use serde_json;
+
+/// Prelude module for easy import
+pub mod prelude {
+    pub use super::{
+        http_get, http_post_json, log, LogLevel, PluginEvent, PluginExtensionPoint, PluginResponse,
+        PluginUiElement,
+    };
+}
 
 // Global allocator for WASM
 use core::alloc::{GlobalAlloc, Layout};
@@ -81,8 +89,20 @@ pub enum PluginResponse {
 // External host functions
 extern "C" {
     fn host_log(level: u32, ptr: *const u8, len: usize) -> i32;
-    fn host_http_get(url_ptr: *const u8, url_len: usize, out_ptr: *mut u8, out_max_len: usize) -> i32;
-    fn host_http_post_json(url_ptr: *const u8, url_len: usize, body_ptr: *const u8, body_len: usize, out_ptr: *mut u8, out_max_len: usize) -> i32;
+    fn host_http_get(
+        url_ptr: *const u8,
+        url_len: usize,
+        out_ptr: *mut u8,
+        out_max_len: usize,
+    ) -> i32;
+    fn host_http_post_json(
+        url_ptr: *const u8,
+        url_len: usize,
+        body_ptr: *const u8,
+        body_len: usize,
+        out_ptr: *mut u8,
+        out_max_len: usize,
+    ) -> i32;
 }
 
 /// Log a message to the host
@@ -97,16 +117,10 @@ pub fn http_get(url: &str) -> Result<String, i32> {
     const BUFFER_SIZE: usize = 65536; // 64KB buffer
     let mut buffer = Vec::with_capacity(BUFFER_SIZE);
     buffer.resize(BUFFER_SIZE, 0u8);
-    
-    let result = unsafe {
-        host_http_get(
-            url.as_ptr(),
-            url.len(),
-            buffer.as_mut_ptr(),
-            BUFFER_SIZE,
-        )
-    };
-    
+
+    let result =
+        unsafe { host_http_get(url.as_ptr(), url.len(), buffer.as_mut_ptr(), BUFFER_SIZE) };
+
     if result < 0 {
         Err(result)
     } else {
@@ -121,7 +135,7 @@ pub fn http_post_json(url: &str, body: &str) -> Result<String, i32> {
     const BUFFER_SIZE: usize = 65536; // 64KB buffer
     let mut buffer = Vec::with_capacity(BUFFER_SIZE);
     buffer.resize(BUFFER_SIZE, 0u8);
-    
+
     let result = unsafe {
         host_http_post_json(
             url.as_ptr(),
@@ -132,7 +146,7 @@ pub fn http_post_json(url: &str, body: &str) -> Result<String, i32> {
             BUFFER_SIZE,
         )
     };
-    
+
     if result < 0 {
         Err(result)
     } else {
@@ -149,25 +163,21 @@ macro_rules! plugin_metadata {
         #[no_mangle]
         pub extern "C" fn plugin_metadata(out_ptr: *mut u8, out_max_len: u32) -> i32 {
             use alloc::format;
-            
+
             let metadata = format!(
                 r#"{{"id":"{}","name":"{}","version":"{}","author":"{}","description":"{}"}}"#,
                 $id, $name, $version, $author, $description
             );
-            
+
             let bytes = metadata.as_bytes();
             if bytes.len() > out_max_len as usize {
                 return -1;
             }
-            
+
             unsafe {
-                core::ptr::copy_nonoverlapping(
-                    bytes.as_ptr(),
-                    out_ptr,
-                    bytes.len(),
-                );
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr, bytes.len());
             }
-            
+
             bytes.len() as i32
         }
     };
@@ -176,6 +186,15 @@ macro_rules! plugin_metadata {
 /// Macro to define plugin initialization
 #[macro_export]
 macro_rules! plugin_init {
+    ($handler:expr) => {
+        #[no_mangle]
+        pub extern "C" fn plugin_init() -> i32 {
+            match $handler() {
+                Ok(()) => 0,
+                Err(_) => -1,
+            }
+        }
+    };
     () => {
         #[no_mangle]
         pub extern "C" fn plugin_init() -> i32 {
@@ -191,6 +210,144 @@ macro_rules! plugin_cleanup {
         #[no_mangle]
         pub extern "C" fn plugin_cleanup() {
             // Cleanup code here
+        }
+    };
+}
+
+/// Extension point where a plugin provides UI
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PluginExtensionPoint {
+    /// Main page when plugin is selected in Plugins page
+    MainPage,
+    /// Widget to inject into archive properties sidebar
+    Sidebar,
+    /// Future: context menu items
+    ContextMenu,
+}
+
+/// UI element that a plugin can define
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PluginUiElement {
+    /// Vertical layout container
+    Column {
+        #[serde(default)]
+        children: Vec<PluginUiElement>,
+    },
+    /// Horizontal layout container
+    Row {
+        #[serde(default)]
+        children: Vec<PluginUiElement>,
+    },
+    /// Text label
+    Label {
+        text: String,
+        #[serde(default)]
+        bold: bool,
+        #[serde(default)]
+        size: Option<f32>,
+    },
+    /// Button
+    Button { id: String, label: String },
+    /// Text input
+    TextInput {
+        id: String,
+        label: String,
+        value: String,
+    },
+    /// Checkbox
+    Checkbox {
+        id: String,
+        label: String,
+        checked: bool,
+    },
+    /// Separator line
+    Separator,
+    /// Spacing
+    Space {
+        #[serde(default = "default_space_size")]
+        size: f32,
+    },
+}
+
+fn default_space_size() -> f32 {
+    8.0
+}
+
+/// Macro to define plugin UI layout
+#[macro_export]
+macro_rules! plugin_ui_layout {
+    ($handler:expr) => {
+        #[no_mangle]
+        pub extern "C" fn plugin_ui_layout(
+            extension_point_id: u32,
+            out_ptr: *mut u8,
+            out_max_len: u32,
+        ) -> i32 {
+            use alloc::vec::Vec;
+            use $crate::{PluginExtensionPoint, PluginUiElement};
+
+            let extension_point = match extension_point_id {
+                0 => PluginExtensionPoint::MainPage,
+                1 => PluginExtensionPoint::Sidebar,
+                2 => PluginExtensionPoint::ContextMenu,
+                _ => return 0,
+            };
+
+            let elements: Vec<PluginUiElement> = $handler(extension_point);
+            if elements.is_empty() {
+                return 0;
+            }
+
+            let json = match $crate::serde_json::to_string(&elements) {
+                Ok(j) => j,
+                Err(_) => return -1,
+            };
+
+            let bytes = json.as_bytes();
+            if bytes.len() > out_max_len as usize {
+                return -1;
+            }
+
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), out_ptr, bytes.len());
+            }
+
+            bytes.len() as i32
+        }
+    };
+}
+
+/// Macro to define plugin UI event handler
+#[macro_export]
+macro_rules! plugin_ui_event {
+    ($handler:expr) => {
+        #[no_mangle]
+        pub extern "C" fn plugin_on_ui_event(
+            id_ptr: *const u8,
+            id_len: u32,
+            value_ptr: *const u8,
+            value_len: u32,
+        ) -> i32 {
+            use alloc::slice;
+            use alloc::string::String;
+
+            let id = unsafe {
+                let bytes = slice::from_raw_parts(id_ptr, id_len as usize);
+                String::from_utf8_lossy(bytes).into_owned()
+            };
+
+            let value = if value_len > 0 {
+                unsafe {
+                    let bytes = slice::from_raw_parts(value_ptr, value_len as usize);
+                    Some(String::from_utf8_lossy(bytes).into_owned())
+                }
+            } else {
+                None
+            };
+
+            $handler(&id, value);
+            0
         }
     };
 }

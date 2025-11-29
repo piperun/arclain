@@ -1,0 +1,17 @@
+[plugin]
+id = "ui-demo"
+name = "UI Demo Plugin"
+version = "0.1.0"
+description = "Demonstrates UI capabilities in the sidebar and plugins page"
+author = "Arclain Team"
+
+[capabilities]
+network = false
+archive_metadata_read = false
+archive_metadata_write = false
+archive_modify = false
+file_read = false
+file_write = false
+
+[rate_limits]
+http_requests_per_minute = 60

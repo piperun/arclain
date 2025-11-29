@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 pub enum AppPage {
     /// Main archive viewer page
     Main,
+    /// Plugins management page
+    Plugins,
     /// Settings page with a specific category selected
     Settings(SettingsPage),
 }
@@ -150,6 +152,7 @@ impl PageNavigator {
     pub fn get_breadcrumb(&self) -> Vec<(&'static str, AppPage)> {
         match &self.current_page {
             AppPage::Main => vec![],
+            AppPage::Plugins => vec![("Plugins", AppPage::Plugins)],
             AppPage::Settings(category) => {
                 let mut breadcrumb = vec![("Settings", AppPage::Settings(SettingsPage::Overview))];
 

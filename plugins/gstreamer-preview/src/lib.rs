@@ -1,17 +1,21 @@
 //! GStreamer Media Preview Plugin
-//! 
+//!
 //! This plugin provides media file previews and thumbnail generation
 //! using a hybrid WASM coordinator + native GStreamer service approach.
-//! 
+//!
 //! The WASM plugin acts as a coordinator while delegating heavy media
 //! processing to a native GStreamer service via IPC.
 
 #![no_std]
 
 extern crate alloc;
-use alloc::string::{String, ToString};
+
+#[macro_use]
+extern crate archust_plugin_sdk;
+
 use alloc::format;
-use archust_plugin_sdk::*;
+use alloc::string::ToString;
+use archust_plugin_sdk::prelude::*;
 use serde_json::json;
 
 plugin_metadata!(
@@ -27,18 +31,17 @@ plugin_cleanup!();
 
 /// Supported media file extensions
 const SUPPORTED_VIDEO_EXTENSIONS: &[&str] = &[
-    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg"
+    "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "mpg", "mpeg",
 ];
 
-const SUPPORTED_AUDIO_EXTENSIONS: &[&str] = &[
-    "mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus"
-];
+const SUPPORTED_AUDIO_EXTENSIONS: &[&str] =
+    &["mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus"];
 
 /// Check if file is a supported media file
 pub fn is_media_file(filename: &str) -> bool {
     if let Some(ext_pos) = filename.rfind('.') {
         let ext = &filename[ext_pos + 1..].to_lowercase();
-        SUPPORTED_VIDEO_EXTENSIONS.contains(&ext.as_str()) 
+        SUPPORTED_VIDEO_EXTENSIONS.contains(&ext.as_str())
             || SUPPORTED_AUDIO_EXTENSIONS.contains(&ext.as_str())
     } else {
         false
@@ -66,17 +69,15 @@ pub fn is_audio_file(filename: &str) -> bool {
 }
 
 /// Plugin event handler
-/// 
+///
 /// This plugin responds to archive open events by identifying media files
 /// and preparing metadata about them. Actual media processing (thumbnails,
 /// duration extraction) would be delegated to a native GStreamer service.
 #[no_mangle]
 pub extern "C" fn plugin_on_event(event_ptr: *const u8, event_len: usize) -> i32 {
     // Read event JSON from memory
-    let event_bytes = unsafe {
-        core::slice::from_raw_parts(event_ptr, event_len)
-    };
-    
+    let event_bytes = unsafe { core::slice::from_raw_parts(event_ptr, event_len) };
+
     let event_str = match core::str::from_utf8(event_bytes) {
         Ok(s) => s,
         Err(_) => {
@@ -84,7 +85,7 @@ pub extern "C" fn plugin_on_event(event_ptr: *const u8, event_len: usize) -> i32
             return -1;
         }
     };
-    
+
     // Parse event
     let event: PluginEvent = match serde_json::from_str(event_str) {
         Ok(e) => e,
@@ -93,36 +94,48 @@ pub extern "C" fn plugin_on_event(event_ptr: *const u8, event_len: usize) -> i32
             return -1;
         }
     };
-    
+
     // Handle OnArchiveOpen event
     match event {
         PluginEvent::OnArchiveOpen { ref path, .. } => {
             log(LogLevel::Info, &format!("Archive opened: {}", path));
-            
+
             // Note: In a full implementation, we would:
             // 1. List all files in the archive using file_list() host function
             // 2. Identify media files
             // 3. Send thumbnail generation requests to native GStreamer service
             // 4. Cache results
             // 5. Return metadata with thumbnail paths
-            
+
             // For now, just log that we received the event
-            log(LogLevel::Info, "GStreamer preview plugin loaded (stub implementation)");
-            
+            log(
+                LogLevel::Info,
+                "GStreamer preview plugin loaded (stub implementation)",
+            );
+
             0
         }
         PluginEvent::OnFileExtract { ref file_path, .. } => {
             // Check if extracted file is a media file
             if is_media_file(file_path) {
-                log(LogLevel::Info, &format!("Media file extracted: {}", file_path));
-                
+                log(
+                    LogLevel::Info,
+                    &format!("Media file extracted: {}", file_path),
+                );
+
                 if is_video_file(file_path) {
-                    log(LogLevel::Debug, "File is a video - thumbnail generation would be triggered");
+                    log(
+                        LogLevel::Debug,
+                        "File is a video - thumbnail generation would be triggered",
+                    );
                 } else if is_audio_file(file_path) {
-                    log(LogLevel::Debug, "File is audio - metadata extraction would be triggered");
+                    log(
+                        LogLevel::Debug,
+                        "File is audio - metadata extraction would be triggered",
+                    );
                 }
             }
-            
+
             0
         }
         _ => 0, // Ignore other events

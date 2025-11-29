@@ -1,12 +1,22 @@
+use super::plugin_ui;
 use super::theme::AppTheme;
+use arclain_plugins::manager::PluginManager;
+use arclain_plugins::types::PluginExtensionPoint;
 use eframe::egui;
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 pub struct PropertyGroup {
     pub title: String,
     pub properties: Vec<(String, String)>,
 }
 
-pub fn render(ui: &mut egui::Ui, theme: &AppTheme, groups: &[PropertyGroup]) {
+pub fn render(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    groups: &[PropertyGroup],
+    plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
+) {
     ui.vertical(|ui| {
         ui.add_space(4.0);
 
@@ -16,6 +26,61 @@ pub fn render(ui: &mut egui::Ui, theme: &AppTheme, groups: &[PropertyGroup]) {
             }
 
             render_property_group(ui, theme, group);
+        }
+
+        // Render Plugin Sidebar UI
+        if let Some(manager_arc) = plugin_manager {
+            let manager = manager_arc.lock();
+
+            let plugins: Vec<String> = manager
+                .list_plugins()
+                .iter()
+                .filter(|p| p.enabled)
+                .map(|p| p.id.clone())
+                .collect();
+
+            for plugin_id in plugins {
+                manager.with_plugin_instance(&plugin_id, |instance| {
+                    if let Ok(ui_elements) = instance.get_ui_layout(PluginExtensionPoint::Sidebar) {
+                        if !ui_elements.is_empty() {
+                            ui.add_space(8.0);
+
+                            let id = ui.make_persistent_id(&plugin_id);
+                            let plugin_name = instance
+                                .get_metadata()
+                                .map(|m| m.name)
+                                .unwrap_or_else(|_| "Unknown".to_string());
+
+                            egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                id,
+                                true,
+                            )
+                            .show_header(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(format!("{} Plugin", plugin_name))
+                                        .size(11.0)
+                                        .strong()
+                                        .color(theme.colors.text_muted),
+                                );
+                            })
+                            .body(|ui| {
+                                ui.add_space(4.0);
+                                let mut callback: Box<dyn FnMut(&str, Option<String>)> =
+                                    Box::new(|element_id: &str, value: Option<String>| {
+                                        tracing::info!(
+                                            "UI Event from sidebar: {} = {:?}",
+                                            element_id,
+                                            value
+                                        );
+                                    });
+
+                                plugin_ui::render_ui_elements(ui, &ui_elements, &mut callback);
+                            });
+                        }
+                    }
+                });
+            }
         }
     });
 }
@@ -149,29 +214,28 @@ pub fn create_plugin_metadata_group(metadata: &serde_json::Value) -> Option<Prop
     if !metadata.is_object() {
         return None;
     }
-    
+
     let obj = metadata.as_object()?;
     if obj.is_empty() {
         return None;
     }
-    
+
     let mut properties = Vec::new();
-    
+
     // Extract common fields with nice formatting
     for (key, value) in obj.iter() {
         let display_value = match value {
             serde_json::Value::String(s) => s.clone(),
             serde_json::Value::Number(n) => n.to_string(),
             serde_json::Value::Bool(b) => b.to_string(),
-            serde_json::Value::Array(arr) => {
-                arr.iter()
-                    .filter_map(|v| v.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
             _ => continue,
         };
-        
+
         // Format key to be more readable
         let display_key = key
             .split('_')
@@ -184,14 +248,14 @@ pub fn create_plugin_metadata_group(metadata: &serde_json::Value) -> Option<Prop
             })
             .collect::<Vec<_>>()
             .join(" ");
-        
+
         properties.push((format!("{}:", display_key), display_value));
     }
-    
+
     if properties.is_empty() {
         return None;
     }
-    
+
     Some(PropertyGroup {
         title: "PLUGIN METADATA".to_string(),
         properties,

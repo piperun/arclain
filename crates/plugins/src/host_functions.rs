@@ -258,8 +258,8 @@ pub fn write_string_to_memory(
 /// - level: log level (0=error, 1=warn, 2=info, 3=debug, 4=trace)
 /// - ptr: pointer to message string in WASM memory
 /// - len: length of message string
-pub fn host_log(mut caller: Caller<'_, HostFunctions>, level: u32, ptr: u32, len: u32) -> i32 {
-    let message = match read_string_from_memory(&mut caller, ptr, len) {
+pub fn host_log(mut caller: Caller<'_, HostFunctions>, level: i32, ptr: i32, len: i32) -> i32 {
+    let message = match read_string_from_memory(&mut caller, ptr as u32, len as u32) {
         Ok(s) => s,
         Err(e) => {
             error!("Failed to read log message: {}", e);
@@ -784,6 +784,34 @@ pub fn host_dealloc(_caller: Caller<'_, HostFunctions>, ptr: u32, size: u32, ali
     );
     // No-op: We use a simple bump allocator that does not support deallocation.
     // Memory is reclaimed only when the plugin instance is dropped.
+}
+
+/// Host function: Deallocate memory (wasm-bindgen style)
+///
+/// Parameters:
+/// - ptr: pointer to memory
+/// - size: size of memory
+pub fn host_wasm_dealloc(_caller: Caller<'_, HostFunctions>, ptr: u32, size: u32, align: u32) {
+    trace!(
+        "[Plugin] __wasm_dealloc called: ptr={}, size={}, align={}",
+        ptr,
+        size,
+        align
+    );
+    // No-op: Same as __rust_dealloc
+}
+
+/// Host function: Allocate memory (wasm-bindgen style)
+///
+/// Parameters:
+/// - size: size of memory
+///
+/// Returns:
+/// - pointer to allocated memory
+pub fn host_wasm_alloc(mut caller: Caller<'_, HostFunctions>, size: u32) -> u32 {
+    trace!("[Plugin] __wasm_alloc called: size={}", size);
+    // Align to 8 bytes by default for safety
+    host_alloc(caller, size, 8)
 }
 
 /// Host function: Allocate memory
