@@ -78,7 +78,11 @@ impl FileOpener {
                 };
 
                 // Include if in the same directory or any subdirectory
-                entry_dir == dir || entry_dir.starts_with(&format!("{}/", dir))
+                if dir.is_empty() {
+                    true
+                } else {
+                    entry_dir == dir || entry_dir.starts_with(&format!("{}/", dir))
+                }
             })
             .cloned()
             .collect()

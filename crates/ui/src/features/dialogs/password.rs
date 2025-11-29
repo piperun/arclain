@@ -6,6 +6,7 @@ use eframe::egui;
 pub struct PasswordDialog {
     pub show: bool,
     pub password: String,
+    pub save_password: bool,
     pub error: String,
 }
 
@@ -14,6 +15,7 @@ impl Default for PasswordDialog {
         Self {
             show: false,
             password: String::new(),
+            save_password: false,
             error: String::new(),
         }
     }
@@ -51,7 +53,7 @@ pub fn render_password_dialog(
             let screen = ctx.viewport_rect();
             // Slightly larger modal to avoid button overflow
             let width = 520.0;
-            let height = if dialog.error.is_empty() { 300.0 } else { 340.0 };
+            let height = if dialog.error.is_empty() { 340.0 } else { 380.0 };
             let pos = egui::pos2((screen.width() - width) / 2.0, (screen.height() - height) / 2.0);
             let rect = egui::Rect::from_min_size(pos, egui::vec2(width, height));
 
@@ -106,6 +108,9 @@ pub fn render_password_dialog(
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     result = Some(PasswordDialogResult::Cancel);
                 }
+
+                // Save password checkbox
+                ui.checkbox(&mut dialog.save_password, "Save password for future use");
 
                 if !dialog.error.is_empty() { 
                     ui.colored_label(egui::Color32::from_rgb(220, 53, 69), &dialog.error); 

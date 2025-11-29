@@ -257,7 +257,7 @@ impl AppState {
         self.headers_encrypted = info.headers_encrypted;
         self.encryption_method = info.encryption_method.clone();
         self.navigation = NavigationState::new();
-        
+
         // Dispatch OnArchiveOpen event to plugins
         self.plugin_metadata = None; // Reset metadata
         if let Some(ref manager_arc) = self.plugin_manager {
@@ -266,12 +266,12 @@ impl AppState {
                 path: path.to_string_lossy().to_string(),
                 kind: info.archive_kind,
             };
-            
+
             // Collect metadata responses from plugins
             let mut manager = manager_arc.lock();
             let responses = manager.dispatch_event(&event);
             let mut combined_metadata = serde_json::Map::new();
-            
+
             for response in responses {
                 if let arclain_plugins::PluginResponse::Metadata { data } = response {
                     if let Some(obj) = data.as_object() {
@@ -282,14 +282,14 @@ impl AppState {
                     }
                 }
             }
-            
+
             if !combined_metadata.is_empty() {
                 let field_count = combined_metadata.len();
                 self.plugin_metadata = Some(serde_json::Value::Object(combined_metadata));
                 info!("Collected plugin metadata with {} fields", field_count);
             }
         }
-        
+
         info!(
             "Archive opened successfully with {} entries",
             self.all_entries.len()
@@ -620,7 +620,7 @@ impl AppState {
 
         // Persist to secrets DB if available
         if let Some(ref dbs) = self.dbs {
-            replace_pass_rules(&dbs.secrets, &rules)?;
+            arclain_core::config_db::replace_pass_rules(&dbs.secrets, &rules)?;
             info!(
                 "Saved {} password rules to encrypted secrets DB",
                 rules.len()
@@ -635,5 +635,44 @@ impl AppState {
         }
 
         Ok(())
+    }
+
+    pub fn save_password_rule_from_archive(
+        &mut self,
+        archive_path: &Path,
+        password: &str,
+    ) -> Result<()> {
+        let filename = archive_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+
+        if filename.is_empty() {
+            return Ok(());
+        }
+
+        // Generate a pattern from the filename
+        // Strategy: escape special regex chars, then try to make it generic if possible
+        // For now, we'll just use the exact filename as the pattern to be safe
+        let pattern = regex::escape(filename);
+
+        let new_rule = arclain_core::PassRule {
+            name: format!("Auto-saved: {}", filename),
+            pattern,
+            password: password.to_string(),
+            priority: 10, // High priority for specific file matches
+            enabled: true,
+        };
+
+        let mut rules = self.cfg.cfg.pass_rules.clone();
+        // Check if a rule with this pattern already exists, if so update it
+        if let Some(existing) = rules.iter_mut().find(|r| r.pattern == new_rule.pattern) {
+            existing.password = new_rule.password.clone();
+            existing.enabled = true;
+        } else {
+            rules.push(new_rule);
+        }
+
+        self.save_password_rules(rules)
     }
 }

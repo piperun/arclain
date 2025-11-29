@@ -1228,6 +1228,16 @@ impl ArclainApp {
                             &mut self.entries,
                             &mut self.archive_info,
                         ) {
+                            // Auto-save password if requested
+                            if self.password_dialog.save_password {
+                                if let Err(e) = self.state.lock().save_password_rule_from_archive(&path, &password) {
+                                    error!("Failed to auto-save password: {}", e);
+                                    self.status_info.message = format!("Failed to save password: {}", e);
+                                } else {
+                                    self.status_info.message = "Password saved to rules".to_string();
+                                }
+                            }
+
                             self.password_dialog.show = false;
                             self.pending_archive_path = None;
 
