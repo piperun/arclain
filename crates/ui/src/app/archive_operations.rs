@@ -123,7 +123,11 @@ pub fn load_archive_data(
             st.encrypted_crc_policy.clone(),
             {
                 let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
-                st.current_password.is_some() || st.cfg.auto_password_for(archive_name, &st.last_entries).is_some()
+                st.current_password.is_some()
+                    || st
+                        .cfg
+                        .auto_password_for(archive_name, &st.last_entries)
+                        .is_some()
             },
             st.current_archive.clone(),
         )
@@ -132,20 +136,18 @@ pub fn load_archive_data(
     if have_pw && policy != "on_access" {
         let (backend, archive_path, password, paths_to_compute) = {
             let st = state.lock();
-            let pw_opt = st
-                .current_password
-                .clone()
-                .or_else(|| {
-                    let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
-                    st.cfg.auto_password_for(archive_name, &st.last_entries)
-                });
+            let pw_opt = st.current_password.clone().or_else(|| {
+                let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
+                st.cfg.auto_password_for(archive_name, &st.last_entries)
+            });
             let arc = st.current_archive.clone();
             let paths: Vec<String> = st
                 .all_entries
                 .iter()
-                .filter(|e| !e.is_dir && e.encrypted && e.crc32.is_none())
+                .filter(|e| !e.is_dir && (e.encrypted || st.headers_encrypted) && e.crc32.is_none())
                 .map(|e| e.path.clone())
                 .collect();
+
             (st.backend.clone(), arc, pw_opt, paths)
         };
 
@@ -270,8 +272,11 @@ fn dispatch_metadata_event(
     // Note: dispatch_event requires &mut self, but we have Arc<PluginManager>
     // For now, we'll return None. This will be fixed when we add interior mutability to dispatch_event
     // or restructure to allow mutable access
-    
-    tracing::debug!("Would dispatch metadata event for: {}", archive_path.display());
+
+    tracing::debug!(
+        "Would dispatch metadata event for: {}",
+        archive_path.display()
+    );
     None
 }
 
