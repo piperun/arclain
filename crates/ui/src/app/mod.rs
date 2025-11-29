@@ -65,6 +65,7 @@ pub struct ArclainApp {
     extraction_child: Option<std::process::Child>,
     extraction_minimized: bool,
     extraction_started: Option<Instant>,
+    password_rules_loaded: bool,  // Track if we've loaded password rules for current settings session
 }
 
 impl ArclainApp {
@@ -105,6 +106,7 @@ impl ArclainApp {
             extraction_child: None,
             extraction_minimized: false,
             extraction_started: None,
+            password_rules_loaded: false,
         }
     }
 }
@@ -927,8 +929,8 @@ impl ArclainApp {
 
     /// Render the settings page
     fn render_settings_page(&mut self, ctx: &egui::Context, settings_page: SettingsPage) {
-        // Load password rules when entering Password Rules page
-        if matches!(settings_page, SettingsPage::PasswordRules) {
+        // Load password rules when entering Password Rules page (only once per session)
+        if matches!(settings_page, SettingsPage::PasswordRules) && !self.password_rules_loaded {
             let st = self.state.lock();
             self.password_rules_dialog.rules = st
                 .cfg
@@ -943,6 +945,11 @@ impl ArclainApp {
                     enabled: r.enabled,
                 })
                 .collect();
+            self.password_rules_loaded = true;
+        }
+        // Reset flag when leaving password rules page
+        if !matches!(settings_page, SettingsPage::PasswordRules) {
+            self.password_rules_loaded = false;
         }
 
         // Left panel - Settings navigator
@@ -1082,11 +1089,16 @@ impl ArclainApp {
                     .collect();
 
                 // Save to database via state
-                let res = { self.state.lock().save_password_rules(pass_rules) };
+                let res = { self.state.lock().save_password_rules(pass_rules.clone()) };
                 match res {
                     Ok(()) => {
                         self.password_rules_dialog.error.clear();
                         self.status_info.message = "Password rules saved successfully".to_string();
+                        // Update the in-memory config so next load gets the saved rules
+                        {
+                            let mut st = self.state.lock();
+                            st.cfg.cfg.pass_rules = pass_rules;
+                        }
                     }
                     Err(e) => {
                         error!("Failed to save password rules: {}", e);
