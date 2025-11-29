@@ -1,6 +1,16 @@
+/pkg
+/dist
+/build
+*.wasm
 /target
+target/
 ui_archive/*
 *.txt
 *.md
 !README.md
 *.html
+
+# Plugin build artifacts
+
+plugins/*/wasm32-unknown-unknown/
+plugin-sdk/*/target/
