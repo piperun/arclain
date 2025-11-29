@@ -808,7 +808,7 @@ pub fn host_wasm_dealloc(_caller: Caller<'_, HostFunctions>, ptr: u32, size: u32
 ///
 /// Returns:
 /// - pointer to allocated memory
-pub fn host_wasm_alloc(mut caller: Caller<'_, HostFunctions>, size: u32) -> u32 {
+pub fn host_wasm_alloc(caller: Caller<'_, HostFunctions>, size: u32) -> u32 {
     trace!("[Plugin] __wasm_alloc called: size={}", size);
     // Align to 8 bytes by default for safety
     host_alloc(caller, size, 8)

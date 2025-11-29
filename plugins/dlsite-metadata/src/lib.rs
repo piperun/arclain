@@ -26,6 +26,131 @@ plugin_metadata!(
 plugin_init!();
 plugin_cleanup!();
 
+// UI Layout for extension points
+plugin_ui_layout!(|extension_point| {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    match extension_point {
+        PluginExtensionPoint::MainPage => {
+            vec![
+                PluginUiElement::Label {
+                    text: "DLSite Metadata Settings".to_string(),
+                    bold: true,
+                    size: Some(18.0),
+                },
+                PluginUiElement::Space { size: 12.0 },
+                PluginUiElement::Separator,
+                PluginUiElement::Space { size: 12.0 },
+                PluginUiElement::Label {
+                    text: "API Configuration".to_string(),
+                    bold: true,
+                    size: Some(14.0),
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Label {
+                    text: "Request timeout (seconds):".to_string(),
+                    bold: false,
+                    size: None,
+                },
+                PluginUiElement::TextInput {
+                    id: "request_timeout".to_string(),
+                    label: "Timeout".to_string(),
+                    value: "30".to_string(),
+                },
+                PluginUiElement::Space { size: 16.0 },
+                PluginUiElement::Label {
+                    text: "Cache Settings".to_string(),
+                    bold: true,
+                    size: Some(14.0),
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Checkbox {
+                    id: "enable_cache".to_string(),
+                    label: "Enable metadata caching".to_string(),
+                    checked: true,
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Label {
+                    text: "Cache will improve performance for frequently accessed archives."
+                        .to_string(),
+                    bold: false,
+                    size: Some(12.0),
+                },
+            ]
+        }
+        PluginExtensionPoint::Sidebar => {
+            vec![
+                PluginUiElement::Label {
+                    text: "DLSite Metadata".to_string(),
+                    bold: true,
+                    size: Some(14.0),
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Separator,
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Row {
+                    children: vec![
+                        PluginUiElement::Label {
+                            text: "Status:".to_string(),
+                            bold: true,
+                            size: None,
+                        },
+                        PluginUiElement::Space { size: 4.0 },
+                        PluginUiElement::Label {
+                            text: "Ready to scan".to_string(),
+                            bold: false,
+                            size: None,
+                        },
+                    ],
+                },
+                PluginUiElement::Space { size: 8.0 },
+                PluginUiElement::Button {
+                    id: "fetch_metadata".to_string(),
+                    label: "Fetch Metadata".to_string(),
+                },
+            ]
+        }
+        _ => Vec::new(),
+    }
+});
+
+// UI Event handler
+plugin_ui_event!(|id, value| {
+    log(
+        LogLevel::Info,
+        &format!("DLSite UI event: {} = {:?}", id, value),
+    );
+
+    match id {
+        "fetch_metadata" => {
+            log(LogLevel::Info, "Fetching DLSite metadata...");
+            // TODO: Implement metadata fetching
+        }
+        "request_timeout" => {
+            if let Some(val) = value {
+                log(
+                    LogLevel::Info,
+                    &format!("Request timeout changed to: {}", val),
+                );
+                // TODO: Update timeout setting
+            }
+        }
+        "enable_cache" => {
+            if let Some(val) = value {
+                log(
+                    LogLevel::Info,
+                    &format!("Cache setting changed to: {}", val),
+                );
+                // TODO: Update cache setting
+            }
+        }
+        _ => {
+            log(LogLevel::Debug, &format!("Unknown UI event: {}", id));
+        }
+    }
+});
+
 /// DLSite product code
 #[derive(Debug, Clone)]
 pub struct DLSiteCode {
