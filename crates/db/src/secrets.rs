@@ -15,7 +15,7 @@ const PASS_RULES_TABLE: TableDefinition<u32, &[u8]> = TableDefinition::new("pass
 const METADATA_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("metadata");
 
 /// Encrypted password rule stored in redb
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PassRule {
     pub name: String,
     pub pattern: String,
@@ -23,6 +23,18 @@ pub struct PassRule {
     pub password: String, // Not serialized - encrypted separately
     pub priority: u32,
     pub enabled: bool,
+}
+
+impl std::fmt::Debug for PassRule {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PassRule")
+            .field("name", &self.name)
+            .field("pattern", &self.pattern)
+            .field("password", &"[REDACTED]")
+            .field("priority", &self.priority)
+            .field("enabled", &self.enabled)
+            .finish()
+    }
 }
 
 /// Encrypted password database using redb + AES-256-GCM
