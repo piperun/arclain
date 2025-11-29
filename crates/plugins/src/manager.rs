@@ -239,6 +239,16 @@ impl PluginManager {
             .map(|p| p.metadata.clone())
     }
 
+    /// Access a plugin instance mutably (e.g. for UI interaction)
+    pub fn with_plugin_instance<F, R>(&self, plugin_id: &str, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut PluginInstance) -> R,
+    {
+        let mut plugins = self.plugins.write();
+        let plugin = plugins.get_mut(plugin_id)?;
+        Some(f(&mut plugin.instance))
+    }
+
     /// Dispatch an event to all enabled plugins
     pub fn dispatch_event(&mut self, event: &PluginEvent) -> Vec<PluginResponse> {
         debug!("Dispatching event: {:?}", event);

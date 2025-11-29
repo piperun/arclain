@@ -8,6 +8,7 @@ members = [
 exclude = [
     "plugins/dlsite-metadata",
     "plugins/gstreamer-preview",
+    "plugins/ui-demo",
     "plugin-sdk"
 ]
 resolver = "2"

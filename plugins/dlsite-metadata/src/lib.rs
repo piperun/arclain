@@ -1,15 +1,18 @@
 //! DLSite Metadata Plugin
-//! 
+//!
 //! This plugin extracts DLSite product codes from archive filenames and
 //! fetches metadata from the DLSite API.
 
 #![no_std]
 
 extern crate alloc;
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+
+#[macro_use]
+extern crate archust_plugin_sdk;
+
 use alloc::format;
-use archust_plugin_sdk::*;
+use alloc::string::{String, ToString};
+use archust_plugin_sdk::prelude::*;
 use serde_json::json;
 
 plugin_metadata!(
@@ -26,8 +29,8 @@ plugin_cleanup!();
 /// DLSite product code
 #[derive(Debug, Clone)]
 pub struct DLSiteCode {
-    pub prefix: String,  // RJ, VJ, or BJ
-    pub number: String,  // 6-8 digits
+    pub prefix: String, // RJ, VJ, or BJ
+    pub number: String, // 6-8 digits
 }
 
 impl DLSiteCode {
@@ -45,14 +48,14 @@ impl DLSiteCode {
 pub fn extract_dlsite_code(filename: &str) -> Option<DLSiteCode> {
     // Pattern: (RJ|VJ|BJ) followed by 6-8 digits
     let filename_upper = filename.to_uppercase();
-    
+
     // Find RJ, VJ, or BJ prefix
     let prefixes = ["RJ", "VJ", "BJ"];
-    
+
     for prefix in &prefixes {
         if let Some(pos) = filename_upper.find(prefix) {
             let after_prefix = &filename_upper[pos + prefix.len()..];
-            
+
             // Extract digits
             let mut digits = String::new();
             for ch in after_prefix.chars() {
@@ -62,7 +65,7 @@ pub fn extract_dlsite_code(filename: &str) -> Option<DLSiteCode> {
                     break;
                 }
             }
-            
+
             // Validate length (6-8 digits)
             if digits.len() >= 6 && digits.len() <= 8 {
                 return Some(DLSiteCode {
@@ -72,14 +75,14 @@ pub fn extract_dlsite_code(filename: &str) -> Option<DLSiteCode> {
             }
         }
     }
-    
+
     None
 }
 
 /// Clean filename from download site tags
 pub fn clean_filename(filename: &str) -> String {
     let mut cleaned = filename.to_string();
-    
+
     // Remove common download site tags
     let tags = [
         "[DLsite]",
@@ -89,16 +92,16 @@ pub fn clean_filename(filename: &str) -> String {
         "(DLsite)",
         "(dlsite)",
     ];
-    
+
     for tag in &tags {
         cleaned = cleaned.replace(tag, "");
     }
-    
+
     // Remove extra spaces
     while cleaned.contains("  ") {
         cleaned = cleaned.replace("  ", " ");
     }
-    
+
     cleaned.trim().to_string()
 }
 
@@ -106,43 +109,49 @@ pub fn clean_filename(filename: &str) -> String {
 pub fn extract_title_from_filename(filename: &str, code: &DLSiteCode) -> Option<String> {
     let full_code = code.full_code();
     let filename_upper = filename.to_uppercase();
-    
+
     if let Some(pos) = filename_upper.find(&full_code) {
         let after_code = &filename[pos + full_code.len()..];
-        
+
         // Remove file extension
         let without_ext = if let Some(ext_pos) = after_code.rfind('.') {
             &after_code[..ext_pos]
         } else {
             after_code
         };
-        
+
         // Clean up
         let cleaned = clean_filename(without_ext);
-        
+
         if !cleaned.is_empty() {
             return Some(cleaned);
         }
     }
-    
+
     None
 }
 
 /// Fetch metadata from DLSite API
-/// 
+///
 /// Note: This is a placeholder implementation. The actual DLSite API
 /// requires authentication and has specific endpoint formats.
 pub fn fetch_dlsite_metadata(code: &DLSiteCode) -> Result<serde_json::Value, i32> {
-    log(LogLevel::Info, &format!("Fetching metadata for {}", code.full_code()));
-    
+    log(
+        LogLevel::Info,
+        &format!("Fetching metadata for {}", code.full_code()),
+    );
+
     // Construct API URL (this is a placeholder - real API would be different)
-    let url = format!("https://www.dlsite.com/maniax/work/=/product_id/{}.html", code.full_code());
-    
+    let url = format!(
+        "https://www.dlsite.com/maniax/work/=/product_id/{}.html",
+        code.full_code()
+    );
+
     // Make HTTP request
     match http_get(&url) {
         Ok(response) => {
             log(LogLevel::Info, "Successfully fetched metadata");
-            
+
             // Parse HTML response (in production, would use proper HTML parser)
             // For now, return a placeholder JSON
             Ok(json!({
@@ -154,7 +163,10 @@ pub fn fetch_dlsite_metadata(code: &DLSiteCode) -> Result<serde_json::Value, i32
             }))
         }
         Err(error_code) => {
-            log(LogLevel::Error, &format!("HTTP request failed: {}", error_code));
+            log(
+                LogLevel::Error,
+                &format!("HTTP request failed: {}", error_code),
+            );
             Err(error_code)
         }
     }
@@ -164,10 +176,8 @@ pub fn fetch_dlsite_metadata(code: &DLSiteCode) -> Result<serde_json::Value, i32
 #[no_mangle]
 pub extern "C" fn plugin_on_event(event_ptr: *const u8, event_len: usize) -> i32 {
     // Read event JSON from memory
-    let event_bytes = unsafe {
-        core::slice::from_raw_parts(event_ptr, event_len)
-    };
-    
+    let event_bytes = unsafe { core::slice::from_raw_parts(event_ptr, event_len) };
+
     let event_str = match core::str::from_utf8(event_bytes) {
         Ok(s) => s,
         Err(_) => {
@@ -175,7 +185,7 @@ pub extern "C" fn plugin_on_event(event_ptr: *const u8, event_len: usize) -> i32
             return -1;
         }
     };
-    
+
     // Parse event
     let event: PluginEvent = match serde_json::from_str(event_str) {
         Ok(e) => e,
@@ -184,21 +194,24 @@ pub extern "C" fn plugin_on_event(event_ptr: *const u8, event_len: usize) -> i32
             return -1;
         }
     };
-    
+
     // Handle OnArchiveOpen event
     match event {
         PluginEvent::OnArchiveOpen { ref path, .. } => {
             log(LogLevel::Info, &format!("Archive opened: {}", path));
-            
+
             // Extract DLSite code from filename
             if let Some(code) = extract_dlsite_code(path) {
-                log(LogLevel::Info, &format!("Found DLSite code: {}", code.full_code()));
-                
+                log(
+                    LogLevel::Info,
+                    &format!("Found DLSite code: {}", code.full_code()),
+                );
+
                 // Extract title
                 if let Some(title) = extract_title_from_filename(path, &code) {
                     log(LogLevel::Info, &format!("Extracted title: {}", title));
                 }
-                
+
                 // Fetch metadata (commented out for now to avoid real API calls)
                 // match fetch_dlsite_metadata(&code) {
                 //     Ok(metadata) => {
@@ -209,7 +222,7 @@ pub extern "C" fn plugin_on_event(event_ptr: *const u8, event_len: usize) -> i32
                 //         log(LogLevel::Warn, "Failed to fetch metadata");
                 //     }
                 // }
-                
+
                 // Return metadata response (placeholder)
                 let response = PluginResponse::Metadata {
                     data: json!({
@@ -217,12 +230,12 @@ pub extern "C" fn plugin_on_event(event_ptr: *const u8, event_len: usize) -> i32
                         "extracted_title": extract_title_from_filename(path, &code),
                     }),
                 };
-                
+
                 // For now, just return success
                 // Full response serialization will be implemented in Phase 3
                 return 0;
             }
-            
+
             0
         }
         _ => 0, // Ignore other events
@@ -272,7 +285,7 @@ mod tests {
             prefix: "RJ".to_string(),
             number: "123456".to_string(),
         };
-        
+
         let title = extract_title_from_filename("RJ123456 Cool Game.zip", &code).unwrap();
         assert_eq!(title, "Cool Game");
     }
@@ -283,8 +296,10 @@ mod tests {
             prefix: "RJ".to_string(),
             number: "123456".to_string(),
         };
-        
-        let title = extract_title_from_filename("[DLsite] RJ123456 [Download] Cool Game.zip", &code).unwrap();
+
+        let title =
+            extract_title_from_filename("[DLsite] RJ123456 [Download] Cool Game.zip", &code)
+                .unwrap();
         assert_eq!(title, "Cool Game");
     }
 

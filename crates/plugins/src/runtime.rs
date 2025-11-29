@@ -4,7 +4,8 @@
 
 use crate::host_functions::{self, HostFunctions};
 use crate::types::{
-    PluginCapability, PluginError, PluginEvent, PluginMetadata, PluginResponse, Result,
+    PluginCapability, PluginError, PluginEvent, PluginExtensionPoint, PluginMetadata,
+    PluginResponse, PluginUiElement, Result,
 };
 use arclain_core::sevenzip::SevenZipCli;
 use std::path::Path;
@@ -156,6 +157,14 @@ impl LoadedPlugin {
             .func_wrap("env", "__rust_alloc", host_functions::host_alloc)
             .map_err(|e| PluginError::InitError(e.to_string()))?;
 
+        linker
+            .func_wrap("env", "__wasm_dealloc", host_functions::host_wasm_dealloc)
+            .map_err(|e| PluginError::InitError(e.to_string()))?;
+
+        linker
+            .func_wrap("env", "__wasm_alloc", host_functions::host_wasm_alloc)
+            .map_err(|e| PluginError::InitError(e.to_string()))?;
+
         // Instantiate the module
         let instance = linker
             .instantiate(&mut store, &self.module)
@@ -256,6 +265,130 @@ impl PluginInstance {
         // Phase 1: Return placeholder response
         // Full event dispatch will be implemented in Phase 2
         Ok(PluginResponse::None)
+    }
+
+    /// Get UI layout for a specific extension point
+    ///
+    /// Returns a vector of `PluginUiElement`
+    pub fn get_ui_layout(
+        &mut self,
+        extension_point: PluginExtensionPoint,
+    ) -> Result<Vec<PluginUiElement>> {
+        // Check if the plugin exports the ui_layout function
+        let ui_layout_func = match self
+            .instance
+            .get_typed_func::<(u32, u32, u32), i32>(&mut self.store, "plugin_ui_layout")
+        {
+            Ok(f) => f,
+            Err(_) => {
+                // Plugin doesn't provide UI, return empty layout
+                return Ok(Vec::new());
+            }
+        };
+
+        // Allocate buffer for UI JSON
+        const BUFFER_SIZE: u32 = 8192;
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| PluginError::ExecutionError("No memory export found".to_string()))?;
+
+        let buffer_ptr = 1024u32;
+
+        // Convert extension point to u32 for WASM
+        let extension_point_id = match extension_point {
+            PluginExtensionPoint::MainPage => 0,
+            PluginExtensionPoint::Sidebar => 1,
+            PluginExtensionPoint::ContextMenu => 2,
+        };
+
+        let result = ui_layout_func
+            .call(
+                &mut self.store,
+                (extension_point_id, buffer_ptr, BUFFER_SIZE),
+            )
+            .map_err(|e| PluginError::ExecutionError(e.to_string()))?;
+
+        if result < 0 {
+            return Err(PluginError::ExecutionError(
+                "Plugin failed to provide UI layout".to_string(),
+            ));
+        }
+
+        if result == 0 {
+            // Plugin doesn't provide UI for this extension point
+            return Ok(Vec::new());
+        }
+
+        // Read UI layout JSON from WASM memory
+        let mut buffer = vec![0u8; result as usize];
+        memory
+            .read(&self.store, buffer_ptr as usize, &mut buffer)
+            .map_err(|e| PluginError::ExecutionError(format!("Failed to read UI layout: {}", e)))?;
+
+        let ui_elements: Vec<PluginUiElement> = serde_json::from_slice(&buffer)
+            .map_err(|e| PluginError::ExecutionError(format!("Invalid UI layout JSON: {}", e)))?;
+
+        Ok(ui_elements)
+    }
+
+    /// Send a UI event to the plugin (e.g., button click, text input change)
+    ///
+    /// # Arguments
+    /// * `element_id` - The ID of the UI element that triggered the event
+    /// * `value` - Optional value (e.g., new text for TextInput, checked state for Checkbox)
+    ///
+    /// # Returns
+    /// Returns `true` if the plugin successfully handled the event
+    pub fn send_ui_event(&mut self, element_id: &str, value: Option<String>) -> Result<bool> {
+        // Check if the plugin exports the ui_event function
+        let ui_event_func = match self
+            .instance
+            .get_typed_func::<(u32, u32, u32, u32), i32>(&mut self.store, "plugin_on_ui_event")
+        {
+            Ok(f) => f,
+            Err(_) => {
+                // Plugin doesn't handle UI events
+                return Ok(false);
+            }
+        };
+
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| PluginError::ExecutionError("No memory export found".to_string()))?;
+
+        // Write element_id to memory
+        let id_bytes = element_id.as_bytes();
+        let id_ptr = 1024u32;
+        memory
+            .write(&mut self.store, id_ptr as usize, id_bytes)
+            .map_err(|e| {
+                PluginError::ExecutionError(format!("Failed to write element ID: {}", e))
+            })?;
+
+        // Write value to memory (if provided)
+        let (value_ptr, value_len) = if let Some(val) = value {
+            let value_bytes = val.as_bytes();
+            let vptr = 2048u32;
+            memory
+                .write(&mut self.store, vptr as usize, value_bytes)
+                .map_err(|e| {
+                    PluginError::ExecutionError(format!("Failed to write value: {}", e))
+                })?;
+            (vptr, value_bytes.len() as u32)
+        } else {
+            (0u32, 0u32)
+        };
+
+        let result = ui_event_func
+            .call(
+                &mut self.store,
+                (id_ptr, id_bytes.len() as u32, value_ptr, value_len),
+            )
+            .map_err(|e| PluginError::ExecutionError(e.to_string()))?;
+
+        Ok(result == 0)
     }
 
     /// Clean up the plugin

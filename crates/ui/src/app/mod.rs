@@ -12,7 +12,7 @@ use crate::app::navigation::{AppPage, PageNavigator, SettingsPage};
 use crate::app::state::AppState;
 use crate::app::utils::{convert_to_file_entry, format_size};
 use crate::features::{
-    dialogs, file_list, header, load_cjk_fonts, plugins::types::PluginsListState,
+    dialogs, file_list, header, load_cjk_fonts, plugins::types::PluginsListState, plugins_page,
     properties_panel, settings_content, settings_page, status_bar, toolbar, tree_panel, AppTheme,
 };
 use crate::platform::detect_dark_mode;
@@ -46,6 +46,7 @@ pub struct ArclainApp {
     // Settings state
     security_settings_state: settings_content::SecuritySettingsState,
     plugins_state: PluginsListState,
+    plugins_page_state: plugins_page::PluginsPageState,
 
     // Data
     entries: Vec<file_list::FileEntry>,
@@ -93,6 +94,7 @@ impl ArclainApp {
             password_rules_dialog: dialogs::PasswordRulesDialog::default(),
             security_settings_state: settings_content::SecuritySettingsState::default(),
             plugins_state: PluginsListState::default(),
+            plugins_page_state: plugins_page::PluginsPageState::default(),
             entries: Vec::new(),
             status_info: status_bar::StatusBarInfo::default(),
             current_path: String::new(),
@@ -172,6 +174,9 @@ impl eframe::App for ArclainApp {
                 }
                 if header_actions.navigate_back {
                     self.page_navigator.navigate_back();
+                }
+                if header_actions.navigate_plugins {
+                    self.page_navigator.navigate_to(AppPage::Plugins);
                 }
                 if header_actions.navigate_settings {
                     self.page_navigator
@@ -367,6 +372,12 @@ impl eframe::App for ArclainApp {
             AppPage::Main => {
                 self.render_main_page(ctx);
             }
+            AppPage::Plugins => {
+                let st = self.state.lock();
+                let plugin_manager = st.plugin_manager.clone();
+                drop(st);
+                plugins_page::render(ctx, &self.theme, &mut self.plugins_page_state, plugin_manager.as_ref());
+            }
             AppPage::Settings(settings_page) => {
                 self.render_settings_page(ctx, settings_page.clone());
             }
@@ -554,7 +565,8 @@ impl ArclainApp {
                         }
                     }
 
-                    properties_panel::render(ui, &self.theme, &groups);
+                    let st = self.state.lock();
+                    properties_panel::render(ui, &self.theme, &groups, st.plugin_manager.as_ref());
                 });
         }
 

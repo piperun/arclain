@@ -16,6 +16,7 @@ impl Default for HeaderState {
 pub struct HeaderActions {
     pub navigate_home: bool,
     pub navigate_back: bool,
+    pub navigate_plugins: bool,
     pub navigate_settings: bool,
 }
 
@@ -24,6 +25,7 @@ impl Default for HeaderActions {
         Self {
             navigate_home: false,
             navigate_back: false,
+            navigate_plugins: false,
             navigate_settings: false,
         }
     }
@@ -70,6 +72,16 @@ pub fn render(
 
             ui.add_space(8.0);
         }
+
+        // Plugins button
+        let plugins_btn = egui::Button::new(egui::RichText::new("⬢").size(16.0))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+            .min_size(egui::vec2(32.0, 32.0));
+        if ui.add(plugins_btn).clicked() {
+            actions.navigate_plugins = true;
+        }
+        ui.add_space(8.0);
 
         // Settings button (always at the top row, same style as nav)
         let settings_btn = egui::Button::new(egui::RichText::new("⚙").size(16.0))
