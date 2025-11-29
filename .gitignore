@@ -1,2 +1,5 @@
 /target
 ui_archive/*
+*.txt
+*.md
+!README.md
