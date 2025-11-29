@@ -1,9 +1,9 @@
 //! Host functions that plugins can call
-//! 
+//!
 //! This module implements the host-side functions that are exposed to WASM plugins.
 
 use crate::types::{PluginCapability, PluginError, Result};
-use arclain_core::{ArchiveBackend, sevenzip::SevenZipCli};
+use arclain_core::{sevenzip::SevenZipCli, ArchiveBackend};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::Path;
@@ -31,10 +31,10 @@ impl RateLimiter {
     pub fn check_rate_limit(&self) -> bool {
         let now = Instant::now();
         let mut requests = self.requests.lock();
-        
+
         // Remove requests older than 1 minute
         requests.retain(|&time| now.duration_since(time) < Duration::from_secs(60));
-        
+
         // Check if we're under the limit
         if requests.len() < self.requests_per_minute as usize {
             requests.push(now);
@@ -59,7 +59,7 @@ impl HttpClient {
             .user_agent("Archust-Plugin/1.0")
             .build()
             .expect("Failed to create HTTP client");
-        
+
         Self {
             client,
             rate_limiter: RateLimiter::new(requests_per_minute),
@@ -70,23 +70,25 @@ impl HttpClient {
     pub fn get(&self, url: &str) -> Result<String> {
         if !self.rate_limiter.check_rate_limit() {
             return Err(PluginError::ExecutionError(
-                "Rate limit exceeded".to_string()
+                "Rate limit exceeded".to_string(),
             ));
         }
 
         debug!("HTTP GET: {}", url);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .get(url)
             .send()
             .map_err(|e| PluginError::ExecutionError(format!("HTTP request failed: {}", e)))?;
-        
+
         if !response.status().is_success() {
-            return Err(PluginError::ExecutionError(
-                format!("HTTP error: {}", response.status())
-            ));
+            return Err(PluginError::ExecutionError(format!(
+                "HTTP error: {}",
+                response.status()
+            )));
         }
-        
+
         response
             .text()
             .map_err(|e| PluginError::ExecutionError(format!("Failed to read response: {}", e)))
@@ -96,25 +98,27 @@ impl HttpClient {
     pub fn post_json(&self, url: &str, body: &str) -> Result<String> {
         if !self.rate_limiter.check_rate_limit() {
             return Err(PluginError::ExecutionError(
-                "Rate limit exceeded".to_string()
+                "Rate limit exceeded".to_string(),
             ));
         }
 
         debug!("HTTP POST: {}", url);
-        
-        let response = self.client
+
+        let response = self
+            .client
             .post(url)
             .header("Content-Type", "application/json")
             .body(body.to_string())
             .send()
             .map_err(|e| PluginError::ExecutionError(format!("HTTP request failed: {}", e)))?;
-        
+
         if !response.status().is_success() {
-            return Err(PluginError::ExecutionError(
-                format!("HTTP error: {}", response.status())
-            ));
+            return Err(PluginError::ExecutionError(format!(
+                "HTTP error: {}",
+                response.status()
+            )));
         }
-        
+
         response
             .text()
             .map_err(|e| PluginError::ExecutionError(format!("Failed to read response: {}", e)))
@@ -138,7 +142,10 @@ pub struct HostFunctions {
 }
 
 impl HostFunctions {
-    pub fn new(capabilities: std::collections::HashSet<PluginCapability>, requests_per_minute: u32) -> Self {
+    pub fn new(
+        capabilities: std::collections::HashSet<PluginCapability>,
+        requests_per_minute: u32,
+    ) -> Self {
         let http_client = if capabilities.contains(&PluginCapability::Network) {
             Some(HttpClient::new(requests_per_minute))
         } else {
@@ -155,7 +162,7 @@ impl HostFunctions {
             current_password: Arc::new(Mutex::new(None)),
         }
     }
-    
+
     /// Create with archive backend integration
     pub fn with_backend(
         capabilities: std::collections::HashSet<PluginCapability>,
@@ -166,7 +173,7 @@ impl HostFunctions {
         host_funcs.archive_backend = Some(backend);
         host_funcs
     }
-    
+
     /// Set the current archive context
     pub fn set_archive_context(&self, archive_path: Option<String>, password: Option<String>) {
         *self.current_archive.lock() = archive_path;
@@ -183,7 +190,7 @@ impl HostFunctions {
         let mut next_id = self.next_buffer_id.lock();
         let id = *next_id;
         *next_id += 1;
-        
+
         self.memory_buffers.lock().insert(id, data);
         id
     }
@@ -195,17 +202,21 @@ impl HostFunctions {
 }
 
 /// Read a string from WASM memory
-pub fn read_string_from_memory(caller: &mut Caller<'_, HostFunctions>, ptr: u32, len: u32) -> Result<String> {
+pub fn read_string_from_memory(
+    caller: &mut Caller<'_, HostFunctions>,
+    ptr: u32,
+    len: u32,
+) -> Result<String> {
     let memory = caller
         .get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| PluginError::ExecutionError("No memory export found".to_string()))?;
-    
+
     let mut buffer = vec![0u8; len as usize];
     memory
         .read(caller, ptr as usize, &mut buffer)
         .map_err(|e| PluginError::ExecutionError(format!("Failed to read memory: {}", e)))?;
-    
+
     String::from_utf8(buffer)
         .map_err(|e| PluginError::ExecutionError(format!("Invalid UTF-8: {}", e)))
 }
@@ -221,16 +232,16 @@ pub fn write_string_to_memory(
         .get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| PluginError::ExecutionError("No memory export found".to_string()))?;
-    
+
     let bytes = data.as_bytes();
     if bytes.len() > max_len as usize {
         return Ok(-1); // Buffer too small
     }
-    
+
     memory
         .write(caller, ptr as usize, bytes)
         .map_err(|e| PluginError::ExecutionError(format!("Failed to write memory: {}", e)))?;
-    
+
     Ok(bytes.len() as i32)
 }
 
@@ -239,7 +250,7 @@ pub fn write_string_to_memory(
 // ============================================================================
 
 /// Host function: log a message
-/// 
+///
 /// Parameters:
 /// - level: log level (0=error, 1=warn, 2=info, 3=debug, 4=trace)
 /// - ptr: pointer to message string in WASM memory
@@ -252,7 +263,7 @@ pub fn host_log(mut caller: Caller<'_, HostFunctions>, level: u32, ptr: u32, len
             return -1;
         }
     };
-    
+
     match level {
         0 => error!("[Plugin] {}", message),
         1 => warn!("[Plugin] {}", message),
@@ -260,18 +271,18 @@ pub fn host_log(mut caller: Caller<'_, HostFunctions>, level: u32, ptr: u32, len
         3 => debug!("[Plugin] {}", message),
         _ => trace!("[Plugin] {}", message),
     }
-    
+
     0
 }
 
 /// Host function: HTTP GET request
-/// 
+///
 /// Parameters:
 /// - url_ptr: pointer to URL string in WASM memory
 /// - url_len: length of URL string
 /// - out_ptr: pointer to output buffer in WASM memory
 /// - out_max_len: maximum length of output buffer
-/// 
+///
 /// Returns:
 /// - On success: length of response written to out_ptr
 /// - On error: negative error code
@@ -287,7 +298,7 @@ pub fn host_http_get(
         error!("[Plugin] HTTP GET denied: Network capability not granted");
         return -1;
     }
-    
+
     // Read URL from WASM memory
     let url = match read_string_from_memory(&mut caller, url_ptr, url_len) {
         Ok(s) => s,
@@ -296,7 +307,7 @@ pub fn host_http_get(
             return -2;
         }
     };
-    
+
     // Make HTTP request
     let http_client = match &caller.data().http_client {
         Some(client) => client.clone(),
@@ -305,7 +316,7 @@ pub fn host_http_get(
             return -3;
         }
     };
-    
+
     let response = match http_client.get(&url) {
         Ok(r) => r,
         Err(e) => {
@@ -313,7 +324,7 @@ pub fn host_http_get(
             return -4;
         }
     };
-    
+
     // Write response to WASM memory
     match write_string_to_memory(&mut caller, out_ptr, out_max_len, &response) {
         Ok(len) => len,
@@ -325,7 +336,7 @@ pub fn host_http_get(
 }
 
 /// Host function: HTTP POST request with JSON body
-/// 
+///
 /// Parameters:
 /// - url_ptr: pointer to URL string in WASM memory
 /// - url_len: length of URL string
@@ -333,7 +344,7 @@ pub fn host_http_get(
 /// - body_len: length of JSON body string
 /// - out_ptr: pointer to output buffer in WASM memory
 /// - out_max_len: maximum length of output buffer
-/// 
+///
 /// Returns:
 /// - On success: length of response written to out_ptr
 /// - On error: negative error code
@@ -351,7 +362,7 @@ pub fn host_http_post_json(
         error!("[Plugin] HTTP POST denied: Network capability not granted");
         return -1;
     }
-    
+
     // Read URL from WASM memory
     let url = match read_string_from_memory(&mut caller, url_ptr, url_len) {
         Ok(s) => s,
@@ -360,7 +371,7 @@ pub fn host_http_post_json(
             return -2;
         }
     };
-    
+
     // Read body from WASM memory
     let body = match read_string_from_memory(&mut caller, body_ptr, body_len) {
         Ok(s) => s,
@@ -369,7 +380,7 @@ pub fn host_http_post_json(
             return -3;
         }
     };
-    
+
     // Make HTTP request
     let http_client = match &caller.data().http_client {
         Some(client) => client.clone(),
@@ -378,7 +389,7 @@ pub fn host_http_post_json(
             return -4;
         }
     };
-    
+
     let response = match http_client.post_json(&url, &body) {
         Ok(r) => r,
         Err(e) => {
@@ -386,7 +397,7 @@ pub fn host_http_post_json(
             return -5;
         }
     };
-    
+
     // Write response to WASM memory
     match write_string_to_memory(&mut caller, out_ptr, out_max_len, &response) {
         Ok(len) => len,
@@ -424,7 +435,7 @@ pub fn host_file_read(
         error!("[Plugin] File read denied: FileRead capability not granted");
         return -1;
     }
-    
+
     // Read archive path
     let archive_path = match read_string_from_memory(&mut caller, archive_ptr, archive_len) {
         Ok(s) => s,
@@ -433,7 +444,7 @@ pub fn host_file_read(
             return -2;
         }
     };
-    
+
     // Read file path
     let file_path = match read_string_from_memory(&mut caller, file_ptr, file_len) {
         Ok(s) => s,
@@ -442,9 +453,12 @@ pub fn host_file_read(
             return -3;
         }
     };
-    
-    debug!("[Plugin] Reading file '{}' from archive '{}'", file_path, archive_path);
-    
+
+    debug!(
+        "[Plugin] Reading file '{}' from archive '{}'",
+        file_path, archive_path
+    );
+
     // Get archive backend
     let backend = match &caller.data().archive_backend {
         Some(b) => b.clone(),
@@ -453,10 +467,10 @@ pub fn host_file_read(
             return -4;
         }
     };
-    
+
     // Get password if available
     let password = caller.data().current_password.lock().clone();
-    
+
     // Read file from archive
     let archive_path_buf = Path::new(&archive_path);
     match backend.read_text_file(archive_path_buf, &file_path, password.as_deref()) {
@@ -464,11 +478,17 @@ pub fn host_file_read(
             // Write content to WASM memory
             match write_string_to_memory(&mut caller, _out_ptr, _out_max_len, &content) {
                 Ok(len) => {
-                    info!("[Plugin] Successfully read file '{}' ({} bytes)", file_path, len);
+                    info!(
+                        "[Plugin] Successfully read file '{}' ({} bytes)",
+                        file_path, len
+                    );
                     len
                 }
                 Err(e) => {
-                    error!("[Plugin] Failed to write file content to WASM memory: {}", e);
+                    error!(
+                        "[Plugin] Failed to write file content to WASM memory: {}",
+                        e
+                    );
                     -5
                 }
             }
@@ -507,7 +527,7 @@ pub fn host_file_write(
         error!("[Plugin] File write denied: FileWrite capability not granted");
         return -1;
     }
-    
+
     // Read archive path
     let archive_path = match read_string_from_memory(&mut caller, archive_ptr, archive_len) {
         Ok(s) => s,
@@ -516,7 +536,7 @@ pub fn host_file_write(
             return -2;
         }
     };
-    
+
     // Read file path
     let file_path = match read_string_from_memory(&mut caller, file_ptr, file_len) {
         Ok(s) => s,
@@ -525,7 +545,7 @@ pub fn host_file_write(
             return -3;
         }
     };
-    
+
     // Read file data
     let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
         Some(m) => m,
@@ -534,16 +554,18 @@ pub fn host_file_write(
             return -4;
         }
     };
-    
+
     let mut data = vec![0u8; data_len as usize];
     if let Err(e) = memory.read(&caller, data_ptr as usize, &mut data) {
         error!("[Plugin] Failed to read file data: {}", e);
         return -5;
     }
-    
-    debug!("[Plugin] Writing file '{}' ({} bytes) to archive '{}'",
-           file_path, data_len, archive_path);
-    
+
+    debug!(
+        "[Plugin] Writing file '{}' ({} bytes) to archive '{}'",
+        file_path, data_len, archive_path
+    );
+
     // Get archive backend
     let backend = match &caller.data().archive_backend {
         Some(b) => b.clone(),
@@ -552,7 +574,7 @@ pub fn host_file_write(
             return -6;
         }
     };
-    
+
     // Convert bytes to string (assuming UTF-8 text file)
     let content = match String::from_utf8(data.clone()) {
         Ok(s) => s,
@@ -561,12 +583,15 @@ pub fn host_file_write(
             return -7;
         }
     };
-    
+
     // Write file to archive
     let archive_path_buf = Path::new(&archive_path);
     match backend.add_or_update_file_from_str(archive_path_buf, &file_path, &content) {
         Ok(()) => {
-            info!("[Plugin] Successfully wrote file '{}' to archive", file_path);
+            info!(
+                "[Plugin] Successfully wrote file '{}' to archive",
+                file_path
+            );
             0
         }
         Err(e) => {
@@ -595,11 +620,14 @@ pub fn host_archive_metadata_get(
     out_max_len: u32,
 ) -> i32 {
     // Check capability
-    if !caller.data().check_capability(PluginCapability::ArchiveMetadataRead) {
+    if !caller
+        .data()
+        .check_capability(PluginCapability::ArchiveMetadataRead)
+    {
         error!("[Plugin] Archive metadata read denied: capability not granted");
         return -1;
     }
-    
+
     // Read archive path
     let archive_path = match read_string_from_memory(&mut caller, archive_ptr, archive_len) {
         Ok(s) => s,
@@ -608,9 +636,9 @@ pub fn host_archive_metadata_get(
             return -2;
         }
     };
-    
+
     debug!("[Plugin] Getting metadata for archive '{}'", archive_path);
-    
+
     // Get archive backend
     let backend = match &caller.data().archive_backend {
         Some(b) => b.clone(),
@@ -619,10 +647,10 @@ pub fn host_archive_metadata_get(
             return -3;
         }
     };
-    
+
     // Get password if available
     let password = caller.data().current_password.lock().clone();
-    
+
     // List archive to get metadata
     let archive_path_buf = Path::new(&archive_path);
     match backend.list(archive_path_buf, password.as_deref()) {
@@ -631,7 +659,7 @@ pub fn host_archive_metadata_get(
             let total_files = info.entries.iter().filter(|e| !e.is_dir).count();
             let compressed_size: u64 = info.entries.iter().map(|e| e.packed_size).sum();
             let uncompressed_size: u64 = info.entries.iter().map(|e| e.size).sum();
-            
+
             // Create JSON metadata
             let metadata = serde_json::json!({
                 "files": total_files,
@@ -642,11 +670,14 @@ pub fn host_archive_metadata_get(
                 "encryption_method": info.encryption_method,
                 "archive_type": format!("{:?}", info.archive_kind),
             });
-            
+
             let metadata_str = metadata.to_string();
             match write_string_to_memory(&mut caller, out_ptr, out_max_len, &metadata_str) {
                 Ok(len) => {
-                    info!("[Plugin] Successfully retrieved metadata for '{}'", archive_path);
+                    info!(
+                        "[Plugin] Successfully retrieved metadata for '{}'",
+                        archive_path
+                    );
                     len
                 }
                 Err(e) => {
@@ -681,11 +712,14 @@ pub fn host_archive_metadata_set(
     metadata_len: u32,
 ) -> i32 {
     // Check capability
-    if !caller.data().check_capability(PluginCapability::ArchiveMetadataWrite) {
+    if !caller
+        .data()
+        .check_capability(PluginCapability::ArchiveMetadataWrite)
+    {
         error!("[Plugin] Archive metadata write denied: capability not granted");
         return -1;
     }
-    
+
     // Read archive path
     let archive_path = match read_string_from_memory(&mut caller, archive_ptr, archive_len) {
         Ok(s) => s,
@@ -694,7 +728,7 @@ pub fn host_archive_metadata_set(
             return -2;
         }
     };
-    
+
     // Read metadata JSON
     let metadata_json = match read_string_from_memory(&mut caller, metadata_ptr, metadata_len) {
         Ok(s) => s,
@@ -703,9 +737,12 @@ pub fn host_archive_metadata_set(
             return -3;
         }
     };
-    
-    debug!("[Plugin] Setting metadata for archive '{}': {}", archive_path, metadata_json);
-    
+
+    debug!(
+        "[Plugin] Setting metadata for archive '{}': {}",
+        archive_path, metadata_json
+    );
+
     // Validate JSON
     let metadata: serde_json::Value = match serde_json::from_str(&metadata_json) {
         Ok(v) => v,
@@ -714,73 +751,21 @@ pub fn host_archive_metadata_set(
             return -4;
         }
     };
-    
-    debug!("[Plugin] Metadata modification requested for '{}'", archive_path);
+
+    debug!(
+        "[Plugin] Metadata modification requested for '{}'",
+        archive_path
+    );
     debug!("[Plugin] Metadata: {}", metadata);
-    
+
     // Note: Currently 7-Zip doesn't support arbitrary metadata modification
     // This would require extended attributes or custom comment fields
     // For now, we log the request and return success to not break plugin workflow
     info!("[Plugin] Metadata modification logged (7-Zip has limited metadata support)");
     info!("[Plugin] To implement: use archive comments or extended attributes");
-    
+
     0
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_rate_limiter() {
-        let limiter = RateLimiter::new(5);
-        
-        // Should allow first 5 requests
-        for _ in 0..5 {
-            assert!(limiter.check_rate_limit());
-        }
-        
-        // Should deny 6th request
-        assert!(!limiter.check_rate_limit());
-    }
-
-    #[test]
-    fn test_host_functions_creation() {
-        let caps = vec![PluginCapability::Network].into_iter().collect();
-        let host_funcs = HostFunctions::new(caps, 10);
-        
-        assert!(host_funcs.http_client.is_some());
-        assert!(host_funcs.check_capability(PluginCapability::Network));
-        assert!(!host_funcs.check_capability(PluginCapability::FileRead));
-    }
-
-    #[test]
-    fn test_buffer_allocation() {
-        let caps = std::collections::HashSet::new();
-        let host_funcs = HostFunctions::new(caps, 10);
-        
-        let data = vec![1, 2, 3, 4, 5];
-        let id = host_funcs.allocate_buffer(data.clone());
-        
-        let retrieved = host_funcs.take_buffer(id);
-        assert_eq!(retrieved, Some(data));
-        
-        // Should be removed after taking
-        assert_eq!(host_funcs.take_buffer(id), None);
-    }
-    
-    #[test]
-    fn test_capability_checking() {
-        let caps = vec![
-            PluginCapability::FileRead,
-            PluginCapability::Network,
-        ].into_iter().collect();
-        
-        let host_funcs = HostFunctions::new(caps, 10);
-        
-        assert!(host_funcs.check_capability(PluginCapability::FileRead));
-        assert!(host_funcs.check_capability(PluginCapability::Network));
-        assert!(!host_funcs.check_capability(PluginCapability::FileWrite));
-        assert!(!host_funcs.check_capability(PluginCapability::ArchiveMetadataWrite));
-    }
-}
+mod tests;
