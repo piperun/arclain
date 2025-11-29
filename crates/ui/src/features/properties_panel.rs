@@ -70,6 +70,7 @@ fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGr
     });
 }
 
+#[allow(dead_code)]
 pub fn create_file_info_group(
     name: &str,
     size: &str,
@@ -87,6 +88,7 @@ pub fn create_file_info_group(
     }
 }
 
+#[allow(dead_code)]
 pub fn create_attributes_group(modified: &str, crc32: &str, method: &str) -> PropertyGroup {
     PropertyGroup {
         title: "ATTRIBUTES".to_string(),
@@ -139,4 +141,59 @@ pub fn create_archive_info_group(
         title: "ARCHIVE INFO".to_string(),
         properties: props,
     }
+}
+
+/// Create a property group for plugin metadata
+#[allow(dead_code)]
+pub fn create_plugin_metadata_group(metadata: &serde_json::Value) -> Option<PropertyGroup> {
+    if !metadata.is_object() {
+        return None;
+    }
+    
+    let obj = metadata.as_object()?;
+    if obj.is_empty() {
+        return None;
+    }
+    
+    let mut properties = Vec::new();
+    
+    // Extract common fields with nice formatting
+    for (key, value) in obj.iter() {
+        let display_value = match value {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Array(arr) => {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+            _ => continue,
+        };
+        
+        // Format key to be more readable
+        let display_key = key
+            .split('_')
+            .map(|word| {
+                let mut chars = word.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        
+        properties.push((format!("{}:", display_key), display_value));
+    }
+    
+    if properties.is_empty() {
+        return None;
+    }
+    
+    Some(PropertyGroup {
+        title: "PLUGIN METADATA".to_string(),
+        properties,
+    })
 }

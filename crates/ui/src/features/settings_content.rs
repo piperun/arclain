@@ -3,8 +3,10 @@ use super::dialogs::{
     EncryptedCrcPolicy,
 };
 use super::password_rules_page;
+use super::plugins::{plugin_list, types::PluginsListState};
 use super::theme::AppTheme;
 use crate::app::navigation::SettingsPage;
+use arclain_plugins::PluginManager;
 use eframe::egui;
 
 /// Actions that can be triggered from settings pages
@@ -22,6 +24,8 @@ pub enum SettingsAction {
     RekeyVault { new_key_file_path: String },
     /// Save password rules
     SavePasswordRules { rules: Vec<PasswordRule> },
+    /// Install a plugin from a .wasm file
+    InstallPlugin { wasm_path: String },
 }
 
 /// State for the security settings page
@@ -339,6 +343,8 @@ pub fn render_settings_content(
     page: &SettingsPage,
     security_state: &mut SecuritySettingsState,
     password_rules_dialog: &mut PasswordRulesDialog,
+    plugin_manager: Option<&PluginManager>,
+    plugins_state: &mut PluginsListState,
 ) -> Option<SettingsAction> {
     match page {
         SettingsPage::Overview => {
@@ -357,5 +363,85 @@ pub fn render_settings_content(
         SettingsPage::PasswordRules => {
             render_password_rules_settings(ui, theme, password_rules_dialog)
         }
+        SettingsPage::Plugins => {
+            render_plugins_settings(ui, theme, plugin_manager, plugins_state)
+        }
     }
+}
+
+/// Render the Plugins settings page
+pub fn render_plugins_settings(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    plugin_manager: Option<&PluginManager>,
+    plugins_state: &mut PluginsListState,
+) -> Option<SettingsAction> {
+    // Update plugin list from manager if available
+    if let Some(manager) = plugin_manager {
+        plugins_state.update_from_manager(manager);
+    }
+
+    // Render the plugin list
+    if let Some(action) = plugin_list::render(ui, theme, plugins_state) {
+        // Handle plugin actions
+        return match action {
+            plugin_list::PluginAction::SelectPlugin(id) => {
+                plugins_state.selected_plugin = Some(id);
+                None
+            }
+            plugin_list::PluginAction::EnablePlugin(id) => {
+                if let Some(manager) = plugin_manager {
+                    match manager.enable_plugin(&id) {
+                        Ok(()) => {
+                            tracing::info!("Plugin enabled: {}", id);
+                            // Update the state immediately
+                            plugins_state.update_from_manager(manager);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to enable plugin {}: {}", id, e);
+                        }
+                    }
+                }
+                None
+            }
+            plugin_list::PluginAction::DisablePlugin(id) => {
+                if let Some(manager) = plugin_manager {
+                    match manager.disable_plugin(&id) {
+                        Ok(()) => {
+                            tracing::info!("Plugin disabled: {}", id);
+                            // Update the state immediately
+                            plugins_state.update_from_manager(manager);
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to disable plugin {}: {}", id, e);
+                        }
+                    }
+                }
+                None
+            }
+            plugin_list::PluginAction::ShowPluginSettings(id) => {
+                // TODO: Implement settings dialog
+                tracing::info!("Show settings for plugin: {}", id);
+                None
+            }
+            plugin_list::PluginAction::InstallPlugin => {
+                // Show file picker for .wasm files
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("WASM Plugin", &["wasm"])
+                    .set_title("Select Plugin to Install")
+                    .pick_file()
+                {
+                    tracing::info!("Selected plugin file: {}", file.display());
+                    // Return action to be handled at app level where we have mutable access
+                    Some(SettingsAction::InstallPlugin {
+                        wasm_path: file.to_string_lossy().to_string(),
+                    })
+                } else {
+                    None
+                }
+            }
+        };
+    }
+    
+    None
 }

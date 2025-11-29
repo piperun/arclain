@@ -24,6 +24,7 @@ pub enum FileListAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum SortColumn {
     Name,
     Size,
@@ -363,7 +364,7 @@ fn header_sort_label(
 
 fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
     let cmp = |a: &FileEntry, b: &FileEntry| -> std::cmp::Ordering {
-        use std::cmp::Ordering::*;
+        
         let ord = match sort.column {
             SortColumn::Name => {
                 let an = a.name.to_lowercase();

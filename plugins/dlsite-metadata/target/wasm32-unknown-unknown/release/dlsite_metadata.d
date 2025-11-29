@@ -1,0 +1,1 @@
+D:\Programming\rust\archust\plugins\dlsite-metadata\target\wasm32-unknown-unknown\release\dlsite_metadata.wasm: D:\Programming\rust\archust\plugin-sdk\src\lib.rs D:\Programming\rust\archust\plugins\dlsite-metadata\src\lib.rs

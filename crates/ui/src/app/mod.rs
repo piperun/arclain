@@ -12,8 +12,8 @@ use crate::app::navigation::{AppPage, PageNavigator, SettingsPage};
 use crate::app::state::AppState;
 use crate::app::utils::{convert_to_file_entry, format_size};
 use crate::features::{
-    dialogs, file_list, header, load_cjk_fonts, properties_panel, settings_content, settings_page,
-    status_bar, toolbar, tree_panel, AppTheme,
+    dialogs, file_list, header, load_cjk_fonts, plugins::types::PluginsListState,
+    properties_panel, settings_content, settings_page, status_bar, toolbar, tree_panel, AppTheme,
 };
 use crate::platform::detect_dark_mode;
 
@@ -45,6 +45,7 @@ pub struct ArclainApp {
 
     // Settings state
     security_settings_state: settings_content::SecuritySettingsState,
+    plugins_state: PluginsListState,
 
     // Data
     entries: Vec<file_list::FileEntry>,
@@ -90,6 +91,7 @@ impl ArclainApp {
             edit_dialog: dialogs::FileEditDialog::default(),
             password_rules_dialog: dialogs::PasswordRulesDialog::default(),
             security_settings_state: settings_content::SecuritySettingsState::default(),
+            plugins_state: PluginsListState::default(),
             entries: Vec::new(),
             status_info: status_bar::StatusBarInfo::default(),
             current_path: String::new(),
@@ -315,12 +317,30 @@ impl eframe::App for ArclainApp {
                     .inner_margin(egui::Margin::symmetric(0, 8)),
             )
             .show(ctx, |ui| {
+                // Collect plugin status info
+                let plugin_status = {
+                    let st = self.state.lock();
+                    if let Some(ref manager_arc) = st.plugin_manager {
+                        let manager = manager_arc.lock();
+                        let plugins = manager.list_plugins();
+                        let enabled_count = plugins.iter().filter(|p| p.enabled).count();
+                        Some(status_bar::PluginStatusInfo {
+                            total_plugins: plugins.len(),
+                            enabled_plugins: enabled_count,
+                            has_metadata: st.plugin_metadata.is_some(),
+                        })
+                    } else {
+                        None
+                    }
+                };
+
                 // Left area: main status
                 status_bar::render(
                     ui,
                     &self.theme,
                     &self.status_info,
                     self.archive_info.archive_loaded,
+                    plugin_status.as_ref(),
                 );
 
                 // Right-aligned: background progress chip when minimized
@@ -514,7 +534,7 @@ impl ArclainApp {
                         .inner_margin(egui::Margin::symmetric(16, 16)),
                 )
                 .show(ctx, |ui| {
-                    let groups = vec![properties_panel::create_archive_info_group(
+                    let mut groups = vec![properties_panel::create_archive_info_group(
                         &self.archive_info.archive_format,
                         self.archive_info.file_count,
                         &format_size(self.archive_info.total_size),
@@ -524,6 +544,13 @@ impl ArclainApp {
                         self.archive_info.headers_encrypted,
                         self.archive_info.encryption_method.as_deref(),
                     )];
+
+                    // Add plugin metadata if available
+                    if let Some(metadata) = &self.state.lock().plugin_metadata {
+                        if let Some(plugin_group) = properties_panel::create_plugin_metadata_group(metadata) {
+                            groups.push(plugin_group);
+                        }
+                    }
 
                     properties_panel::render(ui, &self.theme, &groups);
                 });
@@ -590,6 +617,7 @@ impl ArclainApp {
                                                 navigation_operations::navigate_to(&self.state, &folder, &mut self.entries, &mut self.current_path);
                                             }
                                             file_list::FileListAction::Open(name) => {
+                                                info!("[GRID VIEW] Open action triggered for: {}", name);
                                                 // Build full path within archive
                                                 let full_path = {
                                                     let st = self.state.lock();
@@ -600,7 +628,8 @@ impl ArclainApp {
                                                 let need_pw = {
                                                     let st = self.state.lock();
                                                     let is_encrypted = st.all_entries.iter().any(|e| e.path == full_path && e.encrypted);
-                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(&st.last_entries).is_some();
+                                                    let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
+                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(archive_name, &st.last_entries).is_some();
                                                     is_encrypted && !have_pw
                                                 };
                                                 if need_pw {
@@ -666,7 +695,8 @@ impl ArclainApp {
                                                 let need_pw = {
                                                     let st = self.state.lock();
                                                     let is_encrypted = st.all_entries.iter().any(|e| e.path == full_path && e.encrypted);
-                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(&st.last_entries).is_some();
+                                                    let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
+                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(archive_name, &st.last_entries).is_some();
                                                     is_encrypted && !have_pw
                                                 };
                                                 if need_pw {
@@ -739,6 +769,7 @@ impl ArclainApp {
                                                 }
                                             }
                                             file_list::FileListAction::Open(name) => {
+                                                info!("[LIST VIEW] Open action triggered for: {}", name);
                                                 // Build full path within archive
                                                 let full_path = {
                                                     let st = self.state.lock();
@@ -750,7 +781,8 @@ impl ArclainApp {
                                                 let need_pw = {
                                                     let st = self.state.lock();
                                                     let is_encrypted = st.all_entries.iter().any(|e| e.path == full_path && e.encrypted);
-                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(&st.last_entries).is_some();
+                                                    let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
+                                                    let have_pw = st.current_password.is_some() || st.cfg.auto_password_for(archive_name, &st.last_entries).is_some();
                                                     is_encrypted && !have_pw
                                                 };
                                                 if need_pw {
@@ -807,7 +839,11 @@ impl ArclainApp {
                                                 let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
                                                 if let Some(archive) = archive_opt {
                                                     let backend = { let st = self.state.lock(); st.backend.clone() };
-                                                    let auto_pw = { let st = self.state.lock(); st.cfg.auto_password_for(&st.last_entries) };
+                                                    let auto_pw = { 
+                                                        let st = self.state.lock(); 
+                                                        let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
+                                                        st.cfg.auto_password_for(archive_name, &st.last_entries)
+                                                    };
                                                     let pw_opt = { let st = self.state.lock(); st.current_password.as_deref().or(auto_pw.as_deref()).map(|s| s.to_string()) };
                                                     
                                                     match backend.spawn_extract_files_with_progress(&archive, opener.temp_dir(), &files_to_extract, pw_opt.as_deref()) {
@@ -964,13 +1000,33 @@ impl ArclainApp {
                             .show(ui, |ui| {
                                 ui.add_space(8.0);
 
-                                let action = settings_content::render_settings_content(
-                                    ui,
-                                    &self.theme,
-                                    &settings_page,
-                                    &mut self.security_settings_state,
-                                    &mut self.password_rules_dialog,
-                                );
+                                // Get plugin manager reference for settings
+                                let st = self.state.lock();
+                                let plugin_manager_ref = st.plugin_manager.as_ref();
+                                
+                                let action = if let Some(pm_mutex) = plugin_manager_ref {
+                                    let pm = pm_mutex.lock();
+                                    settings_content::render_settings_content(
+                                        ui,
+                                        &self.theme,
+                                        &settings_page,
+                                        &mut self.security_settings_state,
+                                        &mut self.password_rules_dialog,
+                                        Some(&pm),
+                                        &mut self.plugins_state,
+                                    )
+                                } else {
+                                    settings_content::render_settings_content(
+                                        ui,
+                                        &self.theme,
+                                        &settings_page,
+                                        &mut self.security_settings_state,
+                                        &mut self.password_rules_dialog,
+                                        None,
+                                        &mut self.plugins_state,
+                                    )
+                                };
+                                drop(st);
 
                                 // Handle settings actions
                                 if let Some(action) = action {
@@ -991,6 +1047,27 @@ impl ArclainApp {
     /// Handle actions from settings pages
     fn handle_settings_action(&mut self, action: settings_content::SettingsAction) {
         match action {
+            settings_content::SettingsAction::InstallPlugin { wasm_path } => {
+                info!("Installing plugin from: {}", wasm_path);
+                let st = self.state.lock();
+                if let Some(ref manager_arc) = st.plugin_manager {
+                    let mut manager = manager_arc.lock();
+                    match manager.install_plugin(std::path::Path::new(&wasm_path)) {
+                        Ok(plugin_id) => {
+                            info!("Plugin installed successfully: {}", plugin_id);
+                            self.status_info.message = format!("Plugin '{}' installed successfully", plugin_id);
+                            // Update plugins state
+                            self.plugins_state.update_from_manager(&manager);
+                        }
+                        Err(e) => {
+                            error!("Failed to install plugin: {}", e);
+                            self.status_info.message = format!("Failed to install plugin: {}", e);
+                        }
+                    }
+                } else {
+                    self.status_info.message = "Plugin system not available".to_string();
+                }
+            }
             settings_content::SettingsAction::SavePasswordRules { rules } => {
                 // Convert UI rules to core PassRule format
                 let pass_rules: Vec<arclain_core::PassRule> = rules

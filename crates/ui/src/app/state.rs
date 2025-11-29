@@ -5,9 +5,12 @@ use arclain_core::config_db::{
 };
 use arclain_core::sevenzip::SevenZipCli;
 use arclain_core::{ArchiveBackend, ConfigStore, NavigationState};
+use arclain_plugins::PluginManager;
+use parking_lot::Mutex;
 use std::{
     env,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use tracing::{debug, info, warn};
 
@@ -26,6 +29,9 @@ pub struct AppState {
     // DB-backed settings and secrets (optional; falls back to JSON if unavailable)
     pub db_paths: Option<DbPaths>,
     pub dbs: Option<ConfigDbs>,
+    // Plugin system
+    pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
+    pub plugin_metadata: Option<serde_json::Value>,
 }
 
 impl AppState {
@@ -50,6 +56,8 @@ impl AppState {
             encrypted_crc_policy: "on_open".to_string(),
             db_paths: None,
             dbs: None,
+            plugin_manager: None,
+            plugin_metadata: None,
         };
 
         // Attempt to open DB-backed config + secrets (optional)
@@ -189,6 +197,27 @@ impl AppState {
             }
         }
 
+        // Initialize plugin manager with backend integration
+        info!("Initializing plugin system");
+        let plugins_dir = PathBuf::from("plugins");
+        let backend_arc = Arc::new(me.backend.clone());
+        match PluginManager::with_backend(plugins_dir, backend_arc) {
+            Ok(mut manager) => {
+                // Initialize plugins
+                if let Err(e) = manager.init() {
+                    warn!("Failed to initialize plugins: {}", e);
+                } else {
+                    let plugin_count = manager.list_plugins().len();
+                    info!("Plugin manager initialized with {} plugins", plugin_count);
+                }
+                me.plugin_manager = Some(Arc::new(Mutex::new(manager)));
+            }
+            Err(e) => {
+                warn!("Failed to initialize plugin manager: {}", e);
+                info!("Application will continue without plugin support");
+            }
+        }
+
         Ok(me)
     }
 
@@ -201,7 +230,8 @@ impl AppState {
             }
             Err(e) => {
                 debug!("Initial listing failed, trying with auto-password: {}", e);
-                let pw = self.cfg.auto_password_for(&self.last_entries);
+                let archive_name = path.to_str();
+                let pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
                 if let Some(ref password) = pw {
                     info!("Attempting to open archive with auto-detected password");
                     let info = self.backend.list(path, Some(password))?;
@@ -215,7 +245,8 @@ impl AppState {
         };
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         if self.current_password.is_none() {
-            let detected_pw = self.cfg.auto_password_for(&self.last_entries);
+            let archive_name = self.current_archive.as_ref().and_then(|p| p.to_str());
+            let detected_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
             if let Some(pwd) = detected_pw {
                 self.current_password = Some(pwd);
             }
@@ -226,6 +257,39 @@ impl AppState {
         self.headers_encrypted = info.headers_encrypted;
         self.encryption_method = info.encryption_method.clone();
         self.navigation = NavigationState::new();
+        
+        // Dispatch OnArchiveOpen event to plugins
+        self.plugin_metadata = None; // Reset metadata
+        if let Some(ref manager_arc) = self.plugin_manager {
+            use arclain_plugins::PluginEvent;
+            let event = PluginEvent::OnArchiveOpen {
+                path: path.to_string_lossy().to_string(),
+                kind: info.archive_kind,
+            };
+            
+            // Collect metadata responses from plugins
+            let mut manager = manager_arc.lock();
+            let responses = manager.dispatch_event(&event);
+            let mut combined_metadata = serde_json::Map::new();
+            
+            for response in responses {
+                if let arclain_plugins::PluginResponse::Metadata { data } = response {
+                    if let Some(obj) = data.as_object() {
+                        // Merge plugin metadata into combined object
+                        for (key, value) in obj {
+                            combined_metadata.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+            }
+            
+            if !combined_metadata.is_empty() {
+                let field_count = combined_metadata.len();
+                self.plugin_metadata = Some(serde_json::Value::Object(combined_metadata));
+                info!("Collected plugin metadata with {} fields", field_count);
+            }
+        }
+        
         info!(
             "Archive opened successfully with {} entries",
             self.all_entries.len()
@@ -275,20 +339,24 @@ impl AppState {
         self.navigation.filter_entries(&self.all_entries)
     }
 
+    #[allow(dead_code)]
     pub fn extract_all(&self, archive: &Path, dest: &Path) -> Result<()> {
         info!(
             "Extracting all files from {} to {}",
             archive.display(),
             dest.display()
         );
-        let auto_pw = self.cfg.auto_password_for(&self.last_entries);
+        let archive_name = archive.to_str();
+        let auto_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
         self.backend.extract_all(archive, dest, pw)
     }
 
+    #[allow(dead_code)]
     pub fn extract_selected(&self, archive: &Path, dest: &Path, files: Vec<String>) -> Result<()> {
         info!("Extracting {} selected files", files.len());
-        let auto_pw = self.cfg.auto_password_for(&self.last_entries);
+        let archive_name = archive.to_str();
+        let auto_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
 
         let full_paths: Vec<String> = if !self.navigation.current_path.is_empty() {
@@ -310,7 +378,8 @@ impl AppState {
         full_paths: Vec<String>,
     ) -> Result<()> {
         info!("Extracting {} file(s) (exact paths)", full_paths.len());
-        let auto_pw = self.cfg.auto_password_for(&self.last_entries);
+        let archive_name = archive.to_str();
+        let auto_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
         if full_paths.len() > 100 {
             let dir_path = if let Some(first) = full_paths.first() {
@@ -343,7 +412,8 @@ impl AppState {
     }
 
     pub fn read_text_file(&self, archive: &Path, path_in_archive: &str) -> Result<String> {
-        let auto_pw = self.cfg.auto_password_for(&self.last_entries);
+        let archive_name = archive.to_str();
+        let auto_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
         self.backend.read_text_file(archive, path_in_archive, pw)
     }

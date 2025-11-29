@@ -70,11 +70,26 @@ impl ConfigStore {
     }
 
     // Returns the first matching password by descending priority
-    pub fn auto_password_for(&self, filenames: &[String]) -> Option<String> {
+    // Matches against both the archive filename and file entries inside
+    pub fn auto_password_for(&self, archive_path: Option<&str>, filenames: &[String]) -> Option<String> {
         let mut rules: Vec<&PassRule> = self.cfg.pass_rules.iter().filter(|r| r.enabled).collect();
         rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
         for r in rules {
             if let Some(re) = r.to_regex() {
+                // First check archive filename if provided
+                if let Some(archive) = archive_path {
+                    // Extract just the filename from the full path
+                    let archive_name = std::path::Path::new(archive)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(archive);
+                    
+                    if re.is_match(archive_name) {
+                        return Some(r.password.clone());
+                    }
+                }
+                
+                // Also check internal file paths for backwards compatibility
                 if filenames.iter().any(|f| re.is_match(f)) {
                     return Some(r.password.clone());
                 }

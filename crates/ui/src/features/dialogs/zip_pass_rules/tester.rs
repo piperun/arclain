@@ -137,14 +137,8 @@ pub fn render_regex_tester_modal(
                             if let Ok(entries) = std::fs::read_dir(&folder) {
                                 dialog.regex_test_results.clear();
 
-                                // Convert glob pattern to regex
-                                let pattern_str = dialog
-                                    .regex_test_pattern
-                                    .replace(".", "\\.")
-                                    .replace("*", ".*")
-                                    .replace("?", ".");
-
-                                if let Ok(re) = regex::Regex::new(&pattern_str) {
+                                // Use the pattern directly as regex (not glob)
+                                if let Ok(re) = regex::Regex::new(&dialog.regex_test_pattern) {
                                     for entry in entries.flatten() {
                                         if let Ok(file_type) = entry.file_type() {
                                             if file_type.is_file() {
@@ -162,6 +156,14 @@ pub fn render_regex_tester_modal(
                                             }
                                         }
                                     }
+                                } else {
+                                    // Invalid regex - show error
+                                    dialog.regex_test_results.push(
+                                        super::types::RegexTestResult {
+                                            file_path: "⚠️ Invalid regex pattern".to_string(),
+                                            matched: false,
+                                        },
+                                    );
                                 }
                             }
                         }
@@ -172,13 +174,8 @@ pub fn render_regex_tester_modal(
                             if let Ok(entries) = std::fs::read_dir(folder) {
                                 dialog.regex_test_results.clear();
 
-                                let pattern_str = dialog
-                                    .regex_test_pattern
-                                    .replace(".", "\\.")
-                                    .replace("*", ".*")
-                                    .replace("?", ".");
-
-                                if let Ok(re) = regex::Regex::new(&pattern_str) {
+                                // Use the pattern directly as regex (not glob)
+                                if let Ok(re) = regex::Regex::new(&dialog.regex_test_pattern) {
                                     for entry in entries.flatten() {
                                         if let Ok(file_type) = entry.file_type() {
                                             if file_type.is_file() {
@@ -196,6 +193,14 @@ pub fn render_regex_tester_modal(
                                             }
                                         }
                                     }
+                                } else {
+                                    // Invalid regex - show error
+                                    dialog.regex_test_results.push(
+                                        super::types::RegexTestResult {
+                                            file_path: "⚠️ Invalid regex pattern".to_string(),
+                                            matched: false,
+                                        },
+                                    );
                                 }
                             }
                         }

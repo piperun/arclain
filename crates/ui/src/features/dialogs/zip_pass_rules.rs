@@ -5,5 +5,5 @@ mod types;
 mod view;
 
 pub use state::PasswordRulesDialog;
-pub use types::{PasswordRule, RegexTestResult};
+pub use types::PasswordRule;
 pub use view::{render_password_rules_dialog, PasswordRulesResult};

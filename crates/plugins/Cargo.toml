@@ -1,0 +1,23 @@
+[package]
+name = "arclain_plugins"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arclain_core = { path = "../core" }
+wasmtime = "38.0.3"
+wasmtime-wasi = "38.0.3"
+anyhow = "1"
+thiserror = "2.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+toml = "0.9.8"
+parking_lot = "0.12"
+dirs = "6.0.0"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+tokio = { version = "1", features = ["rt", "sync"] }
+
+[dev-dependencies]
+tempfile = "3"
+mockito = "1.5"

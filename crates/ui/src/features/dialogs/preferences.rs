@@ -35,6 +35,7 @@ impl EncryptedCrcPolicy {
     }
 }
 
+#[allow(dead_code)]
 pub struct PreferencesDialog {
     pub show: bool,
     pub key_file_path: String,
@@ -57,6 +58,7 @@ impl Default for PreferencesDialog {
     }
 }
 
+#[allow(dead_code)]
 pub enum PreferencesDialogResult {
     Save {
         key_file_path: Option<String>,
@@ -73,6 +75,7 @@ pub enum PreferencesDialogResult {
     Cancel,
 }
 
+#[allow(dead_code)]
 pub fn render_preferences_dialog(
     ctx: &egui::Context,
     theme: &AppTheme,
