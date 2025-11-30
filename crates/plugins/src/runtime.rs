@@ -174,14 +174,17 @@ impl PluginInstance {
             PluginExtensionPoint::ContextMenu => "ContextMenu",
         };
 
-        let _ui_elements = self
+        let ui_elements = self
             .plugin
             .call_get_ui_layout(&mut self.store, ep_str)
             .map_err(|e| PluginError::ExecutionError(e.to_string()))?;
 
-        // TODO: Convert WIT UI elements to internal PluginUiElement
-        // For now, return empty vec
-        Ok(Vec::new())
+        let converted: Vec<PluginUiElement> = ui_elements
+            .into_iter()
+            .map(|e| convert_ui_element(e))
+            .collect();
+
+        Ok(converted)
     }
 
     /// Send a UI event to the plugin
@@ -198,5 +201,34 @@ impl PluginInstance {
         // Cleanup is handled by Drop in Component Model usually,
         // or we can add a specific cleanup function to WIT
         Ok(())
+    }
+}
+
+fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginUiElement {
+    use crate::arclain::plugin::ui::UiElement;
+    use crate::types::PluginUiElement as InternalElement;
+
+    match element {
+        UiElement::Label(config) => InternalElement::Label {
+            text: config.text,
+            bold: config.bold,
+            size: config.size,
+        },
+        UiElement::Button(config) => InternalElement::Button {
+            id: config.id,
+            label: config.label,
+        },
+        UiElement::TextInput(config) => InternalElement::TextInput {
+            id: config.id,
+            label: config.label,
+            value: config.value,
+        },
+        UiElement::Checkbox(config) => InternalElement::Checkbox {
+            id: config.id,
+            label: config.label,
+            checked: config.checked,
+        },
+        UiElement::Separator => InternalElement::Separator,
+        UiElement::Space(size) => InternalElement::Space { size },
     }
 }
