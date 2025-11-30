@@ -29,6 +29,7 @@ pub struct ToolbarActions {
     pub open: bool,
     pub delete_selected: bool,
     pub convert_to_7z: bool,
+    pub organize_archive: bool,
 }
 
 impl Default for ToolbarActions {
@@ -43,6 +44,7 @@ impl Default for ToolbarActions {
             open: false,
             delete_selected: false,
             convert_to_7z: false,
+            organize_archive: false,
         }
     }
 }
@@ -56,6 +58,7 @@ pub fn render(
     can_go_up: bool,
     archive_loaded: bool,
     has_selection: bool,
+    has_metadata: bool,
 ) -> ToolbarActions {
     let mut actions = ToolbarActions::default();
 
@@ -115,6 +118,15 @@ pub fn render(
                 }
                 if toolbar_button_with_text(ui, theme, "📦", "Convert to 7z", archive_loaded) {
                     actions.convert_to_7z = true;
+                }
+                if toolbar_button_with_text(
+                    ui,
+                    theme,
+                    "🗂",
+                    "Organize",
+                    archive_loaded && has_metadata,
+                ) {
+                    actions.organize_archive = true;
                 }
             });
         });

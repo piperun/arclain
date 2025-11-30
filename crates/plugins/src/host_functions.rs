@@ -261,6 +261,27 @@ impl Host for HostFunctions {
             .map_err(|e| e.to_string())?;
         Ok("Success".to_string())
     }
+
+    fn current_archive_info(&mut self) -> Option<crate::arclain::plugin::host::ArchiveInfo> {
+        // Return current archive path if available
+        let archive = self.current_archive.lock().clone()?;
+        let path_buf = std::path::PathBuf::from(&archive);
+        let filename = path_buf.file_name()?.to_str()?.to_string();
+
+        Some(crate::arclain::plugin::host::ArchiveInfo {
+            path: archive,
+            filename,
+        })
+    }
+
+    fn emit_metadata(&mut self, metadata_json: String) {
+        // Store metadata for the host to process
+        info!("[Plugin] Emitting metadata");
+        debug!("[Plugin] Metadata JSON: {}", metadata_json);
+
+        // TODO: Store metadata in a channel/queue for the UI to consume
+        // For now, just log it as proof of concept
+    }
 }
 
 // Implement the ui::Host trait (empty - ui interface only defines types)

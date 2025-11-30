@@ -32,6 +32,8 @@ pub struct AppState {
     // Plugin system
     pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
     pub plugin_metadata: Option<serde_json::Value>,
+    // Game metadata for archive organization (from plugins like DLSite)
+    pub current_game_metadata: Option<arclain_core::archive_organizer::GameMetadata>,
 }
 
 impl AppState {
@@ -58,6 +60,7 @@ impl AppState {
             dbs: None,
             plugin_manager: None,
             plugin_metadata: None,
+            current_game_metadata: None,
         };
 
         // Attempt to open DB-backed config + secrets (optional)

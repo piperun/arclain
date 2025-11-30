@@ -2,13 +2,13 @@ use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 
 /// Callback for when a UI event occurs
-pub type UiEventCallback = Box<dyn FnMut(&str, Option<String>)>;
+pub type UiEventCallback<'a> = Box<dyn FnMut(&str, Option<String>) + 'a>;
 
 /// Render a plugin UI element and its children
 pub fn render_ui_element(
     ui: &mut egui::Ui,
     element: &PluginUiElement,
-    event_callback: &mut UiEventCallback,
+    event_callback: &mut UiEventCallback<'_>,
 ) {
     match element {
         PluginUiElement::Column { children } => {
@@ -133,7 +133,7 @@ pub fn render_ui_element(
 pub fn render_ui_elements(
     ui: &mut egui::Ui,
     elements: &[PluginUiElement],
-    event_callback: &mut UiEventCallback,
+    event_callback: &mut UiEventCallback<'_>,
 ) {
     for element in elements {
         render_ui_element(ui, element, event_callback);
