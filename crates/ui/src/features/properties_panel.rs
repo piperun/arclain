@@ -66,13 +66,12 @@ pub fn render(
                             })
                             .body(|ui| {
                                 ui.add_space(4.0);
+                                ui.add_space(4.0);
+
                                 let mut callback: Box<dyn FnMut(&str, Option<String>)> =
                                     Box::new(|element_id: &str, value: Option<String>| {
-                                        tracing::info!(
-                                            "UI Event from sidebar: {} = {:?}",
-                                            element_id,
-                                            value
-                                        );
+                                        tracing::info!("UI Event: {} = {:?}", element_id, value);
+                                        let _ = instance.send_ui_event(element_id, value);
                                     });
 
                                 plugin_ui::render_ui_elements(ui, &ui_elements, &mut callback);

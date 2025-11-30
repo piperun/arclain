@@ -28,3 +28,13 @@ pub fn error(msg: &str) {
 pub fn debug(msg: &str) {
     arclain::plugin::host::log(arclain::plugin::host::LogLevel::Debug, msg);
 }
+
+// Archive context helpers
+pub fn current_archive_info() -> Option<arclain::plugin::host::ArchiveInfo> {
+    arclain::plugin::host::current_archive_info()
+}
+
+// Metadata helpers
+pub fn emit_metadata(metadata_json: &str) {
+    arclain::plugin::host::emit_metadata(metadata_json);
+}

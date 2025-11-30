@@ -3,6 +3,7 @@ pub mod extraction_operations;
 pub mod file_operations;
 pub mod navigation;
 pub mod navigation_operations;
+pub mod organize_operations;
 pub mod state;
 pub mod utils;
 pub mod window_operations;
@@ -230,6 +231,10 @@ impl eframe::App for ArclainApp {
                 drop(state);
 
                 let has_selection = self.entries.iter().any(|e| e.selected);
+                let has_metadata = {
+                    let state = self.state.lock();
+                    state.current_game_metadata.is_some()
+                };
                 let actions = toolbar::render(
                     ui,
                     &self.theme,
@@ -239,6 +244,7 @@ impl eframe::App for ArclainApp {
                     can_go_up,
                     self.archive_info.archive_loaded,
                     has_selection,
+                    has_metadata,
                 );
 
                 if actions.open {
@@ -313,6 +319,15 @@ impl eframe::App for ArclainApp {
                         &self.state,
                         &mut self.status_info,
                     );
+                }
+                if actions.organize_archive {
+                    if let Err(e) = organize_operations::organize_with_metadata(
+                        &self.state,
+                        &mut self.status_info,
+                    ) {
+                        error!("Failed to organize archive: {}", e);
+                        self.status_info.message = format!("Organization failed: {}", e);
+                    }
                 }
                 if actions.add {
                     file_operations::add_files(&self.state, &mut self.status_info);

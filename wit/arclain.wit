@@ -23,6 +23,16 @@ interface host {
     // File I/O
     file-read: func(archive: string, file: string) -> result<string, string>;
     file-write: func(archive: string, file: string, data: string) -> result<string, string>;
+
+    // Archive Context
+    record archive-info {
+        path: string,
+        filename: string,
+    }
+    current-archive-info: func() -> option<archive-info>;
+
+    // Metadata
+    emit-metadata: func(metadata-json: string);
 }
 
 interface ui {
