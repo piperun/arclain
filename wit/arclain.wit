@@ -1,0 +1,73 @@
+package arclain:plugin;
+
+interface host {
+    // Logging
+    enum log-level {
+        trace,
+        debug,
+        info,
+        warn,
+        error
+    }
+    
+    log: func(level: log-level, message: string);
+    
+    // Settings
+    get-setting: func(key: string) -> option<string>;
+    set-setting: func(key: string, value: string);
+
+    // HTTP
+    http-get: func(url: string) -> result<string, string>;
+    http-post: func(url: string, body: string) -> result<string, string>;
+
+    // File I/O
+    file-read: func(archive: string, file: string) -> result<string, string>;
+    file-write: func(archive: string, file: string, data: string) -> result<string, string>;
+}
+
+interface ui {
+    // UI Types
+    variant ui-element {
+        label(label-config),
+        button(button-config),
+        text-input(text-input-config),
+        checkbox(checkbox-config),
+        separator,
+        space(f32),
+    }
+    
+    record label-config {
+        text: string,
+        bold: bool,
+        size: option<f32>,
+    }
+    
+    record button-config {
+        id: string,
+        label: string,
+    }
+    
+    record text-input-config {
+        id: string,
+        label: string,
+        value: string,
+    }
+    
+    record checkbox-config {
+        id: string,
+        label: string,
+        checked: bool,
+    }
+}
+
+world plugin-world {
+    import host;
+    
+    // Plugin exports
+    export init: func();
+    
+    // UI exports
+    use ui.{ui-element};
+    export get-ui-layout: func(extension-point: string) -> list<ui-element>;
+    export on-ui-event: func(id: string, value: option<string>);
+}

@@ -1,67 +1,46 @@
-#![no_std]
+use archust_plugin_sdk::info;
 
-extern crate alloc;
+struct Component;
 
-#[macro_use]
-extern crate archust_plugin_sdk;
-
-use alloc::string::ToString;
-use alloc::vec;
-use archust_plugin_sdk::prelude::*;
-
-plugin_metadata!(
-    "ui-demo",
-    "UI Demo Plugin",
-    "0.1.0",
-    "Arclain Team",
-    "Demonstrates UI capabilities"
-);
-
-plugin_init!(|| {
-    log(LogLevel::Info, "UI Demo Plugin initialized");
-    Ok::<(), ()>(())
-});
-
-plugin_cleanup!();
-
-plugin_ui_layout!(|extension_point| {
-    if extension_point == PluginExtensionPoint::Sidebar {
-        vec![
-            PluginUiElement::Label {
-                text: "Demo Sidebar UI".to_string(),
-                bold: true,
-                size: Some(14.0),
-            },
-            PluginUiElement::Separator,
-            PluginUiElement::Row {
-                children: vec![
-                    PluginUiElement::Label {
-                        text: "Status:".to_string(),
-                        bold: false,
-                        size: None,
-                    },
-                    PluginUiElement::Space { size: 8.0 },
-                    PluginUiElement::Label {
-                        text: "Active".to_string(),
-                        bold: true,
-                        size: None,
-                    },
-                ],
-            },
-            PluginUiElement::Button {
-                id: "demo_btn".to_string(),
-                label: "Click Me".to_string(),
-            },
-        ]
-    } else {
-        vec![]
+impl archust_plugin_sdk::Guest for Component {
+    fn init() {
+        info("UI Demo Plugin initialized via Component Model!");
     }
-});
 
-plugin_ui_event!(|element_id, value| {
-    use alloc::format;
-    log(
-        LogLevel::Info,
-        &format!("UI Event: {} = {:?}", element_id, value),
-    );
-});
+    fn get_ui_layout(
+        extension_point: String,
+    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::UiElement> {
+        use archust_plugin_sdk::arclain::plugin::ui::*;
+
+        match extension_point.as_str() {
+            "Sidebar" => vec![
+                UiElement::Label(LabelConfig {
+                    text: "UI Demo Plugin".to_string(),
+                    bold: true,
+                    size: Some(16.0),
+                }),
+                UiElement::Button(ButtonConfig {
+                    id: "demo_btn".to_string(),
+                    label: "Click Me!".to_string(),
+                }),
+                UiElement::TextInput(TextInputConfig {
+                    id: "demo_input".to_string(),
+                    label: "Enter text".to_string(),
+                    value: "".to_string(),
+                }),
+                UiElement::Checkbox(CheckboxConfig {
+                    id: "demo_check".to_string(),
+                    label: "Check me".to_string(),
+                    checked: false,
+                }),
+            ],
+            _ => vec![],
+        }
+    }
+
+    fn on_ui_event(id: String, value: Option<String>) {
+        info(&format!("UI Event: {} = {:?}", id, value));
+    }
+}
+
+archust_plugin_sdk::export!(Component with_types_in archust_plugin_sdk);
