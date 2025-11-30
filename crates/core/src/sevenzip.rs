@@ -452,75 +452,6 @@ impl SevenZipCli {
             encryption_method,
         }
     }
-
-    // Stream bytes to compute CRC-32 without materializing to disk
-    pub fn crc32_of_entry(
-        &self,
-        archive: &Path,
-        path_in_archive: &str,
-        password: Option<&str>,
-    ) -> Result<String> {
-        info!(
-            "Computing CRC-32 via streaming: {} -> {}",
-            archive.display(),
-            path_in_archive
-        );
-
-        let mut args = vec![
-            OsString::from("e"),
-            OsString::from("-so"),
-            OsString::from("-y"),
-            OsString::from("-bd"),
-            OsString::from("-sccUTF-8"),
-            OsString::from("-scsUTF-8"),
-        ];
-        if let Some(p) = password {
-            args.push(OsString::from(format!("-p{}", p)));
-        } else {
-            // Avoid interactive prompt; fail fast if password is required
-            args.push(OsString::from("-p"));
-        }
-        args.push(archive.as_os_str().to_os_string());
-        args.push(OsString::from(path_in_archive));
-
-        let mut child = Command::new(&self.exe)
-            .args(&args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawning 7z for crc")?;
-
-        let mut hasher = crc32fast::Hasher::new();
-        if let Some(mut stdout) = child.stdout.take() {
-            use std::io::Read;
-            let mut buf = [0u8; 8192];
-            loop {
-                let n = stdout.read(&mut buf)?;
-                if n == 0 {
-                    break;
-                }
-                hasher.update(&buf[..n]);
-            }
-        }
-
-        let output = child.wait_with_output().context("waiting for 7z output")?;
-        if !output.status.success() {
-            let err = String::from_utf8_lossy(&output.stderr);
-            error!(
-                "7-Zip stream CRC failed with code {:?}: {}",
-                output.status.code(),
-                err.trim()
-            );
-            return Err(anyhow!(
-                "7z failed (code {:?}): {}",
-                output.status.code(),
-                err.trim()
-            ));
-        }
-
-        let sum = hasher.finalize();
-        Ok(format!("{:08X}", sum))
-    }
 }
 
 impl ArchiveBackend for SevenZipCli {
@@ -789,6 +720,145 @@ impl ArchiveBackend for SevenZipCli {
         self.run_status(args)?;
         info!("Archive created successfully");
         Ok(())
+    }
+
+    fn convert_to_7z(&self, source: &Path, dest: &Path, temp_dir: &Path) -> Result<()> {
+        info!(
+            "Converting {} to 7z at {} (temp: {})",
+            source.display(),
+            dest.display(),
+            temp_dir.display()
+        );
+
+        // Create a unique temporary directory
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let work_dir = temp_dir.join(format!("arclain_convert_{}", timestamp));
+        std::fs::create_dir_all(&work_dir).context("creating temp dir for conversion")?;
+
+        // RAII guard for cleanup
+        struct TempDirGuard {
+            path: PathBuf,
+        }
+        impl Drop for TempDirGuard {
+            fn drop(&mut self) {
+                if let Err(e) = std::fs::remove_dir_all(&self.path) {
+                    error!("Failed to cleanup temp dir {}: {}", self.path.display(), e);
+                }
+            }
+        }
+        let _guard = TempDirGuard {
+            path: work_dir.clone(),
+        };
+
+        // 1. Extract source to work_dir
+        self.extract_all(source, &work_dir, None)
+            .context("extracting source archive")?;
+
+        // 2. Compress work_dir contents to dest
+        // We run 7z from within work_dir to ensure relative paths are correct
+        let dest_abs = std::fs::canonicalize(dest.parent().unwrap_or(Path::new(".")))?
+            .join(dest.file_name().unwrap());
+
+        let args = vec![
+            OsString::from("a"),
+            OsString::from("-t7z"),
+            OsString::from("-mx=9"),
+            OsString::from("-m0=LZMA2"),
+            OsString::from("-mmt=on"),
+            OsString::from("-bd"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+            dest_abs.as_os_str().to_os_string(),
+            OsString::from("."), // Add everything in CWD
+        ];
+
+        debug!("Executing 7-Zip conversion command: {:?}", args);
+        let status = Command::new(&self.exe)
+            .args(&args)
+            .current_dir(&work_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .context("spawning 7z for conversion")?;
+
+        if !status.success() {
+            error!("7-Zip conversion failed with code {:?}", status.code());
+            return Err(anyhow!("7z conversion failed (code {:?})", status.code()));
+        }
+
+        info!("Conversion completed successfully");
+        Ok(())
+    }
+
+    fn crc32_of_entry(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+    ) -> Result<String> {
+        info!(
+            "Computing CRC-32 via streaming: {} -> {}",
+            archive.display(),
+            path_in_archive
+        );
+
+        let mut args = vec![
+            OsString::from("e"),
+            OsString::from("-so"),
+            OsString::from("-y"),
+            OsString::from("-bd"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            // Avoid interactive prompt; fail fast if password is required
+            args.push(OsString::from("-p"));
+        }
+        args.push(archive.as_os_str().to_os_string());
+        args.push(OsString::from(path_in_archive));
+
+        let mut child = Command::new(&self.exe)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawning 7z for crc")?;
+
+        let mut hasher = crc32fast::Hasher::new();
+        if let Some(mut stdout) = child.stdout.take() {
+            use std::io::Read;
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = stdout.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+        }
+
+        let output = child.wait_with_output().context("waiting for 7z output")?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            error!(
+                "7-Zip stream CRC failed with code {:?}: {}",
+                output.status.code(),
+                err.trim()
+            );
+            return Err(anyhow!(
+                "7z failed (code {:?}): {}",
+                output.status.code(),
+                err.trim()
+            ));
+        }
+
+        let sum = hasher.finalize();
+        Ok(format!("{:08X}", sum))
     }
 
     fn read_text_file(

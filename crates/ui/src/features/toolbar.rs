@@ -28,6 +28,7 @@ pub struct ToolbarActions {
     pub add: bool,
     pub open: bool,
     pub delete_selected: bool,
+    pub convert_to_7z: bool,
 }
 
 impl Default for ToolbarActions {
@@ -41,6 +42,7 @@ impl Default for ToolbarActions {
             add: false,
             open: false,
             delete_selected: false,
+            convert_to_7z: false,
         }
     }
 }
@@ -110,6 +112,9 @@ pub fn render(
                     archive_loaded && has_selection,
                 ) {
                     actions.delete_selected = true;
+                }
+                if toolbar_button_with_text(ui, theme, "📦", "Convert to 7z", archive_loaded) {
+                    actions.convert_to_7z = true;
                 }
             });
         });

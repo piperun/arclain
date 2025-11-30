@@ -35,6 +35,7 @@ impl PassRule {
 pub struct Config {
     pub sevenzip_path: Option<PathBuf>,
     pub transfer_dir: Option<PathBuf>,
+    pub temp_dir: Option<PathBuf>,
     pub pass_rules: Vec<PassRule>,
 }
 
@@ -56,6 +57,7 @@ impl ConfigStore {
             Config {
                 sevenzip_path: None,
                 transfer_dir: None,
+                temp_dir: None,
                 pass_rules: vec![],
             }
         };
