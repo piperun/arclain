@@ -33,6 +33,32 @@ impl archust_plugin_sdk::Guest for Component {
                     label: "Check me".to_string(),
                     checked: false,
                 }),
+                UiElement::Separator,
+                UiElement::Label(LabelConfig {
+                    text: "New Elements".to_string(),
+                    bold: true,
+                    size: None,
+                }),
+                UiElement::RadioGroup(RadioGroupConfig {
+                    id: "theme_radio".to_string(),
+                    label: "Theme".to_string(),
+                    options: vec!["Light".to_string(), "Dark".to_string()],
+                    selected: "Light".to_string(),
+                }),
+                UiElement::Slider(SliderConfig {
+                    id: "opacity_slider".to_string(),
+                    label: "Opacity".to_string(),
+                    value: 0.5,
+                    min: 0.0,
+                    max: 1.0,
+                    step: Some(0.1),
+                }),
+                UiElement::Dropdown(DropdownConfig {
+                    id: "mode_dropdown".to_string(),
+                    label: "Mode".to_string(),
+                    options: vec!["Simple".to_string(), "Advanced".to_string()],
+                    selected: "Simple".to_string(),
+                }),
             ],
             _ => vec![],
         }

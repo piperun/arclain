@@ -32,6 +32,9 @@ interface ui {
         button(button-config),
         text-input(text-input-config),
         checkbox(checkbox-config),
+        radio-group(radio-group-config),
+        slider(slider-config),
+        dropdown(dropdown-config),
         separator,
         space(f32),
     }
@@ -57,6 +60,29 @@ interface ui {
         id: string,
         label: string,
         checked: bool,
+    }
+
+    record radio-group-config {
+        id: string,
+        label: string,
+        options: list<string>,
+        selected: string,
+    }
+
+    record slider-config {
+        id: string,
+        label: string,
+        value: f32,
+        min: f32,
+        max: f32,
+        step: option<f32>,
+    }
+
+    record dropdown-config {
+        id: string,
+        label: string,
+        options: list<string>,
+        selected: string,
     }
 }
 
