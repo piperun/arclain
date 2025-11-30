@@ -228,6 +228,26 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
             label: config.label,
             checked: config.checked,
         },
+        UiElement::RadioGroup(config) => InternalElement::RadioGroup {
+            id: config.id,
+            label: config.label,
+            options: config.options,
+            selected: config.selected,
+        },
+        UiElement::Slider(config) => InternalElement::Slider {
+            id: config.id,
+            label: config.label,
+            value: config.value,
+            min: config.min,
+            max: config.max,
+            step: config.step,
+        },
+        UiElement::Dropdown(config) => InternalElement::Dropdown {
+            id: config.id,
+            label: config.label,
+            options: config.options,
+            selected: config.selected,
+        },
         UiElement::Separator => InternalElement::Separator,
         UiElement::Space(size) => InternalElement::Space { size },
     }

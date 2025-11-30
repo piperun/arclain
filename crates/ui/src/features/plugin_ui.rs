@@ -59,6 +59,73 @@ pub fn render_ui_element(
         PluginUiElement::Space { size } => {
             ui.add_space(*size);
         }
+        PluginUiElement::RadioGroup {
+            id,
+            label,
+            options,
+            selected,
+        } => {
+            ui.label(label);
+            let mut current_selected = selected.clone();
+            let mut changed = false;
+
+            for option in options {
+                if ui
+                    .radio_value(&mut current_selected, option.clone(), option)
+                    .changed()
+                {
+                    changed = true;
+                }
+            }
+
+            if changed {
+                event_callback(id, Some(current_selected));
+            }
+        }
+        PluginUiElement::Slider {
+            id,
+            label,
+            value,
+            min,
+            max,
+            step,
+        } => {
+            let mut current_value = *value;
+            ui.label(label);
+
+            let slider = egui::Slider::new(&mut current_value, *min..=*max);
+            let slider = if let Some(s) = step {
+                slider.step_by(*s as f64)
+            } else {
+                slider
+            };
+
+            if ui.add(slider).changed() {
+                event_callback(id, Some(current_value.to_string()));
+            }
+        }
+        PluginUiElement::Dropdown {
+            id,
+            label,
+            options,
+            selected,
+        } => {
+            let mut current_selected = selected.clone();
+            ui.label(label);
+
+            egui::ComboBox::from_id_source(id)
+                .selected_text(&current_selected)
+                .show_ui(ui, |ui| {
+                    for option in options {
+                        if ui
+                            .selectable_value(&mut current_selected, option.clone(), option)
+                            .changed()
+                        {
+                            event_callback(id, Some(current_selected.clone()));
+                        }
+                    }
+                });
+        }
     }
 }
 

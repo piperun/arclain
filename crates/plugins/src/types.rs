@@ -200,6 +200,29 @@ pub enum PluginUiElement {
         label: String,
         checked: bool,
     },
+    /// Radio button group
+    RadioGroup {
+        id: String,
+        label: String,
+        options: Vec<String>,
+        selected: String,
+    },
+    /// Slider
+    Slider {
+        id: String,
+        label: String,
+        value: f32,
+        min: f32,
+        max: f32,
+        step: Option<f32>,
+    },
+    /// Dropdown menu
+    Dropdown {
+        id: String,
+        label: String,
+        options: Vec<String>,
+        selected: String,
+    },
     /// Separator line
     Separator,
     /// Spacing
