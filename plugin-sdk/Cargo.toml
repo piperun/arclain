@@ -9,6 +9,7 @@ crate-type = ["rlib"]
 [dependencies]
 serde = { version = "1", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1", features = ["alloc"], default-features = false }
+wit-bindgen = "0.39"
 
 [profile.release]
 opt-level = "z"

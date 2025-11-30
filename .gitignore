@@ -4,6 +4,7 @@
 *.wasm
 /target
 target/
+release/
 ui_archive/*
 *.txt
 *.md
