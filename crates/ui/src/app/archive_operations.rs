@@ -1,7 +1,7 @@
 use crate::app::state::AppState;
 use crate::app::utils::{convert_to_file_entry, format_size};
 use crate::features::{dialogs, file_list, status_bar};
-use arclain_core::ArchiveEntry;
+use arclain_core::{ArchiveBackend, ArchiveEntry};
 use crc32fast::Hasher;
 use parking_lot::Mutex;
 use std::path::PathBuf;
@@ -293,4 +293,45 @@ pub struct ArchiveInfo {
     pub total_crc32: Option<String>,
     pub archive_loaded: bool,
     pub plugin_metadata: Option<serde_json::Value>,
+}
+pub fn convert_archive(state: &Arc<Mutex<AppState>>, status_info: &mut status_bar::StatusBarInfo) {
+    let (current_archive, backend, temp_dir) = {
+        let st = state.lock();
+        (
+            st.current_archive.clone(),
+            st.backend.clone(),
+            st.cfg.cfg.temp_dir.clone(),
+        )
+    };
+
+    if let Some(source) = current_archive {
+        // Determine default destination filename
+        let mut default_name = source.file_stem().unwrap_or_default().to_os_string();
+        default_name.push(".7z");
+
+        // Open save dialog
+        if let Some(dest) = rfd::FileDialog::new()
+            .set_file_name(default_name.to_string_lossy())
+            .add_filter("7z Archive", &["7z"])
+            .save_file()
+        {
+            info!("Converting {} to {}", source.display(), dest.display());
+            status_info.message = "Converting archive... (this may take a while)".to_string();
+
+            // Determine temp dir
+            let temp = temp_dir.unwrap_or_else(std::env::temp_dir);
+
+            // Run conversion (blocking for now)
+            match backend.convert_to_7z(&source, &dest, &temp) {
+                Ok(_) => {
+                    status_info.message = "Conversion completed successfully".to_string();
+                    info!("Conversion completed successfully");
+                }
+                Err(e) => {
+                    error!("Conversion failed: {}", e);
+                    status_info.message = format!("Conversion failed: {}", e);
+                }
+            }
+        }
+    }
 }

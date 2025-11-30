@@ -45,6 +45,7 @@ pub struct ArclainApp {
 
     // Settings state
     security_settings_state: settings_content::SecuritySettingsState,
+    archives_settings_state: settings_content::ArchivesSettingsState,
     plugins_state: PluginsListState,
     plugins_page_state: plugins_page::PluginsPageState,
 
@@ -93,6 +94,7 @@ impl ArclainApp {
             edit_dialog: dialogs::FileEditDialog::default(),
             password_rules_dialog: dialogs::PasswordRulesDialog::default(),
             security_settings_state: settings_content::SecuritySettingsState::default(),
+            archives_settings_state: settings_content::ArchivesSettingsState::default(),
             plugins_state: PluginsListState::default(),
             plugins_page_state: plugins_page::PluginsPageState::default(),
             entries: Vec::new(),
@@ -201,6 +203,13 @@ impl eframe::App for ArclainApp {
                             "on_access" => dialogs::EncryptedCrcPolicy::OnAccess,
                             _ => dialogs::EncryptedCrcPolicy::OnOpen,
                         };
+                    
+                    // Prefill archives settings
+                    if let Some(temp) = &st.cfg.cfg.temp_dir {
+                        self.archives_settings_state.temp_dir = temp.to_string_lossy().to_string();
+                    } else {
+                        self.archives_settings_state.temp_dir.clear();
+                    }
                 }
             });
 
@@ -298,6 +307,12 @@ impl eframe::App for ArclainApp {
                         self.status_info.message =
                             "Another extraction is already running".to_string();
                     }
+                }
+                if actions.convert_to_7z {
+                    archive_operations::convert_archive(
+                        &self.state,
+                        &mut self.status_info,
+                    );
                 }
                 if actions.add {
                     file_operations::add_files(&self.state, &mut self.status_info);
@@ -1030,8 +1045,9 @@ impl ArclainApp {
                                         &self.theme,
                                         &settings_page,
                                         &mut self.security_settings_state,
+                                        &mut self.archives_settings_state,
                                         &mut self.password_rules_dialog,
-                                        Some(&pm),
+                                        Some(&*pm),
                                         &mut self.plugins_state,
                                     )
                                 } else {
@@ -1040,6 +1056,7 @@ impl ArclainApp {
                                         &self.theme,
                                         &settings_page,
                                         &mut self.security_settings_state,
+                                        &mut self.archives_settings_state,
                                         &mut self.password_rules_dialog,
                                         None,
                                         &mut self.plugins_state,
@@ -1085,6 +1102,16 @@ impl ArclainApp {
                     }
                 } else {
                     self.status_info.message = "Plugin system not available".to_string();
+                }
+            }
+            settings_content::SettingsAction::SaveArchives { temp_dir } => {
+                let mut st = self.state.lock();
+                st.cfg.cfg.temp_dir = temp_dir.map(PathBuf::from);
+                if let Err(e) = st.cfg.save() {
+                    error!("Failed to save config: {}", e);
+                    self.status_info.message = format!("Failed to save settings: {}", e);
+                } else {
+                    self.status_info.message = "Archives settings saved".to_string();
                 }
             }
             settings_content::SettingsAction::SavePasswordRules { rules } => {

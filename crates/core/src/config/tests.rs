@@ -9,6 +9,7 @@ fn create_test_config() -> ConfigStore {
         cfg: Config {
             sevenzip_path: None,
             transfer_dir: None,
+            temp_dir: None,
             pass_rules: vec![],
         },
     }

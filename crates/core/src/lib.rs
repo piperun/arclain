@@ -366,6 +366,17 @@ pub trait ArchiveBackend: Send + Sync {
         path_in_archive: &str,
         content: &str,
     ) -> Result<()>;
+
+    /// Convert an archive to 7z format using a temporary directory.
+    fn convert_to_7z(&self, source: &Path, dest: &Path, temp_dir: &Path) -> Result<()>;
+
+    /// Compute CRC-32 of a specific entry (useful for encrypted files where listing doesn't provide it).
+    fn crc32_of_entry(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+    ) -> Result<String>;
 }
 
 pub use config::{Config, ConfigStore, PassRule};

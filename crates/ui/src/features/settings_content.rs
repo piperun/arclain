@@ -24,6 +24,8 @@ pub enum SettingsAction {
     RekeyVault { new_key_file_path: String },
     /// Save password rules
     SavePasswordRules { rules: Vec<PasswordRule> },
+    /// Save archives settings
+    SaveArchives { temp_dir: Option<String> },
     /// Install a plugin from a .wasm file
     InstallPlugin { wasm_path: String },
 }
@@ -36,6 +38,12 @@ pub struct SecuritySettingsState {
     pub encrypted_crc_policy: EncryptedCrcPolicy,
     pub info: String,
     pub error: String,
+}
+
+/// State for the archives settings page
+#[derive(Default)]
+pub struct ArchivesSettingsState {
+    pub temp_dir: String,
 }
 
 /// Render the General settings page
@@ -74,7 +82,13 @@ pub fn render_general_settings(ui: &mut egui::Ui, theme: &AppTheme) {
 }
 
 /// Render the Archives settings page
-pub fn render_archives_settings(ui: &mut egui::Ui, theme: &AppTheme) {
+pub fn render_archives_settings(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    state: &mut ArchivesSettingsState,
+) -> Option<SettingsAction> {
+    let mut action = None;
+
     egui::ScrollArea::vertical()
         .id_salt("archives_settings_scroll")
         .show(ui, |ui| {
@@ -94,6 +108,42 @@ pub fn render_archives_settings(ui: &mut egui::Ui, theme: &AppTheme) {
 
             ui.add_space(8.0);
 
+            // Section: Temporary Files
+            render_settings_section(ui, theme, "Temporary Files", |ui| {
+                ui.label(
+                    egui::RichText::new(
+                        "Directory used for intermediate operations (like conversion)",
+                    )
+                    .size(12.0)
+                    .color(theme.colors.text_secondary),
+                );
+                ui.add_space(8.0);
+
+                ui.label(
+                    egui::RichText::new("Temporary Directory")
+                        .size(12.0)
+                        .strong()
+                        .color(theme.colors.text_primary),
+                );
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    let te =
+                        egui::TextEdit::singleline(&mut state.temp_dir).hint_text("System Default");
+                    ui.add_sized([ui.available_width() - 110.0, 28.0], te);
+                    if ui
+                        .add(egui::Button::new("Browse…").min_size(egui::vec2(100.0, 28.0)))
+                        .clicked()
+                    {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            state.temp_dir = path.to_string_lossy().to_string();
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(8.0);
+
             // Section: Compression
             render_settings_section(ui, theme, "Compression", |ui| {
                 ui.label(
@@ -105,7 +155,29 @@ pub fn render_archives_settings(ui: &mut egui::Ui, theme: &AppTheme) {
 
                 ui.label("Coming soon: Compression level, format preferences");
             });
+
+            ui.add_space(16.0);
+
+            // Save button
+            ui.horizontal(|ui| {
+                let save_btn = egui::Button::new(egui::RichText::new("💾 Save Changes").strong())
+                    .min_size(egui::vec2(140.0, 36.0));
+
+                if ui.add(save_btn).clicked() {
+                    let temp_dir_opt = if state.temp_dir.trim().is_empty() {
+                        None
+                    } else {
+                        Some(state.temp_dir.trim().to_string())
+                    };
+
+                    action = Some(SettingsAction::SaveArchives {
+                        temp_dir: temp_dir_opt,
+                    });
+                }
+            });
         });
+
+    action
 }
 
 /// Render the Security settings page (migrated from preferences dialog)
@@ -342,6 +414,7 @@ pub fn render_settings_content(
     theme: &AppTheme,
     page: &SettingsPage,
     security_state: &mut SecuritySettingsState,
+    archives_state: &mut ArchivesSettingsState,
     password_rules_dialog: &mut PasswordRulesDialog,
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
@@ -355,17 +428,12 @@ pub fn render_settings_content(
             render_general_settings(ui, theme);
             None
         }
-        SettingsPage::Archives => {
-            render_archives_settings(ui, theme);
-            None
-        }
+        SettingsPage::Archives => render_archives_settings(ui, theme, archives_state),
         SettingsPage::Security => render_security_settings(ui, theme, security_state),
         SettingsPage::PasswordRules => {
             render_password_rules_settings(ui, theme, password_rules_dialog)
         }
-        SettingsPage::Plugins => {
-            render_plugins_settings(ui, theme, plugin_manager, plugins_state)
-        }
+        SettingsPage::Plugins => render_plugins_settings(ui, theme, plugin_manager, plugins_state),
     }
 }
 
@@ -442,6 +510,6 @@ pub fn render_plugins_settings(
             }
         };
     }
-    
+
     None
 }
