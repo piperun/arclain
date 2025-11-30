@@ -1,3 +1,4 @@
+pub mod archive_organizer;
 pub mod config;
 pub mod config_db;
 pub mod file_opener;
