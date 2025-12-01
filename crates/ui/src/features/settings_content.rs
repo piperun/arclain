@@ -433,6 +433,7 @@ pub fn render_settings_content(
         SettingsPage::PasswordRules => {
             render_password_rules_settings(ui, theme, password_rules_dialog)
         }
+        SettingsPage::OrganizationRules => None, // Handled in app/mod.rs
         SettingsPage::Plugins => render_plugins_settings(ui, theme, plugin_manager, plugins_state),
     }
 }

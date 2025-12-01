@@ -37,3 +37,48 @@ pub fn replace_pass_rules(db: &arclain_db::SecretsDb, rules: &[PassRule]) -> Res
         .collect();
     db.replace_all_pass_rules(&mapped)
 }
+
+// Organization Rules
+
+use crate::organization::OrganizationRule;
+use arclain_db::{delete_rule, list_rules, save_rule, DbOrganizationRule};
+
+pub fn list_org_rules(conn: &arclain_db::DbConnection) -> Result<Vec<OrganizationRule>> {
+    let db_rules = list_rules(conn)?;
+    let mut rules = Vec::new();
+
+    for r in db_rules {
+        rules.push(OrganizationRule {
+            id: r.id,
+            name: r.name,
+            description: r.description,
+            category: r.category,
+            priority: r.priority,
+            is_enabled: r.is_enabled,
+            is_system: r.is_system,
+            trigger: serde_json::from_str(&r.trigger_json).unwrap_or_default(),
+            actions: serde_json::from_str(&r.actions_json).unwrap_or_default(),
+        });
+    }
+
+    Ok(rules)
+}
+
+pub fn save_org_rule(conn: &arclain_db::DbConnection, rule: &OrganizationRule) -> Result<i64> {
+    let db_rule = DbOrganizationRule {
+        id: rule.id,
+        name: rule.name.clone(),
+        description: rule.description.clone(),
+        category: rule.category.clone(),
+        priority: rule.priority,
+        is_enabled: rule.is_enabled,
+        is_system: rule.is_system,
+        trigger_json: serde_json::to_string(&rule.trigger).unwrap_or_default(),
+        actions_json: serde_json::to_string(&rule.actions).unwrap_or_default(),
+    };
+    save_rule(conn, &db_rule)
+}
+
+pub fn delete_org_rule(conn: &arclain_db::DbConnection, id: i64) -> Result<()> {
+    delete_rule(conn, id)
+}

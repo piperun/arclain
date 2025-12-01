@@ -3,7 +3,6 @@ pub mod extraction_operations;
 pub mod file_operations;
 pub mod navigation;
 pub mod navigation_operations;
-pub mod organize_operations;
 pub mod state;
 pub mod utils;
 pub mod window_operations;
@@ -49,6 +48,8 @@ pub struct ArclainApp {
     archives_settings_state: settings_content::ArchivesSettingsState,
     plugins_state: PluginsListState,
     plugins_page_state: plugins_page::PluginsPageState,
+    organization_rules_state: crate::features::organization_rules_page::OrganizationRulesState,
+    organize_panel_state: Option<crate::features::organize_panel::OrganizePanel>,
 
     // Data
     entries: Vec<file_list::FileEntry>,
@@ -98,6 +99,8 @@ impl ArclainApp {
             archives_settings_state: settings_content::ArchivesSettingsState::default(),
             plugins_state: PluginsListState::default(),
             plugins_page_state: plugins_page::PluginsPageState::default(),
+            organization_rules_state: crate::features::organization_rules_page::OrganizationRulesState::default(),
+            organize_panel_state: None,
             entries: Vec::new(),
             status_info: status_bar::StatusBarInfo::default(),
             current_path: String::new(),
@@ -321,13 +324,39 @@ impl eframe::App for ArclainApp {
                     );
                 }
                 if actions.organize_archive {
-                    if let Err(e) = organize_operations::organize_with_metadata(
-                        &self.state,
-                        &mut self.status_info,
-                    ) {
-                        error!("Failed to organize archive: {}", e);
-                        self.status_info.message = format!("Organization failed: {}", e);
-                    }
+                    // Initialize Organize Panel (same as properties panel button)
+                    let state = self.state.lock();
+                    let archive_name = state.current_archive.as_ref()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let entries = state.all_entries.clone();
+                    
+                    // Load rules from DB
+                    let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config_db::open_config_db(&p.config_db).ok()) {
+                        arclain_core::config_db::list_org_rules(conn).unwrap_or_default()
+                    } else {
+                        Vec::new()
+                    };
+                    
+                    // If no rules, use default presets
+                    let rules = if rules.is_empty() {
+                        arclain_core::organization::presets::get_default_rules()
+                    } else {
+                        rules
+                    };
+
+                    let metadata = state.current_game_metadata.clone();
+
+                    drop(state);
+
+                    self.organize_panel_state = Some(crate::features::organize_panel::OrganizePanel::new(
+                        archive_name,
+                        entries,
+                        rules,
+                        metadata,
+                    ));
+                    self.page_navigator.navigate_to(AppPage::Organize);
                 }
                 if actions.add {
                     file_operations::add_files(&self.state, &mut self.status_info);
@@ -410,6 +439,64 @@ impl eframe::App for ArclainApp {
             }
             AppPage::Settings(settings_page) => {
                 self.render_settings_page(ctx, settings_page.clone());
+            }
+            AppPage::Organize => {
+                if let Some(panel) = &mut self.organize_panel_state {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if let Some(apply) = panel.render(ui) {
+                            if apply {
+                                // Apply organization
+                                if let Some(plan) = &panel.preview_plan {
+                                    // Execute plan
+                                    info!("Applying organization plan: {:?}", plan);
+                                    
+                                    // Trigger organization operation
+                                    let state = self.state.lock();
+                                    let backend = state.backend.clone();
+                                    let current_archive = state.current_archive.clone();
+                                    let temp_dir = state.cfg.cfg.temp_dir.clone().unwrap_or_else(|| std::env::temp_dir());
+                                    let password = state.current_password.clone();
+                                    drop(state);
+
+                                    if let Some(source) = current_archive {
+                                        // Create dest path (same dir, new name or overwrite?)
+                                        // For safety, let's create a new file with _organized suffix or similar, 
+                                        // OR just overwrite if the user expects it.
+                                        // The plan might imply a rename of the root folder, but the archive filename itself?
+                                        // Let's append "_organized" for now to be safe.
+                                        let file_stem = source.file_stem().unwrap_or_default().to_string_lossy();
+                                        let dest = source.with_file_name(format!("{}_organized.7z", file_stem));
+
+                                        match arclain_core::archive_organizer::execute_organization_plan(
+                                            &backend,
+                                            &source,
+                                            &dest,
+                                            plan,
+                                            &temp_dir,
+                                            password.as_deref()
+                                        ) {
+                                            Ok(_) => {
+                                                self.status_info.message = format!("Organization applied: {}", dest.display());
+                                                self.page_navigator.navigate_to_main();
+                                                // TODO: Open the new archive?
+                                            }
+                                            Err(e) => {
+                                                error!("Organization failed: {}", e);
+                                                self.status_info.message = format!("Organization failed: {}", e);
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Cancel
+                                self.page_navigator.navigate_back();
+                            }
+                        }
+                    });
+                } else {
+                    // No state, go back
+                    self.page_navigator.navigate_back();
+                }
             }
         }
 
@@ -577,26 +664,79 @@ impl ArclainApp {
                         .inner_margin(egui::Margin::symmetric(16, 16)),
                 )
                 .show(ctx, |ui| {
-                    let mut groups = vec![properties_panel::create_archive_info_group(
-                        &self.archive_info.archive_format,
-                        self.archive_info.file_count,
-                        &format_size(self.archive_info.total_size),
-                        &format_size(self.archive_info.compressed_size),
-                        self.archive_info.total_crc32.as_deref(),
-                        self.archive_info.archive_encrypted,
-                        self.archive_info.headers_encrypted,
-                        self.archive_info.encryption_method.as_deref(),
-                    )];
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let mut groups = vec![properties_panel::create_archive_info_group(
+                            &self.archive_info.archive_format,
+                            self.archive_info.file_count,
+                            &format_size(self.archive_info.total_size),
+                            &format_size(self.archive_info.compressed_size),
+                            self.archive_info.total_crc32.as_deref(),
+                            self.archive_info.archive_encrypted,
+                            self.archive_info.headers_encrypted,
+                            self.archive_info.encryption_method.as_deref(),
+                        )];
 
-                    // Add plugin metadata if available
-                    if let Some(metadata) = &self.state.lock().plugin_metadata {
-                        if let Some(plugin_group) = properties_panel::create_plugin_metadata_group(metadata) {
-                            groups.push(plugin_group);
+                        // Add plugin metadata if available
+                        if let Some(metadata) = &self.state.lock().plugin_metadata {
+                            if let Some(plugin_group) = properties_panel::create_plugin_metadata_group(metadata) {
+                                groups.push(plugin_group);
+                            }
                         }
-                    }
 
-                    let st = self.state.lock();
-                    properties_panel::render(ui, &self.theme, &groups, st.plugin_manager.as_ref());
+                        let st = self.state.lock();
+                        let action = properties_panel::render(ui, &self.theme, &groups, st.plugin_manager.as_ref());
+                        drop(st);
+
+                        // Handle metadata emission from plugins
+                        if let properties_panel::PropertiesPanelAction::Metadata(json) = &action {
+                             match arclain_core::archive_organizer::GameMetadata::from_json(json) {
+                                Ok(metadata) => {
+                                    let mut state = self.state.lock();
+                                    state.current_game_metadata = Some(metadata);
+                                    info!("Metadata updated from plugin");
+                                }
+                                Err(e) => {
+                                    error!("Failed to parse metadata JSON: {}", e);
+                                }
+                            }
+                        }
+
+                        if matches!(action, properties_panel::PropertiesPanelAction::Organize) {
+                            // Initialize Organize Panel
+                            let state = self.state.lock();
+                            let archive_name = state.current_archive.as_ref()
+                                .and_then(|p| p.file_name())
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            let entries = state.all_entries.clone();
+                            
+                            // Load rules from DB
+                            let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config_db::open_config_db(&p.config_db).ok()) {
+                                arclain_core::config_db::list_org_rules(conn).unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
+                            
+                            // If no rules, use default presets
+                            let rules = if rules.is_empty() {
+                                arclain_core::organization::presets::get_default_rules()
+                            } else {
+                                rules
+                            };
+
+                            let metadata = state.current_game_metadata.clone();
+
+                            drop(state);
+
+                            self.organize_panel_state = Some(crate::features::organize_panel::OrganizePanel::new(
+                                archive_name,
+                                entries,
+                                rules,
+                                metadata,
+                            ));
+                            self.page_navigator.navigate_to(AppPage::Organize);
+                        }
+                    });
                 });
         }
 
@@ -1053,36 +1193,48 @@ impl ArclainApp {
                                 let st = self.state.lock();
                                 let plugin_manager_ref = st.plugin_manager.as_ref();
                                 
-                                let action = if let Some(pm_mutex) = plugin_manager_ref {
-                                    let pm = pm_mutex.lock();
-                                    settings_content::render_settings_content(
-                                        ui,
+                                if matches!(settings_page, SettingsPage::OrganizationRules) {
+                                    // Render Organization Rules page directly as it needs AppState
+                                    crate::features::organization_rules_page::render(
+                                        ctx,
                                         &self.theme,
-                                        &settings_page,
-                                        &mut self.security_settings_state,
-                                        &mut self.archives_settings_state,
-                                        &mut self.password_rules_dialog,
-                                        Some(&*pm),
-                                        &mut self.plugins_state,
-                                    )
+                                        &mut self.organization_rules_state,
+                                        &self.state,
+                                    );
                                 } else {
-                                    settings_content::render_settings_content(
-                                        ui,
-                                        &self.theme,
-                                        &settings_page,
-                                        &mut self.security_settings_state,
-                                        &mut self.archives_settings_state,
-                                        &mut self.password_rules_dialog,
-                                        None,
-                                        &mut self.plugins_state,
-                                    )
-                                };
-                                drop(st);
-
-                                // Handle settings actions
-                                if let Some(action) = action {
-                                    self.handle_settings_action(action);
+                                    let action = if let Some(pm_mutex) = plugin_manager_ref {
+                                        let pm = pm_mutex.lock();
+                                        settings_content::render_settings_content(
+                                            ui,
+                                            &self.theme,
+                                            &settings_page,
+                                            &mut self.security_settings_state,
+                                            &mut self.archives_settings_state,
+                                            &mut self.password_rules_dialog,
+                                            Some(&*pm),
+                                            &mut self.plugins_state,
+                                        )
+                                    } else {
+                                        settings_content::render_settings_content(
+                                            ui,
+                                            &self.theme,
+                                            &settings_page,
+                                            &mut self.security_settings_state,
+                                            &mut self.archives_settings_state,
+                                            &mut self.password_rules_dialog,
+                                            None,
+                                            &mut self.plugins_state,
+                                        )
+                                    };
+                                    
+                                    // Handle settings actions
+                                    if let Some(action) = action {
+                                        drop(st); // Drop lock before handling action which might lock again
+                                        self.handle_settings_action(action);
+                                        return;
+                                    }
                                 }
+                                drop(st);
 
                                 // For password rules page, save changes when modified
                                 if matches!(settings_page, SettingsPage::PasswordRules) {

@@ -2,6 +2,8 @@
 pub mod dialogs;
 pub mod file_list;
 pub mod header;
+pub mod organization_rules_page;
+pub mod organize_panel;
 pub mod password_rules_page;
 pub mod plugin_ui;
 pub mod plugins;

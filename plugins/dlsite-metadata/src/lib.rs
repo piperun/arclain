@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 // Plugin state to store found metadata
 struct PluginState {
-    found_metadata: Option<(String, serde_json::Value)>, // (product_id, json)
+    found_metadata: Option<(String, serde_json::Value, Option<ScrapedData>)>, // (product_id, json, scraped)
     last_status: String,
 }
 
@@ -57,7 +57,7 @@ impl archust_plugin_sdk::Guest for Component {
                         size: None,
                     }));
 
-                    if let Some((id, data)) = &state.found_metadata {
+                    if let Some((id, data, _)) = &state.found_metadata {
                         let title = data["work_name"].as_str().unwrap_or("Unknown Title");
                         elements.push(UiElement::Button(ButtonConfig {
                             id: "show_details".to_string(),
@@ -91,17 +91,19 @@ impl archust_plugin_sdk::Guest for Component {
                 });
 
                 match perform_scan() {
-                    Ok(Some((product_id, json))) => {
+                    Ok(Some((product_id, json, scraped))) => {
                         info("[DLSite Plugin] Metadata found");
+                        
+                        // Emit metadata immediately
+                        let metadata_tuple = (json.clone(), scraped.clone());
+                        let metadata_json = generate_metadata_json(&product_id, Some(&metadata_tuple));
+                        archust_plugin_sdk::emit_metadata(&metadata_json);
+
                         STATE.with(|state| {
                             let mut s = state.borrow_mut();
-                            s.found_metadata = Some((product_id.clone(), json.clone()));
+                            s.found_metadata = Some((product_id, json, scraped));
                             s.last_status = "Metadata found!".to_string();
                         });
-
-                        // Emit metadata immediately
-                        let metadata_json = generate_metadata_json(&product_id, Some(&json));
-                        archust_plugin_sdk::emit_metadata(&metadata_json);
                     }
                     Ok(None) => {
                         info("[DLSite Plugin] No metadata found");
@@ -119,14 +121,17 @@ impl archust_plugin_sdk::Guest for Component {
             }
             "show_details" => {
                 STATE.with(|state| {
-                    if let Some((id, json)) = &state.borrow().found_metadata {
+                    if let Some((id, json, scraped)) = &state.borrow().found_metadata {
                         let title = json["work_name"].as_str().unwrap_or("Unknown");
                         let maker = json["maker_name"].as_str().unwrap_or("Unknown");
                         let price = json["price"].as_u64().unwrap_or(0);
+                        
+                        let desc_len = scraped.as_ref().and_then(|s| s.description.as_ref()).map(|s| s.len()).unwrap_or(0);
+                        let screenshots_count = scraped.as_ref().map(|s| s.screenshots.len()).unwrap_or(0);
 
                         let msg = format!(
-                            "Title: {}\nCircle: {}\nPrice: {} JPY\nCode: {}",
-                            title, maker, price, id
+                            "Title: {}\nCircle: {}\nPrice: {} JPY\nCode: {}\nDescription Length: {}\nScreenshots: {}",
+                            title, maker, price, id, desc_len, screenshots_count
                         );
                         archust_plugin_sdk::show_message("DLSite Metadata Details", &msg);
                     }
@@ -137,7 +142,7 @@ impl archust_plugin_sdk::Guest for Component {
     }
 }
 
-fn perform_scan() -> Result<Option<(String, serde_json::Value)>, String> {
+fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
     use archust_plugin_sdk::{current_archive_info, info, list_archive_files};
 
     let info_data = current_archive_info().ok_or("No archive open")?;
@@ -149,8 +154,8 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value)>, String> {
     // 1. Check filename
     if let Some(code) = detect_dlsite_code(&info_data.filename) {
         info(&format!("[DLSite Plugin] Found code in filename: {}", code));
-        if let Some(json) = fetch_dlsite_metadata(&code) {
-            return Ok(Some((code, json)));
+        if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
+            return Ok(Some((code, json, scraped)));
         }
     }
 
@@ -166,8 +171,8 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value)>, String> {
                         "[DLSite Plugin] Found code in archive content: {}",
                         code
                     ));
-                    if let Some(json) = fetch_dlsite_metadata(&code) {
-                        return Ok(Some((code, json)));
+                    if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
+                        return Ok(Some((code, json, scraped)));
                     }
                 }
             }
@@ -196,40 +201,117 @@ fn detect_dlsite_code(text: &str) -> Option<String> {
     None
 }
 
-fn fetch_dlsite_metadata(product_id: &str) -> Option<serde_json::Value> {
+fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use archust_plugin_sdk::{http_get, info};
 
-    let url = format!(
+    // 1. Fetch JSON API
+    let api_url = format!(
         "https://www.dlsite.com/home/api/=/product.json?work_no={}",
         product_id
     );
-    info(&format!("[DLSite Plugin] Fetching URL: {}", url));
+    info(&format!("[DLSite Plugin] Fetching API: {}", api_url));
 
-    match http_get(&url) {
-        Ok(response_body) => {
-            match serde_json::from_str::<serde_json::Value>(&response_body) {
-                Ok(json) => {
-                    if let Some(arr) = json.as_array() {
-                        if let Some(first) = arr.first() {
-                            return Some(first.clone());
-                        }
-                    }
-                    if json.is_object() {
-                        // Check if it's an error response or empty
-                        // DLSite API might return success but empty result?
-                        return Some(json);
-                    }
+    let json_data = match http_get(&api_url) {
+        Ok(response_body) => match serde_json::from_str::<serde_json::Value>(&response_body) {
+            Ok(json) => {
+                if let Some(arr) = json.as_array() {
+                    arr.first().cloned()
+                } else if json.is_object() {
+                    Some(json)
+                } else {
                     None
                 }
-                Err(_) => None,
             }
-        }
+            Err(_) => None,
+        },
         Err(_) => None,
+    };
+
+    if json_data.is_none() {
+        return None;
     }
+    let json_data = json_data.unwrap();
+
+    // 2. Fetch HTML Page for scraping
+    let html_url = format!(
+        "https://www.dlsite.com/home/work/=/product_id/{}.html",
+        product_id
+    );
+    info(&format!("[DLSite Plugin] Fetching HTML: {}", html_url));
+
+    let scraped_data = match http_get(&html_url) {
+        Ok(html) => scrape_html_metadata(&html),
+        Err(e) => {
+            info(&format!("[DLSite Plugin] Failed to fetch HTML: {}", e));
+            None
+        }
+    };
+
+    Some((json_data, scraped_data))
 }
 
-fn generate_metadata_json(product_id: &str, dlsite_data: Option<&serde_json::Value>) -> String {
-    let (title, circle, description, price, release_date, tags) = if let Some(data) = dlsite_data {
+#[derive(Debug, Clone)]
+struct ScrapedData {
+    description: Option<String>,
+    screenshots: Vec<String>,
+}
+
+fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
+    use regex::Regex;
+
+    // Scrape Description
+    // Look for <div class="work_parts_area">...</div>
+    // Note: This is a simple regex and might be brittle
+    let desc_re = Regex::new(r#"(?s)<div[^>]*class="work_parts_area"[^>]*>(.*?)</div>"#).ok()?;
+    let description = desc_re.captures(html).map(|caps| {
+        let raw = caps.get(1).map_or("", |m| m.as_str());
+        // Simple HTML tag stripping
+        let strip_re = Regex::new(r"<[^>]*>").unwrap();
+        strip_re.replace_all(raw, "").trim().to_string()
+    });
+
+    // Scrape Screenshots
+    // Look for images in the slider or product info
+    // Pattern: src="//img.dlsite.jp/modpub/images2/work/doujin/..."
+    // We'll look for the high-res versions often found in data-src or src
+    let img_re =
+        Regex::new(r#"src="([^"]*img\.dlsite\.jp/modpub/images2/work/doujin/[^"]+)""#).ok()?;
+
+    let mut screenshots = Vec::new();
+    for caps in img_re.captures_iter(html) {
+        if let Some(url) = caps.get(1) {
+            let url_str = url.as_str();
+            // Ensure protocol
+            let full_url = if url_str.starts_with("//") {
+                format!("https:{}", url_str)
+            } else {
+                url_str.to_string()
+            };
+
+            // Avoid duplicates and thumbnails if possible (simple check)
+            if !screenshots.contains(&full_url) {
+                screenshots.push(full_url);
+            }
+        }
+    }
+
+    Some(ScrapedData {
+        description,
+        screenshots,
+    })
+}
+
+fn generate_metadata_json(
+    product_id: &str,
+    data: Option<&(serde_json::Value, Option<ScrapedData>)>,
+) -> String {
+    let (json_data, scraped_data) = if let Some((j, s)) = data {
+        (Some(j), s.as_ref())
+    } else {
+        (None, None)
+    };
+
+    let (title, circle, short_desc, price, release_date, tags) = if let Some(data) = json_data {
         (
             data["work_name"].as_str().unwrap_or("Unknown Title"),
             data["maker_name"].as_str().unwrap_or("Unknown Circle"),
@@ -245,26 +327,6 @@ fn generate_metadata_json(product_id: &str, dlsite_data: Option<&serde_json::Val
                 })
                 .unwrap_or_default(),
         )
-    } else {
-        // Fallback should not happen in new logic, but keep safe default
-        ("Unknown", "Unknown", "", "0 JPY".to_string(), "", vec![])
-    };
-
-    serde_json::json!({
-        "product_id": product_id,
-        "source": "dlsite",
-        "common": {
-            "title": title,
-            "description": description,
-            "tags": tags,
-            "release_date": release_date,
-            "creator": circle
-        },
-        "dlsite": {
-            "code": product_id,
-            "circle": circle,
-            "price": price,
-            "raw_data": dlsite_data
         },
         "screenshots": []
     })

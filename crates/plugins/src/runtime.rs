@@ -224,6 +224,13 @@ impl PluginInstance {
         pending
     }
 
+    /// Get emitted metadata from the plugin
+    pub fn get_emitted_metadata(&self) -> Option<String> {
+        let data = self.store.data();
+        let mut metadata = data.emitted_metadata.lock();
+        metadata.take()
+    }
+
     /// Set the current archive context for the plugin
     pub fn set_archive_context(&mut self, archive_path: Option<String>, password: Option<String>) {
         self.store

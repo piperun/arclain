@@ -113,7 +113,7 @@ pub fn render_ui_element(
             let mut current_selected = selected.clone();
             ui.label(label);
 
-            egui::ComboBox::from_id_source(id)
+            egui::ComboBox::from_id_salt(id)
                 .selected_text(&current_selected)
                 .show_ui(ui, |ui| {
                     for option in options {

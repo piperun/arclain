@@ -8,7 +8,10 @@ pub enum AppPage {
     /// Plugins management page
     Plugins,
     /// Settings page with a specific category selected
+    /// Settings page with a specific category selected
     Settings(SettingsPage),
+    /// Archive organization page
+    Organize,
 }
 
 /// Represents different settings categories
@@ -22,6 +25,8 @@ pub enum SettingsPage {
     Archives,
     /// Password rules management
     PasswordRules,
+    /// Organization rules management
+    OrganizationRules,
     /// Security and encryption settings
     Security,
     /// Plugin management
@@ -36,6 +41,7 @@ impl SettingsPage {
             SettingsPage::General => "General",
             SettingsPage::Archives => "Archives",
             SettingsPage::PasswordRules => "Password Rules",
+            SettingsPage::OrganizationRules => "Organization Rules",
             SettingsPage::Security => "Security",
             SettingsPage::Plugins => "Plugins",
         }
@@ -48,6 +54,7 @@ impl SettingsPage {
             SettingsPage::General => "🔧",
             SettingsPage::Archives => "📦",
             SettingsPage::PasswordRules => "🔐",
+            SettingsPage::OrganizationRules => "📋",
             SettingsPage::Security => "🛡",
             SettingsPage::Plugins => "⬢",
         }
@@ -60,6 +67,7 @@ impl SettingsPage {
             SettingsPage::General => "General application preferences",
             SettingsPage::Archives => "Archive handling and extraction options",
             SettingsPage::PasswordRules => "Manage password rules and patterns",
+            SettingsPage::OrganizationRules => "Manage archive organization rules",
             SettingsPage::Security => "Encryption and security settings",
             SettingsPage::Plugins => "Manage and configure plugins",
         }
@@ -71,6 +79,7 @@ impl SettingsPage {
             SettingsPage::General,
             SettingsPage::Archives,
             SettingsPage::PasswordRules,
+            SettingsPage::OrganizationRules,
             SettingsPage::Security,
             SettingsPage::Plugins,
         ]
@@ -153,6 +162,7 @@ impl PageNavigator {
         match &self.current_page {
             AppPage::Main => vec![],
             AppPage::Plugins => vec![("Plugins", AppPage::Plugins)],
+            AppPage::Organize => vec![("Organize", AppPage::Organize)],
             AppPage::Settings(category) => {
                 let mut breadcrumb = vec![("Settings", AppPage::Settings(SettingsPage::Overview))];
 

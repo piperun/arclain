@@ -12,6 +12,9 @@ use std::os::unix::fs::PermissionsExt;
 mod secrets;
 pub use secrets::{PassRule as DbPassRule, SecretsDb};
 
+mod organization;
+pub use organization::{delete_rule, get_rule, list_rules, save_rule, DbOrganizationRule};
+
 /// Re-export Connection so dependents don't need rusqlite directly.
 pub use rusqlite::Connection as DbConnection;
 
@@ -226,6 +229,20 @@ fn init_config_schema(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS meta(
             migration INTEGER NOT NULL
+        );",
+        [],
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS organization_rules(
+            id INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT,
+            category TEXT DEFAULT 'General',
+            trigger_json TEXT NOT NULL,
+            actions_json TEXT NOT NULL,
+            priority INTEGER DEFAULT 0,
+            is_enabled BOOLEAN DEFAULT 1,
+            is_system BOOLEAN DEFAULT 0
         );",
         [],
     )?;

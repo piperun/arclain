@@ -26,7 +26,7 @@ use crate::{sevenzip::SevenZipCli, ArchiveBackend};
 ///   }
 /// }
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameMetadata {
     /// Product ID - platform-specific identifier (e.g., "RJ123456", "itch-slug")
     pub product_id: String,
@@ -54,11 +54,20 @@ pub struct GameMetadata {
 
     /// Full layered JSON with both common and platform-specific data
     /// This is what gets saved as metadata.json in the archive
+    #[serde(skip)]
     pub metadata_json: String,
 }
 
+impl GameMetadata {
+    pub fn from_json(json: &str) -> anyhow::Result<Self> {
+        let mut metadata: Self = serde_json::from_str(json)?;
+        metadata.metadata_json = json.to_string();
+        Ok(metadata)
+    }
+}
+
 /// Screenshot data provided by plugin
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ScreenshotData {
     FilePath(PathBuf), // Downloaded by plugin
     Base64(String),    // Base64-encoded
@@ -250,5 +259,114 @@ pub fn organize_archive(
         .context("creating organized 7z archive")?;
 
     info!("Archive organization completed successfully");
+    Ok(())
+}
+
+/// Execute a generic organization plan
+pub fn execute_organization_plan(
+    backend: &SevenZipCli,
+    source: &Path,
+    dest: &Path,
+    plan: &crate::organization::engine::OrganizationPlan,
+    temp_dir: &Path,
+    password: Option<&str>,
+) -> Result<()> {
+    info!(
+        "Executing organization plan '{}' for archive {}",
+        plan.rule_name,
+        source.display()
+    );
+
+    // Create unique temp directory
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let work_dir = temp_dir.join(format!("arclain_plan_{}", timestamp));
+    let source_extracted = work_dir.join("source");
+    let organized_dir = work_dir.join("organized");
+
+    std::fs::create_dir_all(&source_extracted).context("creating temp source dir")?;
+    std::fs::create_dir_all(&organized_dir).context("creating temp organized dir")?;
+
+    // RAII cleanup guard
+    struct TempDirGuard {
+        path: PathBuf,
+    }
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            if let Err(e) = std::fs::remove_dir_all(&self.path) {
+                error!("Failed to cleanup temp dir {}: {}", self.path.display(), e);
+            }
+        }
+    }
+    let _guard = TempDirGuard {
+        path: work_dir.clone(),
+    };
+
+    // 1. Extract source
+    debug!("Extracting source archive");
+    backend
+        .extract_all(source, &source_extracted, password)
+        .context("extracting source archive")?;
+
+    // 2. Move files according to plan
+    debug!("Moving files according to plan");
+    for (src_rel, dst_rel) in &plan.moves {
+        let src_path = source_extracted.join(src_rel);
+        let dst_path = organized_dir.join(dst_rel);
+
+        if src_path.exists() {
+            if let Some(parent) = dst_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            // Use copy instead of rename to avoid issues if we want to keep source for some reason
+            // (though we delete it later). Rename is faster but cross-device issues might occur if temp is weird.
+            // Since it's all in temp, rename should be fine.
+            std::fs::rename(&src_path, &dst_path)
+                .or_else(|_| std::fs::copy(&src_path, &dst_path).map(|_| ()))?;
+        } else {
+            debug!("Source file not found (maybe directory?): {}", src_rel);
+        }
+    }
+
+    // 3. Compress organized directory to dest
+    debug!("Compressing organized structure to 7z");
+    let dest_abs = if dest.is_absolute() {
+        dest.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(dest)
+    };
+
+    // We want to compress the CONTENTS of organized_dir, but create_archive takes a list of files/folders.
+    // If we pass [organized_dir], it will create a root folder named "organized" inside the archive?
+    // No, create_archive usually takes the items to put at root.
+    // But our plan includes the root folder in the dst_rel (e.g. "Game/file.txt").
+    // So organized_dir contains "Game" folder.
+    // So we should pass [organized_dir/Game] (or whatever is inside organized_dir).
+
+    // Actually, if organized_dir contains "Game", and we want the archive to contain "Game",
+    // we should pass `organized_dir/Game` to create_archive?
+    // Wait, SevenZipCli::create_archive takes `paths: &[PathBuf]`.
+    // If I pass `path/to/Game`, 7z usually stores "Game/...".
+    // So I should list the children of organized_dir and pass them.
+
+    let mut items_to_compress = Vec::new();
+    for entry in std::fs::read_dir(&organized_dir)? {
+        let entry = entry?;
+        items_to_compress.push(entry.path());
+    }
+
+    if items_to_compress.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Organized directory is empty, nothing to compress"
+        ));
+    }
+
+    backend
+        .create_archive(&dest_abs, &items_to_compress, "7z")
+        .context("creating organized 7z archive")?;
+
+    info!("Plan execution completed successfully");
     Ok(())
 }
