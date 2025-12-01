@@ -214,6 +214,22 @@ impl PluginInstance {
         // or we can add a specific cleanup function to WIT
         Ok(())
     }
+
+    /// Get pending messages from the plugin
+    pub fn get_pending_messages(&self) -> Vec<(String, String)> {
+        let data = self.store.data();
+        let mut messages = data.pending_messages.lock();
+        let pending = messages.clone();
+        messages.clear();
+        pending
+    }
+
+    /// Set the current archive context for the plugin
+    pub fn set_archive_context(&mut self, archive_path: Option<String>, password: Option<String>) {
+        self.store
+            .data()
+            .set_archive_context(archive_path, password);
+    }
 }
 
 fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginUiElement {

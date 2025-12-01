@@ -38,3 +38,22 @@ pub fn current_archive_info() -> Option<arclain::plugin::host::ArchiveInfo> {
 pub fn emit_metadata(metadata_json: &str) {
     arclain::plugin::host::emit_metadata(metadata_json);
 }
+
+// HTTP helpers
+pub fn http_get(url: &str) -> Result<String, String> {
+    arclain::plugin::host::http_get(url)
+}
+
+pub fn http_post(url: &str, body: &str) -> Result<String, String> {
+    arclain::plugin::host::http_post(url, body)
+}
+
+// Archive helpers
+pub fn list_archive_files() -> Result<Vec<String>, String> {
+    arclain::plugin::host::list_archive_files()
+}
+
+// UI helpers
+pub fn show_message(title: &str, message: &str) {
+    arclain::plugin::host::show_message(title, message);
+}

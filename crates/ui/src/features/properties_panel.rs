@@ -42,6 +42,12 @@ pub fn render(
             for plugin_id in plugins {
                 manager.with_plugin_instance(&plugin_id, |instance| {
                     if let Ok(ui_elements) = instance.get_ui_layout(PluginExtensionPoint::Sidebar) {
+                        // Check for pending messages
+                        let messages = instance.get_pending_messages();
+                        for (title, message) in messages {
+                            tracing::info!("PLUGIN MESSAGE: {} - {}", title, message);
+                        }
+
                         if !ui_elements.is_empty() {
                             ui.add_space(8.0);
 

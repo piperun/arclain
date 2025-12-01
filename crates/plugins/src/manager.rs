@@ -57,6 +57,16 @@ impl PluginManager {
         self.backend = Some(backend);
     }
 
+    /// Set the current archive context for all plugins
+    pub fn set_archive_context(&self, archive_path: Option<String>, password: Option<String>) {
+        let mut plugins = self.plugins.write();
+        for plugin in plugins.values_mut() {
+            plugin
+                .instance
+                .set_archive_context(archive_path.clone(), password.clone());
+        }
+    }
+
     /// Initialize and load all plugins
     pub fn init(&mut self) -> Result<()> {
         info!("Initializing plugin system");
