@@ -10,6 +10,7 @@ ui_archive/*
 *.md
 !README.md
 *.html
+mockups/*
 
 # Plugin build artifacts
 
