@@ -124,6 +124,7 @@ pub struct HostFunctions {
     pub current_archive: Arc<Mutex<Option<String>>>,
     pub current_password: Arc<Mutex<Option<String>>>,
     pub settings: Arc<Mutex<HashMap<String, String>>>,
+    pub pending_messages: Arc<Mutex<Vec<(String, String)>>>,
     pub table: ResourceTable,
     pub ctx: WasiCtx,
 }
@@ -149,6 +150,7 @@ impl HostFunctions {
             current_archive: Arc::new(Mutex::new(None)),
             current_password: Arc::new(Mutex::new(None)),
             settings: Arc::new(Mutex::new(HashMap::new())),
+            pending_messages: Arc::new(Mutex::new(Vec::new())),
             table: ResourceTable::new(),
             ctx,
         }
@@ -274,6 +276,27 @@ impl Host for HostFunctions {
         })
     }
 
+    fn list_archive_files(&mut self) -> std::result::Result<Vec<String>, String> {
+        if !self.check_capability(PluginCapability::ArchiveMetadataRead) {
+            return Err("ArchiveMetadataRead capability not granted".to_string());
+        }
+        let backend = self
+            .archive_backend
+            .as_ref()
+            .ok_or("Archive backend not available")?;
+        let archive = self
+            .current_archive
+            .lock()
+            .clone()
+            .ok_or("No archive currently open")?;
+        let password = self.current_password.lock().clone();
+
+        let info = backend
+            .list(Path::new(&archive), password.as_deref())
+            .map_err(|e| e.to_string())?;
+        Ok(info.entries.into_iter().map(|e| e.path).collect())
+    }
+
     fn emit_metadata(&mut self, metadata_json: String) {
         // Store metadata for the host to process
         info!("[Plugin] Emitting metadata");
@@ -281,6 +304,14 @@ impl Host for HostFunctions {
 
         // TODO: Store metadata in a channel/queue for the UI to consume
         // For now, just log it as proof of concept
+    }
+
+    fn show_message(&mut self, title: String, message: String) {
+        info!(
+            "[Plugin] Requesting message dialog: {} - {}",
+            title, message
+        );
+        self.pending_messages.lock().push((title, message));
     }
 }
 

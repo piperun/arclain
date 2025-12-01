@@ -264,6 +264,15 @@ impl AppState {
         // Dispatch OnArchiveOpen event to plugins
         self.plugin_metadata = None; // Reset metadata
         if let Some(ref manager_arc) = self.plugin_manager {
+            // Update archive context for plugins
+            {
+                let manager = manager_arc.lock();
+                manager.set_archive_context(
+                    Some(path.to_string_lossy().to_string()),
+                    self.current_password.clone(),
+                );
+            }
+
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
                 path: path.to_string_lossy().to_string(),
@@ -315,6 +324,16 @@ impl AppState {
         self.encryption_method = info.encryption_method.clone();
         self.navigation = NavigationState::new();
         self.current_password = Some(password.to_string());
+
+        // Update plugin context
+        if let Some(ref manager_arc) = self.plugin_manager {
+            let manager = manager_arc.lock();
+            manager.set_archive_context(
+                Some(path.to_string_lossy().to_string()),
+                Some(password.to_string()),
+            );
+        }
+
         Ok(self.all_entries.clone())
     }
 

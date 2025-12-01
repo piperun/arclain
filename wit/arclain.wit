@@ -30,9 +30,13 @@ interface host {
         filename: string,
     }
     current-archive-info: func() -> option<archive-info>;
+    list-archive-files: func() -> result<list<string>, string>;
 
     // Metadata
     emit-metadata: func(metadata-json: string);
+
+    // UI Feedback
+    show-message: func(title: string, message: string);
 }
 
 interface ui {
