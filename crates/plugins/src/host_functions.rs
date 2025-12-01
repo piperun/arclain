@@ -125,6 +125,7 @@ pub struct HostFunctions {
     pub current_password: Arc<Mutex<Option<String>>>,
     pub settings: Arc<Mutex<HashMap<String, String>>>,
     pub pending_messages: Arc<Mutex<Vec<(String, String)>>>,
+    pub emitted_metadata: Arc<Mutex<Option<String>>>,
     pub table: ResourceTable,
     pub ctx: WasiCtx,
 }
@@ -151,6 +152,7 @@ impl HostFunctions {
             current_password: Arc::new(Mutex::new(None)),
             settings: Arc::new(Mutex::new(HashMap::new())),
             pending_messages: Arc::new(Mutex::new(Vec::new())),
+            emitted_metadata: Arc::new(Mutex::new(None)),
             table: ResourceTable::new(),
             ctx,
         }
@@ -302,8 +304,7 @@ impl Host for HostFunctions {
         info!("[Plugin] Emitting metadata");
         debug!("[Plugin] Metadata JSON: {}", metadata_json);
 
-        // TODO: Store metadata in a channel/queue for the UI to consume
-        // For now, just log it as proof of concept
+        *self.emitted_metadata.lock() = Some(metadata_json);
     }
 
     fn show_message(&mut self, title: String, message: String) {

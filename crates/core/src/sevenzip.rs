@@ -199,7 +199,7 @@ impl SevenZipCli {
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .context("spawning 7z with stdin")?;
 
@@ -208,10 +208,19 @@ impl SevenZipCli {
             stdin.write_all(stdin_data)?;
         }
 
-        let status = child.wait().context("waiting for 7z")?;
-        if !status.success() {
-            error!("7-Zip command failed with code {:?}", status.code());
-            return Err(anyhow!("7z failed (code {:?})", status.code()));
+        let output = child.wait_with_output().context("waiting for 7z")?;
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            error!(
+                "7-Zip command failed with code {:?}: {}",
+                output.status.code(),
+                err
+            );
+            return Err(anyhow!(
+                "7z failed (code {:?}): {}",
+                output.status.code(),
+                err
+            ));
         }
         Ok(())
     }
@@ -222,16 +231,25 @@ impl SevenZipCli {
         S: AsRef<OsStr>,
     {
         debug!("Executing 7-Zip command (status mode): {:?}", self.exe);
-        let status = Command::new(&self.exe)
+        let output = Command::new(&self.exe)
             .args(args)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+            .stderr(Stdio::piped())
+            .output()
             .context("spawning 7z")?;
 
-        if !status.success() {
-            error!("7-Zip command failed with code {:?}", status.code());
-            return Err(anyhow!("7z failed (code {:?})", status.code()));
+        if !output.status.success() {
+            let err = String::from_utf8_lossy(&output.stderr);
+            error!(
+                "7-Zip command failed with code {:?}: {}",
+                output.status.code(),
+                err
+            );
+            return Err(anyhow!(
+                "7z failed (code {:?}): {}",
+                output.status.code(),
+                err
+            ));
         }
 
         debug!("7-Zip command completed successfully");

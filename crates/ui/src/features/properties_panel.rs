@@ -11,12 +11,21 @@ pub struct PropertyGroup {
     pub properties: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PropertiesPanelAction {
+    None,
+    Organize,
+    Metadata(String),
+}
+
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     groups: &[PropertyGroup],
     plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
-) {
+) -> PropertiesPanelAction {
+    let mut action = PropertiesPanelAction::None;
+
     ui.vertical(|ui| {
         ui.add_space(4.0);
 
@@ -40,7 +49,7 @@ pub fn render(
                 .collect();
 
             for plugin_id in plugins {
-                manager.with_plugin_instance(&plugin_id, |instance| {
+                let metadata_opt = manager.with_plugin_instance(&plugin_id, |instance| {
                     if let Ok(ui_elements) = instance.get_ui_layout(PluginExtensionPoint::Sidebar) {
                         // Check for pending messages
                         let messages = instance.get_pending_messages();
@@ -84,10 +93,26 @@ pub fn render(
                             });
                         }
                     }
+
+                    // Check for emitted metadata
+                    instance.get_emitted_metadata()
                 });
+
+                if let Some(Some(metadata)) = metadata_opt {
+                    action = PropertiesPanelAction::Metadata(metadata);
+                }
             }
         }
+        // Organize Button - always available for any archive
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(8.0);
+        if ui.button("📦 Organize Archive").clicked() {
+            action = PropertiesPanelAction::Organize;
+        }
     });
+
+    action
 }
 
 fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGroup) {

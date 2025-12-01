@@ -3,6 +3,7 @@ pub mod config;
 pub mod config_db;
 pub mod file_opener;
 pub mod logging;
+pub mod organization;
 pub mod sevenzip;
 
 use anyhow::Result;
