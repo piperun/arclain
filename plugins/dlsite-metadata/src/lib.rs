@@ -266,50 +266,113 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
 
 #[derive(Debug, Clone)]
 struct ScrapedData {
+    title: Option<String>,
+    circle: Option<String>,
+    release_date: Option<String>,
+    tags: Vec<String>,
     description: Option<String>,
     screenshots: Vec<String>,
 }
 
 fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
-    use regex::Regex;
+    use scraper::{Html, Selector};
 
-    // Scrape Description
-    // Look for <div class="work_parts_area">...</div>
-    // Note: This is a simple regex and might be brittle
-    let desc_re = Regex::new(r#"(?s)<div[^>]*class="work_parts_area"[^>]*>(.*?)</div>"#).ok()?;
-    let description = desc_re.captures(html).map(|caps| {
-        let raw = caps.get(1).map_or("", |m| m.as_str());
-        // Simple HTML tag stripping
-        let strip_re = Regex::new(r"<[^>]*>").unwrap();
-        strip_re.replace_all(raw, "").trim().to_string()
-    });
-
-    // Scrape Screenshots
-    // Look for images in the slider or product info
-    // Pattern: src="//img.dlsite.jp/modpub/images2/work/doujin/..."
-    // We'll look for the high-res versions often found in data-src or src
-    let img_re =
-        Regex::new(r#"src="([^"]*img\.dlsite\.jp/modpub/images2/work/doujin/[^"]+)""#).ok()?;
-
+    let document = Html::parse_document(html);
+    
+    let mut title = None;
+    let mut circle = None;
+    let mut release_date = None;
+    let mut tags = Vec::new();
+    let mut description = None;
     let mut screenshots = Vec::new();
-    for caps in img_re.captures_iter(html) {
-        if let Some(url) = caps.get(1) {
-            let url_str = url.as_str();
-            // Ensure protocol
-            let full_url = if url_str.starts_with("//") {
-                format!("https:{}", url_str)
-            } else {
-                url_str.to_string()
-            };
 
-            // Avoid duplicates and thumbnails if possible (simple check)
-            if !screenshots.contains(&full_url) {
+    // 1. Parse Tables (work_maker and work_outline)
+    let tr_selector = Selector::parse("table#work_maker tr, table#work_outline tr").unwrap();
+    let th_selector = Selector::parse("th").unwrap();
+    let td_selector = Selector::parse("td").unwrap();
+    let maker_selector = Selector::parse("span.maker_name").unwrap();
+    let a_selector = Selector::parse("a").unwrap();
+
+    for tr in document.select(&tr_selector) {
+        let th = match tr.select(&th_selector).next() {
+            Some(el) => el.text().collect::<String>().trim().to_string(),
+            None => continue,
+        };
+        let td = match tr.select(&td_selector).next() {
+            Some(el) => el,
+            None => continue,
+        };
+
+        match th.as_str() {
+            "Circle" | "サークル名" | "Brand" | "ブランド名" | "Publisher" | "出版社名" | "Label" | "レーベル" => {
+                if let Some(span) = td.select(&maker_selector).next() {
+                    circle = Some(span.text().collect::<String>().trim().to_string());
+                } else {
+                    circle = Some(td.text().collect::<String>().trim().to_string());
+                }
+            },
+            "Published date" | "販売日" | "予告開始日" => {
+                let date_str = td.text().collect::<String>().trim().to_string();
+                // Try to clean up date string (e.g. "2024年01月01日" -> "2024-01-01")
+                // For now just keep it as is, or do simple replacement
+                release_date = Some(date_str.replace("年", "-").replace("月", "-").replace("日", ""));
+            },
+            "Genre" | "ジャンル" => {
+                for a in td.select(&a_selector) {
+                    tags.push(a.text().collect::<String>().trim().to_string());
+                }
+            },
+            "Series" | "シリーズ名" => {
+                // Could extract series here if needed
+            },
+            _ => {}
+        }
+    }
+
+    // 2. Parse Description
+    // Try meta description first
+    let meta_desc_selector = Selector::parse("meta[name='description']").unwrap();
+    if let Some(meta) = document.select(&meta_desc_selector).next() {
+        if let Some(content) = meta.value().attr("content") {
+            description = Some(content.trim().to_string());
+        }
+    }
+
+    // Fallback to work_parts_area if meta is empty
+    if description.is_none() {
+        let parts_selector = Selector::parse("div.work_parts_area").unwrap();
+        if let Some(div) = document.select(&parts_selector).next() {
+            description = Some(div.text().collect::<String>().trim().to_string());
+        }
+    }
+    
+    // 3. Parse Title (h1#work_name)
+    let title_selector = Selector::parse("h1#work_name").unwrap();
+    if let Some(h1) = document.select(&title_selector).next() {
+        title = Some(h1.text().collect::<String>().trim().to_string());
+    }
+
+    // 4. Parse Screenshots
+    // Look for slider data
+    let slider_selector = Selector::parse("div.product-slider-data div").unwrap();
+    for div in document.select(&slider_selector) {
+        if let Some(src) = div.value().attr("data-src") {
+             if !src.contains("_img_main") {
+                let full_url = if src.starts_with("//") {
+                    format!("https:{}", src)
+                } else {
+                    src.to_string()
+                };
                 screenshots.push(full_url);
-            }
+             }
         }
     }
 
     Some(ScrapedData {
+        title,
+        circle,
+        release_date,
+        tags,
         description,
         screenshots,
     })
@@ -325,25 +388,42 @@ fn generate_metadata_json(
         (None, None)
     };
 
-    let (title, circle, short_desc, price, release_date, tags) = if let Some(data) = json_data {
+    // Extract from JSON first (fallback)
+    let (mut title, mut circle, short_desc, price, mut release_date, mut tags) = if let Some(data) = json_data {
         (
-            data["work_name"].as_str().unwrap_or("Unknown Title"),
-            data["maker_name"].as_str().unwrap_or("Unknown Circle"),
+            data["work_name"].as_str().unwrap_or("Unknown Title").to_string(),
+            data["maker_name"].as_str().unwrap_or("Unknown Circle").to_string(),
             data["intro_s"].as_str().unwrap_or(""),
             data["price"].as_u64().unwrap_or(0),
-            data["regist_date"].as_str().unwrap_or(""),
+            data["regist_date"].as_str().unwrap_or("").to_string(),
             data["genres"]
                 .as_array()
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|v| v["name"].as_str())
+                        .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default(),
         )
     } else {
-        ("Unknown Title", "Unknown Circle", "", 0, "", vec![])
+        ("Unknown Title".to_string(), "Unknown Circle".to_string(), "", 0, "".to_string(), vec![])
     };
+
+    // Override with scraped data if available
+    if let Some(scraped) = scraped_data {
+        if let Some(t) = &scraped.title {
+            if !t.is_empty() { title = t.clone(); }
+        }
+        if let Some(c) = &scraped.circle {
+            if !c.is_empty() { circle = c.clone(); }
+        }
+        if let Some(d) = &scraped.release_date {
+            if !d.is_empty() { release_date = d.clone(); }
+        }
+        if !scraped.tags.is_empty() {
+            tags = scraped.tags.clone();
+        }
+    }
 
     let description = scraped_data
         .and_then(|s| s.description.as_deref())
@@ -359,29 +439,6 @@ fn generate_metadata_json(
         .unwrap_or_default();
 
     // Generate layered JSON for metadata_json field
-    let metadata_json_content = serde_json::json!({
-        "source": "dlsite",
-        "product_id": product_id,
-        "common": {
-            "title": title,
-            "description": description,
-            "tags": tags,
-            "creator": circle,
-            "release_date": release_date,
-            "screenshots": screenshots
-        },
-        "dlsite": {
-            "code": product_id,
-            "circle": circle,
-            "price": price,
-            "short_description": short_desc
-        }
-    });
-
-    // GameMetadata expects flat root-level fields
-    // We also include the 'dlsite' object at the root so that when GameMetadata::from_json
-    // captures the whole string, the RuleEngine can find the 'dlsite' object and extract
-    // variables like 'code' and 'price'.
     serde_json::json!({
         "product_id": product_id,
         "source": "dlsite",
@@ -394,7 +451,7 @@ fn generate_metadata_json(
         "dlsite": {
             "code": product_id,
             "circle": circle,
-            "price": price.to_string(), // Ensure string for RuleEngine
+            "price": price.to_string(),
             "short_description": short_desc
         }
     })

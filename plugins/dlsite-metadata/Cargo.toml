@@ -11,6 +11,7 @@ archust-plugin-sdk = { path = "../../plugin-sdk" }
 serde = { version = "1", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1", features = ["alloc"], default-features = false }
 regex = "1.10"
+scraper = "0.24.0"
 
 # Exclude from workspace build (build manually with wasm target)
 [package.metadata.workspaces]
