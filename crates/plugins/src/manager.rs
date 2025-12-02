@@ -427,6 +427,23 @@ http_requests_per_minute = 60
         info!("Plugin '{}' installed and loaded successfully", plugin_id);
         Ok(plugin_id)
     }
+
+    /// Get aggregated network logs from all enabled plugins
+    pub fn get_network_log(&self) -> Vec<(std::time::SystemTime, String)> {
+        let mut all_logs = Vec::new();
+        let plugins = self.plugins.read();
+
+        for plugin in plugins.values() {
+            if plugin.enabled {
+                let logs = plugin.instance.get_network_log();
+                all_logs.extend(logs);
+            }
+        }
+
+        // Sort by time
+        all_logs.sort_by(|a, b| a.0.cmp(&b.0));
+        all_logs
+    }
 }
 
 /// A managed plugin with its instance and metadata

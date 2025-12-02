@@ -330,6 +330,52 @@ pub fn execute_organization_plan(
         }
     }
 
+    // 2b. Write generated files (e.g. metadata.json)
+    debug!("Writing generated files");
+    for (rel_path, content) in &plan.generated_files {
+        let dst_path = organized_dir.join(rel_path);
+        if let Some(parent) = dst_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&dst_path, content)?;
+    }
+
+    // 2c. Download files (e.g. screenshots)
+    if !plan.downloads.is_empty() {
+        debug!("Downloading {} files", plan.downloads.len());
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .user_agent("Arclain/1.0")
+            .build()?;
+
+        for (url, rel_path) in &plan.downloads {
+            let dst_path = organized_dir.join(rel_path);
+            if let Some(parent) = dst_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+
+            debug!("Downloading {} to {}", url, rel_path);
+            match client.get(url).send() {
+                Ok(resp) => {
+                    if resp.status().is_success() {
+                        if let Ok(bytes) = resp.bytes() {
+                            if let Err(e) = std::fs::write(&dst_path, bytes) {
+                                error!("Failed to write downloaded file {}: {}", rel_path, e);
+                            }
+                        } else {
+                            error!("Failed to get bytes for {}", url);
+                        }
+                    } else {
+                        error!("Failed to download {}: status {}", url, resp.status());
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to download {}: {}", url, e);
+                }
+            }
+        }
+    }
+
     // 3. Compress organized directory to dest
     debug!("Compressing organized structure to 7z");
     let dest_abs = if dest.is_absolute() {

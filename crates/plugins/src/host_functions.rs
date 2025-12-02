@@ -126,6 +126,7 @@ pub struct HostFunctions {
     pub settings: Arc<Mutex<HashMap<String, String>>>,
     pub pending_messages: Arc<Mutex<Vec<(String, String)>>>,
     pub emitted_metadata: Arc<Mutex<Option<String>>>,
+    pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
     pub table: ResourceTable,
     pub ctx: WasiCtx,
 }
@@ -153,6 +154,7 @@ impl HostFunctions {
             settings: Arc::new(Mutex::new(HashMap::new())),
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             emitted_metadata: Arc::new(Mutex::new(None)),
+            network_log: Arc::new(Mutex::new(Vec::new())),
             table: ResourceTable::new(),
             ctx,
         }
@@ -201,6 +203,13 @@ impl Host for HostFunctions {
         }
     }
 
+    fn log_network_activity(&mut self, message: String) {
+        // Store in network activity log for UI display
+        self.network_log
+            .lock()
+            .push((std::time::SystemTime::now(), message));
+    }
+
     fn get_setting(&mut self, key: String) -> Option<String> {
         self.settings.lock().get(&key).cloned()
     }
@@ -216,8 +225,21 @@ impl Host for HostFunctions {
         let client = self
             .http_client
             .as_ref()
-            .ok_or("HTTP client not initialized")?;
-        client.get(&url).map_err(|e| e.to_string())
+            .ok_or("HTTP client not initialized")?
+            .clone();
+
+        // Log the request
+        self.log_network_activity(format!("GET {}", url));
+
+        let result = client.get(&url).map_err(|e| e.to_string());
+
+        // Log result
+        match &result {
+            Ok(resp) => self.log_network_activity(format!("Response: {} bytes", resp.len())),
+            Err(e) => self.log_network_activity(format!("Error: {}", e)),
+        }
+
+        result
     }
 
     fn http_post(&mut self, url: String, body: String) -> std::result::Result<String, String> {
@@ -227,8 +249,21 @@ impl Host for HostFunctions {
         let client = self
             .http_client
             .as_ref()
-            .ok_or("HTTP client not initialized")?;
-        client.post_json(&url, &body).map_err(|e| e.to_string())
+            .ok_or("HTTP client not initialized")?
+            .clone();
+
+        // Log the request
+        self.log_network_activity(format!("POST {}", url));
+
+        let result = client.post_json(&url, &body).map_err(|e| e.to_string());
+
+        // Log result
+        match &result {
+            Ok(resp) => self.log_network_activity(format!("Response: {} bytes", resp.len())),
+            Err(e) => self.log_network_activity(format!("Error: {}", e)),
+        }
+
+        result
     }
 
     fn file_read(&mut self, archive: String, file: String) -> std::result::Result<String, String> {

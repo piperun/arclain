@@ -11,6 +11,7 @@ pub struct OrganizationPlan {
     pub root_folder: String,
     pub moves: Vec<(String, String)>, // (source_path, dest_path)
     pub generated_files: Vec<(String, String)>, // (path, content)
+    pub downloads: Vec<(String, String)>, // (url, relative_path)
 }
 
 pub struct RuleEngine;
@@ -83,6 +84,11 @@ impl RuleEngine {
             metadata.insert("product_id".to_string(), gm.product_id.clone());
             metadata.insert("source".to_string(), gm.source.clone());
             metadata.insert("title".to_string(), gm.title.clone());
+
+            // NEW: Add filtered_title for safe folder names
+            let filtered = crate::title_filter::sanitize_title(&gm.title);
+            metadata.insert("filtered_title".to_string(), filtered);
+
             if let Some(creator) = &gm.creator {
                 metadata.insert("creator".to_string(), creator.clone());
                 metadata.insert("circle".to_string(), creator.clone()); // Alias
@@ -167,11 +173,31 @@ impl RuleEngine {
             }
         }
 
+        // Add screenshots to downloads
+        let mut downloads = Vec::new();
+        if let Some(gm) = game_metadata {
+            for (i, screenshot) in gm.screenshots.iter().enumerate() {
+                if let crate::archive_organizer::ScreenshotData::FilePath(path) = screenshot {
+                    let url = path.to_string_lossy().to_string();
+                    // Determine extension from URL or default to jpg
+                    let ext = Path::new(&url)
+                        .extension()
+                        .map(|e| e.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "jpg".to_string());
+
+                    let filename = format!("image_{:03}.{}", i + 1, ext);
+                    let target_path = format!("{}/Screenshots/{}", root_folder, filename);
+                    downloads.push((url, target_path));
+                }
+            }
+        }
+
         Ok(OrganizationPlan {
             rule_name: rule.name.clone(),
             root_folder,
             moves,
             generated_files,
+            downloads,
         })
     }
 

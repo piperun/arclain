@@ -1,0 +1,25 @@
+# Title Filtering Configuration
+# 
+# This file defines rules for sanitizing game titles into valid folder names.
+# If this file is missing or malformed, hardcoded fallback rules will be used.
+
+[filters]
+# Characters that are invalid in folder names and will be replaced
+invalid_chars = '/:*?"<>|'
+
+# Replacement character for invalid characters
+replacement = "_"
+
+# Maximum length for folder names (most filesystems support 255)
+max_length = 255
+
+# Whether to trim leading/trailing whitespace
+trim_whitespace = true
+
+# Custom character replacements (Japanese brackets, etc.)
+[replacements]
+"【" = "["
+"】" = "]"
+"～" = "~"
+"（" = "("
+"）" = ")"

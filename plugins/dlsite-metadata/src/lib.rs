@@ -202,29 +202,39 @@ fn detect_dlsite_code(text: &str) -> Option<String> {
 }
 
 fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
-    use archust_plugin_sdk::{http_get, info};
+    use archust_plugin_sdk::{http_get, info, log_network_activity};
 
     // 1. Fetch JSON API
     let api_url = format!(
         "https://www.dlsite.com/home/api/=/product.json?work_no={}",
         product_id
     );
-    info(&format!("[DLSite Plugin] Fetching API: {}", api_url));
+    log_network_activity(&format!("Fetching metadata for {} from DLSite API...", product_id));
+    log_network_activity(&format!("GET {}", api_url));
 
     let json_data = match http_get(&api_url) {
-        Ok(response_body) => match serde_json::from_str::<serde_json::Value>(&response_body) {
-            Ok(json) => {
-                if let Some(arr) = json.as_array() {
-                    arr.first().cloned()
-                } else if json.is_object() {
-                    Some(json)
-                } else {
+        Ok(response_body) => {
+            log_network_activity(&format!("Response: {} bytes", response_body.len()));
+            match serde_json::from_str::<serde_json::Value>(&response_body) {
+                Ok(json) => {
+                    if let Some(arr) = json.as_array() {
+                        arr.first().cloned()
+                    } else if json.is_object() {
+                        Some(json)
+                    } else {
+                        None
+                    }
+                }
+                Err(e) => {
+                    log_network_activity(&format!("Failed to parse JSON: {}", e));
                     None
                 }
             }
-            Err(_) => None,
         },
-        Err(_) => None,
+        Err(e) => {
+            log_network_activity(&format!("HTTP Request failed: {}", e));
+            None
+        }
     };
 
     if json_data.is_none() {
@@ -237,12 +247,16 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
         "https://www.dlsite.com/home/work/=/product_id/{}.html",
         product_id
     );
-    info(&format!("[DLSite Plugin] Fetching HTML: {}", html_url));
+    log_network_activity(&format!("Fetching HTML page for scraping..."));
+    log_network_activity(&format!("GET {}", html_url));
 
     let scraped_data = match http_get(&html_url) {
-        Ok(html) => scrape_html_metadata(&html),
+        Ok(html) => {
+            log_network_activity(&format!("Response: {} bytes", html.len()));
+            scrape_html_metadata(&html)
+        },
         Err(e) => {
-            info(&format!("[DLSite Plugin] Failed to fetch HTML: {}", e));
+            log_network_activity(&format!("Failed to fetch HTML: {}", e));
             None
         }
     };
@@ -316,7 +330,7 @@ fn generate_metadata_json(
             data["work_name"].as_str().unwrap_or("Unknown Title"),
             data["maker_name"].as_str().unwrap_or("Unknown Circle"),
             data["intro_s"].as_str().unwrap_or(""),
-            format!("{} JPY", data["price"].as_u64().unwrap_or(0)),
+            data["price"].as_u64().unwrap_or(0),
             data["regist_date"].as_str().unwrap_or(""),
             data["genres"]
                 .as_array()
@@ -327,8 +341,62 @@ fn generate_metadata_json(
                 })
                 .unwrap_or_default(),
         )
+    } else {
+        ("Unknown Title", "Unknown Circle", "", 0, "", vec![])
+    };
+
+    let description = scraped_data
+        .and_then(|s| s.description.as_deref())
+        .unwrap_or(short_desc);
+        
+    let screenshots = scraped_data
+        .map(|s| {
+            s.screenshots
+                .iter()
+                .map(|url| serde_json::json!({ "FilePath": url }))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    // Generate layered JSON for metadata_json field
+    let metadata_json_content = serde_json::json!({
+        "source": "dlsite",
+        "product_id": product_id,
+        "common": {
+            "title": title,
+            "description": description,
+            "tags": tags,
+            "creator": circle,
+            "release_date": release_date,
+            "screenshots": screenshots
         },
-        "screenshots": []
+        "dlsite": {
+            "code": product_id,
+            "circle": circle,
+            "price": price,
+            "short_description": short_desc
+        }
+    });
+
+    // GameMetadata expects flat root-level fields
+    // We also include the 'dlsite' object at the root so that when GameMetadata::from_json
+    // captures the whole string, the RuleEngine can find the 'dlsite' object and extract
+    // variables like 'code' and 'price'.
+    serde_json::json!({
+        "product_id": product_id,
+        "source": "dlsite",
+        "title": title,
+        "description": description,
+        "tags": tags,
+        "release_date": release_date,
+        "creator": circle,
+        "screenshots": screenshots,
+        "dlsite": {
+            "code": product_id,
+            "circle": circle,
+            "price": price.to_string(), // Ensure string for RuleEngine
+            "short_description": short_desc
+        }
     })
     .to_string()
 }

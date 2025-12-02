@@ -724,7 +724,7 @@ impl ArchiveBackend for SevenZipCli {
 
         // Add compression settings for 7z
         if format == "7z" {
-            debug!("Using maximum compression for 7z format");
+            info!("Using maximum compression (level 9, LZMA2) - this may take longer but creates smaller archives");
             args.push(OsString::from("-mx=9"));
             args.push(OsString::from("-m0=LZMA2"));
         }

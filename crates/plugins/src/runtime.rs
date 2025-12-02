@@ -237,6 +237,13 @@ impl PluginInstance {
             .data()
             .set_archive_context(archive_path, password);
     }
+
+    /// Get network logs from the plugin
+    pub fn get_network_log(&self) -> Vec<(std::time::SystemTime, String)> {
+        let data = self.store.data();
+        let logs = data.network_log.lock();
+        logs.clone()
+    }
 }
 
 fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginUiElement {

@@ -274,10 +274,12 @@ dependencies = [
  "fs_extra",
  "once_cell",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.17",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "which",
@@ -328,6 +330,7 @@ dependencies = [
  "anyhow",
  "arclain_core",
  "arclain_plugins",
+ "chrono",
  "crc32fast",
  "dirs 6.0.0",
  "eframe",
@@ -892,6 +895,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ced0551234e87afee12411d535648dd89d2e7f34c78b753395567aff3d447ff"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "chrono"
+version = "0.4.42"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "145052bdd345b87320e369255277e3fb5152762ad123a901ef5c262dd38fe8d2"
+dependencies = [
+ "iana-time-zone",
+ "js-sys",
+ "num-traits",
+ "wasm-bindgen",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
