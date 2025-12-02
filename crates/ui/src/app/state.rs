@@ -249,9 +249,16 @@ impl AppState {
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         if self.current_password.is_none() {
             let archive_name = self.current_archive.as_ref().and_then(|p| p.to_str());
+            debug!(
+                "Attempting auto-password detection for archive: {:?}",
+                archive_name
+            );
             let detected_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
-            if let Some(pwd) = detected_pw {
-                self.current_password = Some(pwd);
+            if let Some(ref pwd) = detected_pw {
+                info!("Auto-detected password for archive (length: {})", pwd.len());
+                self.current_password = Some(pwd.clone());
+            } else {
+                debug!("No password auto-detected for this archive");
             }
         }
         self.all_entries = info.entries.clone();

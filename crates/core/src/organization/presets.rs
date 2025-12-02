@@ -1,60 +1,96 @@
 use super::{MoveFileRule, MoveRule, OrganizationRule, RuleActions, RuleTrigger};
 
 pub fn get_default_rules() -> Vec<OrganizationRule> {
-    vec![OrganizationRule {
-        id: Some(-1), // System rule ID
-        name: "DLSite Archive".to_string(),
-        description: Some("Organizes DLSite archives (RJ codes)".to_string()),
-        category: "Doujin".to_string(),
-        priority: 100,
-        is_enabled: true,
-        is_system: true,
-        trigger: RuleTrigger {
-            filename_pattern: Some(r"(RJ|BJ)\d+".to_string()),
-            min_size: None,
-            max_size: None,
-            extensions: None,
-            has_file: None,
+    vec![
+        // Default fallback rule: Simple flattening
+        OrganizationRule {
+            id: Some(-1), // System rule ID
+            name: "Simple Flatten".to_string(),
+            description: Some(
+                "Default: Flattens nested folders and uses archive name as root".to_string(),
+            ),
+            category: "General".to_string(),
+            priority: 1, // Low priority - fallback
+            is_enabled: true,
+            is_system: true,
+            trigger: RuleTrigger {
+                filename_pattern: None, // Matches everything
+                min_size: None,
+                max_size: None,
+                extensions: None,
+                has_file: None,
+            },
+            actions: RuleActions {
+                root_folder: None, // Will use archive name automatically
+                move_files: vec![
+                    // Just move everything to root, flattening structure
+                    MoveFileRule {
+                        pattern: "**".to_string(),
+                        target: ".".to_string(), // Root of organized archive
+                    },
+                ],
+                move_to: None,
+                rename_pattern: None,
+                organize_content: true,
+                delete_original: false,
+            },
         },
-        actions: RuleActions {
-            root_folder: Some("[$circle] $title [$code]".to_string()),
-            move_files: vec![
-                // Move executables and game data to Game/
-                MoveFileRule {
-                    pattern: "*.exe".to_string(),
-                    target: "Game".to_string(),
-                },
-                MoveFileRule {
-                    pattern: "*.dll".to_string(),
-                    target: "Game".to_string(),
-                },
-                MoveFileRule {
-                    pattern: "*_Data".to_string(), // Unity data folders
-                    target: "Game".to_string(),
-                },
-                // Move images to Images/
-                MoveFileRule {
-                    pattern: "*.jpg".to_string(),
-                    target: "Images".to_string(),
-                },
-                MoveFileRule {
-                    pattern: "*.png".to_string(),
-                    target: "Images".to_string(),
-                },
-                // Catch-all: everything else to Game/
-                MoveFileRule {
-                    pattern: "**".to_string(),
-                    target: "Game".to_string(),
-                },
-            ],
-            move_to: Some(MoveRule {
-                target_dir: "DLSite".to_string(),
-                use_date: false,
-                use_category: false,
-            }),
-            rename_pattern: None,
-            organize_content: true,
-            delete_original: false,
+        // DLSite rule: Only applies when RJ/BJ code is found
+        OrganizationRule {
+            id: Some(-2), // System rule ID
+            name: "DLSite Archive".to_string(),
+            description: Some("Organizes DLSite archives with metadata (RJ/BJ codes)".to_string()),
+            category: "Doujin".to_string(),
+            priority: 100, // High priority - runs first if matched
+            is_enabled: true,
+            is_system: true,
+            trigger: RuleTrigger {
+                filename_pattern: Some(r"(RJ|BJ)\d+".to_string()),
+                min_size: None,
+                max_size: None,
+                extensions: None,
+                has_file: None,
+            },
+            actions: RuleActions {
+                root_folder: Some("[$code][$circle] $title".to_string()),
+                move_files: vec![
+                    // Move executables and game data to Game/
+                    MoveFileRule {
+                        pattern: "*.exe".to_string(),
+                        target: "Game".to_string(),
+                    },
+                    MoveFileRule {
+                        pattern: "*.dll".to_string(),
+                        target: "Game".to_string(),
+                    },
+                    MoveFileRule {
+                        pattern: "*_Data".to_string(), // Unity data folders
+                        target: "Game".to_string(),
+                    },
+                    // Move images to Images/
+                    MoveFileRule {
+                        pattern: "*.jpg".to_string(),
+                        target: "Images".to_string(),
+                    },
+                    MoveFileRule {
+                        pattern: "*.png".to_string(),
+                        target: "Images".to_string(),
+                    },
+                    // Catch-all: everything else to Game/
+                    MoveFileRule {
+                        pattern: "**".to_string(),
+                        target: "Game".to_string(),
+                    },
+                ],
+                move_to: Some(MoveRule {
+                    target_dir: "DLSite".to_string(),
+                    use_date: false,
+                    use_category: false,
+                }),
+                rename_pattern: None,
+                organize_content: true,
+                delete_original: false,
+            },
         },
-    }]
+    ]
 }

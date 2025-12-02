@@ -5,6 +5,7 @@ pub mod file_opener;
 pub mod logging;
 pub mod organization;
 pub mod sevenzip;
+pub mod title_filter;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

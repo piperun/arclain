@@ -441,7 +441,18 @@ impl eframe::App for ArclainApp {
                 self.render_settings_page(ctx, settings_page.clone());
             }
             AppPage::Organize => {
+                // Poll network logs from plugins
+                let logs = {
+                    let st = self.state.lock();
+                    if let Some(manager) = &st.plugin_manager {
+                        manager.lock().get_network_log()
+                    } else {
+                        Vec::new()
+                    }
+                };
+
                 if let Some(panel) = &mut self.organize_panel_state {
+                    panel.update_network_log(logs);
                     egui::CentralPanel::default().show(ctx, |ui| {
                         if let Some(apply) = panel.render(ui) {
                             if apply {
@@ -461,11 +472,17 @@ impl eframe::App for ArclainApp {
                                     if let Some(source) = current_archive {
                                         // Create dest path (same dir, new name or overwrite?)
                                         // For safety, let's create a new file with _organized suffix or similar, 
-                                        // OR just overwrite if the user expects it.
-                                        // The plan might imply a rename of the root folder, but the archive filename itself?
-                                        // Let's append "_organized" for now to be safe.
-                                        let file_stem = source.file_stem().unwrap_or_default().to_string_lossy();
-                                        let dest = source.with_file_name(format!("{}_organized.7z", file_stem));
+                                        // Use the plan's root folder as the archive name
+                                        // This ensures the archive is named [Code][Circle] Title.7z etc.
+                                        let dest_filename = format!("{}.7z", plan.root_folder);
+                                        let dest = source.with_file_name(dest_filename);
+
+                                        // Debug: Check if password is being passed
+                                        if password.is_some() {
+                                            info!("Organizing with password (length: {})", password.as_ref().unwrap().len());
+                                        } else {
+                                            info!("Organizing WITHOUT password - this may fail for encrypted archives!");
+                                        }
 
                                         match arclain_core::archive_organizer::execute_organization_plan(
                                             &backend,
@@ -482,7 +499,54 @@ impl eframe::App for ArclainApp {
                                             }
                                             Err(e) => {
                                                 error!("Organization failed: {}", e);
-                                                self.status_info.message = format!("Organization failed: {}", e);
+                                                // Check if it's a password error - need to check the full error chain
+                                                let error_msg = format!("{:#}", e); // Use {:#} to get full error chain
+                                                info!("Full error chain: {}", error_msg); // Debug logging
+                                                
+                                                if error_msg.contains("Wrong password") || error_msg.contains("password") {
+                                                    info!("Detected password error, attempting auto-password retry");
+                                                    // Try to auto-detect password from rules
+                                                    let state = self.state.lock();
+                                                    let archive_name = source.to_str();
+                                                    let entries = state.all_entries.iter().map(|e| e.path.clone()).collect::<Vec<_>>();
+                                                    let detected_pw = state.cfg.auto_password_for(archive_name, &entries);
+                                                    let backend_clone = state.backend.clone();
+                                                    let temp_dir_clone = state.cfg.cfg.temp_dir.clone().unwrap_or_else(|| std::env::temp_dir());
+                                                    drop(state);
+
+                                                    if let Some(ref password) = detected_pw {
+                                                        info!("Retrying organization with auto-detected password (length: {})", password.len());
+                                                        // Retry with auto-detected password
+                                                        match arclain_core::archive_organizer::execute_organization_plan(
+                                                            &backend_clone,
+                                                            &source,
+                                                            &dest,
+                                                            plan,
+                                                            &temp_dir_clone,
+                                                            Some(password.as_str())
+                                                        ) {
+                                                            Ok(_) => {
+                                                                // Success! Save the password for future use
+                                                                let mut state = self.state.lock();
+                                                                state.current_password = Some(password.clone());
+                                                                drop(state);
+                                                                
+                                                                self.status_info.message = format!("Organization applied: {}", dest.display());
+                                                                self.page_navigator.navigate_to_main();
+                                                            }
+                                                            Err(retry_err) => {
+                                                                error!("Organization retry with auto-password also failed: {}", retry_err);
+                                                                self.status_info.message = "Organization failed: auto-detected password didn't work. Please check your password rules.".to_string();
+                                                            }
+                                                        }
+                                                    } else {
+                                                        info!("No password auto-detected from rules");
+                                                        // No password found in rules
+                                                        self.status_info.message = "Archive has encrypted files but no password rule matched. Add a password rule or close and reopen with password.".to_string();
+                                                    }
+                                                } else {
+                                                    self.status_info.message = format!("Organization failed: {}", e);
+                                                }
                                             }
                                         }
                                     }

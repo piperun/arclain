@@ -9,6 +9,7 @@ pub struct OrganizePanel {
     pub selected_rule_index: usize,
     pub preview_plan: Option<arclain_core::organization::engine::OrganizationPlan>,
     pub metadata: Option<arclain_core::archive_organizer::GameMetadata>,
+    pub network_log: Vec<(std::time::SystemTime, String)>,
 }
 
 impl OrganizePanel {
@@ -25,9 +26,14 @@ impl OrganizePanel {
             selected_rule_index: 0,
             preview_plan: None,
             metadata,
+            network_log: Vec::new(),
         };
         panel.update_preview();
         panel
+    }
+
+    pub fn update_network_log(&mut self, log: Vec<(std::time::SystemTime, String)>) {
+        self.network_log = log;
     }
 
     pub fn update_preview(&mut self) {
@@ -76,37 +82,66 @@ impl OrganizePanel {
 
         ui.add_space(10.0);
 
-        // Preview
-        if let Some(plan) = &self.preview_plan {
-            ui.label(format!("Root Folder: {}", plan.root_folder));
+        // Split view: Preview on left, Network Log on right (if any)
+        ui.columns(2, |columns| {
+            // Left Column: Preview
+            columns[0].vertical(|ui| {
+                ui.heading("Preview");
+                if let Some(plan) = &self.preview_plan {
+                    ui.label(format!("Root Folder: {}", plan.root_folder));
+                    ui.separator();
 
-            ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt("preview_scroll")
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            for (src, dst) in &plan.moves {
+                                ui.horizontal(|ui| {
+                                    ui.label(src);
+                                    ui.label("➡");
+                                    ui.label(dst);
+                                });
+                            }
 
-            egui::ScrollArea::vertical()
-                .max_height(300.0)
-                .show(ui, |ui| {
-                    for (src, dst) in &plan.moves {
-                        ui.horizontal(|ui| {
-                            ui.label(src);
-                            ui.label("➡");
-                            ui.label(dst);
+                            if !plan.generated_files.is_empty() {
+                                ui.separator();
+                                ui.label("Generated Files:");
+                                for (path, _) in &plan.generated_files {
+                                    ui.horizontal(|ui| {
+                                        ui.label("✨");
+                                        ui.label(path);
+                                    });
+                                }
+                            }
                         });
-                    }
+                } else {
+                    ui.label("No preview available");
+                }
+            });
 
-                    if !plan.generated_files.is_empty() {
-                        ui.separator();
-                        ui.label("Generated Files:");
-                        for (path, _) in &plan.generated_files {
-                            ui.horizontal(|ui| {
-                                ui.label("✨");
-                                ui.label(path);
-                            });
+            // Right Column: Network Log
+            columns[1].vertical(|ui| {
+                ui.heading("Network Activity");
+                egui::ScrollArea::vertical()
+                    .id_salt("network_log_scroll")
+                    .max_height(300.0)
+                    .show(ui, |ui| {
+                        if self.network_log.is_empty() {
+                            ui.label(egui::RichText::new("No activity yet").italics().weak());
+                        } else {
+                            for (time, msg) in &self.network_log {
+                                let time_str = chrono::DateTime::<chrono::Local>::from(*time)
+                                    .format("%H:%M:%S")
+                                    .to_string();
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(&time_str).weak().size(10.0));
+                                    ui.label(egui::RichText::new(msg).size(11.0));
+                                });
+                            }
                         }
-                    }
-                });
-        } else {
-            ui.label("No preview available");
-        }
+                    });
+            });
+        });
 
         ui.add_space(20.0);
 

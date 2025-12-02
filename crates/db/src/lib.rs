@@ -172,21 +172,44 @@ impl SecretsKey {
     }
 }
 
+mod metadata_cache;
+pub use metadata_cache::{CachedMetadata, MetadataCache};
+
 /// Open both databases: config (SQLite) and secrets (redb with AES encryption)
 pub struct ConfigDbs {
     pub config: Connection,
     pub secrets: SecretsDb,
+    pub metadata: MetadataCache,
 }
 
 pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
     let cfg = open_config_db(&paths.config_db)?;
     init_config_schema(&cfg)?;
 
+    // Create a shared connection for the metadata cache
+    // Note: In a real app we might want a connection pool or separate connection,
+    // but for now we'll clone the connection if possible or just pass it.
+    // rusqlite Connection is not Clone. We need to wrap it in Arc<Mutex> if we want to share it.
+    // But ConfigDbs owns 'config'.
+
+    // Actually, MetadataCache takes Arc<Mutex<Connection>>.
+    // We should probably change ConfigDbs to hold Arc<Mutex<Connection>> for config too,
+    // or just let MetadataCache have its own connection?
+    // SQLite allows multiple connections.
+
+    // Let's change ConfigDbs to wrap config in Arc<Mutex> to share with MetadataCache
+    // OR just open a second connection for MetadataCache.
+    // Opening a second connection is safer for concurrency if we use WAL.
+
+    let meta_conn = open_config_db(&paths.config_db)?;
+    let metadata_cache = MetadataCache::new(std::sync::Arc::new(std::sync::Mutex::new(meta_conn)));
+
     let sec = SecretsDb::open(&paths.secrets_db, &key.as_bytes())?;
 
     Ok(ConfigDbs {
         config: cfg,
         secrets: sec,
+        metadata: metadata_cache,
     })
 }
 
@@ -246,11 +269,42 @@ fn init_config_schema(conn: &Connection) -> Result<()> {
         );",
         [],
     )?;
+
     // Ensure a meta row exists
     conn.execute(
-        "INSERT INTO meta (migration) SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM meta);",
+        "INSERT INTO meta (migration) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM meta);",
         [],
     )?;
+
+    // Get current migration version
+    let version: i32 = conn.query_row("SELECT migration FROM meta", [], |row| row.get(0))?;
+
+    // Migration 1: Initial schema (already done by CREATE TABLE IF NOT EXISTS above)
+    if version < 1 {
+        conn.execute("UPDATE meta SET migration = 1", [])?;
+    }
+
+    // Migration 2: Metadata Cache
+    if version < 2 {
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dlsite_metadata_cache (
+                product_id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                circle TEXT,
+                price INTEGER,
+                release_date TEXT,
+                metadata_json TEXT NOT NULL,
+                cached_at INTEGER NOT NULL
+            );",
+            [],
+        )?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_metadata_cache_cached_at ON dlsite_metadata_cache(cached_at);",
+            [],
+        )?;
+        conn.execute("UPDATE meta SET migration = 2", [])?;
+    }
+
     Ok(())
 }
 
@@ -350,5 +404,7 @@ fn validate_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod metadata_cache_tests;
 #[cfg(test)]
 mod tests;

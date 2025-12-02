@@ -57,3 +57,7 @@ pub fn list_archive_files() -> Result<Vec<String>, String> {
 pub fn show_message(title: &str, message: &str) {
     arclain::plugin::host::show_message(title, message);
 }
+
+pub fn log_network_activity(msg: &str) {
+    arclain::plugin::host::log_network_activity(msg);
+}
