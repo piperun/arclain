@@ -203,11 +203,44 @@ pub fn organize_archive(
         path: work_dir.clone(),
     };
 
-    // 1. Extract source to root_dir/game
-    let game_dir = root_dir.join("game");
-    std::fs::create_dir_all(&game_dir)?;
+    // 1. Smart root detection: Check if archive already has files at root level
+    // If it does, we don't need to add another "game" subfolder
+    debug!("Listing archive contents to detect root structure");
+    let archive_info = backend
+        .list(source, None)
+        .context("listing archive contents")?;
 
-    debug!("Extracting source to game directory");
+    // Detect if we should extract directly to root or to a game subfolder
+    let should_extract_to_game_subfolder = detect_needs_game_subfolder(&archive_info.entries);
+
+    // Log encryption status for debugging
+    debug!(
+        "Archive encryption status: encrypted={}, headers_encrypted={}, method={:?}",
+        archive_info.encrypted, archive_info.headers_encrypted, archive_info.encryption_method
+    );
+
+    // Check for encryption and reject if encrypted without password
+    if archive_info.encrypted {
+        return Err(anyhow::anyhow!(
+            "Archive '{}' contains encrypted files. Password-protected archives are not supported for organization.",
+            source.display()
+        ));
+    }
+
+    let game_dir = if should_extract_to_game_subfolder {
+        debug!("Archive has single root folder, extracting to game/ subdirectory");
+        let gd = root_dir.join("Game");
+        std::fs::create_dir_all(&gd)?;
+        gd
+    } else {
+        debug!("Archive has files at root, extracting directly without nesting");
+        // Extract directly to a "Game" folder at root level
+        let gd = root_dir.join("Game");
+        std::fs::create_dir_all(&gd)?;
+        gd
+    };
+
+    debug!("Extracting source to {:?}", game_dir);
     backend
         .extract_all(source, &game_dir, None)
         .context("extracting source archive")?;
@@ -415,4 +448,65 @@ pub fn execute_organization_plan(
 
     info!("Plan execution completed successfully");
     Ok(())
+}
+
+/// Detect if archive needs a "game" subfolder or if files are already at root
+///
+/// Returns true if:
+/// - Archive has exactly one top-level folder containing all content
+/// - That folder looks like a wrapper folder (common names)
+///
+/// Returns false if:
+/// - Archive has multiple items at root level (files are already organized)
+/// - Archive has game-like files at root (.exe, package.json, etc.)
+fn detect_needs_game_subfolder(entries: &[crate::ArchiveEntry]) -> bool {
+    if entries.is_empty() {
+        return false;
+    }
+
+    // Get all top-level items (items with no / in path)
+    let mut top_level_items: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for entry in entries {
+        let path_parts: Vec<&str> = entry.path.split(|c| c == '/' || c == '\\').collect();
+        if let Some(first_part) = path_parts.first() {
+            if !first_part.is_empty() {
+                top_level_items.insert(first_part.to_string());
+            }
+        }
+    }
+
+    // If there are multiple top-level items, files are at root - don't add subfolder
+    if top_level_items.len() > 1 {
+        return false;
+    }
+
+    // If there's exactly one top-level item, check if it looks like a wrapper folder
+    if top_level_items.len() == 1 {
+        let folder_name = top_level_items.iter().next().unwrap().to_lowercase();
+
+        // Common wrapper folder names that should be flattened
+        let wrapper_names = [
+            "game",
+            "files",
+            "content",
+            "data",
+            "extracted",
+            "archive",
+            "release",
+        ];
+
+        for wrapper in &wrapper_names {
+            if folder_name == *wrapper || folder_name.starts_with(wrapper) {
+                return true; // Yes, this is a wrapper folder, extract its contents
+            }
+        }
+
+        // If the single folder name looks like a product ID or title, keep it
+        // (e.g., "RJ123456" or actual game name)
+        return false;
+    }
+
+    // Default: if unclear, don't add subfolder (preserve original structure)
+    false
 }

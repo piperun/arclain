@@ -236,9 +236,9 @@ impl archust_plugin_sdk::Guest for Component {
             "show_details" => {
                 STATE.with(|state| {
                     if let Some((id, json, scraped)) = &state.borrow().found_metadata {
-                        let title = json["work_name"].as_str().unwrap_or("Unknown");
-                        let maker = json["maker_name"].as_str().unwrap_or("Unknown");
-                        let price = json["price"].as_u64().unwrap_or(0);
+                        let title = json["title"].as_str().unwrap_or("Unknown");
+                        let maker = json["creator"].as_str().unwrap_or("Unknown");
+                        let price = json["dlsite"]["price"].as_u64().unwrap_or(0);
                         
                         let desc_len = scraped.as_ref().and_then(|s| s.description.as_ref()).map(|s| s.len()).unwrap_or(0);
                         let screenshots_count = scraped.as_ref().map(|s| s.screenshots.len()).unwrap_or(0);

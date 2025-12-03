@@ -10,7 +10,11 @@ pub struct CachedMetadata {
     pub circle: Option<String>,
     pub price: Option<i64>,
     pub release_date: Option<String>,
-    pub metadata_json: String,
+    pub description: Option<String>,
+    pub work_type: Option<String>,
+    pub file_format: Option<String>,
+    pub tags_json: Option<String>, // JSON array of tags
+    pub raw_api_json: String,      // Original DLSite API response
     pub cached_at: u64,
 }
 
@@ -35,7 +39,7 @@ impl MetadataCache {
     pub fn get(&self, product_id: &str) -> Result<Option<CachedMetadata>> {
         self.db.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT product_id, title, circle, price, release_date, metadata_json, cached_at 
+                "SELECT product_id, title, circle, price, release_date, description, work_type, file_format, tags_json, raw_api_json, cached_at 
                  FROM dlsite_metadata_cache WHERE product_id = ?1",
             )?;
 
@@ -47,8 +51,12 @@ impl MetadataCache {
                         circle: row.get(2)?,
                         price: row.get(3)?,
                         release_date: row.get(4)?,
-                        metadata_json: row.get(5)?,
-                        cached_at: row.get(6)?,
+                        description: row.get(5)?,
+                        work_type: row.get(6)?,
+                        file_format: row.get(7)?,
+                        tags_json: row.get(8)?,
+                        raw_api_json: row.get(9)?,
+                        cached_at: row.get(10)?,
                     })
                 })
                 .optional()?;
@@ -62,15 +70,19 @@ impl MetadataCache {
         self.db.with_connection(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO dlsite_metadata_cache 
-                 (product_id, title, circle, price, release_date, metadata_json, cached_at) 
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (product_id, title, circle, price, release_date, description, work_type, file_format, tags_json, raw_api_json, cached_at) 
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     &metadata.product_id,
                     &metadata.title,
                     &metadata.circle,
                     &metadata.price,
                     &metadata.release_date,
-                    &metadata.metadata_json,
+                    &metadata.description,
+                    &metadata.work_type,
+                    &metadata.file_format,
+                    &metadata.tags_json,
+                    &metadata.raw_api_json,
                     &metadata.cached_at,
                 ],
             )?;
