@@ -76,6 +76,10 @@ impl RuleEngine {
         entries: &[ArchiveEntry],
         game_metadata: Option<&crate::archive_organizer::GameMetadata>,
     ) -> Result<OrganizationPlan> {
+        // Prune unnecessary files/folders first
+        let pruned_entries = Self::prune_entries(entries);
+        let entries = &pruned_entries;
+
         let mut moves = Vec::new();
         let mut metadata = HashMap::new();
 
@@ -119,6 +123,15 @@ impl RuleEngine {
                             metadata.insert(name.to_string(), m.as_str().to_string());
                         }
                     }
+                }
+            }
+        }
+
+        // 3. Extract version from filename
+        if let Ok(re) = Regex::new(r"[vV](\d+(\.\d+)+)") {
+            if let Some(caps) = re.captures(archive_name) {
+                if let Some(v) = caps.get(1) {
+                    metadata.insert("version".to_string(), v.as_str().to_string());
                 }
             }
         }
@@ -203,10 +216,25 @@ impl RuleEngine {
 
     fn expand_variables(template: &str, metadata: &HashMap<String, String>) -> String {
         let mut result = template.to_string();
+
+        // Special handling for version prefix " v$version"
+        if result.contains(" v$version") {
+            if let Some(ver) = metadata.get("version") {
+                result = result.replace(" v$version", &format!(" v{}", ver));
+            } else {
+                result = result.replace(" v$version", "");
+            }
+        }
+
         for (key, value) in metadata {
             let placeholder = format!("${}", key);
             result = result.replace(&placeholder, value);
         }
+
+        // Clean up any remaining unreplaced variables if needed?
+        // For now, leave them or maybe strip them?
+        // User might want to see if something failed.
+
         result
     }
 
@@ -237,5 +265,114 @@ impl RuleEngine {
         }
 
         false
+    }
+
+    /// Prune unnecessary files (0-byte) and empty folders recursively
+    /// Does NOT modify paths or filter "junk" - only removes empty files and directories
+    pub(crate) fn prune_entries(entries: &[ArchiveEntry]) -> Vec<ArchiveEntry> {
+        // 1. Build Tree
+        let mut root = TreeNode::new(true);
+
+        for entry in entries {
+            root.insert(&entry.path, entry.clone());
+        }
+
+        // 2. Prune Tree (0-byte files and empty folders)
+        root.prune();
+
+        // 3. Flatten Tree
+        root.flatten()
+    }
+}
+
+struct TreeNode {
+    entry: Option<ArchiveEntry>,
+    children: HashMap<String, TreeNode>,
+    is_dir: bool,
+}
+
+impl TreeNode {
+    fn new(is_dir: bool) -> Self {
+        Self {
+            entry: None,
+            children: HashMap::new(),
+            is_dir,
+        }
+    }
+
+    fn insert(&mut self, path: &str, entry: ArchiveEntry) {
+        let parts: Vec<&str> = path
+            .split(|c| c == '/' || c == '\\')
+            .filter(|s| !s.is_empty())
+            .collect();
+        self.insert_recursive(&parts, entry);
+    }
+
+    fn insert_recursive(&mut self, parts: &[&str], entry: ArchiveEntry) {
+        if parts.is_empty() {
+            // This node represents the entry itself
+            self.is_dir = entry.is_dir;
+            self.entry = Some(entry);
+            return;
+        }
+
+        let name = parts[0];
+        let child = self
+            .children
+            .entry(name.to_string())
+            .or_insert_with(|| TreeNode::new(true));
+        child.insert_recursive(&parts[1..], entry);
+    }
+
+    fn prune(&mut self) -> bool {
+        // Returns true if this node should be kept, false if it should be removed
+
+        // 1. Prune children first (bottom-up)
+        let mut to_remove = Vec::new();
+        for (name, child) in &mut self.children {
+            if !child.prune() {
+                to_remove.push(name.clone());
+            }
+        }
+
+        for name in to_remove {
+            self.children.remove(&name);
+        }
+
+        // 2. Check if this node is unnecessary
+
+        // If it's a file
+        if !self.is_dir {
+            if let Some(entry) = &self.entry {
+                if entry.size == 0 {
+                    return false; // Remove 0-byte file
+                }
+            }
+            return true; // Keep non-zero file
+        }
+
+        // If it's a directory
+        if self.children.is_empty() {
+            // Empty directory -> Remove
+            return false;
+        }
+
+        true // Keep directory with children
+    }
+
+    fn flatten(&self) -> Vec<ArchiveEntry> {
+        let mut result = Vec::new();
+
+        // Only include files, not directories
+        if let Some(entry) = &self.entry {
+            if !entry.is_dir {
+                result.push(entry.clone());
+            }
+        }
+
+        for child in self.children.values() {
+            result.extend(child.flatten());
+        }
+        result
     }
 }

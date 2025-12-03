@@ -127,6 +127,7 @@ pub struct HostFunctions {
     pub pending_messages: Arc<Mutex<Vec<(String, String)>>>,
     pub emitted_metadata: Arc<Mutex<Option<String>>>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
+    pub metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
     pub table: ResourceTable,
     pub ctx: WasiCtx,
 }
@@ -155,6 +156,7 @@ impl HostFunctions {
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             emitted_metadata: Arc::new(Mutex::new(None)),
             network_log: Arc::new(Mutex::new(Vec::new())),
+            metadata_cache: None,
             table: ResourceTable::new(),
             ctx,
         }
@@ -168,6 +170,10 @@ impl HostFunctions {
         let mut host_funcs = Self::new(capabilities, requests_per_minute);
         host_funcs.archive_backend = Some(backend);
         host_funcs
+    }
+
+    pub fn set_metadata_cache(&mut self, cache: Arc<arclain_db::MetadataCache>) {
+        self.metadata_cache = Some(cache);
     }
 
     pub fn set_archive_context(&self, archive_path: Option<String>, password: Option<String>) {
@@ -348,6 +354,88 @@ impl Host for HostFunctions {
             title, message
         );
         self.pending_messages.lock().push((title, message));
+    }
+
+    fn get_cached_metadata(&mut self, id: String) -> Option<String> {
+        if let Some(cache) = &self.metadata_cache {
+            match cache.get(&id) {
+                Ok(Some(meta)) => {
+                    // Check if fresh (7 days)
+                    match cache.is_fresh(&id, 7) {
+                        Ok(true) => {
+                            self.log_network_activity(format!("Cache HIT for {}", id));
+                            Some(meta.metadata_json)
+                        }
+                        Ok(false) => {
+                            self.log_network_activity(format!("Cache STALE for {}", id));
+                            None
+                        }
+                        Err(e) => {
+                            error!("Failed to check cache freshness: {}", e);
+                            None
+                        }
+                    }
+                }
+                Ok(None) => {
+                    self.log_network_activity(format!("Cache MISS for {}", id));
+                    None
+                }
+                Err(e) => {
+                    error!("Failed to get cached metadata: {}", e);
+                    None
+                }
+            }
+        } else {
+            warn!("Metadata cache not initialized");
+            None
+        }
+    }
+
+    fn save_cached_metadata(&mut self, id: String, json: String) {
+        if let Some(cache) = &self.metadata_cache {
+            // We need to parse the JSON to extract fields for the cache
+            // This is a bit inefficient (parsing twice), but robust
+            use arclain_db::CachedMetadata;
+
+            // Try to parse basic info
+            let parsed: serde_json::Value = match serde_json::from_str(&json) {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("Failed to parse metadata JSON for caching: {}", e);
+                    return;
+                }
+            };
+
+            let title = parsed["title"].as_str().unwrap_or("Unknown").to_string();
+            let circle = parsed["creator"].as_str().map(|s| s.to_string());
+            // Price is in dlsite.price as string
+            let price = parsed["dlsite"]["price"]
+                .as_str()
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|p| p as i64);
+            let release_date = parsed["release_date"].as_str().map(|s| s.to_string());
+
+            let meta = CachedMetadata {
+                product_id: id.clone(),
+                title,
+                circle,
+                price,
+                release_date,
+                metadata_json: json,
+                cached_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+            };
+
+            if let Err(e) = cache.save(&meta) {
+                error!("Failed to save metadata to cache: {}", e);
+            } else {
+                self.log_network_activity(format!("Saved {} to cache", id));
+            }
+        } else {
+            warn!("Metadata cache not initialized");
+        }
     }
 }
 

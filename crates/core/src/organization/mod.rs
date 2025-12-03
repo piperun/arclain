@@ -4,6 +4,9 @@ use std::collections::HashMap;
 pub mod engine;
 pub mod presets;
 
+#[cfg(test)]
+mod pruning_tests;
+
 /// A rule for organizing archives
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrganizationRule {

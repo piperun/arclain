@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arclain_core::config_db::{
-    get_config, list_pass_rules, open_config_db, open_databases, replace_pass_rules, set_config,
+    get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
 use arclain_core::sevenzip::SevenZipCli;
@@ -66,16 +66,29 @@ impl AppState {
         // Attempt to open DB-backed config + secrets (optional)
         if let Ok(mut paths) = DbPaths::defaults("arclain") {
             // Read overrides from config.sqlite if present
-            if let Ok(cfg_conn) = open_config_db(&paths.config_db) {
-                if let Ok(Some(secrets_path)) = get_config(&cfg_conn, "secrets_db_path") {
+            if let Ok(cfg_db) = ConfigDb::open(&paths.config_db) {
+                let cfg_conn = cfg_db.into_sqlite_db();
+
+                // Try to read secrets_db_path
+                if let Ok(Some(secrets_path)) =
+                    cfg_conn.with_connection(|conn| get_config(conn, "secrets_db_path"))
+                {
                     paths.secrets_db = PathBuf::from(secrets_path);
                 }
-                if let Ok(Some(keyfile_path)) = get_config(&cfg_conn, "key_file_path") {
+
+                // Try to read key_file_path
+                if let Ok(Some(keyfile_path)) =
+                    cfg_conn.with_connection(|conn| get_config(conn, "key_file_path"))
+                {
                     me.db_paths = Some(paths.clone());
                     // env var can override later
                     paths.key_file = Some(PathBuf::from(keyfile_path));
                 }
-                if let Ok(Some(policy)) = get_config(&cfg_conn, "encrypted_crc_policy") {
+
+                // Try to read encrypted_crc_policy
+                if let Ok(Some(policy)) =
+                    cfg_conn.with_connection(|conn| get_config(conn, "encrypted_crc_policy"))
+                {
                     me.encrypted_crc_policy = policy;
                 }
             }
@@ -105,51 +118,60 @@ impl AppState {
             }
 
             // Open secrets DB if key file provided and valid
+            // Open secrets DB if key file provided and valid
             if let Some(ref key_path) = paths.key_file {
-                if let Ok(key) = SecretsKey::from_file(key_path) {
+                if let Ok(key) = SecretsKey::load_from_file(key_path) {
                     match open_databases(&paths, &key) {
                         Ok(mut dbs) => {
                             // Persist current paths into config DB
-                            let _ = set_config(
-                                &dbs.config,
-                                "secrets_db_path",
-                                &paths.secrets_db.to_string_lossy(),
-                            );
-                            let _ = set_config(
-                                &dbs.config,
-                                "key_file_path",
-                                &key_path.to_string_lossy(),
-                            );
+                            let _ = dbs.config.with_connection(|conn| {
+                                set_config(
+                                    conn,
+                                    "secrets_db_path",
+                                    &paths.secrets_db.to_string_lossy(),
+                                )?;
+                                set_config(conn, "key_file_path", &key_path.to_string_lossy())
+                            });
 
                             // Migrate plain JSON settings -> config.sqlite if not present
-                            if get_config(&dbs.config, "sevenzip_path")
-                                .unwrap_or(None)
-                                .is_none()
-                            {
+                            let has_sevenzip = matches!(
+                                dbs.config
+                                    .with_connection(|conn| get_config(conn, "sevenzip_path")),
+                                Ok(Some(_))
+                            );
+
+                            if !has_sevenzip {
                                 if let Some(p) = me.cfg.cfg.sevenzip_path.clone() {
-                                    let _ = set_config(
-                                        &dbs.config,
-                                        "sevenzip_path",
-                                        &p.to_string_lossy(),
-                                    );
+                                    let _ = dbs.config.with_connection(|conn| {
+                                        set_config(conn, "sevenzip_path", &p.to_string_lossy())
+                                    });
                                 }
                             }
-                            if get_config(&dbs.config, "transfer_dir")
-                                .unwrap_or(None)
-                                .is_none()
-                            {
+
+                            let has_transfer = matches!(
+                                dbs.config
+                                    .with_connection(|conn| get_config(conn, "transfer_dir")),
+                                Ok(Some(_))
+                            );
+
+                            if !has_transfer {
                                 if let Some(p) = me.cfg.cfg.transfer_dir.clone() {
-                                    let _ = set_config(
-                                        &dbs.config,
-                                        "transfer_dir",
-                                        &p.to_string_lossy(),
-                                    );
+                                    let _ = dbs.config.with_connection(|conn| {
+                                        set_config(conn, "transfer_dir", &p.to_string_lossy())
+                                    });
                                 }
                             }
 
                             // Migrate JSON pass_rules -> secrets DB (first run)
-                            let migrated =
-                                get_config(&dbs.config, "pass_rules_migrated").unwrap_or(None);
+                            let migrated = if let Ok(res) = dbs
+                                .config
+                                .with_connection(|conn| get_config(conn, "pass_rules_migrated"))
+                            {
+                                res
+                            } else {
+                                None
+                            };
+
                             if migrated.as_deref() != Some("1") {
                                 if let Ok(existing) = list_pass_rules(&dbs.secrets) {
                                     if existing.is_empty() && !me.cfg.cfg.pass_rules.is_empty() {
@@ -159,15 +181,18 @@ impl AppState {
                                         ) {
                                             info!("Pass rules migration failed: {}", e);
                                         } else {
-                                            let _ =
-                                                set_config(&dbs.config, "pass_rules_migrated", "1");
+                                            let _ = dbs.config.with_connection(|conn| {
+                                                set_config(conn, "pass_rules_migrated", "1")
+                                            });
                                             info!(
                                                 "Migrated {} pass rules into secrets DB",
                                                 me.cfg.cfg.pass_rules.len()
                                             );
                                         }
                                     } else if !existing.is_empty() {
-                                        let _ = set_config(&dbs.config, "pass_rules_migrated", "1");
+                                        let _ = dbs.config.with_connection(|conn| {
+                                            set_config(conn, "pass_rules_migrated", "1")
+                                        });
                                     }
                                 }
                             }
@@ -186,12 +211,12 @@ impl AppState {
                             me.dbs = Some(dbs);
                         }
                         Err(e) => {
-                            warn!(
-                                "Failed to open secrets DB: {}; falling back to JSON config",
-                                e
-                            );
-                            info!("Database path: {}", paths.secrets_db.display());
+                            warn!("Failed to open databases: {}", e);
+                            info!("Config DB: {}", paths.config_db.display());
+                            info!("Cache DB: {}", paths.cache_db.display());
+                            info!("Secrets DB: {}", paths.secrets_db.display());
                             info!("Key file: {}", key_path.display());
+                            info!("Falling back to JSON config");
                         }
                     }
                 } else {
@@ -212,6 +237,9 @@ impl AppState {
                 } else {
                     let plugin_count = manager.list_plugins().len();
                     info!("Plugin manager initialized with {} plugins", plugin_count);
+                }
+                if let Some(ref dbs) = me.dbs {
+                    manager.set_metadata_cache(Arc::new(dbs.metadata.clone()));
                 }
                 me.plugin_manager = Some(Arc::new(Mutex::new(manager)));
             }
@@ -486,24 +514,32 @@ impl AppState {
         }
 
         // Always persist overrides into plain config.sqlite
-        let cfg_conn = open_config_db(&paths.config_db)?;
+        let cfg_conn = ConfigDb::open(&paths.config_db)?.into_sqlite_db();
         if let Some(ref dbp) = secrets_db_path {
-            let _ = set_config(&cfg_conn, "secrets_db_path", dbp);
+            let _ = cfg_conn.with_connection(|conn| set_config(conn, "secrets_db_path", dbp));
         }
         if let Some(ref kfp) = key_file_path {
-            let _ = set_config(&cfg_conn, "key_file_path", kfp);
+            let _ = cfg_conn.with_connection(|conn| set_config(conn, "key_file_path", kfp));
         }
         if let Some(ref pol) = encrypted_crc_policy {
-            let _ = set_config(&cfg_conn, "encrypted_crc_policy", pol);
+            let _ = cfg_conn.with_connection(|conn| set_config(conn, "encrypted_crc_policy", pol));
             self.encrypted_crc_policy = pol.clone();
         }
 
         // Try to open encrypted secrets DB only if we have a key file
         if let Some(kp) = paths.key_file.clone() {
-            let key = SecretsKey::from_file(&kp)?;
+            let key = SecretsKey::load_from_file(&kp)?;
             let dbs = open_databases(&paths, &key)?;
             // Store connections and paths
             self.db_paths = Some(paths.clone());
+
+            // Update plugin manager with new cache
+            if let Some(ref manager_arc) = self.plugin_manager {
+                manager_arc
+                    .lock()
+                    .set_metadata_cache(Arc::new(dbs.metadata.clone()));
+            }
+
             self.dbs = Some(dbs);
 
             // Load pass rules from secrets DB
@@ -554,16 +590,25 @@ impl AppState {
         }
 
         // Persist new path in config DB
-        let cfg_conn = open_config_db(&paths.config_db)?;
-        let _ = set_config(&cfg_conn, "secrets_db_path", &dst.to_string_lossy());
+        let cfg_conn = ConfigDb::open(&paths.config_db)?.into_sqlite_db();
+        let _ = cfg_conn
+            .with_connection(|conn| set_config(conn, "secrets_db_path", &dst.to_string_lossy()));
 
         // Update paths and reopen if key is available
         paths.secrets_db = dst;
         self.db_paths = Some(paths.clone());
 
         if let Some(ref kp) = paths.key_file {
-            let key = SecretsKey::from_file(kp)?;
+            let key = SecretsKey::load_from_file(kp)?;
             let dbs = open_databases(&paths, &key)?;
+
+            // Update plugin manager with new cache
+            if let Some(ref manager_arc) = self.plugin_manager {
+                manager_arc
+                    .lock()
+                    .set_metadata_cache(Arc::new(dbs.metadata.clone()));
+            }
+
             self.dbs = Some(dbs);
 
             // Reload pass rules
@@ -591,8 +636,8 @@ impl AppState {
             .key_file
             .clone()
             .ok_or_else(|| anyhow::anyhow!("No current key file configured"))?;
-        let old_key = SecretsKey::from_file(&old_key_path)?;
-        let new_key = SecretsKey::from_file(Path::new(new_key_file_path))?;
+        let old_key = SecretsKey::load_from_file(&old_key_path)?;
+        let new_key = SecretsKey::load_from_file(Path::new(new_key_file_path))?;
 
         // For redb, we need to:
         // 1. Read all data with old key
@@ -624,12 +669,21 @@ impl AppState {
         replace_pass_rules(&new_dbs.secrets, &rules)?;
 
         // Persist new key file path
-        let cfg_conn = open_config_db(&paths.config_db)?;
-        let _ = set_config(&cfg_conn, "key_file_path", new_key_file_path);
+        let cfg_conn = ConfigDb::open(&paths.config_db)?.into_sqlite_db();
+        let _ =
+            cfg_conn.with_connection(|conn| set_config(conn, "key_file_path", new_key_file_path));
 
         // Update paths in memory
         paths.key_file = Some(PathBuf::from(new_key_file_path));
         self.db_paths = Some(paths.clone());
+
+        // Update plugin manager with new cache
+        if let Some(ref manager_arc) = self.plugin_manager {
+            manager_arc
+                .lock()
+                .set_metadata_cache(Arc::new(new_dbs.metadata.clone()));
+        }
+
         self.dbs = Some(new_dbs);
 
         // Reload pass rules (should be the same, but for consistency)

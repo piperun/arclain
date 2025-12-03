@@ -64,13 +64,11 @@ pub fn render(
             // Ideally we should load this once when entering the page, but for now lazy load
             if state.rules.is_empty() {
                 let st = app_state.lock();
-                if let Some(conn) = &st
-                    .db_paths
-                    .as_ref()
-                    .and_then(|p| config_db::open_config_db(&p.config_db).ok())
-                {
-                    if let Ok(rules) = config_db::list_org_rules(conn) {
-                        state.rules = rules;
+                if let Some(p) = &st.db_paths {
+                    if let Ok(cfg_db) = config_db::ConfigDb::open(&p.config_db) {
+                        if let Ok(rules) = config_db::list_org_rules(&cfg_db.into_sqlite_db()) {
+                            state.rules = rules;
+                        }
                     }
                 }
             }
@@ -117,21 +115,17 @@ pub fn render(
             // Handle deletion
             if let Some(id) = delete_id {
                 let st = app_state.lock();
-                if let Some(conn) = &st
-                    .db_paths
-                    .as_ref()
-                    .and_then(|p| config_db::open_config_db(&p.config_db).ok())
-                {
-                    let _ = config_db::delete_org_rule(conn, id);
+                if let Some(p) = &st.db_paths {
+                    if let Ok(cfg_db) = config_db::ConfigDb::open(&p.config_db) {
+                        let _ = config_db::delete_org_rule(&cfg_db.into_sqlite_db(), id);
+                    }
                 }
                 // Refresh list
-                if let Some(conn) = &st
-                    .db_paths
-                    .as_ref()
-                    .and_then(|p| config_db::open_config_db(&p.config_db).ok())
-                {
-                    if let Ok(rules) = config_db::list_org_rules(conn) {
-                        state.rules = rules;
+                if let Some(p) = &st.db_paths {
+                    if let Ok(cfg_db) = config_db::ConfigDb::open(&p.config_db) {
+                        if let Ok(rules) = config_db::list_org_rules(&cfg_db.into_sqlite_db()) {
+                            state.rules = rules;
+                        }
                     }
                 }
             }
@@ -223,22 +217,25 @@ pub fn render(
                                 if ui.button("Save").clicked() {
                                     // Save to DB
                                     let st = app_state.lock();
-                                    if let Some(conn) = &st
-                                        .db_paths
-                                        .as_ref()
-                                        .and_then(|p| config_db::open_config_db(&p.config_db).ok())
-                                    {
-                                        let _ = config_db::save_org_rule(conn, rule);
+                                    if let Some(p) = &st.db_paths {
+                                        if let Ok(cfg_db) = config_db::ConfigDb::open(&p.config_db)
+                                        {
+                                            let _ = config_db::save_org_rule(
+                                                &cfg_db.into_sqlite_db(),
+                                                rule,
+                                            );
+                                        }
                                     }
                                     state.show_editor = false;
                                     // Refresh list
-                                    if let Some(conn) = &st
-                                        .db_paths
-                                        .as_ref()
-                                        .and_then(|p| config_db::open_config_db(&p.config_db).ok())
-                                    {
-                                        if let Ok(rules) = config_db::list_org_rules(conn) {
-                                            state.rules = rules;
+                                    if let Some(p) = &st.db_paths {
+                                        if let Ok(cfg_db) = config_db::ConfigDb::open(&p.config_db)
+                                        {
+                                            if let Ok(rules) =
+                                                config_db::list_org_rules(&cfg_db.into_sqlite_db())
+                                            {
+                                                state.rules = rules;
+                                            }
                                         }
                                     }
                                 }

@@ -11,10 +11,11 @@ fn setup_test_dir() -> TempDir {
 }
 
 /// Helper to create test database paths
-fn test_db_paths(temp_dir: &TempDir) -> (PathBuf, PathBuf) {
+fn test_db_paths(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
     let config_path = temp_dir.path().join("config.sqlite");
-    let secrets_path = temp_dir.path().join("secrets").join("pass.sqlite");
-    (config_path, secrets_path)
+    let cache_path = temp_dir.path().join("cache.sqlite");
+    let secrets_path = temp_dir.path().join("secrets").join("pass.redb");
+    (config_path, cache_path, secrets_path)
 }
 
 /// Generate a random 32-byte key for testing
@@ -66,26 +67,28 @@ fn test_secrets_key_debug_redaction() {
 #[test]
 fn test_config_db_creation() {
     let temp_dir = setup_test_dir();
-    let (config_path, _) = test_db_paths(&temp_dir);
+    let (config_path, _, _) = test_db_paths(&temp_dir);
 
     // Create config database
-    let conn = open_config_db(&config_path).expect("Failed to open config DB");
-
-    // Initialize schema
-    init_config_schema(&conn).expect("Failed to initialize schema");
+    let db = ConfigDb::open(&config_path).expect("Failed to open config DB");
+    let conn = db.into_sqlite_db();
 
     // Verify file exists
     assert!(config_path.exists());
 
     // Verify schema - should be able to query the table
-    conn.execute("SELECT key, value FROM app_config LIMIT 0", [])
-        .expect("Schema not properly initialized");
+    conn.with_connection(|c| {
+        c.execute("SELECT key, value FROM app_config LIMIT 0", [])
+            .expect("Schema not properly initialized");
+        Ok(())
+    })
+    .unwrap();
 }
 
 #[test]
 fn test_secrets_db_creation_and_encryption() {
     let temp_dir = setup_test_dir();
-    let secrets_path = temp_dir.path().join("secrets").join("pass.redb");
+    let (_, _, secrets_path) = test_db_paths(&temp_dir);
 
     // Create secrets directory
     fs::create_dir_all(secrets_path.parent().unwrap()).expect("Failed to create secrets dir");
@@ -120,33 +123,37 @@ fn test_secrets_db_creation_and_encryption() {
 #[test]
 fn test_config_get_set() {
     let temp_dir = setup_test_dir();
-    let (config_path, _) = test_db_paths(&temp_dir);
+    let (config_path, _, _) = test_db_paths(&temp_dir);
 
-    let conn = open_config_db(&config_path).unwrap();
-    init_config_schema(&conn).unwrap();
+    let db = ConfigDb::open(&config_path).unwrap();
+    let conn = db.into_sqlite_db();
 
-    // Set a value
-    set_config(&conn, "test_key", "test_value").expect("Failed to set config");
+    conn.with_connection(|c| {
+        // Set a value
+        set_config(c, "test_key", "test_value").expect("Failed to set config");
 
-    // Get the value back
-    let value = get_config(&conn, "test_key").expect("Failed to get config");
-    assert_eq!(value, Some("test_value".to_string()));
+        // Get the value back
+        let value = get_config(c, "test_key").expect("Failed to get config");
+        assert_eq!(value, Some("test_value".to_string()));
 
-    // Update the value
-    set_config(&conn, "test_key", "new_value").expect("Failed to update config");
+        // Update the value
+        set_config(c, "test_key", "new_value").expect("Failed to update config");
 
-    let value = get_config(&conn, "test_key").unwrap();
-    assert_eq!(value, Some("new_value".to_string()));
+        let value = get_config(c, "test_key").unwrap();
+        assert_eq!(value, Some("new_value".to_string()));
 
-    // Non-existent key should return None
-    let value = get_config(&conn, "nonexistent").unwrap();
-    assert_eq!(value, None);
+        // Non-existent key should return None
+        let value = get_config(c, "nonexistent").unwrap();
+        assert_eq!(value, None);
+        Ok(())
+    })
+    .unwrap();
 }
 
 #[test]
 fn test_pass_rules_crud() {
     let temp_dir = setup_test_dir();
-    let secrets_path = temp_dir.path().join("secrets").join("pass.redb");
+    let (_, _, secrets_path) = test_db_paths(&temp_dir);
 
     fs::create_dir_all(secrets_path.parent().unwrap()).unwrap();
     let key = generate_test_key();
@@ -248,12 +255,11 @@ fn test_file_permissions_unix() {
     use std::os::unix::fs::PermissionsExt;
 
     let temp_dir = setup_test_dir();
-    let (config_path, secrets_path) = test_db_paths(&temp_dir);
+    let (config_path, _, secrets_path) = test_db_paths(&temp_dir);
 
     // Create config database
-    let conn = open_config_db(&config_path).unwrap();
-    init_config_schema(&conn).unwrap();
-    drop(conn);
+    let db = ConfigDb::open(&config_path).unwrap();
+    drop(db);
 
     // Check config file permissions (should be 600)
     let metadata = fs::metadata(&config_path).unwrap();
@@ -263,9 +269,8 @@ fn test_file_permissions_unix() {
     // Create secrets database
     fs::create_dir_all(secrets_path.parent().unwrap()).unwrap();
     let key = generate_test_key();
-    let conn = open_secrets_db(&secrets_path, &key).unwrap();
-    init_secrets_schema(&conn).unwrap();
-    drop(conn);
+    let db = SecretsDb::open(&secrets_path, &key.as_bytes()).unwrap();
+    drop(db);
 
     // Check secrets file permissions (should be 600)
     let metadata = fs::metadata(&secrets_path).unwrap();
@@ -289,8 +294,7 @@ fn test_file_permissions_unix() {
 #[test]
 fn test_database_integration() {
     let temp_dir = setup_test_dir();
-    let config_path = temp_dir.path().join("config.sqlite");
-    let secrets_path = temp_dir.path().join("secrets").join("pass.redb");
+    let (config_path, cache_path, secrets_path) = test_db_paths(&temp_dir);
 
     // Setup databases
     fs::create_dir_all(secrets_path.parent().unwrap()).unwrap();
@@ -298,6 +302,7 @@ fn test_database_integration() {
 
     let paths = DbPaths {
         config_db: config_path.clone(),
+        cache_db: cache_path.clone(),
         secrets_db: secrets_path.clone(),
         key_file: None,
     };
@@ -305,8 +310,13 @@ fn test_database_integration() {
     let dbs = open_databases(&paths, &key).expect("Failed to open databases");
 
     // Store config
-    set_config(&dbs.config, "theme", "dark").unwrap();
-    set_config(&dbs.config, "crc_policy", "on_open").unwrap();
+    dbs.config
+        .with_connection(|c| {
+            set_config(c, "theme", "dark").unwrap();
+            set_config(c, "crc_policy", "on_open").unwrap();
+            Ok(())
+        })
+        .unwrap();
 
     // Store password rules
     let rules = vec![
@@ -333,14 +343,16 @@ fn test_database_integration() {
     let dbs = open_databases(&paths, &key).unwrap();
 
     // Check config
-    assert_eq!(
-        get_config(&dbs.config, "theme").unwrap(),
-        Some("dark".to_string())
-    );
-    assert_eq!(
-        get_config(&dbs.config, "crc_policy").unwrap(),
-        Some("on_open".to_string())
-    );
+    dbs.config
+        .with_connection(|c| {
+            assert_eq!(get_config(c, "theme").unwrap(), Some("dark".to_string()));
+            assert_eq!(
+                get_config(c, "crc_policy").unwrap(),
+                Some("on_open".to_string())
+            );
+            Ok(())
+        })
+        .unwrap();
 
     // Check password rules
     let fetched = dbs.secrets.list_pass_rules().unwrap();
@@ -358,27 +370,28 @@ fn test_database_integration() {
 
 #[test]
 fn test_concurrent_access() {
-    use std::sync::Arc;
-    use std::sync::Mutex;
     use std::thread;
 
     let temp_dir = setup_test_dir();
-    let (config_path, _) = test_db_paths(&temp_dir);
+    let (config_path, _, _) = test_db_paths(&temp_dir);
 
-    let conn = Arc::new(Mutex::new(open_config_db(&config_path).unwrap()));
-    init_config_schema(&conn.lock().unwrap()).unwrap();
+    let db = ConfigDb::open(&config_path).unwrap();
+    let conn = db.into_sqlite_db();
 
     let mut handles = vec![];
 
     // Spawn multiple threads writing different keys
-    // Using a mutex since SQLite connections aren't thread-safe by default
+    // SqliteDb is already Arc<Mutex<Connection>>, so we can clone it directly
     for i in 0..5 {
-        let conn = Arc::clone(&conn);
+        let conn = conn.clone();
         let handle = thread::spawn(move || {
             let key = format!("key{}", i);
             let value = format!("value{}", i);
-            let conn = conn.lock().unwrap();
-            set_config(&conn, &key, &value).unwrap();
+            conn.with_connection(|c| {
+                set_config(c, &key, &value).unwrap();
+                Ok(())
+            })
+            .unwrap();
         });
         handles.push(handle);
     }
@@ -389,11 +402,14 @@ fn test_concurrent_access() {
     }
 
     // Verify all values were written
-    let conn = conn.lock().unwrap();
-    for i in 0..5 {
-        let key = format!("key{}", i);
-        let expected = format!("value{}", i);
-        let actual = get_config(&conn, &key).unwrap().unwrap();
-        assert_eq!(actual, expected);
-    }
+    conn.with_connection(|c| {
+        for i in 0..5 {
+            let key = format!("key{}", i);
+            let expected = format!("value{}", i);
+            let actual = get_config(c, &key).unwrap().unwrap();
+            assert_eq!(actual, expected);
+        }
+        Ok(())
+    })
+    .unwrap();
 }

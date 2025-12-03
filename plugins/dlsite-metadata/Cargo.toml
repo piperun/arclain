@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive", "alloc"], default-features = fals
 serde_json = { version = "1", features = ["alloc"], default-features = false }
 regex = "1.10"
 scraper = "0.24.0"
+urlencoding = "2"
 
 # Exclude from workspace build (build manually with wasm target)
 [package.metadata.workspaces]

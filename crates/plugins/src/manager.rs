@@ -25,6 +25,7 @@ pub struct PluginManager {
     plugins: Arc<RwLock<HashMap<String, ManagedPlugin>>>,
     enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
     backend: Option<Arc<SevenZipCli>>,
+    metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
 }
 
 impl PluginManager {
@@ -37,6 +38,7 @@ impl PluginManager {
             plugins: Arc::new(RwLock::new(HashMap::new())),
             enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
             backend: None,
+            metadata_cache: None,
         })
     }
 
@@ -49,12 +51,24 @@ impl PluginManager {
             plugins: Arc::new(RwLock::new(HashMap::new())),
             enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
             backend: Some(backend),
+            metadata_cache: None,
         })
     }
 
     /// Set the archive backend for file operations
     pub fn set_backend(&mut self, backend: Arc<SevenZipCli>) {
         self.backend = Some(backend);
+    }
+
+    /// Set the metadata cache and propagate to all loaded plugins
+    pub fn set_metadata_cache(&mut self, cache: Arc<arclain_db::MetadataCache>) {
+        self.metadata_cache = Some(cache.clone());
+
+        // Propagate to all existing plugin instances
+        let mut plugins = self.plugins.write();
+        for plugin in plugins.values_mut() {
+            plugin.instance.set_metadata_cache(Some(cache.clone()));
+        }
     }
 
     /// Set the current archive context for all plugins
@@ -121,9 +135,15 @@ impl PluginManager {
                 capabilities.clone(),
                 rate_limit,
                 Some(backend.clone()),
+                self.metadata_cache.clone(),
             )?
         } else {
-            loaded.instantiate(capabilities.clone(), rate_limit)?
+            loaded.instantiate_with_backend(
+                capabilities.clone(),
+                rate_limit,
+                None,
+                self.metadata_cache.clone(),
+            )?
         };
 
         // Initialize the plugin

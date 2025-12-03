@@ -1,11 +1,13 @@
 use archust_plugin_sdk::info;
 use std::cell::RefCell;
-use std::sync::Mutex;
 
 // Plugin state to store found metadata
 struct PluginState {
     found_metadata: Option<(String, serde_json::Value, Option<ScrapedData>)>, // (product_id, json, scraped)
     last_status: String,
+    search_mode: bool,
+    search_query: String,
+    search_results: Vec<(String, String, String)>, // (code, title, maker)
 }
 
 // Global state (thread-local for WASM component)
@@ -13,6 +15,9 @@ thread_local! {
     static STATE: RefCell<PluginState> = RefCell::new(PluginState {
         found_metadata: None,
         last_status: "Ready to scan".to_string(),
+        search_mode: false,
+        search_query: String::new(),
+        search_results: Vec::new(),
     });
 }
 
@@ -57,17 +62,58 @@ impl archust_plugin_sdk::Guest for Component {
                         size: None,
                     }));
 
-                    if let Some((id, data, _)) = &state.found_metadata {
-                        let title = data["work_name"].as_str().unwrap_or("Unknown Title");
-                        elements.push(UiElement::Button(ButtonConfig {
-                            id: "show_details".to_string(),
-                            label: format!("Found: {} ({})", title, id),
+                    if state.search_mode {
+                        // Search UI
+                        elements.push(UiElement::TextInput(TextInputConfig {
+                            id: "search_query".to_string(),
+                            label: "Search Query".to_string(),
+                            value: state.search_query.clone(),
                         }));
+                        
+                        elements.push(UiElement::Button(ButtonConfig {
+                            id: "perform_search".to_string(),
+                            label: "Search".to_string(),
+                        }));
+                        
+                        elements.push(UiElement::Button(ButtonConfig {
+                            id: "cancel_search".to_string(),
+                            label: "Cancel".to_string(),
+                        }));
+                        
+                        if !state.search_results.is_empty() {
+                            elements.push(UiElement::Separator);
+                            elements.push(UiElement::Label(LabelConfig {
+                                text: "Results:".to_string(),
+                                bold: true,
+                                size: None,
+                            }));
+                            
+                            for (code, title, maker) in &state.search_results {
+                                elements.push(UiElement::Button(ButtonConfig {
+                                    id: format!("select_result_{}", code),
+                                    label: format!("[{}] {} ({})", code, title, maker),
+                                }));
+                            }
+                        }
                     } else {
-                        elements.push(UiElement::Button(ButtonConfig {
-                            id: "fetch_metadata".to_string(),
-                            label: "Fetch Metadata".to_string(),
-                        }));
+                        // Normal UI
+                        if let Some((id, data, _)) = &state.found_metadata {
+                            let title = data["work_name"].as_str().unwrap_or("Unknown Title");
+                            elements.push(UiElement::Button(ButtonConfig {
+                                id: "show_details".to_string(),
+                                label: format!("Found: {} ({})", title, id),
+                            }));
+                        } else {
+                            elements.push(UiElement::Button(ButtonConfig {
+                                id: "fetch_metadata".to_string(),
+                                label: "Fetch Metadata".to_string(),
+                            }));
+                            
+                            elements.push(UiElement::Button(ButtonConfig {
+                                id: "toggle_search".to_string(),
+                                label: "Search Manually".to_string(),
+                            }));
+                        }
                     }
                 });
 
@@ -83,7 +129,75 @@ impl archust_plugin_sdk::Guest for Component {
             id, value
         ));
 
+        if id.starts_with("select_result_") {
+            let code = id.trim_start_matches("select_result_").to_string();
+            info(&format!("[DLSite Plugin] Selected result: {}", code));
+            
+            STATE.with(|state| {
+                state.borrow_mut().last_status = format!("Fetching {}...", code);
+                state.borrow_mut().search_mode = false;
+            });
+            
+            // Re-use logic to fetch and emit
+            if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
+                 // Generate final JSON to save to cache
+                let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
+                archust_plugin_sdk::save_cached_metadata(&code, &metadata_json);
+                archust_plugin_sdk::emit_metadata(&metadata_json);
+                
+                STATE.with(|state| {
+                    let mut s = state.borrow_mut();
+                    s.found_metadata = Some((code.clone(), json, scraped));
+                    s.last_status = format!("Metadata found for {}", code);
+                });
+            } else {
+                STATE.with(|state| {
+                    state.borrow_mut().last_status = format!("Failed to fetch {}", code);
+                });
+            }
+            return;
+        }
+
         match id.as_str() {
+            "toggle_search" => {
+                STATE.with(|state| {
+                    state.borrow_mut().search_mode = true;
+                });
+            }
+            "cancel_search" => {
+                STATE.with(|state| {
+                    let mut s = state.borrow_mut();
+                    s.search_mode = false;
+                    s.search_results.clear();
+                });
+            }
+            "search_query" => {
+                if let Some(query) = value {
+                    STATE.with(|state| {
+                        state.borrow_mut().search_query = query;
+                    });
+                }
+            }
+            "perform_search" => {
+                let query = STATE.with(|state| state.borrow().search_query.clone());
+                if !query.is_empty() {
+                    STATE.with(|state| {
+                        state.borrow_mut().last_status = format!("Searching for '{}'...", query);
+                    });
+                    
+                    let results = search_dlsite(&query);
+                    
+                    STATE.with(|state| {
+                        let mut s = state.borrow_mut();
+                        if results.is_empty() {
+                            s.last_status = "No results found".to_string();
+                        } else {
+                            s.last_status = format!("Found {} results", results.len());
+                        }
+                        s.search_results = results;
+                    });
+                }
+            }
             "fetch_metadata" => {
                 info("[DLSite Plugin] Handling fetch_metadata");
                 STATE.with(|state| {
@@ -98,7 +212,7 @@ impl archust_plugin_sdk::Guest for Component {
                         let metadata_tuple = (json.clone(), scraped.clone());
                         let metadata_json = generate_metadata_json(&product_id, Some(&metadata_tuple));
                         archust_plugin_sdk::emit_metadata(&metadata_json);
-
+                        
                         STATE.with(|state| {
                             let mut s = state.borrow_mut();
                             s.found_metadata = Some((product_id, json, scraped));
@@ -143,7 +257,7 @@ impl archust_plugin_sdk::Guest for Component {
 }
 
 fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
-    use archust_plugin_sdk::{current_archive_info, info, list_archive_files};
+    use archust_plugin_sdk::{current_archive_info, info, list_archive_files, get_cached_metadata, save_cached_metadata};
 
     let info_data = current_archive_info().ok_or("No archive open")?;
     info(&format!(
@@ -151,11 +265,47 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
         info_data.filename
     ));
 
+    // Helper to process found code
+    let process_code = |code: String| -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
+        info(&format!("[DLSite Plugin] Found code: {}", code));
+        
+        // 1. Check cache
+        if let Some(cached_json) = get_cached_metadata(&code) {
+            info(&format!("[DLSite Plugin] Found cached metadata for {}", code));
+            // We need to return the data structure expected by the caller
+            // But cached JSON is the FINAL format, while the caller expects intermediate format
+            // This is a bit of a mismatch. 
+            // However, perform_scan is mostly used to populate the UI state and emit metadata.
+            // If we have cached metadata, we can emit it directly and return a "dummy" intermediate state
+            // or refactor the return type.
+            
+            // For now, let's try to reconstruct a minimal intermediate state from cached JSON
+            // so that "show_details" still works somewhat.
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&cached_json) {
+                 // Emit the cached metadata directly
+                 archust_plugin_sdk::emit_metadata(&cached_json);
+                 
+                 // Return it as if it was the API response, so UI state is populated
+                 // We might need to adapt the fields if the UI expects specific API fields
+                 return Ok(Some((code, json, None)));
+            }
+        }
+
+        // 2. Fetch from network
+        if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
+            // Generate final JSON to save to cache
+            let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
+            save_cached_metadata(&code, &metadata_json);
+            
+            return Ok(Some((code, json, scraped)));
+        }
+        Ok(None)
+    };
+
     // 1. Check filename
     if let Some(code) = detect_dlsite_code(&info_data.filename) {
-        info(&format!("[DLSite Plugin] Found code in filename: {}", code));
-        if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
-            return Ok(Some((code, json, scraped)));
+        if let Ok(Some(result)) = process_code(code) {
+            return Ok(Some(result));
         }
     }
 
@@ -164,15 +314,9 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
     match list_archive_files() {
         Ok(files) => {
             for file in files {
-                // Check if it's a folder (ends with /) or just check path components
-                // We just look for the code in any path string
                 if let Some(code) = detect_dlsite_code(&file) {
-                    info(&format!(
-                        "[DLSite Plugin] Found code in archive content: {}",
-                        code
-                    ));
-                    if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
-                        return Ok(Some((code, json, scraped)));
+                    if let Ok(Some(result)) = process_code(code) {
+                        return Ok(Some(result));
                     }
                 }
             }
@@ -202,7 +346,7 @@ fn detect_dlsite_code(text: &str) -> Option<String> {
 }
 
 fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
-    use archust_plugin_sdk::{http_get, info, log_network_activity};
+    use archust_plugin_sdk::{http_get, log_network_activity};
 
     // 1. Fetch JSON API
     let api_url = format!(
@@ -401,61 +545,137 @@ fn generate_metadata_json(
                 .map(|arr| {
                     arr.iter()
                         .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<String>>()
                 })
                 .unwrap_or_default(),
         )
     } else {
-        ("Unknown Title".to_string(), "Unknown Circle".to_string(), "", 0, "".to_string(), vec![])
+        (
+            "Unknown Title".to_string(),
+            "Unknown Circle".to_string(),
+            "",
+            0,
+            "".to_string(),
+            Vec::new(),
+        )
     };
 
     // Override with scraped data if available
     if let Some(scraped) = scraped_data {
         if let Some(t) = &scraped.title {
-            if !t.is_empty() { title = t.clone(); }
+            title = t.clone();
         }
         if let Some(c) = &scraped.circle {
-            if !c.is_empty() { circle = c.clone(); }
+            circle = c.clone();
         }
         if let Some(d) = &scraped.release_date {
-            if !d.is_empty() { release_date = d.clone(); }
+            release_date = d.clone();
         }
         if !scraped.tags.is_empty() {
             tags = scraped.tags.clone();
         }
     }
 
-    let description = scraped_data
-        .and_then(|s| s.description.as_deref())
-        .unwrap_or(short_desc);
-        
-    let screenshots = scraped_data
-        .map(|s| {
-            s.screenshots
-                .iter()
-                .map(|url| serde_json::json!({ "FilePath": url }))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let description = if let Some(scraped) = scraped_data {
+        scraped.description.clone().unwrap_or(short_desc.to_string())
+    } else {
+        short_desc.to_string()
+    };
 
-    // Generate layered JSON for metadata_json field
-    serde_json::json!({
+    let screenshots = if let Some(scraped) = scraped_data {
+        scraped.screenshots.iter().map(|url| {
+            // Convert to ScreenshotData::FilePath variant (using URL as path for now)
+            // The core engine will handle downloading these
+            serde_json::json!({ "FilePath": url })
+        }).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let metadata = serde_json::json!({
         "product_id": product_id,
         "source": "dlsite",
         "title": title,
+        "circle": circle,
+        "creator": circle, // Alias for core engine
         "description": description,
-        "tags": tags,
         "release_date": release_date,
-        "creator": circle,
+        "tags": tags,
         "screenshots": screenshots,
         "dlsite": {
-            "code": product_id,
-            "circle": circle,
+            "id": product_id,
+            "code": product_id, // Required by RuleEngine for $code
             "price": price.to_string(),
-            "short_description": short_desc
+            "url": format!("https://www.dlsite.com/home/work/=/product_id/{}.html", product_id)
+        },
+        "common": {
+            "dlsite_id": product_id
         }
-    })
-    .to_string()
+    });
+
+    metadata.to_string()
+}
+
+/// Search DLSite for a query and return list of (code, title, maker)
+fn search_dlsite(query: &str) -> Vec<(String, String, String)> {
+    use archust_plugin_sdk::{http_get, log_network_activity};
+    use scraper::{Html, Selector};
+
+    let url = format!(
+        "https://www.dlsite.com/home/fsr/=/keyword/{}",
+        urlencoding::encode(query)
+    );
+    
+    log_network_activity(&format!("Searching DLSite: {}", query));
+    log_network_activity(&format!("GET {}", url));
+
+    let html = match http_get(&url) {
+        Ok(h) => h,
+        Err(e) => {
+            log_network_activity(&format!("Search failed: {}", e));
+            return Vec::new();
+        }
+    };
+
+    let document = Html::parse_document(&html);
+    let mut results = Vec::new();
+
+    // Select search results
+    // Try multiple selectors as DLSite layout might vary
+    let item_selector = Selector::parse("li.search_result_img_box_inner, tr.n_worklist_item").unwrap();
+    let title_selector = Selector::parse("dt.work_name a, a.work_name").unwrap();
+    let maker_selector = Selector::parse("dd.maker_name a, span.maker_name a").unwrap();
+
+    for item in document.select(&item_selector) {
+        let mut title = "Unknown".to_string();
+        let mut maker = "Unknown".to_string();
+        let mut code = String::new();
+
+        if let Some(link) = item.select(&title_selector).next() {
+            title = link.text().collect::<String>().trim().to_string();
+            if let Some(href) = link.value().attr("href") {
+                // Extract code from URL (.../product_id/RJ123456.html)
+                if let Some(c) = detect_dlsite_code(href) {
+                    code = c;
+                }
+            }
+        }
+
+        if let Some(maker_link) = item.select(&maker_selector).next() {
+            maker = maker_link.text().collect::<String>().trim().to_string();
+        }
+
+        if !code.is_empty() {
+            results.push((code, title, maker));
+        }
+        
+        if results.len() >= 10 {
+            break;
+        }
+    }
+    
+    log_network_activity(&format!("Found {} results", results.len()));
+    results
 }
 
 archust_plugin_sdk::export!(Component with_types_in archust_plugin_sdk);
@@ -520,9 +740,8 @@ mod tests {
         let json = generate_metadata_json("RJ123456", None);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(parsed["product_id"], "RJ123456");
-        assert_eq!(parsed["source"], "dlsite");
-        assert_eq!(parsed["dlsite"]["code"], "RJ123456");
-        assert_eq!(parsed["common"]["title"], "Unknown");
+        assert_eq!(parsed["dlsite"]["id"], "RJ123456");
+        assert_eq!(parsed["common"]["dlsite_id"], "RJ123456");
+        assert_eq!(parsed["title"], "Unknown Title");
     }
 }

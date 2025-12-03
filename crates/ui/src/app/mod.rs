@@ -333,7 +333,7 @@ impl eframe::App for ArclainApp {
                     let entries = state.all_entries.clone();
                     
                     // Load rules from DB
-                    let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config_db::open_config_db(&p.config_db).ok()) {
+                    let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config_db::ConfigDb::open(&p.config_db).ok().map(|db| db.into_sqlite_db())) {
                         arclain_core::config_db::list_org_rules(conn).unwrap_or_default()
                     } else {
                         Vec::new()
@@ -775,7 +775,7 @@ impl ArclainApp {
                             let entries = state.all_entries.clone();
                             
                             // Load rules from DB
-                            let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config_db::open_config_db(&p.config_db).ok()) {
+                            let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config_db::ConfigDb::open(&p.config_db).ok().map(|db| db.into_sqlite_db())) {
                                 arclain_core::config_db::list_org_rules(conn).unwrap_or_default()
                             } else {
                                 Vec::new()
