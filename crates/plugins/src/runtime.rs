@@ -78,7 +78,7 @@ impl LoadedPlugin {
         capabilities: Vec<PluginCapability>,
         requests_per_minute: u32,
     ) -> Result<PluginInstance> {
-        self.instantiate_with_backend(capabilities, requests_per_minute, None)
+        self.instantiate_with_backend(capabilities, requests_per_minute, None, None)
     }
 
     pub fn instantiate_with_backend(
@@ -86,9 +86,10 @@ impl LoadedPlugin {
         capabilities: Vec<PluginCapability>,
         requests_per_minute: u32,
         backend: Option<Arc<SevenZipCli>>,
+        metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
     ) -> Result<PluginInstance> {
         // Create host functions state
-        let host_funcs = if let Some(backend) = backend {
+        let mut host_funcs = if let Some(backend) = backend {
             HostFunctions::with_backend(
                 capabilities.into_iter().collect(),
                 requests_per_minute,
@@ -97,6 +98,10 @@ impl LoadedPlugin {
         } else {
             HostFunctions::new(capabilities.into_iter().collect(), requests_per_minute)
         };
+
+        if let Some(cache) = metadata_cache {
+            host_funcs.set_metadata_cache(cache);
+        }
 
         let mut store = Store::new(&self.engine, host_funcs);
         let mut linker = Linker::new(&self.engine);
@@ -213,6 +218,13 @@ impl PluginInstance {
         // Cleanup is handled by Drop in Component Model usually,
         // or we can add a specific cleanup function to WIT
         Ok(())
+    }
+
+    /// Set the metadata cache for this plugin instance
+    pub fn set_metadata_cache(&mut self, cache: Option<Arc<arclain_db::MetadataCache>>) {
+        if let Some(cache) = cache {
+            self.store.data_mut().set_metadata_cache(cache);
+        }
     }
 
     /// Get pending messages from the plugin

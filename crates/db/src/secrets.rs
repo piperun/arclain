@@ -1,12 +1,13 @@
 //! Encrypted password storage using redb + AES-256-GCM
 //! Pure Rust implementation with no OpenSSL dependencies
 
+use crate::redb_wrapper::ReDb;
 use aes_gcm::{
     aead::{Aead, KeyInit},
     Aes256Gcm, Nonce,
 };
 use anyhow::{anyhow, Context, Result};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use zeroize::Zeroizing;
@@ -38,8 +39,9 @@ impl std::fmt::Debug for PassRule {
 }
 
 /// Encrypted password database using redb + AES-256-GCM
+#[derive(Clone)]
 pub struct SecretsDb {
-    db: Database,
+    db: ReDb,
     cipher: Aes256Gcm,
 }
 
@@ -57,21 +59,23 @@ impl SecretsDb {
                 .with_context(|| format!("creating directory {}", parent.display()))?;
         }
 
-        // Open/create database
-        let db = Database::create(path)
-            .with_context(|| format!("opening redb at {}", path.display()))?;
+        // Open/create database using wrapper
+        let db = ReDb::open(path).with_context(|| format!("opening redb at {}", path.display()))?;
 
         // Initialize cipher with the key
         let cipher =
             Aes256Gcm::new_from_slice(key).map_err(|e| anyhow!("Invalid encryption key: {}", e))?;
 
         // Initialize tables
-        let write_txn = db.begin_write()?;
-        {
-            let _ = write_txn.open_table(PASS_RULES_TABLE)?;
-            let _ = write_txn.open_table(METADATA_TABLE)?;
-        }
-        write_txn.commit()?;
+        db.with_connection(|conn| {
+            let write_txn = conn.begin_write()?;
+            {
+                let _ = write_txn.open_table(PASS_RULES_TABLE)?;
+                let _ = write_txn.open_table(METADATA_TABLE)?;
+            }
+            write_txn.commit()?;
+            Ok(())
+        })?;
 
         Ok(Self { db, cipher })
     }
@@ -118,66 +122,70 @@ impl SecretsDb {
 
     /// List all password rules
     pub fn list_pass_rules(&self) -> Result<Vec<PassRule>> {
-        let read_txn = self.db.begin_read()?;
-        let table = read_txn.open_table(PASS_RULES_TABLE)?;
+        self.db.with_connection(|conn| {
+            let read_txn = conn.begin_read()?;
+            let table = read_txn.open_table(PASS_RULES_TABLE)?;
 
-        let mut rules = Vec::new();
-        for item in table.iter()? {
-            let (_id, encrypted_data) = item?;
-            let decrypted = self.decrypt(encrypted_data.value())?;
+            let mut rules = Vec::new();
+            for item in table.iter()? {
+                let (_id, encrypted_data) = item?;
+                let decrypted = self.decrypt(encrypted_data.value())?;
 
-            // Deserialize the encrypted payload
-            let payload: RulePayload =
-                serde_json::from_slice(&decrypted).context("Failed to deserialize rule")?;
+                // Deserialize the encrypted payload
+                let payload: RulePayload =
+                    serde_json::from_slice(&decrypted).context("Failed to deserialize rule")?;
 
-            rules.push(PassRule {
-                name: payload.name,
-                pattern: payload.pattern,
-                password: payload.password,
-                priority: payload.priority,
-                enabled: payload.enabled,
+                rules.push(PassRule {
+                    name: payload.name,
+                    pattern: payload.pattern,
+                    password: payload.password,
+                    priority: payload.priority,
+                    enabled: payload.enabled,
+                });
+            }
+
+            // Sort by priority (desc) then name (asc)
+            rules.sort_by(|a, b| {
+                b.priority
+                    .cmp(&a.priority)
+                    .then_with(|| a.name.cmp(&b.name))
             });
-        }
 
-        // Sort by priority (desc) then name (asc)
-        rules.sort_by(|a, b| {
-            b.priority
-                .cmp(&a.priority)
-                .then_with(|| a.name.cmp(&b.name))
-        });
-
-        Ok(rules)
+            Ok(rules)
+        })
     }
 
     /// Replace all password rules
     pub fn replace_all_pass_rules(&self, rules: &[PassRule]) -> Result<()> {
-        let write_txn = self.db.begin_write()?;
-        {
-            let mut table = write_txn.open_table(PASS_RULES_TABLE)?;
+        self.db.with_connection(|conn| {
+            let write_txn = conn.begin_write()?;
+            {
+                let mut table = write_txn.open_table(PASS_RULES_TABLE)?;
 
-            // Clear existing rules
-            let keys: Vec<u32> = table.iter()?.map(|item| item.unwrap().0.value()).collect();
-            for key in keys {
-                table.remove(key)?;
+                // Clear existing rules
+                let keys: Vec<u32> = table.iter()?.map(|item| item.unwrap().0.value()).collect();
+                for key in keys {
+                    table.remove(key)?;
+                }
+
+                // Insert new rules
+                for (idx, rule) in rules.iter().enumerate() {
+                    let payload = RulePayload {
+                        name: rule.name.clone(),
+                        pattern: rule.pattern.clone(),
+                        password: rule.password.clone(),
+                        priority: rule.priority,
+                        enabled: rule.enabled,
+                    };
+
+                    let json = serde_json::to_vec(&payload)?;
+                    let encrypted = self.encrypt(&json)?;
+                    table.insert(idx as u32, encrypted.as_slice())?;
+                }
             }
-
-            // Insert new rules
-            for (idx, rule) in rules.iter().enumerate() {
-                let payload = RulePayload {
-                    name: rule.name.clone(),
-                    pattern: rule.pattern.clone(),
-                    password: rule.password.clone(),
-                    priority: rule.priority,
-                    enabled: rule.enabled,
-                };
-
-                let json = serde_json::to_vec(&payload)?;
-                let encrypted = self.encrypt(&json)?;
-                table.insert(idx as u32, encrypted.as_slice())?;
-            }
-        }
-        write_txn.commit()?;
-        Ok(())
+            write_txn.commit()?;
+            Ok(())
+        })
     }
 
     /// Compact the database to reclaim space

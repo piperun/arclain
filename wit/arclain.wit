@@ -38,6 +38,10 @@ interface host {
 
     // UI Feedback
     show-message: func(title: string, message: string);
+
+    // Caching
+    get-cached-metadata: func(id: string) -> option<string>;
+    save-cached-metadata: func(id: string, json: string);
 }
 
 interface ui {

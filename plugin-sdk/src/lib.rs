@@ -61,3 +61,12 @@ pub fn show_message(title: &str, message: &str) {
 pub fn log_network_activity(msg: &str) {
     arclain::plugin::host::log_network_activity(msg);
 }
+
+// Caching helpers
+pub fn get_cached_metadata(id: &str) -> Option<String> {
+    arclain::plugin::host::get_cached_metadata(id)
+}
+
+pub fn save_cached_metadata(id: &str, json: &str) {
+    arclain::plugin::host::save_cached_metadata(id, json);
+}

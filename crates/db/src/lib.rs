@@ -9,8 +9,23 @@ use zeroize::Zeroizing;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+mod sqlite_db;
+pub use sqlite_db::SqliteDb;
+
+mod redb_wrapper;
+pub use redb_wrapper::ReDb;
+
+mod config_db;
+pub use config_db::ConfigDb;
+
+mod cache_db;
+pub use cache_db::CacheDb;
+
 mod secrets;
 pub use secrets::{PassRule as DbPassRule, SecretsDb};
+
+mod metadata_cache;
+pub use metadata_cache::{CachedMetadata, MetadataCache};
 
 mod organization;
 pub use organization::{delete_rule, get_rule, list_rules, save_rule, DbOrganizationRule};
@@ -22,6 +37,7 @@ pub use rusqlite::Connection as DbConnection;
 #[derive(Debug, Clone)]
 pub struct DbPaths {
     pub config_db: PathBuf,
+    pub cache_db: PathBuf,
     pub secrets_db: PathBuf,
     pub key_file: Option<PathBuf>,
 }
@@ -53,6 +69,7 @@ impl DbPaths {
 
         Ok(Self {
             config_db: base.join("config.sqlite"),
+            cache_db: base.join("cache.sqlite"),
             secrets_db: secrets_dir.join("pass.redb"),
             key_file: Some(secrets_dir.join("master.key")),
         })
@@ -100,12 +117,10 @@ impl SecretsKey {
             }
         }
 
-        // Encode key as base64 and write to file
         let encoded = B64.encode(&*self.0);
-        fs::write(path, encoded.as_bytes())
-            .with_context(|| format!("writing key file {}", path.display()))?;
+        fs::write(path, encoded).with_context(|| format!("writing key to {}", path.display()))?;
 
-        // Set file permissions to 600 (user-only read/write) on Unix
+        // Set file permissions to 600 (read/write user only) on Unix
         #[cfg(unix)]
         {
             let perms = fs::Permissions::from_mode(0o600);
@@ -116,53 +131,25 @@ impl SecretsKey {
         Ok(())
     }
 
-    /// Load from a user-provided key file (32 bytes raw, 64-char hex, or base64)
-    pub fn from_file(path: &Path) -> Result<Self> {
-        // Validate path to prevent directory traversal
-        validate_path(path)?;
+    /// Load the key from a file
+    pub fn load_from_file(path: &Path) -> Result<Self> {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("reading key from {}", path.display()))?;
+        let bytes = B64
+            .decode(contents.trim())
+            .context("Invalid base64 in key file")?;
 
-        let data =
-            fs::read(path).with_context(|| format!("reading key file {}", path.display()))?;
-
-        // Set file permissions to 600 (user-only read/write) on Unix
-        #[cfg(unix)]
-        {
-            let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(path, perms)
-                .with_context(|| format!("setting permissions on {}", path.display()))?;
-        }
-        // 1) Exact 32 raw bytes
-        if data.len() == 32 {
-            return Ok(Self(Zeroizing::new(data)));
-        }
-        // 2) Try as UTF-8 text: hex or base64
-        let text = std::str::from_utf8(&data)
-            .map(|s| s.trim())
-            .map_err(|_| anyhow!("key file is not 32 raw bytes and not UTF-8 text"))?;
-
-        if is_hex_64(text) {
-            let mut out = Vec::with_capacity(32);
-            hex_decode_into(text, &mut out)?;
-            if out.len() != 32 {
-                return Err(anyhow!("hex key must decode to 32 bytes"));
-            }
-            return Ok(Self(Zeroizing::new(out)));
+        if bytes.len() != 32 {
+            return Err(anyhow!("Invalid key length: expected 32 bytes"));
         }
 
-        // base64 (strict)
-        let out = B64
-            .decode(text.as_bytes())
-            .map_err(|_| anyhow!("key file is not valid base64 or hex"))?;
-        if out.len() != 32 {
-            return Err(anyhow!("base64 key must decode to 32 bytes"));
-        }
-        Ok(Self(Zeroizing::new(out)))
+        Ok(Self(Zeroizing::new(bytes)))
     }
 
     /// Get the 32-byte key as a fixed-size array
     pub fn as_bytes(&self) -> [u8; 32] {
         let mut arr = [0u8; 32];
-        arr.copy_from_slice(&self.0[..32]);
+        arr.copy_from_slice(&self.0);
         arr
     }
 
@@ -172,140 +159,48 @@ impl SecretsKey {
     }
 }
 
-mod metadata_cache;
-pub use metadata_cache::{CachedMetadata, MetadataCache};
+/// Validate that a path is safe (no parent traversal)
+fn validate_path(path: &Path) -> Result<()> {
+    for component in path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(anyhow!("Invalid path: contains parent directory traversal"));
+        }
+    }
+    Ok(())
+}
 
-/// Open both databases: config (SQLite) and secrets (redb with AES encryption)
+/// Holds open connections to both databases
 pub struct ConfigDbs {
-    pub config: Connection,
+    pub config: SqliteDb,
     pub secrets: SecretsDb,
     pub metadata: MetadataCache,
 }
 
+/// Open all databases, initializing schemas if needed
 pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
-    let cfg = open_config_db(&paths.config_db)?;
-    init_config_schema(&cfg)?;
+    // Open config database using new module
+    let config_db = ConfigDb::open(&paths.config_db)
+        .with_context(|| format!("Failed to open config database at {:?}", paths.config_db))?;
 
-    // Create a shared connection for the metadata cache
-    // Note: In a real app we might want a connection pool or separate connection,
-    // but for now we'll clone the connection if possible or just pass it.
-    // rusqlite Connection is not Clone. We need to wrap it in Arc<Mutex> if we want to share it.
-    // But ConfigDbs owns 'config'.
+    // Ensure cache directory exists
+    if let Some(parent) = paths.cache_db.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create cache directory at {:?}", parent))?;
+    }
 
-    // Actually, MetadataCache takes Arc<Mutex<Connection>>.
-    // We should probably change ConfigDbs to hold Arc<Mutex<Connection>> for config too,
-    // or just let MetadataCache have its own connection?
-    // SQLite allows multiple connections.
+    // Open cache database
+    let cache_db = CacheDb::open(&paths.cache_db)
+        .with_context(|| format!("Failed to open cache database at {:?}", paths.cache_db))?;
 
-    // Let's change ConfigDbs to wrap config in Arc<Mutex> to share with MetadataCache
-    // OR just open a second connection for MetadataCache.
-    // Opening a second connection is safer for concurrency if we use WAL.
-
-    let meta_conn = open_config_db(&paths.config_db)?;
-    let metadata_cache = MetadataCache::new(std::sync::Arc::new(std::sync::Mutex::new(meta_conn)));
-
-    let sec = SecretsDb::open(&paths.secrets_db, &key.as_bytes())?;
+    // Open secrets database using new module
+    let secrets_db = SecretsDb::open(&paths.secrets_db, &key.as_bytes())
+        .with_context(|| format!("Failed to open secrets database at {:?}", paths.secrets_db))?;
 
     Ok(ConfigDbs {
-        config: cfg,
-        secrets: sec,
-        metadata: metadata_cache,
+        config: config_db.into_sqlite_db(),
+        secrets: secrets_db,
+        metadata: MetadataCache::new(cache_db.into_sqlite_db()),
     })
-}
-
-/// Plain SQLite for config.sqlite
-pub fn open_config_db(path: &Path) -> Result<Connection> {
-    let conn =
-        Connection::open(path).with_context(|| format!("opening config db {}", path.display()))?;
-
-    // Set file permissions to 600 (user-only read/write) on Unix
-    #[cfg(unix)]
-    {
-        if let Ok(metadata) = fs::metadata(path) {
-            if metadata.is_file() {
-                let perms = fs::Permissions::from_mode(0o600);
-                fs::set_permissions(path, perms)
-                    .with_context(|| format!("setting permissions on {}", path.display()))?;
-            }
-        }
-    }
-
-    // Pragmas safe for plain sqlite
-    conn.execute_batch(
-        "\
-        PRAGMA journal_mode=WAL;
-        PRAGMA synchronous=NORMAL;
-        PRAGMA temp_store=MEMORY;
-        ",
-    )?;
-    Ok(conn)
-}
-
-fn init_config_schema(conn: &Connection) -> Result<()> {
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS app_config(
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS meta(
-            migration INTEGER NOT NULL
-        );",
-        [],
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS organization_rules(
-            id INTEGER PRIMARY KEY,
-            name TEXT NOT NULL,
-            description TEXT,
-            category TEXT DEFAULT 'General',
-            trigger_json TEXT NOT NULL,
-            actions_json TEXT NOT NULL,
-            priority INTEGER DEFAULT 0,
-            is_enabled BOOLEAN DEFAULT 1,
-            is_system BOOLEAN DEFAULT 0
-        );",
-        [],
-    )?;
-
-    // Ensure a meta row exists
-    conn.execute(
-        "INSERT INTO meta (migration) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM meta);",
-        [],
-    )?;
-
-    // Get current migration version
-    let version: i32 = conn.query_row("SELECT migration FROM meta", [], |row| row.get(0))?;
-
-    // Migration 1: Initial schema (already done by CREATE TABLE IF NOT EXISTS above)
-    if version < 1 {
-        conn.execute("UPDATE meta SET migration = 1", [])?;
-    }
-
-    // Migration 2: Metadata Cache
-    if version < 2 {
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS dlsite_metadata_cache (
-                product_id TEXT PRIMARY KEY,
-                title TEXT NOT NULL,
-                circle TEXT,
-                price INTEGER,
-                release_date TEXT,
-                metadata_json TEXT NOT NULL,
-                cached_at INTEGER NOT NULL
-            );",
-            [],
-        )?;
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_metadata_cache_cached_at ON dlsite_metadata_cache(cached_at);",
-            [],
-        )?;
-        conn.execute("UPDATE meta SET migration = 2", [])?;
-    }
-
-    Ok(())
 }
 
 /// Simple K/V config helpers (stored in plain config.sqlite)
@@ -328,35 +223,6 @@ pub fn set_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
 
 /// Helpers
 
-fn is_hex_64(s: &str) -> bool {
-    s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-fn hex_decode_into(s: &str, out: &mut Vec<u8>) -> Result<()> {
-    fn val(c: u8) -> Result<u8> {
-        match c {
-            b'0'..=b'9' => Ok(c - b'0'),
-            b'a'..=b'f' => Ok(10 + (c - b'a')),
-            b'A'..=b'F' => Ok(10 + (c - b'A')),
-            _ => Err(anyhow!("invalid hex")),
-        }
-    }
-    let b = s.as_bytes();
-    if b.len() % 2 != 0 {
-        return Err(anyhow!("hex length must be even"));
-    }
-    out.clear();
-    out.reserve(b.len() / 2);
-    let mut i = 0usize;
-    while i < b.len() {
-        let hi = val(b[i])?;
-        let lo = val(b[i + 1])?;
-        out.push((hi << 4) | lo);
-        i += 2;
-    }
-    Ok(())
-}
-
 fn hex_encode_upper(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789ABCDEF";
     let mut s = String::with_capacity(bytes.len() * 2);
@@ -365,43 +231,6 @@ fn hex_encode_upper(bytes: &[u8]) -> String {
         s.push(HEX[(v & 0x0F) as usize] as char);
     }
     s
-}
-
-/// Validate file path to prevent directory traversal and ensure it's a valid UTF-8 path
-fn validate_path(path: &Path) -> Result<()> {
-    // Ensure path is valid UTF-8
-    path.to_str()
-        .ok_or_else(|| anyhow!("path contains invalid UTF-8: {}", path.display()))?;
-
-    // Check for directory traversal attempts
-    let path_str = path.to_string_lossy();
-    if path_str.contains("..") {
-        return Err(anyhow!(
-            "path contains directory traversal: {}",
-            path.display()
-        ));
-    }
-
-    // Additional platform-specific checks
-    #[cfg(windows)]
-    {
-        // Check for Windows reserved names
-        let forbidden = [
-            "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7",
-            "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-        ];
-        if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-            let name_upper = file_name.to_uppercase();
-            if forbidden.iter().any(|&f| name_upper.starts_with(f)) {
-                return Err(anyhow!(
-                    "path uses Windows reserved name: {}",
-                    path.display()
-                ));
-            }
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

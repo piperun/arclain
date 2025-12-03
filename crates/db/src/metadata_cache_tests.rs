@@ -1,34 +1,17 @@
+use crate::metadata_cache::CachedMetadata;
 use crate::*;
-use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tempfile::NamedTempFile;
 
-fn setup_test_db() -> Arc<Mutex<DbConnection>> {
-    let conn = DbConnection::open_in_memory().expect("Failed to open in-memory DB");
-    // Initialize schema manually since init_config_schema might not cover this table if it's new
-    // But wait, init_config_schema IS where the table is created.
-    // Let's assume we can call init_config_schema or just create the table manually for isolation.
-
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS dlsite_metadata_cache (
-            product_id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            circle TEXT,
-            price INTEGER,
-            release_date TEXT,
-            metadata_json TEXT NOT NULL,
-            cached_at INTEGER NOT NULL
-        )",
-        [],
-    )
-    .expect("Failed to create table");
-
-    Arc::new(Mutex::new(conn))
+fn setup_test_cache() -> MetadataCache {
+    let temp_file = NamedTempFile::new().expect("Failed to create temp file");
+    let cache_db = CacheDb::open(temp_file.path()).expect("Failed to open cache db");
+    MetadataCache::new(cache_db.into_sqlite_db())
 }
 
 #[test]
 fn test_metadata_cache_crud() {
-    let conn = setup_test_db();
-    let cache = MetadataCache::new(conn);
+    let cache = setup_test_cache();
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -64,8 +47,7 @@ fn test_metadata_cache_crud() {
 
 #[test]
 fn test_metadata_cache_freshness() {
-    let conn = setup_test_db();
-    let cache = MetadataCache::new(conn);
+    let cache = setup_test_cache();
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -103,8 +85,7 @@ fn test_metadata_cache_freshness() {
 
 #[test]
 fn test_metadata_cache_cleanup() {
-    let conn = setup_test_db();
-    let cache = MetadataCache::new(conn);
+    let cache = setup_test_cache();
 
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
