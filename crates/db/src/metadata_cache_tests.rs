@@ -24,7 +24,11 @@ fn test_metadata_cache_crud() {
         circle: Some("Test Circle".to_string()),
         price: Some(1000),
         release_date: Some("2024-01-01".to_string()),
-        metadata_json: "{}".to_string(),
+        description: None,
+        work_type: None,
+        file_format: None,
+        tags_json: None,
+        raw_api_json: "{}".to_string(),
         cached_at: now,
     };
 
@@ -61,7 +65,11 @@ fn test_metadata_cache_freshness() {
         circle: None,
         price: None,
         release_date: None,
-        metadata_json: "{}".to_string(),
+        description: None,
+        work_type: None,
+        file_format: None,
+        tags_json: None,
+        raw_api_json: "{}".to_string(),
         cached_at: now,
     };
 
@@ -71,7 +79,11 @@ fn test_metadata_cache_freshness() {
         circle: None,
         price: None,
         release_date: None,
-        metadata_json: "{}".to_string(),
+        description: None,
+        work_type: None,
+        file_format: None,
+        tags_json: None,
+        raw_api_json: "{}".to_string(),
         cached_at: now - (8 * one_day), // 8 days old
     };
 
@@ -99,7 +111,11 @@ fn test_metadata_cache_cleanup() {
         circle: None,
         price: None,
         release_date: None,
-        metadata_json: "{}".to_string(),
+        description: None,
+        work_type: None,
+        file_format: None,
+        tags_json: None,
+        raw_api_json: "{}".to_string(),
         cached_at: now,
     };
 
@@ -109,7 +125,11 @@ fn test_metadata_cache_cleanup() {
         circle: None,
         price: None,
         release_date: None,
-        metadata_json: "{}".to_string(),
+        description: None,
+        work_type: None,
+        file_format: None,
+        tags_json: None,
+        raw_api_json: "{}".to_string(),
         cached_at: now - (10 * one_day), // 10 days old
     };
 
