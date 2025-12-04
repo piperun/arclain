@@ -2,10 +2,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub mod engine;
+pub mod organizer;
 pub mod presets;
 
 #[cfg(test)]
 mod pruning_tests;
+
+// Re-export commonly used types from organizer
+pub use organizer::{
+    check_archive_structure, execute_organization_plan, needs_better_compression,
+    organize_archive, ArchiveStructure, GameMetadata, ScreenshotData,
+};
 
 /// A rule for organizing archives
 #[derive(Debug, Clone, Serialize, Deserialize)]

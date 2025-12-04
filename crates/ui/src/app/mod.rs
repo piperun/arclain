@@ -17,8 +17,8 @@ use crate::features::{
 };
 use crate::platform::detect_dark_mode;
 
-use arclain_core::file_opener::{FileOpener, OpenStrategy};
-use arclain_core::sevenzip::ProgressUpdate;
+use arclain_core::utilities::file_opener::{FileOpener, OpenStrategy};
+use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use eframe::egui;
 use parking_lot::Mutex;
 use std::path::PathBuf;
@@ -333,8 +333,8 @@ impl eframe::App for ArclainApp {
                     let entries = state.all_entries.clone();
                     
                     // Load rules from DB
-                    let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config_db::ConfigDb::open(&p.config_db).ok().map(|db| db.into_sqlite_db())) {
-                        arclain_core::config_db::list_org_rules(conn).unwrap_or_default()
+                    let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config::database::ConfigDb::open(&p.config_db).ok().map(|db| db.into_sqlite_db())) {
+                        arclain_core::config::database::list_org_rules(conn).unwrap_or_default()
                     } else {
                         Vec::new()
                     };
@@ -492,7 +492,7 @@ impl eframe::App for ArclainApp {
                                             arclain_core::Archive::new(backend_arc, &source)
                                         };
                                         
-                                        match arclain_core::archive_organizer::execute_organization_plan(
+                                        match arclain_core::organization::execute_organization_plan(
                                             &archive,
                                             &dest,
                                             plan,
@@ -531,7 +531,7 @@ impl eframe::App for ArclainApp {
                                                             password.clone()
                                                         );
                                                         
-                                                        match arclain_core::archive_organizer::execute_organization_plan(
+                                                        match arclain_core::organization::execute_organization_plan(
                                                             &archive_retry,
                                                             &dest,
                                                             plan,
@@ -765,7 +765,7 @@ impl ArclainApp {
 
                         // Handle metadata emission from plugins
                         if let properties_panel::PropertiesPanelAction::Metadata(json) = &action {
-                             match arclain_core::archive_organizer::GameMetadata::from_json(json) {
+                             match arclain_core::organization::GameMetadata::from_json(json) {
                                 Ok(metadata) => {
                                     let mut state = self.state.lock();
                                     state.current_game_metadata = Some(metadata);
@@ -787,8 +787,8 @@ impl ArclainApp {
                             let entries = state.all_entries.clone();
                             
                             // Load rules from DB
-                            let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config_db::ConfigDb::open(&p.config_db).ok().map(|db| db.into_sqlite_db())) {
-                                arclain_core::config_db::list_org_rules(conn).unwrap_or_default()
+                            let rules = if let Some(conn) = &state.db_paths.as_ref().and_then(|p| arclain_core::config::database::ConfigDb::open(&p.config_db).ok().map(|db| db.into_sqlite_db())) {
+                                arclain_core::config::database::list_org_rules(conn).unwrap_or_default()
                             } else {
                                 Vec::new()
                             };

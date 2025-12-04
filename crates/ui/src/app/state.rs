@@ -1,10 +1,10 @@
 use anyhow::Result;
-use arclain_core::config_db::{
+use arclain_core::config::database::{
     get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
 use arclain_core::backends::BackendSelector;
-use arclain_core::sevenzip::SevenZipCli;
+use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::{ConfigStore, NavigationState};
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
@@ -35,7 +35,7 @@ pub struct AppState {
     pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
     pub plugin_metadata: Option<serde_json::Value>,
     // Game metadata for archive organization (from plugins like DLSite)
-    pub current_game_metadata: Option<arclain_core::archive_organizer::GameMetadata>,
+    pub current_game_metadata: Option<arclain_core::organization::GameMetadata>,
 }
 
 impl AppState {
@@ -722,7 +722,7 @@ impl AppState {
 
         // Persist to secrets DB if available
         if let Some(ref dbs) = self.dbs {
-            arclain_core::config_db::replace_pass_rules(&dbs.secrets, &rules)?;
+            arclain_core::config::database::replace_pass_rules(&dbs.secrets, &rules)?;
             info!(
                 "Saved {} password rules to encrypted secrets DB",
                 rules.len()

@@ -270,6 +270,54 @@ impl SevenZipCli {
         ArchiveKind::Unknown("unknown".into())
     }
 
+    /// Check if a RAR archive has encrypted contents without attempting password.
+    /// This is useful because 7z cannot handle RAR encryption perfectly, so we want
+    /// to detect encryption status upfront before attempting extraction.
+    /// Returns true if any files are encrypted (not just headers).
+    pub fn is_rar_encrypted(&self, path: &Path) -> Result<bool> {
+        info!("Checking RAR encryption status: {}", path.display());
+        
+        let args = vec![
+            OsString::from("l"),
+            OsString::from("-ba"),
+            OsString::from("-slt"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+            OsString::from("-p"), // Empty password to avoid interactive prompt
+            path.as_os_str().to_os_string(),
+        ];
+        
+        // Run the command - it will fail on encrypted headers but may succeed on encrypted files
+        let result = self.run(args);
+        
+        match result {
+            Ok(output) => {
+                // Parse the output to check for encrypted entries
+                let has_encrypted_files = output.lines().any(|line| {
+                    line.starts_with("Encrypted = +") ||
+                    (line.starts_with("Encrypted = ") && line.contains("+"))
+                });
+                
+                debug!("RAR encryption check result: encrypted={}", has_encrypted_files);
+                Ok(has_encrypted_files)
+            }
+            Err(e) => {
+                // If 7z fails, it might be due to encrypted headers
+                let err_msg = e.to_string().to_lowercase();
+                if err_msg.contains("wrong password") ||
+                   err_msg.contains("can not open encrypted archive") ||
+                   err_msg.contains("encrypted") {
+                    debug!("RAR has encrypted headers or cannot open without password");
+                    Ok(true)
+                }
+                else {
+                    // Some other error occurred
+                    Err(e)
+                }
+            }
+        }
+    }
+
     fn parse_list_slt(&self, archive_path: &Path, slt: &str) -> ArchiveInfo {
         let mut entries = Vec::new();
         let mut cur: Vec<(String, String)> = Vec::new();
@@ -749,10 +797,10 @@ impl ArchiveBackend for SevenZipCli {
         Ok(())
     }
 
-    fn convert_to_7z(&self, source: &Path, dest: &Path, temp_dir: &Path) -> Result<()> {
+    fn convert_to_7z(&self, source: &crate::Archive, dest: &Path, temp_dir: &Path) -> Result<()> {
         info!(
             "Converting {} to 7z at {} (temp: {})",
-            source.display(),
+            source.path().display(),
             dest.display(),
             temp_dir.display()
         );
@@ -780,11 +828,11 @@ impl ArchiveBackend for SevenZipCli {
             path: work_dir.clone(),
         };
 
-        // 1. Extract source to work_dir
-        self.extract_all(source, &work_dir, None)
+        // 1. Extract source archive using its password (if any)
+        source.extract_all(&work_dir)
             .context("extracting source archive")?;
 
-        // 2. Compress work_dir contents to dest
+        // 2. Compress work_dir contents to dest using 7z CLI
         // We run 7z from within work_dir to ensure relative paths are correct
         let dest_abs = std::fs::canonicalize(dest.parent().unwrap_or(Path::new(".")))?
             .join(dest.file_name().unwrap());

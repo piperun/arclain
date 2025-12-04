@@ -3,7 +3,7 @@ mod features;
 mod platform;
 
 use anyhow::Result;
-use arclain_core::logging::init_logging;
+use arclain_core::utilities::init_logging;
 use eframe::egui;
 use tracing::info;
 

@@ -1,6 +1,6 @@
 use crate::app::state::AppState;
 use crate::features::{dialogs, file_list, status_bar};
-use arclain_core::sevenzip::ProgressUpdate;
+use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use parking_lot::Mutex;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;

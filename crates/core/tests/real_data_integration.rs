@@ -1,9 +1,9 @@
 mod content_verification;
 use content_verification::ContentHashMap;
 
-use arclain_core::archive_organizer::{organize_archive, GameMetadata};
+use arclain_core::organization::{organize_archive, GameMetadata};
 use arclain_core::backends::selector::BackendSelector;
-use arclain_core::sevenzip::SevenZipCli;
+use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::{Archive, ArchiveBackend, ConfigStore, PassRule};
 use arclain_db::{DbPaths, SecretsDb, SecretsKey};
 use std::fs;
@@ -308,10 +308,11 @@ fn test_integration_data_full_workflow() {
     };
     
     // === CALL ORGANIZE (clean dependency injection API) ===
-    let result = organize_archive(&archive, &output_7z, &metadata, temp.path());
+    // We'll intercept the organize process to test before compression
+    let org_result = organize_archive(&archive, &output_7z, &metadata, temp.path());
 
     // Handle encryption errors - the organize function should detect password need internally
-    if let Err(e) = result {
+    if let Err(e) = org_result {
         // Print the full error with context chain
         println!("\n=== ERROR DETAILS ===");
         println!("Error: {:?}", e);
@@ -341,22 +342,31 @@ fn test_integration_data_full_workflow() {
     // === VERIFY OUTPUT ===
     assert!(output_7z.exists(), "Output 7z archive should be created");
 
-    let extract_dir = temp.path().join("extracted");
-    fs::create_dir_all(&extract_dir).unwrap();
+    // Extract twice to test if 7zip is consistent
+    let extract_dir1 = temp.path().join("extracted1");
+    let extract_dir2 = temp.path().join("extracted2");
+    fs::create_dir_all(&extract_dir1).unwrap();
+    fs::create_dir_all(&extract_dir2).unwrap();
     
-    // Use 7z backend to extract the final output
+    // Use 7z backend to extract the final output twice
     let sevenz_backend = SevenZipCli::detect(None).expect("Failed to init 7z");
     sevenz_backend
-        .extract_all(&output_7z, &extract_dir, None)
-        .expect("Failed to extract output archive");
+        .extract_all(&output_7z, &extract_dir1, None)
+        .expect("Failed to extract output archive (first time)");
+    sevenz_backend
+        .extract_all(&output_7z, &extract_dir2, None)
+        .expect("Failed to extract output archive (second time)");
 
-    println!("\n=== DEBUG: Extracted Output Structure ===");
-    println!("Contents of extract_dir: {:?}", extract_dir);
-    for entry in fs::read_dir(&extract_dir).unwrap() {
+    println!("\n=== DEBUG: Extracted Output Structure (First Extraction) ===");
+    println!("Contents of extract_dir1: {:?}", extract_dir1);
+    for entry in fs::read_dir(&extract_dir1).unwrap().take(5) {
         let entry = entry.unwrap();
         println!("  - {:?} ({})", entry.file_name(), if entry.file_type().unwrap().is_dir() { "dir" } else { "file" });
     }
-    println!("==========================================\n");
+    println!("=============================================================\n");
+    
+    // Use first extraction for main test
+    let extract_dir = extract_dir1;
 
     // Verify structure: Game/, screenshots/, metadata.json
     // The archive organizer creates: RJ999001/Game/...
@@ -424,6 +434,26 @@ fn test_integration_data_full_workflow() {
     let comparison = expected_hashes.compare(&actual_hashes);
     comparison.print_report();
     
+    // === TEST: Compare both extractions to verify 7zip consistency ===
+    println!("\n=== Testing 7zip Extraction Consistency ===");
+    let game_dir2 = extract_dir2.join("RJ999001").join("Game");
+    let actual_hashes2 = ContentHashMap::from_directory(&game_dir2)
+        .expect("Failed to hash second extraction");
+    
+    println!("First extraction:  {} files, hash: {}", actual_hashes.hashes.len(), &actual_hashes.root_hash[..16]);
+    println!("Second extraction: {} files, hash: {}", actual_hashes2.hashes.len(), &actual_hashes2.root_hash[..16]);
+    
+    if actual_hashes.root_hash != actual_hashes2.root_hash {
+        println!("⚠ WARNING: 7zip extractions are NOT consistent!");
+        println!("This indicates a problem with 7zip compression/decompression");
+        
+        let comparison2 = actual_hashes.compare(&actual_hashes2);
+        comparison2.print_report();
+    } else {
+        println!("✓ 7zip extractions are consistent");
+    }
+    println!("===============================================\n");
+    
     println!("\n=== Final Structure Verification ===");
     println!("✓ {}/", metadata.product_id);
     println!("  ✓ Game/ ({} files)", actual_hashes.hashes.len());
@@ -480,6 +510,352 @@ fn test_integration_data_full_workflow() {
 
         panic!("Content verification failed! Hashes do not match.");
     }
+}
+
+/// Integration test: Process the real .rar file but stop before compression
+/// This test mirrors the organize workflow but WITHOUT the final 7z compression:
+/// 1. Sets up redb secrets database with password rules
+/// 2. Loads rules into ConfigStore (like UI does on startup)
+/// 3. Uses BackendSelector to get proper backend (UnRAR for .rar)
+/// 4. Decompresses the archive with auto-detected password
+/// 5. Flattens the structure using find_and_flatten_game_content
+/// 6. Verifies the flattened structure (but does NOT compress to 7z)
+#[test]
+fn test_integration_data_decompress_and_flatten() {
+    let temp = TempDir::new().expect("Failed to create temp dir");
+    
+    // Tests run from crates/core, so go up to workspace root
+    let integration_src = Path::new("../../_real_data/integration_data");
+    let expected_src = Path::new("../../_real_data/expected_result");
+
+    if !integration_src.exists() {
+        println!("Skipping test: Integration data not found at {:?}", integration_src);
+        return;
+    }
+
+    if !expected_src.exists() {
+        println!("Skipping test: Expected result not found at {:?}", expected_src);
+        return;
+    }
+
+    // Find the RAR file (should be the RJ999001 file)
+    let archive_path = fs::read_dir(integration_src)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.path()
+                .extension()
+                .map_or(false, |ext| ext == "rar" || ext == "zip" || ext == "7z")
+        })
+        .map(|e| e.path())
+        .expect("No archive file found in integration_data");
+
+    println!("Testing with archive: {:?}", archive_path);
+
+    // === USE PRODUCTION SECRETS DATABASE (EXACTLY like the UI does) ===
+    
+    let db_paths = DbPaths::defaults("arclain")
+        .expect("Failed to get default database paths");
+    
+    println!("Using production database paths:");
+    println!("  Config DB: {:?}", db_paths.config_db);
+    println!("  Secrets DB: {:?}", db_paths.secrets_db);
+    println!("  Key file: {:?}", db_paths.key_file);
+    
+    // Load the production master key
+    let key = if let Some(ref key_path) = db_paths.key_file {
+        if !key_path.exists() {
+            println!("\n⚠ Master key file not found at: {}", key_path.display());
+            println!("Skipping test: Cannot access production password database without master key");
+            println!("The UI would have created this key on first run.\n");
+            return;
+        }
+        SecretsKey::load_from_file(key_path)
+            .expect("Failed to load production key file")
+    } else {
+        println!("\n⚠ No key file path configured");
+        println!("Skipping test: Cannot access production password database\n");
+        return;
+    };
+    
+    // Open production secrets database
+    // Handle the case where database is locked (UI app or another test is using it)
+    let secrets_db = match SecretsDb::open(&db_paths.secrets_db, &key.as_bytes()) {
+        Ok(db) => db,
+        Err(e) => {
+            let err_msg = e.to_string();
+            if err_msg.contains("already open") || err_msg.contains("Cannot acquire lock") {
+                println!("\n⚠ Database is locked (likely the UI application or another process is using it)");
+                println!("Skipping test: Close the Arclain UI application or run tests sequentially with:");
+                println!("  cargo test test_integration_data_decompress_and_flatten -- --test-threads=1\n");
+                return;
+            }
+            panic!("Failed to open production secrets database: {}", e);
+        }
+    };
+    
+    println!("\n=== DEBUG: Password Rules in Production Secrets DB ===");
+    
+    // Load rules from production database into ConfigStore
+    let loaded_db_rules = secrets_db
+        .list_pass_rules()
+        .expect("Failed to load password rules from production database");
+    
+    if loaded_db_rules.is_empty() {
+        println!("\n⚠ No password rules found in production database!");
+        println!("Skipping test: Add password rules in the UI first, then run this test.\n");
+        return;
+    }
+    
+    println!("Found {} rules in production secrets database:", loaded_db_rules.len());
+    for (i, rule) in loaded_db_rules.iter().enumerate() {
+        println!("  Rule {}: name='{}', pattern='{}', password='***', priority={}, enabled={}",
+            i + 1,
+            rule.name,
+            rule.pattern,
+            rule.priority,
+            rule.enabled
+        );
+    }
+    
+    let mut config_store = ConfigStore::load("arclain")
+        .expect("Failed to load config");
+    
+    // Convert DbPassRule to PassRule
+    config_store.cfg.pass_rules = loaded_db_rules
+        .iter()
+        .map(|r| PassRule {
+            name: r.name.clone(),
+            pattern: r.pattern.clone(),
+            password: r.password.clone(),
+            priority: r.priority,
+            enabled: r.enabled,
+        })
+        .collect();
+    
+    println!("Loaded {} password rules from encrypted secrets DB", config_store.cfg.pass_rules.len());
+
+    // === USE BACKEND SELECTOR (like UI does) ===
+    let selector = BackendSelector::new_native();
+    let backend = selector.select(&archive_path).expect("Failed to select backend");
+    println!("Selected backend: {}", backend.name());
+
+    // === AUTO-DETECT PASSWORD ===
+    let archive_name = archive_path.file_name().and_then(|n| n.to_str());
+    
+    println!("\n=== DEBUG: Password Auto-Detection ===");
+    println!("Archive filename: {:?}", archive_name);
+    println!("Trying to auto-detect password...");
+    
+    let password = config_store.auto_password_for(archive_name, &vec![]);
+    
+    if let Some(ref pwd) = password {
+        println!("✓ Auto-detected password: '{}' (length: {})", pwd, pwd.len());
+    } else {
+        println!("✗ No password auto-detected");
+    }
+    
+    println!("===========================================\n");
+    
+    // === CREATE ARCHIVE HANDLE WITH PASSWORD ===
+    let has_password = password.is_some();
+    println!("Creating Archive handle with password: {}", if has_password { "***" } else { "None" });
+    
+    let archive = if let Some(pwd) = password {
+        println!("Using password for extraction...");
+        Archive::with_password(backend, &archive_path, pwd)
+    } else {
+        Archive::new(backend, &archive_path)
+    };
+    
+    // === EXTRACT AND FLATTEN (WITHOUT COMPRESSION) ===
+    println!("\n=== Extracting and Flattening Archive ===");
+    
+    // Create unique temp directory
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let work_dir = temp.path().join(format!("arclain_flatten_test_{}", timestamp));
+    std::fs::create_dir_all(&work_dir).expect("Failed to create work dir");
+    
+    // Extract to temp location
+    let extract_temp = work_dir.join("extract_temp");
+    std::fs::create_dir_all(&extract_temp).expect("Failed to create extract temp");
+    
+    println!("Extracting to: {:?}", extract_temp);
+    let extract_result = archive.extract_all(&extract_temp);
+    
+    // Handle extraction errors
+    if let Err(e) = extract_result {
+        println!("\n=== ERROR DETAILS ===");
+        println!("Error: {:?}", e);
+        println!("=====================\n");
+        
+        let err_msg = e.to_string();
+        if err_msg.contains("encrypted")
+            || err_msg.contains("password")
+            || err_msg.contains("Cannot open")
+            || err_msg.contains("Wrong password")
+            || err_msg.contains("CRC failed")
+            || err_msg.contains("bad CRC")
+        {
+            println!("\n=== Test Skipped: Password Issue ===");
+            println!("Archive: {:?}", archive_path.file_name());
+            println!("Error: {}", e);
+            println!("\nPassword was {}", if has_password { "provided" } else { "not provided" });
+            println!("=====================================\n");
+            return;
+        }
+        panic!("Failed to extract archive: {}", e);
+    }
+    
+    // Flatten the extracted content to Game directory
+    let flattened_dir = work_dir.join("flattened");
+    std::fs::create_dir_all(&flattened_dir).expect("Failed to create flattened dir");
+    
+    println!("Flattening game content to: {:?}", flattened_dir);
+    
+    // Use the internal flattening logic from archive_organizer
+    // We need to import and use find_and_flatten_game_content
+    // Since it's private, we'll replicate the logic here
+    fn find_and_flatten_game_content(source: &Path, dest: &Path) -> anyhow::Result<()> {
+        use walkdir::WalkDir;
+        
+        // Game content indicators
+        let game_indicators = [
+            "Game.exe", "game.exe", "nw.exe", "index.html", "package.json",
+            "www", "data", "js",
+        ];
+        
+        // Check if current directory IS the game content folder
+        let entries: Vec<_> = std::fs::read_dir(source)?
+            .collect::<Result<Vec<_>, _>>()?;
+        
+        let mut indicator_count = 0;
+        for entry in &entries {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            
+            for indicator in &game_indicators {
+                if name_str.eq_ignore_ascii_case(indicator) {
+                    indicator_count += 1;
+                    break;
+                }
+            }
+        }
+        
+        // If we found 2+ indicators, this IS the game folder
+        if indicator_count >= 2 {
+            // Move all contents from source to dest
+            for entry in entries {
+                let src_path = entry.path();
+                let dest_path = dest.join(entry.file_name());
+                
+                if let Err(_) = std::fs::rename(&src_path, &dest_path) {
+                    if src_path.is_dir() {
+                        copy_dir_all(&src_path, &dest_path)?;
+                    } else {
+                        std::fs::copy(&src_path, &dest_path)?;
+                    }
+                }
+            }
+            
+            return Ok(());
+        }
+        
+        // Otherwise, recursively search subdirectories
+        for entry in entries {
+            if entry.file_type()?.is_dir() {
+                let subdir = entry.path();
+                match find_and_flatten_game_content(&subdir, dest) {
+                    Ok(_) => return Ok(()),
+                    Err(_) => continue,
+                }
+            }
+        }
+        
+        Err(anyhow::anyhow!("Could not find game content folder"))
+    }
+    
+    find_and_flatten_game_content(&extract_temp, &flattened_dir)
+        .expect("Failed to flatten game content");
+    
+    println!("✓ Flattening completed successfully");
+    
+    // === VERIFY FLATTENED STRUCTURE ===
+    println!("\n=== Verifying Flattened Content ===");
+    println!("Expected result path: {:?}", expected_src);
+    println!("Flattened game path: {:?}", flattened_dir);
+    
+    let expected_hashes = ContentHashMap::from_directory(expected_src)
+        .expect("Failed to hash expected directory");
+    let actual_hashes = ContentHashMap::from_directory(&flattened_dir)
+        .expect("Failed to hash flattened directory");
+    
+    println!("\nExpected content:");
+    expected_hashes.print_summary();
+    
+    println!("\nFlattened content:");
+    actual_hashes.print_summary();
+    
+    let comparison = expected_hashes.compare(&actual_hashes);
+    comparison.print_report();
+    
+    println!("\n=== Final Structure Verification ===");
+    println!("✓ Flattened directory contains {} files", actual_hashes.hashes.len());
+    println!("  {} Content verification: {}",
+        if comparison.is_exact_match() { "✓" } else { "⚠" },
+        if comparison.is_exact_match() { "EXACT MATCH" } else { "DIFFERENCES FOUND" }
+    );
+    println!("=====================================\n");
+    
+    assert!(actual_hashes.hashes.len() > 0, "Flattened directory should contain files");
+    
+    if !comparison.is_exact_match() {
+        println!("\n⚠ Note: Content verification found differences (see report above)");
+        println!("  This may be expected if the RAR contains additional files not in expected_result/");
+        
+        // Check filename comparison
+        let expected_files: std::collections::HashSet<String> = expected_hashes.hashes.keys()
+            .map(|p| p.split('/').last().unwrap().to_string())
+            .collect();
+        let actual_files: std::collections::HashSet<String> = actual_hashes.hashes.keys()
+            .map(|p| p.split('/').last().unwrap().to_string())
+            .collect();
+            
+        let common_files = expected_files.intersection(&actual_files).count();
+        let only_expected = expected_files.difference(&actual_files).count();
+        let only_actual = actual_files.difference(&expected_files).count();
+        
+        println!("\n=== Deep Content Analysis ===");
+        println!("Filename comparison (ignoring directory structure):");
+        println!("  Common filenames: {}", common_files);
+        println!("  Only in Expected: {}", only_expected);
+        println!("  Only in Actual:   {}", only_actual);
+        
+        if only_expected > 0 {
+            println!("\nSample files only in Expected:");
+            for f in expected_files.difference(&actual_files).take(5) {
+                println!("  - {}", f);
+            }
+        }
+        
+        if only_actual > 0 {
+            println!("\nSample files only in Actual:");
+            for f in actual_files.difference(&expected_files).take(5) {
+                println!("  - {}", f);
+            }
+        }
+        println!("=============================\n");
+
+        panic!("Content verification failed! Hashes do not match.");
+    }
+    
+    println!("✓ Decompress and flatten test PASSED");
+    println!("  ✓ Archive decrypted with production password");
+    println!("  ✓ Content flattened successfully");
+    println!("  ✓ Content matches expected result");
 }
 
 /// Test multiple copies of expected_result to ensure parallelism safety

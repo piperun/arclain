@@ -74,7 +74,7 @@ impl RuleEngine {
         rule: &OrganizationRule,
         archive_name: &str,
         entries: &[ArchiveEntry],
-        game_metadata: Option<&crate::archive_organizer::GameMetadata>,
+        game_metadata: Option<&super::organizer::GameMetadata>,
     ) -> Result<OrganizationPlan> {
         // Prune unnecessary files/folders first
         let pruned_entries = Self::prune_entries(entries);
@@ -90,7 +90,7 @@ impl RuleEngine {
             metadata.insert("title".to_string(), gm.title.clone());
 
             // NEW: Add filtered_title for safe folder names
-            let filtered = crate::title_filter::sanitize_title(&gm.title);
+            let filtered = crate::utilities::title_filter::sanitize_title(&gm.title);
             metadata.insert("filtered_title".to_string(), filtered);
 
             if let Some(creator) = &gm.creator {
@@ -190,7 +190,7 @@ impl RuleEngine {
         let mut downloads = Vec::new();
         if let Some(gm) = game_metadata {
             for (i, screenshot) in gm.screenshots.iter().enumerate() {
-                if let crate::archive_organizer::ScreenshotData::FilePath(path) = screenshot {
+                if let super::organizer::ScreenshotData::FilePath(path) = screenshot {
                     let url = path.to_string_lossy().to_string();
                     // Determine extension from URL or default to jpg
                     let ext = Path::new(&url)

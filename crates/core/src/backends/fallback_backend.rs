@@ -202,7 +202,7 @@ impl ArchiveBackend for FallbackBackend {
         }
     }
 
-    fn convert_to_7z(&self, source: &Path, dest: &Path, temp_dir: &Path) -> Result<()> {
+    fn convert_to_7z(&self, source: &crate::Archive, dest: &Path, temp_dir: &Path) -> Result<()> {
         match self.primary.convert_to_7z(source, dest, temp_dir) {
             Ok(()) => Ok(()),
             Err(_) => self.fallback.convert_to_7z(source, dest, temp_dir),

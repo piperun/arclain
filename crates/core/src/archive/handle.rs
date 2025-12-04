@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
-use crate::{ArchiveBackend, ArchiveInfo};
+use super::{ArchiveBackend, ArchiveInfo};
 
 /// Archive handle with dependency injection pattern.
 /// 

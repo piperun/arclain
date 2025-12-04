@@ -8,7 +8,7 @@ pub struct OrganizePanel {
     pub rules: Vec<OrganizationRule>,
     pub selected_rule_index: usize,
     pub preview_plan: Option<arclain_core::organization::engine::OrganizationPlan>,
-    pub metadata: Option<arclain_core::archive_organizer::GameMetadata>,
+    pub metadata: Option<arclain_core::organization::GameMetadata>,
     pub network_log: Vec<(std::time::SystemTime, String)>,
 }
 
@@ -17,7 +17,7 @@ impl OrganizePanel {
         archive_name: String,
         entries: Vec<ArchiveEntry>,
         rules: Vec<OrganizationRule>,
-        metadata: Option<arclain_core::archive_organizer::GameMetadata>,
+        metadata: Option<arclain_core::organization::GameMetadata>,
     ) -> Self {
         let mut panel = Self {
             archive_name: archive_name.clone(),
