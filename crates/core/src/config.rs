@@ -31,12 +31,31 @@ impl PassRule {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub sevenzip_path: Option<PathBuf>,
     pub transfer_dir: Option<PathBuf>,
     pub temp_dir: Option<PathBuf>,
     pub pass_rules: Vec<PassRule>,
+    /// Backend selection: "native" (use native backends where possible) or "cli" (always use 7z CLI)
+    #[serde(default = "default_backend_mode")]
+    pub backend_mode: String,
+}
+
+fn default_backend_mode() -> String {
+    "native".to_string()
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            sevenzip_path: None,
+            transfer_dir: None,
+            temp_dir: None,
+            pass_rules: vec![],
+            backend_mode: default_backend_mode(),
+        }
+    }
 }
 
 pub struct ConfigStore {
@@ -54,12 +73,7 @@ impl ConfigStore {
             let s = fs::read_to_string(&path).context("reading config")?;
             serde_json::from_str(&s).context("parsing config")?
         } else {
-            Config {
-                sevenzip_path: None,
-                transfer_dir: None,
-                temp_dir: None,
-                pass_rules: vec![],
-            }
+            Config::default()
         };
         Ok(Self { path, cfg })
     }

@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
 
-use crate::{sevenzip::SevenZipCli, ArchiveBackend};
+use crate::Archive;
 
 /// Generic game/product metadata from any source (DLSite, itch.io, Steam, etc.)
 ///
@@ -85,18 +85,17 @@ pub struct ArchiveStructure {
 
 /// Check if archive already follows the desired structure
 pub fn check_archive_structure(
-    backend: &SevenZipCli,
-    archive: &Path,
+    archive: &Archive,
     expected: &ArchiveStructure,
 ) -> Result<bool> {
     info!(
         "Checking if archive {} follows structure for {}",
-        archive.display(),
+        archive.path().display(),
         expected.root_folder
     );
 
     // List archive contents
-    let info = backend.list(archive, None)?;
+    let info = archive.backend().list(archive.path(), archive.password_ref())?;
 
     // Check for root folder
     let root_prefix = format!("{}/", expected.root_folder);
@@ -148,11 +147,11 @@ pub fn check_archive_structure(
 }
 
 /// Check if archive uses optimal compression
-pub fn needs_better_compression(backend: &SevenZipCli, archive: &Path) -> Result<bool> {
-    info!("Checking compression settings: {}", archive.display());
+pub fn needs_better_compression(archive: &Archive) -> Result<bool> {
+    info!("Checking compression settings: {}", archive.path().display());
 
     // Check if it's a 7z archive
-    let kind = backend.identify(archive)?;
+    let kind = archive.backend().identify(archive.path())?;
     if !matches!(kind, crate::ArchiveKind::SevenZ) {
         debug!("Archive is not 7z format, needs conversion");
         return Ok(true);
@@ -164,17 +163,19 @@ pub fn needs_better_compression(backend: &SevenZipCli, archive: &Path) -> Result
     Ok(true)
 }
 
-/// Organize archive with game metadata (source-agnostic)
+/// Organize archive with game metadata using Archive (dependency injection pattern)
+///
+/// This is the primary API for organizing archives. Pass in an Archive handle
+/// which encapsulates the backend, file path, and any necessary credentials.
 pub fn organize_archive(
-    backend: &SevenZipCli,
-    source: &Path,
+    archive: &Archive,
     dest: &Path,
     metadata: &GameMetadata,
     temp_dir: &Path,
 ) -> Result<()> {
     info!(
         "Organizing archive {} with {} metadata for {}",
-        source.display(),
+        archive.path().display(),
         metadata.source,
         metadata.product_id
     );
@@ -203,15 +204,12 @@ pub fn organize_archive(
         path: work_dir.clone(),
     };
 
-    // 1. Smart root detection: Check if archive already has files at root level
-    // If it does, we don't need to add another "game" subfolder
-    debug!("Listing archive contents to detect root structure");
-    let archive_info = backend
-        .list(source, None)
+    // 1. Check for encryption
+    debug!("Listing archive contents to check encryption");
+    let archive_info = archive
+        .backend()
+        .list(archive.path(), archive.password_ref())
         .context("listing archive contents")?;
-
-    // Detect if we should extract directly to root or to a game subfolder
-    let should_extract_to_game_subfolder = detect_needs_game_subfolder(&archive_info.entries);
 
     // Log encryption status for debugging
     debug!(
@@ -220,44 +218,42 @@ pub fn organize_archive(
     );
 
     // Check for encryption and reject if encrypted without password
-    if archive_info.encrypted {
+    if archive_info.encrypted && !archive.has_password() {
         return Err(anyhow::anyhow!(
-            "Archive '{}' contains encrypted files. Password-protected archives are not supported for organization.",
-            source.display()
+            "Archive '{}' contains encrypted files but no password was provided.",
+            archive.path().display()
         ));
     }
 
-    let game_dir = if should_extract_to_game_subfolder {
-        debug!("Archive has single root folder, extracting to game/ subdirectory");
-        let gd = root_dir.join("Game");
-        std::fs::create_dir_all(&gd)?;
-        gd
-    } else {
-        debug!("Archive has files at root, extracting directly without nesting");
-        // Extract directly to a "Game" folder at root level
-        let gd = root_dir.join("Game");
-        std::fs::create_dir_all(&gd)?;
-        gd
-    };
-
-    debug!("Extracting source to {:?}", game_dir);
-    backend
-        .extract_all(source, &game_dir, None)
+    // 2. Extract to temp location first
+    let extract_temp = work_dir.join("extract_temp");
+    std::fs::create_dir_all(&extract_temp)?;
+    
+    debug!("Extracting archive to temporary location: {:?}", extract_temp);
+    archive.extract_all(&extract_temp)
         .context("extracting source archive")?;
+
+    // 3. Find the game content folder and flatten to Game/
+    let game_dir = root_dir.join("Game");
+    std::fs::create_dir_all(&game_dir)?;
+    
+    debug!("Finding and flattening game content to: {:?}", game_dir);
+    find_and_flatten_game_content(&extract_temp, &game_dir)?;
 
     // 2. Create metadata.json
     debug!("Creating metadata.json");
     let metadata_path = root_dir.join("metadata.json");
     std::fs::write(&metadata_path, &metadata.metadata_json)?;
 
-    // 3. Create screenshots directory
+    // 3. Create screenshots directory (always create it, even if empty for now)
+    let screenshots_dir = root_dir.join("screenshots");
+    std::fs::create_dir_all(&screenshots_dir)?;
+    
     if !metadata.screenshots.is_empty() {
         debug!(
-            "Creating screenshots directory with {} images",
+            "Processing {} screenshots",
             metadata.screenshots.len()
         );
-        let screenshots_dir = root_dir.join("screenshots");
-        std::fs::create_dir_all(&screenshots_dir)?;
 
         for (idx, screenshot) in metadata.screenshots.iter().enumerate() {
             let filename = format!("{:02}.jpg", idx + 1);
@@ -268,14 +264,18 @@ pub fn organize_archive(
                     debug!("Copying screenshot from {}", path.display());
                     std::fs::copy(path, &dest_path)?;
                 }
-                ScreenshotData::Base64(_data) => {
+                ScreenshotData::Base64(data) => {
                     debug!("Decoding base64 screenshot {}", filename);
-                    // TODO: Decode base64 and write
-                    // For now, write placeholder or skip
-                    info!("Base64 screenshots not yet implemented, skipping");
+                    use base64::Engine;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(data)
+                        .context("decoding base64 screenshot")?;
+                    std::fs::write(&dest_path, bytes)?;
                 }
             }
         }
+    } else {
+        debug!("No screenshots provided in metadata");
     }
 
     // 4. Compress root_dir to dest
@@ -287,7 +287,7 @@ pub fn organize_archive(
     };
 
     // Use create_archive with 7z format
-    backend
+    archive.backend()
         .create_archive(&dest_abs, &[root_dir.clone()], "7z")
         .context("creating organized 7z archive")?;
 
@@ -297,17 +297,15 @@ pub fn organize_archive(
 
 /// Execute a generic organization plan
 pub fn execute_organization_plan(
-    backend: &SevenZipCli,
-    source: &Path,
+    archive: &Archive,
     dest: &Path,
     plan: &crate::organization::engine::OrganizationPlan,
     temp_dir: &Path,
-    password: Option<&str>,
 ) -> Result<()> {
     info!(
         "Executing organization plan '{}' for archive {}",
         plan.rule_name,
-        source.display()
+        archive.path().display()
     );
 
     // Create unique temp directory
@@ -339,8 +337,7 @@ pub fn execute_organization_plan(
 
     // 1. Extract source
     debug!("Extracting source archive");
-    backend
-        .extract_all(source, &source_extracted, password)
+    archive.extract_all(&source_extracted)
         .context("extracting source archive")?;
 
     // 2. Move files according to plan
@@ -442,7 +439,7 @@ pub fn execute_organization_plan(
         ));
     }
 
-    backend
+    archive.backend()
         .create_archive(&dest_abs, &items_to_compress, "7z")
         .context("creating organized 7z archive")?;
 
@@ -450,63 +447,105 @@ pub fn execute_organization_plan(
     Ok(())
 }
 
-/// Detect if archive needs a "game" subfolder or if files are already at root
+/// Find the actual game content folder and flatten it to the destination
 ///
-/// Returns true if:
-/// - Archive has exactly one top-level folder containing all content
-/// - That folder looks like a wrapper folder (common names)
-///
-/// Returns false if:
-/// - Archive has multiple items at root level (files are already organized)
-/// - Archive has game-like files at root (.exe, package.json, etc.)
-fn detect_needs_game_subfolder(entries: &[crate::ArchiveEntry]) -> bool {
-    if entries.is_empty() {
-        return false;
+/// This recursively searches for game content indicators (exe files, package.json, index.html, etc.)
+/// and moves that content to the destination, removing all wrapper directories.
+fn find_and_flatten_game_content(source: &Path, dest: &Path) -> Result<()> {
+    debug!("Searching for game content in: {:?}", source);
+    
+    // Game content indicators - files that indicate we've found the actual game folder
+    let game_indicators = [
+        "Game.exe",
+        "game.exe",
+        "nw.exe",
+        "index.html",
+        "package.json",
+        "www",       // RPG Maker folder
+        "data",      // Common game data folder
+        "js",        // JavaScript games
+    ];
+    
+    // Check if current directory IS the game content folder
+    let entries: Vec<_> = std::fs::read_dir(source)?
+        .collect::<Result<Vec<_>, _>>()?;
+    
+    // Count how many indicators we find
+    let mut indicator_count = 0;
+    for entry in &entries {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        
+        for indicator in &game_indicators {
+            if name_str.eq_ignore_ascii_case(indicator) {
+                indicator_count += 1;
+                debug!("Found game indicator: {}", name_str);
+                break;
+            }
+        }
     }
-
-    // Get all top-level items (items with no / in path)
-    let mut top_level_items: std::collections::HashSet<String> = std::collections::HashSet::new();
-
+    
+    // If we found 2+ indicators, this IS the game folder
+    if indicator_count >= 2 {
+        debug!("Found game content folder ({} indicators), moving to destination", indicator_count);
+        
+        // Move all contents from source to dest
+        for entry in entries {
+            let src_path = entry.path();
+            let dest_path = dest.join(entry.file_name());
+            
+            debug!("Moving {:?} to {:?}", src_path.file_name(), dest_path.file_name());
+            std::fs::rename(&src_path, &dest_path)
+                .or_else(|_| {
+                    // If rename fails (cross-device), copy recursively
+                    if src_path.is_dir() {
+                        copy_dir_recursive(&src_path, &dest_path)
+                    } else {
+                        std::fs::copy(&src_path, &dest_path)
+                            .map(|_| ())
+                            .context("copying file")
+                    }
+                })?;
+        }
+        
+        return Ok(());
+    }
+    
+    // Otherwise, recursively search subdirectories
+    debug!("Not game folder (only {} indicators), searching subdirectories", indicator_count);
+    
     for entry in entries {
-        let path_parts: Vec<&str> = entry.path.split(|c| c == '/' || c == '\\').collect();
-        if let Some(first_part) = path_parts.first() {
-            if !first_part.is_empty() {
-                top_level_items.insert(first_part.to_string());
+        if entry.file_type()?.is_dir() {
+            let subdir = entry.path();
+            debug!("Checking subdirectory: {:?}", subdir.file_name());
+            
+            // Try to find game content in this subdirectory
+            match find_and_flatten_game_content(&subdir, dest) {
+                Ok(_) => return Ok(()), // Found it!
+                Err(_) => continue,      // Not in this subdir, try next
             }
         }
     }
+    
+    // If we get here, we didn't find game content indicators
+    Err(anyhow::anyhow!("Could not find game content folder in extracted archive"))
+}
 
-    // If there are multiple top-level items, files are at root - don't add subfolder
-    if top_level_items.len() > 1 {
-        return false;
-    }
-
-    // If there's exactly one top-level item, check if it looks like a wrapper folder
-    if top_level_items.len() == 1 {
-        let folder_name = top_level_items.iter().next().unwrap().to_lowercase();
-
-        // Common wrapper folder names that should be flattened
-        let wrapper_names = [
-            "game",
-            "files",
-            "content",
-            "data",
-            "extracted",
-            "archive",
-            "release",
-        ];
-
-        for wrapper in &wrapper_names {
-            if folder_name == *wrapper || folder_name.starts_with(wrapper) {
-                return true; // Yes, this is a wrapper folder, extract its contents
-            }
+/// Recursively copy a directory
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)?;
+    
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dest_path = dest.join(entry.file_name());
+        
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&src_path, &dest_path)?;
+        } else {
+            std::fs::copy(&src_path, &dest_path)?;
         }
-
-        // If the single folder name looks like a product ID or title, keep it
-        // (e.g., "RJ123456" or actual game name)
-        return false;
     }
-
-    // Default: if unclear, don't add subfolder (preserve original structure)
-    false
+    
+    Ok(())
 }

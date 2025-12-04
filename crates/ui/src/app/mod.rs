@@ -463,7 +463,7 @@ impl eframe::App for ArclainApp {
                                     
                                     // Trigger organization operation
                                     let state = self.state.lock();
-                                    let backend = state.backend.clone();
+                                    let backend = state.fallback_backend.clone();
                                     let current_archive = state.current_archive.clone();
                                     let temp_dir = state.cfg.cfg.temp_dir.clone().unwrap_or_else(|| std::env::temp_dir());
                                     let password = state.current_password.clone();
@@ -510,7 +510,7 @@ impl eframe::App for ArclainApp {
                                                     let archive_name = source.to_str();
                                                     let entries = state.all_entries.iter().map(|e| e.path.clone()).collect::<Vec<_>>();
                                                     let detected_pw = state.cfg.auto_password_for(archive_name, &entries);
-                                                    let backend_clone = state.backend.clone();
+                                                    let backend_clone = state.fallback_backend.clone();
                                                     let temp_dir_clone = state.cfg.cfg.temp_dir.clone().unwrap_or_else(|| std::env::temp_dir());
                                                     drop(state);
 
@@ -1086,8 +1086,8 @@ impl ArclainApp {
                                                 // Extract files with progress dialog
                                                 let archive_opt = { let st = self.state.lock(); st.current_archive.clone() };
                                                 if let Some(archive) = archive_opt {
-                                                    let backend = { let st = self.state.lock(); st.backend.clone() };
-                                                    let auto_pw = { 
+                                                    let backend = { let st = self.state.lock(); st.fallback_backend.clone() };
+                                                    let auto_pw = {
                                                         let st = self.state.lock(); 
                                                         let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
                                                         st.cfg.auto_password_for(archive_name, &st.last_entries)

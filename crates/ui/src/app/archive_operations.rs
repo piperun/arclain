@@ -148,7 +148,7 @@ pub fn load_archive_data(
                 .map(|e| e.path.clone())
                 .collect();
 
-            (st.backend.clone(), arc, pw_opt, paths)
+            (st.fallback_backend.clone(), arc, pw_opt, paths)
         };
 
         if let (Some(pw), Some(arc_path)) = (password, archive_path) {
@@ -299,7 +299,7 @@ pub fn convert_archive(state: &Arc<Mutex<AppState>>, status_info: &mut status_ba
         let st = state.lock();
         (
             st.current_archive.clone(),
-            st.backend.clone(),
+            st.fallback_backend.clone(),
             st.cfg.cfg.temp_dir.clone(),
         )
     };

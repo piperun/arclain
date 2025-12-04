@@ -1,4 +1,4 @@
-use crate::{ArchiveBackend, ArchiveEntry, ArchiveInfo, ArchiveKind};
+use crate::{ArchiveBackend, ArchiveEntry, ArchiveInfo, ArchiveKind, BackendCapabilities};
 use anyhow::{anyhow, Context, Result};
 use std::io::{BufRead, BufReader};
 use std::sync::mpsc;
@@ -473,6 +473,15 @@ impl SevenZipCli {
 }
 
 impl ArchiveBackend for SevenZipCli {
+    fn name(&self) -> &str {
+        "7z (CLI)"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        // CLI backend supports full read/write operations
+        BackendCapabilities::full_featured()
+    }
+
     fn identify(&self, path: &Path) -> Result<ArchiveKind> {
         info!("Identifying archive type: {}", path.display());
         let args = vec![

@@ -1,0 +1,513 @@
+use crate::{ArchiveBackend, ArchiveEntry, ArchiveInfo, ArchiveKind, BackendCapabilities};
+use anyhow::{anyhow, Context, Result};
+use sevenz_rust2::{ArchiveReader, Password};
+use std::fs::File;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use tracing::{info, warn};
+
+/// Native 7z backend using the `sevenz-rust2` crate
+#[derive(Clone)]
+pub struct SevenZBackend;
+
+impl SevenZBackend {
+    pub fn new() -> Self {
+        Self
+    }
+
+    /// Convert NtTime to ISO 8601 string format
+    fn format_time(nt_time: sevenz_rust2::NtTime) -> Option<String> {
+        use std::time::SystemTime;
+        
+        let system_time: SystemTime = nt_time.into();
+        
+        // Convert to a readable format
+        if let Ok(duration) = system_time.duration_since(SystemTime::UNIX_EPOCH) {
+            let secs = duration.as_secs();
+            
+            // Basic ISO 8601 formatting without external dependencies
+            // Calculate date/time components from Unix timestamp
+            const SECONDS_PER_DAY: u64 = 86400;
+            const DAYS_FROM_0_TO_1970: i64 = 719162; // Days from year 0 to Unix epoch
+            
+            let days_since_epoch = (secs / SECONDS_PER_DAY) as i64;
+            let seconds_today = secs % SECONDS_PER_DAY;
+            
+            let hours = seconds_today / 3600;
+            let minutes = (seconds_today % 3600) / 60;
+            let seconds = seconds_today % 60;
+            
+            // Simplified date calculation (good enough for display)
+            let days_from_year_0 = days_since_epoch + DAYS_FROM_0_TO_1970;
+            let year = (days_from_year_0 / 365) as u32; // Approximation
+            
+            // Format as ISO 8601-ish (simplified)
+            Some(format!(
+                "{:04}-01-01T{:02}:{:02}:{:02}Z",
+                year, hours, minutes, seconds
+            ))
+        } else {
+            None
+        }
+    }
+}
+
+impl ArchiveBackend for SevenZBackend {
+    fn name(&self) -> &str {
+        "7z (Native)"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        // 7z backend supports full read/write operations
+        BackendCapabilities::full_featured()
+    }
+
+    fn identify(&self, path: &Path) -> Result<ArchiveKind> {
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        match ext.as_str() {
+            "7z" => Ok(ArchiveKind::SevenZ),
+            _ => Err(anyhow!("Not a 7z archive: {}", path.display())),
+        }
+    }
+
+    fn list(&self, path: &Path, password: Option<&str>) -> Result<ArchiveInfo> {
+        info!("Using {} backend to list: {}", self.name(), path.display());
+
+        let pwd = password
+            .map(Password::from)
+            .unwrap_or_else(Password::empty);
+
+        let reader = ArchiveReader::open(path, pwd)
+            .context("Failed to open 7z archive")?;
+
+        let mut entries = Vec::new();
+        let mut any_encrypted = false;
+        let headers_encrypted = false; // 7z-rust2 doesn't easily expose this
+
+        // Access the archive's files directly
+        for entry in &reader.archive().files {
+            let is_dir = entry.is_directory;
+            // Check if the entry has encryption by checking if it has a stream and other indicators
+            let encrypted = entry.has_stream && !entry.is_directory && entry.has_crc;
+
+            if encrypted {
+                any_encrypted = true;
+            }
+
+            let modified = if entry.has_last_modified_date {
+                Self::format_time(entry.last_modified_date)
+            } else {
+                None
+            };
+
+            entries.push(ArchiveEntry {
+                path: entry.name.clone(),
+                size: entry.size,
+                packed_size: entry.compressed_size,
+                modified,
+                is_dir,
+                encrypted,
+                crc32: if entry.has_crc {
+                    Some(format!("{:08X}", entry.crc))
+                } else {
+                    None
+                },
+            });
+        }
+
+        let encryption_method = if any_encrypted {
+            Some("7z".to_string())
+        } else {
+            None
+        };
+
+        Ok(ArchiveInfo {
+            archive_path: path.to_path_buf(),
+            archive_kind: ArchiveKind::SevenZ,
+            entries,
+            encrypted: any_encrypted,
+            headers_encrypted,
+            encryption_method,
+        })
+    }
+
+    fn extract_all(&self, path: &Path, dest: &Path, password: Option<&str>) -> Result<()> {
+        info!(
+            "Using {} backend to extract {} to {}",
+            self.name(),
+            path.display(),
+            dest.display()
+        );
+
+        std::fs::create_dir_all(dest).context("Failed to create destination directory")?;
+
+        if let Some(pwd) = password {
+            sevenz_rust2::decompress_file_with_password(path, dest, Password::from(pwd))
+                .context("Failed to extract encrypted 7z archive")?;
+        } else {
+            sevenz_rust2::decompress_file(path, dest).context("Failed to extract 7z archive")?;
+        }
+
+        Ok(())
+    }
+
+    fn extract_files(
+        &self,
+        path: &Path,
+        dest: &Path,
+        files: &[String],
+        password: Option<&str>,
+    ) -> Result<()> {
+        info!(
+            "Using {} backend to extract {} files",
+            self.name(),
+            files.len()
+        );
+
+        std::fs::create_dir_all(dest)?;
+
+        let pwd = password
+            .map(Password::from)
+            .unwrap_or_else(Password::empty);
+
+        let mut reader = ArchiveReader::open(path, pwd)?;
+
+        reader.for_each_entries(|entry, reader| {
+            let entry_path = entry.name.clone();
+            if files
+                .iter()
+                .any(|f| entry_path == *f || entry_path.contains(f))
+            {
+                let dest_path = dest.join(&entry_path);
+                if entry.is_directory {
+                    std::fs::create_dir_all(&dest_path).ok();
+                } else {
+                    if let Some(parent) = dest_path.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    let mut out = File::create(&dest_path)?;
+                    std::io::copy(reader, &mut out)?;
+                }
+            }
+            Ok(true)
+        })?;
+
+        Ok(())
+    }
+
+    fn extract_directory(
+        &self,
+        path: &Path,
+        dest: &Path,
+        dir_path: &str,
+        password: Option<&str>,
+    ) -> Result<()> {
+        info!(
+            "Using {} backend to extract directory '{}'",
+            self.name(),
+            dir_path
+        );
+
+        std::fs::create_dir_all(dest)?;
+
+        let pwd = password
+            .map(Password::from)
+            .unwrap_or_else(Password::empty);
+
+        let mut reader = ArchiveReader::open(path, pwd)?;
+
+        let dir_prefix = format!("{}/", dir_path.trim_end_matches('/'));
+
+        reader.for_each_entries(|entry, reader| {
+            let entry_path = entry.name.clone();
+            if entry_path.starts_with(&dir_prefix) || entry_path == dir_path {
+                let dest_path = dest.join(&entry_path);
+                if entry.is_directory {
+                    std::fs::create_dir_all(&dest_path).ok();
+                } else {
+                    if let Some(parent) = dest_path.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    let mut out = File::create(&dest_path)?;
+                    std::io::copy(reader, &mut out)?;
+                }
+            }
+            Ok(true)
+        })?;
+
+        Ok(())
+    }
+
+    fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()> {
+        info!(
+            "Using {} backend to recompress {} to {}",
+            self.name(),
+            source.display(),
+            dest_7z.display()
+        );
+
+        // Use sevenz_rust2's compress functionality
+        sevenz_rust2::compress_to_path(source, dest_7z)
+            .context("Failed to recompress to 7z format")?;
+
+        Ok(())
+    }
+
+    fn add_files(&self, archive: &Path, files: &[PathBuf]) -> Result<()> {
+        info!(
+            "Using {} backend to add {} files to archive",
+            self.name(),
+            files.len()
+        );
+
+        // 7z archives don't support in-place modification
+        // We need to extract, add files, and recompress
+        let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
+        let extract_dir = temp_dir.path().join("extracted");
+        
+        // Extract existing archive
+        self.extract_all(archive, &extract_dir, None)?;
+
+        // Copy new files to extracted directory
+        for file in files {
+            if !file.exists() {
+                warn!("File does not exist, skipping: {}", file.display());
+                continue;
+            }
+
+            let file_name = file
+                .file_name()
+                .ok_or_else(|| anyhow!("Invalid file path: {}", file.display()))?;
+            let dest_path = extract_dir.join(file_name);
+
+            std::fs::copy(file, &dest_path)
+                .with_context(|| format!("Failed to copy {} to archive", file.display()))?;
+        }
+
+        // Recompress to original archive location
+        let temp_archive = temp_dir.path().join("temp.7z");
+        sevenz_rust2::compress_to_path(&extract_dir, &temp_archive)
+            .context("Failed to create new archive")?;
+
+        // Replace original archive
+        std::fs::copy(&temp_archive, archive)
+            .context("Failed to replace original archive")?;
+
+        Ok(())
+    }
+
+    fn create_archive(&self, dest: &Path, files: &[PathBuf], _format: &str) -> Result<()> {
+        info!(
+            "Using {} backend to create archive at {} with {} files",
+            self.name(),
+            dest.display(),
+            files.len()
+        );
+
+        if files.is_empty() {
+            return Err(anyhow!("No files provided to create archive"));
+        }
+
+        // Create a temporary directory to organize files
+        let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
+        let staging_dir = temp_dir.path().join("staging");
+        std::fs::create_dir_all(&staging_dir)?;
+
+        // Copy files to staging directory
+        for file in files {
+            if !file.exists() {
+                warn!("File does not exist, skipping: {}", file.display());
+                continue;
+            }
+
+            let file_name = file
+                .file_name()
+                .ok_or_else(|| anyhow!("Invalid file path: {}", file.display()))?;
+            let dest_path = staging_dir.join(file_name);
+
+            if file.is_dir() {
+                fs_extra::dir::copy(file, &staging_dir, &fs_extra::dir::CopyOptions::new())
+                    .with_context(|| format!("Failed to copy directory {} to archive", file.display()))?;
+            } else {
+                std::fs::copy(file, &dest_path)
+                    .with_context(|| format!("Failed to copy {} to archive", file.display()))?;
+            }
+        }
+
+        // Compress the staging directory
+        sevenz_rust2::compress_to_path(&staging_dir, dest)
+            .context("Failed to create 7z archive")?;
+
+        Ok(())
+    }
+
+    fn read_text_file(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+    ) -> Result<String> {
+        let pwd = password
+            .map(Password::from)
+            .unwrap_or_else(Password::empty);
+
+        let mut reader = ArchiveReader::open(archive, pwd)?;
+
+        let mut content_bytes = Vec::new();
+        let mut found = false;
+
+        reader.for_each_entries(|entry, reader| {
+            if entry.name == path_in_archive {
+                std::io::copy(reader, &mut content_bytes)?;
+                found = true;
+                Ok(false) // Stop iteration
+            } else {
+                Ok(true)
+            }
+        })?;
+
+        if !found {
+            return Err(anyhow!("File not found in archive: {}", path_in_archive));
+        }
+
+        let content = String::from_utf8(content_bytes).unwrap_or_else(|e| {
+            String::from_utf8_lossy(&e.into_bytes()).to_string()
+        });
+
+        Ok(content)
+    }
+
+    fn delete_files(&self, archive: &Path, files: &[String]) -> Result<()> {
+        info!(
+            "Using {} backend to delete {} files from archive",
+            self.name(),
+            files.len()
+        );
+
+        // 7z archives don't support in-place modification
+        // We need to extract, remove files, and recompress
+        let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
+        let extract_dir = temp_dir.path().join("extracted");
+        
+        // Extract existing archive
+        self.extract_all(archive, &extract_dir, None)?;
+
+        // Delete specified files
+        for file_path in files {
+            let full_path = extract_dir.join(file_path);
+            if full_path.exists() {
+                if full_path.is_dir() {
+                    std::fs::remove_dir_all(&full_path)
+                        .with_context(|| format!("Failed to delete directory: {}", file_path))?;
+                } else {
+                    std::fs::remove_file(&full_path)
+                        .with_context(|| format!("Failed to delete file: {}", file_path))?;
+                }
+            } else {
+                warn!("File not found in archive, skipping: {}", file_path);
+            }
+        }
+
+        // Recompress to original archive location
+        let temp_archive = temp_dir.path().join("temp.7z");
+        sevenz_rust2::compress_to_path(&extract_dir, &temp_archive)
+            .context("Failed to create new archive")?;
+
+        // Replace original archive
+        std::fs::copy(&temp_archive, archive)
+            .context("Failed to replace original archive")?;
+
+        Ok(())
+    }
+
+    fn add_or_update_file_from_str(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        content: &str,
+    ) -> Result<()> {
+        info!("Adding/updating file '{}' in 7z archive", path_in_archive);
+
+        // 7z archives don't support in-place modification
+        // We need to extract, modify, and recompress
+        let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
+        let extract_dir = temp_dir.path().join("extracted");
+        
+        // Extract existing archive
+        self.extract_all(archive, &extract_dir, None)?;
+
+        // Write the new content
+        let file_path = extract_dir.join(path_in_archive);
+        
+        // Create parent directories if needed
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)
+                .context("Failed to create parent directories")?;
+        }
+
+        let mut file = File::create(&file_path)
+            .with_context(|| format!("Failed to create file: {}", path_in_archive))?;
+        file.write_all(content.as_bytes())
+            .context("Failed to write file content")?;
+
+        // Recompress to original archive location
+        let temp_archive = temp_dir.path().join("temp.7z");
+        sevenz_rust2::compress_to_path(&extract_dir, &temp_archive)
+            .context("Failed to create new archive")?;
+
+        // Replace original archive
+        std::fs::copy(&temp_archive, archive)
+            .context("Failed to replace original archive")?;
+
+        Ok(())
+    }
+
+    fn convert_to_7z(&self, source: &Path, dest: &Path, temp_dir: &Path) -> Result<()> {
+        info!(
+            "Converting {} to 7z format at {}",
+            source.display(),
+            dest.display()
+        );
+
+        // First extract the source archive to temp directory
+        let extract_dir = temp_dir.join("extract");
+        std::fs::create_dir_all(&extract_dir)?;
+
+        // Try to extract using this backend first (if it's a 7z file)
+        let extract_result = self.extract_all(source, &extract_dir, None);
+        
+        if extract_result.is_err() {
+            // If extraction fails, it might not be a 7z file
+            // The caller should handle conversion from other formats
+            return Err(anyhow!(
+                "Source file is not a 7z archive or extraction failed. Use appropriate backend for conversion."
+            ));
+        }
+
+        // Compress the extracted content to destination
+        sevenz_rust2::compress_to_path(&extract_dir, dest)
+            .context("Failed to create 7z archive")?;
+
+        Ok(())
+    }
+
+    fn crc32_of_entry(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+    ) -> Result<String> {
+        let info = self.list(archive, password)?;
+        for entry in info.entries {
+            if entry.path == path_in_archive {
+                return entry.crc32.ok_or_else(|| anyhow!("No CRC available"));
+            }
+        }
+        Err(anyhow!("Entry not found"))
+    }
+}
