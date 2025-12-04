@@ -3,7 +3,7 @@
 use crate::loader::{DiscoveredPlugin, PluginLoader};
 use crate::runtime::PluginInstance;
 use crate::types::{PluginError, PluginEvent, PluginMetadata, PluginResponse, Result};
-use arclain_core::sevenzip::SevenZipCli;
+use arclain_core::ArchiveBackend;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -24,7 +24,7 @@ pub struct PluginManager {
     loader: PluginLoader,
     plugins: Arc<RwLock<HashMap<String, ManagedPlugin>>>,
     enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
-    backend: Option<Arc<SevenZipCli>>,
+    backend: Option<Arc<dyn ArchiveBackend>>,
     metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
 }
 
@@ -43,7 +43,7 @@ impl PluginManager {
     }
 
     /// Create a new plugin manager with archive backend
-    pub fn with_backend(plugins_dir: PathBuf, backend: Arc<SevenZipCli>) -> Result<Self> {
+    pub fn with_backend(plugins_dir: PathBuf, backend: Arc<dyn ArchiveBackend>) -> Result<Self> {
         let loader = PluginLoader::new(plugins_dir)?;
 
         Ok(Self {
@@ -56,7 +56,7 @@ impl PluginManager {
     }
 
     /// Set the archive backend for file operations
-    pub fn set_backend(&mut self, backend: Arc<SevenZipCli>) {
+    pub fn set_backend(&mut self, backend: Arc<dyn ArchiveBackend>) {
         self.backend = Some(backend);
     }
 
