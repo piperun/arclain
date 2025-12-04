@@ -3,8 +3,9 @@ use arclain_core::config_db::{
     get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
+use arclain_core::backends::BackendSelector;
 use arclain_core::sevenzip::SevenZipCli;
-use arclain_core::{ArchiveBackend, ConfigStore, NavigationState};
+use arclain_core::{ConfigStore, NavigationState};
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
 use std::{
@@ -16,7 +17,8 @@ use tracing::{debug, info, warn};
 
 pub struct AppState {
     pub cfg: ConfigStore,
-    pub backend: SevenZipCli,
+    pub backend_selector: BackendSelector,
+    pub fallback_backend: SevenZipCli, // Keep for plugin compatibility
     pub last_entries: Vec<String>,
     pub all_entries: Vec<arclain_core::ArchiveEntry>,
     pub navigation: NavigationState,
@@ -40,13 +42,18 @@ impl AppState {
     pub fn new() -> Result<Self> {
         info!("Initializing application state");
         let cfg = ConfigStore::load("arclain")?;
-        let backend = SevenZipCli::detect(cfg.cfg.sevenzip_path.as_deref())?;
-        info!("7-Zip backend initialized");
+        let fallback_backend = SevenZipCli::detect(cfg.cfg.sevenzip_path.as_deref())?;
+        info!("7-Zip CLI backend initialized as fallback");
+        
+        // Create backend selector (defaults to native mode with fallbacks)
+        let backend_selector = BackendSelector::new_native();
+        info!("Backend selector initialized (native mode with fallbacks)");
 
         // Build initial state
         let mut me = Self {
             cfg,
-            backend,
+            backend_selector,
+            fallback_backend,
             last_entries: vec![],
             all_entries: vec![],
             navigation: NavigationState::new(),
@@ -225,10 +232,10 @@ impl AppState {
             }
         }
 
-        // Initialize plugin manager with backend integration
+        // Initialize plugin manager with fallback backend for compatibility
         info!("Initializing plugin system");
         let plugins_dir = PathBuf::from("plugins");
-        let backend_arc = Arc::new(me.backend.clone());
+        let backend_arc = Arc::new(me.fallback_backend.clone());
         match PluginManager::with_backend(plugins_dir, backend_arc) {
             Ok(mut manager) => {
                 // Initialize plugins
@@ -254,7 +261,11 @@ impl AppState {
 
     pub fn list_archive(&mut self, path: &Path) -> Result<Vec<arclain_core::ArchiveEntry>> {
         info!("Opening archive: {}", path.display());
-        let info = match self.backend.list(path, None) {
+        
+        // Select appropriate backend based on file extension
+        let backend = self.backend_selector.select(path)?;
+        
+        let info = match backend.list(path, None) {
             Ok(info) => {
                 debug!("Archive opened without password (may have encrypted files inside)");
                 info
@@ -265,7 +276,7 @@ impl AppState {
                 let pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
                 if let Some(ref password) = pw {
                     info!("Attempting to open archive with auto-detected password");
-                    let info = self.backend.list(path, Some(password))?;
+                    let info = backend.list(path, Some(password))?;
                     self.current_password = Some(password.clone());
                     info
                 } else {
@@ -350,7 +361,8 @@ impl AppState {
         password: &str,
     ) -> Result<Vec<arclain_core::ArchiveEntry>> {
         info!("Listing archive with manually provided password");
-        let info = self.backend.list(path, Some(password))?;
+        let backend = self.backend_selector.select(path)?;
+        let info = backend.list(path, Some(password))?;
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         self.all_entries = info.entries.clone();
         self.current_archive = Some(path.to_path_buf());
@@ -406,7 +418,8 @@ impl AppState {
         let archive_name = archive.to_str();
         let auto_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
-        self.backend.extract_all(archive, dest, pw)
+        let backend = self.backend_selector.select(archive)?;
+        backend.extract_all(archive, dest, pw)
     }
 
     #[allow(dead_code)]
@@ -425,7 +438,8 @@ impl AppState {
             files
         };
 
-        self.backend.extract_files(archive, dest, &full_paths, pw)
+        let backend = self.backend_selector.select(archive)?;
+        backend.extract_files(archive, dest, &full_paths, pw)
     }
 
     pub fn extract_specific(
@@ -457,26 +471,31 @@ impl AppState {
                     dir_path
                 }
             );
-            self.backend.extract_directory(archive, dest, dir_path, pw)
+            let backend = self.backend_selector.select(archive)?;
+            backend.extract_directory(archive, dest, dir_path, pw)
         } else {
             debug!("Files to extract: {:?}", full_paths);
-            self.backend.extract_files(archive, dest, &full_paths, pw)
+            let backend = self.backend_selector.select(archive)?;
+            backend.extract_files(archive, dest, &full_paths, pw)
         }
     }
 
     pub fn add_files_to_archive(&self, archive: &Path, files: Vec<PathBuf>) -> Result<()> {
-        self.backend.add_files(archive, &files)
+        let backend = self.backend_selector.select(archive)?;
+        backend.add_files(archive, &files)
     }
 
     pub fn read_text_file(&self, archive: &Path, path_in_archive: &str) -> Result<String> {
         let archive_name = archive.to_str();
         let auto_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
-        self.backend.read_text_file(archive, path_in_archive, pw)
+        let backend = self.backend_selector.select(archive)?;
+        backend.read_text_file(archive, path_in_archive, pw)
     }
 
     pub fn delete_files(&self, archive: &Path, files: &[String]) -> Result<()> {
-        self.backend.delete_files(archive, files)
+        let backend = self.backend_selector.select(archive)?;
+        backend.delete_files(archive, files)
     }
 
     pub fn add_or_update_file_from_str(
@@ -485,8 +504,8 @@ impl AppState {
         path_in_archive: &str,
         content: &str,
     ) -> Result<()> {
-        self.backend
-            .add_or_update_file_from_str(archive, path_in_archive, content)
+        let backend = self.backend_selector.select(archive)?;
+        backend.add_or_update_file_from_str(archive, path_in_archive, content)
     }
 
     /// Apply Preferences changes: persist overrides and (re)open SQLCipher DBs.

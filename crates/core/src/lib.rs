@@ -1,4 +1,6 @@
+pub mod archive;
 pub mod archive_organizer;
+pub mod backends;
 pub mod config;
 pub mod config_db;
 pub mod file_opener;
@@ -327,7 +329,68 @@ pub struct ArchiveInfo {
     pub encryption_method: Option<String>,
 }
 
+/// Capabilities that an archive backend may support
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BackendCapabilities {
+    /// Can extract files from archives
+    pub can_extract: bool,
+    /// Can create new archives
+    pub can_create: bool,
+    /// Can add files to existing archives
+    pub can_add_files: bool,
+    /// Can delete files from archives
+    pub can_delete_files: bool,
+    /// Can modify files in archives
+    pub can_modify_files: bool,
+    /// Can recompress to 7z format
+    pub can_recompress_7z: bool,
+    /// Can convert to 7z format
+    pub can_convert_to_7z: bool,
+}
+
+impl BackendCapabilities {
+    /// Creates capabilities for a read-only backend
+    pub const fn read_only() -> Self {
+        Self {
+            can_extract: true,
+            can_create: false,
+            can_add_files: false,
+            can_delete_files: false,
+            can_modify_files: false,
+            can_recompress_7z: false,
+            can_convert_to_7z: false,
+        }
+    }
+
+    /// Creates capabilities for a full-featured backend
+    pub const fn full_featured() -> Self {
+        Self {
+            can_extract: true,
+            can_create: true,
+            can_add_files: true,
+            can_delete_files: true,
+            can_modify_files: true,
+            can_recompress_7z: true,
+            can_convert_to_7z: true,
+        }
+    }
+
+    /// Check if the backend is read-only (no write operations)
+    pub fn is_read_only(&self) -> bool {
+        !self.can_create
+            && !self.can_add_files
+            && !self.can_delete_files
+            && !self.can_modify_files
+    }
+}
+
 pub trait ArchiveBackend: Send + Sync {
+    /// Returns the name of this backend for logging/display purposes
+    fn name(&self) -> &str;
+
+    /// Returns the capabilities of this backend
+    fn capabilities(&self) -> BackendCapabilities;
+
     fn identify(&self, path: &Path) -> Result<ArchiveKind>;
     fn list(&self, path: &Path, password: Option<&str>) -> Result<ArchiveInfo>;
     fn extract_all(&self, path: &Path, dest: &Path, password: Option<&str>) -> Result<()>;
@@ -382,5 +445,6 @@ pub trait ArchiveBackend: Send + Sync {
     ) -> Result<String>;
 }
 
+pub use archive::Archive;
 pub use config::{Config, ConfigStore, PassRule};
 pub use config_db::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};

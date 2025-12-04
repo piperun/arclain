@@ -8,6 +8,7 @@ struct PluginState {
     search_mode: bool,
     search_query: String,
     search_results: Vec<(String, String, String)>, // (code, title, maker)
+    auto_load_enabled: bool, // Cache for the auto_load_cache setting
 }
 
 // Global state (thread-local for WASM component)
@@ -18,6 +19,7 @@ thread_local! {
         search_mode: false,
         search_query: String::new(),
         search_results: Vec::new(),
+        auto_load_enabled: true, // Default to enabled
     });
 }
 
@@ -26,6 +28,21 @@ struct Component;
 impl archust_plugin_sdk::Guest for Component {
     fn init() {
         info("DLSite Metadata Enricher initialized via Component Model");
+        
+        // Check if auto-load is enabled and try to load cached metadata for current archive
+        let auto_load = archust_plugin_sdk::arclain::plugin::host::get_setting("auto_load_cache")
+            .unwrap_or_else(|| "true".to_string()) == "true";
+        
+        STATE.with(|state| {
+            state.borrow_mut().auto_load_enabled = auto_load;
+        });
+        
+        if auto_load {
+            info("[DLSite Plugin] Auto-load enabled, checking for cached metadata");
+            if let Err(e) = try_auto_load_cache() {
+                info(&format!("[DLSite Plugin] Auto-load failed: {}", e));
+            }
+        }
     }
 
     fn get_ui_layout(
@@ -43,6 +60,11 @@ impl archust_plugin_sdk::Guest for Component {
                 UiElement::Checkbox(CheckboxConfig {
                     id: "enable_cache".to_string(),
                     label: "Enable Metadata Caching".to_string(),
+                    checked: true,
+                }),
+                UiElement::Checkbox(CheckboxConfig {
+                    id: "auto_load_cache".to_string(),
+                    label: "Auto-load cached metadata on archive open".to_string(),
                     checked: true,
                 }),
             ],
@@ -159,6 +181,22 @@ impl archust_plugin_sdk::Guest for Component {
         }
 
         match id.as_str() {
+            "auto_load_cache" => {
+                if let Some(val) = value {
+                    let enabled = val == "true";
+                    STATE.with(|state| {
+                        state.borrow_mut().auto_load_enabled = enabled;
+                    });
+                    archust_plugin_sdk::arclain::plugin::host::set_setting("auto_load_cache", &val);
+                    info(&format!("[DLSite Plugin] Auto-load cache setting changed to: {}", enabled));
+                }
+            }
+            "enable_cache" => {
+                if let Some(val) = value {
+                    archust_plugin_sdk::arclain::plugin::host::set_setting("enable_cache", &val);
+                    info(&format!("[DLSite Plugin] Cache enabled setting changed to: {}", val));
+                }
+            }
             "toggle_search" => {
                 STATE.with(|state| {
                     state.borrow_mut().search_mode = true;
@@ -272,22 +310,34 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
         // 1. Check cache
         if let Some(cached_json) = get_cached_metadata(&code) {
             info(&format!("[DLSite Plugin] Found cached metadata for {}", code));
-            // We need to return the data structure expected by the caller
-            // But cached JSON is the FINAL format, while the caller expects intermediate format
-            // This is a bit of a mismatch. 
-            // However, perform_scan is mostly used to populate the UI state and emit metadata.
-            // If we have cached metadata, we can emit it directly and return a "dummy" intermediate state
-            // or refactor the return type.
             
-            // For now, let's try to reconstruct a minimal intermediate state from cached JSON
-            // so that "show_details" still works somewhat.
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&cached_json) {
+            if let Ok(cached_value) = serde_json::from_str::<serde_json::Value>(&cached_json) {
                  // Emit the cached metadata directly
                  archust_plugin_sdk::emit_metadata(&cached_json);
                  
-                 // Return it as if it was the API response, so UI state is populated
-                 // We might need to adapt the fields if the UI expects specific API fields
-                 return Ok(Some((code, json, None)));
+                 // Convert cached format to API response format for UI state
+                 // Cached JSON has: title, creator, circle, description, dlsite.price
+                 // API response has: work_name, maker_name, intro_s, price
+                 let mut api_response = serde_json::json!({
+                     "work_name": cached_value["title"].as_str().unwrap_or("Unknown Title"),
+                     "maker_name": cached_value["circle"].as_str()
+                         .or_else(|| cached_value["creator"].as_str())
+                         .unwrap_or("Unknown Circle"),
+                     "intro_s": cached_value["description"].as_str().unwrap_or(""),
+                     "price": cached_value["dlsite"]["price"].as_str()
+                         .and_then(|s| s.parse::<u64>().ok())
+                         .unwrap_or(0),
+                     "regist_date": cached_value["release_date"].as_str().unwrap_or(""),
+                 });
+                 
+                 // Add tags if present
+                 if let Some(tags) = cached_value["tags"].as_array() {
+                     api_response["genres"] = serde_json::json!(
+                         tags.iter().map(|t| serde_json::json!({"name": t})).collect::<Vec<_>>()
+                     );
+                 }
+                 
+                 return Ok(Some((code, api_response, None)));
             }
         }
 
@@ -676,6 +726,45 @@ fn search_dlsite(query: &str) -> Vec<(String, String, String)> {
     
     log_network_activity(&format!("Found {} results", results.len()));
     results
+}
+
+/// Try to auto-load cached metadata for the current archive
+fn try_auto_load_cache() -> Result<(), String> {
+    use archust_plugin_sdk::{current_archive_info, get_cached_metadata, emit_metadata, info};
+    
+    let info_data = current_archive_info().ok_or("No archive open")?;
+    
+    // Check filename for DLsite code
+    if let Some(code) = detect_dlsite_code(&info_data.filename) {
+        info(&format!("[DLSite Plugin] Auto-checking cache for {}", code));
+        
+        if let Some(cached_json) = get_cached_metadata(&code) {
+            info(&format!("[DLSite Plugin] Found cached metadata for {}, emitting", code));
+            emit_metadata(&cached_json);
+            
+            // Update state with cached data
+            if let Ok(cached_value) = serde_json::from_str::<serde_json::Value>(&cached_json) {
+                let api_response = serde_json::json!({
+                    "work_name": cached_value["title"].as_str().unwrap_or("Unknown Title"),
+                    "maker_name": cached_value["circle"].as_str()
+                        .or_else(|| cached_value["creator"].as_str())
+                        .unwrap_or("Unknown Circle"),
+                });
+                
+                STATE.with(|state| {
+                    let mut s = state.borrow_mut();
+                    s.found_metadata = Some((code.clone(), api_response, None));
+                    s.last_status = format!("Loaded from cache: {}", code);
+                });
+            }
+            
+            return Ok(());
+        } else {
+            info(&format!("[DLSite Plugin] No cache found for {}", code));
+        }
+    }
+    
+    Err("No DLsite code found in archive name".to_string())
 }
 
 archust_plugin_sdk::export!(Component with_types_in archust_plugin_sdk);

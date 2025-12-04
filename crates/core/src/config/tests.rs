@@ -6,12 +6,7 @@ fn create_test_config() -> ConfigStore {
     let path = temp_dir.path().join("config.json");
     ConfigStore {
         path,
-        cfg: Config {
-            sevenzip_path: None,
-            transfer_dir: None,
-            temp_dir: None,
-            pass_rules: vec![],
-        },
+        cfg: Config::default(),
     }
 }
 

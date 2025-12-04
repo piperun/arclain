@@ -47,7 +47,7 @@ pub fn extract_selected(
         };
 
         let archive_clone = archive.clone();
-        let backend = st.backend.clone();
+        let backend = st.fallback_backend.clone();
         let archive_name = archive.to_str();
         let auto_pw = st.cfg.auto_password_for(archive_name, &st.last_entries);
         let pw_opt = st
@@ -106,7 +106,7 @@ pub fn extract_all(
     let st = state.lock();
     if let Some(archive) = &st.current_archive {
         let archive_clone = archive.clone();
-        let backend = st.backend.clone();
+        let backend = st.fallback_backend.clone();
         let archive_name = archive.to_str();
         let auto_pw = st.cfg.auto_password_for(archive_name, &st.last_entries);
         let pw_opt = st
