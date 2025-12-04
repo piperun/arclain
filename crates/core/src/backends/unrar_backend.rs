@@ -265,10 +265,10 @@ impl ArchiveBackend for UnrarBackend {
         Err(anyhow!("RAR backend is read-only, cannot modify files"))
     }
 
-    fn convert_to_7z(&self, source: &Path, _dest: &Path, temp_dir: &Path) -> Result<()> {
-        // Extract to temp, then let caller compress with another backend
+    fn convert_to_7z(&self, source: &crate::Archive, _dest: &Path, temp_dir: &Path) -> Result<()> {
+        // Extract to temp using Archive handle (with password if needed)
         let extract_dir = temp_dir.join("rar_extract");
-        self.extract_all(source, &extract_dir, None)?;
+        source.extract_all(&extract_dir)?;
 
         // Caller should use a different backend to compress to 7z
         Err(anyhow!(

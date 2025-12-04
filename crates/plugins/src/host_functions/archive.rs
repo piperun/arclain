@@ -9,9 +9,9 @@ impl HostFunctions {
         &mut self,
     ) -> Option<crate::arclain::plugin::host::ArchiveInfo> {
         // Return current archive path if available
-        let archive = self.current_archive.lock().clone()?;
+        let archive: String = self.current_archive.lock().clone()?;
         let path_buf = std::path::PathBuf::from(&archive);
-        let filename = path_buf.file_name()?.to_str()?.to_string();
+        let filename: String = path_buf.file_name()?.to_str()?.to_string();
 
         Some(crate::arclain::plugin::host::ArchiveInfo {
             path: archive,

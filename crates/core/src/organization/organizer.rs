@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
 
-use crate::Archive;
+use crate::{Archive, ArchiveBackend};
 
 /// Generic game/product metadata from any source (DLSite, itch.io, Steam, etc.)
 ///
@@ -188,6 +188,7 @@ pub fn organize_archive(
     metadata: &GameMetadata,
     temp_dir: &Path,
 ) -> Result<()> {
+    use crate::backends::sevenz_backend::SevenZBackend;
     info!(
         "Organizing archive {} with {} metadata for {}",
         archive.path().display(),
@@ -293,18 +294,20 @@ pub fn organize_archive(
         debug!("No screenshots provided in metadata");
     }
 
-    // 4. Compress root_dir to dest
-    debug!("Compressing organized structure to 7z");
+    // 4. Compress root_dir to dest using native 7z backend
+    debug!("Compressing organized structure to 7z using native sevenz-rust backend");
     let dest_abs = if dest.is_absolute() {
         dest.to_path_buf()
     } else {
         std::env::current_dir()?.join(dest)
     };
 
-    // Use create_archive with 7z format
-    archive.backend()
+    // Always use native 7z backend for compression (not the source archive's backend)
+    // This ensures we use sevenz-rust for optimal compression regardless of source format
+    let sevenz_backend = SevenZBackend::new();
+    sevenz_backend
         .create_archive(&dest_abs, &[root_dir.clone()], "7z")
-        .context("creating organized 7z archive")?;
+        .context("creating organized 7z archive with native backend")?;
 
     info!("Archive organization completed successfully");
     Ok(())
@@ -421,8 +424,8 @@ pub fn execute_organization_plan(
         }
     }
 
-    // 3. Compress organized directory to dest
-    debug!("Compressing organized structure to 7z");
+    // 3. Compress organized directory to dest using native 7z backend
+    debug!("Compressing organized structure to 7z using native sevenz-rust backend");
     let dest_abs = if dest.is_absolute() {
         dest.to_path_buf()
     } else {
@@ -454,9 +457,12 @@ pub fn execute_organization_plan(
         ));
     }
 
-    archive.backend()
+    // Always use native 7z backend for compression (not the source archive's backend)
+    use crate::backends::sevenz_backend::SevenZBackend;
+    let sevenz_backend = SevenZBackend::new();
+    sevenz_backend
         .create_archive(&dest_abs, &items_to_compress, "7z")
-        .context("creating organized 7z archive")?;
+        .context("creating organized 7z archive with native backend")?;
 
     info!("Plan execution completed successfully");
     Ok(())

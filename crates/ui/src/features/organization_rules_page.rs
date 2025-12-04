@@ -1,6 +1,6 @@
 use crate::app::state::AppState;
 use crate::features::theme::AppTheme;
-use arclain_core::config_db;
+use arclain_core::config::database as config_db;
 use arclain_core::organization::{MoveFileRule, OrganizationRule, RuleActions, RuleTrigger};
 use eframe::egui;
 use parking_lot::Mutex;

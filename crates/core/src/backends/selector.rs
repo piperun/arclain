@@ -2,7 +2,8 @@ use crate::backends::fallback_backend::FallbackBackend;
 use crate::backends::libarchive_backend::LibarchiveBackend;
 use crate::backends::sevenz_backend::SevenZBackend;
 use crate::backends::unrar_backend::UnrarBackend;
-use crate::{sevenzip::SevenZipCli, ArchiveBackend};
+use crate::backends::sevenz_cli::SevenZipCli;
+use crate::ArchiveBackend;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
@@ -53,7 +54,7 @@ impl BackendSelector {
 
         let backend: Arc<dyn ArchiveBackend> = match ext.as_str() {
             "rar" | "r00" | "r01" | "r02" | "r03" => {
-                // Try native RAR backend first, fallback to 7z.exe CLI
+                // Try native RAR backend first, fallback to 7z CLI
                 let primary = Arc::new(UnrarBackend::new());
                 let fallback = Arc::new(SevenZipCli::detect(None)?);
                 let backend = Arc::new(FallbackBackend::new(primary, fallback));

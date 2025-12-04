@@ -295,18 +295,19 @@ pub struct ArchiveInfo {
     pub plugin_metadata: Option<serde_json::Value>,
 }
 pub fn convert_archive(state: &Arc<Mutex<AppState>>, status_info: &mut status_bar::StatusBarInfo) {
-    let (current_archive, backend, temp_dir) = {
+    let (current_archive, current_password, last_entries, temp_dir) = {
         let st = state.lock();
         (
             st.current_archive.clone(),
-            st.fallback_backend.clone(),
+            st.current_password.clone(),
+            st.last_entries.clone(),
             st.cfg.cfg.temp_dir.clone(),
         )
     };
 
-    if let Some(source) = current_archive {
+    if let Some(source_path) = current_archive {
         // Determine default destination filename
-        let mut default_name = source.file_stem().unwrap_or_default().to_os_string();
+        let mut default_name = source_path.file_stem().unwrap_or_default().to_os_string();
         default_name.push(".7z");
 
         // Open save dialog
@@ -315,14 +316,45 @@ pub fn convert_archive(state: &Arc<Mutex<AppState>>, status_info: &mut status_ba
             .add_filter("7z Archive", &["7z"])
             .save_file()
         {
-            info!("Converting {} to {}", source.display(), dest.display());
+            info!("Converting {} to {}", source_path.display(), dest.display());
             status_info.message = "Converting archive... (this may take a while)".to_string();
 
             // Determine temp dir
             let temp = temp_dir.unwrap_or_else(std::env::temp_dir);
 
-            // Run conversion (blocking for now)
-            match backend.convert_to_7z(&source, &dest, &temp) {
+            // Select appropriate backend for the source archive
+            let st = state.lock();
+            let backend = match st.backend_selector.select(&source_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    error!("Failed to select backend: {}", e);
+                    status_info.message = format!("Conversion failed: {}", e);
+                    return;
+                }
+            };
+
+            // Get password - try current_password first, then auto-detect
+            let password = {
+                let st = state.lock();
+                let archive_name = source_path.to_str();
+                current_password.or_else(|| st.cfg.auto_password_for(archive_name, &last_entries))
+            };
+
+            // Create Archive handle with password (if available)
+            let archive = if let Some(pwd) = password {
+                info!("Converting archive with password (length: {})", pwd.len());
+                arclain_core::Archive::with_password(backend, source_path, pwd)
+            } else {
+                info!("Converting archive without password");
+                arclain_core::Archive::new(backend, source_path)
+            };
+
+            // Run conversion using Archive handle (includes password)
+            // Note: We use the fallback backend for actual conversion since it has CLI support
+            let converter = st.fallback_backend.clone();
+            drop(st);
+
+            match converter.convert_to_7z(&archive, &dest, &temp) {
                 Ok(_) => {
                     status_info.message = "Conversion completed successfully".to_string();
                     info!("Conversion completed successfully");

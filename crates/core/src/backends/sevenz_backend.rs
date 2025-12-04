@@ -303,7 +303,7 @@ impl ArchiveBackend for SevenZBackend {
 
     fn create_archive(&self, dest: &Path, files: &[PathBuf], _format: &str) -> Result<()> {
         info!(
-            "Using {} backend to create archive at {} with {} files",
+            "Using {} backend to create archive at {} with {} items",
             self.name(),
             dest.display(),
             files.len()
@@ -313,7 +313,10 @@ impl ArchiveBackend for SevenZBackend {
             return Err(anyhow!("No files provided to create archive"));
         }
 
-        // Create a temporary directory to organize files
+        // Note: sevenz_rust2::compress_to_path compresses the CONTENTS of a directory,
+        // not the directory itself. So we always need to use staging to preserve structure.
+
+        // For multiple files/dirs, we need to stage them to compress together
         let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
         let staging_dir = temp_dir.path().join("staging");
         std::fs::create_dir_all(&staging_dir)?;
@@ -467,27 +470,20 @@ impl ArchiveBackend for SevenZBackend {
         Ok(())
     }
 
-    fn convert_to_7z(&self, source: &Path, dest: &Path, temp_dir: &Path) -> Result<()> {
+    fn convert_to_7z(&self, source: &crate::Archive, dest: &Path, temp_dir: &Path) -> Result<()> {
         info!(
             "Converting {} to 7z format at {}",
-            source.display(),
+            source.path().display(),
             dest.display()
         );
 
-        // First extract the source archive to temp directory
+        // First extract the source archive to temp directory using Archive handle (with password if needed)
         let extract_dir = temp_dir.join("extract");
         std::fs::create_dir_all(&extract_dir)?;
 
-        // Try to extract using this backend first (if it's a 7z file)
-        let extract_result = self.extract_all(source, &extract_dir, None);
-        
-        if extract_result.is_err() {
-            // If extraction fails, it might not be a 7z file
-            // The caller should handle conversion from other formats
-            return Err(anyhow!(
-                "Source file is not a 7z archive or extraction failed. Use appropriate backend for conversion."
-            ));
-        }
+        // Extract using the Archive handle (which has password if needed)
+        source.extract_all(&extract_dir)
+            .context("Failed to extract source archive")?;
 
         // Compress the extracted content to destination
         sevenz_rust2::compress_to_path(&extract_dir, dest)

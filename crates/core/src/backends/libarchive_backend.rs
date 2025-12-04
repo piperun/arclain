@@ -261,10 +261,10 @@ impl ArchiveBackend for LibarchiveBackend {
         Err(anyhow!("Libarchive backend is read-only, cannot modify files"))
     }
 
-    fn convert_to_7z(&self, source: &Path, _dest: &Path, temp_dir: &Path) -> Result<()> {
-        // Extract to temp, caller should use another backend to compress
+    fn convert_to_7z(&self, source: &crate::Archive, _dest: &Path, temp_dir: &Path) -> Result<()> {
+        // Extract to temp using Archive handle (with password if needed)
         let extract_dir = temp_dir.join("libarchive_extract");
-        self.extract_all(source, &extract_dir, None)?;
+        source.extract_all(&extract_dir)?;
 
         Err(anyhow!(
             "Libarchive backend extracted to {:?}, use another backend to create 7z",
