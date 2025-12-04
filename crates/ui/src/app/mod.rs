@@ -484,13 +484,19 @@ impl eframe::App for ArclainApp {
                                             info!("Organizing WITHOUT password - this may fail for encrypted archives!");
                                         }
 
+                                        // Create Archive handle with backend and password
+                                        let backend_arc = std::sync::Arc::new(backend.clone());
+                                        let archive = if let Some(ref pw) = password {
+                                            arclain_core::Archive::with_password(backend_arc, &source, pw.clone())
+                                        } else {
+                                            arclain_core::Archive::new(backend_arc, &source)
+                                        };
+                                        
                                         match arclain_core::archive_organizer::execute_organization_plan(
-                                            &backend,
-                                            &source,
+                                            &archive,
                                             &dest,
                                             plan,
-                                            &temp_dir,
-                                            password.as_deref()
+                                            &temp_dir
                                         ) {
                                             Ok(_) => {
                                                 self.status_info.message = format!("Organization applied: {}", dest.display());
@@ -517,13 +523,19 @@ impl eframe::App for ArclainApp {
                                                     if let Some(ref password) = detected_pw {
                                                         info!("Retrying organization with auto-detected password (length: {})", password.len());
                                                         // Retry with auto-detected password
-                                                        match arclain_core::archive_organizer::execute_organization_plan(
-                                                            &backend_clone,
+                                                        // Create Archive handle for retry with detected password
+                                                        let backend_arc = std::sync::Arc::new(backend_clone.clone());
+                                                        let archive_retry = arclain_core::Archive::with_password(
+                                                            backend_arc,
                                                             &source,
+                                                            password.clone()
+                                                        );
+                                                        
+                                                        match arclain_core::archive_organizer::execute_organization_plan(
+                                                            &archive_retry,
                                                             &dest,
                                                             plan,
-                                                            &temp_dir_clone,
-                                                            Some(password.as_str())
+                                                            &temp_dir_clone
                                                         ) {
                                                             Ok(_) => {
                                                                 // Success! Save the password for future use

@@ -253,7 +253,12 @@ mod tests {
     #[test]
     fn settings_pages_list_has_all() {
         let pages = SettingsPage::all_pages();
-        assert_eq!(pages.len(), 4);
+        assert_eq!(pages.len(), 6);
+        assert!(pages.contains(&SettingsPage::General));
+        assert!(pages.contains(&SettingsPage::Archives));
+        assert!(pages.contains(&SettingsPage::PasswordRules));
+        assert!(pages.contains(&SettingsPage::OrganizationRules));
         assert!(pages.contains(&SettingsPage::Security));
+        assert!(pages.contains(&SettingsPage::Plugins));
     }
 }

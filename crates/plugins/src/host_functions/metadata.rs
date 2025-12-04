@@ -21,6 +21,10 @@ impl HostFunctions {
                     match cache.is_fresh(&id, 7) {
                         Ok(true) => {
                             self.log_network_activity(format!("Cache HIT for {}", id));
+                            info!("[Cache] Retrieved cached metadata for {}: title={}, circle={:?}",
+                                id, meta.title, meta.circle);
+                            info!("[Cache] raw_api_json length: {} bytes", meta.raw_api_json.len());
+                            debug!("[Cache] raw_api_json content: {}", meta.raw_api_json);
                             Some(meta.raw_api_json)
                         }
                         Ok(false) => {
@@ -63,8 +67,14 @@ impl HostFunctions {
                 }
             };
 
+            info!("[Cache SAVE] Parsing metadata for {}", id);
+            debug!("[Cache SAVE] Full JSON: {}", json);
+            
             let title = parsed["title"].as_str().unwrap_or("Unknown").to_string();
             let circle = parsed["creator"].as_str().map(|s| s.to_string());
+            
+            info!("[Cache SAVE] Extracted - title: {}, circle from 'creator': {:?}", title, circle);
+            info!("[Cache SAVE] Also checking 'circle' field: {:?}", parsed["circle"].as_str());
             // Price is in dlsite.price as string
             let price = parsed["dlsite"]["price"]
                 .as_str()
