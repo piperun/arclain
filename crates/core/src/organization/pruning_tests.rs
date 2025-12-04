@@ -717,15 +717,15 @@ mod pruning_tests {
     #[test]
     fn test_wave_random_pattern_game_plus_imagepack() {
         use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         // Test multiple random iterations to ensure robustness
         for iteration in 0..5 {
             let mut entries = vec![];
 
             // Randomly choose depths (0-5 levels)
-            let game_depth: usize = rng.gen_range(0..=5);
-            let imagepack_depth: usize = rng.gen_range(0..=5);
+            let game_depth: usize = rng.random_range(0..=5);
+            let imagepack_depth: usize = rng.random_range(0..=5);
 
             // Build random path for game
             let game_prefix = if game_depth == 0 {
@@ -777,8 +777,8 @@ mod pruning_tests {
             entries.push(make_entry(&format!("{}/readme.txt", img_base), 256, false));
 
             // Add random junk at various depths
-            for i in 0..rng.gen_range(3..8) {
-                let junk_depth = rng.gen_range(0..=4);
+            for i in 0..rng.random_range(3..8) {
+                let junk_depth = rng.random_range(0..=4);
                 let mut junk_path = String::new();
                 for j in 0..junk_depth {
                     if j > 0 {
@@ -794,8 +794,8 @@ mod pruning_tests {
             }
 
             // Add random empty folders
-            for i in 0..rng.gen_range(2..5) {
-                let empty_depth = rng.gen_range(1..=3);
+            for _i in 0..rng.random_range(2..5) {
+                let empty_depth = rng.random_range(1..=3);
                 let mut empty_path = String::new();
                 for j in 0..empty_depth {
                     if j > 0 {
@@ -862,8 +862,7 @@ mod pruning_tests {
 
     #[test]
     fn test_wave_random_extreme_patterns() {
-        use rand::Rng;
-        let mut rng = rand::thread_rng();
+        let _rng = rand::rng();
 
         // Test extreme scenarios
         for _ in 0..3 {

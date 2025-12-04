@@ -62,6 +62,21 @@ impl GameMetadata {
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
         let mut metadata: Self = serde_json::from_str(json)?;
         metadata.metadata_json = json.to_string();
+        
+        // DEBUG: Log what we parsed
+        tracing::info!("[GameMetadata] Parsed from JSON - title: {:?}, creator: {:?}",
+            metadata.title, metadata.creator);
+        
+        // If creator is None, try to extract from 'circle' field in the raw JSON
+        if metadata.creator.is_none() {
+            if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(json) {
+                if let Some(circle) = json_value.get("circle").and_then(|v| v.as_str()) {
+                    tracing::info!("[GameMetadata] Found 'circle' field in JSON: {}, using as creator", circle);
+                    metadata.creator = Some(circle.to_string());
+                }
+            }
+        }
+        
         Ok(metadata)
     }
 }

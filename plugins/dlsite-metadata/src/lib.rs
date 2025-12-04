@@ -246,10 +246,8 @@ impl archust_plugin_sdk::Guest for Component {
                     Ok(Some((product_id, json, scraped))) => {
                         info("[DLSite Plugin] Metadata found");
                         
-                        // Emit metadata immediately
-                        let metadata_tuple = (json.clone(), scraped.clone());
-                        let metadata_json = generate_metadata_json(&product_id, Some(&metadata_tuple));
-                        archust_plugin_sdk::emit_metadata(&metadata_json);
+                        // Note: perform_scan() already emits metadata (either from cache or fresh),
+                        // so we don't emit again here to avoid double emission
                         
                         STATE.with(|state| {
                             let mut s = state.borrow_mut();
@@ -346,6 +344,9 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
             // Generate final JSON to save to cache
             let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
             save_cached_metadata(&code, &metadata_json);
+            
+            // Emit the fresh metadata
+            archust_plugin_sdk::emit_metadata(&metadata_json);
             
             return Ok(Some((code, json, scraped)));
         }
