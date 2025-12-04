@@ -11,7 +11,7 @@ mod settings;
 
 use crate::arclain::plugin::host::{Host, LogLevel};
 use crate::types::PluginCapability;
-use arclain_core::sevenzip::SevenZipCli;
+use arclain_core::ArchiveBackend;
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,7 +24,7 @@ pub use http::{HttpClient, RateLimiter};
 pub struct HostFunctions {
     pub http_client: Option<HttpClient>,
     pub capabilities: std::collections::HashSet<PluginCapability>,
-    pub archive_backend: Option<Arc<SevenZipCli>>,
+    pub archive_backend: Option<Arc<dyn ArchiveBackend>>,
     pub current_archive: Arc<Mutex<Option<String>>>,
     pub current_password: Arc<Mutex<Option<String>>>,
     pub settings: Arc<Mutex<HashMap<String, String>>>,
@@ -69,7 +69,7 @@ impl HostFunctions {
     pub fn with_backend(
         capabilities: std::collections::HashSet<PluginCapability>,
         requests_per_minute: u32,
-        backend: Arc<SevenZipCli>,
+        backend: Arc<dyn ArchiveBackend>,
     ) -> Self {
         let mut host_funcs = Self::new(capabilities, requests_per_minute);
         host_funcs.archive_backend = Some(backend);

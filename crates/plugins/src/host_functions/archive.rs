@@ -2,7 +2,6 @@
 
 use super::HostFunctions;
 use crate::types::PluginCapability;
-use arclain_core::ArchiveBackend;
 use std::path::Path;
 
 impl HostFunctions {
