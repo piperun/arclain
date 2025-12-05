@@ -1,0 +1,46 @@
+# Default Organization Rules
+
+[[rules]]
+name = "Generic Game"
+description = "Organizes generic game archives into Game/ folder"
+category = "General"
+priority = 10
+is_enabled = true
+is_system = true
+
+[rules.trigger]
+# Matches everything if no pattern specified, but we can be specific if needed
+# For generic, we might want to match common game extensions or just be a fallback
+extensions = ["zip", "rar", "7z"]
+
+[rules.actions]
+root_folder = "$title"
+organize_content = true
+delete_original = false
+
+[[rules.actions.move_files]]
+pattern = "**"
+target = "Game"
+
+
+[[rules]]
+name = "DLSite Archive"
+description = "Organizes DLSite archives with metadata (RJ/BJ codes)"
+category = "Doujin"
+priority = 100
+is_enabled = true
+is_system = true
+
+[rules.trigger]
+filename_pattern = "(RJ|BJ)\\d+"
+
+[rules.actions]
+root_folder = "[$code][$circle] $title v$version"
+organize_content = true
+delete_original = false
+use_standard_layout = true
+
+[rules.actions.move_to]
+target_dir = "DLSite"
+use_date = false
+use_category = false

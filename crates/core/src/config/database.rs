@@ -85,3 +85,26 @@ pub fn save_org_rule(db: &arclain_db::SqliteDb, rule: &OrganizationRule) -> Resu
 pub fn delete_org_rule(db: &arclain_db::SqliteDb, id: i64) -> Result<()> {
     db.with_connection(|conn| delete_rule(conn, id))
 }
+
+// Title Replacements
+
+pub use arclain_db::{
+    delete_title_replacement, list_title_replacements, save_title_replacement, DbTitleReplacement,
+};
+
+pub fn list_replacements(db: &arclain_db::SqliteDb) -> Result<Vec<DbTitleReplacement>> {
+    db.with_connection(|conn| list_title_replacements(conn))
+}
+
+pub fn save_replacement(
+    db: &arclain_db::SqliteDb,
+    original: &str,
+    replacement: &str,
+    is_system: bool,
+) -> Result<()> {
+    db.with_connection(|conn| save_title_replacement(conn, original, replacement, is_system))
+}
+
+pub fn delete_replacement(db: &arclain_db::SqliteDb, id: i64) -> Result<()> {
+    db.with_connection(|conn| delete_title_replacement(conn, id))
+}

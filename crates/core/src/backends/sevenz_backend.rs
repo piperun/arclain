@@ -244,6 +244,8 @@ impl ArchiveBackend for SevenZBackend {
     }
 
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()> {
+        use std::time::Instant;
+        
         info!(
             "Using {} backend to recompress {} to {}",
             self.name(),
@@ -252,13 +254,21 @@ impl ArchiveBackend for SevenZBackend {
         );
 
         // Use sevenz_rust2's compress functionality
+        let start = Instant::now();
+        info!("🔄 Starting compression with sevenz-rust2...");
+        
         sevenz_rust2::compress_to_path(source, dest_7z)
             .context("Failed to recompress to 7z format")?;
+        
+        let elapsed = start.elapsed();
+        info!("✅ Compression completed in {:.2}s", elapsed.as_secs_f64());
 
         Ok(())
     }
 
     fn add_files(&self, archive: &Path, files: &[PathBuf]) -> Result<()> {
+        use std::time::Instant;
+        
         info!(
             "Using {} backend to add {} files to archive",
             self.name(),
@@ -267,11 +277,16 @@ impl ArchiveBackend for SevenZBackend {
 
         // 7z archives don't support in-place modification
         // We need to extract, add files, and recompress
+        let total_start = Instant::now();
         let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
         let extract_dir = temp_dir.path().join("extracted");
         
         // Extract existing archive
+        let extract_start = Instant::now();
+        info!("📂 Extracting existing archive...");
         self.extract_all(archive, &extract_dir, None)?;
+        let extract_elapsed = extract_start.elapsed();
+        info!("✅ Extraction completed in {:.2}s", extract_elapsed.as_secs_f64());
 
         // Copy new files to extracted directory
         for file in files {
@@ -290,18 +305,30 @@ impl ArchiveBackend for SevenZBackend {
         }
 
         // Recompress to original archive location
+        let compress_start = Instant::now();
+        info!("🔄 Recompressing modified archive...");
         let temp_archive = temp_dir.path().join("temp.7z");
         sevenz_rust2::compress_to_path(&extract_dir, &temp_archive)
             .context("Failed to create new archive")?;
+        let compress_elapsed = compress_start.elapsed();
+        info!("✅ Recompression completed in {:.2}s", compress_elapsed.as_secs_f64());
 
         // Replace original archive
         std::fs::copy(&temp_archive, archive)
             .context("Failed to replace original archive")?;
+        
+        let total_elapsed = total_start.elapsed();
+        info!("📊 Total add_files time: {:.2}s (extract: {:.2}s, recompress: {:.2}s)",
+              total_elapsed.as_secs_f64(),
+              extract_elapsed.as_secs_f64(),
+              compress_elapsed.as_secs_f64());
 
         Ok(())
     }
 
     fn create_archive(&self, dest: &Path, files: &[PathBuf], _format: &str) -> Result<()> {
+        use std::time::Instant;
+        
         info!(
             "Using {} backend to create archive at {} with {} items",
             self.name(),
@@ -317,6 +344,9 @@ impl ArchiveBackend for SevenZBackend {
         // not the directory itself. So we always need to use staging to preserve structure.
 
         // For multiple files/dirs, we need to stage them to compress together
+        let start_staging = Instant::now();
+        info!("📁 Creating staging directory and copying files...");
+        
         let temp_dir = tempfile::tempdir().context("Failed to create temporary directory")?;
         let staging_dir = temp_dir.path().join("staging");
         std::fs::create_dir_all(&staging_dir)?;
@@ -341,10 +371,23 @@ impl ArchiveBackend for SevenZBackend {
                     .with_context(|| format!("Failed to copy {} to archive", file.display()))?;
             }
         }
+        
+        let staging_elapsed = start_staging.elapsed();
+        info!("✅ Staging completed in {:.2}s", staging_elapsed.as_secs_f64());
 
         // Compress the staging directory
+        let start_compress = Instant::now();
+        info!("🔄 Starting compression with sevenz-rust2...");
+        
         sevenz_rust2::compress_to_path(&staging_dir, dest)
             .context("Failed to create 7z archive")?;
+        
+        let compress_elapsed = start_compress.elapsed();
+        info!("✅ Compression completed in {:.2}s", compress_elapsed.as_secs_f64());
+        info!("📊 Total time: {:.2}s (staging: {:.2}s, compression: {:.2}s)",
+              (staging_elapsed + compress_elapsed).as_secs_f64(),
+              staging_elapsed.as_secs_f64(),
+              compress_elapsed.as_secs_f64());
 
         Ok(())
     }
@@ -471,23 +514,44 @@ impl ArchiveBackend for SevenZBackend {
     }
 
     fn convert_to_7z(&self, source: &crate::Archive, dest: &Path, temp_dir: &Path) -> Result<()> {
+        use std::time::Instant;
+        
         info!(
             "Converting {} to 7z format at {}",
             source.path().display(),
             dest.display()
         );
 
+        let total_start = Instant::now();
+
         // First extract the source archive to temp directory using Archive handle (with password if needed)
         let extract_dir = temp_dir.join("extract");
         std::fs::create_dir_all(&extract_dir)?;
 
         // Extract using the Archive handle (which has password if needed)
+        let extract_start = Instant::now();
+        info!("📂 Extracting source archive to temp directory...");
         source.extract_all(&extract_dir)
             .context("Failed to extract source archive")?;
+        let extract_elapsed = extract_start.elapsed();
+        info!("✅ Extraction completed in {:.2}s", extract_elapsed.as_secs_f64());
 
         // Compress the extracted content to destination
+        let compress_start = Instant::now();
+        info!("🔄 Starting compression with sevenz-rust2 (this may take a while)...");
+        info!("⚠️  NOTE: sevenz-rust2 compression is BLOCKING and may appear to hang");
+        
         sevenz_rust2::compress_to_path(&extract_dir, dest)
             .context("Failed to create 7z archive")?;
+        
+        let compress_elapsed = compress_start.elapsed();
+        info!("✅ Compression completed in {:.2}s", compress_elapsed.as_secs_f64());
+        
+        let total_elapsed = total_start.elapsed();
+        info!("📊 Total conversion time: {:.2}s (extract: {:.2}s, compress: {:.2}s)",
+              total_elapsed.as_secs_f64(),
+              extract_elapsed.as_secs_f64(),
+              compress_elapsed.as_secs_f64());
 
         Ok(())
     }

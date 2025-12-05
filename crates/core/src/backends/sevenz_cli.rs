@@ -1094,6 +1094,29 @@ impl SevenZipCli {
         }
         self.spawn_with_progress(args)
     }
+
+    /// Like `compress`, but returns a running process with progress updates for conversion
+    pub fn spawn_convert_with_progress(
+        &self,
+        source_dir: &Path,
+        dest_7z: &Path,
+    ) -> Result<ChildWithProgress> {
+        let mut args = vec![
+            OsString::from("a"),
+            OsString::from("-t7z"),
+            OsString::from("-mx=5"),      // Normal compression (faster than -mx=9)
+            OsString::from("-m0=LZMA2"),
+            OsString::from("-mmt=on"),     // Multi-threaded
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+            dest_7z.as_os_str().to_os_string(),
+        ];
+        
+        // Add all files/folders in source directory
+        args.push(OsString::from(format!("{}{}*", source_dir.display(), std::path::MAIN_SEPARATOR)));
+        
+        self.spawn_with_progress(args)
+    }
 }
 
 /// Progress event from 7-Zip streaming output.

@@ -84,6 +84,11 @@ pub struct RuleActions {
 
     /// Whether to delete the original archive after organization
     pub delete_original: bool,
+
+    /// If true, enforces the standard Game/Screenshots/Metadata layout.
+    /// If true, `move_files` is IGNORED or used only as hints for what constitutes "Game Content".
+    #[serde(default)]
+    pub use_standard_layout: bool,
 }
 
 /// A rule for moving a specific file or group of files

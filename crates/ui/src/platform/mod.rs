@@ -42,7 +42,7 @@ pub fn suspend_process(pid: u32) -> anyhow::Result<()> {
         loop {
             if entry.th32OwnerProcessID == pid {
                 let h_thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
-                if h_thread != std::ptr::null_mut() {
+                if !h_thread.is_null() {
                     let _ = SuspendThread(h_thread);
                     CloseHandle(h_thread);
                 }
@@ -77,7 +77,7 @@ pub fn resume_process(pid: u32) -> anyhow::Result<()> {
         loop {
             if entry.th32OwnerProcessID == pid {
                 let h_thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
-                if h_thread != std::ptr::null_mut() {
+                if !h_thread.is_null() {
                     let _ = ResumeThread(h_thread);
                     CloseHandle(h_thread);
                 }

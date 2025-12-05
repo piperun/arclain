@@ -90,12 +90,30 @@ impl ArchiveBackend for FallbackBackend {
     }
 
     fn extract_all(&self, path: &Path, dest: &Path, password: Option<&str>) -> Result<()> {
+        info!(
+            "Trying {} backend to extract: {} to {}",
+            self.primary_name,
+            path.display(),
+            dest.display()
+        );
+        
         match self.primary.extract_all(path, dest, password) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                info!(
+                    "Successfully extracted archive with {} backend",
+                    self.primary_name
+                );
+                Ok(())
+            }
             Err(e) => {
                 warn!(
                     "{} backend failed to extract: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
+                );
+                info!(
+                    "Using fallback {} backend to extract: {}",
+                    self.fallback_name,
+                    path.display()
                 );
                 self.fallback.extract_all(path, dest, password)
                     .with_context(|| format!("Both {} and {} backends failed to extract", self.primary_name, self.fallback_name))

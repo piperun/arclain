@@ -12,7 +12,13 @@ ui_archive/*
 *.html
 mockups/*
 
+# Log files
+logs/
+*.log
+
 # Plugin build artifacts
 
 plugins/*/wasm32-unknown-unknown/
 plugin-sdk/*/target/
+
+_real_data/

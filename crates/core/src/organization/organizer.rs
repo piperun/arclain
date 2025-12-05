@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
 
-use crate::{Archive, ArchiveBackend};
+use crate::Archive;
 
 /// Generic game/product metadata from any source (DLSite, itch.io, Steam, etc.)
 ///
@@ -178,6 +178,195 @@ pub fn needs_better_compression(archive: &Archive) -> Result<bool> {
     Ok(true)
 }
 
+/// RAII guard for temporary directory cleanup
+struct TempDirGuard {
+    path: PathBuf,
+}
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
+            error!("Failed to cleanup temp dir {}: {}", self.path.display(), e);
+        }
+    }
+}
+
+/// Create a unique temporary work directory
+fn create_work_directory(temp_dir: &Path, prefix: &str) -> Result<(PathBuf, TempDirGuard)> {
+    debug!("Creating work directory with prefix '{}' in {:?}", prefix, temp_dir);
+    
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    
+    let work_dir = temp_dir.join(format!("{}_{}", prefix, timestamp));
+    std::fs::create_dir_all(&work_dir).context("creating work directory")?;
+    
+    info!("Created work directory: {:?}", work_dir);
+    
+    let guard = TempDirGuard {
+        path: work_dir.clone(),
+    };
+    
+    Ok((work_dir, guard))
+}
+
+/// Verify archive encryption status and password availability
+fn verify_archive_encryption(archive: &Archive) -> Result<()> {
+    info!("Verifying archive encryption status for: {}", archive.path().display());
+    
+    let archive_info = archive
+        .backend()
+        .list(archive.path(), archive.password_ref())
+        .context("listing archive contents")?;
+
+    debug!(
+        "Archive encryption status: encrypted={}, headers_encrypted={}, method={:?}",
+        archive_info.encrypted, archive_info.headers_encrypted, archive_info.encryption_method
+    );
+
+    if archive_info.encrypted && !archive.has_password() {
+        error!("Archive is encrypted but no password provided: {}", archive.path().display());
+        return Err(anyhow::anyhow!(
+            "Archive '{}' contains encrypted files but no password was provided.",
+            archive.path().display()
+        ));
+    }
+
+    if archive_info.encrypted {
+        info!("Archive is encrypted and password is available");
+    } else {
+        info!("Archive is not encrypted");
+    }
+
+    Ok(())
+}
+
+/// Extract archive contents to a temporary directory
+fn extract_archive_to_temp(archive: &Archive, work_dir: &Path) -> Result<PathBuf> {
+    info!("Extracting archive: {}", archive.path().display());
+    
+    let extract_temp = work_dir.join("extract_temp");
+    std::fs::create_dir_all(&extract_temp)?;
+    
+    debug!("Extract destination: {:?}", extract_temp);
+    archive.extract_all(&extract_temp)
+        .context("extracting source archive")?;
+    
+    info!("Archive extraction completed successfully");
+    Ok(extract_temp)
+}
+
+/// Organize game content by finding and flattening to Game/ directory
+fn organize_game_content(extract_temp: &Path, root_dir: &Path) -> Result<PathBuf> {
+    info!("Organizing game content from extracted files");
+    
+    let game_dir = root_dir.join("Game");
+    std::fs::create_dir_all(&game_dir)?;
+    
+    debug!("Game directory destination: {:?}", game_dir);
+    find_and_flatten_game_content(extract_temp, &game_dir)?;
+    
+    info!("Game content organization completed");
+    Ok(game_dir)
+}
+
+/// Create metadata.json file in the root directory
+fn create_metadata_file(root_dir: &Path, metadata: &GameMetadata) -> Result<()> {
+    info!("Creating metadata.json for product: {}", metadata.product_id);
+    
+    let metadata_path = root_dir.join("metadata.json");
+    debug!("Metadata file path: {:?}", metadata_path);
+    
+    std::fs::write(&metadata_path, &metadata.metadata_json)
+        .context("writing metadata.json")?;
+    
+    info!("Metadata file created successfully ({} bytes)", metadata.metadata_json.len());
+    Ok(())
+}
+
+/// Process and save screenshot to destination
+fn process_screenshot(
+    screenshot: &ScreenshotData,
+    dest_path: &Path,
+    filename: &str,
+) -> Result<()> {
+    match screenshot {
+        ScreenshotData::FilePath(path) => {
+            debug!("Copying screenshot '{}' from {}", filename, path.display());
+            let bytes_copied = std::fs::copy(path, dest_path)
+                .context("copying screenshot file")?;
+            debug!("Screenshot copied: {} bytes", bytes_copied);
+        }
+        ScreenshotData::Base64(data) => {
+            debug!("Decoding base64 screenshot '{}' ({} bytes)", filename, data.len());
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .context("decoding base64 screenshot")?;
+            std::fs::write(dest_path, &bytes)
+                .context("writing decoded screenshot")?;
+            debug!("Base64 screenshot decoded and saved: {} bytes", bytes.len());
+        }
+    }
+    Ok(())
+}
+
+/// Create screenshots directory and process all screenshots
+fn create_screenshots_directory(root_dir: &Path, metadata: &GameMetadata) -> Result<()> {
+    info!("Setting up screenshots directory");
+    
+    let screenshots_dir = root_dir.join("screenshots");
+    std::fs::create_dir_all(&screenshots_dir)?;
+    debug!("Screenshots directory created: {:?}", screenshots_dir);
+    
+    if metadata.screenshots.is_empty() {
+        info!("No screenshots provided in metadata - directory created but empty");
+        return Ok(());
+    }
+    
+    info!("Processing {} screenshots", metadata.screenshots.len());
+    
+    for (idx, screenshot) in metadata.screenshots.iter().enumerate() {
+        let filename = format!("{:02}.jpg", idx + 1);
+        let dest_path = screenshots_dir.join(&filename);
+        
+        process_screenshot(screenshot, &dest_path, &filename)
+            .with_context(|| format!("processing screenshot {}", filename))?;
+    }
+    
+    info!("All screenshots processed successfully");
+    Ok(())
+}
+
+/// Create the final 7z archive from organized content
+fn create_final_archive(
+    archive: &Archive,
+    dest: &Path,
+    root_dir: &Path,
+) -> Result<()> {
+    info!("Creating final 7z archive");
+    debug!("Source directory: {:?}", root_dir);
+    debug!("Destination path: {:?}", dest);
+    
+    let dest_abs = if dest.is_absolute() {
+        dest.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(dest)
+    };
+    
+    debug!("Absolute destination path: {:?}", dest_abs);
+    
+    info!("Compressing organized structure to 7z format");
+    archive.backend()
+        .create_archive(&dest_abs, &[root_dir.to_path_buf()], "7z")
+        .context("creating organized 7z archive")?;
+    
+    info!("Final archive created successfully: {}", dest_abs.display());
+    Ok(())
+}
+
 /// Organize archive with game metadata using Archive (dependency injection pattern)
 ///
 /// This is the primary API for organizing archives. Pass in an Archive handle
@@ -188,7 +377,6 @@ pub fn organize_archive(
     metadata: &GameMetadata,
     temp_dir: &Path,
 ) -> Result<()> {
-    use crate::backends::sevenz_backend::SevenZBackend;
     info!(
         "Organizing archive {} with {} metadata for {}",
         archive.path().display(),
@@ -196,118 +384,28 @@ pub fn organize_archive(
         metadata.product_id
     );
 
-    // Create unique temp directory
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let work_dir = temp_dir.join(format!("arclain_organize_{}", timestamp));
+    // Step 1: Create work directory with cleanup guard
+    let (work_dir, _guard) = create_work_directory(temp_dir, "arclain_organize")?;
     let root_dir = work_dir.join(&metadata.product_id);
-    std::fs::create_dir_all(&root_dir).context("creating temp dir")?;
+    std::fs::create_dir_all(&root_dir).context("creating root dir")?;
 
-    // RAII cleanup guard
-    struct TempDirGuard {
-        path: PathBuf,
-    }
-    impl Drop for TempDirGuard {
-        fn drop(&mut self) {
-            if let Err(e) = std::fs::remove_dir_all(&self.path) {
-                error!("Failed to cleanup temp dir {}: {}", self.path.display(), e);
-            }
-        }
-    }
-    let _guard = TempDirGuard {
-        path: work_dir.clone(),
-    };
+    // Step 2: Verify encryption status
+    verify_archive_encryption(archive)?;
 
-    // 1. Check for encryption
-    debug!("Listing archive contents to check encryption");
-    let archive_info = archive
-        .backend()
-        .list(archive.path(), archive.password_ref())
-        .context("listing archive contents")?;
+    // Step 3: Extract archive
+    let extract_temp = extract_archive_to_temp(archive, &work_dir)?;
 
-    // Log encryption status for debugging
-    debug!(
-        "Archive encryption status: encrypted={}, headers_encrypted={}, method={:?}",
-        archive_info.encrypted, archive_info.headers_encrypted, archive_info.encryption_method
-    );
+    // Step 4: Organize game content
+    organize_game_content(&extract_temp, &root_dir)?;
 
-    // Check for encryption and reject if encrypted without password
-    if archive_info.encrypted && !archive.has_password() {
-        return Err(anyhow::anyhow!(
-            "Archive '{}' contains encrypted files but no password was provided.",
-            archive.path().display()
-        ));
-    }
+    // Step 5: Create metadata file
+    create_metadata_file(&root_dir, metadata)?;
 
-    // 2. Extract to temp location first
-    let extract_temp = work_dir.join("extract_temp");
-    std::fs::create_dir_all(&extract_temp)?;
-    
-    debug!("Extracting archive to temporary location: {:?}", extract_temp);
-    archive.extract_all(&extract_temp)
-        .context("extracting source archive")?;
+    // Step 6: Process screenshots
+    create_screenshots_directory(&root_dir, metadata)?;
 
-    // 3. Find the game content folder and flatten to Game/
-    let game_dir = root_dir.join("Game");
-    std::fs::create_dir_all(&game_dir)?;
-    
-    debug!("Finding and flattening game content to: {:?}", game_dir);
-    find_and_flatten_game_content(&extract_temp, &game_dir)?;
-
-    // 2. Create metadata.json
-    debug!("Creating metadata.json");
-    let metadata_path = root_dir.join("metadata.json");
-    std::fs::write(&metadata_path, &metadata.metadata_json)?;
-
-    // 3. Create screenshots directory (always create it, even if empty for now)
-    let screenshots_dir = root_dir.join("screenshots");
-    std::fs::create_dir_all(&screenshots_dir)?;
-    
-    if !metadata.screenshots.is_empty() {
-        debug!(
-            "Processing {} screenshots",
-            metadata.screenshots.len()
-        );
-
-        for (idx, screenshot) in metadata.screenshots.iter().enumerate() {
-            let filename = format!("{:02}.jpg", idx + 1);
-            let dest_path = screenshots_dir.join(&filename);
-
-            match screenshot {
-                ScreenshotData::FilePath(path) => {
-                    debug!("Copying screenshot from {}", path.display());
-                    std::fs::copy(path, &dest_path)?;
-                }
-                ScreenshotData::Base64(data) => {
-                    debug!("Decoding base64 screenshot {}", filename);
-                    use base64::Engine;
-                    let bytes = base64::engine::general_purpose::STANDARD
-                        .decode(data)
-                        .context("decoding base64 screenshot")?;
-                    std::fs::write(&dest_path, bytes)?;
-                }
-            }
-        }
-    } else {
-        debug!("No screenshots provided in metadata");
-    }
-
-    // 4. Compress root_dir to dest using native 7z backend
-    debug!("Compressing organized structure to 7z using native sevenz-rust backend");
-    let dest_abs = if dest.is_absolute() {
-        dest.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(dest)
-    };
-
-    // Always use native 7z backend for compression (not the source archive's backend)
-    // This ensures we use sevenz-rust for optimal compression regardless of source format
-    let sevenz_backend = SevenZBackend::new();
-    sevenz_backend
-        .create_archive(&dest_abs, &[root_dir.clone()], "7z")
-        .context("creating organized 7z archive with native backend")?;
+    // Step 7: Create final archive
+    create_final_archive(archive, dest, &root_dir)?;
 
     info!("Archive organization completed successfully");
     Ok(())
@@ -360,21 +458,34 @@ pub fn execute_organization_plan(
 
     // 2. Move files according to plan
     debug!("Moving files according to plan");
-    for (src_rel, dst_rel) in &plan.moves {
-        let src_path = source_extracted.join(src_rel);
-        let dst_path = organized_dir.join(dst_rel);
+    
+    if plan.use_standard_layout {
+        // Standard Layout: Smart Flattening
+        // We ignore explicit moves for game content and use the flattener
+        let root_folder = organized_dir.join(&plan.root_folder);
+        let game_dir = root_folder.join("Game");
+        std::fs::create_dir_all(&game_dir)?;
+        
+        debug!("Using Standard Layout - Flattening game content to {:?}", game_dir);
+        find_and_flatten_game_content(&source_extracted, &game_dir)?;
+    } else {
+        // Legacy/Custom Layout: Explicit moves
+        for (src_rel, dst_rel) in &plan.moves {
+            let src_path = source_extracted.join(src_rel);
+            let dst_path = organized_dir.join(dst_rel);
 
-        if src_path.exists() {
-            if let Some(parent) = dst_path.parent() {
-                std::fs::create_dir_all(parent)?;
+            if src_path.exists() {
+                if let Some(parent) = dst_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                // Use copy instead of rename to avoid issues if we want to keep source for some reason
+                // (though we delete it later). Rename is faster but cross-device issues might occur if temp is weird.
+                // Since it's all in temp, rename should be fine.
+                std::fs::rename(&src_path, &dst_path)
+                    .or_else(|_| std::fs::copy(&src_path, &dst_path).map(|_| ()))?;
+            } else {
+                debug!("Source file not found (maybe directory?): {}", src_rel);
             }
-            // Use copy instead of rename to avoid issues if we want to keep source for some reason
-            // (though we delete it later). Rename is faster but cross-device issues might occur if temp is weird.
-            // Since it's all in temp, rename should be fine.
-            std::fs::rename(&src_path, &dst_path)
-                .or_else(|_| std::fs::copy(&src_path, &dst_path).map(|_| ()))?;
-        } else {
-            debug!("Source file not found (maybe directory?): {}", src_rel);
         }
     }
 
@@ -424,8 +535,8 @@ pub fn execute_organization_plan(
         }
     }
 
-    // 3. Compress organized directory to dest using native 7z backend
-    debug!("Compressing organized structure to 7z using native sevenz-rust backend");
+    // 3. Compress organized directory to dest
+    debug!("Compressing organized structure to 7z");
     let dest_abs = if dest.is_absolute() {
         dest.to_path_buf()
     } else {
@@ -441,7 +552,7 @@ pub fn execute_organization_plan(
 
     // Actually, if organized_dir contains "Game", and we want the archive to contain "Game",
     // we should pass `organized_dir/Game` to create_archive?
-    // Wait, SevenZipCli::create_archive takes `paths: &[PathBuf]`.
+    // Wait, create_archive takes `paths: &[PathBuf]`.
     // If I pass `path/to/Game`, 7z usually stores "Game/...".
     // So I should list the children of organized_dir and pass them.
 
@@ -457,12 +568,10 @@ pub fn execute_organization_plan(
         ));
     }
 
-    // Always use native 7z backend for compression (not the source archive's backend)
-    use crate::backends::sevenz_backend::SevenZBackend;
-    let sevenz_backend = SevenZBackend::new();
-    sevenz_backend
+    // Use the backend from the archive handle to create the new archive
+    archive.backend()
         .create_archive(&dest_abs, &items_to_compress, "7z")
-        .context("creating organized 7z archive with native backend")?;
+        .context("creating organized 7z archive")?;
 
     info!("Plan execution completed successfully");
     Ok(())
@@ -473,7 +582,7 @@ pub fn execute_organization_plan(
 /// This recursively searches for game content indicators (exe files, package.json, index.html, etc.)
 /// and moves that content to the destination, removing all wrapper directories.
 fn find_and_flatten_game_content(source: &Path, dest: &Path) -> Result<()> {
-    debug!("Searching for game content in: {:?}", source);
+    debug!("Searching for game content in: {}", source.display());
     
     // Game content indicators - files that indicate we've found the actual game folder
     let game_indicators = [
@@ -508,14 +617,14 @@ fn find_and_flatten_game_content(source: &Path, dest: &Path) -> Result<()> {
     
     // If we found 2+ indicators, this IS the game folder
     if indicator_count >= 2 {
-        debug!("Found game content folder ({} indicators), moving to destination", indicator_count);
+        info!("Found game content folder with {} indicators, flattening {} files/dirs", indicator_count, entries.len());
         
         // Move all contents from source to dest
         for entry in entries {
             let src_path = entry.path();
             let dest_path = dest.join(entry.file_name());
             
-            debug!("Moving {:?} to {:?}", src_path.file_name(), dest_path.file_name());
+            debug!("Moving {} -> {}", src_path.display(), dest_path.display());
             std::fs::rename(&src_path, &dest_path)
                 .or_else(|_| {
                     // If rename fails (cross-device), copy recursively
@@ -533,12 +642,12 @@ fn find_and_flatten_game_content(source: &Path, dest: &Path) -> Result<()> {
     }
     
     // Otherwise, recursively search subdirectories
-    debug!("Not game folder (only {} indicators), searching subdirectories", indicator_count);
+    debug!("Not game folder (only {} indicators), searching {} subdirectories", indicator_count, entries.iter().filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)).count());
     
     for entry in entries {
         if entry.file_type()?.is_dir() {
             let subdir = entry.path();
-            debug!("Checking subdirectory: {:?}", subdir.file_name());
+            debug!("Checking subdirectory: {}", subdir.display());
             
             // Try to find game content in this subdirectory
             match find_and_flatten_game_content(&subdir, dest) {

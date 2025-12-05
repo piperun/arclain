@@ -1,5 +1,7 @@
 //! Configuration management
-//! 
+//!
+//! Configuration management
+//!
 //! This module provides configuration and password management functionality:
 //! - Application settings
 //! - Password rules for automatic detection
@@ -7,6 +9,9 @@
 
 pub mod database;
 pub mod settings;
+pub mod sync;
 
-pub use database::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};
+pub use database::{
+    open_databases, ConfigDb, ConfigDbs, DbPaths, DbTitleReplacement, SecretsDb, SecretsKey,
+};
 pub use settings::{Config, ConfigStore, PassRule};
