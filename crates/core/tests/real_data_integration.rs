@@ -4,11 +4,13 @@ use content_verification::ContentHashMap;
 use arclain_core::organization::{organize_archive, GameMetadata};
 use arclain_core::backends::selector::BackendSelector;
 use arclain_core::backends::sevenz_cli::SevenZipCli;
+use arclain_core::utilities::logging::init_test_logging;
 use arclain_core::{Archive, ArchiveBackend, ConfigStore, PassRule};
 use arclain_db::{DbPaths, SecretsDb, SecretsKey};
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+use tracing::{info, warn, error, debug};
 use walkdir::WalkDir;
 
 // Helper to copy directory recursively
@@ -89,15 +91,19 @@ fn get_dummy_metadata(product_id: &str) -> GameMetadata {
 /// Test that organizing already-organized content (expected_result) stays the same
 #[test]
 fn test_expected_result_idempotency() {
+    let _ = init_test_logging("test_expected_result_idempotency");
+    
     let temp = TempDir::new().expect("Failed to create temp dir");
     
     // Tests run from crates/core, so go up to workspace root
     let expected_src = Path::new("../../_real_data/expected_result");
 
     if !expected_src.exists() {
-        println!("Skipping test: Real data not found at {:?}", expected_src);
+        warn!("Skipping test: Real data not found at {:?}", expected_src);
         return;
     }
+    
+    info!("Starting idempotency test with expected_result data");
 
     // Copy expected_result to temp directory
     let input_dir = temp.path().join("expected_result_copy");
@@ -151,6 +157,8 @@ fn test_expected_result_idempotency() {
 /// 4. Calls organize with auto-detected password
 #[test]
 fn test_integration_data_full_workflow() {
+    let _ = init_test_logging("test_integration_data_full_workflow");
+    
     let temp = TempDir::new().expect("Failed to create temp dir");
     
     // Tests run from crates/core, so go up to workspace root
@@ -158,12 +166,12 @@ fn test_integration_data_full_workflow() {
     let expected_src = Path::new("../../_real_data/expected_result");
 
     if !integration_src.exists() {
-        println!("Skipping test: Integration data not found at {:?}", integration_src);
+        warn!("Skipping test: Integration data not found at {:?}", integration_src);
         return;
     }
 
     if !expected_src.exists() {
-        println!("Skipping test: Expected result not found at {:?}", expected_src);
+        warn!("Skipping test: Expected result not found at {:?}", expected_src);
         return;
     }
 
@@ -179,7 +187,8 @@ fn test_integration_data_full_workflow() {
         .map(|e| e.path())
         .expect("No archive file found in integration_data");
 
-    println!("Testing with archive: {:?}", archive_path);
+    info!("=== Starting Full Workflow Integration Test ===");
+    info!("Testing with archive: {:?}", archive_path);
 
     // === USE PRODUCTION SECRETS DATABASE (EXACTLY like the UI does) ===
     
@@ -188,24 +197,24 @@ fn test_integration_data_full_workflow() {
     let db_paths = DbPaths::defaults("arclain")
         .expect("Failed to get default database paths");
     
-    println!("Using production database paths:");
-    println!("  Config DB: {:?}", db_paths.config_db);
-    println!("  Secrets DB: {:?}", db_paths.secrets_db);
-    println!("  Key file: {:?}", db_paths.key_file);
+    info!("Using production database paths:");
+    info!("  Config DB: {:?}", db_paths.config_db);
+    info!("  Secrets DB: {:?}", db_paths.secrets_db);
+    info!("  Key file: {:?}", db_paths.key_file);
     
     // Load the production master key (same as UI at state.rs:112-124)
     let key = if let Some(ref key_path) = db_paths.key_file {
         if !key_path.exists() {
-            println!("\n⚠ Master key file not found at: {}", key_path.display());
-            println!("Skipping test: Cannot access production password database without master key");
-            println!("The UI would have created this key on first run.\n");
+            warn!("Master key file not found at: {}", key_path.display());
+            warn!("Skipping test: Cannot access production password database without master key");
+            warn!("The UI would have created this key on first run.");
             return;
         }
         SecretsKey::load_from_file(key_path)
             .expect("Failed to load production key file")
     } else {
-        println!("\n⚠ No key file path configured");
-        println!("Skipping test: Cannot access production password database\n");
+        warn!("No key file path configured");
+        warn!("Skipping test: Cannot access production password database");
         return;
     };
     
@@ -213,7 +222,7 @@ fn test_integration_data_full_workflow() {
     let secrets_db = SecretsDb::open(&db_paths.secrets_db, &key.as_bytes())
         .expect("Failed to open production secrets database");
     
-    println!("\n=== DEBUG: Password Rules in Production Secrets DB ===");
+    info!("Checking password rules in production secrets database");
     
     // Load rules from production database into ConfigStore (EXACTLY like UI at state.rs:208-214)
     let loaded_db_rules = secrets_db
@@ -221,20 +230,15 @@ fn test_integration_data_full_workflow() {
         .expect("Failed to load password rules from production database");
     
     if loaded_db_rules.is_empty() {
-        println!("\n⚠ No password rules found in production database!");
-        println!("Skipping test: Add password rules in the UI first, then run this test.\n");
+        warn!("No password rules found in production database!");
+        warn!("Skipping test: Add password rules in the UI first, then run this test.");
         return;
     }
     
-    println!("Found {} rules in production secrets database:", loaded_db_rules.len());
+    info!("Found {} password rules in production secrets database", loaded_db_rules.len());
     for (i, rule) in loaded_db_rules.iter().enumerate() {
-        println!("  Rule {}: name='{}', pattern='{}', password='***', priority={}, enabled={}",
-            i + 1,
-            rule.name,
-            rule.pattern,
-            rule.priority,
-            rule.enabled
-        );
+        debug!("  Rule {}: name='{}', pattern='{}', priority={}, enabled={}",
+            i + 1, rule.name, rule.pattern, rule.priority, rule.enabled);
     }
     
     let mut config_store = ConfigStore::load("arclain")
@@ -252,12 +256,12 @@ fn test_integration_data_full_workflow() {
         })
         .collect();
     
-    println!("Loaded {} password rules from encrypted secrets DB", config_store.cfg.pass_rules.len());
+    info!("Loaded {} password rules into ConfigStore", config_store.cfg.pass_rules.len());
 
     // === USE BACKEND SELECTOR (like UI does) ===
     let selector = BackendSelector::new_native();
     let backend = selector.select(&archive_path).expect("Failed to select backend");
-    println!("Selected backend: {}", backend.name());
+    info!("Selected backend: {}", backend.name());
 
     // === PREPARE METADATA ===
     let metadata = GameMetadata {
@@ -277,31 +281,26 @@ fn test_integration_data_full_workflow() {
     // === AUTO-DETECT PASSWORD (like UI does at lines 512 of mod.rs) ===
     let archive_name = archive_path.file_name().and_then(|n| n.to_str());
     
-    println!("\n=== DEBUG: Password Auto-Detection ===");
-    println!("Archive filename: {:?}", archive_name);
-    println!("Trying to auto-detect password...");
+    info!("Attempting password auto-detection for archive: {:?}", archive_name);
     
     let password = config_store.auto_password_for(archive_name, &vec![]);
     
     if let Some(ref pwd) = password {
-        println!("✓ Auto-detected password: '{}' (length: {})", pwd, pwd.len());
+        info!("✓ Auto-detected password (length: {})", pwd.len());
+        debug!("Password: '{}'", pwd);
     } else {
-        println!("✗ No password auto-detected");
-        println!("\nDEBUG: Available rules in ConfigStore:");
+        warn!("✗ No password auto-detected");
+        debug!("Available rules in ConfigStore:");
         for (i, rule) in config_store.cfg.pass_rules.iter().enumerate() {
-            println!("  Rule {}: pattern='{}', password='{}', enabled={}",
-                i + 1, rule.pattern, rule.password, rule.enabled);
+            debug!("  Rule {}: pattern='{}', enabled={}", i + 1, rule.pattern, rule.enabled);
         }
     }
     
-    println!("===========================================\n");
-    
     // === CREATE ARCHIVE HANDLE WITH PASSWORD (dependency injection) ===
     let has_password = password.is_some();
-    println!("Creating Archive handle with password: {}", if has_password { "***" } else { "None" });
+    info!("Creating Archive handle with password: {}", if has_password { "provided" } else { "None" });
     
     let archive = if let Some(pwd) = password {
-        println!("Using password for organization...");
         Archive::with_password(backend, &archive_path, pwd)
     } else {
         Archive::new(backend, &archive_path)
@@ -313,10 +312,7 @@ fn test_integration_data_full_workflow() {
 
     // Handle encryption errors - the organize function should detect password need internally
     if let Err(e) = org_result {
-        // Print the full error with context chain
-        println!("\n=== ERROR DETAILS ===");
-        println!("Error: {:?}", e);
-        println!("=====================\n");
+        error!("Organization failed: {:?}", e);
         
         let err_msg = e.to_string();
         if err_msg.contains("encrypted")
@@ -327,17 +323,18 @@ fn test_integration_data_full_workflow() {
             || err_msg.contains("CRC failed")
             || err_msg.contains("bad CRC")
         {
-            println!("\n=== Test Skipped: Password Issue ===");
-            println!("Archive: {:?}", archive_path.file_name());
-            println!("Error: {}", e);
-            println!("\nPassword was {}", if has_password { "provided" } else { "not provided" });
-            println!("\nThe test is using password rules from your production secrets database.");
-            println!("If the password is still wrong, update the rules in the UI and run the test again.");
-            println!("=====================================\n");
+            warn!("Test Skipped: Password Issue");
+            warn!("Archive: {:?}", archive_path.file_name());
+            warn!("Error: {}", e);
+            warn!("Password was {}", if has_password { "provided" } else { "not provided" });
+            warn!("The test is using password rules from your production secrets database.");
+            warn!("If the password is still wrong, update the rules in the UI and run the test again.");
             return;
         }
         panic!("Failed to organize archive: {}", e);
     }
+    
+    info!("Organization completed successfully");
 
     // === VERIFY OUTPUT ===
     assert!(output_7z.exists(), "Output 7z archive should be created");
@@ -522,7 +519,11 @@ fn test_integration_data_full_workflow() {
 /// 6. Verifies the flattened structure (but does NOT compress to 7z)
 #[test]
 fn test_integration_data_decompress_and_flatten() {
+    let _ = init_test_logging("test_integration_data_decompress_and_flatten");
+    
     let temp = TempDir::new().expect("Failed to create temp dir");
+    
+    info!("=== Starting Decompress and Flatten Test ===");
     
     // Tests run from crates/core, so go up to workspace root
     let integration_src = Path::new("../../_real_data/integration_data");
@@ -861,7 +862,11 @@ fn test_integration_data_decompress_and_flatten() {
 /// Test multiple copies of expected_result to ensure parallelism safety
 #[test]
 fn test_multiple_expected_result_copies() {
+    let _ = init_test_logging("test_multiple_expected_result_copies");
+    
     let temp = TempDir::new().expect("Failed to create temp dir");
+    
+    info!("=== Starting Multiple Copies Test ===");
     
     // Tests run from crates/core, so go up to workspace root
     let expected_src = Path::new("../../_real_data/expected_result");

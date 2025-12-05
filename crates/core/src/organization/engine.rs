@@ -12,6 +12,7 @@ pub struct OrganizationPlan {
     pub moves: Vec<(String, String)>, // (source_path, dest_path)
     pub generated_files: Vec<(String, String)>, // (path, content)
     pub downloads: Vec<(String, String)>, // (url, relative_path)
+    pub use_standard_layout: bool,
 }
 
 pub struct RuleEngine;
@@ -146,36 +147,38 @@ impl RuleEngine {
         };
 
         // Process file moves
-        for entry in entries {
-            if entry.is_dir {
-                continue;
-            }
-
-            let mut target_dir = "game/".to_string(); // Default fallback
-
-            // Find matching move rule
-            for move_rule in &rule.actions.move_files {
-                if Self::matches_glob(&move_rule.pattern, &entry.path) {
-                    target_dir = move_rule.target.clone();
-                    break;
+        if !rule.actions.use_standard_layout {
+            for entry in entries {
+                if entry.is_dir {
+                    continue;
                 }
+
+                let mut target_dir = "game/".to_string(); // Default fallback
+
+                // Find matching move rule
+                for move_rule in &rule.actions.move_files {
+                    if Self::matches_glob(&move_rule.pattern, &entry.path) {
+                        target_dir = move_rule.target.clone();
+                        break;
+                    }
+                }
+
+                // Expand variables in target
+                target_dir = Self::expand_variables(&target_dir, &metadata);
+
+                // Construct new path
+                // e.g. root_folder/target_dir/filename
+                let filename = Path::new(&entry.path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+
+                let new_path = format!("{}/{}/{}", root_folder, target_dir, filename)
+                    .replace("//", "/")
+                    .replace("\\", "/");
+
+                moves.push((entry.path.clone(), new_path));
             }
-
-            // Expand variables in target
-            target_dir = Self::expand_variables(&target_dir, &metadata);
-
-            // Construct new path
-            // e.g. root_folder/target_dir/filename
-            let filename = Path::new(&entry.path)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
-
-            let new_path = format!("{}/{}/{}", root_folder, target_dir, filename)
-                .replace("//", "/")
-                .replace("\\", "/");
-
-            moves.push((entry.path.clone(), new_path));
         }
 
         // Generate metadata.json if metadata is available
@@ -199,7 +202,13 @@ impl RuleEngine {
                         .unwrap_or_else(|| "jpg".to_string());
 
                     let filename = format!("image_{:03}.{}", i + 1, ext);
-                    let target_path = format!("{}/Screenshots/{}", root_folder, filename);
+                    // Standard layout uses lowercase "screenshots"
+                    let screenshots_folder = if rule.actions.use_standard_layout {
+                        "screenshots"
+                    } else {
+                        "Screenshots"
+                    };
+                    let target_path = format!("{}/{}/{}", root_folder, screenshots_folder, filename);
                     downloads.push((url, target_path));
                 }
             }
@@ -211,6 +220,7 @@ impl RuleEngine {
             moves,
             generated_files,
             downloads,
+            use_standard_layout: rule.actions.use_standard_layout,
         })
     }
 

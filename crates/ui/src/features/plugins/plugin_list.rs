@@ -1,7 +1,7 @@
 //! Plugin list view component
 
 use super::types::{PluginInfo, PluginsListState};
-use crate::features::theme::AppTheme;
+use crate::shared::theme::AppTheme;
 use eframe::egui;
 
 /// Render the plugins list view

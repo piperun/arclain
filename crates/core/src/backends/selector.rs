@@ -1,8 +1,7 @@
 use crate::backends::fallback_backend::FallbackBackend;
 use crate::backends::libarchive_backend::LibarchiveBackend;
-use crate::backends::sevenz_backend::SevenZBackend;
-use crate::backends::unrar_backend::UnrarBackend;
 use crate::backends::sevenz_cli::SevenZipCli;
+use crate::backends::unrar_backend::UnrarBackend;
 use crate::ArchiveBackend;
 use anyhow::Result;
 use std::path::Path;
@@ -10,6 +9,7 @@ use std::sync::Arc;
 use tracing::info;
 
 /// Selects the appropriate backend for a given archive
+#[derive(Clone)]
 pub struct BackendSelector {
     backend_mode: String,
 }
@@ -68,14 +68,11 @@ impl BackendSelector {
                 backend
             }
             "7z" => {
-                // Try native 7z backend first, fallback to 7z.exe CLI
-                let primary = Arc::new(SevenZBackend::new());
-                let fallback = Arc::new(SevenZipCli::detect(None)?);
-                let backend = Arc::new(FallbackBackend::new(primary, fallback));
+                // Use 7z CLI directly for 7z files (faster than native sevenz-rust2)
+                let backend = Arc::new(SevenZipCli::detect(None)?);
                 info!(
-                    "Selected {} → {} fallback chain for {} (extension: .{})",
+                    "Selected {} backend for {} (extension: .{}) - using CLI for optimal performance",
                     backend.name(),
-                    "7z (CLI)",
                     archive.display(),
                     ext
                 );

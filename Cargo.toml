@@ -3,7 +3,8 @@ members = [
     "crates/core",
     "crates/ui",
     "crates/db",
-    "crates/plugins"
+    "crates/plugins",
+    "crates/checksum"
 ]
 exclude = [
     "plugins/dlsite-metadata",

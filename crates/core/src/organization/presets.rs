@@ -33,6 +33,7 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
                 rename_pattern: None,
                 organize_content: true,
                 delete_original: false,
+                use_standard_layout: false,
             },
         },
         // DLSite rule: Only applies when RJ/BJ code is found
@@ -53,35 +54,7 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
             },
             actions: RuleActions {
                 root_folder: Some("[$code][$circle] $title".to_string()),
-                move_files: vec![
-                    // Move executables and game data to Game/
-                    MoveFileRule {
-                        pattern: "*.exe".to_string(),
-                        target: "Game".to_string(),
-                    },
-                    MoveFileRule {
-                        pattern: "*.dll".to_string(),
-                        target: "Game".to_string(),
-                    },
-                    MoveFileRule {
-                        pattern: "*_Data".to_string(), // Unity data folders
-                        target: "Game".to_string(),
-                    },
-                    // Move images to Images/
-                    MoveFileRule {
-                        pattern: "*.jpg".to_string(),
-                        target: "Images".to_string(),
-                    },
-                    MoveFileRule {
-                        pattern: "*.png".to_string(),
-                        target: "Images".to_string(),
-                    },
-                    // Catch-all: everything else to Game/
-                    MoveFileRule {
-                        pattern: "**".to_string(),
-                        target: "Game".to_string(),
-                    },
-                ],
+                move_files: vec![], // Handled by standard layout
                 move_to: Some(MoveRule {
                     target_dir: "DLSite".to_string(),
                     use_date: false,
@@ -90,6 +63,7 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
                 rename_pattern: None,
                 organize_content: true,
                 delete_original: false,
+                use_standard_layout: true,
             },
         },
     ]

@@ -1,0 +1,30 @@
+[package]
+name = "arclain_checksum"
+version = "0.1.0"
+edition = "2021"
+description = "File integrity verification with Merkle trees and parallel hashing"
+
+[dependencies]
+# Hashing algorithms
+crc32fast = "1.4"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+sha2 = "0.10"
+
+# Parallelism
+rayon = "1.10"
+
+# Memory-mapped I/O for large files
+memmap2 = "0.9"
+
+# Directory walking
+walkdir = "2.5"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "2.0"
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.14"

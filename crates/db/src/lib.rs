@@ -16,7 +16,11 @@ mod redb_wrapper;
 pub use redb_wrapper::ReDb;
 
 mod config_db;
-pub use config_db::ConfigDb;
+pub use config_db::{
+    delete_title_replacement, get_title_filter_settings, list_title_replacements,
+    save_title_filter_settings, save_title_replacement, ConfigDb, DbTitleFilterSettings,
+    DbTitleReplacement,
+};
 
 mod cache_db;
 pub use cache_db::CacheDb;
@@ -29,6 +33,14 @@ pub use metadata_cache::{CachedMetadata, MetadataCache};
 
 mod organization;
 pub use organization::{delete_rule, get_rule, list_rules, save_rule, DbOrganizationRule};
+
+mod checksum_db;
+pub use checksum_db::{
+    begin_checksum_operation, delete_checksum_operation, get_checksum_algorithm, get_checksum_mode,
+    get_file_checksum, get_merkle_root, get_pending_checksum_operations, set_checksum_algorithm,
+    set_checksum_mode, store_file_checksum, store_merkle_root, update_checksum_operation,
+    ChecksumDb, DbFileChecksum, DbOperation, OpId, OpState, OpType, VerifyMode,
+};
 
 /// Re-export Connection so dependents don't need rusqlite directly.
 pub use rusqlite::Connection as DbConnection;
