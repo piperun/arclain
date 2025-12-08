@@ -18,7 +18,7 @@ tracing-appender = "0.2"
 chrono = "0.4"
 fs_extra = "1"
 crc32fast = "1"
-toml = "0.9.8"
+
 zeroize = "1.8.1"
 base64 = "0.22"
 sha2 = "0.10"

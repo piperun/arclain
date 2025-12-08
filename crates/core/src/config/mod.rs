@@ -8,6 +8,7 @@
 //! - Database configuration
 
 pub mod database;
+pub mod defaults;
 pub mod settings;
 pub mod sync;
 

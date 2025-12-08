@@ -18,7 +18,7 @@ pub enum PreviewFilter {
 }
 
 /// A node in the preview tree
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
 pub struct PreviewTreeNode {
     pub name: String,
@@ -174,6 +174,54 @@ pub fn build_tree_from_paths(paths: &[(String, bool, bool)]) -> Vec<PreviewTreeN
         .collect();
 
     sort_tree(&mut result);
+    result
+}
+
+/// Create a new filtered tree based on the provided filter
+#[allow(dead_code)]
+pub fn filter_tree(nodes: &[PreviewTreeNode], filter: PreviewFilter) -> Vec<PreviewTreeNode> {
+    let mut result = Vec::new();
+
+    for node in nodes {
+        let should_include_node = match filter {
+            PreviewFilter::All => true,
+            PreviewFilter::FoldersOnly => node.is_dir,
+            PreviewFilter::FilesOnly => !node.is_dir,
+            PreviewFilter::GeneratedOnly => node.is_generated || node.is_download,
+        };
+
+        // If it's a folder, we might need to include it if it has matching children, even if the filter says folders only?
+        // Logic: Recursively filter children.
+        // If folders only: include folders. Files inside? No.
+        // If files only: include files. Folders are needed to show structure? User said "folder only", "files + folders".
+        // Usually "Files Only" means flat list or still structured? "Folders Only" definitely means structure.
+        // Let's stick to the simple logic used in render:
+
+        let mut new_node = node.clone();
+        new_node.children = filter_tree(&node.children, filter);
+
+        if should_include_node {
+            result.push(new_node);
+        } else if node.is_dir && !new_node.children.is_empty() {
+            // Keep directory if it has matching children (e.g. for FilesOnly view, we need path?)
+            // Actually, render_node logic hides the node if !should_show.
+            // But if it's a directory with children that ARE shown, does render_node show it?
+            // render_node: if !should_show && !node.is_dir { return; }
+            // This implies if it IS a dir, it's shown unless explicitly excluded elsewhere?
+            // Actually "FoldersOnly" -> node.is_dir is true.
+            // "FilesOnly" -> node.is_dir is false.
+            // If Filter is FilesOnly, render_node hits !should_show (false) && !node.is_dir (false) => passes through for dirs?
+            // Let's match render_node:
+
+            // If node is a directory, we keep it if it has children after filtering, OR if the filter specifically includes directories?
+            // Render logic says: if !should_show && !node.is_dir { return } -> Files are hidden if filter doesn't match. Directories are effectively "always shown" to traverse?
+            // But wait, allow filtering for export to be simpler:
+
+            if !new_node.children.is_empty() {
+                result.push(new_node);
+            }
+        }
+    }
     result
 }
 

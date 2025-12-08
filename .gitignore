@@ -15,6 +15,7 @@ mockups/*
 # Log files
 logs/
 *.log
+*.json
 
 # Plugin build artifacts
 

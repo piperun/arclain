@@ -1,4 +1,4 @@
-use arclain_db::{ConfigDb, DbTitleFilterSettings};
+use arclain_db::ConfigDb;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -83,9 +83,6 @@ static FILTER_CACHE: Lazy<Arc<RwLock<TitleFilterConfig>>> = Lazy::new(|| {
 /// Initialize the title filter service
 /// This should be called at application startup
 pub fn init(db: &ConfigDb) -> anyhow::Result<()> {
-    // 1. Seed from TOML if present (Migration)
-    seed_from_toml(db)?;
-
     // 2. Seed system replacements if missing
     seed_system_replacements(db)?;
 
@@ -140,46 +137,6 @@ pub fn refresh_cache(db: &ConfigDb) -> anyhow::Result<()> {
         tracing::info!("Title filter cache refreshed");
         Ok(())
     })
-}
-
-/// Seed database from legacy TOML file if it exists
-fn seed_from_toml(db: &ConfigDb) -> anyhow::Result<()> {
-    let toml_path = std::path::PathBuf::from("assets/title_filters.toml");
-    if !toml_path.exists() {
-        return Ok(());
-    }
-
-    tracing::info!("Found legacy title_filters.toml, migrating to database...");
-
-    let content = std::fs::read_to_string(&toml_path)?;
-    let config: TitleFilterConfig = toml::from_str(&content)?;
-
-    db.with_conn(|conn| {
-        // Save scalar settings
-        let db_settings = DbTitleFilterSettings {
-            invalid_chars: Some(config.filters.invalid_chars),
-            replacement: Some(config.filters.replacement),
-            max_length: Some(config.filters.max_length),
-            trim_whitespace: Some(config.filters.trim_whitespace),
-        };
-        arclain_db::save_title_filter_settings(conn, &db_settings)?;
-
-        // Save replacements
-        // Note: TOML replacements are considered user-defined (is_system = false)
-        // unless they match system defaults, but for simplicity we mark them as user
-        // so they can be edited/deleted.
-        for (original, replacement) in config.replacements {
-            arclain_db::save_title_replacement(conn, &original, &replacement, false)?;
-        }
-        Ok(())
-    })?;
-
-    // Rename TOML file to prevent re-import
-    let backup_path = toml_path.with_extension("toml.bak");
-    std::fs::rename(&toml_path, &backup_path)?;
-    tracing::info!("Migration complete. Renamed to {:?}", backup_path);
-
-    Ok(())
 }
 
 /// Ensure system replacements exist in the DB
