@@ -3,7 +3,7 @@ use crate::ArchiveEntry;
 use anyhow::Result;
 use regex::Regex;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A pending download with cache information
 #[derive(Debug, Clone)]
@@ -159,6 +159,30 @@ impl RuleEngine {
 
         // Process file moves
         if !rule.actions.use_standard_layout {
+            // 1. Find common root directory to handle nested archives properly
+            // e.g. if everything is in "GameName/...", we want to strip "GameName/"
+            let paths: Vec<&Path> = entries.iter().map(|e| Path::new(&e.path)).collect();
+            let common_root = if paths.is_empty() {
+                PathBuf::new()
+            } else {
+                let mut iter = paths.iter();
+                let mut root = iter
+                    .next()
+                    .unwrap()
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .to_path_buf();
+
+                for path in iter {
+                    while !path.starts_with(&root) {
+                        if !root.pop() {
+                            break;
+                        }
+                    }
+                }
+                root
+            };
+
             for entry in entries {
                 if entry.is_dir {
                     continue;
@@ -177,16 +201,27 @@ impl RuleEngine {
                 // Expand variables in target
                 target_dir = Self::expand_variables(&target_dir, &metadata);
 
-                // Construct new path
-                // e.g. root_folder/target_dir/filename
-                let filename = Path::new(&entry.path)
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy();
+                // Construct new path: root_folder / target_dir / relative_path
+                // Instead of taking just filename, we take path relative to common_root
+                let relative_path = Path::new(&entry.path)
+                    .strip_prefix(&common_root)
+                    .unwrap_or(Path::new(&entry.path));
 
-                let new_path = format!("{}/{}/{}", root_folder, target_dir, filename)
-                    .replace("//", "/")
-                    .replace("\\", "/");
+                // If the relative path is empty (shouldn't happen for files) or just filename, it works.
+                // If it has subdirs, they are preserved.
+
+                let dest_path = if target_dir.is_empty() || target_dir == "." {
+                    format!("{}/{}", root_folder, relative_path.to_string_lossy())
+                } else {
+                    format!(
+                        "{}/{}/{}",
+                        root_folder,
+                        target_dir,
+                        relative_path.to_string_lossy()
+                    )
+                };
+
+                let new_path = dest_path.replace("//", "/").replace("\\", "/");
 
                 moves.push((entry.path.clone(), new_path));
             }
