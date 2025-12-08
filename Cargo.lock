@@ -304,7 +304,6 @@ dependencies = [
  "ssri",
  "tempfile",
  "thiserror 2.0.17",
- "toml 0.9.8",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

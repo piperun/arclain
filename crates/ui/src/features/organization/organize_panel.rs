@@ -325,6 +325,17 @@ impl OrganizePanel {
             ui.separator();
 
             // ════════════════════════════════════════════════════════════════
+            // VALIDATION: Check for DLsite rule without metadata
+            // ════════════════════════════════════════════════════════════════
+            let is_dlsite_rule = self
+                .rules
+                .get(self.selected_rule_index)
+                .map(|r| r.category.eq_ignore_ascii_case("dlsite"))
+                .unwrap_or(false);
+
+            let missing_metadata = is_dlsite_rule && self.metadata.is_none();
+
+            // ════════════════════════════════════════════════════════════════
             // TABS: Preview | Network Activity
             // ════════════════════════════════════════════════════════════════
             ui.horizontal(|ui| {
@@ -369,15 +380,67 @@ impl OrganizePanel {
             // TAB CONTENT
             // ════════════════════════════════════════════════════════════════
             match self.active_tab {
-                OrganizeTab::Preview => self.render_preview_tab(ui, &mut action),
+                OrganizeTab::Preview => self.render_preview_tab(ui, &mut action, missing_metadata),
                 OrganizeTab::NetworkActivity => self.render_network_tab(ui),
             }
         });
 
+        // Disable Apply if metadata missing
+        if let Some(OrganizePanelAction::Apply) = action {
+            let is_dlsite_rule = self
+                .rules
+                .get(self.selected_rule_index)
+                .map(|r| r.category.eq_ignore_ascii_case("dlsite"))
+                .unwrap_or(false);
+            if is_dlsite_rule && self.metadata.is_none() {
+                action = None; // Cancel action
+            }
+        }
+
         action
     }
 
-    fn render_preview_tab(&mut self, ui: &mut egui::Ui, action: &mut Option<OrganizePanelAction>) {
+    fn render_preview_tab(
+        &mut self,
+        ui: &mut egui::Ui,
+        action: &mut Option<OrganizePanelAction>,
+        missing_metadata: bool,
+    ) {
+        if missing_metadata {
+            ui.vertical_centered(|ui| {
+                ui.add_space(40.0);
+                ui.label(
+                    egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE)
+                        .size(64.0)
+                        .color(egui::Color32::from_rgb(239, 68, 68)), // Red-500
+                );
+                ui.add_space(16.0);
+                ui.label(
+                    egui::RichText::new("No Metadata Available")
+                        .size(20.0)
+                        .strong()
+                        .color(egui::Color32::from_rgb(229, 231, 235)),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new(
+                        "This rule requires game metadata (e.g., RJ/BJ code) to function.",
+                    )
+                    .size(14.0)
+                    .color(egui::Color32::from_rgb(156, 163, 175)),
+                );
+                ui.label(
+                    egui::RichText::new(
+                        "Please fetch metadata for this archive before organizing.",
+                    )
+                    .size(14.0)
+                    .color(egui::Color32::from_rgb(156, 163, 175)),
+                );
+                ui.add_space(40.0);
+            });
+            return;
+        }
+
         if let Some(plan) = &self.preview_plan.clone() {
             // ════════════════════════════════════════════════════════════════
             // HEADER: Output folder with copy button
@@ -400,6 +463,7 @@ impl OrganizePanel {
                         );
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Copy button
                             if ui
                                 .button(RichText::new(format!(
                                     "{} Copy",
@@ -410,9 +474,49 @@ impl OrganizePanel {
                             {
                                 ui.ctx().copy_text(plan.root_folder.clone());
                             }
+
+                            ui.add_space(8.0);
+
+                            // Export Tree Button
+                            if ui
+                                .button(RichText::new(format!(
+                                    "{} Export Tree",
+                                    egui_phosphor::regular::EXPORT
+                                )))
+                                .clicked()
+                            {
+                                // Export logic
+                                let filtered_tree =
+                                    crate::shared::components::preview_tree::filter_tree(
+                                        &self.organized_tree,
+                                        self.preview_filter,
+                                    );
+                                if let Ok(json) = serde_json::to_string_pretty(&filtered_tree) {
+                                    // Save to file dialog? Or just dump to clipboard/file?
+                                    // Implementation: Write to "tree_export.json" in temp or current dir for now?
+                                    // Or use rfd? UI crate might probably not have filtering dialog.
+                                    // Let's write to "preview_export.json" in current dir and notify.
+                                    if let Err(e) = std::fs::write("preview_export.json", json) {
+                                        tracing::error!("Failed to export tree: {}", e);
+                                    } else {
+                                        tracing::info!("Exported tree to preview_export.json");
+                                    }
+                                }
+                            }
                         });
                     });
                 });
+
+            if missing_metadata {
+                ui.add_enabled_ui(false, |ui| {
+                    ui.add_space(4.0);
+                    // ... Proceed to render tree but disabled ...
+                });
+                // Actually, we just want to disable the Apply button, specifically.
+                // The user said "show... before you can organize, you can interact with organizer".
+                // Interaction with organizer likely refers to tree view toggle etc?
+                // Let's stick to warning + apply disabled.
+            }
 
             ui.add_space(4.0);
 

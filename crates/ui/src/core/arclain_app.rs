@@ -305,14 +305,29 @@ impl eframe::App for ArclainApp {
                             let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
                             drop(state);
                             
-                            // Load rules directly from DB
+                            // Load rules directly from DB and filter by enabled plugins
                             let mut rules = Vec::new(); // Default empty
                             {
                                 let state = self.state.lock();
+                                
+                                // Check enabled plugins (specifically DLsite)
+                                let dlsite_enabled = if let Some(manager) = &state.plugin_manager {
+                                    let mgr = manager.lock();
+                                    mgr.list_plugins().iter().any(|p| p.id.eq_ignore_ascii_case("dlsite") && p.enabled)
+                                } else {
+                                    false
+                                };
+
                                 if let Some(dbs) = &state.dbs {
                                    let db = &dbs.config;
                                    if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
-                                       rules = loaded;
+                                       rules = loaded.into_iter().filter(|r| {
+                                            if r.category.eq_ignore_ascii_case("dlsite") {
+                                                dlsite_enabled
+                                            } else {
+                                                true
+                                            }
+                                       }).collect();
                                    }
                                 }
                             }
@@ -542,14 +557,29 @@ impl eframe::App for ArclainApp {
                                 let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
                                 drop(state);
                                 
-                                // Load rules directly from DB
+                                // Load rules directly from DB and filter by enabled plugins
                                 let mut rules = Vec::new(); // Default empty
                                 {
                                     let state = self.state.lock();
+                                    
+                                    // Check enabled plugins (specifically DLsite)
+                                    let dlsite_enabled = if let Some(manager) = &state.plugin_manager {
+                                        let mgr = manager.lock();
+                                        mgr.list_plugins().iter().any(|p| p.id.eq_ignore_ascii_case("dlsite") && p.enabled)
+                                    } else {
+                                        false
+                                    };
+
                                     if let Some(dbs) = &state.dbs {
                                        let db = &dbs.config;
                                        if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
-                                           rules = loaded;
+                                           rules = loaded.into_iter().filter(|r| {
+                                                if r.category.eq_ignore_ascii_case("dlsite") {
+                                                    dlsite_enabled
+                                                } else {
+                                                    true
+                                                }
+                                           }).collect();
                                        }
                                     }
                                 }
