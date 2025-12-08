@@ -24,6 +24,8 @@ open = "5"
 crc32fast = "1"
 chrono = "0.4"
 egui-phosphor = "0.11.0"
+arclain_db = { path = "../db" }
+reqwest = { version = "0.12.24", features = ["blocking", "json"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55.0"

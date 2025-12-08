@@ -305,14 +305,21 @@ impl eframe::App for ArclainApp {
                             let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
                             drop(state);
                             
-                            // Ensure rules are loaded before navigating
-                            self.organization_feature.ensure_rules_loaded(&self.state);
+                            // Load rules directly from DB
+                            let mut rules = Vec::new(); // Default empty
+                            {
+                                let state = self.state.lock();
+                                if let Some(dbs) = &state.dbs {
+                                   let db = &dbs.config;
+                                   if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
+                                       rules = loaded;
+                                   }
+                                }
+                            }
                             
-                            // Initialize panel if needed (or just let the page render handle it?)
-                            // Actually, we should initialize it here so we have the data ready
+                            // Initialize panel
                             let state = self.state.lock();
                             let entries = state.all_entries.clone();
-                            let rules = self.organization_feature.rules_state.rules.clone();
                             let metadata = state.current_game_metadata.clone();
                             drop(state);
 
@@ -535,11 +542,20 @@ impl eframe::App for ArclainApp {
                                 let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
                                 drop(state);
                                 
-                                self.organization_feature.ensure_rules_loaded(&self.state);
+                                // Load rules directly from DB
+                                let mut rules = Vec::new(); // Default empty
+                                {
+                                    let state = self.state.lock();
+                                    if let Some(dbs) = &state.dbs {
+                                       let db = &dbs.config;
+                                       if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
+                                           rules = loaded;
+                                       }
+                                    }
+                                }
                                 
                                 let state = self.state.lock();
                                 let entries = state.all_entries.clone();
-                                let rules = self.organization_feature.rules_state.rules.clone();
                                 let metadata = state.current_game_metadata.clone();
                                 drop(state);
                                 
@@ -570,6 +586,7 @@ impl eframe::App for ArclainApp {
                         page,
                         &mut on_back,
                         breadcrumb,
+                        Some(&mut self.organization_feature.rules_page),
                     );
 
                     if on_back {
@@ -586,22 +603,94 @@ impl eframe::App for ArclainApp {
                     );
                 }
                 AppPage::Organize => {
-                    organization::rules_page::render(
-                        ctx,
-                        &self.theme,
-                        &mut self.organization_feature.rules_state,
-                        &self.state,
-                    );
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                         // Extract DB (generic way, minimal lock)
+                         let db_opt = {
+                             let state = self.state.lock();
+                             if let Some(dbs) = &state.dbs {
+                                 Some(dbs.config.clone()) // Clone ConfigDb (cheap Arc)
+                             } else {
+                                 None
+                             }
+                         };
+
+                         if let Some(cfg_db) = db_opt {
+                             self.organization_feature.rules_page.render(ui, &cfg_db);
+                         } else {
+                             ui.label("Database not available.");
+                         }
+                    });
                 }
                 AppPage::OrganizeArchive(_name) => {
                     let mut action = crate::features::organization::OrganizationAction::None;
                     
                     if let Some(panel) = &mut self.organization_feature.organize_panel {
                         if let Some(result) = panel.render(ctx) {
-                            if result {
-                                action = crate::features::organization::OrganizationAction::Apply;
-                            } else {
-                                action = crate::features::organization::OrganizationAction::Cancel;
+                            match result {
+                                crate::features::organization::OrganizePanelAction::Apply => {
+                                    action = crate::features::organization::OrganizationAction::Apply;
+                                }
+                                crate::features::organization::OrganizePanelAction::Cancel => {
+                                    action = crate::features::organization::OrganizationAction::Cancel;
+                                }
+                                crate::features::organization::OrganizePanelAction::LoadScreenshots => {
+                                    if let Some(tx) = panel.screenshot_tx.clone() {
+                                        // Clone downloads to move to thread
+                                        let downloads = if let Some(plan) = &panel.preview_plan {
+                                            plan.downloads.clone()
+                                        } else {
+                                            Vec::new()
+                                        };
+
+                                        // Extract needed data from state BEFORE spawning
+                                        let (cache_db_path, cache_dir) = {
+                                            let state = self.state.lock();
+                                            if let Some(paths) = &state.db_paths {
+                                                 let dir = paths.cache_db.parent().unwrap_or(std::path::Path::new(".")).join("content");
+                                                 (Some(paths.cache_db.clone()), Some(dir))
+                                            } else {
+                                                (None, None)
+                                            }
+                                        };
+
+                                        std::thread::spawn(move || {
+                                            if let (Some(db_path), Some(dir)) = (cache_db_path, cache_dir) {
+                                                // Create ContentCache
+                                                if let Ok(db) = arclain_db::SqliteDb::open(&db_path) {
+                                                    if let Ok(cache) = arclain_core::utilities::ContentCache::new(dir, db) {
+                                                        let client = reqwest::blocking::Client::new();
+                                                        for download in downloads {
+                                                            if download.cached { continue; }
+                                                            
+                                                            // Check if already in cache
+                                                            if let Ok(true) = cache.has(&download.cache_key) {
+                                                                let _ = tx.send((download.dest_path.clone(), true));
+                                                                continue;
+                                                            }
+
+                                                            // Download
+                                                            if let Ok(resp) = client.get(&download.url).send() {
+                                                                if let Ok(bytes) = resp.bytes() {
+                                                                    let _ = cache.put(
+                                                                        &download.cache_key,
+                                                                        bytes.as_ref(),
+                                                                        arclain_db::CacheType::Screenshot,
+                                                                        download.product_id.as_deref(),
+                                                                        Some(&download.url)
+                                                                    );
+                                                                    let _ = tx.send((download.dest_path.clone(), true));
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                crate::features::organization::OrganizePanelAction::ManageRules => {
+                                    self.page_navigator.navigate_to(crate::core::AppPage::Settings(crate::core::SettingsPage::OrganizationRules));
+                                }
                             }
                         }
                     } else {

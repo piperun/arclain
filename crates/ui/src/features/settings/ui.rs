@@ -33,6 +33,7 @@ impl SettingsFeature {
         page: &mut SettingsPage,
         on_back: &mut bool,
         breadcrumb: Vec<(String, crate::core::AppPage)>,
+        rules_page: Option<&mut crate::features::organization::rules_page::RulesPage>,
     ) {
         let mut action = None;
 
@@ -74,6 +75,8 @@ impl SettingsFeature {
                     &mut self.password_rules_dialog,
                     None, // Plugin manager not available in shared state yet?
                     &mut self.plugins_state,
+                    rules_page,
+                    &shared.app_state, // Need app state for DB check in rules page
                 );
             }
         });
@@ -157,6 +160,46 @@ impl SettingsFeature {
                         }
                     }
                 }
+            }
+            SettingsAction::ClearCacheIndex => {
+                let mut state = shared.app_state.lock();
+                if let Some(dbs) = &mut state.dbs {
+                    // cache_index table is in metadata db (MetadataCacheDb)
+                    if let Err(e) = dbs.metadata.clear_cache_index() {
+                        self.archives_state.checksum_enabled = false; // Just to trigger a repaint/usage
+                        tracing::error!("Failed to clear cache index: {}", e);
+                    } else {
+                        tracing::info!("Cache index cleared successfully");
+                    }
+                }
+            }
+            SettingsAction::ClearCacheContent => {
+                let state = shared.app_state.lock();
+                let cache_dir = if let Some(paths) = &state.db_paths {
+                    paths
+                        .cache_db
+                        .parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("content")
+                } else {
+                    // Fallback if DB not loaded (unlikely in settings)
+                    std::path::PathBuf::from("data/content")
+                };
+                drop(state);
+
+                // Perform in background
+                std::thread::spawn(move || {
+                    tracing::info!("Clearing cache content at {:?}", cache_dir);
+                    if cache_dir.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
+                            tracing::error!("Failed to remove cache dir: {}", e);
+                        }
+                        // Recreate
+                        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                            tracing::error!("Failed to recreate cache dir: {}", e);
+                        }
+                    }
+                });
             }
         }
     }

@@ -58,6 +58,10 @@ pub enum SettingsAction {
     SaveArchives { temp_dir: Option<String> },
     /// Install a plugin from a .wasm file
     InstallPlugin { wasm_path: String },
+    /// Clear the cache index (database entries)
+    ClearCacheIndex,
+    /// Clear the cache content (files on disk)
+    ClearCacheContent,
 }
 
 /// State for the security settings page
@@ -315,6 +319,34 @@ pub fn render_archives_settings(
                         temp_dir: temp_dir_opt,
                     });
                 }
+            });
+
+            ui.add_space(8.0);
+            
+            // Section: Cache Management
+            render_settings_section(ui, theme, "Cache Management", |ui| {
+                ui.label(
+                    egui::RichText::new("Manage the application cache (thumbnails, metadata, etc.)")
+                        .size(12.0)
+                        .color(theme.colors.text_secondary),
+                );
+                ui.add_space(8.0);
+                
+                ui.horizontal(|ui| {
+                     if ui.button("Clear Cache Index").clicked() {
+                         action = Some(SettingsAction::ClearCacheIndex);
+                     }
+                     
+                     if ui.button("Clear Cache Content").clicked() {
+                         action = Some(SettingsAction::ClearCacheContent);
+                     }
+                });
+                ui.label(
+                    egui::RichText::new("Clearing index removes database entries. Clearing content removes files from disk.")
+                        .size(10.0)
+                        .italics()
+                        .color(theme.colors.text_secondary),
+                );
             });
         });
 
@@ -607,6 +639,8 @@ pub fn render_settings_content(
     password_rules_dialog: &mut PasswordRulesDialog,
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
+    rules_page: Option<&mut crate::features::organization::rules_page::RulesPage>,
+    app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
 ) -> Option<SettingsAction> {
     match page {
         SettingsPage::Overview => {
@@ -622,7 +656,31 @@ pub fn render_settings_content(
         SettingsPage::PasswordRules => {
             render_password_rules_settings(ui, theme, password_rules_dialog)
         }
-        SettingsPage::OrganizationRules => render_organization_rules_settings(ui, theme),
+        SettingsPage::OrganizationRules => {
+            if let Some(rp) = rules_page {
+                let db_opt = {
+                    let state = app_state.lock();
+                    if let Some(dbs) = &state.dbs {
+                        Some(dbs.config.clone())
+                    } else {
+                        None
+                    }
+                };
+
+                if let Some(db) = db_opt {
+                    // Generic way: db is ConfigDb which (since it wraps SqliteDb or is SqliteDb?)
+                    // Wait, db.config IS SqliteDb according to previous error.
+                    // But here I cloned it.
+                    // So db is SqliteDb.
+                    rp.render(ui, &db);
+                } else {
+                    ui.label("Database not available (encrypted?)");
+                }
+            } else {
+                ui.label("Rules page not available.");
+            }
+            None
+        }
         SettingsPage::Plugins => render_plugins_settings(ui, theme, plugin_manager, plugins_state),
     }
 }

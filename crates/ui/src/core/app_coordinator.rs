@@ -78,11 +78,8 @@ impl eframe::App for AppCoordinator {
         self.shared.theme.apply_to_context(ctx);
 
         // Handle password dialogs (shown on all pages)
-        let pw_action = password_management::handle_password_dialogs(
-            &mut self.passwords,
-            ctx,
-            &self.shared,
-        );
+        let pw_action =
+            password_management::handle_password_dialogs(&mut self.passwords, ctx, &self.shared);
         if let password_management::PasswordFeatureAction::PasswordUnlocked { .. } = pw_action {
             // Handle password unlock success
             // This would trigger archive reload or file operation retry
@@ -119,7 +116,14 @@ impl eframe::App for AppCoordinator {
                 let mut on_back = false;
                 // TODO: Implement breadcrumb for AppCoordinator
                 let breadcrumb = vec![];
-                self.settings.render(ctx, &self.shared, settings_page, &mut on_back, breadcrumb);
+                self.settings.render(
+                    ctx,
+                    &self.shared,
+                    settings_page,
+                    &mut on_back,
+                    breadcrumb,
+                    Some(&mut self.organization.rules_page),
+                );
                 if on_back {
                     self.navigate_back();
                 }

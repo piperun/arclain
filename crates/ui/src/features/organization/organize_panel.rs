@@ -1,13 +1,26 @@
 use crate::shared::components::network_log::NetworkLog;
+use crate::shared::components::preview_tree::{
+    self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
+};
 use arclain_core::organization::{engine::RuleEngine, OrganizationRule};
 use arclain_core::ArchiveEntry;
-use eframe::egui;
+use eframe::egui::{self, RichText};
+use egui_extras::{Size, StripBuilder};
+use std::sync::mpsc::{channel, Receiver, Sender};
 
 #[derive(Default, PartialEq, Clone, Copy)]
 pub enum OrganizeTab {
     #[default]
     Preview,
     NetworkActivity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum OrganizePanelAction {
+    Apply,
+    Cancel,
+    LoadScreenshots,
+    ManageRules,
 }
 
 pub struct OrganizePanel {
@@ -19,6 +32,18 @@ pub struct OrganizePanel {
     pub metadata: Option<arclain_core::organization::GameMetadata>,
     pub network_log: Vec<(std::time::SystemTime, String)>,
     pub active_tab: OrganizeTab,
+    pub screenshot_rx: Option<Receiver<(String, bool)>>,
+    pub screenshot_tx: Option<Sender<(String, bool)>>,
+    pub is_loading_screenshots: bool,
+    // Tree view state
+    // Tree view state
+    pub preview_filter: PreviewFilter,
+    pub original_tree_state: PreviewTreeState,
+    pub organized_tree_state: PreviewTreeState,
+    pub original_tree: Vec<preview_tree::PreviewTreeNode>,
+    pub organized_tree: Vec<preview_tree::PreviewTreeNode>,
+    pub show_variables_legend: bool,
+    pub depth_limit: Option<usize>,
 }
 
 impl OrganizePanel {
@@ -31,14 +56,43 @@ impl OrganizePanel {
         let mut panel = Self {
             archive_name: archive_name.clone(),
             entries: entries.clone(),
-            rules,
+            rules: rules.clone(),
             selected_rule_index: 0,
             preview_plan: None,
             metadata,
             network_log: Vec::new(),
             active_tab: OrganizeTab::Preview,
+            screenshot_rx: None,
+            screenshot_tx: None,
+            is_loading_screenshots: false,
+            preview_filter: PreviewFilter::All,
+            original_tree_state: PreviewTreeState::default(),
+            organized_tree_state: PreviewTreeState::default(),
+            original_tree: Vec::new(),
+            organized_tree: Vec::new(),
+            show_variables_legend: true,
+            depth_limit: None,
         };
+
+        // Auto-select rule
+        if let Some(meta) = &panel.metadata {
+            if let Some(idx) = panel
+                .rules
+                .iter()
+                .position(|r| r.is_enabled && r.category.eq_ignore_ascii_case(&meta.source))
+            {
+                panel.selected_rule_index = idx;
+            } else if let Some(idx) = panel.rules.iter().position(|r| r.is_enabled) {
+                panel.selected_rule_index = idx;
+            }
+        } else if let Some(idx) = panel.rules.iter().position(|r| r.is_enabled) {
+            panel.selected_rule_index = idx;
+        }
+
         panel.update_preview();
+        let (tx, rx) = channel();
+        panel.screenshot_tx = Some(tx);
+        panel.screenshot_rx = Some(rx);
         panel
     }
 
@@ -54,7 +108,26 @@ impl OrganizePanel {
                 &self.entries,
                 self.metadata.as_ref(),
             ) {
-                self.preview_plan = Some(plan);
+                self.preview_plan = Some(plan.clone());
+
+                // Build and cache trees
+                let original_paths: Vec<String> =
+                    plan.moves.iter().map(|(src, _)| src.clone()).collect();
+                self.original_tree = build_original_tree(&original_paths);
+
+                println!("DEBUG: Plan moves count: {}", plan.moves.len());
+                if let Some(first) = plan.moves.first() {
+                    println!("DEBUG: First move: src='{}', dst='{}'", first.0, first.1);
+                }
+
+                self.organized_tree = build_organized_tree(
+                    &plan.moves,
+                    &plan.generated_files,
+                    &plan.downloads,
+                    &plan.resolved_variables,
+                );
+                println!("DEBUG: Organized tree nodes: {}", self.organized_tree.len());
+
                 if self.metadata.is_some() {
                     self.update_network_log(vec![(
                         std::time::SystemTime::now(),
@@ -80,10 +153,12 @@ impl OrganizePanel {
         }
     }
 
+    #[allow(dead_code)]
     fn filename(path: &str) -> &str {
         path.rsplit('/').next().unwrap_or(path)
     }
 
+    #[allow(dead_code)]
     fn directory(path: &str) -> &str {
         match path.rsplit_once('/') {
             Some((dir, _)) => dir,
@@ -91,7 +166,24 @@ impl OrganizePanel {
         }
     }
 
-    pub fn render(&mut self, ctx: &egui::Context) -> Option<bool> {
+    pub fn render(&mut self, ctx: &egui::Context) -> Option<OrganizePanelAction> {
+        // Check for screenshot updates
+        if let Some(rx) = &self.screenshot_rx {
+            while let Ok((path, success)) = rx.try_recv() {
+                if let Some(plan) = &mut self.preview_plan {
+                    for download in &mut plan.downloads {
+                        if download.dest_path == path {
+                            download.cached = success;
+                        }
+                    }
+                }
+                // If all done, we could set is_loading_screenshots = false,
+                // but we don't know total count easily here without tracking.
+                // For now, let it stay true or rely on something else.
+                // Actually, if we just update model, UI reflects it.
+            }
+        }
+
         let mut action = None;
 
         // Bottom action bar
@@ -107,7 +199,7 @@ impl OrganizePanel {
                         .button(format!("{}  Cancel", egui_phosphor::regular::X))
                         .clicked()
                     {
-                        action = Some(false);
+                        action = Some(OrganizePanelAction::Cancel);
                     }
                     ui.add_space(12.0);
                     let apply_btn = egui::Button::new(
@@ -119,7 +211,7 @@ impl OrganizePanel {
                     )
                     .fill(egui::Color32::from_rgb(34, 139, 34));
                     if ui.add(apply_btn).clicked() {
-                        action = Some(true);
+                        action = Some(OrganizePanelAction::Apply);
                     }
                 });
             });
@@ -185,13 +277,27 @@ impl OrganizePanel {
                     .map(|r| r.name.clone())
                     .unwrap_or_else(|| "None".to_string());
 
+                // Check if DLsite code exists in archive name
+                let has_dlsite_code = arclain_core::utilities::has_dlsite_code(&self.archive_name);
+
                 egui::ComboBox::from_id_salt("rule_selector")
                     .selected_text(&current_rule)
                     .width(200.0)
                     .show_ui(ui, |ui| {
                         for i in 0..self.rules.len() {
                             let rule = &self.rules[i];
-                            if ui
+                            let is_dlsite_rule = rule.category.to_lowercase() == "dlsite";
+                            let is_disabled = is_dlsite_rule && !has_dlsite_code;
+
+                            if is_disabled {
+                                // Gray out DLsite rules when no code detected
+                                let label = format!("{} (no DLsite code)", rule.name);
+                                ui.add_enabled(
+                                    false,
+                                    egui::Button::new(egui::RichText::new(label).weak())
+                                        .selected(self.selected_rule_index == i),
+                                );
+                            } else if ui
                                 .selectable_value(&mut self.selected_rule_index, i, &rule.name)
                                 .changed()
                             {
@@ -205,6 +311,15 @@ impl OrganizePanel {
                         ui.label(egui::RichText::new(desc).weak().italics().size(11.0));
                     }
                 }
+
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .link(egui::RichText::new("Manage Rules...").size(11.0))
+                        .clicked()
+                    {
+                        action = Some(OrganizePanelAction::ManageRules);
+                    }
+                });
             });
 
             ui.separator();
@@ -254,7 +369,7 @@ impl OrganizePanel {
             // TAB CONTENT
             // ════════════════════════════════════════════════════════════════
             match self.active_tab {
-                OrganizeTab::Preview => self.render_preview_tab(ui),
+                OrganizeTab::Preview => self.render_preview_tab(ui, &mut action),
                 OrganizeTab::NetworkActivity => self.render_network_tab(ui),
             }
         });
@@ -262,9 +377,11 @@ impl OrganizePanel {
         action
     }
 
-    fn render_preview_tab(&self, ui: &mut egui::Ui) {
-        if let Some(plan) = &self.preview_plan {
-            // Output folder
+    fn render_preview_tab(&mut self, ui: &mut egui::Ui, action: &mut Option<OrganizePanelAction>) {
+        if let Some(plan) = &self.preview_plan.clone() {
+            // ════════════════════════════════════════════════════════════════
+            // HEADER: Output folder with copy button
+            // ════════════════════════════════════════════════════════════════
             egui::Frame::NONE
                 .fill(egui::Color32::from_rgb(35, 45, 55))
                 .inner_margin(10.0)
@@ -272,130 +389,300 @@ impl OrganizePanel {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(egui_phosphor::regular::FOLDER)
+                            RichText::new(egui_phosphor::regular::FOLDER)
                                 .color(egui::Color32::from_rgb(250, 204, 21)),
                         );
-                        ui.label(egui::RichText::new("Output:").strong());
+                        ui.label(RichText::new("Output:").strong());
                         ui.label(
-                            egui::RichText::new(&plan.root_folder)
+                            RichText::new(&plan.root_folder)
                                 .monospace()
                                 .color(egui::Color32::from_rgb(147, 197, 253)),
                         );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button(RichText::new(format!(
+                                    "{} Copy",
+                                    egui_phosphor::regular::COPY
+                                )))
+                                .on_hover_text("Copy folder name to clipboard")
+                                .clicked()
+                            {
+                                ui.ctx().copy_text(plan.root_folder.clone());
+                            }
+                        });
                     });
                 });
 
             ui.add_space(4.0);
 
-            // File count header
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(egui_phosphor::regular::FILES).size(14.0));
-                ui.label(egui::RichText::new("File Operations").strong());
-                ui.label(
-                    egui::RichText::new(format!("({} files)", plan.moves.len()))
-                        .weak()
-                        .size(11.0),
+            // ════════════════════════════════════════════════════════════════
+            // VARIABLES LEGEND (collapsible)
+            // ════════════════════════════════════════════════════════════════
+            if !plan.resolved_variables.is_empty() {
+                let legend_header = format!(
+                    "{} Variables {}",
+                    egui_phosphor::regular::CODE,
+                    if self.show_variables_legend {
+                        "▼"
+                    } else {
+                        "▶"
+                    }
                 );
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new(&legend_header).size(12.0).weak())
+                            .frame(false),
+                    )
+                    .clicked()
+                {
+                    self.show_variables_legend = !self.show_variables_legend;
+                }
+
+                if self.show_variables_legend {
+                    egui::Frame::NONE
+                        .fill(ui.style().visuals.faint_bg_color)
+                        .inner_margin(8.0)
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("Template:").weak().size(11.0));
+                                ui.label(
+                                    RichText::new(&plan.root_folder_template)
+                                        .monospace()
+                                        .size(11.0),
+                                );
+                            });
+                            ui.add_space(4.0);
+                            egui::Grid::new("variables_grid")
+                                .num_columns(2)
+                                .spacing([16.0, 2.0])
+                                .show(ui, |ui| {
+                                    // Show key variables
+                                    for key in ["code", "circle", "title", "version", "product_id"]
+                                    {
+                                        if let Some(value) = plan.resolved_variables.get(key) {
+                                            ui.label(
+                                                RichText::new(format!("${}", key))
+                                                    .monospace()
+                                                    .size(11.0)
+                                                    .weak(),
+                                            );
+                                            ui.label(
+                                                RichText::new(Self::truncate_path(value, 40))
+                                                    .monospace()
+                                                    .size(11.0)
+                                                    .color(egui::Color32::from_rgb(147, 197, 253)),
+                                            );
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                        });
+                }
+                ui.add_space(4.0);
+            }
+
+            // ════════════════════════════════════════════════════════════════
+            // STATS BAR
+            // ════════════════════════════════════════════════════════════════
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} {} files",
+                        egui_phosphor::regular::FILE,
+                        plan.moves.len()
+                    ))
+                    .size(11.0)
+                    .weak(),
+                );
+                ui.separator();
+                ui.label(
+                    RichText::new(format!(
+                        "{} {} generated",
+                        egui_phosphor::regular::SPARKLE,
+                        plan.generated_files.len()
+                    ))
+                    .size(11.0)
+                    .weak(),
+                );
+                if !plan.downloads.is_empty() {
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {} downloads",
+                            egui_phosphor::regular::DOWNLOAD,
+                            plan.downloads.len()
+                        ))
+                        .size(11.0)
+                        .weak(),
+                    );
+
+                    if !self.is_loading_screenshots {
+                        ui.separator();
+                        if ui
+                            .button(format!(
+                                "{} Load Screenshots",
+                                egui_phosphor::regular::DOWNLOAD_SIMPLE
+                            ))
+                            .on_hover_text("Download screenshots for preview")
+                            .clicked()
+                        {
+                            *action = Some(OrganizePanelAction::LoadScreenshots);
+                            self.is_loading_screenshots = true;
+                        }
+                    } else {
+                        ui.separator();
+                        ui.spinner();
+                    }
+                }
             });
 
-            // Scrollable file list
-            egui::ScrollArea::both()
-                .id_salt("preview_scroll")
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 3.0);
+            ui.add_space(4.0);
 
-                    for (src, dst) in &plan.moves {
-                        let src_file = Self::filename(src);
-                        let src_dir = Self::directory(src);
-                        let dst_dir = Self::directory(dst);
+            // ════════════════════════════════════════════════════════════════
+            // FILTER TABS & DEPTH LIMIT
+            // ════════════════════════════════════════════════════════════════
+            ui.horizontal(|ui| {
+                let filters = [
+                    (PreviewFilter::All, "All"),
+                    (PreviewFilter::FoldersOnly, "📁 Folders"),
+                    (PreviewFilter::FilesOnly, "📄 Files"),
+                    (PreviewFilter::GeneratedOnly, "✨ Generated"),
+                ];
+                for (filter, label) in filters {
+                    if ui
+                        .selectable_label(
+                            self.preview_filter == filter,
+                            RichText::new(label).size(11.0),
+                        )
+                        .clicked()
+                    {
+                        self.preview_filter = filter;
+                    }
+                }
 
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    egui::ComboBox::from_id_salt("depth_limit")
+                        .selected_text(match self.depth_limit {
+                            None => "Depth: All".to_string(),
+                            Some(0) => "Depth: Root".to_string(),
+                            Some(n) => format!("Depth: {}", n),
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut self.depth_limit, None, "All");
+                            ui.selectable_value(&mut self.depth_limit, Some(0), "Root Only");
+                            ui.selectable_value(&mut self.depth_limit, Some(1), "1 Level");
+                            ui.selectable_value(&mut self.depth_limit, Some(2), "2 Levels");
+                            ui.selectable_value(&mut self.depth_limit, Some(3), "3 Levels");
+                        });
+                });
+            });
+
+            ui.separator();
+
+            // ════════════════════════════════════════════════════════════════
+            // DUAL PANE TREE VIEW
+            // ════════════════════════════════════════════════════════════════
+            let available = ui.available_size();
+
+            StripBuilder::new(ui)
+                .size(Size::remainder().at_least(100.0)) // Left Pane
+                .size(Size::exact(30.0)) // Arrow
+                .size(Size::remainder().at_least(100.0)) // Right Pane
+                .horizontal(|mut strip| {
+                    // LEFT PANE: Original structure
+                    strip.cell(|ui| {
                         egui::Frame::NONE
-                            .fill(ui.style().visuals.faint_bg_color)
-                            .inner_margin(egui::Margin::symmetric(10, 6))
-                            .corner_radius(3.0)
+                            .fill(egui::Color32::from_rgb(30, 30, 35))
+                            .inner_margin(8.0)
+                            .corner_radius(4.0)
                             .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(egui_phosphor::regular::FILE)
-                                            .size(12.0)
-                                            .color(egui::Color32::from_rgb(156, 163, 175)),
+                                ui.vertical(|ui| {
+                                    ui.set_height(available.y - 40.0);
+
+                                    let original_title = format!("Original: {}", self.archive_name);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(original_title).strong().size(12.0),
+                                        )
+                                        .truncate(),
                                     );
-                                    ui.label(egui::RichText::new(src_file).strong().size(12.0));
-                                });
-                                ui.horizontal(|ui| {
-                                    ui.add_space(18.0);
-                                    let src_display = if src_dir.is_empty() {
-                                        "(root)".to_string()
-                                    } else {
-                                        Self::truncate_path(src_dir, 35)
-                                    };
-                                    ui.label(
-                                        egui::RichText::new(src_display)
-                                            .weak()
-                                            .size(10.0)
-                                            .monospace(),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(egui_phosphor::regular::ARROW_RIGHT)
-                                            .size(10.0)
-                                            .color(egui::Color32::from_rgb(74, 222, 128)),
-                                    );
-                                    let dst_display = if dst_dir.is_empty() {
-                                        "(root)".to_string()
-                                    } else {
-                                        Self::truncate_path(dst_dir, 35)
-                                    };
-                                    ui.label(
-                                        egui::RichText::new(dst_display)
-                                            .size(10.0)
-                                            .monospace()
-                                            .color(egui::Color32::from_rgb(147, 197, 253)),
-                                    );
+                                    ui.separator();
+
+                                    egui::ScrollArea::both()
+                                        .id_salt("original_tree")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            preview_tree::render_tree(
+                                                ui,
+                                                &mut self.original_tree_state,
+                                                &self.original_tree,
+                                                self.preview_filter,
+                                                self.depth_limit,
+                                            );
+                                        });
                                 });
                             });
-                    }
+                    });
 
-                    // Generated files
-                    if !plan.generated_files.is_empty() {
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
+                    // ARROW
+                    strip.cell(|ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.add_space(available.y / 2.0 - 20.0);
                             ui.label(
-                                egui::RichText::new(egui_phosphor::regular::SPARKLE)
-                                    .color(egui::Color32::from_rgb(250, 204, 21)),
+                                RichText::new(egui_phosphor::regular::ARROW_RIGHT)
+                                    .size(20.0)
+                                    .color(egui::Color32::from_rgb(74, 222, 128)),
                             );
-                            ui.label(egui::RichText::new("Generated Files").strong());
                         });
-                        for (path, _) in &plan.generated_files {
-                            egui::Frame::NONE
-                                .fill(egui::Color32::from_rgb(55, 48, 35))
-                                .inner_margin(6.0)
-                                .corner_radius(3.0)
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new(egui_phosphor::regular::FILE_PLUS)
-                                                .color(egui::Color32::from_rgb(250, 204, 21)),
-                                        );
-                                        ui.label(egui::RichText::new(path).monospace().size(11.0));
-                                    });
+                    });
+
+                    // RIGHT PANE: Organized structure
+                    strip.cell(|ui| {
+                        egui::Frame::NONE
+                            .fill(egui::Color32::from_rgb(30, 35, 35))
+                            .inner_margin(8.0)
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.vertical(|ui| {
+                                    ui.set_height(available.y - 40.0);
+
+                                    let organized_title = format!("Modified: {}", plan.root_folder);
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(organized_title).strong().size(12.0),
+                                        )
+                                        .truncate(),
+                                    );
+                                    ui.separator();
+
+                                    egui::ScrollArea::both()
+                                        .id_salt("organized_tree")
+                                        .auto_shrink([false, false])
+                                        .show(ui, |ui| {
+                                            preview_tree::render_tree(
+                                                ui,
+                                                &mut self.organized_tree_state,
+                                                &self.organized_tree,
+                                                self.preview_filter,
+                                                self.depth_limit,
+                                            );
+                                        });
                                 });
-                        }
-                    }
+                            });
+                    });
                 });
         } else {
             ui.vertical_centered(|ui| {
                 ui.add_space(40.0);
                 ui.label(
-                    egui::RichText::new(egui_phosphor::regular::WARNING)
+                    RichText::new(egui_phosphor::regular::WARNING)
                         .size(40.0)
                         .color(egui::Color32::from_rgb(251, 191, 36)),
                 );
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("No preview available")
-                        .size(14.0)
-                        .weak(),
-                );
+                ui.label(RichText::new("No preview available").size(14.0).weak());
             });
         }
     }

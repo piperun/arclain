@@ -108,3 +108,43 @@ pub fn save_replacement(
 pub fn delete_replacement(db: &arclain_db::SqliteDb, id: i64) -> Result<()> {
     db.with_connection(|conn| delete_title_replacement(conn, id))
 }
+
+/// Ensure default rules exist in the database
+pub fn ensure_default_rules(db: &arclain_db::SqliteDb) -> Result<()> {
+    let rules = list_org_rules(db)?;
+    if !rules.is_empty() {
+        return Ok(());
+    }
+
+    // Seed default DLsite rule
+    let dlsite_rule = OrganizationRule {
+        id: None, // Ignored on insert
+        name: "DLsite Standard".to_string(),
+        description: Some("Standard organization for DLsite works".to_string()),
+        category: "dlsite".to_string(),
+        priority: 100,
+        is_enabled: true,
+        is_system: true,
+        trigger: crate::organization::RuleTrigger {
+            filename_pattern: Some(r"(RJ|VJ|BJ)\d+".to_string()),
+            has_file: None,
+            extensions: None,
+            min_size: None,
+            max_size: None,
+        },
+        actions: crate::organization::RuleActions {
+            root_folder: Some("Game".to_string()),
+            use_standard_layout: true,
+            move_files: vec![],
+            move_to: None,
+            rename_pattern: None,
+            organize_content: true,
+            delete_original: false,
+        },
+    };
+
+    save_org_rule(db, &dlsite_rule)?;
+    tracing::info!("Seeded default DLsite rule");
+
+    Ok(())
+}
