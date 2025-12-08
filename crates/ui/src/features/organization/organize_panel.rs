@@ -93,6 +93,15 @@ impl OrganizePanel {
         let (tx, rx) = channel();
         panel.screenshot_tx = Some(tx);
         panel.screenshot_rx = Some(rx);
+        
+        // Debug: Log rules and selection
+        tracing::debug!(
+            "OrganizePanel::new - {} rules loaded, selected_rule_index={}, selected_rule={}",
+            panel.rules.len(),
+            panel.selected_rule_index,
+            panel.rules.get(panel.selected_rule_index).map(|r| format!("'{}' (category: '{}')", r.name, r.category)).unwrap_or("None".to_string())
+        );
+        
         panel
     }
 
@@ -334,6 +343,13 @@ impl OrganizePanel {
                 .unwrap_or(false);
 
             let missing_metadata = is_dlsite_rule && self.metadata.is_none();
+            
+            tracing::debug!(
+                "OrganizePanel render: is_dlsite_rule={}, metadata.is_none()={}, missing_metadata={}",
+                is_dlsite_rule,
+                self.metadata.is_none(),
+                missing_metadata
+            );
 
             // ════════════════════════════════════════════════════════════════
             // TABS: Preview | Network Activity
@@ -408,33 +424,34 @@ impl OrganizePanel {
     ) {
         if missing_metadata {
             ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
+                ui.add_space(60.0);
+                // Large X Icon
                 ui.label(
-                    egui::RichText::new(egui_phosphor::regular::WARNING_CIRCLE)
-                        .size(64.0)
-                        .color(egui::Color32::from_rgb(239, 68, 68)), // Red-500
+                    egui::RichText::new(egui_phosphor::regular::X)
+                        .size(120.0)
+                        .color(egui::Color32::from_rgb(100, 100, 100)), // Darker grey for the icon
                 );
-                ui.add_space(16.0);
+                ui.add_space(20.0);
+                
+                // Heading
                 ui.label(
-                    egui::RichText::new("No Metadata Available")
-                        .size(20.0)
+                    egui::RichText::new("No metadata found")
+                        .size(32.0)
                         .strong()
-                        .color(egui::Color32::from_rgb(229, 231, 235)),
+                        .color(egui::Color32::from_rgb(150, 150, 150)),
                 );
-                ui.add_space(8.0);
+                ui.add_space(30.0);
+                
+                // Subtext
                 ui.label(
-                    egui::RichText::new(
-                        "This rule requires game metadata (e.g., RJ/BJ code) to function.",
-                    )
-                    .size(14.0)
-                    .color(egui::Color32::from_rgb(156, 163, 175)),
+                    egui::RichText::new("please try and fetch the metadata before trying to organize with dlsite-metadata.")
+                        .size(16.0)
+                        .color(egui::Color32::from_rgb(120, 120, 120)),
                 );
                 ui.label(
-                    egui::RichText::new(
-                        "Please fetch metadata for this archive before organizing.",
-                    )
-                    .size(14.0)
-                    .color(egui::Color32::from_rgb(156, 163, 175)),
+                    egui::RichText::new("If this message still shows up and you have fetched metadata, please check the log.")
+                        .size(16.0)
+                        .color(egui::Color32::from_rgb(120, 120, 120)),
                 );
                 ui.add_space(40.0);
             });
