@@ -5,14 +5,32 @@ use regex::Regex;
 use std::collections::HashMap;
 use std::path::Path;
 
+/// A pending download with cache information
+#[derive(Debug, Clone)]
+pub struct PendingDownload {
+    /// DLsite product code (e.g., "RJ123456") if applicable
+    pub product_id: Option<String>,
+    /// Source URL to download from
+    pub url: String,
+    /// Destination path relative to root folder
+    pub dest_path: String,
+    /// Cache key for content cache lookup (e.g., "dlsite:RJ123456:screenshot_0")
+    pub cache_key: String,
+    /// Whether this content is already in cache
+    pub cached: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct OrganizationPlan {
     pub rule_name: String,
     pub root_folder: String,
+    pub root_folder_template: String, // Original template pattern before variable expansion
     pub moves: Vec<(String, String)>, // (source_path, dest_path)
     pub generated_files: Vec<(String, String)>, // (path, content)
-    pub downloads: Vec<(String, String)>, // (url, relative_path)
+    pub downloads: Vec<PendingDownload>,
     pub use_standard_layout: bool,
+    /// Resolved template variables for UI display (e.g., "code" -> "RJ999001")
+    pub resolved_variables: HashMap<String, String>,
 }
 
 pub struct RuleEngine;
@@ -102,16 +120,9 @@ impl RuleEngine {
                 metadata.insert("release_date".to_string(), date.clone());
             }
 
-            // Parse JSON for platform-specific fields (e.g. dlsite.price)
+            // Parse JSON for platform-specific fields (generic flattening)
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&gm.metadata_json) {
-                if let Some(dlsite) = json.get("dlsite") {
-                    if let Some(price) = dlsite.get("price").and_then(|v| v.as_str()) {
-                        metadata.insert("price".to_string(), price.to_string());
-                    }
-                    if let Some(code) = dlsite.get("code").and_then(|v| v.as_str()) {
-                        metadata.insert("code".to_string(), code.to_string());
-                    }
-                }
+                Self::flatten_json_value(&json, &mut metadata, "");
             }
         }
 
@@ -192,6 +203,9 @@ impl RuleEngine {
         // Add screenshots to downloads
         let mut downloads = Vec::new();
         if let Some(gm) = game_metadata {
+            // Get DLsite code from metadata if available
+            let dlsite_code = metadata.get("code").cloned();
+
             for (i, screenshot) in gm.screenshots.iter().enumerate() {
                 if let super::organizer::ScreenshotData::FilePath(path) = screenshot {
                     let url = path.to_string_lossy().to_string();
@@ -208,19 +222,42 @@ impl RuleEngine {
                     } else {
                         "Screenshots"
                     };
-                    let target_path = format!("{}/{}/{}", root_folder, screenshots_folder, filename);
-                    downloads.push((url, target_path));
+                    let dest_path = format!("{}/{}/{}", root_folder, screenshots_folder, filename);
+
+                    // Generate cache key
+                    let cache_key = if let Some(ref code) = dlsite_code {
+                        format!("dlsite:{}:screenshot_{}", code, i)
+                    } else {
+                        format!("screenshot:{}:{}", gm.product_id, i)
+                    };
+
+                    downloads.push(PendingDownload {
+                        product_id: dlsite_code.clone(),
+                        url,
+                        dest_path,
+                        cache_key,
+                        cached: false, // Will be checked by UI when loading
+                    });
                 }
             }
         }
 
+        // Store the original template for UI display
+        let root_folder_template = rule
+            .actions
+            .root_folder
+            .clone()
+            .unwrap_or_else(|| "Game".to_string());
+
         Ok(OrganizationPlan {
             rule_name: rule.name.clone(),
             root_folder,
+            root_folder_template,
             moves,
             generated_files,
             downloads,
             use_standard_layout: rule.actions.use_standard_layout,
+            resolved_variables: metadata,
         })
     }
 
@@ -292,6 +329,39 @@ impl RuleEngine {
 
         // 3. Flatten Tree
         root.flatten()
+    }
+
+    /// Recursive JSON flattener to extract variables like "dlsite.price" -> "1200"
+    fn flatten_json_value(
+        value: &serde_json::Value,
+        acc: &mut HashMap<String, String>,
+        prefix: &str,
+    ) {
+        match value {
+            serde_json::Value::Null => {}
+            serde_json::Value::Bool(b) => {
+                acc.insert(prefix.to_string(), b.to_string());
+            }
+            serde_json::Value::Number(n) => {
+                acc.insert(prefix.to_string(), n.to_string());
+            }
+            serde_json::Value::String(s) => {
+                acc.insert(prefix.to_string(), s.clone());
+            }
+            serde_json::Value::Array(_) => {
+                // Skip arrays for simple variable resolution for now
+            }
+            serde_json::Value::Object(map) => {
+                for (k, v) in map {
+                    let new_prefix = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{}.{}", prefix, k)
+                    };
+                    Self::flatten_json_value(v, acc, &new_prefix);
+                }
+            }
+        }
     }
 }
 

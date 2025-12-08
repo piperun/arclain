@@ -2,8 +2,8 @@ use anyhow::Result;
 use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::backends::BackendSelector;
 use arclain_core::config::database::{
-    get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
-    ConfigDbs, DbPaths, SecretsDb, SecretsKey,
+    ensure_default_rules, get_config, list_pass_rules, open_databases, replace_pass_rules,
+    set_config, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
 use arclain_core::utilities::ChecksumService;
 use arclain_core::{ConfigStore, NavigationState};
@@ -145,6 +145,11 @@ impl AppState {
                                 )?;
                                 set_config(conn, "key_file_path", &key_path.to_string_lossy())
                             });
+
+                            // Seed default organization rules
+                            if let Err(e) = ensure_default_rules(&dbs.config) {
+                                warn!("Failed to ensure default rules: {}", e);
+                            }
 
                             // Migrate plain JSON settings -> config.sqlite if not present
                             let has_sevenzip = matches!(

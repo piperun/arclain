@@ -126,4 +126,9 @@ impl MetadataCache {
             Ok(count)
         })
     }
+    /// Clear all cache entries
+    pub fn clear_cache_index(&self) -> Result<()> {
+        self.db
+            .with_connection(|conn| crate::cache_index::clear_all_entries(conn))
+    }
 }

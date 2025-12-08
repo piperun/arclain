@@ -3,6 +3,7 @@
 pub mod file_list;
 pub mod header;
 pub mod network_log;
+pub mod preview_tree;
 pub mod properties_panel;
 pub mod status_bar;
 pub mod toolbar;
