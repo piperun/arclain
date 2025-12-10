@@ -13,10 +13,7 @@ pub struct FallbackBackend {
 }
 
 impl FallbackBackend {
-    pub fn new(
-        primary: Arc<dyn ArchiveBackend>,
-        fallback: Arc<dyn ArchiveBackend>,
-    ) -> Self {
+    pub fn new(primary: Arc<dyn ArchiveBackend>, fallback: Arc<dyn ArchiveBackend>) -> Self {
         let primary_name = primary.name().to_string();
         let fallback_name = fallback.name().to_string();
         Self {
@@ -64,7 +61,7 @@ impl ArchiveBackend for FallbackBackend {
             self.primary_name,
             path.display()
         );
-        
+
         match self.primary.list(path, password) {
             Ok(info) => {
                 info!(
@@ -83,8 +80,12 @@ impl ArchiveBackend for FallbackBackend {
                     self.fallback_name,
                     path.display()
                 );
-                self.fallback.list(path, password)
-                    .with_context(|| format!("Both {} and {} backends failed to list archive", self.primary_name, self.fallback_name))
+                self.fallback.list(path, password).with_context(|| {
+                    format!(
+                        "Both {} and {} backends failed to list archive",
+                        self.primary_name, self.fallback_name
+                    )
+                })
             }
         }
     }
@@ -96,7 +97,7 @@ impl ArchiveBackend for FallbackBackend {
             path.display(),
             dest.display()
         );
-        
+
         match self.primary.extract_all(path, dest, password) {
             Ok(()) => {
                 info!(
@@ -115,8 +116,14 @@ impl ArchiveBackend for FallbackBackend {
                     self.fallback_name,
                     path.display()
                 );
-                self.fallback.extract_all(path, dest, password)
-                    .with_context(|| format!("Both {} and {} backends failed to extract", self.primary_name, self.fallback_name))
+                self.fallback
+                    .extract_all(path, dest, password)
+                    .with_context(|| {
+                        format!(
+                            "Both {} and {} backends failed to extract",
+                            self.primary_name, self.fallback_name
+                        )
+                    })
             }
         }
     }
@@ -135,7 +142,8 @@ impl ArchiveBackend for FallbackBackend {
                     "{} backend failed to extract files: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
                 );
-                self.fallback.extract_files(path, dest, files, password)
+                self.fallback
+                    .extract_files(path, dest, files, password)
                     .with_context(|| format!("Both backends failed to extract files"))
             }
         }
@@ -148,14 +156,18 @@ impl ArchiveBackend for FallbackBackend {
         dir_path: &str,
         password: Option<&str>,
     ) -> Result<()> {
-        match self.primary.extract_directory(path, dest, dir_path, password) {
+        match self
+            .primary
+            .extract_directory(path, dest, dir_path, password)
+        {
             Ok(()) => Ok(()),
             Err(e) => {
                 warn!(
                     "{} backend failed to extract directory: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
                 );
-                self.fallback.extract_directory(path, dest, dir_path, password)
+                self.fallback
+                    .extract_directory(path, dest, dir_path, password)
                     .with_context(|| format!("Both backends failed to extract directory"))
             }
         }
@@ -188,14 +200,18 @@ impl ArchiveBackend for FallbackBackend {
         path_in_archive: &str,
         password: Option<&str>,
     ) -> Result<String> {
-        match self.primary.read_text_file(archive, path_in_archive, password) {
+        match self
+            .primary
+            .read_text_file(archive, path_in_archive, password)
+        {
             Ok(content) => Ok(content),
             Err(e) => {
                 warn!(
                     "{} backend failed to read file: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
                 );
-                self.fallback.read_text_file(archive, path_in_archive, password)
+                self.fallback
+                    .read_text_file(archive, path_in_archive, password)
                     .with_context(|| format!("Both backends failed to read file"))
             }
         }
@@ -214,9 +230,14 @@ impl ArchiveBackend for FallbackBackend {
         path_in_archive: &str,
         content: &str,
     ) -> Result<()> {
-        match self.primary.add_or_update_file_from_str(archive, path_in_archive, content) {
+        match self
+            .primary
+            .add_or_update_file_from_str(archive, path_in_archive, content)
+        {
             Ok(()) => Ok(()),
-            Err(_) => self.fallback.add_or_update_file_from_str(archive, path_in_archive, content),
+            Err(_) => self
+                .fallback
+                .add_or_update_file_from_str(archive, path_in_archive, content),
         }
     }
 
@@ -233,14 +254,18 @@ impl ArchiveBackend for FallbackBackend {
         path_in_archive: &str,
         password: Option<&str>,
     ) -> Result<String> {
-        match self.primary.crc32_of_entry(archive, path_in_archive, password) {
+        match self
+            .primary
+            .crc32_of_entry(archive, path_in_archive, password)
+        {
             Ok(crc) => Ok(crc),
             Err(e) => {
                 warn!(
                     "{} backend failed to get CRC: {}. Falling back to {}",
                     self.primary_name, e, self.fallback_name
                 );
-                self.fallback.crc32_of_entry(archive, path_in_archive, password)
+                self.fallback
+                    .crc32_of_entry(archive, path_in_archive, password)
                     .with_context(|| format!("Both backends failed to get CRC"))
             }
         }

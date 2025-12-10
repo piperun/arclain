@@ -324,6 +324,15 @@ impl AppState {
             }
         };
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
+        self.all_entries = info.entries.clone();
+        // IMPORTANT: Set current_archive BEFORE password detection so archive name matching works
+        self.current_archive = Some(path.to_path_buf());
+        self.archive_encrypted = info.encrypted;
+        self.headers_encrypted = info.headers_encrypted;
+        self.encryption_method = info.encryption_method.clone();
+        self.navigation = NavigationState::new();
+
+        // Now attempt password detection with correct archive context
         if self.current_password.is_none() {
             let archive_name = self.current_archive.as_ref().and_then(|p| p.to_str());
             debug!(
@@ -334,16 +343,17 @@ impl AppState {
             if let Some(ref pwd) = detected_pw {
                 info!("Auto-detected password for archive (length: {})", pwd.len());
                 self.current_password = Some(pwd.clone());
+            } else if info.encrypted {
+                warn!("Archive is encrypted but no password was auto-detected from rules");
             } else {
-                debug!("No password auto-detected for this archive");
+                debug!("No password needed - archive is not encrypted");
             }
+        } else {
+            info!(
+                "Password already set (length: {})",
+                self.current_password.as_ref().map(|p| p.len()).unwrap_or(0)
+            );
         }
-        self.all_entries = info.entries.clone();
-        self.current_archive = Some(path.to_path_buf());
-        self.archive_encrypted = info.encrypted;
-        self.headers_encrypted = info.headers_encrypted;
-        self.encryption_method = info.encryption_method.clone();
-        self.navigation = NavigationState::new();
 
         // Dispatch OnArchiveOpen event to plugins
         self.plugin_metadata = None; // Reset metadata
