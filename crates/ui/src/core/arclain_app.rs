@@ -776,10 +776,6 @@ impl eframe::App for ArclainApp {
                             self.organization_feature.organize_panel = None;
                             self.page_navigator.navigate_back();
                         }
-                        crate::features::organization::OrganizationAction::Cancel => {
-                            self.organization_feature.organize_panel = None;
-                            self.page_navigator.navigate_back();
-                        }
                         crate::features::organization::OrganizationAction::None => {}
                     }
                 }

@@ -88,7 +88,7 @@ impl GameMetadata {
 }
 
 /// Screenshot data provided by plugin
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ScreenshotData {
     FilePath(PathBuf), // Downloaded by plugin
     Base64(String),    // Base64-encoded

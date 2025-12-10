@@ -1,4 +1,10 @@
-use crate::features::organization::add_rule_dialog::AddRuleDialog;
+//! Organization Rules Settings Page
+//!
+//! CRUD interface for managing organization rules. Part of the Settings feature.
+
+mod add_rule_dialog;
+
+use add_rule_dialog::AddRuleDialog;
 use arclain_core::config::database::{delete_org_rule, list_org_rules, save_org_rule};
 use arclain_core::organization::OrganizationRule;
 use arclain_db::SqliteDb;

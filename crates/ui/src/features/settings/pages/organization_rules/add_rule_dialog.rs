@@ -1,7 +1,10 @@
+//! Add/Edit Rule Dialog for Organization Rules
+//!
+//! Dialog UI for creating and editing organization rules.
+
 use arclain_core::organization::OrganizationRule;
 use eframe::egui::{self, Align, Layout, Window};
 
-#[allow(dead_code)]
 pub struct AddRuleDialog {
     open: bool,
     rule: OrganizationRule,
@@ -21,10 +24,6 @@ impl Default for AddRuleDialog {
 }
 
 impl AddRuleDialog {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     pub fn open(&mut self) {
         self.open = true;
         self.is_edit = false;
@@ -37,10 +36,6 @@ impl AddRuleDialog {
         self.is_edit = true;
         self.rule = rule;
         self.title_error = None;
-    }
-
-    pub fn close(&mut self) {
-        self.open = false;
     }
 
     pub fn is_open(&self) -> bool {

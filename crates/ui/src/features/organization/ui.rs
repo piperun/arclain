@@ -1,12 +1,11 @@
 use crate::features::organization::organize_panel::OrganizePanel;
-use crate::features::organization::rules_page::RulesPage;
+use crate::features::settings::pages::RulesPage;
 use crate::shared::SharedState;
 use eframe::egui;
 
 pub enum OrganizationAction {
     None,
     Apply,
-    Cancel,
 }
 
 pub struct OrganizationFeature {
