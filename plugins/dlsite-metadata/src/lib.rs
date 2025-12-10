@@ -45,6 +45,33 @@ impl archust_plugin_sdk::Guest for Component {
         }
     }
 
+    fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition> {
+        use archust_plugin_sdk::arclain::plugin::rules::*;
+
+        vec![PluginRuleDefinition {
+            name: "DLSite Archive".to_string(),
+            category: "Game".to_string(),
+            description: Some("Organizes DLSite game archives logic".to_string()),
+            trigger: PluginRuleTrigger {
+                filename_pattern: None,
+                has_file: None,
+                extensions: None,
+                min_size: None,
+                max_size: None,
+                metadata_source: Some("dlsite".to_string()),
+            },
+            actions: PluginRuleActions {
+                root_folder: Some("$maker_name/$work_name".to_string()),
+                move_files: vec![],
+                move_to: None,
+                rename_pattern: None,
+                organize_content: true,
+                delete_original: false,
+                use_standard_layout: true,
+            },
+        }]
+    }
+
     fn get_ui_layout(
         extension_point: String,
     ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::UiElement> {

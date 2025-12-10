@@ -14,6 +14,7 @@ pub struct PropertyGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesPanelAction {
     None,
+    #[allow(dead_code)] // Used in pattern matching but never constructed yet
     Organize,
     Metadata(String),
 }
@@ -102,13 +103,6 @@ pub fn render(
                     action = PropertiesPanelAction::Metadata(metadata);
                 }
             }
-        }
-        // Organize Button - always available for any archive
-        ui.add_space(16.0);
-        ui.separator();
-        ui.add_space(8.0);
-        if ui.button("📦 Organize Archive").clicked() {
-            action = PropertiesPanelAction::Organize;
         }
     });
 

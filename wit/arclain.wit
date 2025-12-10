@@ -105,11 +105,53 @@ interface ui {
     }
 }
 
+interface rules {
+    record move-file-rule {
+        pattern: string,
+        target: string,
+    }
+
+    record move-rule {
+        target-dir: string,
+        use-date: bool,
+        use-category: bool,
+    }
+
+    record plugin-rule-trigger {
+        filename-pattern: option<string>,
+        has-file: option<string>,
+        extensions: option<list<string>>,
+        min-size: option<u64>,
+        max-size: option<u64>,
+        metadata-source: option<string>,
+    }
+
+    record plugin-rule-actions {
+        root-folder: option<string>,
+        move-files: list<move-file-rule>,
+        move-to: option<move-rule>,
+        rename-pattern: option<string>,
+        organize-content: bool,
+        delete-original: bool,
+        use-standard-layout: bool,
+    }
+
+    record plugin-rule-definition {
+        name: string,
+        category: string,
+        description: option<string>,
+        trigger: plugin-rule-trigger,
+        actions: plugin-rule-actions,
+    }
+}
+
 world plugin-world {
     import host;
     
     // Plugin exports
     export init: func();
+    use rules.{plugin-rule-definition};
+    export get-default-rules: func() -> list<plugin-rule-definition>;
     
     // UI exports
     use ui.{ui-element};

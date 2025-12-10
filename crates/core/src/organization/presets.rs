@@ -19,6 +19,7 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
                 max_size: None,
                 extensions: None,
                 has_file: None,
+                metadata_source: None,
             },
             actions: RuleActions {
                 root_folder: None, // Will use archive name automatically
@@ -51,6 +52,7 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
                 max_size: None,
                 extensions: None,
                 has_file: None,
+                metadata_source: None,
             },
             actions: RuleActions {
                 root_folder: Some("[$code][$circle] $title".to_string()),

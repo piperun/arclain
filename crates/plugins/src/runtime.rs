@@ -163,6 +163,15 @@ impl PluginInstance {
         })
     }
 
+    /// Get default organization rules from the plugin
+    pub fn get_default_rules(
+        &mut self,
+    ) -> Result<Vec<crate::bindings::arclain::plugin::rules::PluginRuleDefinition>> {
+        self.plugin
+            .call_get_default_rules(&mut self.store)
+            .map_err(|e| PluginError::ExecutionError(e.to_string()))
+    }
+
     /// Dispatch an event to the plugin
     pub fn on_event(&mut self, _event: &PluginEvent) -> Result<PluginResponse> {
         Ok(PluginResponse::None)
