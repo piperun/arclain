@@ -7,6 +7,11 @@ impl archust_plugin_sdk::Guest for Component {
         info("UI Demo Plugin initialized via Component Model!");
     }
 
+    fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition>
+    {
+        vec![]
+    }
+
     fn get_ui_layout(
         extension_point: String,
     ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::UiElement> {

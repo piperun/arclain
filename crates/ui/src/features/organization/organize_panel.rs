@@ -2,6 +2,7 @@ use crate::shared::components::network_log::NetworkLog;
 use crate::shared::components::preview_tree::{
     self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
 };
+use crate::features::organization::export_dialog::ExportTreeDialog;
 use arclain_core::organization::{engine::RuleEngine, OrganizationRule};
 use arclain_core::ArchiveEntry;
 use eframe::egui::{self, RichText};
@@ -18,7 +19,6 @@ pub enum OrganizeTab {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OrganizePanelAction {
     Apply,
-    Cancel,
     LoadScreenshots,
     ManageRules,
 }
@@ -36,7 +36,6 @@ pub struct OrganizePanel {
     pub screenshot_tx: Option<Sender<(String, bool)>>,
     pub is_loading_screenshots: bool,
     // Tree view state
-    // Tree view state
     pub preview_filter: PreviewFilter,
     pub original_tree_state: PreviewTreeState,
     pub organized_tree_state: PreviewTreeState,
@@ -44,6 +43,7 @@ pub struct OrganizePanel {
     pub organized_tree: Vec<preview_tree::PreviewTreeNode>,
     pub show_variables_legend: bool,
     pub depth_limit: Option<usize>,
+    pub export_dialog: ExportTreeDialog,
 }
 
 impl OrganizePanel {
@@ -72,19 +72,20 @@ impl OrganizePanel {
             organized_tree: Vec::new(),
             show_variables_legend: true,
             depth_limit: None,
+            export_dialog: ExportTreeDialog::new(),
         };
 
         // Auto-select rule
-        if let Some(meta) = &panel.metadata {
-            if let Some(idx) = panel
-                .rules
-                .iter()
-                .position(|r| r.is_enabled && r.category.eq_ignore_ascii_case(&meta.source))
-            {
-                panel.selected_rule_index = idx;
-            } else if let Some(idx) = panel.rules.iter().position(|r| r.is_enabled) {
-                panel.selected_rule_index = idx;
-            }
+        if let Some(idx) = panel.rules.iter().position(|r| {
+            r.is_enabled
+                && RuleEngine::matches_trigger(
+                    &r.trigger,
+                    &panel.archive_name,
+                    &panel.entries,
+                    panel.metadata.as_ref(),
+                )
+        }) {
+            panel.selected_rule_index = idx;
         } else if let Some(idx) = panel.rules.iter().position(|r| r.is_enabled) {
             panel.selected_rule_index = idx;
         }
@@ -120,14 +121,16 @@ impl OrganizePanel {
                 self.preview_plan = Some(plan.clone());
 
                 // Build and cache trees
-                let original_paths: Vec<String> =
-                    plan.moves.iter().map(|(src, _)| src.clone()).collect();
-                self.original_tree = build_original_tree(&original_paths);
+                // Use self.entries (all archive files) for original tree, NOT plan.moves
+                // Filter out directory entries - only include actual files
+                let original_paths: Vec<String> = self
+                    .entries
+                    .iter()
+                    .filter(|e| !e.is_dir) // Only include files, not directory entries
+                    .map(|e| e.path.clone())
+                    .collect();
 
-                println!("DEBUG: Plan moves count: {}", plan.moves.len());
-                if let Some(first) = plan.moves.first() {
-                    println!("DEBUG: First move: src='{}', dst='{}'", first.0, first.1);
-                }
+                self.original_tree = build_original_tree(&original_paths);
 
                 self.organized_tree = build_organized_tree(
                     &plan.moves,
@@ -135,7 +138,6 @@ impl OrganizePanel {
                     &plan.downloads,
                     &plan.resolved_variables,
                 );
-                println!("DEBUG: Organized tree nodes: {}", self.organized_tree.len());
 
                 if self.metadata.is_some() {
                     self.update_network_log(vec![(
@@ -148,13 +150,18 @@ impl OrganizePanel {
     }
 
     fn truncate_path(path: &str, max_len: usize) -> String {
-        if path.len() <= max_len {
+        // Use character count, not byte count, for proper Unicode handling
+        let char_count = path.chars().count();
+        if char_count <= max_len {
             return path.to_string();
         }
         let parts: Vec<&str> = path.split('/').collect();
         if parts.len() <= 2 {
+            // Take first half and last half of characters (not bytes)
             let half = max_len / 2;
-            format!("{}...{}", &path[..half], &path[path.len() - half..])
+            let prefix: String = path.chars().take(half).collect();
+            let suffix: String = path.chars().skip(char_count - half).collect();
+            format!("{}...{}", prefix, suffix)
         } else {
             let first = parts[0];
             let last = parts.last().unwrap();
@@ -176,6 +183,13 @@ impl OrganizePanel {
     }
 
     pub fn render(&mut self, ctx: &egui::Context) -> Option<OrganizePanelAction> {
+        self.export_dialog.show(
+            ctx,
+            &self.original_tree,
+            &self.organized_tree,
+            self.metadata.as_ref(),
+        );
+
         // Check for screenshot updates
         if let Some(rx) = &self.screenshot_rx {
             while let Ok((path, success)) = rx.try_recv() {
@@ -195,35 +209,16 @@ impl OrganizePanel {
 
         let mut action = None;
 
-        // Bottom action bar
-        egui::TopBottomPanel::bottom("organize_actions")
-            .frame(
-                egui::Frame::NONE
-                    .fill(ctx.style().visuals.window_fill)
-                    .inner_margin(12.0),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .button(format!("{}  Cancel", egui_phosphor::regular::X))
-                        .clicked()
-                    {
-                        action = Some(OrganizePanelAction::Cancel);
-                    }
-                    ui.add_space(12.0);
-                    let apply_btn = egui::Button::new(
-                        egui::RichText::new(format!(
-                            "{}  Apply Organization",
-                            egui_phosphor::regular::CHECK
-                        ))
-                        .strong(),
-                    )
-                    .fill(egui::Color32::from_rgb(34, 139, 34));
-                    if ui.add(apply_btn).clicked() {
-                        action = Some(OrganizePanelAction::Apply);
-                    }
-                });
-            });
+        // ════════════════════════════════════════════════════════════════
+        // EARLY VALIDATION: Check for DLsite rule without metadata
+        // ════════════════════════════════════════════════════════════════
+        let is_dlsite_rule = self
+            .rules
+            .get(self.selected_rule_index)
+            .map(|r| r.category.eq_ignore_ascii_case("dlsite"))
+            .unwrap_or(false);
+        let missing_metadata = is_dlsite_rule && self.metadata.is_none();
+        let can_apply = !missing_metadata && self.preview_plan.is_some();
 
         // Main content panel
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -247,26 +242,72 @@ impl OrganizePanel {
                             ui.label(egui::RichText::new(&self.archive_name).size(12.0).weak());
                         });
 
-                        // Metadata badge
+                        // Metadata badge - smaller with explicit label
                         if let Some(meta) = &self.metadata {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
+                                    // Apply button (enabled/disabled based on metadata)
+                                    let apply_btn = egui::Button::new(
+                                        egui::RichText::new(format!(
+                                            "{}  Apply",
+                                            egui_phosphor::regular::CHECK
+                                        ))
+                                        .strong()
+                                        .size(12.0),
+                                    )
+                                    .fill(if can_apply {
+                                        egui::Color32::from_rgb(34, 139, 34)
+                                    } else {
+                                        egui::Color32::from_rgb(60, 60, 60)
+                                    });
+                                    
+                                    if ui.add_enabled(can_apply, apply_btn).clicked() {
+                                        action = Some(OrganizePanelAction::Apply);
+                                    }
+                                    
+                                    ui.add_space(8.0);
+                                    
+                                    // Metadata badge
                                     egui::Frame::NONE
-                                        .fill(egui::Color32::from_rgb(45, 85, 55))
-                                        .inner_margin(egui::Margin::symmetric(8, 4))
-                                        .corner_radius(4.0)
+                                        .fill(egui::Color32::from_rgb(35, 65, 45))
+                                        .inner_margin(egui::Margin::symmetric(6, 3))
+                                        .corner_radius(3.0)
                                         .show(ui, |ui| {
                                             ui.label(
                                                 egui::RichText::new(format!(
-                                                    "{} {}",
+                                                    "{} Fetched: {}",
                                                     egui_phosphor::regular::CHECK_CIRCLE,
-                                                    &meta.title
+                                                    Self::truncate_path(&meta.title, 30)
                                                 ))
-                                                .color(egui::Color32::from_rgb(134, 239, 172))
-                                                .size(11.0),
+                                                .color(egui::Color32::from_rgb(120, 200, 150))
+                                                .size(10.0),
                                             );
                                         });
+                                },
+                            );
+                        } else {
+                            // No metadata - show Apply button (possibly disabled)
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let apply_btn = egui::Button::new(
+                                        egui::RichText::new(format!(
+                                            "{}  Apply",
+                                            egui_phosphor::regular::CHECK
+                                        ))
+                                        .strong()
+                                        .size(12.0),
+                                    )
+                                    .fill(if can_apply {
+                                        egui::Color32::from_rgb(34, 139, 34)
+                                    } else {
+                                        egui::Color32::from_rgb(60, 60, 60)
+                                    });
+                                    
+                                    if ui.add_enabled(can_apply, apply_btn).clicked() {
+                                        action = Some(OrganizePanelAction::Apply);
+                                    }
                                 },
                             );
                         }
@@ -293,27 +334,45 @@ impl OrganizePanel {
                     .selected_text(&current_rule)
                     .width(200.0)
                     .show_ui(ui, |ui| {
-                        for i in 0..self.rules.len() {
-                            let rule = &self.rules[i];
-                            let is_dlsite_rule = rule.category.to_lowercase() == "dlsite";
-                            let is_disabled = is_dlsite_rule && !has_dlsite_code;
+                        // Collect indices by category
+                        let mut categories: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
+                        for (i, rule) in self.rules.iter().enumerate() {
+                            categories.entry(rule.category.clone()).or_default().push(i);
+                        }
 
-                            if is_disabled {
-                                // Gray out DLsite rules when no code detected
-                                let label = format!("{} (no DLsite code)", rule.name);
-                                ui.add_enabled(
-                                    false,
-                                    egui::Button::new(egui::RichText::new(label).weak())
-                                        .selected(self.selected_rule_index == i),
-                                );
-                            } else if ui
-                                .selectable_value(&mut self.selected_rule_index, i, &rule.name)
-                                .changed()
-                            {
-                                self.update_preview();
+                        // Render categorized
+                        for (category, indices) in categories {
+                            ui.label(
+                                egui::RichText::new(category)
+                                    .size(10.0)
+                                    .strong()
+                                    .color(ui.visuals().text_color().gamma_multiply(0.6)),
+                            );
+                            
+                            for i in indices {
+                                let rule = &self.rules[i];
+                                let is_dlsite_rule = rule.category.to_lowercase() == "dlsite";
+                                let is_disabled = is_dlsite_rule && !has_dlsite_code;
+
+                                if is_disabled {
+                                    // Gray out DLsite rules when no code detected
+                                    let label = format!("{} (no DLsite code)", rule.name);
+                                    ui.add_enabled(
+                                        false,
+                                        egui::Button::new(egui::RichText::new(label).weak())
+                                            .selected(self.selected_rule_index == i),
+                                    );
+                                } else if ui
+                                    .selectable_value(&mut self.selected_rule_index, i, &rule.name)
+                                    .changed()
+                                {
+                                    self.update_preview();
+                                }
                             }
+                            ui.add_space(4.0);
                         }
                     });
+
 
                 if let Some(rule) = self.rules.get(self.selected_rule_index) {
                     if let Some(desc) = &rule.description {
@@ -334,70 +393,60 @@ impl OrganizePanel {
             ui.separator();
 
             // ════════════════════════════════════════════════════════════════
-            // VALIDATION: Check for DLsite rule without metadata
+            // EMPTY STATE: Full page takeover when metadata is missing
             // ════════════════════════════════════════════════════════════════
-            let is_dlsite_rule = self
-                .rules
-                .get(self.selected_rule_index)
-                .map(|r| r.category.eq_ignore_ascii_case("dlsite"))
-                .unwrap_or(false);
+            if missing_metadata {
+                // Render full-page empty state (no tabs)
+                self.render_empty_state(ui);
+            } else {
+                // ════════════════════════════════════════════════════════════════
+                // TABS: Preview | Network Activity
+                // ════════════════════════════════════════════════════════════════
+                ui.horizontal(|ui| {
+                    // Preview tab
+                    let preview_label = format!("{} Preview", egui_phosphor::regular::EYE);
+                    let preview_selected = self.active_tab == OrganizeTab::Preview;
+                    if ui
+                        .selectable_label(
+                            preview_selected,
+                            egui::RichText::new(&preview_label).size(13.0),
+                        )
+                        .clicked()
+                    {
+                        self.active_tab = OrganizeTab::Preview;
+                    }
 
-            let missing_metadata = is_dlsite_rule && self.metadata.is_none();
-            
-            tracing::debug!(
-                "OrganizePanel render: is_dlsite_rule={}, metadata.is_none()={}, missing_metadata={}",
-                is_dlsite_rule,
-                self.metadata.is_none(),
-                missing_metadata
-            );
+                    ui.add_space(8.0);
 
-            // ════════════════════════════════════════════════════════════════
-            // TABS: Preview | Network Activity
-            // ════════════════════════════════════════════════════════════════
-            ui.horizontal(|ui| {
-                // Preview tab
-                let preview_label = format!("{} Preview", egui_phosphor::regular::EYE);
-                let preview_selected = self.active_tab == OrganizeTab::Preview;
-                if ui
-                    .selectable_label(
-                        preview_selected,
-                        egui::RichText::new(&preview_label).size(13.0),
-                    )
-                    .clicked()
-                {
-                    self.active_tab = OrganizeTab::Preview;
+                    // Network Activity tab (show count if any)
+                    let net_count = self.network_log.len();
+                    let net_label = if net_count > 0 {
+                        format!(
+                            "{} Network Activity ({})",
+                            egui_phosphor::regular::GLOBE,
+                            net_count
+                        )
+                    } else {
+                        format!("{} Network Activity", egui_phosphor::regular::GLOBE)
+                    };
+                    let net_selected = self.active_tab == OrganizeTab::NetworkActivity;
+                    if ui
+                        .selectable_label(net_selected, egui::RichText::new(&net_label).size(13.0))
+                        .clicked()
+                    {
+                        self.active_tab = OrganizeTab::NetworkActivity;
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                // ════════════════════════════════════════════════════════════════
+                // TAB CONTENT
+                // ════════════════════════════════════════════════════════════════
+                match self.active_tab {
+                    OrganizeTab::Preview => self.render_preview_tab(ui, &mut action),
+                    OrganizeTab::NetworkActivity => self.render_network_tab(ui),
                 }
-
-                ui.add_space(8.0);
-
-                // Network Activity tab (show count if any)
-                let net_count = self.network_log.len();
-                let net_label = if net_count > 0 {
-                    format!(
-                        "{} Network Activity ({})",
-                        egui_phosphor::regular::GLOBE,
-                        net_count
-                    )
-                } else {
-                    format!("{} Network Activity", egui_phosphor::regular::GLOBE)
-                };
-                let net_selected = self.active_tab == OrganizeTab::NetworkActivity;
-                if ui
-                    .selectable_label(net_selected, egui::RichText::new(&net_label).size(13.0))
-                    .clicked()
-                {
-                    self.active_tab = OrganizeTab::NetworkActivity;
-                }
-            });
-
-            ui.add_space(4.0);
-
-            // ════════════════════════════════════════════════════════════════
-            // TAB CONTENT
-            // ════════════════════════════════════════════════════════════════
-            match self.active_tab {
-                OrganizeTab::Preview => self.render_preview_tab(ui, &mut action, missing_metadata),
-                OrganizeTab::NetworkActivity => self.render_network_tab(ui),
             }
         });
 
@@ -416,47 +465,46 @@ impl OrganizePanel {
         action
     }
 
+    fn render_empty_state(&mut self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(60.0);
+            // Large X Icon
+            ui.label(
+                egui::RichText::new(egui_phosphor::regular::X)
+                    .size(120.0)
+                    .color(egui::Color32::from_rgb(100, 100, 100)),
+            );
+            ui.add_space(20.0);
+            
+            // Heading
+            ui.label(
+                egui::RichText::new("No metadata found")
+                    .size(32.0)
+                    .strong()
+                    .color(egui::Color32::from_rgb(150, 150, 150)),
+            );
+            ui.add_space(30.0);
+            
+            // Subtext
+            ui.label(
+                egui::RichText::new("please try and fetch the metadata before trying to organize with dlsite-metadata.")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(120, 120, 120)),
+            );
+            ui.label(
+                egui::RichText::new("If this message still shows up and you have fetched metadata, please check the log.")
+                    .size(16.0)
+                    .color(egui::Color32::from_rgb(120, 120, 120)),
+            );
+            ui.add_space(40.0);
+        });
+    }
+
     fn render_preview_tab(
         &mut self,
         ui: &mut egui::Ui,
         action: &mut Option<OrganizePanelAction>,
-        missing_metadata: bool,
     ) {
-        if missing_metadata {
-            ui.vertical_centered(|ui| {
-                ui.add_space(60.0);
-                // Large X Icon
-                ui.label(
-                    egui::RichText::new(egui_phosphor::regular::X)
-                        .size(120.0)
-                        .color(egui::Color32::from_rgb(100, 100, 100)), // Darker grey for the icon
-                );
-                ui.add_space(20.0);
-                
-                // Heading
-                ui.label(
-                    egui::RichText::new("No metadata found")
-                        .size(32.0)
-                        .strong()
-                        .color(egui::Color32::from_rgb(150, 150, 150)),
-                );
-                ui.add_space(30.0);
-                
-                // Subtext
-                ui.label(
-                    egui::RichText::new("please try and fetch the metadata before trying to organize with dlsite-metadata.")
-                        .size(16.0)
-                        .color(egui::Color32::from_rgb(120, 120, 120)),
-                );
-                ui.label(
-                    egui::RichText::new("If this message still shows up and you have fetched metadata, please check the log.")
-                        .size(16.0)
-                        .color(egui::Color32::from_rgb(120, 120, 120)),
-                );
-                ui.add_space(40.0);
-            });
-            return;
-        }
 
         if let Some(plan) = &self.preview_plan.clone() {
             // ════════════════════════════════════════════════════════════════
@@ -502,38 +550,14 @@ impl OrganizePanel {
                                 )))
                                 .clicked()
                             {
-                                // Export logic
-                                let filtered_tree =
-                                    crate::shared::components::preview_tree::filter_tree(
-                                        &self.organized_tree,
-                                        self.preview_filter,
-                                    );
-                                if let Ok(json) = serde_json::to_string_pretty(&filtered_tree) {
-                                    // Save to file dialog? Or just dump to clipboard/file?
-                                    // Implementation: Write to "tree_export.json" in temp or current dir for now?
-                                    // Or use rfd? UI crate might probably not have filtering dialog.
-                                    // Let's write to "preview_export.json" in current dir and notify.
-                                    if let Err(e) = std::fs::write("preview_export.json", json) {
-                                        tracing::error!("Failed to export tree: {}", e);
-                                    } else {
-                                        tracing::info!("Exported tree to preview_export.json");
-                                    }
-                                }
+                                self.export_dialog.open();
                             }
                         });
                     });
                 });
 
-            if missing_metadata {
-                ui.add_enabled_ui(false, |ui| {
-                    ui.add_space(4.0);
-                    // ... Proceed to render tree but disabled ...
-                });
-                // Actually, we just want to disable the Apply button, specifically.
-                // The user said "show... before you can organize, you can interact with organizer".
-                // Interaction with organizer likely refers to tree view toggle etc?
-                // Let's stick to warning + apply disabled.
-            }
+
+
 
             ui.add_space(4.0);
 
@@ -566,14 +590,28 @@ impl OrganizePanel {
                         .inner_margin(8.0)
                         .corner_radius(4.0)
                         .show(ui, |ui| {
+                            // Show pattern template
                             ui.horizontal(|ui| {
-                                ui.label(RichText::new("Template:").weak().size(11.0));
+                                ui.label(RichText::new("Pattern:").weak().size(11.0));
                                 ui.label(
                                     RichText::new(&plan.root_folder_template)
                                         .monospace()
-                                        .size(11.0),
+                                        .size(11.0)
+                                        .color(egui::Color32::from_rgb(250, 204, 21)),
+                                );
+                                ui.label(
+                                    RichText::new("→").weak().size(11.0),
+                                );
+                                ui.label(
+                                    RichText::new(&plan.root_folder)
+                                        .monospace()
+                                        .size(11.0)
+                                        .color(egui::Color32::from_rgb(134, 239, 172)),
                                 );
                             });
+                            ui.add_space(4.0);
+                            ui.separator();
+                            ui.add_space(4.0);
                             ui.add_space(4.0);
                             egui::Grid::new("variables_grid")
                                 .num_columns(2)
@@ -605,42 +643,110 @@ impl OrganizePanel {
             }
 
             // ════════════════════════════════════════════════════════════════
-            // STATS BAR
+            // STATS BAR with INTEGRITY VERIFICATION
             // ════════════════════════════════════════════════════════════════
+            let report = self.calculate_discrepancies();
+
             ui.horizontal(|ui| {
+                // Original stats
                 ui.label(
                     RichText::new(format!(
-                        "{} {} files",
-                        egui_phosphor::regular::FILE,
-                        plan.moves.len()
+                        "{} Original: {} files, {} folders",
+                        egui_phosphor::regular::ARCHIVE,
+                        report.original_files,
+                        report.original_folders
                     ))
                     .size(11.0)
                     .weak(),
                 );
+
                 ui.separator();
+
+                // Modified stats  
                 ui.label(
                     RichText::new(format!(
-                        "{} {} generated",
-                        egui_phosphor::regular::SPARKLE,
-                        plan.generated_files.len()
+                        "{} Modified: {} files ({} moved + {} gen + {} dl)",
+                        egui_phosphor::regular::FOLDER_NOTCH_OPEN,
+                        report.expected_modified_files,
+                        report.moved_files,
+                        report.generated_files,
+                        report.planned_screenshots
                     ))
                     .size(11.0)
                     .weak(),
                 );
-                if !plan.downloads.is_empty() {
+
+                // Discrepancy warning
+                if report.file_discrepancy != 0 {
+                    ui.separator();
+                    let discrepancy_text = if report.file_discrepancy > 0 {
+                        format!(
+                            "{} {} filtered out",
+                            egui_phosphor::regular::WARNING,
+                            report.file_discrepancy
+                        )
+                    } else {
+                        format!(
+                            "{} {} added",
+                            egui_phosphor::regular::PLUS,
+                            -report.file_discrepancy
+                        )
+                    };
+                    ui.label(
+                        RichText::new(discrepancy_text)
+                            .size(11.0)
+                            .color(if report.file_discrepancy > 0 {
+                                egui::Color32::from_rgb(251, 191, 36) // Warning yellow
+                            } else {
+                                egui::Color32::from_rgb(74, 222, 128) // Success green
+                            }),
+                    );
+                }
+
+                // Screenshot warning
+                if report.expected_screenshots != report.planned_screenshots {
                     ui.separator();
                     ui.label(
                         RichText::new(format!(
-                            "{} {} downloads",
-                            egui_phosphor::regular::DOWNLOAD,
-                            plan.downloads.len()
+                            "{} Screenshots: {}/{} planned",
+                            egui_phosphor::regular::IMAGE,
+                            report.planned_screenshots,
+                            report.expected_screenshots
                         ))
                         .size(11.0)
-                        .weak(),
-                    );
+                        .color(egui::Color32::from_rgb(251, 191, 36)),
+                    )
+                    .on_hover_text("Some screenshots may not be available or failed to load");
+                }
+                
+                // Fingerprint match indicator
+                ui.separator();
+                if report.content_match {
+                    ui.label(
+                        RichText::new(format!("{} Verified", egui_phosphor::regular::CHECK_CIRCLE))
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(74, 222, 128)), // Green
+                    )
+                    .on_hover_text(format!(
+                        "Content fingerprints match\nOriginal: {:016x}\nContent: {:016x}",
+                        report.original_fingerprint, report.content_fingerprint
+                    ));
+                } else {
+                    ui.label(
+                        RichText::new(format!("{} Mismatch", egui_phosphor::regular::X_CIRCLE))
+                            .size(11.0)
+                            .color(egui::Color32::from_rgb(248, 113, 113)), // Red
+                    )
+                    .on_hover_text(format!(
+                        "Content fingerprints differ - some files may be missing or extra\nOriginal: {:016x}\nContent: {:016x}",
+                        report.original_fingerprint, report.content_fingerprint
+                    ));
+                }
+            });
 
+            ui.horizontal(|ui| {
+                if !plan.downloads.is_empty() {
                     if !self.is_loading_screenshots {
-                        ui.separator();
                         if ui
                             .button(format!(
                                 "{} Load Screenshots",
@@ -653,8 +759,20 @@ impl OrganizePanel {
                             self.is_loading_screenshots = true;
                         }
                     } else {
-                        ui.separator();
                         ui.spinner();
+                        ui.label(RichText::new("Loading...").weak().size(11.0));
+                    }
+                }
+
+                // Export Issues button - visible when there are discrepancies
+                if report.file_discrepancy > 0 || report.expected_screenshots != report.planned_screenshots {
+                    ui.separator();
+                    if ui
+                        .button(format!("{} Export Issues", egui_phosphor::regular::WARNING_CIRCLE))
+                        .on_hover_text("Export a report of files filtered out and missing screenshots")
+                        .clicked()
+                    {
+                        Self::export_issues_report(&report, &self.original_tree, &self.organized_tree, &self.metadata);
                     }
                 }
             });
@@ -811,4 +929,268 @@ impl OrganizePanel {
     fn render_network_tab(&self, ui: &mut egui::Ui) {
         NetworkLog::render(ui, &self.network_log);
     }
+
+    /// Count files in a PreviewTreeNode tree (recursive)
+    fn count_files(nodes: &[preview_tree::PreviewTreeNode]) -> usize {
+        let mut count = 0;
+        for node in nodes {
+            if node.is_dir {
+                count += Self::count_files(&node.children);
+            } else {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Count folders in a PreviewTreeNode tree (recursive)
+    fn count_folders(nodes: &[preview_tree::PreviewTreeNode]) -> usize {
+        let mut count = 0;
+        for node in nodes {
+            if node.is_dir {
+                count += 1;
+                count += Self::count_folders(&node.children);
+            }
+        }
+        count
+    }
+
+    /// Get the number of expected screenshots from metadata
+    fn expected_screenshot_count(&self) -> usize {
+        self.metadata
+            .as_ref()
+            .map(|m| m.screenshots.len())
+            .unwrap_or(0)
+    }
+
+    /// Calculate discrepancies between original and modified trees
+    pub fn calculate_discrepancies(&self) -> IntegrityReport {
+        let original_file_count = Self::count_files(&self.original_tree);
+        let original_folder_count = Self::count_folders(&self.original_tree);
+
+        let expected_screenshots = self.expected_screenshot_count();
+        let planned_screenshots = self
+            .preview_plan
+            .as_ref()
+            .map(|p| p.downloads.len())
+            .unwrap_or(0);
+        let generated_files = self
+            .preview_plan
+            .as_ref()
+            .map(|p| p.generated_files.len())
+            .unwrap_or(0);
+        let moved_files = self
+            .preview_plan
+            .as_ref()
+            .map(|p| p.moves.len())
+            .unwrap_or(0);
+
+        // Files expected in modified = moved + generated + downloads
+        let expected_modified_files = moved_files + generated_files + planned_screenshots;
+
+        // Compute fingerprints for quick equality check
+        // Compare: original file paths vs source paths from plan.moves
+        // This verifies that all original files are accounted for in the organization plan
+        
+        // 1. Original file paths (strip archive root folder)
+        let mut original_set = std::collections::HashSet::new();
+        Self::collect_full_paths(&self.original_tree, &mut original_set, "", true);
+        let mut original_paths: Vec<String> = original_set.into_iter().collect();
+        original_paths.sort();
+        
+        // 2. Source paths from moves (strip archive root folder - same as original)
+        let mut planned_sources: Vec<String> = self
+            .preview_plan
+            .as_ref()
+            .map(|p| {
+                p.moves
+                    .iter()
+                    .map(|(src, _)| {
+                        // Strip first path component (archive root)
+                        src.split(['/', '\\'])
+                            .skip(1)
+                            .collect::<Vec<_>>()
+                            .join("/")
+                    })
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        planned_sources.sort();
+        
+        // FNV-1a hash for fast fingerprinting
+        let original_fingerprint = Self::fnv1a_hash(&original_paths.join("\n"));
+        let content_fingerprint = Self::fnv1a_hash(&planned_sources.join("\n"));
+        let content_match = original_fingerprint == content_fingerprint;
+
+        IntegrityReport {
+            original_files: original_file_count,
+            original_folders: original_folder_count,
+            moved_files,
+            generated_files,
+            expected_screenshots,
+            planned_screenshots,
+            expected_modified_files,
+            file_discrepancy: original_file_count as i64 - moved_files as i64,
+            original_fingerprint,
+            content_fingerprint,
+            content_match,
+        }
+    }
+
+    /// FNV-1a hash for fast fingerprinting  
+    fn fnv1a_hash(data: &str) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+        
+        let mut hash = FNV_OFFSET;
+        for byte in data.bytes() {
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+
+    /// Export a report of all discrepancies (files filtered out, missing screenshots, etc.)
+    fn export_issues_report(
+        report: &IntegrityReport,
+        original_tree: &[preview_tree::PreviewTreeNode],
+        organized_tree: &[preview_tree::PreviewTreeNode],
+        metadata: &Option<arclain_core::organization::GameMetadata>,
+    ) {
+        let mut content = String::new();
+        content.push_str("=== INTEGRITY REPORT ===\n\n");
+        content.push_str(&format!("Generated: {}\n\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+
+        // Summary
+        content.push_str("## SUMMARY\n\n");
+        content.push_str(&format!("Original Files: {}\n", report.original_files));
+        content.push_str(&format!("Original Folders: {}\n", report.original_folders));
+        content.push_str(&format!("Files Moved: {}\n", report.moved_files));
+        content.push_str(&format!("Files Generated: {}\n", report.generated_files));
+        content.push_str(&format!("Screenshots Planned: {}\n", report.planned_screenshots));
+        content.push_str(&format!("Screenshots Expected: {}\n", report.expected_screenshots));
+        content.push_str(&format!("File Discrepancy: {}\n\n", report.file_discrepancy));
+
+        // Files filtered out (in original but not in modified)
+        if report.file_discrepancy > 0 {
+            content.push_str("## FILES FILTERED OUT\n\n");
+            content.push_str("The following files exist in the original archive but will not be included in the organized output:\n\n");
+
+            // Collect all original file full paths
+            let mut original_files = std::collections::HashSet::new();
+            Self::collect_full_paths(original_tree, &mut original_files, "", false);
+
+            // Collect all modified file destination paths (stripped of root folder prefix)
+            let mut modified_files = std::collections::HashSet::new();
+            Self::collect_full_paths(organized_tree, &mut modified_files, "", true);
+
+            // Find files in original not in modified
+            let mut missing: Vec<_> = original_files
+                .difference(&modified_files)
+                .cloned()
+                .collect();
+            missing.sort();
+
+            for file in &missing {
+                content.push_str(&format!("  - {}\n", file));
+            }
+
+            if missing.is_empty() {
+                content.push_str("  (No files filtered out based on tree comparison)\n");
+            }
+        }
+
+        // Screenshot issues
+        if report.expected_screenshots != report.planned_screenshots {
+            content.push_str("\n## SCREENSHOT ISSUES\n\n");
+            content.push_str(&format!(
+                "Expected {} screenshots from metadata, but only {} are planned for download.\n",
+                report.expected_screenshots, report.planned_screenshots
+            ));
+            content.push_str("This may be due to:\n");
+            content.push_str("  - Screenshots already cached\n");
+            content.push_str("  - Invalid or missing URLs in metadata\n");
+            content.push_str("  - Plugin not returning all screenshot URLs\n");
+        }
+
+        // Metadata summary
+        if let Some(meta) = metadata {
+            content.push_str("\n## METADATA SUMMARY\n\n");
+            content.push_str(&format!("Title: {}\n", meta.title));
+            content.push_str(&format!("Product ID: {}\n", meta.product_id));
+            if let Some(creator) = &meta.creator {
+                content.push_str(&format!("Creator: {}\n", creator));
+            }
+            content.push_str(&format!("Screenshots in metadata: {}\n", meta.screenshots.len()));
+        }
+
+        // Save the report
+        let task = rfd::FileDialog::new()
+            .set_file_name("integrity_report.txt")
+            .add_filter("Text File", &["txt"])
+            .save_file();
+
+        if let Some(path) = task {
+            if let Err(e) = std::fs::write(&path, content) {
+                tracing::error!("Failed to save integrity report: {}", e);
+            } else {
+                tracing::info!("Exported integrity report to {:?}", path);
+                if let Err(e) = open::that(path) {
+                    tracing::warn!("Failed to open exported file: {}", e);
+                }
+            }
+        }
+    }
+
+    /// Collect all file full paths from a tree (helper for export_issues_report)
+    fn collect_full_paths(
+        nodes: &[preview_tree::PreviewTreeNode],
+        result: &mut std::collections::HashSet<String>,
+        prefix: &str,
+        strip_first_component: bool,
+    ) {
+        for node in nodes {
+            let path = if prefix.is_empty() {
+                node.name.clone()
+            } else {
+                format!("{}/{}", prefix, node.name)
+            };
+
+            if node.is_dir {
+                Self::collect_full_paths(&node.children, result, &path, strip_first_component);
+            } else {
+                // Optionally strip the first path component for comparison
+                let final_path = if strip_first_component {
+                    // e.g., "[RJ123]/Game/data/file.json" -> "Game/data/file.json"
+                    path.split('/').skip(1).collect::<Vec<_>>().join("/")
+                } else {
+                    path
+                };
+                if !final_path.is_empty() {
+                    result.insert(final_path);
+                }
+            }
+        }
+    }
 }
+
+/// Report of integrity statistics
+#[derive(Debug, Clone, Default)]
+pub struct IntegrityReport {
+    pub original_files: usize,
+    pub original_folders: usize,
+    pub moved_files: usize,
+    pub generated_files: usize,
+    pub expected_screenshots: usize,
+    pub planned_screenshots: usize,
+    pub expected_modified_files: usize,
+    pub file_discrepancy: i64, // Negative = files filtered out
+    /// Fingerprint of original file paths (for quick equality check)
+    pub original_fingerprint: u64,
+    /// Fingerprint of content file paths in modified tree (excluding generated/downloads)
+    pub content_fingerprint: u64,
+    /// Whether content fingerprints match (all original content accounted for)
+    pub content_match: bool,
+}
+

@@ -37,10 +37,12 @@ pub struct RuleEngine;
 
 impl RuleEngine {
     /// Find all rules that match the given archive
+    /// Find all rules that match the given archive
     pub fn find_matching_rules(
         rules: &[OrganizationRule],
         archive_name: &str,
         entries: &[ArchiveEntry],
+        game_metadata: Option<&super::organizer::GameMetadata>,
     ) -> Vec<OrganizationRule> {
         let mut matches = Vec::new();
 
@@ -49,7 +51,7 @@ impl RuleEngine {
                 continue;
             }
 
-            if Self::matches_trigger(&rule.trigger, archive_name, entries) {
+            if Self::matches_trigger(&rule.trigger, archive_name, entries, game_metadata) {
                 matches.push(rule.clone());
             }
         }
@@ -59,11 +61,37 @@ impl RuleEngine {
         matches
     }
 
-    fn matches_trigger(
+    pub fn matches_trigger(
         trigger: &RuleTrigger,
         archive_name: &str,
         entries: &[ArchiveEntry],
+        game_metadata: Option<&super::organizer::GameMetadata>,
     ) -> bool {
+        // 1. Check metadata source trigger (Highest Priority)
+        if let Some(source_trigger) = &trigger.metadata_source {
+            if let Some(metadata) = game_metadata {
+                if metadata.source.eq_ignore_ascii_case(source_trigger) {
+                    return true;
+                }
+            }
+            // If trigger requires metadata source but we don't have it or it doesn't match:
+            // Do we fail immediately? Or fallback to regex?
+            // "Trigger matching" implies ALL conditions must check out, OR specific ones override?
+            // Usually, if a specific trigger is set, it MUST match.
+            // But here "metadata_source" implies "If this matches, rule applies".
+            // If it DOESN'T match, we should probably return FALSE immediately if we treat it as a constraint.
+            // "I want this rule to apply only for DLsite games".
+            // So if `source_trigger` is set, and metadata source != trigger, return false.
+            if let Some(metadata) = game_metadata {
+                if !metadata.source.eq_ignore_ascii_case(source_trigger) {
+                    return false;
+                }
+            } else {
+                // Trigger requires metadata, but we have none. Match failed.
+                return false;
+            }
+        }
+
         // Check filename pattern
         if let Some(pattern) = &trigger.filename_pattern {
             if let Ok(re) = Regex::new(pattern) {
@@ -148,17 +176,75 @@ impl RuleEngine {
             }
         }
 
+        // Detect content root early if sanitization is enabled
+        let content_root = if rule.actions.use_standard_layout {
+            Some(Self::find_game_content_root_in_entries(entries))
+        } else {
+            None
+        };
+
+        // If we found a content root (e.g. "Game_v1.0_[Patched]"), try to extract useful info from its name
+        if let Some(root_path) = &content_root {
+            if let Some(folder_name) = root_path.file_name().and_then(|n| n.to_str()) {
+                // Extract Version from folder name
+                if let Ok(re) = Regex::new(r"[vV](\d+(\.\d+)+)") {
+                    if let Some(caps) = re.captures(folder_name) {
+                        if let Some(v) = caps.get(1) {
+                            metadata.insert("version".to_string(), v.as_str().to_string());
+                        }
+                    }
+                }
+
+                // Extract [TaGs] from folder name
+                if let Ok(re) = Regex::new(r"\[([^\]]+)\]") {
+                    let mut tags = Vec::new();
+                    for cap in re.captures_iter(folder_name) {
+                        if let Some(m) = cap.get(1) {
+                            tags.push(m.as_str().to_string());
+                        }
+                    }
+                    if !tags.is_empty() {
+                        metadata.insert("root_tags".to_string(), tags.join(", "));
+                        metadata.insert("folder_name".to_string(), folder_name.to_string());
+                    }
+                }
+            }
+        }
+
         // Determine root folder name
         let root_folder = if let Some(root_template) = &rule.actions.root_folder {
             Self::expand_variables(root_template, &metadata)
         } else {
-            // Default to archive name without extension if not specified?
-            // Or just "Game"?
             "Game".to_string()
         };
 
         // Process file moves
-        if !rule.actions.use_standard_layout {
+        if let Some(content_root) = content_root {
+            // Sanitization Mode: We already found the root, use it to flatten
+            // Put game content inside a "Game" subfolder within the root_folder
+            let content_root_path = Path::new(&content_root);
+
+            for entry in entries {
+                if entry.is_dir {
+                    continue;
+                }
+
+                // Only include files that are inside the content root
+                // (This filters out junk wrappers efficiently)
+                if let Ok(relative_content_path) =
+                    Path::new(&entry.path).strip_prefix(content_root_path)
+                {
+                    // Add "Game/" prefix to put content in a subfolder
+                    let dest_path = format!(
+                        "{}/Game/{}",
+                        root_folder,
+                        relative_content_path.to_string_lossy()
+                    );
+                    let new_path = dest_path.replace("//", "/").replace("\\", "/");
+                    moves.push((entry.path.clone(), new_path));
+                }
+            }
+        } else if !rule.actions.use_standard_layout {
             // 1. Find common root directory to handle nested archives properly
             // e.g. if everything is in "GameName/...", we want to strip "GameName/"
             let paths: Vec<&Path> = entries.iter().map(|e| Path::new(&e.path)).collect();
@@ -397,6 +483,77 @@ impl RuleEngine {
                 }
             }
         }
+    }
+    /// Helper to find the "game content" root folder in entries
+    /// Mimics logic from organizer.rs::find_and_flatten_game_content
+    fn find_game_content_root_in_entries(entries: &[ArchiveEntry]) -> PathBuf {
+        let game_indicators = [
+            "Game.exe",
+            "game.exe",
+            "nw.exe",
+            "index.html",
+            "package.json",
+            "www",
+            "data",
+            "js",
+        ];
+
+        let mut best_root = PathBuf::new();
+        let mut best_score = 0;
+
+        // Group entries by parent directory
+        let mut dirs: HashMap<PathBuf, usize> = HashMap::new();
+
+        for entry in entries {
+            let path = Path::new(&entry.path);
+            if let Some(parent) = path.parent() {
+                // If this file is an indicator, score the parent
+                if let Some(fname) = path.file_name() {
+                    let fname_str = fname.to_string_lossy();
+                    if game_indicators
+                        .iter()
+                        .any(|i| fname_str.eq_ignore_ascii_case(i))
+                    {
+                        *dirs.entry(parent.to_path_buf()).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        // Find dir with >= 2 indicators
+        for (dir, score) in dirs {
+            if score >= 2 && score > best_score {
+                best_score = score;
+                best_root = dir;
+            }
+        }
+
+        // If no definitive root found (score < 2), fallback to common root or just root
+        if best_score < 2 {
+            // Find common root logic could be reused here or simple fallback
+            // For now, if we can't find game content, we assume content is at root
+            // of the *entries* (common prefix)
+            let paths: Vec<&Path> = entries.iter().map(|e| Path::new(&e.path)).collect();
+            if !paths.is_empty() {
+                let mut iter = paths.iter();
+                let mut root = iter
+                    .next()
+                    .unwrap()
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .to_path_buf();
+                for path in iter {
+                    while !path.starts_with(&root) {
+                        if !root.pop() {
+                            break;
+                        }
+                    }
+                }
+                return root;
+            }
+        }
+
+        best_root
     }
 }
 

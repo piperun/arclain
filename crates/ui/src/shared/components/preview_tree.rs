@@ -146,7 +146,14 @@ pub fn build_tree_from_paths(paths: &[(String, bool, bool)]) -> Vec<PreviewTreeN
     }
 
     // Now build the tree structure by linking children to parents
-    let all_paths: Vec<String> = nodes.keys().cloned().collect();
+    // CRITICAL: Sort by depth DESCENDING (deepest paths first) so children are
+    // fully linked before their parent gets cloned and pushed to grandparent
+    let mut all_paths: Vec<String> = nodes.keys().cloned().collect();
+    all_paths.sort_by(|a, b| {
+        let depth_a = a.matches('/').count();
+        let depth_b = b.matches('/').count();
+        depth_b.cmp(&depth_a) // Descending order - deepest first
+    });
 
     for path in &all_paths {
         // Find parent path
@@ -403,4 +410,137 @@ pub fn build_original_tree(entries: &[String]) -> Vec<PreviewTreeNode> {
     let paths: Vec<(String, bool, bool)> =
         entries.iter().map(|p| (p.clone(), false, false)).collect();
     build_tree_from_paths(&paths)
+}
+
+/// Count files recursively in a tree (used in tests)
+#[allow(dead_code)]
+pub fn count_files_in_tree(nodes: &[PreviewTreeNode]) -> usize {
+    let mut count = 0;
+    for node in nodes {
+        if node.is_dir {
+            count += count_files_in_tree(&node.children);
+        } else {
+            count += 1;
+        }
+    }
+    count
+}
+
+/// Count folders recursively in a tree (used in tests)
+#[allow(dead_code)]
+pub fn count_folders_in_tree(nodes: &[PreviewTreeNode]) -> usize {
+    let mut count = 0;
+    for node in nodes {
+        if node.is_dir {
+            count += 1;
+            count += count_folders_in_tree(&node.children);
+        }
+    }
+    count
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_tree_simple() {
+        let paths = vec!["root/file1.txt".to_string(), "root/file2.txt".to_string()];
+        let tree = build_original_tree(&paths);
+
+        assert_eq!(tree.len(), 1, "Should have 1 root node");
+        assert!(tree[0].is_dir, "Root should be a directory");
+        assert_eq!(tree[0].children.len(), 2, "Root should have 2 children");
+        assert_eq!(count_files_in_tree(&tree), 2);
+        assert_eq!(count_folders_in_tree(&tree), 1);
+    }
+
+    #[test]
+    fn test_build_tree_nested() {
+        let paths = vec![
+            "root/audio/bgm/music.mp3".to_string(),
+            "root/audio/se/sound.wav".to_string(),
+            "root/data/config.json".to_string(),
+        ];
+        let tree = build_original_tree(&paths);
+
+        assert_eq!(tree.len(), 1, "Should have 1 root node");
+        assert_eq!(count_files_in_tree(&tree), 3);
+        assert_eq!(
+            count_folders_in_tree(&tree),
+            5,
+            "Should have 5 folders: root, audio, bgm, se, data"
+        );
+    }
+
+    #[test]
+    fn test_build_tree_preserves_all_children() {
+        // Regression test: ensure all nested children are properly linked
+        let paths = vec![
+            "Game/audio/bgm/Battle1.mp3".to_string(),
+            "Game/audio/bgm/Battle2.mp3".to_string(),
+            "Game/audio/se/hit.wav".to_string(),
+            "Game/data/Actors.json".to_string(),
+            "Game/data/Maps/Map001.json".to_string(),
+            "Game/index.html".to_string(),
+        ];
+        let tree = build_original_tree(&paths);
+
+        assert_eq!(tree.len(), 1, "Should have 1 root node (Game)");
+        assert_eq!(count_files_in_tree(&tree), 6, "Should have 6 files total");
+        assert_eq!(
+            count_folders_in_tree(&tree),
+            6,
+            "Should have 6 folders: Game, audio, bgm, se, data, Maps"
+        );
+
+        // Verify nested structure
+        let game = &tree[0];
+        assert_eq!(game.name, "Game");
+        assert!(
+            game.children.len() >= 3,
+            "Game should have at least 3 children (audio, data, index.html)"
+        );
+
+        // Find audio folder and verify it has children
+        let audio = game.children.iter().find(|c| c.name == "audio");
+        assert!(audio.is_some(), "Should have audio folder");
+        let audio = audio.unwrap();
+        assert!(
+            audio.children.len() >= 2,
+            "Audio should have at least 2 children (bgm, se)"
+        );
+
+        // Verify bgm has files
+        let bgm = audio.children.iter().find(|c| c.name == "bgm");
+        assert!(bgm.is_some(), "Should have bgm folder");
+        let bgm = bgm.unwrap();
+        assert_eq!(bgm.children.len(), 2, "bgm should have 2 files");
+    }
+
+    #[test]
+    fn test_count_with_expected_values() {
+        // Based on user's real data: 27 folders, 1016 files
+        // Create a simplified version of the archive structure
+        let mut paths = Vec::new();
+
+        // Add some typical RPG Maker structure
+        for i in 0..100 {
+            paths.push(format!("Game/www/audio/bgm/bgm{:03}.m4a", i));
+            paths.push(format!("Game/www/audio/se/se{:03}.m4a", i));
+            paths.push(format!("Game/www/img/characters/char{:03}.png", i));
+        }
+        paths.push("Game/www/data/Actors.json".to_string());
+        paths.push("Game/www/data/System.json".to_string());
+        paths.push("Game/www/index.html".to_string());
+        paths.push("Game/Game.exe".to_string());
+
+        let tree = build_original_tree(&paths);
+
+        // Should count all files correctly
+        assert_eq!(count_files_in_tree(&tree), paths.len());
+
+        // Folders: Game, www, audio, bgm, se, img, characters, data = 8
+        assert_eq!(count_folders_in_tree(&tree), 8);
+    }
 }

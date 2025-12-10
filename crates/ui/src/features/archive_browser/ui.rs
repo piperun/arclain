@@ -134,7 +134,8 @@ fn render_properties_panel(
                 }
 
                 // Selected File Info
-                let selected_entries: Vec<_> = state.entries.iter().filter(|e| e.selected).collect();
+                let selected_entries: Vec<_> =
+                    state.entries.iter().filter(|e| e.selected).collect();
                 if selected_entries.len() == 1 {
                     let entry = selected_entries[0];
                     groups.push(properties_panel::create_file_info_group(
@@ -170,8 +171,8 @@ fn render_properties_panel(
                     PropertiesPanelAction::Organize => {
                         action = Some(ArchiveBrowserAction::Organize);
                     }
-                    PropertiesPanelAction::Metadata(_) => {
-                        // TODO: Handle metadata action if needed
+                    PropertiesPanelAction::Metadata(json) => {
+                        action = Some(ArchiveBrowserAction::Metadata(json));
                     }
                     PropertiesPanelAction::None => {}
                 }

@@ -33,9 +33,6 @@ impl OrganizationFeature {
                     crate::features::organization::OrganizePanelAction::Apply => {
                         action = OrganizationAction::Apply;
                     }
-                    crate::features::organization::OrganizePanelAction::Cancel => {
-                        action = OrganizationAction::Cancel;
-                    }
                     _ => {}
                 }
             }

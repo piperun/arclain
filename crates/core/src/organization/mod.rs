@@ -10,8 +10,8 @@ mod pruning_tests;
 
 // Re-export commonly used types from organizer
 pub use organizer::{
-    check_archive_structure, execute_organization_plan, needs_better_compression,
-    organize_archive, ArchiveStructure, GameMetadata, ScreenshotData,
+    check_archive_structure, execute_organization_plan, needs_better_compression, organize_archive,
+    ArchiveStructure, GameMetadata, ScreenshotData,
 };
 
 /// A rule for organizing archives
@@ -62,6 +62,9 @@ pub struct RuleTrigger {
 
     /// Maximum size in bytes
     pub max_size: Option<u64>,
+
+    /// Match if the game metadata source matches this string (e.g., "dlsite")
+    pub metadata_source: Option<String>,
 }
 
 /// Actions to perform when organizing

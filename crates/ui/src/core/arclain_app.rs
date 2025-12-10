@@ -313,10 +313,11 @@ impl eframe::App for ArclainApp {
                                 // Check enabled plugins (specifically DLsite)
                                 let dlsite_enabled = if let Some(manager) = &state.plugin_manager {
                                     let mgr = manager.lock();
-                                    mgr.list_plugins().iter().any(|p| p.id.eq_ignore_ascii_case("dlsite") && p.enabled)
+                                    mgr.list_plugins().iter().any(|p| p.id.eq_ignore_ascii_case("dlsite-metadata") && p.enabled)
                                 } else {
                                     false
                                 };
+
 
                                 if let Some(dbs) = &state.dbs {
                                    let db = &dbs.config;
@@ -550,6 +551,19 @@ impl eframe::App for ArclainApp {
                         crate::features::archive_browser::ArchiveBrowserAction::DeleteFile(_file) => {
                             // TODO: Delete file
                         }
+                        crate::features::archive_browser::ArchiveBrowserAction::Metadata(json) => {
+                            // Parse metadata JSON and store in state
+                            match serde_json::from_str::<arclain_core::organization::GameMetadata>(&json) {
+                                Ok(metadata) => {
+                                    tracing::info!("Received metadata from plugin: {:?}", metadata.title);
+                                    let mut state = self.state.lock();
+                                    state.current_game_metadata = Some(metadata);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Failed to parse metadata JSON: {}", e);
+                                }
+                            }
+                        }
                         crate::features::archive_browser::ArchiveBrowserAction::Organize => {
                             // Trigger organization flow same as toolbar
                             let state = self.state.lock();
@@ -659,9 +673,6 @@ impl eframe::App for ArclainApp {
                             match result {
                                 crate::features::organization::OrganizePanelAction::Apply => {
                                     action = crate::features::organization::OrganizationAction::Apply;
-                                }
-                                crate::features::organization::OrganizePanelAction::Cancel => {
-                                    action = crate::features::organization::OrganizationAction::Cancel;
                                 }
                                 crate::features::organization::OrganizePanelAction::LoadScreenshots => {
                                     if let Some(tx) = panel.screenshot_tx.clone() {

@@ -1,6 +1,7 @@
 use arclain_core::organization::OrganizationRule;
-use egui::{Align, Layout, Window};
+use eframe::egui::{self, Align, Layout, Window};
 
+#[allow(dead_code)]
 pub struct AddRuleDialog {
     open: bool,
     rule: OrganizationRule,

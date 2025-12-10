@@ -33,4 +33,5 @@ pub enum ArchiveBrowserAction {
     EditFile(String),
     DeleteFile(String),
     Organize,
+    Metadata(String), // Metadata JSON from plugin
 }

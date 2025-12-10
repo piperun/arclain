@@ -131,6 +131,7 @@ pub fn ensure_default_rules(db: &arclain_db::SqliteDb) -> Result<()> {
             extensions: None,
             min_size: None,
             max_size: None,
+            metadata_source: None,
         },
         actions: crate::organization::RuleActions {
             root_folder: Some("Game".to_string()),
@@ -145,6 +146,34 @@ pub fn ensure_default_rules(db: &arclain_db::SqliteDb) -> Result<()> {
 
     save_org_rule(db, &dlsite_rule)?;
     tracing::info!("Seeded default DLsite rule");
+
+    Ok(())
+}
+
+/// Upsert system rules (e.g. from plugins)
+/// Matches existing system rules by name and updates them.
+/// Creates new rules if not found.
+pub fn upsert_system_rules(db: &arclain_db::SqliteDb, rules: &[OrganizationRule]) -> Result<()> {
+    let existing_rules = list_org_rules(db)?;
+
+    for rule in rules {
+        // Find existing system rule with same name
+        if let Some(existing) = existing_rules
+            .iter()
+            .find(|r| r.is_system && r.name == rule.name)
+        {
+            // Check if actual content changed? optimization?
+            // For now, always update to ensure latest definition
+            let mut updated = rule.clone();
+            updated.id = existing.id; // Preserve ID
+            save_org_rule(db, &updated)?;
+            tracing::debug!("Updated system rule: {}", rule.name);
+        } else {
+            // Insert new rule
+            save_org_rule(db, rule)?;
+            tracing::info!("Inserted new system rule: {}", rule.name);
+        }
+    }
 
     Ok(())
 }

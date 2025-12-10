@@ -167,3 +167,6 @@ impl Host for HostFunctions {
 
 // Implement the ui::Host trait (empty - ui interface only defines types)
 impl crate::arclain::plugin::ui::Host for HostFunctions {}
+
+// Implement the rules::Host trait (empty - rules interface only defines types)
+impl crate::arclain::plugin::rules::Host for HostFunctions {}
