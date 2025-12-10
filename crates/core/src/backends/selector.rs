@@ -54,12 +54,18 @@ impl BackendSelector {
 
         let backend: Arc<dyn ArchiveBackend> = match ext.as_str() {
             "rar" | "r00" | "r01" | "r02" | "r03" => {
-                // Try native RAR backend first, fallback to 7z CLI
-                let primary = Arc::new(UnrarBackend::new());
-                let fallback = Arc::new(SevenZipCli::detect(None)?);
-                let backend = Arc::new(FallbackBackend::new(primary, fallback));
+                // Try UnRAR → libarchive → 7z CLI fallback chain
+                let unrar = Arc::new(UnrarBackend::new());
+                let libarchive = Arc::new(LibarchiveBackend::new());
+                let sevenz = Arc::new(SevenZipCli::detect(None)?);
+
+                // Build nested fallback: libarchive → 7z CLI
+                let secondary_chain = Arc::new(FallbackBackend::new(libarchive, sevenz));
+                // Then: UnRAR → (libarchive → 7z CLI)
+                let backend = Arc::new(FallbackBackend::new(unrar, secondary_chain));
+
                 info!(
-                    "Selected {} → {} fallback chain for {} (extension: .{})",
+                    "Selected {} → Libarchive (Native) → {} fallback chain for {} (extension: .{})",
                     backend.name(),
                     "7z (CLI)",
                     archive.display(),

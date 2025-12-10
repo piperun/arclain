@@ -31,8 +31,13 @@ pub fn execute_organization_plan(
     // Select appropriate backend based on archive type (RAR uses UnRAR, etc.)
     let backend = backend_selector.select(source)?;
     let archive = if let Some(ref pw) = password {
+        info!(
+            "Initializing archive handle with password (length: {})",
+            pw.len()
+        );
         arclain_core::Archive::with_password(backend, source, pw.clone())
     } else {
+        info!("Initializing archive handle WITHOUT password");
         arclain_core::Archive::new(backend, source)
     };
 
