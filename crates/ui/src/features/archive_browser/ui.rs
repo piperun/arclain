@@ -90,7 +90,7 @@ fn render_tree_panel(
                 &folders,
                 &current_path,
             ) {
-                *action = ArchiveBrowserAction::NavigateToFolder(path);
+                *action = ArchiveBrowserAction::NavigateToPath(path);
             }
         });
 }
@@ -243,7 +243,7 @@ fn render_breadcrumb(
             if let Some(path) =
                 file_list::render_breadcrumb(ui, &shared.theme, &current_path, &archive_name)
             {
-                *action = ArchiveBrowserAction::NavigateToFolder(path);
+                *action = ArchiveBrowserAction::NavigateToPath(path);
             }
         });
 }

@@ -443,8 +443,13 @@ impl AppState {
     }
 
     pub fn navigate_to_folder(&mut self, folder: &str) {
-        debug!("Navigating to folder: {}", folder);
+        debug!("Navigating to folder (relative): {}", folder);
         self.navigation.navigate_to(folder);
+    }
+
+    pub fn navigate_to_path(&mut self, path: &str) {
+        debug!("Navigating to path (absolute): {}", path);
+        self.navigation.navigate_to_absolute(path);
     }
 
     pub fn navigate_back(&mut self) {

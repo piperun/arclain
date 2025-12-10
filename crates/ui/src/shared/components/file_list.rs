@@ -76,6 +76,16 @@ pub fn render_breadcrumb(
     archive_name: &str,
 ) -> Option<String> {
     let mut navigate_to: Option<String> = None;
+    let available_width = ui.available_width();
+    let default_font = egui::FontId::proportional(14.0);
+
+    // Estimate width of root button
+    let root_galley = ui.painter().layout_no_wrap(
+        archive_name.to_string(),
+        default_font.clone(),
+        theme.colors.text_primary,
+    );
+    let root_width = root_galley.rect.width() + 16.0; // padding
 
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
@@ -93,7 +103,6 @@ pub fn render_breadcrumb(
 
         if root_response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            // Draw underline on hover
             let rect = root_response.rect;
             ui.painter().line_segment(
                 [
@@ -105,69 +114,168 @@ pub fn render_breadcrumb(
         }
 
         if root_response.clicked() {
-            navigate_to = Some(String::new()); // Navigate to root
+            navigate_to = Some(String::new());
         }
 
         if !current_path.is_empty() {
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new("/")
-                        .size(14.0)
-                        .color(theme.colors.text_muted),
-                )
-                .selectable(false),
+            // Separator after root
+            ui.label(
+                egui::RichText::new("/")
+                    .size(14.0)
+                    .color(theme.colors.text_muted),
             );
 
-            // Split path into segments and make each clickable
             let segments: Vec<&str> = current_path.split('/').collect();
-            for (idx, segment) in segments.iter().enumerate() {
-                if idx > 0 {
-                    ui.add(
-                        egui::Label::new(
+            let separator_width = 12.0; // approx width of " / "
+
+            // Calculate widths of all segments
+            let segment_widths: Vec<f32> = segments
+                .iter()
+                .map(|s| {
+                    ui.painter()
+                        .layout_no_wrap(
+                            s.to_string(),
+                            default_font.clone(),
+                            theme.colors.text_primary,
+                        )
+                        .rect
+                        .width()
+                })
+                .collect();
+
+            let total_segments_width: f32 = segment_widths.iter().sum::<f32>()
+                + (segment_widths.len() as f32 * separator_width);
+
+            // Determine if we need to compact
+            // We need space for Root + Current Path. If it overflows, we collapse middle items.
+            // Remaining width for path segments:
+            let path_available_width = available_width - root_width;
+
+            if total_segments_width <= path_available_width || segments.len() <= 2 {
+                // Render all segments normally
+                for (idx, segment) in segments.iter().enumerate() {
+                    if idx > 0 {
+                        ui.label(
                             egui::RichText::new("/")
                                 .size(14.0)
                                 .color(theme.colors.text_muted),
-                        )
-                        .selectable(false),
+                        );
+                    }
+                    render_breadcrumb_segment(
+                        ui,
+                        theme,
+                        segment,
+                        idx == segments.len() - 1,
+                        idx,
+                        &segments,
+                        &mut navigate_to,
+                    );
+                }
+            } else {
+                // COMPACT MODE: Show First segment ... Last 2 segments (or fit as many of last as possible)
+                // Actually, standard is: ... / grandparent / parent / current
+                // We always want to show the current (last) folder.
+
+                // Construct items to show from back to front
+                let mut kept_indices = std::collections::VecDeque::new();
+                let mut used_width = 0.0;
+                let ellipsis_width = 24.0;
+
+                // Always show last one
+                if let Some(last_idx) = segments.len().checked_sub(1) {
+                    kept_indices.push_front(last_idx);
+                    used_width += segment_widths[last_idx];
+                }
+
+                // Try adding more from the end backwards
+                for idx in (0..segments.len() - 1).rev() {
+                    let w = segment_widths[idx] + separator_width;
+                    if used_width + w + ellipsis_width + separator_width < path_available_width {
+                        kept_indices.push_front(idx);
+                        used_width += w;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Check if we need ellipsis (if we didn't include index 0)
+                let show_ellipsis = kept_indices.front().map(|&i| i > 0).unwrap_or(false);
+
+                if show_ellipsis {
+                    ui.label(
+                        egui::RichText::new("...")
+                            .size(14.0)
+                            .color(theme.colors.text_muted),
+                    );
+                    ui.label(
+                        egui::RichText::new("/")
+                            .size(14.0)
+                            .color(theme.colors.text_muted),
                     );
                 }
 
-                let is_last = idx == segments.len() - 1;
-                let text_color = if is_last {
-                    theme.colors.text_primary
-                } else {
-                    theme.colors.text_secondary
-                };
-
-                let segment_response = ui.add(
-                    egui::Label::new(egui::RichText::new(*segment).size(14.0).color(text_color))
-                        .selectable(false)
-                        .sense(egui::Sense::click()),
-                );
-
-                if segment_response.hovered() {
-                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    // Draw underline on hover
-                    let rect = segment_response.rect;
-                    ui.painter().line_segment(
-                        [
-                            egui::pos2(rect.min.x, rect.max.y),
-                            egui::pos2(rect.max.x, rect.max.y),
-                        ],
-                        egui::Stroke::new(1.0, text_color),
+                for (i, &idx) in kept_indices.iter().enumerate() {
+                    if i > 0 {
+                        ui.label(
+                            egui::RichText::new("/")
+                                .size(14.0)
+                                .color(theme.colors.text_muted),
+                        );
+                    }
+                    render_breadcrumb_segment(
+                        ui,
+                        theme,
+                        segments[idx],
+                        idx == segments.len() - 1,
+                        idx,
+                        &segments,
+                        &mut navigate_to,
                     );
-                }
-
-                if segment_response.clicked() {
-                    // Build path up to this segment
-                    let target_path = segments[..=idx].join("/");
-                    navigate_to = Some(target_path);
                 }
             }
         }
     });
 
     navigate_to
+}
+
+fn render_breadcrumb_segment(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    segment: &str,
+    is_last: bool,
+    idx: usize,
+    all_segments: &[&str],
+    navigate_to: &mut Option<String>,
+) {
+    let text_color = if is_last {
+        theme.colors.text_primary
+    } else {
+        theme.colors.text_secondary
+    };
+
+    let response = ui.add(
+        egui::Label::new(egui::RichText::new(segment).size(14.0).color(text_color))
+            .selectable(false)
+            .sense(egui::Sense::click()),
+    );
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        let rect = response.rect;
+        ui.painter().line_segment(
+            [
+                egui::pos2(rect.min.x, rect.max.y),
+                egui::pos2(rect.max.x, rect.max.y),
+            ],
+            egui::Stroke::new(1.0, text_color),
+        );
+    }
+
+    if response.clicked() {
+        let target = all_segments[..=idx].join("/");
+        *navigate_to = Some(target);
+    }
 }
 
 // ================= Grid View =================
@@ -247,7 +355,12 @@ fn render_grid_item(
         ui.painter()
             .rect_filled(icon_rect, 4.0, theme.colors.bg_tertiary);
 
-        let ext = entry.name.split('.').next_back().unwrap_or("").to_uppercase();
+        let ext = entry
+            .name
+            .split('.')
+            .next_back()
+            .unwrap_or("")
+            .to_uppercase();
         let ext_text: &str = if entry.is_folder { "📁" } else { &ext };
 
         ui.painter().text(
@@ -709,7 +822,7 @@ pub fn render_list_view(
                             row.col(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 6.0;
-                                    
+
                                     // Apply custom button style
                                     ui.style_mut().visuals.widgets.inactive = theme.button_style();
 

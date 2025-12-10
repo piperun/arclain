@@ -17,6 +17,20 @@ pub fn navigate_to_folder(state: &mut ArchiveBrowserState, shared: &SharedState,
     );
 }
 
+pub fn navigate_to_path(state: &mut ArchiveBrowserState, shared: &SharedState, path: &str) {
+    let mut app_state = shared.app_state.lock();
+    app_state.navigate_to_path(path);
+    state.entries = app_state
+        .get_current_entries()
+        .iter()
+        .map(convert_to_file_entry)
+        .collect();
+    state.current_path = update_current_path_display(
+        app_state.navigation.current_path.clone(),
+        app_state.current_archive.clone(),
+    );
+}
+
 pub fn navigate_back(state: &mut ArchiveBrowserState, shared: &SharedState) {
     let mut app_state = shared.app_state.lock();
     if app_state.navigation.can_go_back() {
