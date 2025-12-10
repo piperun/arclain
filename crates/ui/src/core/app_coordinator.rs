@@ -90,7 +90,8 @@ impl eframe::App for AppCoordinator {
         self.operations.update_conversion_progress(ctx);
 
         // Render current page
-        match &mut self.current_page {
+        let current_page = self.current_page.clone();
+        match current_page {
             AppPage::Main => {
                 let action = self.browser.render(ctx, &self.shared);
                 match action {
@@ -113,20 +114,29 @@ impl eframe::App for AppCoordinator {
                 self.plugins.render(ctx, &self.shared);
             }
             AppPage::Settings(settings_page) => {
-                let mut on_back = false;
                 // TODO: Implement breadcrumb for AppCoordinator
                 let breadcrumb = vec![];
-                self.settings.render(
-                    ctx,
-                    &self.shared,
-                    settings_page,
-                    &mut on_back,
-                    breadcrumb,
-                    Some(&mut self.organization.rules_page),
-                );
-                if on_back {
-                    self.navigate_back();
-                }
+                let settings_page = settings_page.clone(); // Clone to avoid borrow conflict
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    if let Some(target) = self.settings.render(
+                        ui,
+                        &self.shared,
+                        &settings_page,
+                        breadcrumb,
+                        Some(&mut self.organization.rules_page),
+                        "", // No search context in AppCoordinator yet
+                    ) {
+                        // Convert crate::core::AppPage to local AppPage
+                        let local_target = match target {
+                            crate::core::AppPage::Main => AppPage::Main,
+                            crate::core::AppPage::Settings(sp) => AppPage::Settings(sp),
+                            crate::core::AppPage::Plugins => AppPage::Plugins,
+                            crate::core::AppPage::Organize => AppPage::Organize,
+                            _ => AppPage::Main, // Fallback for unmatched types
+                        };
+                        self.navigate_to(local_target);
+                    }
+                });
             }
             AppPage::Organize => {
                 let action = self.organization.render(ctx, &self.shared);

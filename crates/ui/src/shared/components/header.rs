@@ -36,7 +36,7 @@ pub fn render(
     if show_nav_buttons {
         let left_rect =
             egui::Rect::from_min_size(full_rect.min, egui::vec2(left_width, full_rect.height()));
-        ui.allocate_ui_at_rect(left_rect, |ui| {
+        ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
 
@@ -73,7 +73,7 @@ pub fn render(
         egui::pos2(full_rect.min.x + left_width + 12.0, full_rect.min.y),
         egui::vec2(center_width, full_rect.height()),
     );
-    ui.allocate_ui_at_rect(center_rect, |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(center_rect), |ui| {
         ui.with_layout(
             egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
             |ui| {
@@ -94,7 +94,11 @@ pub fn render(
                         );
                         ui.add(
                             egui::TextEdit::singleline(&mut state.search_text)
-                                .hint_text("Search files...")
+                                .hint_text(if is_on_settings {
+                                    "Search settings..."
+                                } else {
+                                    "Search files..."
+                                })
                                 .frame(false)
                                 .desired_width(search_width - 32.0),
                         );
@@ -109,7 +113,7 @@ pub fn render(
         egui::pos2(full_rect.max.x - right_width, full_rect.min.y),
         egui::vec2(right_width, full_rect.height()),
     );
-    ui.allocate_ui_at_rect(right_rect, |ui| {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
 
