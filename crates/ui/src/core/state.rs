@@ -40,6 +40,15 @@ pub struct AppState {
     pub archive_info: crate::core::operations::archive::ArchiveInfo,
     // Checksum verification service
     pub checksum_service: Option<ChecksumService>,
+    // UI preferences
+    pub ui_preferences: UiPreferences,
+}
+
+/// UI display preferences (persisted to config DB)
+#[derive(Clone, Default)]
+pub struct UiPreferences {
+    /// Show text labels on header/toolbar buttons
+    pub show_button_labels: bool,
 }
 
 impl AppState {
@@ -74,6 +83,7 @@ impl AppState {
             current_game_metadata: None,
             archive_info: crate::core::operations::archive::ArchiveInfo::default(),
             checksum_service: None,
+            ui_preferences: UiPreferences::default(),
         };
 
         // Attempt to open DB-backed config + secrets (optional)

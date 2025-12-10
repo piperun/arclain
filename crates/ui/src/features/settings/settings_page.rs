@@ -72,30 +72,9 @@ pub fn render_settings_navigator(
 }
 
 /// Render the settings page header with breadcrumb
-pub fn render_settings_header(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    current_page: &SettingsPage,
-    on_back: &mut bool,
-) {
+pub fn render_settings_header(ui: &mut egui::Ui, theme: &AppTheme, current_page: &SettingsPage) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
-
-        // Back button
-        let back_btn = egui::Button::new(
-            egui::RichText::new("←")
-                .size(18.0)
-                .color(theme.colors.text_primary),
-        )
-        .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-        .min_size(egui::vec2(36.0, 36.0));
-
-        if ui.add(back_btn).clicked() {
-            *on_back = true;
-        }
-
-        ui.add_space(8.0);
 
         // Page icon and title
         ui.label(egui::RichText::new(current_page.icon()).size(24.0));
@@ -117,94 +96,77 @@ pub fn render_settings_header(
             );
         });
     });
+
+    ui.add_space(12.0);
+    ui.separator();
 }
 
 /// Render the settings overview page (landing page)
 pub fn render_settings_overview(ui: &mut egui::Ui, theme: &AppTheme) -> Option<SettingsPage> {
     let mut selected_page = None;
 
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
+    egui::ScrollArea::vertical()
+        .id_salt("settings_overview_scroll")
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
-        // Title
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("⚙").size(32.0));
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
-                ui.label(
-                    egui::RichText::new("Settings")
-                        .size(24.0)
-                        .strong()
-                        .color(theme.colors.text_primary),
-                );
-                ui.label(
-                    egui::RichText::new("Configure application preferences")
-                        .size(13.0)
-                        .color(theme.colors.text_secondary),
-                );
-            });
+            // Settings categories grid (no duplicate header - already shown in page header)
+            egui::Grid::new("settings_grid")
+                .spacing([16.0, 16.0])
+                .show(ui, |ui| {
+                    let mut col = 0;
+
+                    for page in SettingsPage::all_pages() {
+                        let card_response = egui::Frame::NONE
+                            .fill(theme.colors.bg_secondary)
+                            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                            .corner_radius(8.0)
+                            .inner_margin(20.0)
+                            .show(ui, |ui| {
+                                ui.set_min_size(egui::vec2(280.0, 100.0));
+
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 8.0);
+
+                                    ui.label(egui::RichText::new(page.icon()).size(24.0));
+
+                                    ui.label(
+                                        egui::RichText::new(page.display_name())
+                                            .size(16.0)
+                                            .strong()
+                                            .color(theme.colors.text_primary),
+                                    );
+
+                                    ui.label(
+                                        egui::RichText::new(page.description())
+                                            .size(12.0)
+                                            .color(theme.colors.text_secondary),
+                                    );
+                                });
+                            })
+                            .response;
+
+                        if card_response.interact(egui::Sense::click()).clicked() {
+                            selected_page = Some(page);
+                        }
+
+                        // Hover effect
+                        if card_response.hovered() {
+                            ui.painter().rect_filled(
+                                card_response.rect,
+                                8.0,
+                                theme.colors.accent.linear_multiply(0.1),
+                            );
+                        }
+
+                        col += 1;
+                        if col >= 2 {
+                            ui.end_row();
+                            col = 0;
+                        }
+                    }
+                });
         });
-
-        ui.add_space(24.0);
-
-        // Settings categories grid
-        egui::Grid::new("settings_grid")
-            .spacing([16.0, 16.0])
-            .show(ui, |ui| {
-                let mut col = 0;
-
-                for page in SettingsPage::all_pages() {
-                    let card_response = egui::Frame::NONE
-                        .fill(theme.colors.bg_secondary)
-                        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-                        .corner_radius(8.0)
-                        .inner_margin(20.0)
-                        .show(ui, |ui| {
-                            ui.set_min_size(egui::vec2(280.0, 100.0));
-
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 8.0);
-
-                                ui.label(egui::RichText::new(page.icon()).size(32.0));
-
-                                ui.label(
-                                    egui::RichText::new(page.display_name())
-                                        .size(16.0)
-                                        .strong()
-                                        .color(theme.colors.text_primary),
-                                );
-
-                                ui.label(
-                                    egui::RichText::new(page.description())
-                                        .size(12.0)
-                                        .color(theme.colors.text_secondary),
-                                );
-                            });
-                        })
-                        .response;
-
-                    if card_response.interact(egui::Sense::click()).clicked() {
-                        selected_page = Some(page);
-                    }
-
-                    // Hover effect
-                    if card_response.hovered() {
-                        ui.painter().rect_filled(
-                            card_response.rect,
-                            8.0,
-                            theme.colors.accent.linear_multiply(0.1),
-                        );
-                    }
-
-                    col += 1;
-                    if col >= 2 {
-                        ui.end_row();
-                        col = 0;
-                    }
-                }
-            });
-    });
 
     selected_page
 }
@@ -216,7 +178,7 @@ mod tests {
     #[test]
     fn all_settings_pages_present() {
         let pages = SettingsPage::all_pages();
-        assert_eq!(pages.len(), 6);
+        assert_eq!(pages.len(), 7);
         assert!(pages.contains(&SettingsPage::General));
         assert!(pages.contains(&SettingsPage::Archives));
         assert!(pages.contains(&SettingsPage::PasswordRules));
@@ -237,9 +199,9 @@ pub fn render_breadcrumb(
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
 
-        // Home button
+        // Home button with Phosphor icon
         let home_btn = egui::Button::new(
-            egui::RichText::new("🏠 Home")
+            egui::RichText::new(format!("{} Home", egui_phosphor::regular::HOUSE))
                 .size(13.0)
                 .color(theme.colors.text_secondary),
         )
