@@ -19,11 +19,8 @@ pub fn render_password_rules_page(
     dialog: &mut PasswordRulesDialog,
 ) -> Option<PasswordRulesPageResult> {
     let mut result = None;
-    egui::ScrollArea::vertical()
-        .id_salt("password_rules_page_scroll")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
 
             // Title section
             ui.horizontal(|ui| {

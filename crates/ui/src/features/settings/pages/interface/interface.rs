@@ -7,52 +7,48 @@ pub fn render_interface_settings(
     theme: &AppTheme,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
 ) {
-    egui::ScrollArea::vertical()
-        .id_salt("interface_settings_scroll")
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
-            // Section: Buttons
-            render_section(ui, theme, "Buttons & Controls", |ui| {
-                ui.label(
-                    egui::RichText::new("Configure how buttons and controls appear")
-                        .size(12.0)
-                        .color(theme.colors.text_secondary),
-                );
-                ui.add_space(8.0);
-
-                // Show button labels toggle
-                let mut show_labels = {
-                    let state = app_state.lock();
-                    state.ui_preferences.show_button_labels
-                };
-
-                if ui
-                    .checkbox(&mut show_labels, "Show button labels")
-                    .on_hover_text(
-                        "Display text labels next to icons in header and toolbar buttons",
-                    )
-                    .changed()
-                {
-                    let mut state = app_state.lock();
-                    state.ui_preferences.show_button_labels = show_labels;
-                }
-            });
-
+        // Section: Buttons
+        render_section(ui, theme, "Buttons & Controls", |ui| {
+            ui.label(
+                egui::RichText::new("Configure how buttons and controls appear")
+                    .size(12.0)
+                    .color(theme.colors.text_secondary),
+            );
             ui.add_space(8.0);
 
-            // Section: Theme (placeholder)
-            render_section(ui, theme, "Theme", |ui| {
-                ui.label(
-                    egui::RichText::new("Visual theme customization")
-                        .size(12.0)
-                        .color(theme.colors.text_secondary),
-                );
-                ui.add_space(8.0);
+            // Show button labels toggle
+            let mut show_labels = {
+                let state = app_state.lock();
+                state.ui_preferences.show_button_labels
+            };
 
-                ui.label("Coming soon: Custom theme colors and fonts");
-            });
+            if ui
+                .checkbox(&mut show_labels, "Show button labels")
+                .on_hover_text("Display text labels next to icons in header and toolbar buttons")
+                .changed()
+            {
+                let mut state = app_state.lock();
+                state.ui_preferences.show_button_labels = show_labels;
+            }
         });
+
+        ui.add_space(8.0);
+
+        // Section: Theme (placeholder)
+        render_section(ui, theme, "Theme", |ui| {
+            ui.label(
+                egui::RichText::new("Visual theme customization")
+                    .size(12.0)
+                    .color(theme.colors.text_secondary),
+            );
+            ui.add_space(8.0);
+
+            ui.label("Coming soon: Custom theme colors and fonts");
+        });
+    });
 }
 
 /// Helper function to render a settings section with consistent styling

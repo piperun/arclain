@@ -510,7 +510,8 @@ impl eframe::App for ArclainApp {
 
         // Render Main Content
         egui::CentralPanel::default().show(ctx, |_ui| {
-            match &mut self.page_navigator.current_page {
+            let current_page = self.page_navigator.current_page.clone();
+            match current_page {
                 AppPage::Main => {
                     let action = self.archive_browser.render(
                         ctx,
@@ -623,25 +624,24 @@ impl eframe::App for ArclainApp {
                     }
                 }
                 AppPage::Settings(page) => {
-                    let mut on_back = false;
                     let breadcrumb = crate::core::navigation::PageNavigator::get_breadcrumb(
                         &crate::core::AppPage::Settings(page.clone())
                     );
-                    self.settings_feature.render(
-                        ctx,
-                        &crate::shared::SharedState {
-                            app_state: self.state.clone(),
-                            theme: self.theme.clone(),
-                        },
-                        page,
-                        &mut on_back,
-                        breadcrumb,
-                        Some(&mut self.organization_feature.rules_page),
-                    );
-
-                    if on_back {
-                        self.page_navigator.navigate_back();
-                    }
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        if let Some(target) = self.settings_feature.render(
+                            ui,
+                            &crate::shared::SharedState {
+                                app_state: self.state.clone(),
+                                theme: self.theme.clone(),
+                            },
+                            &page,
+                            breadcrumb,
+                            Some(&mut self.organization_feature.rules_page),
+                            &self.header_state.search_text,
+                        ) {
+                            self.page_navigator.navigate_to(target);
+                        }
+                    });
                 }
                 AppPage::Plugins => {
                     self.plugins_feature.render(

@@ -105,68 +105,69 @@ pub fn render_settings_header(ui: &mut egui::Ui, theme: &AppTheme, current_page:
 pub fn render_settings_overview(ui: &mut egui::Ui, theme: &AppTheme) -> Option<SettingsPage> {
     let mut selected_page = None;
 
-    egui::ScrollArea::vertical()
-        .id_salt("settings_overview_scroll")
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
-            // Settings categories grid (no duplicate header - already shown in page header)
-            egui::Grid::new("settings_grid")
-                .spacing([16.0, 16.0])
-                .show(ui, |ui| {
-                    let mut col = 0;
+        // Responsive settings cards - Explicit grid calculation
+        let available_width = ui.available_width();
+        let card_width = 280.0;
+        let spacing = 16.0;
+        let num_cols = ((available_width + spacing) / (card_width + spacing)).floor() as usize;
+        let num_cols = num_cols.max(1);
 
-                    for page in SettingsPage::all_pages() {
-                        let card_response = egui::Frame::NONE
-                            .fill(theme.colors.bg_secondary)
-                            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-                            .corner_radius(8.0)
-                            .inner_margin(20.0)
-                            .show(ui, |ui| {
-                                ui.set_min_size(egui::vec2(280.0, 100.0));
+        egui::Grid::new("settings_overview_grid")
+            .spacing(egui::vec2(spacing, spacing))
+            .show(ui, |ui| {
+                for (index, page) in SettingsPage::all_pages().into_iter().enumerate() {
+                    let card_response = egui::Frame::NONE
+                        .fill(theme.colors.bg_secondary)
+                        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                        .corner_radius(8.0)
+                        .inner_margin(20.0)
+                        .show(ui, |ui| {
+                            ui.set_width(card_width);
+                            ui.set_height(100.0);
 
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing = egui::vec2(0.0, 8.0);
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 8.0);
 
-                                    ui.label(egui::RichText::new(page.icon()).size(24.0));
+                                ui.label(egui::RichText::new(page.icon()).size(24.0));
 
-                                    ui.label(
-                                        egui::RichText::new(page.display_name())
-                                            .size(16.0)
-                                            .strong()
-                                            .color(theme.colors.text_primary),
-                                    );
+                                ui.label(
+                                    egui::RichText::new(page.display_name())
+                                        .size(16.0)
+                                        .strong()
+                                        .color(theme.colors.text_primary),
+                                );
 
-                                    ui.label(
-                                        egui::RichText::new(page.description())
-                                            .size(12.0)
-                                            .color(theme.colors.text_secondary),
-                                    );
-                                });
-                            })
-                            .response;
+                                ui.label(
+                                    egui::RichText::new(page.description())
+                                        .size(12.0)
+                                        .color(theme.colors.text_secondary),
+                                );
+                            });
+                        })
+                        .response;
 
-                        if card_response.interact(egui::Sense::click()).clicked() {
-                            selected_page = Some(page);
-                        }
-
-                        // Hover effect
-                        if card_response.hovered() {
-                            ui.painter().rect_filled(
-                                card_response.rect,
-                                8.0,
-                                theme.colors.accent.linear_multiply(0.1),
-                            );
-                        }
-
-                        col += 1;
-                        if col >= 2 {
-                            ui.end_row();
-                            col = 0;
-                        }
+                    if card_response.interact(egui::Sense::click()).clicked() {
+                        selected_page = Some(page);
                     }
-                });
-        });
+
+                    // Hover effect
+                    if card_response.hovered() {
+                        ui.painter().rect_filled(
+                            card_response.rect,
+                            8.0,
+                            theme.colors.accent.linear_multiply(0.1),
+                        );
+                    }
+
+                    if (index + 1) % num_cols == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+    });
 
     selected_page
 }
@@ -248,4 +249,87 @@ pub fn render_breadcrumb(
     });
 
     navigate_to
+}
+
+/// Render settings search results
+pub fn render_settings_search_results(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    query: &str,
+) -> Option<SettingsPage> {
+    let mut selected_page = None;
+    let query = query.to_lowercase();
+
+    ui.vertical(|ui| {
+        ui.label(
+            egui::RichText::new(format!("Search results for \"{}\"", query))
+                .size(14.0)
+                .color(theme.colors.text_secondary),
+        );
+        ui.add_space(16.0);
+
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(16.0, 16.0);
+
+            let mut found = false;
+            for page in SettingsPage::all_pages() {
+                if page.display_name().to_lowercase().contains(&query)
+                    || page.description().to_lowercase().contains(&query)
+                {
+                    found = true;
+                    let card_response = egui::Frame::NONE
+                        .fill(theme.colors.bg_secondary)
+                        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                        .corner_radius(8.0)
+                        .inner_margin(20.0)
+                        .show(ui, |ui| {
+                            ui.set_width(280.0);
+                            ui.set_height(80.0);
+
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(page.icon()).size(20.0));
+                                    ui.label(
+                                        egui::RichText::new(page.display_name())
+                                            .size(15.0)
+                                            .strong()
+                                            .color(theme.colors.text_primary),
+                                    );
+                                });
+                                ui.label(
+                                    egui::RichText::new(page.description())
+                                        .size(12.0)
+                                        .color(theme.colors.text_secondary),
+                                );
+                            });
+                        })
+                        .response;
+
+                    if card_response.interact(egui::Sense::click()).clicked() {
+                        selected_page = Some(page);
+                    }
+
+                    if card_response.hovered() {
+                        ui.painter().rect_filled(
+                            card_response.rect,
+                            8.0,
+                            theme.colors.accent.linear_multiply(0.1),
+                        );
+                    }
+                }
+            }
+
+            if !found {
+                ui.label(
+                    egui::RichText::new("No matching settings found.")
+                        .size(14.0)
+                        .color(theme.colors.text_secondary)
+                        .italics(),
+                );
+            }
+        });
+    });
+
+    selected_page
 }

@@ -28,62 +28,110 @@ impl SettingsFeature {
 
     pub fn render(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         shared: &SharedState,
-        page: &mut SettingsPage,
-        on_back: &mut bool,
+        page: &SettingsPage,
         breadcrumb: Vec<(String, crate::core::AppPage)>,
         rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
-    ) {
+        search_text: &str,
+    ) -> Option<crate::core::AppPage> {
         let mut action = None;
+        let mut navigate_to = None;
 
-        egui::SidePanel::left("settings_nav")
-            .resizable(false)
-            .default_width(250.0)
-            .show(ctx, |ui| {
-                if let Some(new_page) = render_settings_navigator(ui, &shared.theme, page) {
-                    *page = new_page;
-                }
+        use egui_extras::{Size, StripBuilder};
+
+        // Main Horizontal Strip: Nav | Content
+        StripBuilder::new(ui)
+            .size(Size::exact(250.0)) // Navigation width
+            .size(Size::remainder())  // Content width
+            .horizontal(|mut strip| {
+                // Strip 1: Navigation
+                strip.cell(|ui| {
+                    ui.push_id("settings_nav_strip", |ui| {
+                        // Mimic SidePanel styling
+                        egui::Frame::side_top_panel(ui.style())
+                            .fill(shared.theme.colors.bg_secondary)
+                            .inner_margin(egui::Margin::symmetric(12, 8)) // Add some padding
+                            .show(ui, |ui| {
+                                ui.set_height(ui.available_height()); // Fill height
+                                if let Some(new_page) = render_settings_navigator(ui, &shared.theme, page) {
+                                    navigate_to = Some(crate::core::AppPage::Settings(new_page));
+                                }
+                            });
+                    });
+                });
+
+                // Strip 2: Content (Header / Body)
+                strip.cell(|ui| {
+                    ui.push_id("settings_content_strip", |ui| {
+                        StripBuilder::new(ui)
+                            .size(Size::initial(80.0)) // Header height (approx)
+                            .size(Size::remainder()) // Scrollable content
+                            .vertical(|mut strip| {
+                                // Sub-strip 1: Header
+                                strip.cell(|ui| {
+                                    ui.vertical(|ui| {
+                                        // Render breadcrumb
+                                        if let Some(target) = render_breadcrumb(ui, &shared.theme, &breadcrumb) {
+                                            navigate_to = Some(target);
+                                        }
+                                        ui.add_space(8.0);
+
+                                        // Header
+                                        render_settings_header(ui, &shared.theme, page);
+                                        ui.add_space(20.0);
+                                    });
+                                });
+
+                                // Sub-strip 2: Scrollable Content
+                                strip.cell(|ui| {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt("settings_content_scroll")
+                                        .show(ui, |ui| {
+                                            // Force width to allow wrapping - explicit width from available space
+                                            ui.set_width(ui.available_width());
+
+                                            // If search is active, show results
+                                            if !search_text.trim().is_empty() {
+                                                if let Some(target) =
+                                                    crate::features::settings::settings_page::render_settings_search_results(
+                                                        ui,
+                                                        &shared.theme,
+                                                        search_text,
+                                                    )
+                                                {
+                                                    navigate_to = Some(crate::core::AppPage::Settings(target));
+                                                }
+                                            } else if *page == SettingsPage::Overview {
+                                                if let Some(new_page) = render_settings_overview(ui, &shared.theme) {
+                                                    navigate_to = Some(crate::core::AppPage::Settings(new_page));
+                                                }
+                                            } else {
+                                                action = render_settings_content(
+                                                    ui,
+                                                    &shared.theme,
+                                                    page,
+                                                    &mut self.security_state,
+                                                    &mut self.archives_state,
+                                                    &mut self.password_rules_dialog,
+                                                    None, // Plugin manager not available in shared state yet?
+                                                    &mut self.plugins_state,
+                                                    rules_page,
+                                                    &shared.app_state, // Need app state for DB check in rules page
+                                                );
+                                            }
+                                        });
+                                });
+                            });
+                    });
+                });
             });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // Render breadcrumb
-            if let Some(target) = render_breadcrumb(ui, &shared.theme, &breadcrumb) {
-                match target {
-                    crate::core::AppPage::Settings(p) => *page = p,
-                    crate::core::AppPage::Main => *on_back = true, // Navigate back/home
-                    _ => {}
-                }
-            }
-            ui.add_space(8.0);
-
-            render_settings_header(ui, &shared.theme, page);
-            ui.add_space(20.0);
-
-            // If we are on a specific page, render content, otherwise render overview
-            if *page == SettingsPage::Overview {
-                if let Some(new_page) = render_settings_overview(ui, &shared.theme) {
-                    *page = new_page;
-                }
-            } else {
-                action = render_settings_content(
-                    ui,
-                    &shared.theme,
-                    page,
-                    &mut self.security_state,
-                    &mut self.archives_state,
-                    &mut self.password_rules_dialog,
-                    None, // Plugin manager not available in shared state yet?
-                    &mut self.plugins_state,
-                    rules_page,
-                    &shared.app_state, // Need app state for DB check in rules page
-                );
-            }
-        });
 
         if let Some(action) = action {
             self.handle_action(action, shared);
         }
+
+        navigate_to
     }
 
     pub fn handle_action(&mut self, action: SettingsAction, shared: &SharedState) {

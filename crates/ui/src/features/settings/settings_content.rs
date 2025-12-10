@@ -124,37 +124,35 @@ impl ChecksumAlgorithm {
 
 /// Render the General settings page
 pub fn render_general_settings(ui: &mut egui::Ui, theme: &AppTheme) {
-    egui::ScrollArea::vertical()
-        .id_salt("general_settings_scroll")
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
-            // Section: Appearance
-            render_settings_section(ui, theme, "Appearance", |ui| {
-                ui.label(
-                    egui::RichText::new("Theme settings and visual preferences")
-                        .size(12.0)
-                        .color(theme.colors.text_secondary),
-                );
-                ui.add_space(8.0);
-
-                ui.label("Coming soon: Theme customization options");
-            });
-
+        // Section: Appearance
+        render_settings_section(ui, theme, "Appearance", |ui| {
+            ui.label(
+                egui::RichText::new("Theme settings and visual preferences")
+                    .size(12.0)
+                    .color(theme.colors.text_secondary),
+            );
             ui.add_space(8.0);
 
-            // Section: Behavior
-            render_settings_section(ui, theme, "Behavior", |ui| {
-                ui.label(
-                    egui::RichText::new("Application behavior and default actions")
-                        .size(12.0)
-                        .color(theme.colors.text_secondary),
-                );
-                ui.add_space(8.0);
-
-                ui.label("Coming soon: Default extraction location, file associations");
-            });
+            ui.label("Coming soon: Theme customization options");
         });
+
+        ui.add_space(8.0);
+
+        // Section: Behavior
+        render_settings_section(ui, theme, "Behavior", |ui| {
+            ui.label(
+                egui::RichText::new("Application behavior and default actions")
+                    .size(12.0)
+                    .color(theme.colors.text_secondary),
+            );
+            ui.add_space(8.0);
+
+            ui.label("Coming soon: Default extraction location, file associations");
+        });
+    });
 }
 
 /// Render the Archives settings page
@@ -165,9 +163,7 @@ pub fn render_archives_settings(
 ) -> Option<SettingsAction> {
     let mut action = None;
 
-    egui::ScrollArea::vertical()
-        .id_salt("archives_settings_scroll")
-        .show(ui, |ui| {
+    ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
             // Section: Extraction
@@ -348,7 +344,7 @@ pub fn render_archives_settings(
                         .color(theme.colors.text_secondary),
                 );
             });
-        });
+    });
 
     action
 }
@@ -361,9 +357,7 @@ pub fn render_security_settings(
 ) -> Option<SettingsAction> {
     let mut action = None;
 
-    egui::ScrollArea::vertical()
-        .id_salt("security_settings_scroll")
-        .show(ui, |ui| {
+    ui.vertical(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
             render_settings_section(ui, theme, "Encryption", |ui| {
@@ -529,7 +523,7 @@ pub fn render_security_settings(
                     });
                 }
             });
-        });
+    });
 
     action
 }
