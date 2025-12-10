@@ -46,7 +46,7 @@ impl ArchiveBackend for UnrarBackend {
         } else {
             Archive::new(path)
         };
-        
+
         let open_archive = archive
             .open_for_listing()
             .context("Failed to open RAR archive for listing")?;
@@ -122,13 +122,46 @@ impl ArchiveBackend for UnrarBackend {
         } else {
             Archive::new(path)
         };
-        
+
         let mut open_archive = archive
             .open_for_processing()
             .context("Failed to open RAR archive for extraction")?;
 
         while let Some(header) = open_archive.read_header()? {
-            open_archive = header.extract_to(dest.to_path_buf())?;
+            let entry_name = header.entry().filename.to_string_lossy().to_string();
+            let full_dest = dest.join(&entry_name);
+
+            // Log if path is suspiciously long (Windows MAX_PATH is 260)
+            let path_len = full_dest.to_string_lossy().len();
+            if path_len > 240 {
+                tracing::warn!(
+                    "Long path detected ({} chars): {}",
+                    path_len,
+                    full_dest.display()
+                );
+            }
+
+            match header.extract_to(dest.to_path_buf()) {
+                Ok(next_archive) => {
+                    open_archive = next_archive;
+                }
+                Err(e) => {
+                    // Log detailed error info from UnrarError
+                    tracing::error!(
+                        "UnRAR failed to extract '{}' to '{}': code={:?}, when={:?}",
+                        entry_name,
+                        dest.display(),
+                        e.code,
+                        e.when
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Failed to extract '{}': {:?} during {:?}",
+                        entry_name,
+                        e.code,
+                        e.when
+                    ));
+                }
+            }
         }
 
         Ok(())
@@ -155,7 +188,7 @@ impl ArchiveBackend for UnrarBackend {
         } else {
             Archive::new(path)
         };
-        
+
         let mut open_archive = archive.open_for_processing()?;
 
         // Extract only specified files
@@ -196,7 +229,7 @@ impl ArchiveBackend for UnrarBackend {
         } else {
             Archive::new(path)
         };
-        
+
         let mut open_archive = archive.open_for_processing()?;
 
         let dir_prefix = format!("{}/", dir_path.trim_end_matches('/'));

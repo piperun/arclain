@@ -755,11 +755,14 @@ impl eframe::App for ArclainApp {
                                     };
 
                                     if let Some(path) = archive_path {
+                                        // Build destination path by changing extension to .7z
+                                        let dest_path = path.with_extension("7z");
+                                        
                                         if let Err(e) = crate::features::organization::operations::execute_organization_plan(
                                             &shared_state,
                                             plan,
                                             &path,
-                                            &path,
+                                            &dest_path,
                                         ) {
                                             let msg = format!("Organization failed: {}", e);
                                             crate::core::utils::log_failure("Organization", &msg);

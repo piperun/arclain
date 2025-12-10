@@ -538,9 +538,7 @@ mod pruning_tests {
 
         // Junk should be removed
         assert!(!pruned.iter().any(|e| e.path == "zero_file.tmp"));
-        assert!(!pruned
-            .iter()
-            .any(|e| pruned.iter().any(|e| e.path.contains("empty_folder"))));
+        assert!(!pruned.iter().any(|e| e.path.contains("empty_folder")));
     }
 
     #[test]
