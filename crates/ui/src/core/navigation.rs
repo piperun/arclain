@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Represents the different pages in the application
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AppPage {
     /// Main archive viewer page
     #[default]
@@ -25,6 +24,8 @@ pub enum SettingsPage {
     Overview,
     /// General application settings
     General,
+    /// User interface settings
+    Interface,
     /// Archive-related settings
     Archives,
     /// Password rules management
@@ -43,6 +44,7 @@ impl SettingsPage {
         match self {
             SettingsPage::Overview => "Settings",
             SettingsPage::General => "General",
+            SettingsPage::Interface => "Interface",
             SettingsPage::Archives => "Archives",
             SettingsPage::PasswordRules => "Password Rules",
             SettingsPage::OrganizationRules => "Organization Rules",
@@ -54,13 +56,14 @@ impl SettingsPage {
     /// Get icon for the settings page
     pub fn icon(&self) -> &'static str {
         match self {
-            SettingsPage::Overview => "⚙",
-            SettingsPage::General => "🔧",
-            SettingsPage::Archives => "📦",
-            SettingsPage::PasswordRules => "🔐",
-            SettingsPage::OrganizationRules => "📋",
-            SettingsPage::Security => "🛡",
-            SettingsPage::Plugins => "⬢",
+            SettingsPage::Overview => egui_phosphor::regular::GEAR,
+            SettingsPage::General => egui_phosphor::regular::WRENCH,
+            SettingsPage::Interface => egui_phosphor::regular::LAYOUT,
+            SettingsPage::Archives => egui_phosphor::regular::ARCHIVE,
+            SettingsPage::PasswordRules => egui_phosphor::regular::KEY,
+            SettingsPage::OrganizationRules => egui_phosphor::regular::LIST_CHECKS,
+            SettingsPage::Security => egui_phosphor::regular::SHIELD,
+            SettingsPage::Plugins => egui_phosphor::regular::PUZZLE_PIECE,
         }
     }
 
@@ -69,6 +72,7 @@ impl SettingsPage {
         match self {
             SettingsPage::Overview => "Configure application settings",
             SettingsPage::General => "General application preferences",
+            SettingsPage::Interface => "Button labels, themes, and display options",
             SettingsPage::Archives => "Archive handling and extraction options",
             SettingsPage::PasswordRules => "Manage password rules and patterns",
             SettingsPage::OrganizationRules => "Manage archive organization rules",
@@ -81,6 +85,7 @@ impl SettingsPage {
     pub fn all_pages() -> Vec<SettingsPage> {
         vec![
             SettingsPage::General,
+            SettingsPage::Interface,
             SettingsPage::Archives,
             SettingsPage::PasswordRules,
             SettingsPage::OrganizationRules,
@@ -89,7 +94,6 @@ impl SettingsPage {
         ]
     }
 }
-
 
 /// Navigation state manager for the application
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -256,7 +260,7 @@ mod tests {
     #[test]
     fn settings_pages_list_has_all() {
         let pages = SettingsPage::all_pages();
-        assert_eq!(pages.len(), 6);
+        assert_eq!(pages.len(), 7);
         assert!(pages.contains(&SettingsPage::General));
         assert!(pages.contains(&SettingsPage::Archives));
         assert!(pages.contains(&SettingsPage::PasswordRules));

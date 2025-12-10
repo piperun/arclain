@@ -156,6 +156,12 @@ impl eframe::App for ArclainApp {
                 let can_go_back = self.page_navigator.can_go_back();
                 let is_on_settings = self.page_navigator.is_on_settings();
                 
+                // Sync UI preferences from AppState
+                {
+                    let state = self.state.lock();
+                    self.header_state.show_button_labels = state.ui_preferences.show_button_labels;
+                }
+                
                 let actions = components::header::render(
                     ui,
                     &self.theme,

@@ -602,6 +602,10 @@ pub fn render_settings_content(
             render_general_settings(ui, theme);
             None
         }
+        SettingsPage::Interface => {
+            crate::features::settings::pages::render_interface_settings(ui, theme, app_state);
+            None
+        }
         SettingsPage::Archives => render_archives_settings(ui, theme, archives_state),
         SettingsPage::Security => render_security_settings(ui, theme, security_state),
         SettingsPage::PasswordRules => {

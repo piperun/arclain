@@ -57,7 +57,7 @@ impl SettingsFeature {
             }
             ui.add_space(8.0);
 
-            render_settings_header(ui, &shared.theme, page, on_back);
+            render_settings_header(ui, &shared.theme, page);
             ui.add_space(20.0);
 
             // If we are on a specific page, render content, otherwise render overview
