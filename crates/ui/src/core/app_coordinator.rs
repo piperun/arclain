@@ -135,10 +135,7 @@ impl eframe::App for AppCoordinator {
                         // Apply organization and navigate back
                         self.navigate_back();
                     }
-                    organization::OrganizationAction::Cancel => {
-                        self.navigate_back();
-                    }
-                    _ => {}
+                    organization::OrganizationAction::None => {}
                 }
             }
         }

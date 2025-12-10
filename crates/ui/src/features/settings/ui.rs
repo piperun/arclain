@@ -33,7 +33,7 @@ impl SettingsFeature {
         page: &mut SettingsPage,
         on_back: &mut bool,
         breadcrumb: Vec<(String, crate::core::AppPage)>,
-        rules_page: Option<&mut crate::features::organization::rules_page::RulesPage>,
+        rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
     ) {
         let mut action = None;
 

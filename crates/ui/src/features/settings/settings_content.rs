@@ -580,55 +580,6 @@ fn render_settings_section<R>(
         .inner
 }
 
-/// Render the Organization Rules settings page
-pub fn render_organization_rules_settings(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-) -> Option<SettingsAction> {
-    egui::ScrollArea::vertical()
-        .id_salt("organization_rules_settings_scroll")
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
-
-            render_settings_section(ui, theme, "Organization Rules", |ui| {
-                ui.label(
-                    egui::RichText::new("Configure how archives are organized after extraction")
-                        .size(12.0)
-                        .color(theme.colors.text_secondary),
-                );
-                ui.add_space(12.0);
-
-                ui.label(
-                    egui::RichText::new("Organization rules define how extracted archive contents are structured. Rules can specify folder templates, file sorting patterns, and metadata-based naming conventions.")
-                        .size(12.0)
-                        .color(theme.colors.text_secondary),
-                );
-                ui.add_space(16.0);
-
-                ui.label(
-                    egui::RichText::new("To manage organization rules, go to the Organize view when you have an archive open.")
-                        .size(12.0)
-                        .color(theme.colors.text_primary),
-                );
-            });
-
-            ui.add_space(8.0);
-
-            render_settings_section(ui, theme, "Default Behavior", |ui| {
-                ui.label(
-                    egui::RichText::new("Settings for automatic organization")
-                        .size(12.0)
-                        .color(theme.colors.text_secondary),
-                );
-                ui.add_space(8.0);
-
-                ui.label("Coming soon: Auto-organize on extraction, default rule set selection");
-            });
-        });
-
-    None
-}
-
 /// Render the appropriate settings content based on the current page
 pub fn render_settings_content(
     ui: &mut egui::Ui,
@@ -639,7 +590,7 @@ pub fn render_settings_content(
     password_rules_dialog: &mut PasswordRulesDialog,
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
-    rules_page: Option<&mut crate::features::organization::rules_page::RulesPage>,
+    rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
 ) -> Option<SettingsAction> {
     match page {
