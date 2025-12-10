@@ -1,5 +1,5 @@
 //! Archive navigation state for UI
-//! 
+//!
 //! This module provides navigation functionality for browsing archive contents.
 //! May be moved to UI layer in the future.
 
@@ -37,6 +37,23 @@ impl NavigationState {
         } else {
             format!("{}/{}", current, segment)
         };
+        self.forward_stack.clear();
+    }
+
+    pub fn navigate_to_absolute(&mut self, path: &str) {
+        let new_path = Self::normalize_path(path); // Normalize but allow empty (root)
+
+        // Don't navigate if path is same
+        if new_path == self.current_path {
+            return;
+        }
+
+        // Save current to history
+        if !self.current_path.is_empty() {
+            self.path_stack.push(self.current_path.clone());
+        }
+
+        self.current_path = new_path;
         self.forward_stack.clear();
     }
 

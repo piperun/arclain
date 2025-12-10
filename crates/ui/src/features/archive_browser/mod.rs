@@ -29,6 +29,7 @@ impl ArchiveBrowser {
 pub enum ArchiveBrowserAction {
     None,
     NavigateToFolder(String),
+    NavigateToPath(String),
     OpenFile(String),
     EditFile(String),
     DeleteFile(String),

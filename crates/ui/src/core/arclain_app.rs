@@ -513,23 +513,34 @@ impl eframe::App for ArclainApp {
             let current_page = self.page_navigator.current_page.clone();
             match current_page {
                 AppPage::Main => {
+
+                    let shared_state = crate::shared::SharedState {
+                        app_state: self.state.clone(),
+                        theme: self.theme.clone(),
+                    };
+
                     let action = self.archive_browser.render(
                         ctx,
-                        &crate::shared::SharedState {
-                            app_state: self.state.clone(),
-                            theme: self.theme.clone(),
-                        },
+                        &shared_state,
                     );
                     
                     match action {
-                        crate::features::archive_browser::ArchiveBrowserAction::NavigateToFolder(folder) => {
+                        crate::features::archive_browser::ArchiveBrowserAction::NavigateToFolder(
+                            folder,
+                        ) => {
                             crate::features::archive_browser::navigation::navigate_to_folder(
                                 self.archive_browser.state_mut(),
-                                &crate::shared::SharedState {
-                                    app_state: self.state.clone(),
-                                    theme: self.theme.clone(),
-                                },
+                                &shared_state,
                                 &folder,
+                            );
+                        }
+                        crate::features::archive_browser::ArchiveBrowserAction::NavigateToPath(
+                            path,
+                        ) => {
+                            crate::features::archive_browser::navigation::navigate_to_path(
+                                self.archive_browser.state_mut(),
+                                &shared_state,
+                                &path,
                             );
                         }
                         crate::features::archive_browser::ArchiveBrowserAction::OpenFile(file) => {
