@@ -11,7 +11,7 @@ fn test_secrets_db_create() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("secrets.redb");
 
-    let db = SecretsDb::open(&db_path, &test_key()).unwrap();
+    let _db = SecretsDb::open(&db_path, &test_key()).unwrap();
     assert!(db_path.exists());
 }
 

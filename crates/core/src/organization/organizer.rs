@@ -442,14 +442,15 @@ pub fn execute_organization_plan(
         archive.path().display()
     );
 
-    // Create unique temp directory
-    let timestamp = std::time::SystemTime::now()
+    // Create unique temp directory with short, readable name
+    // Format: arc_<secs>_<pid> (saves ~25 chars vs old format for Windows path limits)
+    let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos();
-    let work_dir = temp_dir.join(format!("arclain_plan_{}", timestamp));
-    let source_extracted = work_dir.join("source");
-    let organized_dir = work_dir.join("organized");
+        .as_secs();
+    let work_dir = temp_dir.join(format!("arc_{}_{}", secs, std::process::id()));
+    let source_extracted = work_dir.join("src");
+    let organized_dir = work_dir.join("out");
 
     std::fs::create_dir_all(&source_extracted).context("creating temp source dir")?;
     std::fs::create_dir_all(&organized_dir).context("creating temp organized dir")?;
