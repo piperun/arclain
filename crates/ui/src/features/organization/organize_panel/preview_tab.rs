@@ -1,14 +1,10 @@
-use super::{OrganizePanel, OrganizePanelAction};
+use super::OrganizePanel;
 use crate::shared::components::preview_tree::{self, PreviewFilter};
 use eframe::egui::{self, RichText};
 use egui_extras::{Size, StripBuilder};
 
 impl OrganizePanel {
-    pub(super) fn render_preview_tab(
-        &mut self,
-        ui: &mut egui::Ui,
-        action: &mut Option<OrganizePanelAction>,
-    ) {
+    pub(super) fn render_preview_tab(&mut self, ui: &mut egui::Ui) {
         if let Some(plan) = &self.preview_plan.clone() {
             // HEADER: Output folder with copy button
             egui::Frame::NONE
@@ -59,84 +55,7 @@ impl OrganizePanel {
 
             ui.add_space(4.0);
 
-            // VARIABLES LEGEND (collapsible)
-            if !plan.resolved_variables.is_empty() {
-                let legend_header = format!(
-                    "{} Variables {}",
-                    egui_phosphor::regular::CODE,
-                    if self.show_variables_legend {
-                        "▼"
-                    } else {
-                        "▶"
-                    }
-                );
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new(&legend_header).size(12.0).weak())
-                            .frame(false),
-                    )
-                    .clicked()
-                {
-                    self.show_variables_legend = !self.show_variables_legend;
-                }
-
-                if self.show_variables_legend {
-                    egui::Frame::NONE
-                        .fill(ui.style().visuals.faint_bg_color)
-                        .inner_margin(8.0)
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            // Show pattern template
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new("Pattern:").weak().size(11.0));
-                                ui.label(
-                                    RichText::new(&plan.root_folder_template)
-                                        .monospace()
-                                        .size(11.0)
-                                        .color(egui::Color32::from_rgb(250, 204, 21)),
-                                );
-                                ui.label(
-                                    RichText::new("→").weak().size(11.0),
-                                );
-                                ui.label(
-                                    RichText::new(&plan.root_folder)
-                                        .monospace()
-                                        .size(11.0)
-                                        .color(egui::Color32::from_rgb(134, 239, 172)),
-                                );
-                            });
-                            ui.add_space(4.0);
-                            ui.separator();
-                            ui.add_space(4.0);
-                            ui.add_space(4.0);
-                            egui::Grid::new("variables_grid")
-                                .num_columns(2)
-                                .spacing([16.0, 2.0])
-                                .show(ui, |ui| {
-                                    // Show key variables
-                                    for key in ["code", "circle", "title", "version", "product_id"]
-                                    {
-                                        if let Some(value) = plan.resolved_variables.get(key) {
-                                            ui.label(
-                                                RichText::new(format!("${}", key))
-                                                    .monospace()
-                                                    .size(11.0)
-                                                    .weak(),
-                                            );
-                                            ui.label(
-                                                RichText::new(Self::truncate_path(value, 40))
-                                                    .monospace()
-                                                    .size(11.0)
-                                                    .color(egui::Color32::from_rgb(147, 197, 253)),
-                                            );
-                                            ui.end_row();
-                                        }
-                                    }
-                                });
-                        });
-                }
-                ui.add_space(4.0);
-            }
+            // Variables moved to separate tab
 
             // STATS BAR with INTEGRITY VERIFICATION
             let report = self.calculate_discrepancies();
@@ -156,7 +75,7 @@ impl OrganizePanel {
 
                 ui.separator();
 
-                // Modified stats  
+                // Modified stats
                 ui.label(
                     RichText::new(format!(
                         "{} Modified: {} files ({} moved + {} gen + {} dl)",
@@ -186,15 +105,13 @@ impl OrganizePanel {
                             -report.file_discrepancy
                         )
                     };
-                    ui.label(
-                        RichText::new(discrepancy_text)
-                            .size(11.0)
-                            .color(if report.file_discrepancy > 0 {
-                                egui::Color32::from_rgb(251, 191, 36) // Warning yellow
-                            } else {
-                                egui::Color32::from_rgb(74, 222, 128) // Success green
-                            }),
-                    );
+                    ui.label(RichText::new(discrepancy_text).size(11.0).color(
+                        if report.file_discrepancy > 0 {
+                            egui::Color32::from_rgb(251, 191, 36) // Warning yellow
+                        } else {
+                            egui::Color32::from_rgb(74, 222, 128) // Success green
+                        },
+                    ));
                 }
 
                 // Screenshot warning
@@ -212,8 +129,10 @@ impl OrganizePanel {
                     )
                     .on_hover_text("Some screenshots may not be available or failed to load");
                 }
-                
+
                 // Fingerprint match indicator
+                ui.separator();
+                // Content Hash / Coverage match indicator
                 ui.separator();
                 if report.content_match {
                     ui.label(
@@ -222,8 +141,8 @@ impl OrganizePanel {
                             .color(egui::Color32::from_rgb(74, 222, 128)), // Green
                     )
                     .on_hover_text(format!(
-                        "Content fingerprints match\nOriginal: {:016x}\nContent: {:016x}",
-                        report.original_fingerprint, report.content_fingerprint
+                        "Source content verified (invariant under move)\nOriginal Hash: {:016x}\nResult Hash:   {:016x}",
+                        report.original_hash, report.result_hash
                     ));
                 } else {
                     ui.label(
@@ -232,41 +151,36 @@ impl OrganizePanel {
                             .color(egui::Color32::from_rgb(248, 113, 113)), // Red
                     )
                     .on_hover_text(format!(
-                        "Content fingerprints differ - some files may be missing or extra\nOriginal: {:016x}\nContent: {:016x}",
-                        report.original_fingerprint, report.content_fingerprint
+                        "Hash mismatch! Files missing or added.\nOriginal Hash: {:016x}\nResult Hash:   {:016x}\nMissing: {} file(s)",
+                        report.original_hash, report.result_hash, report.missing_original_files.len()
                     ));
                 }
             });
 
             ui.horizontal(|ui| {
-                if !plan.downloads.is_empty() {
-                    if !self.is_loading_screenshots {
-                        if ui
-                            .button(format!(
-                                "{} Load Screenshots",
-                                egui_phosphor::regular::DOWNLOAD_SIMPLE
-                            ))
-                            .on_hover_text("Download screenshots for preview")
-                            .clicked()
-                        {
-                            *action = Some(OrganizePanelAction::LoadScreenshots);
-                            self.is_loading_screenshots = true;
-                        }
-                    } else {
-                        ui.spinner();
-                        ui.label(RichText::new("Loading...").weak().size(11.0));
-                    }
-                }
+                // Load Screenshots button removed per user request
 
                 // Export Issues button - visible when there are discrepancies
-                if report.file_discrepancy > 0 || report.expected_screenshots != report.planned_screenshots {
+                if report.file_discrepancy > 0
+                    || report.expected_screenshots != report.planned_screenshots
+                {
                     ui.separator();
                     if ui
-                        .button(format!("{} Export Issues", egui_phosphor::regular::WARNING_CIRCLE))
-                        .on_hover_text("Export a report of files filtered out and missing screenshots")
+                        .button(format!(
+                            "{} Export Issues",
+                            egui_phosphor::regular::WARNING_CIRCLE
+                        ))
+                        .on_hover_text(
+                            "Export a report of files filtered out and missing screenshots",
+                        )
                         .clicked()
                     {
-                        Self::export_issues_report(&report, &self.original_tree, &self.organized_tree, &self.metadata);
+                        Self::export_issues_report(
+                            &report,
+                            &self.original_tree,
+                            &self.organized_tree,
+                            &self.metadata,
+                        );
                     }
                 }
             });

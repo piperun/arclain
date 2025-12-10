@@ -674,61 +674,7 @@ impl eframe::App for ArclainApp {
                                 crate::features::organization::OrganizePanelAction::Apply => {
                                     action = crate::features::organization::OrganizationAction::Apply;
                                 }
-                                crate::features::organization::OrganizePanelAction::LoadScreenshots => {
-                                    if let Some(tx) = panel.screenshot_tx.clone() {
-                                        // Clone downloads to move to thread
-                                        let downloads = if let Some(plan) = &panel.preview_plan {
-                                            plan.downloads.clone()
-                                        } else {
-                                            Vec::new()
-                                        };
 
-                                        // Extract needed data from state BEFORE spawning
-                                        let (cache_db_path, cache_dir) = {
-                                            let state = self.state.lock();
-                                            if let Some(paths) = &state.db_paths {
-                                                 let dir = paths.cache_db.parent().unwrap_or(std::path::Path::new(".")).join("content");
-                                                 (Some(paths.cache_db.clone()), Some(dir))
-                                            } else {
-                                                (None, None)
-                                            }
-                                        };
-
-                                        std::thread::spawn(move || {
-                                            if let (Some(db_path), Some(dir)) = (cache_db_path, cache_dir) {
-                                                // Create ContentCache
-                                                if let Ok(db) = arclain_db::SqliteDb::open(&db_path) {
-                                                    if let Ok(cache) = arclain_core::utilities::ContentCache::new(dir, db) {
-                                                        let client = reqwest::blocking::Client::new();
-                                                        for download in downloads {
-                                                            if download.cached { continue; }
-                                                            
-                                                            // Check if already in cache
-                                                            if let Ok(true) = cache.has(&download.cache_key) {
-                                                                let _ = tx.send((download.dest_path.clone(), true));
-                                                                continue;
-                                                            }
-
-                                                            // Download
-                                                            if let Ok(resp) = client.get(&download.url).send() {
-                                                                if let Ok(bytes) = resp.bytes() {
-                                                                    let _ = cache.put(
-                                                                        &download.cache_key,
-                                                                        bytes.as_ref(),
-                                                                        arclain_db::CacheType::Screenshot,
-                                                                        download.product_id.as_deref(),
-                                                                        Some(&download.url)
-                                                                    );
-                                                                    let _ = tx.send((download.dest_path.clone(), true));
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    }
-                                }
                                 crate::features::organization::OrganizePanelAction::ManageRules => {
                                     self.page_navigator.navigate_to(crate::core::AppPage::Settings(crate::core::SettingsPage::OrganizationRules));
                                 }

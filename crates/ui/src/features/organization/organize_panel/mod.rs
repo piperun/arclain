@@ -5,12 +5,12 @@
 mod integrity;
 mod network_tab;
 mod preview_tab;
+mod variables_tab;
 
 pub use integrity::IntegrityReport;
 use integrity::{collect_full_paths, count_files, count_folders, export_issues_report, fnv1a_hash};
 
 use crate::features::organization::export_dialog::ExportTreeDialog;
-// NetworkLog import removed
 
 use crate::shared::components::preview_tree::{
     self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
@@ -19,19 +19,17 @@ use arclain_core::organization::{engine::RuleEngine, OrganizationRule};
 use arclain_core::ArchiveEntry;
 use eframe::egui;
 
-use std::sync::mpsc::{channel, Receiver, Sender};
-
 #[derive(Default, PartialEq, Clone, Copy)]
 pub enum OrganizeTab {
     #[default]
     Preview,
+    Variables,
     NetworkActivity,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum OrganizePanelAction {
     Apply,
-    LoadScreenshots,
     ManageRules,
 }
 
@@ -44,16 +42,12 @@ pub struct OrganizePanel {
     pub metadata: Option<arclain_core::organization::GameMetadata>,
     pub network_log: Vec<(std::time::SystemTime, String)>,
     pub active_tab: OrganizeTab,
-    pub screenshot_rx: Option<Receiver<(String, bool)>>,
-    pub screenshot_tx: Option<Sender<(String, bool)>>,
-    pub is_loading_screenshots: bool,
     // Tree view state
     pub preview_filter: PreviewFilter,
     pub original_tree_state: PreviewTreeState,
     pub organized_tree_state: PreviewTreeState,
     pub original_tree: Vec<preview_tree::PreviewTreeNode>,
     pub organized_tree: Vec<preview_tree::PreviewTreeNode>,
-    pub show_variables_legend: bool,
     pub depth_limit: Option<usize>,
     pub export_dialog: ExportTreeDialog,
 }
@@ -74,15 +68,11 @@ impl OrganizePanel {
             metadata,
             network_log: Vec::new(),
             active_tab: OrganizeTab::Preview,
-            screenshot_rx: None,
-            screenshot_tx: None,
-            is_loading_screenshots: false,
             preview_filter: PreviewFilter::All,
             original_tree_state: PreviewTreeState::default(),
             organized_tree_state: PreviewTreeState::default(),
             original_tree: Vec::new(),
             organized_tree: Vec::new(),
-            show_variables_legend: true,
             depth_limit: None,
             export_dialog: ExportTreeDialog::new(),
         };
@@ -103,9 +93,6 @@ impl OrganizePanel {
         }
 
         panel.update_preview();
-        let (tx, rx) = channel();
-        panel.screenshot_tx = Some(tx);
-        panel.screenshot_rx = Some(rx);
         
         // Debug: Log rules and selection
         tracing::debug!(
@@ -201,19 +188,6 @@ impl OrganizePanel {
             &self.organized_tree,
             self.metadata.as_ref(),
         );
-
-        // Check for screenshot updates
-        if let Some(rx) = &self.screenshot_rx {
-            while let Ok((path, success)) = rx.try_recv() {
-                if let Some(plan) = &mut self.preview_plan {
-                    for download in &mut plan.downloads {
-                        if download.dest_path == path {
-                            download.cached = success;
-                        }
-                    }
-                }
-            }
-        }
 
         let mut action = None;
 
@@ -397,48 +371,63 @@ impl OrganizePanel {
             if missing_metadata {
                 self.render_empty_state(ui);
             } else {
-                ui.horizontal(|ui| {
-                    let preview_label = format!("{} Preview", egui_phosphor::regular::EYE);
-                    let preview_selected = self.active_tab == OrganizeTab::Preview;
-                    if ui
-                        .selectable_label(
-                            preview_selected,
-                            egui::RichText::new(&preview_label).size(13.0),
-                        )
-                        .clicked()
-                    {
-                        self.active_tab = OrganizeTab::Preview;
+                    ui.horizontal(|ui| {
+                        // Tab Selector
+                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+                        
+                        let tab_btn = |ui: &mut egui::Ui, label: &str, tab: OrganizeTab, active: OrganizeTab| {
+                            let is_active = tab == active;
+                            let text = egui::RichText::new(label)
+                                .size(13.0)
+                                .color(if is_active {
+                                    ui.visuals().text_color()
+                                } else {
+                                    ui.visuals().text_color().gamma_multiply(0.6)
+                                });
+                                
+                            if ui
+                                .add(egui::Button::new(text).frame(false))
+                                .clicked()
+                            {
+                                return Some(tab);
+                            }
+                            None
+                        };
+
+                        if let Some(tab) = tab_btn(ui, &format!("{} Preview", egui_phosphor::regular::EYE), OrganizeTab::Preview, self.active_tab) {
+                            self.active_tab = tab;
+                        }
+                        
+                        ui.add_space(16.0);
+                        
+                        if let Some(tab) = tab_btn(ui, &format!("{} Variables", egui_phosphor::regular::CODE), OrganizeTab::Variables, self.active_tab) {
+                            self.active_tab = tab;
+                        }
+
+                        ui.add_space(16.0);
+
+                        let net_count = self.network_log.len();
+                        let net_label = if net_count > 0 {
+                            format!("{} Network ({})", egui_phosphor::regular::GLOBE, net_count)
+                        } else {
+                            format!("{} Network", egui_phosphor::regular::GLOBE)
+                        };
+
+                        if let Some(tab) = tab_btn(ui, &net_label, OrganizeTab::NetworkActivity, self.active_tab) {
+                            self.active_tab = tab;
+                        }
+                    });
+
+                    ui.separator();
+                    ui.add_space(4.0);
+
+                    match self.active_tab {
+                        OrganizeTab::Preview => self.render_preview_tab(ui),
+                        OrganizeTab::Variables => self.render_variables_tab(ui),
+                        OrganizeTab::NetworkActivity => self.render_network_tab(ui),
                     }
-
-                    ui.add_space(8.0);
-
-                    let net_count = self.network_log.len();
-                    let net_label = if net_count > 0 {
-                        format!(
-                            "{} Network Activity ({})",
-                            egui_phosphor::regular::GLOBE,
-                            net_count
-                        )
-                    } else {
-                        format!("{} Network Activity", egui_phosphor::regular::GLOBE)
-                    };
-                    let net_selected = self.active_tab == OrganizeTab::NetworkActivity;
-                    if ui
-                        .selectable_label(net_selected, egui::RichText::new(&net_label).size(13.0))
-                        .clicked()
-                    {
-                        self.active_tab = OrganizeTab::NetworkActivity;
-                    }
-                });
-
-                ui.add_space(4.0);
-
-                match self.active_tab {
-                    OrganizeTab::Preview => self.render_preview_tab(ui, &mut action),
-                    OrganizeTab::NetworkActivity => self.render_network_tab(ui),
                 }
-            }
-        });
+            });
 
         if let Some(OrganizePanelAction::Apply) = action {
             let is_dlsite_rule = self
@@ -494,7 +483,7 @@ impl OrganizePanel {
             .unwrap_or(0)
     }
 
-    /// Calculate discrepancies between original and modified trees
+    /// Calculate discrepancies using source coverage
     pub fn calculate_discrepancies(&self) -> IntegrityReport {
         let original_file_count = count_files(&self.original_tree);
         let original_folder_count = count_folders(&self.original_tree);
@@ -505,7 +494,7 @@ impl OrganizePanel {
             .as_ref()
             .map(|p| p.downloads.len())
             .unwrap_or(0);
-        let generated_files = self
+        let generated_files_count = self
             .preview_plan
             .as_ref()
             .map(|p| p.generated_files.len())
@@ -516,57 +505,53 @@ impl OrganizePanel {
             .map(|p| p.moves.len())
             .unwrap_or(0);
 
-        let expected_modified_files = moved_files + generated_files + planned_screenshots;
+        let expected_modified_files = moved_files + generated_files_count + planned_screenshots;
         
-        // 1. Original file paths (strip archive root folder)
+        
+        // 1. Original file paths
         let mut original_set = std::collections::HashSet::new();
-        collect_full_paths(&self.original_tree, &mut original_set, "", true);
-        let mut original_paths: Vec<String> = original_set.into_iter().collect();
+        collect_full_paths(&self.original_tree, &mut original_set, "");
+        let mut original_paths: Vec<String> = original_set.iter().cloned().collect();
         original_paths.sort();
+        let original_hash = fnv1a_hash(&original_paths.join("|"));
         
-        let original_fingerprint = fnv1a_hash(&original_paths.join("|"));
+        // 2. Covered paths from plan (Source Hashing)
+        // We hash the SOURCE paths of the moves plan to verify that the set of files 
+        // being organized is identical to the original set of files.
+        // CRITICAL: Normalize path separators to '/' because preview_tree normalizes original paths to '/'.
+        // If plan.moves contains '\' (on Windows), straight comparison fails.
+        let mut plan_sources: Vec<String> = if let Some(plan) = &self.preview_plan {
+             plan.moves.iter().map(|(src, _)| src.replace('\\', "/")).collect()
+        } else {
+             Vec::new()
+        };
+        // Also add logic to verify if we missed any original files
+        let covered_set: std::collections::HashSet<String> = plan_sources.iter().cloned().collect();
+        let missing_original_files: Vec<String> = original_set.difference(&covered_set).cloned().collect();
+        
+        plan_sources.sort();
+        let result_hash = fnv1a_hash(&plan_sources.join("|"));
 
-        // 2. Organized file paths
-        let mut organized_set = std::collections::HashSet::new();
-        collect_full_paths(&self.organized_tree, &mut organized_set, "", true);
-        
-        // Filter out generated and downloaded files from organized set to compare with original
-        if let Some(plan) = &self.preview_plan {
-             // Exclude generated files
-             for file in &plan.generated_files {
-                 // file.path is relative to root, e.g. "Game/info.json"
-                 // Our organized_tree paths are also relative
-                 organized_set.remove(&file.0);
-             }
-             // Exclude downloads
-             for dl in &plan.downloads {
-                 organized_set.remove(&dl.dest_path);
-             }
-        }
-        
-        let mut content_paths: Vec<String> = organized_set.into_iter().collect();
-        content_paths.sort();
-        
-        let content_fingerprint = fnv1a_hash(&content_paths.join("|"));
-        
-        // Calculate discrepancy (simple count diff for now, can be more detailed)
-        // file_discrepancy = (count in modified tree) - (original count + expected additions)
+        let content_match = original_hash == result_hash;
+
         let modified_file_count = count_files(&self.organized_tree);
-        let expected_total = original_file_count + generated_files + planned_screenshots;
+        // This discrepancy calc is still vague but let's keep it for "total count"
+        let expected_total = original_file_count + generated_files_count + planned_screenshots;
         let file_discrepancy = (modified_file_count as i64) - (expected_total as i64);
 
         IntegrityReport {
             original_files: original_file_count,
             original_folders: original_folder_count,
             moved_files,
-            generated_files,
+            generated_files: generated_files_count,
             expected_screenshots,
             planned_screenshots,
             expected_modified_files,
             file_discrepancy,
-            original_fingerprint,
-            content_fingerprint,
-            content_match: original_fingerprint == content_fingerprint,
+            missing_original_files,
+            original_hash,
+            result_hash,
+            content_match,
         }
     }
 

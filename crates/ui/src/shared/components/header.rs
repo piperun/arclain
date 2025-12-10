@@ -6,7 +6,6 @@ pub struct HeaderState {
     pub search_text: String,
 }
 
-
 #[derive(Default)]
 pub struct HeaderActions {
     pub navigate_home: bool,
@@ -14,7 +13,6 @@ pub struct HeaderActions {
     pub navigate_plugins: bool,
     pub navigate_settings: bool,
 }
-
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -27,30 +25,33 @@ pub fn render(
 ) -> HeaderActions {
     let mut actions = HeaderActions::default();
 
-    ui.horizontal(|ui| {
+    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
         ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
 
         // Navigation buttons (shown when not on main page)
         if show_nav_buttons {
             // Home button
-            let home_btn = egui::Button::new(egui::RichText::new("🏠").size(16.0))
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-                .min_size(egui::vec2(32.0, 32.0));
+            let home_btn =
+                egui::Button::new(egui::RichText::new(egui_phosphor::regular::HOUSE).size(18.0))
+                    .fill(egui::Color32::TRANSPARENT)
+                    .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                    .min_size(egui::vec2(32.0, 32.0));
 
             if ui.add(home_btn).clicked() {
                 actions.navigate_home = true;
             }
 
             // Back button
-            let back_btn = egui::Button::new(egui::RichText::new("←").size(16.0))
-                .fill(if can_go_back {
-                    egui::Color32::TRANSPARENT
-                } else {
-                    theme.colors.bg_secondary
-                })
-                .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-                .min_size(egui::vec2(32.0, 32.0));
+            let back_btn = egui::Button::new(
+                egui::RichText::new(egui_phosphor::regular::ARROW_LEFT).size(18.0),
+            )
+            .fill(if can_go_back {
+                egui::Color32::TRANSPARENT
+            } else {
+                theme.colors.bg_secondary
+            })
+            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+            .min_size(egui::vec2(32.0, 32.0));
 
             if ui.add_enabled(can_go_back, back_btn).clicked() {
                 actions.navigate_back = true;
@@ -60,24 +61,26 @@ pub fn render(
         }
 
         // Plugins button
-        let plugins_btn = egui::Button::new(egui::RichText::new("⬢").size(16.0))
-            .fill(egui::Color32::TRANSPARENT)
-            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-            .min_size(egui::vec2(32.0, 32.0));
+        let plugins_btn =
+            egui::Button::new(egui::RichText::new(egui_phosphor::regular::PLUGS).size(18.0))
+                .fill(egui::Color32::TRANSPARENT)
+                .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                .min_size(egui::vec2(32.0, 32.0));
         if ui.add(plugins_btn).clicked() {
             actions.navigate_plugins = true;
         }
         ui.add_space(8.0);
 
         // Settings button (always at the top row, same style as nav)
-        let settings_btn = egui::Button::new(egui::RichText::new("⚙").size(16.0))
-            .fill(if is_on_settings {
-                theme.colors.bg_secondary
-            } else {
-                egui::Color32::TRANSPARENT
-            })
-            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-            .min_size(egui::vec2(32.0, 32.0));
+        let settings_btn =
+            egui::Button::new(egui::RichText::new(egui_phosphor::regular::GEAR).size(18.0))
+                .fill(if is_on_settings {
+                    theme.colors.bg_secondary
+                } else {
+                    egui::Color32::TRANSPARENT
+                })
+                .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                .min_size(egui::vec2(32.0, 32.0));
         if ui.add(settings_btn).clicked() {
             actions.navigate_settings = true;
         }
@@ -91,61 +94,65 @@ pub fn render(
                 .strong(),
         );
 
-        ui.add_space(ui.available_width() - if show_nav_buttons { 460.0 } else { 380.0 });
+        ui.allocate_ui_with_layout(
+            egui::vec2(ui.available_width() - 340.0, ui.available_height()),
+            egui::Layout::right_to_left(egui::Align::Center),
+            |ui| {
+                // Theme toggle - styled like the mockup (Right aligned)
+                let toggle_size = egui::vec2(48.0, 24.0);
+                let (rect, response) = ui.allocate_exact_size(toggle_size, egui::Sense::click());
 
-        // Search box with proper theming
-        let search_frame = egui::Frame::NONE
-            .fill(theme.colors.bg_primary)
-            .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
-            .corner_radius(4.0)
-            .inner_margin(egui::Margin::symmetric(8, 4));
+                if response.clicked() {
+                    *on_theme_toggle = true;
+                }
 
-        search_frame.show(ui, |ui| {
-            ui.add_sized(
-                [284.0, 16.0],
-                egui::TextEdit::singleline(&mut state.search_text)
-                    .hint_text("Search files...")
-                    .frame(false),
-            );
-        });
+                if ui.is_rect_visible(rect) {
+                    let radius = rect.height() / 2.0;
 
-        ui.add_space(12.0);
+                    // Background
+                    ui.painter()
+                        .rect_filled(rect, radius, theme.colors.bg_primary);
 
-        // Theme toggle - styled like the mockup
-        let toggle_size = egui::vec2(48.0, 24.0);
-        let (rect, response) = ui.allocate_exact_size(toggle_size, egui::Sense::click());
+                    // Border
+                    ui.painter().rect_stroke(
+                        rect,
+                        egui::CornerRadius::same(radius as u8),
+                        egui::Stroke::new(1.0, theme.colors.border_color),
+                        egui::StrokeKind::Outside,
+                    );
 
-        if response.clicked() {
-            *on_theme_toggle = true;
-        }
+                    // Slider circle
+                    let circle_radius = (rect.height() - 4.0) / 2.0;
+                    let circle_x = if theme.dark_mode {
+                        rect.right() - circle_radius - 2.0
+                    } else {
+                        rect.left() + circle_radius + 2.0
+                    };
+                    let circle_center = egui::pos2(circle_x, rect.center().y);
 
-        if ui.is_rect_visible(rect) {
-            let radius = rect.height() / 2.0;
+                    ui.painter()
+                        .circle_filled(circle_center, circle_radius, theme.colors.accent);
+                }
 
-            // Background
-            ui.painter()
-                .rect_filled(rect, radius, theme.colors.bg_primary);
+                ui.add_space(16.0);
 
-            // Border
-            ui.painter().rect_stroke(
-                rect,
-                egui::CornerRadius::same(radius as u8),
-                egui::Stroke::new(1.0, theme.colors.border_color),
-                egui::StrokeKind::Outside,
-            );
+                // Search box
+                let search_frame = egui::Frame::NONE
+                    .fill(theme.colors.bg_primary)
+                    .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(8, 4));
 
-            // Slider circle
-            let circle_radius = (rect.height() - 4.0) / 2.0;
-            let circle_x = if theme.dark_mode {
-                rect.right() - circle_radius - 2.0
-            } else {
-                rect.left() + circle_radius + 2.0
-            };
-            let circle_center = egui::pos2(circle_x, rect.center().y);
-
-            ui.painter()
-                .circle_filled(circle_center, circle_radius, theme.colors.accent);
-        }
+                search_frame.show(ui, |ui| {
+                    ui.add_sized(
+                        [240.0, 16.0],
+                        egui::TextEdit::singleline(&mut state.search_text)
+                            .hint_text("Search files...")
+                            .frame(false),
+                    );
+                });
+            },
+        );
     });
 
     actions
