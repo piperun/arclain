@@ -129,6 +129,12 @@ impl UnrarCli {
 
         let mut current_entry: Option<ArchiveEntry> = None;
 
+        // Helper to parse numbers that might contain commas or spaces
+        let parse_number = |s: &str| -> u64 {
+            let clean: String = s.chars().filter(|c| c.is_digit(10)).collect();
+            clean.parse().unwrap_or(0)
+        };
+
         for line in output.lines() {
             let line = line.trim();
 
@@ -150,21 +156,27 @@ impl UnrarCli {
                 });
             } else if let Some(ref mut entry) = current_entry {
                 if line.starts_with("Type: ") {
-                    entry.is_dir = line.contains("Directory");
+                    entry.is_dir = line.contains("Directory") || line.contains("Dir");
                 } else if line.starts_with("Size: ") {
-                    entry.size = line
-                        .strip_prefix("Size: ")
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(0);
+                    if let Some(s) = line.strip_prefix("Size: ") {
+                        entry.size = parse_number(s);
+                    }
                 } else if line.starts_with("Packed size: ") {
-                    entry.packed_size = line
-                        .strip_prefix("Packed size: ")
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(0);
+                    if let Some(s) = line.strip_prefix("Packed size: ") {
+                        entry.packed_size = parse_number(s);
+                    }
                 } else if line.starts_with("mtime: ") {
-                    entry.modified = line.strip_prefix("mtime: ").map(|s| s.to_string());
+                    entry.modified = line.strip_prefix("mtime: ").map(|s| s.trim().to_string());
+                } else if line.starts_with("Time: ") {
+                    entry.modified = line.strip_prefix("Time: ").map(|s| s.trim().to_string());
+                } else if line.starts_with("Last write time: ") {
+                    entry.modified = line
+                        .strip_prefix("Last write time: ")
+                        .map(|s| s.trim().to_string());
                 } else if line.starts_with("CRC32: ") {
-                    entry.crc32 = line.strip_prefix("CRC32: ").map(|s| s.to_uppercase());
+                    entry.crc32 = line
+                        .strip_prefix("CRC32: ")
+                        .map(|s| s.trim().to_uppercase());
                 } else if line.starts_with("Flags: ") && line.contains("encrypted") {
                     entry.encrypted = true;
                     encrypted = true;
@@ -239,7 +251,28 @@ impl ArchiveBackend for UnrarCli {
 
         args.push(OsString::from(path));
 
-        let output = self.run(&args)?;
+        let output = match self.run(&args) {
+            Ok(o) => o,
+            Err(e) => {
+                let err_msg = e.to_string();
+                if err_msg.contains("code Some(11)")
+                    || err_msg.contains("code 11")
+                    || err_msg.contains("Incorrect password")
+                {
+                    info!("UnRAR CLI indicated encrypted headers (password required)");
+                    // Return a dummy info with encrypted headers set
+                    return Ok(ArchiveInfo {
+                        archive_path: path.to_path_buf(),
+                        archive_kind: ArchiveKind::Rar,
+                        entries: Vec::new(),
+                        encrypted: true,
+                        headers_encrypted: true,
+                        encryption_method: Some("RAR".to_string()),
+                    });
+                }
+                return Err(e);
+            }
+        };
         let info = self.parse_list_output(path, &output);
 
         info!("Listed {} entries from RAR archive", info.entries.len());

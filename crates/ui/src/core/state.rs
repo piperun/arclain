@@ -315,8 +315,30 @@ impl AppState {
 
         let info = match backend.list(path, None) {
             Ok(info) => {
-                debug!("Archive opened without password (may have encrypted files inside)");
-                info
+                if info.headers_encrypted {
+                    debug!("Archive has encrypted headers, trying auto-password");
+                    let archive_name = path.to_str();
+                    let pw = self.cfg.auto_password_for(archive_name, &vec![]); // last_entries is empty here anyway
+                    if let Some(ref password) = pw {
+                        info!("Attempting to open encrypted archive with auto-detected password");
+                        match backend.list(path, Some(password)) {
+                            Ok(new_info) => {
+                                self.current_password = Some(password.clone());
+                                new_info
+                            }
+                            Err(e) => {
+                                warn!("Failed to open archive with auto-detected password: {}", e);
+                                info // Return original encrypted info so UI shows unlock screen
+                            }
+                        }
+                    } else {
+                        debug!("No auto-password found for encrypted archive");
+                        info
+                    }
+                } else {
+                    debug!("Archive opened without password");
+                    info
+                }
             }
             Err(e) => {
                 debug!("Initial listing failed, trying with auto-password: {}", e);

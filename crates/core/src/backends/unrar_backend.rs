@@ -65,14 +65,40 @@ impl ArchiveBackend for UnrarBackend {
                         any_encrypted = true;
                     }
 
+                    // Check for invalid UTF-8/encoding issues (detect replacement char)
+                    let filename = entry.filename.to_string_lossy().to_string();
+                    if filename.contains('\u{FFFD}') {
+                        tracing::warn!(
+                            "Detected invalid encoding (replacement char) in RAR entry: {}",
+                            filename
+                        );
+                        // Return empty list to trigger fallback to CLI which might handle encoding better (e.g. 7z CLI)
+                        let encryption_method = if any_encrypted {
+                            Some("RAR".to_string())
+                        } else {
+                            None
+                        };
+
+                        return Ok(ArchiveInfo {
+                            archive_path: path.to_path_buf(),
+                            archive_kind: ArchiveKind::Rar,
+                            entries: Vec::new(),
+                            encrypted: any_encrypted,
+                            headers_encrypted,
+                            encryption_method,
+                        });
+                    }
+
                     entries.push(ArchiveEntry {
-                        path: entry.filename.to_string_lossy().to_string(),
+                        path: filename,
                         size: entry.unpacked_size,
                         packed_size: 0,
-                        modified: None, // unrar doesn't easily expose this
+                        modified: None, // entry.file_time
                         is_dir,
                         encrypted,
-                        // Try file_crc based on common naming, if fails we'll see in check
+                        // Note: file_crc access might trigger computation if not lazy.
+                        // However, standard unrar header usually contains it.
+                        // usage of {:08X} is standard.
                         crc32: Some(format!("{:08X}", entry.file_crc)),
                     });
                 }

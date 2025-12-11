@@ -26,6 +26,7 @@ pub enum FileListAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortColumn {
     Name,
+    Type,
     Size,
     Compressed,
     Ratio,
@@ -485,6 +486,16 @@ fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
                 let bn = b.name.to_lowercase();
                 an.cmp(&bn)
             }
+            SortColumn::Type => {
+                let get_type = |e: &FileEntry| {
+                    if e.is_folder {
+                        "Directory".to_string()
+                    } else {
+                        e.name.split('.').last().unwrap_or("File").to_lowercase()
+                    }
+                };
+                get_type(a).cmp(&get_type(b))
+            }
             SortColumn::Size => {
                 let asz = parse_size_to_bytes(&a.size);
                 let bsz = parse_size_to_bytes(&b.size);
@@ -556,12 +567,13 @@ pub fn render_list_view(
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::exact(34.0)) // Checkbox (+ select all in header)
                 .column(Column::remainder().at_least(220.0)) // Name
+                .column(Column::exact(80.0)) // Type
                 .column(Column::exact(110.0)) // Size
                 .column(Column::exact(110.0)) // Compressed
                 .column(Column::exact(76.0)) // Ratio
                 .column(Column::exact(140.0)) // Modified
                 .column(Column::exact(120.0)) // CRC-32
-                .column(Column::exact(36.0)) // Encrypted
+                .column(Column::exact(80.0)) // Encrypted
                 .column(Column::exact(84.0)) // Actions (Edit/Delete)
                 .header(28.0, |mut header| {
                     // Select all checkbox
@@ -593,6 +605,23 @@ pub fn render_list_view(
                                 sort.ascending = !sort.ascending;
                             } else {
                                 sort.column = SortColumn::Name;
+                                sort.ascending = true;
+                            }
+                        }
+                    });
+                    header.col(|ui| {
+                        if header_sort_label(
+                            ui,
+                            theme,
+                            "Type",
+                            sort.column,
+                            SortColumn::Type,
+                            sort.ascending,
+                        ) {
+                            if sort.column == SortColumn::Type {
+                                sort.ascending = !sort.ascending;
+                            } else {
+                                sort.column = SortColumn::Type;
                                 sort.ascending = true;
                             }
                         }
@@ -686,7 +715,7 @@ pub fn render_list_view(
                         if header_sort_label(
                             ui,
                             theme,
-                            "🔒",
+                            "Encrypted",
                             sort.column,
                             SortColumn::Encrypted,
                             sort.ascending,
@@ -752,6 +781,24 @@ pub fn render_list_view(
                             });
 
                             row.col(|ui| {
+                                let type_str = if is_folder {
+                                    "Folder".to_string()
+                                } else {
+                                    entry_name
+                                        .split('.')
+                                        .last()
+                                        .unwrap_or("File")
+                                        .to_uppercase()
+                                };
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(type_str).size(14.0).color(muted_color),
+                                    )
+                                    .selectable(false),
+                                );
+                            });
+
+                            row.col(|ui| {
                                 ui.add(
                                     egui::Label::new(
                                         egui::RichText::new(&entry.size)
@@ -807,10 +854,15 @@ pub fn render_list_view(
                             });
 
                             row.col(|ui| {
-                                if entry.encrypted {
+                                if !entry.is_folder {
+                                    let (text, color) = if entry.encrypted {
+                                        ("Yes", theme.colors.text_primary)
+                                    } else {
+                                        ("No", theme.colors.text_muted)
+                                    };
                                     ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new("🔒").size(14.0).color(text_color),
+                                            egui::RichText::new(text).size(14.0).color(color),
                                         )
                                         .selectable(false),
                                     );

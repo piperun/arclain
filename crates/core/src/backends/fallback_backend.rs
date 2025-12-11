@@ -64,11 +64,39 @@ impl ArchiveBackend for FallbackBackend {
 
         match self.primary.list(path, password) {
             Ok(info) => {
-                info!(
-                    "Successfully listed archive with {} backend",
-                    self.primary_name
-                );
-                Ok(info)
+                if info.entries.is_empty() && !info.headers_encrypted {
+                    warn!(
+                        "{} backend returned empty list for: {}. Assuming failure/encryption issue. Falling back to {}",
+                        self.primary_name,
+                        path.display(),
+                        self.fallback_name
+                    );
+                    info!(
+                        "Using fallback {} backend to list: {}",
+                        self.fallback_name,
+                        path.display()
+                    );
+                    self.fallback.list(path, password).with_context(|| {
+                        format!(
+                            "Both {} and {} backends failed to list archive (Primary returned empty list)",
+                            self.primary_name, self.fallback_name
+                        )
+                    })
+                } else {
+                    if info.entries.is_empty() && info.headers_encrypted {
+                        info!(
+                            "{} backend detected encrypted headers for: {}",
+                            self.primary_name,
+                            path.display()
+                        );
+                    } else {
+                        info!(
+                            "Successfully listed archive with {} backend",
+                            self.primary_name
+                        );
+                    }
+                    Ok(info)
+                }
             }
             Err(e) => {
                 warn!(
