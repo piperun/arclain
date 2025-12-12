@@ -68,15 +68,15 @@ impl AddRuleDialog {
                 ui.colored_label(egui::Color32::RED, err);
             }
 
-            ui.horizontal(|ui| {
-                ui.label("Category:");
-                ui.text_edit_singleline(&mut self.rule.category);
-            });
+            // ui.horizontal(|ui| {
+            //     ui.label("Category:");
+            //     ui.text_edit_singleline(&mut self.rule.category);
+            // });
 
-            ui.label("Description:");
-            let mut desc = self.rule.description.clone().unwrap_or_default();
-            ui.text_edit_multiline(&mut desc);
-            self.rule.description = if desc.is_empty() { None } else { Some(desc) };
+            // ui.label("Description:");
+            // let mut desc = self.rule.description.clone().unwrap_or_default();
+            // ui.text_edit_multiline(&mut desc);
+            // self.rule.description = if desc.is_empty() { None } else { Some(desc) };
 
             ui.add_space(16.0);
             ui.separator();
@@ -143,14 +143,14 @@ impl AddRuleDialog {
                 });
             }
 
-            ui.checkbox(
-                &mut self.rule.actions.organize_content,
-                "Organize Content (Extract/Repack)",
-            );
-            ui.checkbox(
-                &mut self.rule.actions.delete_original,
-                "Delete Original Archive",
-            );
+            // ui.checkbox(
+            //     &mut self.rule.actions.organize_content,
+            //     "Organize Content (Extract/Repack)",
+            // );
+            // ui.checkbox(
+            //     &mut self.rule.actions.delete_original,
+            //     "Delete Original Archive",
+            // );
 
             ui.add_space(20.0);
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {

@@ -278,13 +278,9 @@ use crate::bindings::arclain::plugin::rules as wit_rules;
 impl From<wit_rules::PluginRuleDefinition> for arclain_core::OrganizationRule {
     fn from(def: wit_rules::PluginRuleDefinition) -> Self {
         arclain_core::OrganizationRule {
-            id: None, // System rules don't need fixed IDs here, DB assigns/updates them
             name: def.name,
-            description: def.description,
-            category: def.category,
             priority: 100, // Plugins get high priority by default? Or config?
             is_enabled: true,
-            is_system: true,
             trigger: def.trigger.into(),
             actions: def.actions.into(),
         }
@@ -296,9 +292,6 @@ impl From<wit_rules::PluginRuleTrigger> for arclain_core::RuleTrigger {
         arclain_core::RuleTrigger {
             filename_pattern: t.filename_pattern,
             has_file: t.has_file,
-            extensions: t.extensions,
-            min_size: t.min_size,
-            max_size: t.max_size,
             metadata_source: t.metadata_source,
         }
     }
@@ -309,30 +302,16 @@ impl From<wit_rules::PluginRuleActions> for arclain_core::RuleActions {
         arclain_core::RuleActions {
             root_folder: a.root_folder,
             move_files: a.move_files.into_iter().map(|m| m.into()).collect(),
-            move_to: a.move_to.map(|m| m.into()),
-            rename_pattern: a.rename_pattern,
-            organize_content: a.organize_content,
-            delete_original: a.delete_original,
             use_standard_layout: a.use_standard_layout,
         }
     }
 }
 
-impl From<wit_rules::MoveFileRule> for arclain_core::MoveFileRule {
+impl From<wit_rules::MoveFileRule> for arclain_core::MoveAction {
     fn from(m: wit_rules::MoveFileRule) -> Self {
-        arclain_core::MoveFileRule {
+        arclain_core::MoveAction {
             pattern: m.pattern,
             target: m.target,
-        }
-    }
-}
-
-impl From<wit_rules::MoveRule> for arclain_core::MoveRule {
-    fn from(m: wit_rules::MoveRule) -> Self {
-        arclain_core::MoveRule {
-            target_dir: m.target_dir,
-            use_date: m.use_date,
-            use_category: m.use_category,
         }
     }
 }

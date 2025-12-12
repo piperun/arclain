@@ -18,9 +18,7 @@ pub use archive::{
     Archive, ArchiveBackend, ArchiveEntry, ArchiveInfo, ArchiveKind, BackendCapabilities,
     NavigationState,
 };
-pub use config::{Config, ConfigStore, PassRule};
 pub use config::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};
-pub use organization::{
-    ExtractedMetadata, MoveFileRule, MoveRule, OrganizationRule, RuleActions, RuleTrigger,
-};
+pub use config::{Config, ConfigStore, PassRule};
+pub use organization::{GameMetadata, MoveAction, OrganizationRule, RuleActions, RuleTrigger};
 pub use utilities::{init_logging, FileOpener, OpenStrategy};

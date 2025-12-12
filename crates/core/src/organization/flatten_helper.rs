@@ -1,6 +1,11 @@
+use std::collections::HashMap;
 
 /// Recursive JSON flattener
-fn flatten_json_value(value: &serde_json::Value, acc: &mut HashMap<String, String>, prefix: &str) {
+pub fn flatten_json_value(
+    value: &serde_json::Value,
+    acc: &mut HashMap<String, String>,
+    prefix: &str,
+) {
     match value {
         serde_json::Value::Null => {}
         serde_json::Value::Bool(b) => {
@@ -22,7 +27,7 @@ fn flatten_json_value(value: &serde_json::Value, acc: &mut HashMap<String, Strin
                 } else {
                     format!("{}.{}", prefix, k)
                 };
-                Self::flatten_json_value(v, acc, &new_prefix);
+                flatten_json_value(v, acc, &new_prefix);
             }
         }
     }

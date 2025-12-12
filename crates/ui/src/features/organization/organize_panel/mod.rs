@@ -99,7 +99,7 @@ impl OrganizePanel {
             "OrganizePanel::new - {} rules loaded, selected_rule_index={}, selected_rule={}",
             panel.rules.len(),
             panel.selected_rule_index,
-            panel.rules.get(panel.selected_rule_index).map(|r| format!("'{}' (category: '{}')", r.name, r.category)).unwrap_or("None".to_string())
+            panel.rules.get(panel.selected_rule_index).map(|r| format!("'{}'", r.name)).unwrap_or("None".to_string())
         );
         
         panel
@@ -195,7 +195,7 @@ impl OrganizePanel {
         let is_dlsite_rule = self
             .rules
             .get(self.selected_rule_index)
-            .map(|r| r.category.eq_ignore_ascii_case("dlsite"))
+            .map(|r| r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false))
             .unwrap_or(false);
         let missing_metadata = is_dlsite_rule && self.metadata.is_none();
         let can_apply = !missing_metadata && self.preview_plan.is_some();
@@ -315,7 +315,8 @@ impl OrganizePanel {
                     .show_ui(ui, |ui| {
                         let mut categories: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
                         for (i, rule) in self.rules.iter().enumerate() {
-                            categories.entry(rule.category.clone()).or_default().push(i);
+                            let cat = rule.trigger.metadata_source.clone().unwrap_or_else(|| "General".to_string());
+                            categories.entry(cat).or_default().push(i);
                         }
 
                         for (category, indices) in categories {
@@ -328,7 +329,7 @@ impl OrganizePanel {
                             
                             for i in indices {
                                 let rule = &self.rules[i];
-                                let is_dlsite_rule = rule.category.to_lowercase() == "dlsite";
+                                let is_dlsite_rule = rule.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false);
                                 let is_disabled = is_dlsite_rule && !has_dlsite_code;
 
                                 if is_disabled {
@@ -350,11 +351,11 @@ impl OrganizePanel {
                     });
 
 
-                if let Some(rule) = self.rules.get(self.selected_rule_index) {
-                    if let Some(desc) = &rule.description {
-                        ui.label(egui::RichText::new(desc).weak().italics().size(11.0));
-                    }
-                }
+                // if let Some(rule) = self.rules.get(self.selected_rule_index) {
+                //     if let Some(desc) = &rule.description {
+                //         ui.label(egui::RichText::new(desc).weak().italics().size(11.0));
+                //     }
+                // }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
@@ -433,7 +434,7 @@ impl OrganizePanel {
             let is_dlsite_rule = self
                 .rules
                 .get(self.selected_rule_index)
-                .map(|r| r.category.eq_ignore_ascii_case("dlsite"))
+                .map(|r| r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false))
                 .unwrap_or(false);
             if is_dlsite_rule && self.metadata.is_none() {
                 action = None;
