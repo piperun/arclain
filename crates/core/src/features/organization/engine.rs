@@ -42,7 +42,7 @@ impl RuleEngine {
         rules: &[OrganizationRule],
         archive_name: &str,
         entries: &[ArchiveEntry],
-        game_metadata: Option<&crate::organization::metadata::GameMetadata>,
+        game_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
     ) -> Vec<OrganizationRule> {
         let mut matches = Vec::new();
 
@@ -65,7 +65,7 @@ impl RuleEngine {
         trigger: &RuleTrigger,
         archive_name: &str,
         entries: &[ArchiveEntry],
-        game_metadata: Option<&crate::organization::metadata::GameMetadata>,
+        game_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
     ) -> bool {
         // 1. Check metadata source trigger (Highest Priority)
         if let Some(source_trigger) = &trigger.metadata_source {
@@ -121,7 +121,7 @@ impl RuleEngine {
         rule: &OrganizationRule,
         archive_name: &str,
         entries: &[ArchiveEntry],
-        game_metadata: Option<&crate::organization::metadata::GameMetadata>,
+        game_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
     ) -> Result<OrganizationPlan> {
         // Prune unnecessary files/folders first
         let pruned_entries = Self::prune_entries(entries);
@@ -150,7 +150,11 @@ impl RuleEngine {
 
             // Parse JSON for platform-specific fields (generic flattening)
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&gm.metadata_json) {
-                crate::organization::flatten_helper::flatten_json_value(&json, &mut metadata, "");
+                crate::features::organization::flatten_helper::flatten_json_value(
+                    &json,
+                    &mut metadata,
+                    "",
+                );
             }
         }
 
@@ -328,7 +332,9 @@ impl RuleEngine {
             let dlsite_code = metadata.get("code").cloned();
 
             for (i, screenshot) in gm.screenshots.iter().enumerate() {
-                if let crate::organization::metadata::ScreenshotData::FilePath(path) = screenshot {
+                if let crate::features::organization::metadata::ScreenshotData::FilePath(path) =
+                    screenshot
+                {
                     let url = path.to_string_lossy().to_string();
                     // Determine extension from URL or default to jpg
                     let ext = Path::new(&url)

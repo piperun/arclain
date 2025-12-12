@@ -36,7 +36,7 @@ pub struct AppState {
     pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
     pub plugin_metadata: Option<serde_json::Value>,
     // Game metadata for archive organization (from plugins like DLSite)
-    pub current_game_metadata: Option<arclain_core::organization::GameMetadata>,
+    pub current_game_metadata: Option<arclain_core::features::organization::GameMetadata>,
     pub archive_info: crate::core::operations::archive::ArchiveInfo,
     // Checksum verification service
     pub checksum_service: Option<ChecksumService>,

@@ -3,7 +3,7 @@ use content_verification::ContentHashMap;
 
 use arclain_core::backends::selector::BackendSelector;
 use arclain_core::backends::sevenz_cli::SevenZipCli;
-use arclain_core::organization::{organizer::organize_archive, GameMetadata};
+use arclain_core::features::organization::{organizer::organize_archive, GameMetadata};
 use arclain_core::utilities::logging::init_test_logging;
 use arclain_core::{Archive, ArchiveBackend, ConfigStore, PassRule};
 use arclain_db::{DbPaths, SecretsDb, SecretsKey};

@@ -3,7 +3,7 @@
 //! A reusable component for rendering hierarchical file/folder structures
 //! in the organize preview panel. Supports both original and organized views.
 
-use arclain_core::organization::engine::PendingDownload;
+use arclain_core::features::organization::engine::PendingDownload;
 use eframe::egui::{self, RichText, Ui};
 use std::collections::HashMap;
 

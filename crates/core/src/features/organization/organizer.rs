@@ -60,7 +60,7 @@ pub fn organize_archive(
 pub fn execute_organization_plan(
     archive: &Archive,
     dest: &Path,
-    plan: &crate::organization::engine::OrganizationPlan,
+    plan: &crate::features::organization::engine::OrganizationPlan,
     temp_dir: &Path,
 ) -> Result<()> {
     info!(
