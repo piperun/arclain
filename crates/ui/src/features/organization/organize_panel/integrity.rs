@@ -85,7 +85,7 @@ pub fn export_issues_report(
     report: &IntegrityReport,
     _original_tree: &[preview_tree::PreviewTreeNode],
     _organized_tree: &[preview_tree::PreviewTreeNode],
-    metadata: &Option<arclain_core::organization::GameMetadata>,
+    metadata: &Option<arclain_core::features::organization::GameMetadata>,
 ) {
     use std::io::Write;
 
@@ -143,10 +143,10 @@ pub fn export_issues_report(
 
             for data in expected_urls {
                 let identifier = match data {
-                    arclain_core::organization::ScreenshotData::FilePath(p) => {
+                    arclain_core::features::organization::ScreenshotData::FilePath(p) => {
                         p.display().to_string()
                     }
-                    arclain_core::organization::ScreenshotData::Base64(s) => {
+                    arclain_core::features::organization::ScreenshotData::Base64(s) => {
                         format!("Base64 data ({} bytes)", s.len())
                     }
                 };

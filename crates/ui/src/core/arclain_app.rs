@@ -571,7 +571,7 @@ impl eframe::App for ArclainApp {
                         }
                         crate::features::archive_browser::ArchiveBrowserAction::Metadata(json) => {
                             // Parse metadata JSON and store in state
-                            match serde_json::from_str::<arclain_core::organization::GameMetadata>(&json) {
+                            match serde_json::from_str::<arclain_core::features::organization::GameMetadata>(&json) {
                                 Ok(metadata) => {
                                     tracing::info!("Received metadata from plugin: {:?}", metadata.title);
                                     let mut state = self.state.lock();

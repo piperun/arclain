@@ -2,7 +2,7 @@
 //!
 //! Dialog UI for creating and editing organization rules.
 
-use arclain_core::organization::OrganizationRule;
+use arclain_core::features::organization::OrganizationRule;
 use eframe::egui::{self, Align, Layout, Window};
 
 pub struct AddRuleDialog {

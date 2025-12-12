@@ -1,4 +1,4 @@
-use crate::organization::{OrganizationRule, RuleActions, RuleTrigger};
+use crate::features::organization::{OrganizationRule, RuleActions, RuleTrigger};
 
 pub fn get_default_rules() -> Vec<OrganizationRule> {
     vec![OrganizationRule {

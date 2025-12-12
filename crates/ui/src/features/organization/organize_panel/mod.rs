@@ -15,7 +15,7 @@ use crate::features::organization::export_dialog::ExportTreeDialog;
 use crate::shared::components::preview_tree::{
     self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
 };
-use arclain_core::organization::{engine::RuleEngine, OrganizationRule};
+use arclain_core::features::organization::{engine::RuleEngine, OrganizationRule};
 use arclain_core::ArchiveEntry;
 use eframe::egui;
 
@@ -38,8 +38,8 @@ pub struct OrganizePanel {
     pub entries: Vec<ArchiveEntry>,
     pub rules: Vec<OrganizationRule>,
     pub selected_rule_index: usize,
-    pub preview_plan: Option<arclain_core::organization::engine::OrganizationPlan>,
-    pub metadata: Option<arclain_core::organization::GameMetadata>,
+    pub preview_plan: Option<arclain_core::features::organization::engine::OrganizationPlan>,
+    pub metadata: Option<arclain_core::features::organization::GameMetadata>,
     pub network_log: Vec<(std::time::SystemTime, String)>,
     pub active_tab: OrganizeTab,
     // Tree view state
@@ -57,7 +57,7 @@ impl OrganizePanel {
         archive_name: String,
         entries: Vec<ArchiveEntry>,
         rules: Vec<OrganizationRule>,
-        metadata: Option<arclain_core::organization::GameMetadata>,
+        metadata: Option<arclain_core::features::organization::GameMetadata>,
     ) -> Self {
         let mut panel = Self {
             archive_name: archive_name.clone(),
@@ -560,7 +560,7 @@ impl OrganizePanel {
         report: &IntegrityReport,
         original_tree: &[preview_tree::PreviewTreeNode],
         organized_tree: &[preview_tree::PreviewTreeNode],
-        metadata: &Option<arclain_core::organization::GameMetadata>,
+        metadata: &Option<arclain_core::features::organization::GameMetadata>,
     ) {
         export_issues_report(report, original_tree, organized_tree, metadata);
     }

@@ -1,5 +1,5 @@
 use crate::shared::components::preview_tree::PreviewTreeNode;
-use arclain_core::organization::GameMetadata;
+use arclain_core::features::organization::GameMetadata;
 use eframe::egui;
 use serde::Serialize;
 

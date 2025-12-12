@@ -39,7 +39,7 @@ pub fn replace_pass_rules(db: &arclain_db::SecretsDb, rules: &[PassRule]) -> Res
 
 // Organization Rules
 
-use crate::organization::OrganizationRule;
+use crate::features::organization::OrganizationRule;
 use arclain_db::{delete_rule, list_rules, save_rule, DbOrganizationRule};
 
 pub fn list_org_rules(db: &arclain_db::SqliteDb) -> Result<Vec<OrganizationRule>> {
@@ -138,12 +138,12 @@ pub fn ensure_default_rules(db: &arclain_db::SqliteDb) -> Result<()> {
         name: "DLsite Standard".to_string(),
         priority: 100,
         is_enabled: true,
-        trigger: crate::organization::RuleTrigger {
+        trigger: crate::features::organization::RuleTrigger {
             filename_pattern: Some(r"(RJ|VJ|BJ)\d+".to_string()),
             has_file: None,
             metadata_source: None,
         },
-        actions: crate::organization::RuleActions {
+        actions: crate::features::organization::RuleActions {
             root_folder: Some("Game".to_string()),
             use_standard_layout: true,
             move_files: vec![],

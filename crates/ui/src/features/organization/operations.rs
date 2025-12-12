@@ -2,7 +2,7 @@
 // This will contain the logic for executing organization plans, retrying with passwords, etc.
 
 use crate::shared::SharedState;
-use arclain_core::organization::engine::OrganizationPlan;
+use arclain_core::features::organization::engine::OrganizationPlan;
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -41,7 +41,9 @@ pub fn execute_organization_plan(
         arclain_core::Archive::new(backend, source)
     };
 
-    match arclain_core::organization::execute_organization_plan(&archive, dest, plan, &temp_dir) {
+    match arclain_core::features::organization::execute_organization_plan(
+        &archive, dest, plan, &temp_dir,
+    ) {
         Ok(_) => Ok(()),
         Err(e) => {
             // If failed, try with auto-password if we didn't have one
@@ -88,7 +90,7 @@ pub fn try_with_auto_password(
         let backend = backend_selector.select(source)?;
         let archive_retry = arclain_core::Archive::with_password(backend, source, password.clone());
 
-        match arclain_core::organization::execute_organization_plan(
+        match arclain_core::features::organization::execute_organization_plan(
             &archive_retry,
             dest,
             plan,

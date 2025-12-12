@@ -1,4 +1,4 @@
-use crate::organization::engine::RuleEngine;
+use crate::features::organization::engine::RuleEngine;
 use crate::ArchiveEntry;
 
 #[cfg(test)]
