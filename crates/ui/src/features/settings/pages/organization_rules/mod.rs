@@ -57,16 +57,16 @@ impl RulesPage {
 
         ui.separator();
 
-        let mut rule_to_delete = None;
+        let rule_to_delete = None;
         if let Some(rules) = &self.rules {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for rule in rules {
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             ui.colored_label(egui::Color32::LIGHT_BLUE, &rule.name);
-                            if rule.is_system {
-                                ui.label("(System)");
-                            }
+                            // if rule.is_system {
+                            //     ui.label("(System)");
+                            // }
                             if !rule.is_enabled {
                                 ui.colored_label(egui::Color32::GRAY, "(Disabled)");
                             }
@@ -74,11 +74,11 @@ impl RulesPage {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
-                                    if !rule.is_system {
-                                        if ui.button("Delete").clicked() {
-                                            rule_to_delete = rule.id;
-                                        }
-                                    }
+                                    // if !rule.is_system {
+                                    //     if ui.button("Delete").clicked() {
+                                    //         rule_to_delete = rule.id;
+                                    //     }
+                                    // }
 
                                     if ui.button("Edit").clicked() {
                                         self.dialog.edit(rule.clone());
@@ -89,14 +89,14 @@ impl RulesPage {
 
                         // Details
                         ui.horizontal(|ui| {
-                            ui.label(format!("Category: {}", rule.category));
+                            // ui.label(format!("Category: {}", rule.category));
                             if let Some(pattern) = &rule.trigger.filename_pattern {
                                 ui.label(format!(" | Pattern: {}", pattern));
                             }
                         });
-                        if let Some(desc) = &rule.description {
-                            ui.label(egui::RichText::new(desc).italics().weak());
-                        }
+                        // if let Some(desc) = &rule.description {
+                        //     ui.label(egui::RichText::new(desc).italics().weak());
+                        // }
                     });
                     ui.add_space(4.0);
                 }

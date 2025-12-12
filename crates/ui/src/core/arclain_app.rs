@@ -329,7 +329,7 @@ impl eframe::App for ArclainApp {
                                    let db = &dbs.config;
                                    if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
                                        rules = loaded.into_iter().filter(|r| {
-                                            if r.category.eq_ignore_ascii_case("dlsite") {
+                                            if r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false) {
                                                 dlsite_enabled
                                             } else {
                                                 true
@@ -606,7 +606,7 @@ impl eframe::App for ArclainApp {
                                        let db = &dbs.config;
                                        if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
                                            rules = loaded.into_iter().filter(|r| {
-                                                if r.category.eq_ignore_ascii_case("dlsite") {
+                                                if r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false) {
                                                     dlsite_enabled
                                                 } else {
                                                     true

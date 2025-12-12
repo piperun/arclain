@@ -19,11 +19,7 @@ pub fn sync_rules(db: &SqliteDb) -> Result<()> {
     tracing::info!("sync_rules: {} default rules to insert", defaults.len());
 
     for rule in &defaults {
-        tracing::info!(
-            "sync_rules: Inserting rule '{}' (category: '{}')",
-            rule.name,
-            rule.category
-        );
+        tracing::info!("sync_rules: Inserting rule '{}'", rule.name);
         save_org_rule(db, rule)?;
     }
 

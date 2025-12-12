@@ -12,7 +12,6 @@ pub mod defaults;
 pub mod settings;
 pub mod sync;
 
-pub use database::{
-    open_databases, ConfigDb, ConfigDbs, DbPaths, DbTitleReplacement, SecretsDb, SecretsKey,
-};
+pub use arclain_db::DbTitleReplacement;
+pub use database::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};
 pub use settings::{Config, ConfigStore, PassRule};
