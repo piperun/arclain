@@ -5,8 +5,9 @@ use arclain_core::config::database::{
     get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
-use arclain_core::utilities::ChecksumService;
-use arclain_core::{ConfigStore, NavigationState};
+use arclain_core::utilities::{auto_password_for, ChecksumService, PassRule};
+use arclain_core::NavigationState;
+use arclain_db::UserConfig;
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
 use std::{
@@ -17,7 +18,10 @@ use std::{
 use tracing::{debug, info, warn};
 
 pub struct AppState {
-    pub cfg: ConfigStore,
+    /// User configuration loaded from database
+    pub user_config: UserConfig,
+    /// Password rules loaded from encrypted secrets DB
+    pub pass_rules: Vec<PassRule>,
     pub backend_selector: BackendSelector,
     pub fallback_backend: SevenZipCli, // Keep for plugin compatibility
     pub last_entries: Vec<String>,
@@ -54,8 +58,24 @@ pub struct UiPreferences {
 impl AppState {
     pub fn new() -> Result<Self> {
         info!("Initializing application state");
-        let cfg = ConfigStore::load("arclain")?;
-        let fallback_backend = SevenZipCli::detect(cfg.cfg.sevenzip_path.as_deref())?;
+
+        // Load user config from database
+        let db_paths = DbPaths::defaults("arclain")?;
+        let user_config = if let Ok(cfg_db) = ConfigDb::open(&db_paths.config_db) {
+            let cfg_conn = cfg_db.into_sqlite_db();
+            cfg_conn
+                .with_connection(|conn| {
+                    UserConfig::ensure_table(conn)?;
+                    Ok(UserConfig::load(conn)?.unwrap_or_default())
+                })
+                .unwrap_or_default()
+        } else {
+            UserConfig::default()
+        };
+
+        // Initialize 7-Zip backend with path from config
+        let sevenzip_path = user_config.sevenzip_path.as_ref().map(PathBuf::from);
+        let fallback_backend = SevenZipCli::detect(sevenzip_path.as_deref())?;
         info!("7-Zip CLI backend initialized as fallback");
 
         // Create backend selector (defaults to native mode with fallbacks)
@@ -64,7 +84,8 @@ impl AppState {
 
         // Build initial state
         let mut me = Self {
-            cfg,
+            user_config,
+            pass_rules: vec![],
             backend_selector,
             fallback_backend,
             last_entries: vec![],
@@ -76,7 +97,7 @@ impl AppState {
             encryption_method: None,
             current_password: None,
             encrypted_crc_policy: "on_open".to_string(),
-            db_paths: None,
+            db_paths: Some(db_paths.clone()),
             dbs: None,
             plugin_manager: None,
             plugin_metadata: None,
@@ -145,7 +166,7 @@ impl AppState {
             if let Some(ref key_path) = paths.key_file {
                 if let Ok(key) = SecretsKey::load_from_file(key_path) {
                     match open_databases(&paths, &key) {
-                        Ok(mut dbs) => {
+                        Ok(dbs) => {
                             // Persist current paths into config DB
                             let _ = dbs.config.with_connection(|conn| {
                                 set_config(
@@ -159,75 +180,12 @@ impl AppState {
                             // Note: Organization rules are seeded via sync_configuration() below
 
                             // Migrate plain JSON settings -> config.sqlite if not present
-                            let has_sevenzip = matches!(
-                                dbs.config
-                                    .with_connection(|conn| get_config(conn, "sevenzip_path")),
-                                Ok(Some(_))
-                            );
-
-                            if !has_sevenzip {
-                                if let Some(p) = me.cfg.cfg.sevenzip_path.clone() {
-                                    let _ = dbs.config.with_connection(|conn| {
-                                        set_config(conn, "sevenzip_path", &p.to_string_lossy())
-                                    });
-                                }
-                            }
-
-                            let has_transfer = matches!(
-                                dbs.config
-                                    .with_connection(|conn| get_config(conn, "transfer_dir")),
-                                Ok(Some(_))
-                            );
-
-                            if !has_transfer {
-                                if let Some(p) = me.cfg.cfg.transfer_dir.clone() {
-                                    let _ = dbs.config.with_connection(|conn| {
-                                        set_config(conn, "transfer_dir", &p.to_string_lossy())
-                                    });
-                                }
-                            }
-
-                            // Migrate JSON pass_rules -> secrets DB (first run)
-                            let migrated = if let Ok(res) = dbs
-                                .config
-                                .with_connection(|conn| get_config(conn, "pass_rules_migrated"))
-                            {
-                                res
-                            } else {
-                                None
-                            };
-
-                            if migrated.as_deref() != Some("1") {
-                                if let Ok(existing) = list_pass_rules(&dbs.secrets) {
-                                    if existing.is_empty() && !me.cfg.cfg.pass_rules.is_empty() {
-                                        if let Err(e) = replace_pass_rules(
-                                            &mut dbs.secrets,
-                                            &me.cfg.cfg.pass_rules,
-                                        ) {
-                                            info!("Pass rules migration failed: {}", e);
-                                        } else {
-                                            let _ = dbs.config.with_connection(|conn| {
-                                                set_config(conn, "pass_rules_migrated", "1")
-                                            });
-                                            info!(
-                                                "Migrated {} pass rules into secrets DB",
-                                                me.cfg.cfg.pass_rules.len()
-                                            );
-                                        }
-                                    } else if !existing.is_empty() {
-                                        let _ = dbs.config.with_connection(|conn| {
-                                            set_config(conn, "pass_rules_migrated", "1")
-                                        });
-                                    }
-                                }
-                            }
-
-                            // Load pass rules from secrets DB and replace in-memory rules
+                            // Load pass rules from secrets DB
                             if let Ok(rules) = list_pass_rules(&dbs.secrets) {
-                                me.cfg.cfg.pass_rules = rules;
+                                me.pass_rules = rules;
                                 info!(
                                     "Loaded {} pass rules from encrypted secrets DB",
-                                    me.cfg.cfg.pass_rules.len()
+                                    me.pass_rules.len()
                                 );
                             }
 
@@ -318,7 +276,7 @@ impl AppState {
                 if info.headers_encrypted {
                     debug!("Archive has encrypted headers, trying auto-password");
                     let archive_name = path.to_str();
-                    let pw = self.cfg.auto_password_for(archive_name, &vec![]); // last_entries is empty here anyway
+                    let pw = auto_password_for(&self.pass_rules, archive_name, &vec![]); // last_entries is empty here anyway
                     if let Some(ref password) = pw {
                         info!("Attempting to open encrypted archive with auto-detected password");
                         match backend.list(path, Some(password)) {
@@ -343,7 +301,7 @@ impl AppState {
             Err(e) => {
                 debug!("Initial listing failed, trying with auto-password: {}", e);
                 let archive_name = path.to_str();
-                let pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
+                let pw = auto_password_for(&self.pass_rules, archive_name, &self.last_entries);
                 if let Some(ref password) = pw {
                     info!("Attempting to open archive with auto-detected password");
                     let info = backend.list(path, Some(password))?;
@@ -371,7 +329,7 @@ impl AppState {
                 "Attempting auto-password detection for archive: {:?}",
                 archive_name
             );
-            let detected_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
+            let detected_pw = auto_password_for(&self.pass_rules, archive_name, &self.last_entries);
             if let Some(ref pwd) = detected_pw {
                 info!("Auto-detected password for archive (length: {})", pwd.len());
                 self.current_password = Some(pwd.clone());
@@ -500,7 +458,7 @@ impl AppState {
 
     pub fn read_text_file(&self, archive: &Path, path_in_archive: &str) -> Result<String> {
         let archive_name = archive.to_str();
-        let auto_pw = self.cfg.auto_password_for(archive_name, &self.last_entries);
+        let auto_pw = auto_password_for(&self.pass_rules, archive_name, &self.last_entries);
         let pw = self.current_password.as_deref().or(auto_pw.as_deref());
         let backend = self.backend_selector.select(archive)?;
         backend.read_text_file(archive, path_in_archive, pw)
@@ -577,7 +535,7 @@ impl AppState {
             // Load pass rules from secrets DB
             if let Some(ref dbs_ref) = self.dbs {
                 if let Ok(rules) = list_pass_rules(&dbs_ref.secrets) {
-                    self.cfg.cfg.pass_rules = rules;
+                    self.pass_rules = rules;
                 }
             }
         } else {
@@ -646,7 +604,7 @@ impl AppState {
             // Reload pass rules
             if let Some(ref dbs_ref) = self.dbs {
                 if let Ok(rules) = list_pass_rules(&dbs_ref.secrets) {
-                    self.cfg.cfg.pass_rules = rules;
+                    self.pass_rules = rules;
                 }
             }
         }
@@ -721,7 +679,7 @@ impl AppState {
         // Reload pass rules (should be the same, but for consistency)
         if let Some(ref dbs_ref) = self.dbs {
             if let Ok(rules) = list_pass_rules(&dbs_ref.secrets) {
-                self.cfg.cfg.pass_rules = rules;
+                self.pass_rules = rules;
             }
         }
 
@@ -729,9 +687,9 @@ impl AppState {
     }
 
     /// Save password rules to the encrypted secrets database
-    pub fn save_password_rules(&mut self, rules: Vec<arclain_core::PassRule>) -> Result<()> {
+    pub fn save_password_rules(&mut self, rules: Vec<PassRule>) -> Result<()> {
         // Update in-memory cache
-        self.cfg.cfg.pass_rules = rules.clone();
+        self.pass_rules = rules.clone();
 
         // Persist to secrets DB if available
         if let Some(ref dbs) = self.dbs {
@@ -741,12 +699,8 @@ impl AppState {
                 rules.len()
             );
         } else {
-            // Fall back to JSON if DB not available
-            self.cfg.save()?;
-            warn!(
-                "Saved {} password rules to JSON config (DB not available)",
-                rules.len()
-            );
+            // No DB available - can't save
+            warn!("Cannot save password rules - DB not available (rules updated in memory only)",);
         }
 
         Ok(())
@@ -779,7 +733,7 @@ impl AppState {
             enabled: true,
         };
 
-        let mut rules = self.cfg.cfg.pass_rules.clone();
+        let mut rules = self.pass_rules.clone();
         // Check if a rule with this pattern already exists, if so update it
         if let Some(existing) = rules.iter_mut().find(|r| r.pattern == new_rule.pattern) {
             existing.password = new_rule.password.clone();

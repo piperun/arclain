@@ -319,6 +319,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "arclain_db_derive",
  "base64 0.22.1",
  "cacache",
  "dirs 5.0.1",
@@ -330,6 +331,15 @@ dependencies = [
  "tempfile",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "arclain_db_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -375,6 +385,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rfd",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

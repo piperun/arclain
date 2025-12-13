@@ -5,7 +5,7 @@ members = [
     "crates/db",
     "crates/plugins",
     "crates/checksum"
-]
+, "crates/db_derive"]
 exclude = [
     "plugins/dlsite-metadata",
     "plugins/gstreamer-preview",

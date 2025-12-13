@@ -15,10 +15,10 @@ pub fn execute_organization_plan(
     let state = shared.app_state.lock();
     let backend_selector = state.backend_selector.clone();
     let temp_dir = state
-        .cfg
-        .cfg
+        .user_config
         .temp_dir
-        .clone()
+        .as_ref()
+        .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let password = state.current_password.clone();
     drop(state);
@@ -66,10 +66,10 @@ pub fn try_with_auto_password(
     let state = shared.app_state.lock();
     let backend_selector = state.backend_selector.clone();
     let temp_dir = state
-        .cfg
-        .cfg
+        .user_config
         .temp_dir
-        .clone()
+        .as_ref()
+        .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let archive_name = source.to_str();
     let entries = state
@@ -77,7 +77,8 @@ pub fn try_with_auto_password(
         .iter()
         .map(|e| e.path.clone())
         .collect::<Vec<_>>();
-    let detected_pw = state.cfg.auto_password_for(archive_name, &entries);
+    let detected_pw =
+        arclain_core::utilities::auto_password_for(&state.pass_rules, archive_name, &entries);
     drop(state);
 
     if let Some(ref password) = detected_pw {

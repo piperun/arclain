@@ -1,7 +1,8 @@
 use crate::core::SettingsPage;
 use crate::features::password_management::dialogs::PasswordRulesDialog;
 use crate::features::settings::settings_content::{
-    render_settings_content, ArchivesSettingsState, SecuritySettingsState, SettingsAction,
+    render_settings_content, ArchivesSettingsState, GeneralSettingsState, SecuritySettingsState,
+    SettingsAction,
 };
 use crate::features::settings::settings_page::{
     render_breadcrumb, render_settings_header, render_settings_navigator, render_settings_overview,
@@ -10,6 +11,7 @@ use crate::shared::SharedState;
 use eframe::egui;
 
 pub struct SettingsFeature {
+    pub general_state: GeneralSettingsState,
     pub security_state: SecuritySettingsState,
     pub archives_state: ArchivesSettingsState,
     pub password_rules_dialog: PasswordRulesDialog,
@@ -17,12 +19,80 @@ pub struct SettingsFeature {
 }
 
 impl SettingsFeature {
-    pub fn new(_shared: &SharedState) -> Self {
+    pub fn new(shared: &SharedState) -> Self {
+        // Load saved settings from config
+        let open_nested_in_new_tab = {
+            let state = shared.app_state.lock();
+            state.user_config.open_nested_in_new_tab
+        };
+
         Self {
+            general_state: GeneralSettingsState {
+                open_nested_in_new_tab,
+            },
             security_state: SecuritySettingsState::default(),
             archives_state: ArchivesSettingsState::default(),
             password_rules_dialog: PasswordRulesDialog::default(),
             plugins_state: crate::features::plugins::types::PluginsListState::default(),
+        }
+    }
+
+    pub fn check_changes(&self, shared: &SharedState, page: &SettingsPage) -> bool {
+        let state = shared.app_state.lock();
+
+        match page {
+            SettingsPage::General => {
+                self.general_state.open_nested_in_new_tab
+                    != state.user_config.open_nested_in_new_tab
+            }
+            SettingsPage::Archives => {
+                // Compare temp_dir
+                // Currently temp_dir depends on option. The UI state is a string. UserConfig is Option<String>.
+                // Wait, UserConfig Definition of temp_dir? I suspect it is Option<PathBuf> or Option<String>.
+                // Let's assume Option<String> based on SaveArchives handler: state.user_config.temp_dir = temp_dir;
+                let current_val = if self.archives_state.temp_dir.trim().is_empty() {
+                    None
+                } else {
+                    Some(self.archives_state.temp_dir.trim().to_string())
+                };
+
+                // We need to know what state.user_config.temp_dir is.
+                // Based on `SettingsAction::SaveArchives { temp_dir }`: `state.user_config.temp_dir = temp_dir;`
+                // And `temp_dir` in `SaveArchives` is `Option<String>`.
+                // So state.user_config.temp_dir must be `Option<String>`.
+
+                current_val != state.user_config.temp_dir
+            }
+            SettingsPage::Security => {
+                // Check key file or secrets db
+                !self.security_state.key_file_path.trim().is_empty() 
+                || !self.security_state.secrets_db_path.trim().is_empty()
+                // Policy - assume changed if not default
+                || self.security_state.encrypted_crc_policy != crate::features::settings::types::EncryptedCrcPolicy::default()
+            }
+            SettingsPage::PasswordRules => {
+                // Compare rules
+                // self.password_rules_dialog.rules vs state.pass_rules
+                // Need to convert state.pass_rules (PassRule) to PasswordRule (UiRule) for comparison?
+                // Or just count/content.
+                if self.password_rules_dialog.rules.len() != state.pass_rules.len() {
+                    return true;
+                }
+                // Deep compare
+                for (i, rule) in self.password_rules_dialog.rules.iter().enumerate() {
+                    let other = &state.pass_rules[i];
+                    if rule.name != other.name
+                        || rule.pattern != other.pattern
+                        || rule.password != other.password
+                        || rule.priority != other.priority
+                        || rule.enabled != other.enabled
+                    {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
         }
     }
 
@@ -78,7 +148,52 @@ impl SettingsFeature {
                                         ui.add_space(8.0);
 
                                         // Header
-                                        render_settings_header(ui, &shared.theme, page);
+                                        let has_changes = self.check_changes(shared, page);
+                                        if render_settings_header(ui, &shared.theme, page, has_changes) {
+                                            // Handle global save
+                                            match page {
+                                                SettingsPage::General => {
+                                                    action = Some(SettingsAction::SaveGeneral {
+                                                        open_nested_in_new_tab: self.general_state.open_nested_in_new_tab,
+                                                    });
+                                                }
+                                                SettingsPage::Archives => {
+                                                    let temp_dir_opt = if self.archives_state.temp_dir.trim().is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(self.archives_state.temp_dir.trim().to_string())
+                                                    };
+                                                    action = Some(SettingsAction::SaveArchives {
+                                                        temp_dir: temp_dir_opt,
+                                                    });
+                                                }
+                                                SettingsPage::Security => {
+                                                    let key_opt = if self.security_state.key_file_path.trim().is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(self.security_state.key_file_path.trim().to_string())
+                                                    };
+                                                    let db_opt = if self.security_state.secrets_db_path.trim().is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(self.security_state.secrets_db_path.trim().to_string())
+                                                    };
+                                                    let policy_opt = Some(self.security_state.encrypted_crc_policy.as_str().to_string());
+
+                                                    action = Some(SettingsAction::SaveSecurity {
+                                                        key_file_path: key_opt,
+                                                        secrets_db_path: db_opt,
+                                                        encrypted_crc_policy: policy_opt,
+                                                    });
+                                                }
+                                                SettingsPage::PasswordRules => {
+                                                     action = Some(SettingsAction::SavePasswordRules {
+                                                        rules: self.password_rules_dialog.rules.clone(),
+                                                    });
+                                                }
+                                                _ => {}
+                                            }
+                                        }
                                         ui.add_space(20.0);
                                     });
                                 });
@@ -111,6 +226,7 @@ impl SettingsFeature {
                                                     ui,
                                                     &shared.theme,
                                                     page,
+                                                    &mut self.general_state,
                                                     &mut self.security_state,
                                                     &mut self.archives_state,
                                                     &mut self.password_rules_dialog,
@@ -155,9 +271,13 @@ impl SettingsFeature {
             }
             SettingsAction::SaveArchives { temp_dir } => {
                 let mut state = shared.app_state.lock();
-                state.cfg.cfg.temp_dir = temp_dir.map(std::path::PathBuf::from);
-                if let Err(_e) = state.cfg.save() {
-                    // self.archives_state.error = format!("Failed to save settings: {}", e);
+                state.user_config.temp_dir = temp_dir;
+                // Save via DB if available
+                if let Some(ref dbs) = state.dbs {
+                    let _ = dbs.config.with_connection(|conn| {
+                        state.user_config.save(conn).ok();
+                        Ok::<_, anyhow::Error>(())
+                    });
                 }
             }
             SettingsAction::MoveVault { dest_path } => {
@@ -248,6 +368,23 @@ impl SettingsFeature {
                         }
                     }
                 });
+            }
+            SettingsAction::SaveGeneral {
+                open_nested_in_new_tab,
+            } => {
+                let mut state = shared.app_state.lock();
+                state.user_config.open_nested_in_new_tab = open_nested_in_new_tab;
+                // Save via DB if available
+                if let Some(ref dbs) = state.dbs {
+                    if let Err(e) = dbs.config.with_connection(|conn| {
+                        state.user_config.save(conn).ok();
+                        Ok::<_, anyhow::Error>(())
+                    }) {
+                        tracing::error!("Failed to save general settings: {}", e);
+                    } else {
+                        tracing::info!("General settings saved");
+                    }
+                }
             }
         }
     }
