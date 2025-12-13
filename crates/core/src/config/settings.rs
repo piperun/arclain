@@ -1,35 +1,9 @@
 use anyhow::{Context, Result};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{fs, io::Write, path::PathBuf};
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct PassRule {
-    pub name: String,
-    pub pattern: String, // regex
-    pub password: String,
-    pub priority: u32,
-    pub enabled: bool,
-}
-
-// Custom Debug implementation to avoid logging passwords
-impl std::fmt::Debug for PassRule {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PassRule")
-            .field("name", &self.name)
-            .field("pattern", &self.pattern)
-            .field("password", &"[REDACTED]")
-            .field("priority", &self.priority)
-            .field("enabled", &self.enabled)
-            .finish()
-    }
-}
-
-impl PassRule {
-    pub fn to_regex(&self) -> Option<Regex> {
-        Regex::new(&self.pattern).ok()
-    }
-}
+// Re-export PassRule from password_matcher for backwards compatibility
+pub use crate::utilities::password_matcher::PassRule;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -40,6 +14,9 @@ pub struct Config {
     /// Backend selection: "native" (use native backends where possible) or "cli" (always use 7z CLI)
     #[serde(default = "default_backend_mode")]
     pub backend_mode: String,
+    /// Whether to open nested archives in a new tab (true) or replace current view (false)
+    #[serde(default)]
+    pub open_nested_in_new_tab: bool,
 }
 
 fn default_backend_mode() -> String {
@@ -54,6 +31,7 @@ impl Default for Config {
             temp_dir: None,
             pass_rules: vec![],
             backend_mode: default_backend_mode(),
+            open_nested_in_new_tab: false, // Default: replace current view
         }
     }
 }

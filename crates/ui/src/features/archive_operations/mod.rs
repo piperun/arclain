@@ -1,6 +1,7 @@
 pub mod operations;
 pub mod state;
 
+pub use operations::open_file_from_archive;
 pub use state::ArchiveOperationsState;
 
 use crate::shared::SharedState;

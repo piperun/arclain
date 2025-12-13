@@ -147,6 +147,28 @@ impl eframe::App for ArclainApp {
         // Handle extraction progress
         self.archive_operations.update_extraction_progress(ctx);
         self.archive_operations.update_conversion_progress(ctx);
+        
+        // Process pending file opens (double-click on file in archive)
+        if let Some(file_path) = self.archive_operations.state_mut().pending_open_file.take() {
+            if let Some(nested_archive_path) = crate::features::archive_operations::open_file_from_archive(
+                &self.state,
+                &file_path,
+                &mut self.status_info,
+            ) {
+                // It's a nested archive - open it as the current archive
+                let browser_state = self.archive_browser.state_mut();
+                let mut archive_info = operations::archive::ArchiveInfo::default();
+                operations::archive::open_archive_by_path(
+                    &self.state,
+                    &nested_archive_path,
+                    &mut browser_state.current_path,
+                    &mut self.password_feature.password_dialog,
+                    &mut self.status_info,
+                    &mut browser_state.entries,
+                    &mut archive_info,
+                );
+            }
+        }
 
         // Render Header
         egui::TopBottomPanel::top("header_panel")
@@ -545,6 +567,27 @@ impl eframe::App for ArclainApp {
                         }
                         crate::features::archive_browser::ArchiveBrowserAction::OpenFile(file) => {
                             self.archive_operations.state_mut().pending_open_file = Some(file);
+                        }
+                        crate::features::archive_browser::ArchiveBrowserAction::OpenArchiveInTab(archive_path) => {
+                            // Extract nested archive to temp and open as current archive
+                            if let Some(extracted_path) = crate::features::archive_operations::open_file_from_archive(
+                                &self.state,
+                                &archive_path,
+                                &mut self.status_info,
+                            ) {
+                                // Open the extracted archive as the current archive
+                                let browser_state = self.archive_browser.state_mut();
+                                let mut archive_info = operations::archive::ArchiveInfo::default();
+                                operations::archive::open_archive_by_path(
+                                    &self.state,
+                                    &extracted_path,
+                                    &mut browser_state.current_path,
+                                    &mut self.password_feature.password_dialog,
+                                    &mut self.status_info,
+                                    &mut browser_state.entries,
+                                    &mut archive_info,
+                                );
+                            }
                         }
                         crate::features::archive_browser::ArchiveBrowserAction::EditFile(file) => {
                             self._pending_edit_file = Some(file.clone());

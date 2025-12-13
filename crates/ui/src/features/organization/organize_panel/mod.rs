@@ -11,13 +11,17 @@ pub use integrity::IntegrityReport;
 use integrity::{collect_full_paths, count_files, count_folders, export_issues_report, fnv1a_hash};
 
 use crate::features::organization::export_dialog::ExportTreeDialog;
+use crate::shared::dialogs::progress::{ExtractionProgressDialog, ExtractionStatus};
 
 use crate::shared::components::preview_tree::{
     self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
 };
+use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::features::organization::{engine::RuleEngine, OrganizationRule};
 use arclain_core::ArchiveEntry;
 use eframe::egui;
+use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 #[derive(Default, PartialEq, Clone, Copy)]
 pub enum OrganizeTab {
@@ -50,6 +54,12 @@ pub struct OrganizePanel {
     pub organized_tree: Vec<preview_tree::PreviewTreeNode>,
     pub depth_limit: Option<usize>,
     pub export_dialog: ExportTreeDialog,
+    // Organization progress state
+    pub progress_dialog: ExtractionProgressDialog,
+    pub progress_rx: Option<Receiver<ProgressUpdate>>,
+    pub organization_child: Option<std::process::Child>,
+    pub organization_started: Option<Instant>,
+    pub is_organizing: bool,
 }
 
 impl OrganizePanel {
@@ -75,6 +85,12 @@ impl OrganizePanel {
             organized_tree: Vec::new(),
             depth_limit: None,
             export_dialog: ExportTreeDialog::new(),
+            // Progress state
+            progress_dialog: ExtractionProgressDialog::default(),
+            progress_rx: None,
+            organization_child: None,
+            organization_started: None,
+            is_organizing: false,
         };
 
         // Auto-select rule
@@ -148,6 +164,51 @@ impl OrganizePanel {
         }
     }
 
+    /// Update organization progress from channel
+    pub fn update_organization_progress(&mut self) {
+        if !self.is_organizing {
+            return;
+        }
+
+        // Check for progress updates from channel
+        if let Some(ref rx) = self.progress_rx {
+            while let Ok(update) = rx.try_recv() {
+                self.progress_dialog.percent = update.percent;
+                if let Some(ref msg) = update.message {
+                    self.progress_dialog.file_action = msg.clone();
+                }
+                // Check for completion
+                if update.percent >= 100 {
+                    self.progress_dialog.status = ExtractionStatus::Completed;
+                    self.is_organizing = false;
+                    self.progress_dialog.show = false;
+                }
+            }
+        }
+
+        // Update elapsed time
+        if let Some(started) = self.organization_started {
+            let elapsed = started.elapsed();
+            self.progress_dialog.elapsed_text = format!(
+                "{}:{:02}",
+                elapsed.as_secs() / 60,
+                elapsed.as_secs() % 60
+            );
+        }
+    }
+
+    /// Cancel ongoing organization
+    pub fn cancel_organization(&mut self) {
+        if let Some(ref mut child) = self.organization_child {
+            let _ = child.kill();
+        }
+        self.organization_child = None;
+        self.progress_rx = None;
+        self.is_organizing = false;
+        self.progress_dialog.show = false;
+        self.progress_dialog.status = ExtractionStatus::Cancelled;
+    }
+
     fn truncate_path(path: &str, max_len: usize) -> String {
         // Use character count, not byte count, for proper Unicode handling
         let char_count = path.chars().count();
@@ -182,6 +243,25 @@ impl OrganizePanel {
     }
 
     pub fn render(&mut self, ctx: &egui::Context) -> Option<OrganizePanelAction> {
+        // Update organization progress if running
+        self.update_organization_progress();
+        
+        // Render progress dialog if organizing
+        if self.progress_dialog.show {
+            if let Some(result) = crate::shared::dialogs::progress::render_extraction_progress_dialog(
+                ctx,
+                &crate::shared::theme::AppTheme::new(false), // TODO: Get actual theme
+                &mut self.progress_dialog,
+            ) {
+                match result {
+                    crate::shared::dialogs::progress::ExtractionDialogResult::Cancelled => {
+                        self.cancel_organization();
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
         self.export_dialog.show(
             ctx,
             &self.original_tree,

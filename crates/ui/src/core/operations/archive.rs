@@ -65,6 +65,56 @@ pub fn open_archive(
     }
 }
 
+/// Handle opening an archive file from a specific path (for nested archives)
+pub fn open_archive_by_path(
+    state: &Arc<Mutex<AppState>>,
+    path: &std::path::Path,
+    current_path: &mut String,
+    password_dialog: &mut dialogs::PasswordDialog,
+    status_info: &mut status_bar::StatusBarInfo,
+    entries: &mut Vec<file_list::FileEntry>,
+    archive_info: &mut ArchiveInfo,
+) {
+    info!("Opening archive from path: {}", path.display());
+    *current_path = String::new(); // Reset to root
+
+    let mut st = state.lock();
+    match st.list_archive(path) {
+        Ok(archive_entries) => {
+            let current_archive = st.current_archive.clone();
+            drop(st);
+            load_archive_data(
+                state,
+                archive_entries,
+                current_archive,
+                password_dialog,
+                &mut None,
+                status_info,
+                entries,
+                archive_info,
+            );
+        }
+        Err(e) => {
+            let err_msg = e.to_string();
+            if err_msg.contains("Wrong password")
+                || err_msg.contains("Cannot open encrypted")
+                || err_msg.contains("Can not open encrypted")
+                || err_msg.contains("Enter password")
+                || err_msg.contains("code Some(2)")
+                || err_msg.contains("code Some(255)")
+            {
+                password_dialog.show = true;
+                password_dialog.password.clear();
+                password_dialog.error.clear();
+                status_info.message = "Archive is password-protected".to_string();
+            } else {
+                error!("Failed to load archive: {}", err_msg);
+                status_info.message = format!("Failed to load archive: {}", err_msg);
+            }
+        }
+    }
+}
+
 /// Try to open an archive with a password
 pub fn try_open_with_password(
     state: &Arc<Mutex<AppState>>,
@@ -128,10 +178,12 @@ pub fn load_archive_data(
             {
                 let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
                 st.current_password.is_some()
-                    || st
-                        .cfg
-                        .auto_password_for(archive_name, &st.last_entries)
-                        .is_some()
+                    || arclain_core::utilities::auto_password_for(
+                        &st.pass_rules,
+                        archive_name,
+                        &st.last_entries,
+                    )
+                    .is_some()
             },
             st.current_archive.clone(),
         )
@@ -142,7 +194,11 @@ pub fn load_archive_data(
             let st = state.lock();
             let pw_opt = st.current_password.clone().or_else(|| {
                 let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
-                st.cfg.auto_password_for(archive_name, &st.last_entries)
+                arclain_core::utilities::auto_password_for(
+                    &st.pass_rules,
+                    archive_name,
+                    &st.last_entries,
+                )
             });
             let arc = st.current_archive.clone();
             let paths: Vec<String> = st
@@ -188,7 +244,7 @@ pub fn load_archive_data(
         archive_info.archive_encrypted = st.archive_encrypted;
         archive_info.headers_encrypted = st.headers_encrypted;
         archive_info.encryption_method = st.encryption_method.clone();
-        
+
         // Update state's archive info
         st.archive_info.archive_encrypted = st.archive_encrypted;
         st.archive_info.headers_encrypted = st.headers_encrypted;
@@ -331,7 +387,7 @@ pub fn convert_archive(
             st.current_archive.clone(),
             st.current_password.clone(),
             st.last_entries.clone(),
-            st.cfg.cfg.temp_dir.clone(),
+            st.user_config.temp_dir.as_ref().map(PathBuf::from),
         )
     };
 
@@ -355,7 +411,13 @@ pub fn convert_archive(
             let password = {
                 let st = state.lock();
                 let archive_name = source_path.to_str();
-                current_password.or_else(|| st.cfg.auto_password_for(archive_name, &last_entries))
+                current_password.or_else(|| {
+                    arclain_core::utilities::auto_password_for(
+                        &st.pass_rules,
+                        archive_name,
+                        &last_entries,
+                    )
+                })
             };
 
             // Use 7z CLI for conversion (fast, with progress)

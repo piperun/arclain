@@ -71,8 +71,16 @@ pub fn render_settings_navigator(
     selected_page
 }
 
-/// Render the settings page header with breadcrumb
-pub fn render_settings_header(ui: &mut egui::Ui, theme: &AppTheme, current_page: &SettingsPage) {
+/// Render the settings page header with breadcrumb and global save button
+/// Returns true if the global save button was clicked
+pub fn render_settings_header(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    current_page: &SettingsPage,
+    has_changes: bool,
+) -> bool {
+    let mut save_clicked = false;
+
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
 
@@ -95,10 +103,44 @@ pub fn render_settings_header(ui: &mut egui::Ui, theme: &AppTheme, current_page:
                     .color(theme.colors.text_secondary),
             );
         });
+
+        // Filler to push save button to right
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Add padding from the right edge
+            ui.add_space(20.0);
+
+            let save_btn = egui::Button::new(
+                egui::RichText::new(format!("{} Save", egui_phosphor::regular::FLOPPY_DISK))
+                    .size(14.0)
+                    .color(if has_changes {
+                        theme.colors.text_primary
+                    } else {
+                        theme.colors.text_muted
+                    }),
+            )
+            .fill(if has_changes {
+                theme.colors.accent
+            } else {
+                theme.colors.bg_tertiary
+            })
+            .stroke(if has_changes {
+                egui::Stroke::NONE
+            } else {
+                egui::Stroke::new(1.0, theme.colors.border_color)
+            })
+            .corner_radius(6.0)
+            .min_size(egui::vec2(90.0, 32.0));
+
+            if ui.add_enabled(has_changes, save_btn).clicked() {
+                save_clicked = true;
+            }
+        });
     });
 
     ui.add_space(12.0);
     ui.separator();
+
+    save_clicked
 }
 
 /// Render the settings overview page (landing page)

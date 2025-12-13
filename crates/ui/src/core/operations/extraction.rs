@@ -49,7 +49,11 @@ pub fn extract_selected(
         let archive_clone = archive.clone();
         let backend = st.fallback_backend.clone();
         let archive_name = archive.to_str();
-        let auto_pw = st.cfg.auto_password_for(archive_name, &st.last_entries);
+        let auto_pw = arclain_core::utilities::auto_password_for(
+            &st.pass_rules,
+            archive_name,
+            &st.last_entries,
+        );
         let pw_opt = st
             .current_password
             .as_deref()
@@ -108,7 +112,11 @@ pub fn extract_all(
         let archive_clone = archive.clone();
         let backend = st.fallback_backend.clone();
         let archive_name = archive.to_str();
-        let auto_pw = st.cfg.auto_password_for(archive_name, &st.last_entries);
+        let auto_pw = arclain_core::utilities::auto_password_for(
+            &st.pass_rules,
+            archive_name,
+            &st.last_entries,
+        );
         let pw_opt = st
             .current_password
             .as_deref()

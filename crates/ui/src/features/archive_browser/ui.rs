@@ -248,12 +248,30 @@ fn render_breadcrumb(
         });
 }
 
+/// Common archive file extensions
+const ARCHIVE_EXTENSIONS: &[&str] = &["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz"];
+
+/// Check if a filename has an archive extension
+fn is_archive_file(filename: &str) -> bool {
+    let lower = filename.to_lowercase();
+    ARCHIVE_EXTENSIONS
+        .iter()
+        .any(|ext| lower.ends_with(&format!(".{}", ext)))
+}
+
 fn map_file_list_action(file_action: file_list::FileListAction) -> ArchiveBrowserAction {
     match file_action {
         file_list::FileListAction::Navigate(folder) => {
             ArchiveBrowserAction::NavigateToFolder(folder)
         }
-        file_list::FileListAction::Open(file) => ArchiveBrowserAction::OpenFile(file),
+        file_list::FileListAction::Open(file) => {
+            // Check if the file is a nested archive
+            if is_archive_file(&file) {
+                ArchiveBrowserAction::OpenArchiveInTab(file)
+            } else {
+                ArchiveBrowserAction::OpenFile(file)
+            }
+        }
         file_list::FileListAction::Edit(file) => ArchiveBrowserAction::EditFile(file),
         file_list::FileListAction::Delete(file) => ArchiveBrowserAction::DeleteFile(file),
     }

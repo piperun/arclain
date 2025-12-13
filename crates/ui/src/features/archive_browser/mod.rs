@@ -31,6 +31,7 @@ pub enum ArchiveBrowserAction {
     NavigateToFolder(String),
     NavigateToPath(String),
     OpenFile(String),
+    OpenArchiveInTab(String), // Double-click on nested archive
     EditFile(String),
     DeleteFile(String),
     Organize,

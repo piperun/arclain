@@ -5,20 +5,12 @@ use crate::features::password_management::dialogs::zip_pass_rules::{
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
-/// Result from rendering the password rules page
-pub enum PasswordRulesPageResult {
-    /// User clicked save
-    Save,
-}
-
 /// Render the password rules management page (full-page, non-modal version)
-/// Returns Some(PasswordRulesPageResult::Save) if the save button was clicked
 pub fn render_password_rules_page(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     dialog: &mut PasswordRulesDialog,
-) -> Option<PasswordRulesPageResult> {
-    let mut result = None;
+) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
 
@@ -404,26 +396,6 @@ pub fn render_password_rules_page(
                         );
                     }
 
-                    ui.add_space(20.0);
-
-                    // Save button at the bottom
-                    ui.horizontal(|ui| {
-                        let save_btn = egui::Button::new(
-                            egui::RichText::new("💾 Save All Changes")
-                                .strong()
-                        )
-                        .min_size(egui::vec2(180.0, 40.0));
-
-                        if ui.add(save_btn).clicked() {
-                            result = Some(PasswordRulesPageResult::Save);
-                        }
-
-                        ui.label(
-                            egui::RichText::new("Changes will be saved to the encrypted database")
-                                .size(12.0)
-                                .color(theme.colors.text_secondary)
-                        );
-                    });
                 });
         });
 
@@ -431,6 +403,4 @@ pub fn render_password_rules_page(
     if dialog.show_regex_tester {
         super::dialogs::zip_pass_rules::tester::render_regex_tester_modal(ui.ctx(), theme, dialog);
     }
-
-    result
 }

@@ -52,6 +52,12 @@ pub use cache_index::{
     CacheType,
 };
 
+/// Re-export derive macro for database config structs
+pub use arclain_db_derive::DbConfig;
+
+mod user_config;
+pub use user_config::UserConfig;
+
 /// Re-export Connection so dependents don't need rusqlite directly.
 pub use rusqlite::Connection as DbConnection;
 

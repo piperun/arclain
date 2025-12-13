@@ -14,6 +14,38 @@ pub enum OpenStrategy {
     WithDependencies,
 }
 
+/// Find the full path of a file in the archive entries by matching filename
+fn find_full_path_in_entries(target_file: &str, all_entries: &[String]) -> Option<String> {
+    let target_normalized = target_file.replace('\\', "/");
+    let target_filename = target_normalized
+        .rsplit('/')
+        .next()
+        .unwrap_or(&target_normalized);
+
+    // First try exact match
+    if all_entries
+        .iter()
+        .any(|e| e.replace('\\', "/") == target_normalized)
+    {
+        return Some(target_file.to_string());
+    }
+
+    // Try to find by filename (case-insensitive)
+    for entry in all_entries {
+        let entry_normalized = entry.replace('\\', "/");
+        let entry_filename = entry_normalized
+            .rsplit('/')
+            .next()
+            .unwrap_or(&entry_normalized);
+
+        if entry_filename.eq_ignore_ascii_case(target_filename) {
+            return Some(entry.clone());
+        }
+    }
+
+    None
+}
+
 /// Handles opening files from archives by extracting necessary files to temp
 pub struct FileOpener {
     temp_dir: PathBuf,
@@ -36,14 +68,19 @@ impl FileOpener {
         all_entries: &[String],
         strategy: OpenStrategy,
     ) -> Vec<String> {
+        // First, find the actual full path in all_entries
+        // target_file might be just the filename or a partial path
+        let full_path = find_full_path_in_entries(target_file, all_entries);
+        let target = full_path.as_deref().unwrap_or(target_file);
+
+        debug!("Resolved target path: {} -> {}", target_file, target);
+
         match strategy {
             OpenStrategy::FileOnly => {
-                vec![target_file.to_string()]
+                vec![target.to_string()]
             }
-            OpenStrategy::SameDirectory => self.get_same_directory_files(target_file, all_entries),
-            OpenStrategy::WithDependencies => {
-                self.get_files_with_dependencies(target_file, all_entries)
-            }
+            OpenStrategy::SameDirectory => self.get_same_directory_files(target, all_entries),
+            OpenStrategy::WithDependencies => self.get_files_with_dependencies(target, all_entries),
         }
     }
 
@@ -135,14 +172,16 @@ impl FileOpener {
             anyhow::bail!("File not found in temp directory: {}", file_path.display());
         }
 
-        info!("Opening file: {}", file_path.display());
+        info!("Opening file with system handler: {}", file_path.display());
 
         #[cfg(target_os = "windows")]
         {
-            Command::new("cmd")
-                .args(["/C", "start", "", file_path.to_str().unwrap()])
+            // Use explorer.exe for reliable file opening - handles all path types
+            let status = Command::new("explorer")
+                .arg(&file_path)
                 .spawn()
-                .context("Failed to open file")?;
+                .context("Failed to spawn explorer")?;
+            info!("Launched explorer with PID: {:?}", status.id());
         }
 
         #[cfg(target_os = "macos")]
