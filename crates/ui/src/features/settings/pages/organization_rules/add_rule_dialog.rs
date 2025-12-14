@@ -164,9 +164,9 @@ impl AddRuleDialog {
                 if ui
                     .add_enabled(
                         can_save,
-                        arclain_components::button::TextButton::new(
+                        arclain_widgets::button::TextButton::new(
                             "Save",
-                            arclain_components::button::ButtonSize::Medium,
+                            arclain_widgets::button::ButtonSize::Medium,
                         )
                         .variant(arclain_theme::ButtonVariant::Primary)
                         .with_theme_colors(&theme.colors),

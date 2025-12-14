@@ -61,37 +61,40 @@ pub fn render(
                         if !ui_elements.is_empty() {
                             ui.add_space(8.0);
 
-                            let id = ui.make_persistent_id(&plugin_id);
                             let plugin_name = instance
                                 .get_metadata()
                                 .map(|m| m.name)
                                 .unwrap_or_else(|_| "Unknown".to_string());
 
-                            egui::collapsing_header::CollapsingState::load_with_default_open(
-                                ui.ctx(),
-                                id,
-                                true,
-                            )
-                            .show_header(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(format!("{} Plugin", plugin_name))
-                                        .size(11.0)
-                                        .strong()
-                                        .color(theme.colors.on_surface_variant),
-                                );
-                            })
-                            .body(|ui| {
-                                ui.add_space(4.0);
-                                ui.add_space(4.0);
+                            // Smart suffix: only add "Plugin" if not already present
+                            let display_name = if plugin_name.to_lowercase().ends_with("plugin") {
+                                plugin_name.clone()
+                            } else {
+                                format!("{} Plugin", plugin_name)
+                            };
 
-                                let mut callback: Box<dyn FnMut(&str, Option<String>)> =
-                                    Box::new(|element_id: &str, value: Option<String>| {
-                                        tracing::info!("UI Event: {} = {:?}", element_id, value);
-                                        let _ = instance.send_ui_event(element_id, value);
-                                    });
+                            arclain_widgets::CollapsibleSection::new(&plugin_id, &display_name)
+                                .with_theme_colors(&theme.colors)
+                                .show(ui, |ui| {
+                                    ui.add_space(4.0);
 
-                                plugin_ui::render_ui_elements(ui, &ui_elements, &mut callback);
-                            });
+                                    let mut callback: Box<dyn FnMut(&str, Option<String>)> =
+                                        Box::new(|element_id: &str, value: Option<String>| {
+                                            tracing::info!(
+                                                "UI Event: {} = {:?}",
+                                                element_id,
+                                                value
+                                            );
+                                            let _ = instance.send_ui_event(element_id, value);
+                                        });
+
+                                    plugin_ui::render_ui_elements(
+                                        ui,
+                                        &ui_elements,
+                                        &mut callback,
+                                        &theme.colors,
+                                    );
+                                });
                         }
                     }
 

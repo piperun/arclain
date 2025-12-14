@@ -1,6 +1,7 @@
 use crate::core::operations::window::format_duration;
 use crate::shared::theme::AppTheme;
 use eframe::egui;
+use egui::Widget;
 use std::time::Duration;
 
 pub struct StatusBarInfo {
@@ -69,7 +70,9 @@ pub fn render(
             } else {
                 op.clone()
             };
-            progress_chip(ui, theme, &label);
+            arclain_widgets::Chip::new(&label)
+                .with_theme_colors(&theme.colors)
+                .ui(ui);
         }
 
         if archive_loaded {
@@ -156,17 +159,10 @@ fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginSta
         theme.colors.on_surface_variant
     };
 
-    let frame = egui::Frame::NONE
-        .fill(theme.colors.surface_variant)
-        .stroke(egui::Stroke::new(1.0, color))
-        .corner_radius(10.0)
-        .inner_margin(egui::Margin::symmetric(8, 2));
-
-    let response = frame
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(text).size(11.0).color(color));
-        })
-        .response;
+    let response = arclain_widgets::Chip::new(&text)
+        .with_theme_colors(&theme.colors)
+        .stroke_color(color)
+        .ui(ui);
 
     response.on_hover_ui(|ui| {
         ui.label(egui::RichText::new("Plugin System").strong());
@@ -184,22 +180,4 @@ fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginSta
                 .italics(),
         );
     });
-}
-
-// Lightweight pill button for background tasks
-pub fn progress_chip(ui: &mut egui::Ui, theme: &AppTheme, label: &str) -> egui::Response {
-    let frame = egui::Frame::NONE
-        .fill(theme.colors.surface_variant)
-        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-        .corner_radius(12.0)
-        .inner_margin(egui::Margin::symmetric(10, 4));
-    frame
-        .show(ui, |ui| {
-            ui.label(
-                egui::RichText::new(label)
-                    .size(12.0)
-                    .color(theme.colors.on_surface),
-            );
-        })
-        .response
 }
