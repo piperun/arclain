@@ -94,7 +94,7 @@ pub fn render_extraction_progress_dialog(
                 ui.label(
                     egui::RichText::new(&dlg.title)
                         .size(16.0)
-                        .color(theme.colors.text_primary)
+                        .color(theme.colors.on_surface)
                         .strong(),
                 );
             });
@@ -105,7 +105,7 @@ pub fn render_extraction_progress_dialog(
                 ui.label(
                     egui::RichText::new(&dlg.file_action)
                         .size(14.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
             }
 
@@ -116,7 +116,7 @@ pub fn render_extraction_progress_dialog(
             let pb = egui::ProgressBar::new(pct)
                 .desired_width(ui.available_width())
                 .text(format!("{}%", dlg.percent))
-                .fill(theme.colors.accent)
+                .fill(theme.colors.primary)
                 .animate(true);
             ui.add(pb);
 
@@ -126,18 +126,18 @@ pub fn render_extraction_progress_dialog(
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(format!("Processed: {}", dlg.processed_text))
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
                 ui.add_space(12.0);
                 ui.label(
                     egui::RichText::new(format!("Elapsed: {}", dlg.elapsed_text))
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
                 ui.add_space(12.0);
                 if !dlg.time_left_text.is_empty() {
                     ui.label(
                         egui::RichText::new(format!("Time left: {}", dlg.time_left_text))
-                            .color(theme.colors.text_secondary),
+                            .color(theme.colors.on_surface_variant),
                     );
                 }
             });
@@ -152,7 +152,7 @@ pub fn render_extraction_progress_dialog(
                 .button(
                     egui::RichText::new(header)
                         .strong()
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 )
                 .clicked()
             {
@@ -162,8 +162,8 @@ pub fn render_extraction_progress_dialog(
 
             if dlg.show_log {
                 let frame = egui::Frame::new()
-                    .fill(theme.colors.bg_secondary)
-                    .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                    .fill(theme.colors.surface_variant)
+                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
                     .corner_radius(4.0)
                     .inner_margin(egui::Margin::same(8));
                 frame.show(ui, |ui| {
@@ -173,7 +173,8 @@ pub fn render_extraction_progress_dialog(
                         .show(ui, |ui| {
                             for line in &dlg.log_lines {
                                 ui.label(
-                                    egui::RichText::new(line).color(theme.colors.text_secondary),
+                                    egui::RichText::new(line)
+                                        .color(theme.colors.on_surface_variant),
                                 );
                             }
                         });

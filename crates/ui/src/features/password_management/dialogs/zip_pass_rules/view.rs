@@ -46,11 +46,11 @@ pub fn render_password_rules_dialog(
             );
             let rect = egui::Rect::from_min_size(pos, egui::vec2(width, height));
 
-            ui.painter().rect_filled(rect, 8.0, theme.colors.bg_primary);
+            ui.painter().rect_filled(rect, 8.0, theme.colors.surface);
             ui.painter().rect_stroke(
                 rect,
                 egui::CornerRadius::same(8),
-                egui::Stroke::new(1.0, theme.colors.border_color),
+                egui::Stroke::new(1.0, theme.colors.outline),
                 egui::StrokeKind::Outside,
             );
 
@@ -92,12 +92,12 @@ pub fn render_password_rules_dialog(
                                 egui::RichText::new("🔐 Password Rules")
                                     .size(18.0)
                                     .strong()
-                                    .color(theme.colors.text_primary),
+                                    .color(theme.colors.on_surface),
                             );
                             ui.label(
                                 egui::RichText::new("— manage encrypted archive passwords")
                                     .size(12.0)
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                             );
                         });
 
@@ -107,7 +107,7 @@ pub fn render_password_rules_dialog(
                         ui.label(
                             egui::RichText::new("Saved password rules")
                                 .size(13.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
 
                         let mut to_delete: Option<usize> = None;
@@ -118,13 +118,13 @@ pub fn render_password_rules_dialog(
                             ui.label(
                                 egui::RichText::new("No password rules configured yet")
                                     .size(12.0)
-                                    .color(theme.colors.text_secondary)
+                                    .color(theme.colors.on_surface_variant)
                                     .italics(),
                             );
                         } else {
                             // Table header
                             egui::Frame::NONE
-                                .fill(theme.colors.bg_tertiary)
+                                .fill(theme.colors.surface_variant)
                                 .inner_margin(egui::Margin::symmetric(8, 6))
                                 .show(ui, |ui| {
                                     ui.horizontal(|ui| {
@@ -180,14 +180,14 @@ pub fn render_password_rules_dialog(
                             // Table rows
                             for (idx, rule) in dialog.rules.iter().enumerate() {
                                 let bg_color = if idx % 2 == 0 {
-                                    theme.colors.bg_secondary
+                                    theme.colors.surface_variant
                                 } else {
-                                    theme.colors.bg_primary
+                                    theme.colors.surface
                                 };
                                 egui::Frame::NONE
                                     .fill(bg_color)
                                     .inner_margin(egui::Margin::symmetric(8, 6))
-                                    .stroke(egui::Stroke::new(0.5, theme.colors.border_color))
+                                    .stroke(egui::Stroke::new(0.5, theme.colors.outline))
                                     .show(ui, |ui| {
                                         ui.horizontal(|ui| {
                                             ui.set_min_width(content.width() - 20.0);
@@ -204,9 +204,9 @@ pub fn render_password_rules_dialog(
                                                         egui::RichText::new(&rule.name)
                                                             .size(12.0)
                                                             .color(if rule.enabled {
-                                                                theme.colors.text_primary
+                                                                theme.colors.on_surface
                                                             } else {
-                                                                theme.colors.text_secondary
+                                                                theme.colors.on_surface_variant
                                                             }),
                                                     );
                                                 },
@@ -219,7 +219,7 @@ pub fn render_password_rules_dialog(
                                                         egui::RichText::new(&rule.pattern)
                                                             .size(11.0)
                                                             .family(egui::FontFamily::Monospace)
-                                                            .color(theme.colors.text_secondary),
+                                                            .color(theme.colors.on_surface_variant),
                                                     );
                                                 },
                                             );
@@ -232,7 +232,7 @@ pub fn render_password_rules_dialog(
                                                             rule.priority.to_string(),
                                                         )
                                                         .size(12.0)
-                                                        .color(theme.colors.text_secondary),
+                                                        .color(theme.colors.on_surface_variant),
                                                     );
                                                 },
                                             );
@@ -295,7 +295,7 @@ pub fn render_password_rules_dialog(
                             egui::RichText::new(form_title)
                                 .size(13.0)
                                 .strong()
-                                .color(theme.colors.text_primary),
+                                .color(theme.colors.on_surface),
                         );
 
                         ui.add_space(4.0);
@@ -307,7 +307,7 @@ pub fn render_password_rules_dialog(
                                 ui.label(
                                     egui::RichText::new("Name:")
                                         .size(12.0)
-                                        .color(theme.colors.text_secondary),
+                                        .color(theme.colors.on_surface_variant),
                                 );
                                 ui.add_sized(
                                     [content.width() - 120.0, 28.0],
@@ -319,7 +319,7 @@ pub fn render_password_rules_dialog(
                                 ui.label(
                                     egui::RichText::new("Pattern:")
                                         .size(12.0)
-                                        .color(theme.colors.text_secondary),
+                                        .color(theme.colors.on_surface_variant),
                                 );
                                 ui.horizontal(|ui| {
                                     ui.add_sized(
@@ -339,7 +339,7 @@ pub fn render_password_rules_dialog(
                                 ui.label(
                                     egui::RichText::new("Password:")
                                         .size(12.0)
-                                        .color(theme.colors.text_secondary),
+                                        .color(theme.colors.on_surface_variant),
                                 );
                                 ui.add_sized(
                                     [content.width() - 120.0, 28.0],
@@ -352,7 +352,7 @@ pub fn render_password_rules_dialog(
                                 ui.label(
                                     egui::RichText::new("Priority:")
                                         .size(12.0)
-                                        .color(theme.colors.text_secondary),
+                                        .color(theme.colors.on_surface_variant),
                                 );
                                 ui.horizontal(|ui| {
                                     ui.add_sized(
@@ -418,14 +418,14 @@ pub fn render_password_rules_dialog(
                                             .min_size(egui::vec2(100.0, 32.0)),
                                     )
                                     .clicked()
-                                {
-                                    dialog.editing_index = None;
-                                    dialog.edit_name.clear();
-                                    dialog.edit_pattern.clear();
-                                    dialog.edit_password.clear();
-                                    dialog.edit_priority = "10".to_string();
-                                    dialog.edit_enabled = true;
-                                }
+                            {
+                                dialog.editing_index = None;
+                                dialog.edit_name.clear();
+                                dialog.edit_pattern.clear();
+                                dialog.edit_password.clear();
+                                dialog.edit_priority = "10".to_string();
+                                dialog.edit_enabled = true;
+                            }
                         });
 
                         if !dialog.error.is_empty() {
@@ -448,7 +448,7 @@ pub fn render_password_rules_dialog(
                     egui::pos2(bar_rect.max.x, bar_rect.min.y - 5.0),
                 );
                 ui.painter()
-                    .rect_filled(sep_rect, 0.0, theme.colors.border_color);
+                    .rect_filled(sep_rect, 0.0, theme.colors.outline);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let save_btn = egui::Button::new(egui::RichText::new("Save All").strong())

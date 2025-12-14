@@ -1,10 +1,10 @@
 [package]
-name = "arclain_components"
+name = "arclain_theme"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-eframe = "0.33.0" # Includes egui
 egui = "0.33.0"
 egui-phosphor = "0.11.0"
-arclain_theme = { path = "../theme" }
+tracing = "0.1"
+serde = { version = "1.0", features = ["derive"] }

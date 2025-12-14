@@ -43,9 +43,15 @@ impl AddRuleDialog {
     }
 
     /// Returns Some(rule) if the user saved
-    pub fn show(&mut self, ctx: &egui::Context) -> Option<OrganizationRule> {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        theme: &crate::shared::theme::AppTheme,
+    ) -> Option<OrganizationRule> {
         let mut result = None;
         let mut open = self.open;
+
+        let mut close_requested = false;
 
         Window::new(if self.is_edit {
             "Edit Rule"
@@ -154,21 +160,34 @@ impl AddRuleDialog {
 
             ui.add_space(20.0);
             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
-                if ui.button("Save").clicked() {
-                    if self.rule.name.trim().is_empty() {
-                        self.title_error = Some("Name is required".to_string());
-                    } else {
-                        result = Some(self.rule.clone());
-                        self.open = false;
-                    }
+                let can_save = !self.rule.name.trim().is_empty();
+                if ui
+                    .add_enabled(
+                        can_save,
+                        arclain_components::button::TextButton::new(
+                            "Save",
+                            arclain_components::button::ButtonSize::Medium,
+                        )
+                        .variant(arclain_theme::ButtonVariant::Primary)
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
+                    result = Some(self.rule.clone());
+                    close_requested = true;
                 }
                 if ui.button("Cancel").clicked() {
-                    self.open = false;
+                    close_requested = true;
                 }
             });
         });
 
-        self.open = open;
+        if close_requested {
+            self.open = false;
+        } else {
+            self.open = open;
+        }
+
         result
     }
 }

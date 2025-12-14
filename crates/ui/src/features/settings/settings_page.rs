@@ -21,7 +21,7 @@ pub fn render_settings_navigator(
                 egui::RichText::new("SETTINGS")
                     .size(11.0)
                     .strong()
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
         });
         ui.add_space(16.0);
@@ -35,13 +35,13 @@ pub fn render_settings_navigator(
                     egui::RichText::new(format!("{}  {}", page.icon(), page.display_name()))
                         .size(14.0)
                         .color(if is_selected {
-                            theme.colors.accent
+                            theme.colors.primary
                         } else {
-                            theme.colors.text_primary
+                            theme.colors.on_surface
                         }),
                 )
                 .fill(if is_selected {
-                    theme.colors.bg_primary
+                    theme.colors.surface
                 } else {
                     egui::Color32::TRANSPARENT
                 })
@@ -62,7 +62,7 @@ pub fn render_settings_navigator(
                 ui.painter().rect_filled(
                     hover_rect,
                     6.0,
-                    theme.colors.bg_primary.linear_multiply(0.5),
+                    theme.colors.surface.linear_multiply(0.5),
                 );
             }
         }
@@ -94,13 +94,13 @@ pub fn render_settings_header(
                 egui::RichText::new(current_page.display_name())
                     .size(20.0)
                     .strong()
-                    .color(theme.colors.text_primary),
+                    .color(theme.colors.on_surface),
             );
 
             ui.label(
                 egui::RichText::new(current_page.description())
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
         });
 
@@ -113,20 +113,20 @@ pub fn render_settings_header(
                 egui::RichText::new(format!("{} Save", egui_phosphor::regular::FLOPPY_DISK))
                     .size(14.0)
                     .color(if has_changes {
-                        theme.colors.text_primary
+                        theme.colors.on_primary
                     } else {
-                        theme.colors.text_muted
+                        theme.colors.on_surface_variant
                     }),
             )
             .fill(if has_changes {
-                theme.colors.accent
+                theme.colors.primary
             } else {
-                theme.colors.bg_tertiary
+                theme.colors.secondary
             })
             .stroke(if has_changes {
                 egui::Stroke::NONE
             } else {
-                egui::Stroke::new(1.0, theme.colors.border_color)
+                egui::Stroke::new(1.0, theme.colors.outline)
             })
             .corner_radius(6.0)
             .min_size(egui::vec2(90.0, 32.0));
@@ -162,8 +162,8 @@ pub fn render_settings_overview(ui: &mut egui::Ui, theme: &AppTheme) -> Option<S
             .show(ui, |ui| {
                 for (index, page) in SettingsPage::all_pages().into_iter().enumerate() {
                     let card_response = egui::Frame::NONE
-                        .fill(theme.colors.bg_secondary)
-                        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                        .fill(theme.colors.surface_variant)
+                        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
                         .corner_radius(8.0)
                         .inner_margin(20.0)
                         .show(ui, |ui| {
@@ -179,13 +179,13 @@ pub fn render_settings_overview(ui: &mut egui::Ui, theme: &AppTheme) -> Option<S
                                     egui::RichText::new(page.display_name())
                                         .size(16.0)
                                         .strong()
-                                        .color(theme.colors.text_primary),
+                                        .color(theme.colors.on_surface),
                                 );
 
                                 ui.label(
                                     egui::RichText::new(page.description())
                                         .size(12.0)
-                                        .color(theme.colors.text_secondary),
+                                        .color(theme.colors.on_surface_variant),
                                 );
                             });
                         })
@@ -200,7 +200,7 @@ pub fn render_settings_overview(ui: &mut egui::Ui, theme: &AppTheme) -> Option<S
                         ui.painter().rect_filled(
                             card_response.rect,
                             8.0,
-                            theme.colors.accent.linear_multiply(0.1),
+                            theme.colors.primary.linear_multiply(0.1),
                         );
                     }
 
@@ -246,7 +246,7 @@ pub fn render_breadcrumb(
         let home_btn = egui::Button::new(
             egui::RichText::new(format!("{} Home", egui_phosphor::regular::HOUSE))
                 .size(13.0)
-                .color(theme.colors.text_secondary),
+                .color(theme.colors.on_surface_variant),
         )
         .fill(egui::Color32::TRANSPARENT)
         .stroke(egui::Stroke::NONE)
@@ -260,7 +260,7 @@ pub fn render_breadcrumb(
             ui.label(
                 egui::RichText::new(">")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
 
             let is_last = i == breadcrumb.len() - 1;
@@ -270,14 +270,14 @@ pub fn render_breadcrumb(
                 ui.label(
                     egui::RichText::new(label.as_str())
                         .size(13.0)
-                        .color(theme.colors.text_primary),
+                        .color(theme.colors.on_surface),
                 );
             } else {
                 // Previous pages - clickable
                 let btn = egui::Button::new(
                     egui::RichText::new(label.as_str())
                         .size(13.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 )
                 .fill(egui::Color32::TRANSPARENT)
                 .stroke(egui::Stroke::NONE)
@@ -306,7 +306,7 @@ pub fn render_settings_search_results(
         ui.label(
             egui::RichText::new(format!("Search results for \"{}\"", query))
                 .size(14.0)
-                .color(theme.colors.text_secondary),
+                .color(theme.colors.on_surface_variant),
         );
         ui.add_space(16.0);
 
@@ -320,8 +320,8 @@ pub fn render_settings_search_results(
                 {
                     found = true;
                     let card_response = egui::Frame::NONE
-                        .fill(theme.colors.bg_secondary)
-                        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                        .fill(theme.colors.surface_variant)
+                        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
                         .corner_radius(8.0)
                         .inner_margin(20.0)
                         .show(ui, |ui| {
@@ -336,13 +336,13 @@ pub fn render_settings_search_results(
                                         egui::RichText::new(page.display_name())
                                             .size(15.0)
                                             .strong()
-                                            .color(theme.colors.text_primary),
+                                            .color(theme.colors.on_surface),
                                     );
                                 });
                                 ui.label(
                                     egui::RichText::new(page.description())
                                         .size(12.0)
-                                        .color(theme.colors.text_secondary),
+                                        .color(theme.colors.on_surface_variant),
                                 );
                             });
                         })
@@ -356,7 +356,7 @@ pub fn render_settings_search_results(
                         ui.painter().rect_filled(
                             card_response.rect,
                             8.0,
-                            theme.colors.accent.linear_multiply(0.1),
+                            theme.colors.primary.linear_multiply(0.1),
                         );
                     }
                 }
@@ -366,7 +366,7 @@ pub fn render_settings_search_results(
                 ui.label(
                     egui::RichText::new("No matching settings found.")
                         .size(14.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.on_surface_variant)
                         .italics(),
                 );
             }

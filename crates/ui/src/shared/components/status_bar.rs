@@ -21,7 +21,6 @@ pub struct PluginStatusInfo {
     pub has_metadata: bool,
 }
 
-
 impl Default for StatusBarInfo {
     fn default() -> Self {
         Self {
@@ -51,7 +50,7 @@ pub fn render(
         ui.label(
             egui::RichText::new(&info.message)
                 .size(12.0)
-                .color(theme.colors.text_secondary),
+                .color(theme.colors.on_surface_variant),
         );
 
         // Plugin status indicator (if plugins are loaded)
@@ -81,25 +80,25 @@ pub fn render(
                 ui.label(
                     egui::RichText::new("Ready")
                         .size(12.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
 
                 ui.label(
                     egui::RichText::new("|")
                         .size(12.0)
-                        .color(theme.colors.text_muted),
+                        .color(theme.colors.on_surface_variant),
                 );
 
                 ui.label(
                     egui::RichText::new(&info.archive_format)
                         .size(12.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
 
                 ui.label(
                     egui::RichText::new("|")
                         .size(12.0)
-                        .color(theme.colors.text_muted),
+                        .color(theme.colors.on_surface_variant),
                 );
 
                 ui.label(
@@ -108,31 +107,31 @@ pub fn render(
                         info.total_size, info.compressed_size
                     ))
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
                 );
 
                 ui.label(
                     egui::RichText::new("|")
                         .size(12.0)
-                        .color(theme.colors.text_muted),
+                        .color(theme.colors.on_surface_variant),
                 );
 
                 ui.label(
                     egui::RichText::new(format!("{} folders", info.folder_count))
                         .size(12.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
 
                 ui.label(
                     egui::RichText::new("|")
                         .size(12.0)
-                        .color(theme.colors.text_muted),
+                        .color(theme.colors.on_surface_variant),
                 );
 
                 ui.label(
                     egui::RichText::new(format!("{} files", info.file_count))
                         .size(12.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
             });
         }
@@ -154,11 +153,11 @@ fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginSta
     let color = if info.enabled_plugins > 0 {
         egui::Color32::from_rgb(76, 175, 80) // Green when plugins are active
     } else {
-        theme.colors.text_muted
+        theme.colors.on_surface_variant
     };
 
     let frame = egui::Frame::NONE
-        .fill(theme.colors.bg_tertiary)
+        .fill(theme.colors.surface_variant)
         .stroke(egui::Stroke::new(1.0, color))
         .corner_radius(10.0)
         .inner_margin(egui::Margin::symmetric(8, 2));
@@ -190,8 +189,8 @@ fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginSta
 // Lightweight pill button for background tasks
 pub fn progress_chip(ui: &mut egui::Ui, theme: &AppTheme, label: &str) -> egui::Response {
     let frame = egui::Frame::NONE
-        .fill(theme.colors.bg_tertiary)
-        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+        .fill(theme.colors.surface_variant)
+        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
         .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(10, 4));
     frame
@@ -199,7 +198,7 @@ pub fn progress_chip(ui: &mut egui::Ui, theme: &AppTheme, label: &str) -> egui::
             ui.label(
                 egui::RichText::new(label)
                     .size(12.0)
-                    .color(theme.colors.text_primary),
+                    .color(theme.colors.on_surface),
             );
         })
         .response

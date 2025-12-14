@@ -172,7 +172,7 @@ impl eframe::App for ArclainApp {
 
         // Render Header
         egui::TopBottomPanel::top("header_panel")
-            .frame(egui::Frame::NONE.fill(self.theme.colors.bg_secondary))
+            .frame(egui::Frame::NONE.fill(self.theme.colors.surface_variant))
             .show(ctx, |ui| {
                 let mut theme_toggle = false;
                 let can_go_back = self.page_navigator.can_go_back();
@@ -215,7 +215,7 @@ impl eframe::App for ArclainApp {
         // Render Toolbar (only on Main page)
         if self.page_navigator.is_on_main() {
             egui::TopBottomPanel::top("toolbar_panel")
-                .frame(egui::Frame::NONE.fill(self.theme.colors.bg_secondary))
+                .frame(egui::Frame::NONE.fill(self.theme.colors.surface_variant))
                 .show(ctx, |ui| {
                     let state = self.state.lock();
                     let can_go_back = state.navigation.can_go_back();
@@ -384,7 +384,7 @@ impl eframe::App for ArclainApp {
 
         // Render Status Bar
         egui::TopBottomPanel::bottom("status_bar")
-            .frame(egui::Frame::NONE.fill(self.theme.colors.bg_secondary))
+            .frame(egui::Frame::NONE.fill(self.theme.colors.surface_variant))
             .show(ctx, |ui| {
                 let state = self.state.lock();
                 let archive_loaded = state.current_archive.is_some();
@@ -723,7 +723,7 @@ impl eframe::App for ArclainApp {
                          };
 
                          if let Some(cfg_db) = db_opt {
-                             self.organization_feature.rules_page.render(ui, &cfg_db);
+                             self.organization_feature.rules_page.render(ui, &self.theme, &cfg_db);
                          } else {
                              ui.label("Database not available.");
                          }

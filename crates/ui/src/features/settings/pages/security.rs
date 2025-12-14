@@ -23,7 +23,7 @@ pub fn render(
             ui.label(
                 egui::RichText::new("Master key and secrets database configuration")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(12.0);
 
@@ -40,7 +40,7 @@ pub fn render(
                 egui::RichText::new("Master key file (32-byte raw / hex / base64)")
                     .size(12.0)
                     .strong()
-                    .color(theme.colors.text_primary),
+                    .color(theme.colors.on_surface),
             );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -63,7 +63,7 @@ pub fn render(
                         default_key.as_deref().unwrap_or("Unknown")
                     ))
                     .size(11.0)
-                    .color(theme.colors.text_secondary)
+                    .color(theme.colors.on_surface_variant)
                     .italics(),
                 );
             }
@@ -75,7 +75,7 @@ pub fn render(
                 egui::RichText::new("Secrets database (redb with AES-256-GCM)")
                     .size(12.0)
                     .strong()
-                    .color(theme.colors.text_primary),
+                    .color(theme.colors.on_surface),
             );
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -98,7 +98,7 @@ pub fn render(
                         default_db.as_deref().unwrap_or("Unknown")
                     ))
                     .size(11.0)
-                    .color(theme.colors.text_secondary)
+                    .color(theme.colors.on_surface_variant)
                     .italics(),
                 );
             }
@@ -111,7 +111,7 @@ pub fn render(
             ui.label(
                 egui::RichText::new("When to compute CRC checksums for encrypted files")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(8.0);
 
@@ -143,7 +143,7 @@ pub fn render(
             ui.label(
                 egui::RichText::new("Move or rekey your encrypted secrets vault")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(12.0);
 

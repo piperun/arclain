@@ -77,7 +77,7 @@ pub fn render(
                                     egui::RichText::new(format!("{} Plugin", plugin_name))
                                         .size(11.0)
                                         .strong()
-                                        .color(theme.colors.text_muted),
+                                        .color(theme.colors.on_surface_variant),
                                 );
                             })
                             .body(|ui| {
@@ -111,8 +111,8 @@ pub fn render(
 
 fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGroup) {
     let group_frame = egui::Frame::NONE
-        .fill(theme.colors.bg_primary)
-        .stroke(egui::Stroke::new(1.0, theme.colors.border_light))
+        .fill(theme.colors.surface)
+        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
         .corner_radius(4.0)
         .inner_margin(egui::Margin::symmetric(0, 12));
 
@@ -126,7 +126,7 @@ fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGr
                 egui::RichText::new(&group.title)
                     .size(11.0)
                     .strong()
-                    .color(theme.colors.text_muted),
+                    .color(theme.colors.on_surface_variant),
             );
         });
 
@@ -140,7 +140,7 @@ fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGr
                 ui.label(
                     egui::RichText::new(label)
                         .size(14.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -149,7 +149,7 @@ fn render_property_group(ui: &mut egui::Ui, theme: &AppTheme, group: &PropertyGr
                         egui::RichText::new(value)
                             .size(14.0)
                             .strong()
-                            .color(theme.colors.text_primary),
+                            .color(theme.colors.on_surface),
                     );
                 });
             });

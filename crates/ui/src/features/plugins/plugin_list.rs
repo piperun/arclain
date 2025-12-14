@@ -17,7 +17,7 @@ pub fn render(
 
         // Header with search and controls
         egui::Frame::NONE
-            .fill(theme.colors.bg_secondary)
+            .fill(theme.colors.surface_variant)
             .inner_margin(egui::Margin::symmetric(16, 12))
             .corner_radius(8.0)
             .show(ui, |ui| {
@@ -45,7 +45,7 @@ pub fn render(
                         if ui
                             .button(
                                 egui::RichText::new("+ Install Plugin")
-                                    .color(theme.colors.text_primary),
+                                    .color(theme.colors.on_surface),
                             )
                             .clicked()
                         {
@@ -76,8 +76,7 @@ pub fn render(
                             || p.description
                                 .as_ref()
                                 .map(|d| {
-                                    d.to_lowercase()
-                                        .contains(&state.filter_text.to_lowercase())
+                                    d.to_lowercase().contains(&state.filter_text.to_lowercase())
                                 })
                                 .unwrap_or(false);
 
@@ -94,13 +93,13 @@ pub fn render(
                         ui.label(
                             egui::RichText::new("No plugins found")
                                 .size(16.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
                         ui.add_space(8.0);
                         ui.label(
                             egui::RichText::new("Install plugins to extend functionality")
                                 .size(12.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
                     });
                 } else {
@@ -129,16 +128,16 @@ fn render_plugin_card(
 
     let card = egui::Frame::NONE
         .fill(if is_selected {
-            theme.colors.bg_primary
+            theme.colors.surface
         } else {
-            theme.colors.bg_secondary
+            theme.colors.surface_variant
         })
         .stroke(egui::Stroke::new(
             1.0,
             if is_selected {
-                theme.colors.accent
+                theme.colors.secondary
             } else {
-                theme.colors.border_color
+                theme.colors.outline
             },
         ))
         .inner_margin(egui::Margin::symmetric(16, 12))
@@ -166,17 +165,21 @@ fn render_plugin_card(
                             egui::RichText::new(&plugin.name)
                                 .size(14.0)
                                 .strong()
-                                .color(theme.colors.text_primary),
+                                .color(theme.colors.on_surface),
                         );
 
                         ui.label(
                             egui::RichText::new(format!("v{}", plugin.version))
                                 .size(11.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
 
                         // Enabled/Disabled badge
-                        let badge_text = if plugin.enabled { "Enabled" } else { "Disabled" };
+                        let badge_text = if plugin.enabled {
+                            "Enabled"
+                        } else {
+                            "Disabled"
+                        };
                         let badge_color = if plugin.enabled {
                             egui::Color32::from_rgb(100, 200, 100)
                         } else {
@@ -201,7 +204,7 @@ fn render_plugin_card(
                         ui.label(
                             egui::RichText::new(desc)
                                 .size(12.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
                     }
 
@@ -210,7 +213,7 @@ fn render_plugin_card(
                         ui.label(
                             egui::RichText::new(format!("by {}", author))
                                 .size(11.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
                     }
 
@@ -220,14 +223,14 @@ fn render_plugin_card(
                             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                             for cap in &plugin.capabilities {
                                 egui::Frame::NONE
-                                    .fill(theme.colors.border_color)
+                                    .fill(theme.colors.outline)
                                     .inner_margin(egui::Margin::symmetric(4, 2))
                                     .corner_radius(3.0)
                                     .show(ui, |ui| {
                                         ui.label(
                                             egui::RichText::new(cap)
                                                 .size(9.0)
-                                                .color(theme.colors.text_secondary),
+                                                .color(theme.colors.on_surface_variant),
                                         );
                                     });
                             }

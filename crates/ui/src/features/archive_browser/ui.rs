@@ -38,7 +38,7 @@ pub fn render_archive_browser(
 
 fn render_empty_state(ctx: &egui::Context, shared: &SharedState) {
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(shared.theme.colors.bg_primary))
+        .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
         .show(ctx, |ui| {
             ui.centered_and_justified(|ui| {
                 ui.vertical_centered(|ui| {
@@ -47,13 +47,13 @@ fn render_empty_state(ctx: &egui::Context, shared: &SharedState) {
                     ui.label(
                         egui::RichText::new("No archive loaded")
                             .size(18.0)
-                            .color(shared.theme.colors.text_primary),
+                            .color(shared.theme.colors.on_surface),
                     );
                     ui.add_space(8.0);
                     ui.label(
                         egui::RichText::new("Click 'Open' to load an archive")
                             .size(14.0)
-                            .color(shared.theme.colors.text_secondary),
+                            .color(shared.theme.colors.on_surface_variant),
                     );
                 });
             });
@@ -68,7 +68,7 @@ fn render_tree_panel(
 ) {
     egui::SidePanel::left("tree_panel")
         .exact_width(240.0)
-        .frame(egui::Frame::NONE.fill(shared.theme.colors.bg_secondary))
+        .frame(egui::Frame::NONE.fill(shared.theme.colors.surface_variant))
         .show(ctx, |ui| {
             let app_state = shared.app_state.lock();
             let archive_name = app_state
@@ -109,7 +109,7 @@ fn render_properties_panel(
         .exact_width(280.0)
         .frame(
             egui::Frame::NONE
-                .fill(shared.theme.colors.bg_secondary)
+                .fill(shared.theme.colors.surface_variant)
                 .inner_margin(egui::Margin::symmetric(16, 16)),
         )
         .show(ctx, |ui| {
@@ -189,7 +189,7 @@ fn render_file_list(
     action: &mut ArchiveBrowserAction,
 ) {
     egui::CentralPanel::default()
-        .frame(egui::Frame::NONE.fill(shared.theme.colors.bg_primary))
+        .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 // Render breadcrumb
@@ -226,9 +226,9 @@ fn render_breadcrumb(
     action: &mut ArchiveBrowserAction,
 ) {
     egui::Frame::NONE
-        .fill(shared.theme.colors.bg_secondary)
+        .fill(shared.theme.colors.surface_variant)
         .inner_margin(egui::Margin::symmetric(16, 10))
-        .stroke(egui::Stroke::new(1.0, shared.theme.colors.border_color))
+        .stroke(egui::Stroke::new(1.0, shared.theme.colors.outline))
         .show(ui, |ui| {
             let app_state = shared.app_state.lock();
             let archive_name = app_state

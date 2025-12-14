@@ -283,6 +283,7 @@ dependencies = [
 name = "arclain_components"
 version = "0.1.0"
 dependencies = [
+ "arclain_theme",
  "eframe",
  "egui",
  "egui-phosphor",
@@ -374,6 +375,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "arclain_theme"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "egui-phosphor",
+ "serde",
+ "tracing",
+]
+
+[[package]]
 name = "arclain_ui"
 version = "0.1.0"
 dependencies = [
@@ -382,6 +393,7 @@ dependencies = [
  "arclain_core",
  "arclain_db",
  "arclain_plugins",
+ "arclain_theme",
  "chrono",
  "crc32fast",
  "dirs 6.0.0",

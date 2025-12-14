@@ -218,13 +218,13 @@ pub fn render(
 
 fn toolbar_button(ui: &mut egui::Ui, theme: &AppTheme, text: &str, enabled: bool) -> bool {
     let color = if enabled {
-        theme.colors.text_primary
+        theme.colors.on_surface
     } else {
-        theme.colors.text_muted
+        theme.colors.on_surface_variant
     };
 
     let button = egui::Button::new(egui::RichText::new(text).size(16.0).color(color))
-        .fill(theme.colors.bg_tertiary)
+        .fill(theme.colors.surface_variant)
         .stroke(egui::Stroke::NONE)
         .corner_radius(4.0)
         .min_size(egui::vec2(36.0, 32.0));
@@ -240,9 +240,9 @@ fn toolbar_button_with_text(
     enabled: bool,
 ) -> bool {
     let color = if enabled {
-        theme.colors.text_primary
+        theme.colors.on_surface
     } else {
-        theme.colors.text_muted
+        theme.colors.on_surface_variant
     };
 
     let button = egui::Button::new(
@@ -250,7 +250,7 @@ fn toolbar_button_with_text(
             .size(14.0)
             .color(color),
     )
-    .fill(theme.colors.bg_tertiary)
+    .fill(theme.colors.surface_variant)
     .stroke(egui::Stroke::NONE)
     .corner_radius(4.0)
     .min_size(egui::vec2(90.0, 32.0));
@@ -260,15 +260,15 @@ fn toolbar_button_with_text(
 
 fn toolbar_button_toggle(ui: &mut egui::Ui, theme: &AppTheme, text: &str, selected: bool) -> bool {
     let bg_fill = if selected {
-        theme.colors.bg_hover
+        theme.colors.secondary
     } else {
-        theme.colors.bg_tertiary
+        theme.colors.surface_variant
     };
 
     let button = egui::Button::new(
         egui::RichText::new(text)
             .size(16.0)
-            .color(theme.colors.text_primary),
+            .color(theme.colors.on_surface),
     )
     .fill(bg_fill)
     .stroke(egui::Stroke::NONE)
