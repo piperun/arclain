@@ -84,7 +84,7 @@ pub fn render_breadcrumb(
     let root_galley = ui.painter().layout_no_wrap(
         archive_name.to_string(),
         default_font.clone(),
-        theme.colors.text_primary,
+        theme.colors.on_surface,
     );
     let root_width = root_galley.rect.width() + 16.0; // padding
 
@@ -96,7 +96,7 @@ pub fn render_breadcrumb(
             egui::Label::new(
                 egui::RichText::new(archive_name)
                     .size(14.0)
-                    .color(theme.colors.text_primary),
+                    .color(theme.colors.on_surface),
             )
             .selectable(false)
             .sense(egui::Sense::click()),
@@ -110,7 +110,7 @@ pub fn render_breadcrumb(
                     egui::pos2(rect.min.x, rect.max.y),
                     egui::pos2(rect.max.x, rect.max.y),
                 ],
-                egui::Stroke::new(1.0, theme.colors.text_primary),
+                egui::Stroke::new(1.0, theme.colors.on_surface),
             );
         }
 
@@ -123,7 +123,7 @@ pub fn render_breadcrumb(
             ui.label(
                 egui::RichText::new("/")
                     .size(14.0)
-                    .color(theme.colors.text_muted),
+                    .color(theme.colors.on_surface_variant),
             );
 
             let segments: Vec<&str> = current_path.split('/').collect();
@@ -137,7 +137,7 @@ pub fn render_breadcrumb(
                         .layout_no_wrap(
                             s.to_string(),
                             default_font.clone(),
-                            theme.colors.text_primary,
+                            theme.colors.on_surface,
                         )
                         .rect
                         .width()
@@ -159,7 +159,7 @@ pub fn render_breadcrumb(
                         ui.label(
                             egui::RichText::new("/")
                                 .size(14.0)
-                                .color(theme.colors.text_muted),
+                                .color(theme.colors.on_surface_variant),
                         );
                     }
                     render_breadcrumb_segment(
@@ -206,12 +206,12 @@ pub fn render_breadcrumb(
                     ui.label(
                         egui::RichText::new("...")
                             .size(14.0)
-                            .color(theme.colors.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                     ui.label(
                         egui::RichText::new("/")
                             .size(14.0)
-                            .color(theme.colors.text_muted),
+                            .color(theme.colors.on_surface_variant),
                     );
                 }
 
@@ -220,7 +220,7 @@ pub fn render_breadcrumb(
                         ui.label(
                             egui::RichText::new("/")
                                 .size(14.0)
-                                .color(theme.colors.text_muted),
+                                .color(theme.colors.on_surface_variant),
                         );
                     }
                     render_breadcrumb_segment(
@@ -250,9 +250,9 @@ fn render_breadcrumb_segment(
     navigate_to: &mut Option<String>,
 ) {
     let text_color = if is_last {
-        theme.colors.text_primary
+        theme.colors.on_surface
     } else {
-        theme.colors.text_secondary
+        theme.colors.on_surface_variant
     };
 
     let response = ui.add(
@@ -340,9 +340,9 @@ fn render_grid_item(
         let bg_color = if entry.selected {
             theme.colors.selection
         } else if response.hovered() {
-            theme.colors.bg_hover
+            theme.colors.surface_variant
         } else {
-            theme.colors.bg_primary
+            theme.colors.surface
         };
         ui.painter().rect_filled(rect, 0.0, bg_color);
 
@@ -354,7 +354,7 @@ fn render_grid_item(
         let icon_rect =
             egui::Rect::from_min_size(content_rect.min, egui::vec2(icon_size, icon_size));
         ui.painter()
-            .rect_filled(icon_rect, 4.0, theme.colors.bg_tertiary);
+            .rect_filled(icon_rect, 4.0, theme.colors.surface_variant);
 
         let ext = entry
             .name
@@ -369,7 +369,7 @@ fn render_grid_item(
             egui::Align2::CENTER_CENTER,
             ext_text,
             egui::FontId::proportional(12.0),
-            theme.colors.text_muted,
+            theme.colors.on_surface_variant,
         );
 
         // File info
@@ -379,14 +379,14 @@ fn render_grid_item(
 
         // Use selection text color when selected
         let text_color = if entry.selected {
-            theme.colors.selection_text
+            theme.colors.on_surface
         } else {
-            theme.colors.text_primary
+            theme.colors.on_surface
         };
         let meta_color = if entry.selected {
-            theme.colors.selection_text
+            theme.colors.on_surface
         } else {
-            theme.colors.text_muted
+            theme.colors.on_surface_variant
         };
 
         ui.painter().text(
@@ -414,7 +414,6 @@ fn render_grid_item(
 
         ui.scope_builder(egui::UiBuilder::new().max_rect(actions_rect), |ui| {
             // Apply custom button style
-            ui.style_mut().visuals.widgets.inactive = theme.button_style();
 
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
@@ -470,7 +469,7 @@ fn header_sort_label(
             egui::RichText::new(text)
                 .size(12.0)
                 .strong()
-                .color(theme.colors.text_secondary),
+                .color(theme.colors.on_surface_variant),
         )
         .selectable(false)
         .sense(egui::Sense::click()),
@@ -734,7 +733,7 @@ pub fn render_list_view(
                                 egui::RichText::new("Actions")
                                     .size(12.0)
                                     .strong()
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                             )
                             .selectable(false),
                         );
@@ -761,8 +760,8 @@ pub fn render_list_view(
                         body.row(32.0, |mut row| {
                             let mut checkbox_clicked = false;
                             let mut action_clicked = false;
-                            let text_color = theme.colors.text_primary;
-                            let muted_color = theme.colors.text_secondary;
+                            let text_color = theme.colors.on_surface;
+                            let muted_color = theme.colors.on_surface_variant;
 
                             row.col(|ui| {
                                 let response = ui.checkbox(&mut entry.selected, "");
@@ -856,9 +855,9 @@ pub fn render_list_view(
                             row.col(|ui| {
                                 if !entry.is_folder {
                                     let (text, color) = if entry.encrypted {
-                                        ("Yes", theme.colors.text_primary)
+                                        ("Yes", theme.colors.on_surface)
                                     } else {
-                                        ("No", theme.colors.text_muted)
+                                        ("No", theme.colors.on_surface_variant)
                                     };
                                     ui.add(
                                         egui::Label::new(
@@ -876,7 +875,6 @@ pub fn render_list_view(
                                     ui.spacing_mut().item_spacing.x = 6.0;
 
                                     // Apply custom button style
-                                    ui.style_mut().visuals.widgets.inactive = theme.button_style();
 
                                     // Edit button enabled for all files (not folders)
                                     let can_edit = !is_folder;

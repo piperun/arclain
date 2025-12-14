@@ -41,11 +41,11 @@ pub fn render_regex_tester_modal(
             );
             let rect = egui::Rect::from_min_size(pos, egui::vec2(width, height));
 
-            ui.painter().rect_filled(rect, 8.0, theme.colors.bg_primary);
+            ui.painter().rect_filled(rect, 8.0, theme.colors.surface);
             ui.painter().rect_stroke(
                 rect,
                 egui::CornerRadius::same(8),
-                egui::Stroke::new(1.0, theme.colors.border_color),
+                egui::Stroke::new(1.0, theme.colors.outline),
                 egui::StrokeKind::Outside,
             );
 
@@ -84,7 +84,7 @@ pub fn render_regex_tester_modal(
                     egui::RichText::new("🧪 Regex Pattern Tester")
                         .size(16.0)
                         .strong()
-                        .color(theme.colors.text_primary),
+                        .color(theme.colors.on_surface),
                 );
 
                 ui.add_space(8.0);
@@ -93,14 +93,14 @@ pub fn render_regex_tester_modal(
                 ui.label(
                     egui::RichText::new("Testing pattern:")
                         .size(12.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
                 ui.label(
                     egui::RichText::new(&dialog.regex_test_pattern)
                         .size(13.0)
                         .family(egui::FontFamily::Monospace)
-                        .color(theme.colors.text_primary)
-                        .background_color(theme.colors.bg_tertiary),
+                        .color(theme.colors.on_surface)
+                        .background_color(theme.colors.surface_variant),
                 );
 
                 ui.add_space(8.0);
@@ -110,20 +110,20 @@ pub fn render_regex_tester_modal(
                     ui.label(
                         egui::RichText::new("Test folder:")
                             .size(12.0)
-                            .color(theme.colors.text_secondary),
+                            .color(theme.colors.on_surface_variant),
                     );
                     if let Some(folder) = &dialog.regex_test_folder {
                         ui.label(
                             egui::RichText::new(folder.display().to_string())
                                 .size(11.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
                     } else {
                         ui.label(
                             egui::RichText::new("No folder selected")
                                 .size(11.0)
                                 .italics()
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
                     }
                 });
@@ -158,12 +158,12 @@ pub fn render_regex_tester_modal(
                                     }
                                 } else {
                                     // Invalid regex - show error
-                                    dialog.regex_test_results.push(
-                                        super::types::RegexTestResult {
+                                    dialog
+                                        .regex_test_results
+                                        .push(super::types::RegexTestResult {
                                             file_path: "⚠️ Invalid regex pattern".to_string(),
                                             matched: false,
-                                        },
-                                    );
+                                        });
                                 }
                             }
                         }
@@ -195,12 +195,12 @@ pub fn render_regex_tester_modal(
                                     }
                                 } else {
                                     // Invalid regex - show error
-                                    dialog.regex_test_results.push(
-                                        super::types::RegexTestResult {
+                                    dialog
+                                        .regex_test_results
+                                        .push(super::types::RegexTestResult {
                                             file_path: "⚠️ Invalid regex pattern".to_string(),
                                             matched: false,
-                                        },
-                                    );
+                                        });
                                 }
                             }
                         }
@@ -216,7 +216,7 @@ pub fn render_regex_tester_modal(
                         dialog.regex_test_results.len()
                     ))
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
                 );
 
                 // Calculate available height for scroll area (remaining height in scroll_rect)
@@ -238,7 +238,7 @@ pub fn render_regex_tester_modal(
                                 egui::RichText::new("Pick a folder to test the pattern")
                                     .size(12.0)
                                     .italics()
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                             );
                         } else {
                             for result in &dialog.regex_test_results {
@@ -255,9 +255,9 @@ pub fn render_regex_tester_modal(
                                             .size(11.0)
                                             .family(egui::FontFamily::Monospace)
                                             .color(if result.matched {
-                                                theme.colors.text_primary
+                                                theme.colors.on_surface
                                             } else {
-                                                theme.colors.text_secondary
+                                                theme.colors.on_surface_variant
                                             }),
                                     );
                                 });
@@ -278,14 +278,14 @@ pub fn render_regex_tester_modal(
                 let bar_rect = ui.max_rect();
                 // solid background for fixed bar
                 ui.painter()
-                    .rect_filled(bar_rect, 0.0, theme.colors.bg_primary);
+                    .rect_filled(bar_rect, 0.0, theme.colors.surface);
                 // subtle top separator
                 let sep_rect = egui::Rect::from_min_max(
                     egui::pos2(bar_rect.min.x, bar_rect.min.y),
                     egui::pos2(bar_rect.max.x, bar_rect.min.y + 1.0),
                 );
                 ui.painter()
-                    .rect_filled(sep_rect, 0.0, theme.colors.border_color);
+                    .rect_filled(sep_rect, 0.0, theme.colors.outline);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui

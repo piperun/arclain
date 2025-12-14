@@ -24,7 +24,7 @@ pub fn render(
             ui.label(
                 egui::RichText::new("Theme settings and visual preferences")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(8.0);
 
@@ -38,7 +38,7 @@ pub fn render(
             ui.label(
                 egui::RichText::new("Application behavior and default actions")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(12.0);
 
@@ -55,7 +55,7 @@ pub fn render(
                 })
                 .size(11.0)
                 .italics()
-                .color(theme.colors.text_secondary),
+                .color(theme.colors.on_surface_variant),
             );
         });
     });

@@ -78,7 +78,7 @@ pub fn render(
             egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
             |ui| {
                 let search_frame = egui::Frame::NONE
-                    .fill(theme.colors.bg_tertiary)
+                    .fill(theme.colors.surface_variant)
                     .corner_radius(4.0)
                     .inner_margin(egui::Margin::symmetric(8, 6));
 
@@ -90,7 +90,7 @@ pub fn render(
                         ui.label(
                             egui::RichText::new(egui_phosphor::regular::MAGNIFYING_GLASS)
                                 .size(14.0)
-                                .color(theme.colors.text_muted),
+                                .color(theme.colors.on_surface_variant),
                         );
                         ui.add(
                             egui::TextEdit::singleline(&mut state.search_text)
@@ -132,7 +132,7 @@ pub fn render(
             if ui.is_rect_visible(rect) {
                 let radius = rect.height() / 2.0;
                 ui.painter()
-                    .rect_filled(rect, radius, theme.colors.bg_tertiary);
+                    .rect_filled(rect, radius, theme.colors.surface_variant);
                 let circle_radius = (rect.height() - 6.0) / 2.0;
                 let circle_x = if theme.dark_mode {
                     rect.right() - circle_radius - 3.0
@@ -142,7 +142,7 @@ pub fn render(
                 ui.painter().circle_filled(
                     egui::pos2(circle_x, rect.center().y),
                     circle_radius,
-                    theme.colors.accent,
+                    theme.colors.on_surface,
                 );
             }
 
@@ -150,9 +150,9 @@ pub fn render(
 
             // Settings
             let settings_bg = if is_on_settings {
-                theme.colors.bg_hover
+                theme.colors.on_surface_variant
             } else {
-                theme.colors.bg_tertiary
+                theme.colors.surface_variant
             };
             if header_button_with_bg(
                 ui,
@@ -203,7 +203,7 @@ fn header_button(
         label,
         enabled,
         show_label,
-        theme.colors.bg_tertiary,
+        theme.colors.surface_variant,
     )
 }
 
@@ -218,9 +218,9 @@ fn header_button_with_bg(
     bg: egui::Color32,
 ) -> egui::Response {
     let color = if enabled {
-        theme.colors.text_primary
+        theme.colors.on_surface
     } else {
-        theme.colors.text_muted
+        theme.colors.on_surface_variant
     };
 
     let text = if show_label {

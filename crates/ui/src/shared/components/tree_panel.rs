@@ -8,7 +8,6 @@ pub struct TreePanelState {
     pub expanded_folders: HashMap<String, bool>,
 }
 
-
 #[derive(Debug, Clone)]
 struct TreeNode {
     name: String,
@@ -118,7 +117,7 @@ pub fn render(
         ui.label(
             egui::RichText::new("ARCHIVE STRUCTURE")
                 .size(12.0)
-                .color(theme.colors.text_secondary)
+                .color(theme.colors.on_surface_variant)
                 .strong(),
         );
     });
@@ -131,7 +130,7 @@ pub fn render(
         ui.painter().rect_filled(
             egui::Rect::from_min_size(sep_rect.min, egui::vec2(ui.available_width(), 1.0)),
             0.0,
-            theme.colors.border_color,
+            theme.colors.outline,
         );
         ui.allocate_space(egui::vec2(ui.available_width(), 1.0));
     });
@@ -271,7 +270,7 @@ fn tree_item(
         let bg_color = if selected {
             theme.colors.selection
         } else if response.hovered() {
-            theme.colors.bg_hover
+            theme.colors.secondary
         } else {
             egui::Color32::TRANSPARENT
         };
@@ -307,7 +306,7 @@ fn tree_item(
                 egui::Align2::CENTER_CENTER,
                 triangle_icon,
                 egui::FontId::proportional(10.0),
-                theme.colors.text_muted,
+                theme.colors.on_surface_variant,
             );
         }
 
@@ -317,9 +316,9 @@ fn tree_item(
 
         // Use selection text color when selected, otherwise primary text color
         let text_color = if selected {
-            theme.colors.selection_text
+            theme.colors.on_surface
         } else {
-            theme.colors.text_primary
+            theme.colors.on_surface
         };
 
         ui.painter().text(

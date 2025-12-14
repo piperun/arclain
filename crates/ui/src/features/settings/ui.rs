@@ -151,7 +151,7 @@ impl SettingsFeature {
                     ui.push_id("settings_nav_strip", |ui| {
                         // Mimic SidePanel styling
                         egui::Frame::side_top_panel(ui.style())
-                            .fill(shared.theme.colors.bg_secondary)
+                            .fill(shared.theme.colors.surface_variant)
                             .inner_margin(egui::Margin::symmetric(12, 8)) // Add some padding
                             .show(ui, |ui| {
                                 ui.set_height(ui.available_height()); // Fill height

@@ -26,12 +26,12 @@ pub fn render(
             ui.label(
                 egui::RichText::new("Configure how files are extracted from archives")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.label(
                 egui::RichText::new("Directory used for intermediate operations (like conversion)")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(8.0);
 
@@ -39,7 +39,7 @@ pub fn render(
                 egui::RichText::new("Temporary Directory")
                     .size(12.0)
                     .strong()
-                    .color(theme.colors.text_primary),
+                    .color(theme.colors.on_surface),
             );
             ui.add_space(4.0);
 
@@ -62,7 +62,7 @@ pub fn render(
                 ui.label(
                     egui::RichText::new(format!("Default: System Temporary Directory ({})", default_temp_str))
                         .size(11.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.on_surface_variant)
                         .italics(),
                 );
             }
@@ -75,7 +75,7 @@ pub fn render(
             ui.label(
                 egui::RichText::new("Settings for creating and modifying archives")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(8.0);
 
@@ -91,7 +91,7 @@ pub fn render(
                     "Verify file integrity after extraction and organization operations",
                 )
                 .size(12.0)
-                .color(theme.colors.text_secondary),
+                .color(theme.colors.on_surface_variant),
             );
             ui.add_space(12.0);
 
@@ -106,7 +106,7 @@ pub fn render(
                     ui.label(
                         egui::RichText::new("Verification Mode:")
                             .size(12.0)
-                            .color(theme.colors.text_primary),
+                            .color(theme.colors.on_surface),
                     );
                     egui::ComboBox::new("checksum_mode", "")
                         .selected_text(state.checksum_mode.display_name())
@@ -130,7 +130,7 @@ pub fn render(
                     ui.label(
                         egui::RichText::new("Algorithm:")
                             .size(12.0)
-                            .color(theme.colors.text_primary),
+                            .color(theme.colors.on_surface),
                     );
                     egui::ComboBox::new("checksum_algorithm", "")
                         .selected_text(state.checksum_algorithm.display_name())
@@ -167,7 +167,7 @@ pub fn render(
             ui.label(
                 egui::RichText::new("Manage the application cache (thumbnails, metadata, etc.)")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(8.0);
 
@@ -186,7 +186,7 @@ pub fn render(
                 )
                 .size(10.0)
                 .italics()
-                .color(theme.colors.text_secondary),
+                .color(theme.colors.on_surface_variant),
             );
         });
     });

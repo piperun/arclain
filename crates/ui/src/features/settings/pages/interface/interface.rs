@@ -15,7 +15,7 @@ pub fn render_interface_settings(
             ui.label(
                 egui::RichText::new("Configure how buttons and controls appear")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(8.0);
 
@@ -42,7 +42,7 @@ pub fn render_interface_settings(
             ui.label(
                 egui::RichText::new("Visual theme customization")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(8.0);
 
@@ -59,8 +59,8 @@ fn render_section<R>(
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     egui::Frame::NONE
-        .fill(theme.colors.bg_secondary)
-        .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+        .fill(theme.colors.surface_variant)
+        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
         .corner_radius(8.0)
         .inner_margin(20.0)
         .show(ui, |ui| {
@@ -69,7 +69,7 @@ fn render_section<R>(
                     egui::RichText::new(title)
                         .size(15.0)
                         .strong()
-                        .color(theme.colors.text_primary),
+                        .color(theme.colors.on_surface),
                 );
                 ui.add_space(8.0);
                 content(ui)

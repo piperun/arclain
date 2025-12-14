@@ -8,7 +8,6 @@ use add_rule_dialog::AddRuleDialog;
 use arclain_core::config::database::{delete_org_rule, list_org_rules, save_org_rule};
 use arclain_core::features::organization::OrganizationRule;
 use arclain_db::SqliteDb;
-use egui::Ui;
 
 pub struct RulesPage {
     rules: Option<Vec<OrganizationRule>>,
@@ -38,7 +37,12 @@ impl RulesPage {
         }
     }
 
-    pub fn render(&mut self, ui: &mut Ui, db: &SqliteDb) {
+    pub fn render(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &crate::shared::theme::AppTheme,
+        db: &SqliteDb,
+    ) {
         if self.rules.is_none() {
             self.refresh_rules(db);
         }
@@ -113,7 +117,7 @@ impl RulesPage {
 
         // Handle Dialog
         if self.dialog.is_open() {
-            if let Some(new_rule) = self.dialog.show(ui.ctx()) {
+            if let Some(new_rule) = self.dialog.show(ui.ctx(), theme) {
                 if let Err(e) = save_org_rule(db, &new_rule) {
                     self.error = Some(format!("Failed to save rule: {}", e));
                 } else {

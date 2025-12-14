@@ -14,7 +14,6 @@ pub struct FileEditDialog {
     pub error: String,
 }
 
-
 pub enum FileEditResult {
     Save { new_name: String, content: String },
     Cancel,
@@ -59,14 +58,14 @@ pub fn render_file_edit_dialog(
                 ui.label(
                     egui::RichText::new("— inline editor")
                         .size(12.0)
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
             });
 
             ui.label(
                 egui::RichText::new("File name")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_sized(
                 [content_rect.width(), 32.0],
@@ -76,7 +75,7 @@ pub fn render_file_edit_dialog(
             ui.label(
                 egui::RichText::new("Content")
                     .size(12.0)
-                    .color(theme.colors.text_secondary),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_sized(
                 [content_rect.width(), content_rect.height() - 140.0],

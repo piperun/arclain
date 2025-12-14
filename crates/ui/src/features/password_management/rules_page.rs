@@ -32,13 +32,13 @@ pub fn render_password_rules_page(
                     egui::RichText::new(form_title)
                         //.size(15.0)
                         .strong()
-                        .color(theme.colors.text_primary),
+                        .color(theme.colors.on_surface),
                 );
                 if dialog.editing_index.is_some() {
                     ui.label(
                         egui::RichText::new("(Editing Mode)")
                             .size(12.0)
-                            .color(theme.colors.accent),
+                            .color(theme.colors.primary),
                     );
                 }
             });
@@ -46,8 +46,8 @@ pub fn render_password_rules_page(
 
             // Form Container
             egui::Frame::NONE
-                .fill(theme.colors.bg_secondary)
-                .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                .fill(theme.colors.surface_variant)
+                .stroke(egui::Stroke::new(1.0, theme.colors.outline))
                 .corner_radius(8.0)
                 .inner_margin(16.0)
                 .show(ui, |ui| {
@@ -58,7 +58,7 @@ pub fn render_password_rules_page(
                             ui.label(
                                 egui::RichText::new("Name:")
                                     .size(12.0)
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                             );
                             ui.add_sized(
                                 [ui.available_width(), 28.0],
@@ -70,7 +70,7 @@ pub fn render_password_rules_page(
                             ui.label(
                                 egui::RichText::new("Pattern:")
                                     .size(12.0)
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                             );
                             ui.horizontal(|ui| {
                                 // Ensure minimum positive width for text edit
@@ -92,7 +92,7 @@ pub fn render_password_rules_page(
                             ui.label(
                                 egui::RichText::new("Password:")
                                     .size(12.0)
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                             );
                             ui.add_sized(
                                 [ui.available_width(), 28.0],
@@ -105,7 +105,7 @@ pub fn render_password_rules_page(
                             ui.label(
                                 egui::RichText::new("Priority:")
                                     .size(12.0)
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                             );
                             ui.horizontal(|ui| {
                                 ui.add_sized(
@@ -135,8 +135,12 @@ pub fn render_password_rules_page(
                         if ui
                             .add_enabled(
                                 can_save,
-                                egui::Button::new(egui::RichText::new(btn_text).strong())
-                                    .min_size(egui::vec2(100.0, 32.0)),
+                                arclain_components::button::TextButton::new(
+                                    btn_text,
+                                    arclain_components::button::ButtonSize::Large,
+                                )
+                                .variant(arclain_theme::ButtonVariant::Primary)
+                                .with_theme_colors(&theme.colors),
                             )
                             .clicked()
                         {
@@ -196,13 +200,13 @@ pub fn render_password_rules_page(
                     egui::RichText::new("Rule Registry")
                         //.size(15.0)
                         .strong()
-                        .color(theme.colors.text_primary),
+                        .color(theme.colors.on_surface),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
                         egui::RichText::new(format!("{} rules", dialog.rules.len()))
                             .size(12.0)
-                            .color(theme.colors.text_secondary),
+                            .color(theme.colors.on_surface_variant),
                     );
                 });
             });
@@ -215,8 +219,8 @@ pub fn render_password_rules_page(
 
             if dialog.rules.is_empty() {
                 egui::Frame::NONE
-                    .fill(theme.colors.bg_secondary)
-                    .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                    .fill(theme.colors.surface_variant)
+                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
                     .corner_radius(8.0)
                     .inner_margin(20.0)
                     .show(ui, |ui| {
@@ -224,15 +228,15 @@ pub fn render_password_rules_page(
                             ui.label(
                                 egui::RichText::new("No password rules configured yet.")
                                     .size(13.0)
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                             );
                         });
                     });
             } else {
                 // Table container using TableBuilder
                 egui::Frame::NONE
-                    .fill(theme.colors.bg_tertiary) // Darker background for contrast
-                    .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                    .fill(theme.colors.secondary) // Darker background for contrast
+                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
                     .corner_radius(8.0)
                     .inner_margin(4.0) // Add some padding inside the frame
                     .show(ui, |ui| {
@@ -249,22 +253,42 @@ pub fn render_password_rules_page(
                             .min_scrolled_height(0.0)
                             .header(24.0, |mut header| {
                                 header.col(|ui| {
-                                    ui.strong("Enabled");
+                                    ui.label(
+                                        egui::RichText::new("Enabled")
+                                            .strong()
+                                            .color(theme.colors.on_surface),
+                                    );
                                 });
                                 header.col(|ui| {
-                                    ui.strong("Name");
+                                    ui.label(
+                                        egui::RichText::new("Name")
+                                            .strong()
+                                            .color(theme.colors.on_surface),
+                                    );
                                 });
                                 header.col(|ui| {
-                                    ui.strong("Pattern");
+                                    ui.label(
+                                        egui::RichText::new("Pattern")
+                                            .strong()
+                                            .color(theme.colors.on_surface),
+                                    );
                                 });
                                 header.col(|ui| {
-                                    ui.strong("Pri");
+                                    ui.label(
+                                        egui::RichText::new("Pri")
+                                            .strong()
+                                            .color(theme.colors.on_surface),
+                                    );
                                 });
                                 header.col(|ui| {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            ui.strong("Actions");
+                                            ui.label(
+                                                egui::RichText::new("Actions")
+                                                    .strong()
+                                                    .color(theme.colors.on_surface),
+                                            );
                                         },
                                     );
                                 });
@@ -281,12 +305,12 @@ pub fn render_password_rules_page(
                                                         ToggleSwitch::new(&mut enabled)
                                                             .text("ON", "OFF")
                                                             .style_on(
-                                                                theme.colors.accent,
-                                                                theme.colors.bg_primary,
+                                                                theme.colors.primary,
+                                                                theme.colors.surface,
                                                             )
                                                             .style_off(
-                                                                theme.colors.bg_primary,
-                                                                theme.colors.text_muted,
+                                                                theme.colors.surface,
+                                                                theme.colors.on_surface_variant,
                                                             )
                                                             .size(40.0, 18.0),
                                                     )
@@ -299,9 +323,10 @@ pub fn render_password_rules_page(
                                         row.col(|ui| {
                                             ui.label(egui::RichText::new(&rule.name).color(
                                                 if rule.enabled {
-                                                    theme.colors.text_primary
+                                                    theme.colors.on_surface
                                                 } else {
-                                                    theme.colors.text_muted // Use muted for disabled
+                                                    theme.colors.on_surface_variant
+                                                    // Use muted for disabled
                                                 },
                                             ));
                                         });
@@ -309,13 +334,13 @@ pub fn render_password_rules_page(
                                             ui.label(
                                                 egui::RichText::new(&rule.pattern)
                                                     .family(egui::FontFamily::Monospace)
-                                                    .color(theme.colors.text_secondary),
+                                                    .color(theme.colors.on_surface_variant),
                                             );
                                         });
                                         row.col(|ui| {
                                             ui.label(
                                                 egui::RichText::new(rule.priority.to_string())
-                                                    .color(theme.colors.text_secondary),
+                                                    .color(theme.colors.on_surface_variant),
                                             );
                                         });
                                         row.col(|ui| {

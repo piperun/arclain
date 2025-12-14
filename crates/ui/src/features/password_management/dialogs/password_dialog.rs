@@ -49,8 +49,8 @@ pub fn render_password_dialog(
             let pos = egui::pos2((screen.width() - width) / 2.0, (screen.height() - height) / 2.0);
             let rect = egui::Rect::from_min_size(pos, egui::vec2(width, height));
 
-            ui.painter().rect_filled(rect, 8.0, theme.colors.bg_primary);
-            ui.painter().rect_stroke(rect, egui::CornerRadius::same(8), egui::Stroke::new(1.0, theme.colors.border_color), egui::StrokeKind::Outside);
+            ui.painter().rect_filled(rect, 8.0, theme.colors.surface);
+            ui.painter().rect_stroke(rect, egui::CornerRadius::same(8), egui::Stroke::new(1.0, theme.colors.outline), egui::StrokeKind::Outside);
 
             // Ensure elements are clipped to the modal rectangle
             ui.set_clip_rect(rect);
@@ -71,14 +71,14 @@ pub fn render_password_dialog(
                         egui::RichText::new("Archive Password Required")
                             .size(16.0)
                             .strong()
-                            .color(theme.colors.text_primary)
+                            .color(theme.colors.on_surface)
                     );
                 });
 
                 ui.label(
                     egui::RichText::new("This archive is password-protected. Please enter the password to continue.")
                         .size(14.0)
-                        .color(theme.colors.text_secondary)
+                        .color(theme.colors.on_surface_variant)
                 );
 
                 let password_response = ui.add_sized(
@@ -116,10 +116,10 @@ pub fn render_password_dialog(
                     let cancel_btn = egui::Button::new(
                         egui::RichText::new("Cancel")
                             .size(14.0)
-                            .color(theme.colors.text_primary)
+                            .color(theme.colors.on_surface)
                     )
-                    .fill(theme.colors.bg_tertiary)
-                    .stroke(egui::Stroke::new(1.0, theme.colors.border_color))
+                    .fill(theme.colors.surface_variant)
+                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
                     .corner_radius(4.0)
                     .min_size(egui::vec2(100.0, 36.0));
                     

@@ -20,7 +20,7 @@ pub fn render(
     // Left sidebar - Plugin list
     egui::SidePanel::left("plugins_list")
         .exact_width(240.0)
-        .frame(egui::Frame::NONE.fill(theme.colors.bg_secondary))
+        .frame(egui::Frame::NONE.fill(theme.colors.surface_variant))
         .show(ctx, |ui| {
             ui.add_space(8.0);
 
@@ -37,7 +37,7 @@ pub fn render(
                         ui.label(
                             egui::RichText::new("No plugins installed")
                                 .size(14.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
                     });
                 } else {
@@ -51,7 +51,7 @@ pub fn render(
 
                             let frame = if is_selected {
                                 egui::Frame::NONE
-                                    .fill(theme.colors.accent.linear_multiply(0.2))
+                                    .fill(theme.colors.surface_variant.linear_multiply(0.2))
                                     .inner_margin(egui::Margin::same(8))
                                     .corner_radius(4.0)
                             } else {
@@ -63,7 +63,7 @@ pub fn render(
                                     ui.label(
                                         egui::RichText::new(&plugin.manifest.plugin.name)
                                             .size(14.0)
-                                            .color(theme.colors.text_primary),
+                                            .color(theme.colors.on_surface),
                                     );
                                     ui.label(
                                         egui::RichText::new(format!(
@@ -71,7 +71,7 @@ pub fn render(
                                             plugin.manifest.plugin.version
                                         ))
                                         .size(11.0)
-                                        .color(theme.colors.text_secondary),
+                                        .color(theme.colors.on_surface_variant),
                                     );
 
                                     // Status indicator
@@ -83,7 +83,7 @@ pub fn render(
                                     let status_color = if plugin.enabled {
                                         egui::Color32::from_rgb(34, 197, 94)
                                     } else {
-                                        theme.colors.text_secondary
+                                        theme.colors.on_surface_variant
                                     };
                                     ui.label(
                                         egui::RichText::new(status_text)
@@ -105,7 +105,7 @@ pub fn render(
             } else {
                 ui.label(
                     egui::RichText::new("Plugin system not initialized")
-                        .color(theme.colors.text_secondary),
+                        .color(theme.colors.on_surface_variant),
                 );
             }
         });
@@ -114,7 +114,7 @@ pub fn render(
     egui::CentralPanel::default()
         .frame(
             egui::Frame::NONE
-                .fill(theme.colors.bg_primary)
+                .fill(theme.colors.surface)
                 .inner_margin(16.0),
         )
         .show(ctx, |ui| {
@@ -131,7 +131,7 @@ pub fn render(
                         ui.label(
                             egui::RichText::new(format!("by {}", plugin.manifest.plugin.author))
                                 .size(13.0)
-                                .color(theme.colors.text_secondary),
+                                .color(theme.colors.on_surface_variant),
                         );
                         ui.add_space(8.0);
                         ui.label(&plugin.manifest.plugin.description);
@@ -162,7 +162,7 @@ pub fn render(
                                     egui::RichText::new(
                                         "This plugin does not provide a settings UI.",
                                     )
-                                    .color(theme.colors.text_secondary),
+                                    .color(theme.colors.on_surface_variant),
                                 );
                             } else {
                                 // Create event callback
@@ -201,7 +201,7 @@ pub fn render(
                     ui.label(
                         egui::RichText::new("Select a plugin from the list")
                             .size(16.0)
-                            .color(theme.colors.text_secondary),
+                            .color(theme.colors.on_surface_variant),
                     );
                 });
             }

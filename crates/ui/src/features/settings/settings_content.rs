@@ -106,7 +106,7 @@ pub fn render_settings_content(
                 };
 
                 if let Some(db) = db_opt {
-                    rp.render(ui, &db);
+                    rp.render(ui, theme, &db);
                 } else {
                     ui.label("Database not available (encrypted?)");
                 }
