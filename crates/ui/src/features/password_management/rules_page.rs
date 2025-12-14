@@ -3,7 +3,7 @@ use crate::features::password_management::dialogs::zip_pass_rules::{
     PasswordRule, PasswordRulesDialog,
 };
 use crate::shared::theme::AppTheme;
-use arclain_components::toggle_switch::ToggleSwitch;
+use arclain_widgets::toggle_switch::ToggleSwitch;
 use eframe::egui;
 
 /// Render the password rules management page (full-page, non-modal version)
@@ -135,9 +135,9 @@ pub fn render_password_rules_page(
                         if ui
                             .add_enabled(
                                 can_save,
-                                arclain_components::button::TextButton::new(
+                                arclain_widgets::button::TextButton::new(
                                     btn_text,
-                                    arclain_components::button::ButtonSize::Large,
+                                    arclain_widgets::button::ButtonSize::Large,
                                 )
                                 .variant(arclain_theme::ButtonVariant::Primary)
                                 .with_theme_colors(&theme.colors),

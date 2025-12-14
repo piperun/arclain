@@ -1,5 +1,6 @@
 use crate::shared::theme::AppTheme;
 use eframe::egui;
+use egui::Widget;
 
 pub struct ToolbarState {
     pub show_tree_panel: bool,
@@ -54,18 +55,28 @@ pub fn render(
             ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
             ui.horizontal_centered(|ui| {
-                if toolbar_button(ui, theme, egui_phosphor::regular::ARROW_LEFT, can_go_back) {
+                if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_LEFT)
+                    .with_theme_colors(&theme.colors)
+                    .enabled(can_go_back)
+                    .ui(ui)
+                    .clicked()
+                {
                     actions.go_back = true;
                 }
-                if toolbar_button(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::ARROW_RIGHT,
-                    can_go_forward,
-                ) {
+                if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_RIGHT)
+                    .with_theme_colors(&theme.colors)
+                    .enabled(can_go_forward)
+                    .ui(ui)
+                    .clicked()
+                {
                     actions.go_forward = true;
                 }
-                if toolbar_button(ui, theme, egui_phosphor::regular::ARROW_UP, can_go_up) {
+                if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_UP)
+                    .with_theme_colors(&theme.colors)
+                    .enabled(can_go_up)
+                    .ui(ui)
+                    .clicked()
+                {
                     actions.go_up = true;
                 }
             });
@@ -78,67 +89,113 @@ pub fn render(
             ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
             ui.horizontal_centered(|ui| {
-                if toolbar_button_with_text(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::FOLDER_OPEN,
-                    "Open",
-                    true,
-                ) {
+                if arclain_widgets::TextButton::new(
+                    format!("{} Open", egui_phosphor::regular::FOLDER_OPEN),
+                    arclain_widgets::ButtonSize::Custom {
+                        width: 90.0,
+                        height: 32.0,
+                    },
+                )
+                .with_theme_colors(&theme.colors)
+                .ui(ui)
+                .clicked()
+                {
                     actions.open = true;
                 }
-                if toolbar_button_with_text(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::EXPORT,
-                    "Extract",
-                    archive_loaded && has_selection,
-                ) {
+                if ui
+                    .add_enabled(
+                        archive_loaded && has_selection,
+                        arclain_widgets::TextButton::new(
+                            format!("{} Extract", egui_phosphor::regular::EXPORT),
+                            arclain_widgets::ButtonSize::Custom {
+                                width: 90.0,
+                                height: 32.0,
+                            },
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     actions.extract = true;
                 }
-                if toolbar_button_with_text(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::EXPORT,
-                    "Extract all",
-                    archive_loaded,
-                ) {
+                if ui
+                    .add_enabled(
+                        archive_loaded,
+                        arclain_widgets::TextButton::new(
+                            format!("{} Extract all", egui_phosphor::regular::EXPORT),
+                            arclain_widgets::ButtonSize::Custom {
+                                width: 90.0,
+                                height: 32.0,
+                            },
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     actions.extract_all = true;
                 }
-                if toolbar_button_with_text(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::PLUS,
-                    "Add",
-                    archive_loaded,
-                ) {
+                if ui
+                    .add_enabled(
+                        archive_loaded,
+                        arclain_widgets::TextButton::new(
+                            format!("{} Add", egui_phosphor::regular::PLUS),
+                            arclain_widgets::ButtonSize::Custom {
+                                width: 90.0,
+                                height: 32.0,
+                            },
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     actions.add = true;
                 }
-                if toolbar_button_with_text(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::TRASH,
-                    "Delete selected",
-                    archive_loaded && has_selection,
-                ) {
+                if ui
+                    .add_enabled(
+                        archive_loaded && has_selection,
+                        arclain_widgets::TextButton::new(
+                            format!("{} Delete selected", egui_phosphor::regular::TRASH),
+                            arclain_widgets::ButtonSize::Custom {
+                                width: 90.0,
+                                height: 32.0,
+                            },
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     actions.delete_selected = true;
                 }
-                if toolbar_button_with_text(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::PACKAGE,
-                    "Convert to 7z",
-                    archive_loaded,
-                ) {
+                if ui
+                    .add_enabled(
+                        archive_loaded,
+                        arclain_widgets::TextButton::new(
+                            format!("{} Convert to 7z", egui_phosphor::regular::PACKAGE),
+                            arclain_widgets::ButtonSize::Custom {
+                                width: 90.0,
+                                height: 32.0,
+                            },
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     actions.convert_to_7z = true;
                 }
-                if toolbar_button_with_text(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::FOLDERS,
-                    "Organize",
-                    archive_loaded,
-                ) {
+                if ui
+                    .add_enabled(
+                        archive_loaded,
+                        arclain_widgets::TextButton::new(
+                            format!("{} Organize", egui_phosphor::regular::FOLDERS),
+                            arclain_widgets::ButtonSize::Custom {
+                                width: 90.0,
+                                height: 32.0,
+                            },
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     actions.organize_archive = true;
                 }
             });
@@ -152,15 +209,21 @@ pub fn render(
 
             ui.horizontal_centered(|ui| {
                 let list_selected = !state.grid_view;
-                if toolbar_button_toggle(ui, theme, egui_phosphor::regular::LIST, list_selected) {
+                if arclain_widgets::ToggleButton::new(egui_phosphor::regular::LIST, list_selected)
+                    .with_theme_colors(&theme.colors)
+                    .ui(ui)
+                    .clicked()
+                {
                     state.grid_view = false;
                 }
-                if toolbar_button_toggle(
-                    ui,
-                    theme,
+                if arclain_widgets::ToggleButton::new(
                     egui_phosphor::regular::GRID_FOUR,
                     state.grid_view,
-                ) {
+                )
+                .with_theme_colors(&theme.colors)
+                .ui(ui)
+                .clicked()
+                {
                     state.grid_view = true;
                 }
             });
@@ -179,7 +242,11 @@ pub fn render(
                     } else {
                         egui_phosphor::regular::LOCK_OPEN
                     };
-                    if toolbar_button_toggle(ui, theme, icon, state.columns_locked) {
+                    if arclain_widgets::ToggleButton::new(icon, state.columns_locked)
+                        .with_theme_colors(&theme.colors)
+                        .ui(ui)
+                        .clicked()
+                    {
                         state.columns_locked = !state.columns_locked;
                     }
                 });
@@ -192,20 +259,24 @@ pub fn render(
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
 
                 ui.horizontal_centered(|ui| {
-                    if toolbar_button_toggle(
-                        ui,
-                        theme,
+                    if arclain_widgets::ToggleButton::new(
                         egui_phosphor::regular::INFO,
                         state.show_properties_panel,
-                    ) {
+                    )
+                    .with_theme_colors(&theme.colors)
+                    .ui(ui)
+                    .clicked()
+                    {
                         state.show_properties_panel = !state.show_properties_panel;
                     }
-                    if toolbar_button_toggle(
-                        ui,
-                        theme,
+                    if arclain_widgets::ToggleButton::new(
                         egui_phosphor::regular::TREE_STRUCTURE,
                         state.show_tree_panel,
-                    ) {
+                    )
+                    .with_theme_colors(&theme.colors)
+                    .ui(ui)
+                    .clicked()
+                    {
                         state.show_tree_panel = !state.show_tree_panel;
                     }
                 });
@@ -214,66 +285,4 @@ pub fn render(
     });
 
     actions
-}
-
-fn toolbar_button(ui: &mut egui::Ui, theme: &AppTheme, text: &str, enabled: bool) -> bool {
-    let color = if enabled {
-        theme.colors.on_surface
-    } else {
-        theme.colors.on_surface_variant
-    };
-
-    let button = egui::Button::new(egui::RichText::new(text).size(16.0).color(color))
-        .fill(theme.colors.surface_variant)
-        .stroke(egui::Stroke::NONE)
-        .corner_radius(4.0)
-        .min_size(egui::vec2(36.0, 32.0));
-
-    ui.add_enabled(enabled, button).clicked()
-}
-
-fn toolbar_button_with_text(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    icon: &str,
-    label: &str,
-    enabled: bool,
-) -> bool {
-    let color = if enabled {
-        theme.colors.on_surface
-    } else {
-        theme.colors.on_surface_variant
-    };
-
-    let button = egui::Button::new(
-        egui::RichText::new(format!("{} {}", icon, label))
-            .size(14.0)
-            .color(color),
-    )
-    .fill(theme.colors.surface_variant)
-    .stroke(egui::Stroke::NONE)
-    .corner_radius(4.0)
-    .min_size(egui::vec2(90.0, 32.0));
-
-    ui.add_enabled(enabled, button).clicked()
-}
-
-fn toolbar_button_toggle(ui: &mut egui::Ui, theme: &AppTheme, text: &str, selected: bool) -> bool {
-    let bg_fill = if selected {
-        theme.colors.secondary
-    } else {
-        theme.colors.surface_variant
-    };
-
-    let button = egui::Button::new(
-        egui::RichText::new(text)
-            .size(16.0)
-            .color(theme.colors.on_surface),
-    )
-    .fill(bg_fill)
-    .stroke(egui::Stroke::NONE)
-    .corner_radius(4.0)
-    .min_size(egui::vec2(36.0, 32.0));
-
-    ui.add(button).clicked()
 }

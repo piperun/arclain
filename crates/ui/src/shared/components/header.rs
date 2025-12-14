@@ -1,5 +1,6 @@
 use crate::shared::theme::AppTheme;
 use eframe::egui;
+use egui::Widget;
 
 #[derive(Default)]
 pub struct HeaderState {
@@ -40,27 +41,20 @@ pub fn render(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
 
-                if header_button(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::HOUSE,
-                    "Home",
-                    true,
-                    show_labels,
-                )
-                .clicked()
+                if arclain_widgets::IconButton::new(egui_phosphor::regular::HOUSE)
+                    .with_theme_colors(&theme.colors)
+                    .ui(ui)
+                    .on_hover_text("Home")
+                    .clicked()
                 {
                     actions.navigate_home = true;
                 }
-                if header_button(
-                    ui,
-                    theme,
-                    egui_phosphor::regular::ARROW_LEFT,
-                    "Back",
-                    can_go_back,
-                    show_labels,
-                )
-                .clicked()
+                if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_LEFT)
+                    .with_theme_colors(&theme.colors)
+                    .enabled(can_go_back)
+                    .ui(ui)
+                    .on_hover_text("Back")
+                    .clicked()
                 {
                     actions.navigate_back = true;
                 }
@@ -115,7 +109,7 @@ pub fn render(
     );
     ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 0.0);
 
             // Theme toggle (rightmost)
             let toggle_size = egui::vec2(40.0, 20.0);
@@ -149,102 +143,72 @@ pub fn render(
             ui.add_space(4.0);
 
             // Settings
-            let settings_bg = if is_on_settings {
+            let settings_btn = if show_labels {
+                arclain_widgets::TextButton::new(
+                    format!("{} Settings", egui_phosphor::regular::GEAR),
+                    arclain_widgets::ButtonSize::Custom {
+                        width: 80.0,
+                        height: 28.0,
+                    },
+                )
+                .with_theme_colors(&theme.colors)
+            } else {
+                arclain_widgets::TextButton::new(
+                    egui_phosphor::regular::GEAR,
+                    arclain_widgets::ButtonSize::Custom {
+                        width: 32.0,
+                        height: 28.0,
+                    },
+                )
+                .with_theme_colors(&theme.colors)
+            }
+            .fill(if is_on_settings {
                 theme.colors.on_surface_variant
             } else {
                 theme.colors.surface_variant
-            };
-            if header_button_with_bg(
-                ui,
-                theme,
-                egui_phosphor::regular::GEAR,
-                "Settings",
-                true,
-                show_labels,
-                settings_bg,
-            )
-            .clicked()
-            {
+            });
+
+            let mut response = settings_btn.ui(ui);
+            if !show_labels {
+                response = response.on_hover_text("Settings");
+            }
+            if response.clicked() {
                 actions.navigate_settings = true;
             }
 
             // Plugins
-            if header_button(
-                ui,
-                theme,
-                egui_phosphor::regular::PUZZLE_PIECE,
-                "Plugins",
-                true,
-                show_labels,
-            )
-            .clicked()
-            {
+            let plugins_btn = if show_labels {
+                arclain_widgets::TextButton::new(
+                    format!("{} Plugins", egui_phosphor::regular::PUZZLE_PIECE),
+                    arclain_widgets::ButtonSize::Custom {
+                        width: 80.0,
+                        height: 28.0,
+                    },
+                )
+                .with_theme_colors(&theme.colors)
+            } else {
+                arclain_widgets::TextButton::new(
+                    egui_phosphor::regular::PUZZLE_PIECE,
+                    arclain_widgets::ButtonSize::Custom {
+                        width: 32.0,
+                        height: 28.0,
+                    },
+                )
+                .with_theme_colors(&theme.colors)
+            }
+            .fill(theme.colors.surface_variant);
+
+            let mut response = plugins_btn.ui(ui);
+            if !show_labels {
+                response = response.on_hover_text("Plugins");
+            }
+            if response.clicked() {
                 actions.navigate_plugins = true;
             }
         });
     });
 
     actions
-}
-
-/// Header button with optional label
-fn header_button(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    icon: &str,
-    label: &str,
-    enabled: bool,
-    show_label: bool,
-) -> egui::Response {
-    header_button_with_bg(
-        ui,
-        theme,
-        icon,
-        label,
-        enabled,
-        show_label,
-        theme.colors.surface_variant,
-    )
-}
-
-/// Header button with optional label and custom background
-fn header_button_with_bg(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    icon: &str,
-    label: &str,
-    enabled: bool,
-    show_label: bool,
-    bg: egui::Color32,
-) -> egui::Response {
-    let color = if enabled {
-        theme.colors.on_surface
-    } else {
-        theme.colors.on_surface_variant
-    };
-
-    let text = if show_label {
-        format!("{} {}", icon, label)
-    } else {
-        icon.to_string()
-    };
-
-    let min_width = if show_label { 80.0 } else { 32.0 };
-
-    let button = egui::Button::new(egui::RichText::new(&text).size(14.0).color(color))
-        .fill(bg)
-        .stroke(egui::Stroke::NONE)
-        .corner_radius(4.0)
-        .min_size(egui::vec2(min_width, 28.0));
-
-    let response = ui.add_enabled(enabled, button);
-
-    // Show tooltip if label is hidden
-    if !show_label {
-        response.on_hover_text(label)
-    } else {
-        response
-    }
 }
 
 #[cfg(test)]

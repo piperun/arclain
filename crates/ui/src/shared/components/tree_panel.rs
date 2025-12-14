@@ -268,9 +268,10 @@ fn tree_item(
 
         // Draw background for selected/hovered state
         let bg_color = if selected {
-            theme.colors.selection
-        } else if response.hovered() {
+            // Use secondary for more visible selection
             theme.colors.secondary
+        } else if response.hovered() {
+            theme.colors.surface_variant
         } else {
             egui::Color32::TRANSPARENT
         };

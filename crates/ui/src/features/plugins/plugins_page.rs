@@ -184,6 +184,7 @@ pub fn render(
                                     ui,
                                     &ui_elements,
                                     &mut event_callback,
+                                    &theme.colors,
                                 );
                                 needs_repaint = true;
                             }

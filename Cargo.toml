@@ -6,7 +6,7 @@ members = [
     "crates/plugins",
     "crates/checksum",
     "crates/db_derive",
-    "crates/components",
+    "crates/widgets",
     "crates/theme"
 ]
 exclude = [

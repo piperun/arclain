@@ -119,7 +119,7 @@ impl NavigationState {
         let mut folders = std::collections::HashSet::new();
 
         for entry in entries {
-            let normalized_path = entry.path.replace('\\', "/");
+            let normalized_path = Self::normalize_path(&entry.path);
 
             if entry.is_dir {
                 folders.insert(normalized_path.clone());

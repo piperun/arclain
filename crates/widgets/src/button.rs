@@ -111,6 +111,11 @@ impl<'a> TextButton<'a> {
         };
         self
     }
+    /// Set custom fill color
+    pub fn fill(mut self, fill: Color32) -> Self {
+        self.fill = Some(fill);
+        self
+    }
 }
 
 impl<'a> Widget for TextButton<'a> {
