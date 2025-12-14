@@ -367,11 +367,13 @@ impl eframe::App for ArclainApp {
                             let metadata = state.current_game_metadata.clone();
                             drop(state);
 
-                            self.organization_feature.organize_panel = Some(crate::features::organization::OrganizePanel::new(
-                                archive_name.clone(),
-                                entries,
-                                rules,
-                                metadata,
+                            self.organization_feature.organizer_page = Some(crate::features::organization::OrganizerPage::new(
+                                crate::features::organization::OrganizePanel::new(
+                                    archive_name.clone(),
+                                    entries,
+                                    rules,
+                                    metadata,
+                                )
                             ));
                             
                             self.page_navigator.navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
@@ -664,11 +666,13 @@ impl eframe::App for ArclainApp {
                                 let metadata = state.current_game_metadata.clone();
                                 drop(state);
                                 
-                                self.organization_feature.organize_panel = Some(crate::features::organization::OrganizePanel::new(
-                                    archive_name.clone(),
-                                    entries,
-                                    rules,
-                                    metadata,
+                                self.organization_feature.organizer_page = Some(crate::features::organization::OrganizerPage::new(
+                                    crate::features::organization::OrganizePanel::new(
+                                        archive_name.clone(),
+                                        entries,
+                                        rules,
+                                        metadata,
+                                    )
                                 ));
                                 
                                 self.page_navigator.navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
@@ -726,29 +730,16 @@ impl eframe::App for ArclainApp {
                     });
                 }
                 AppPage::OrganizeArchive(_name) => {
-                    let mut action = crate::features::organization::OrganizationAction::None;
-                    
-                    if let Some(panel) = &mut self.organization_feature.organize_panel {
-                        if let Some(result) = panel.render(ctx) {
-                            match result {
-                                crate::features::organization::OrganizePanelAction::Apply => {
-                                    action = crate::features::organization::OrganizationAction::Apply;
-                                }
-
-                                crate::features::organization::OrganizePanelAction::ManageRules => {
-                                    self.page_navigator.navigate_to(crate::core::AppPage::Settings(crate::core::SettingsPage::OrganizationRules));
-                                }
-                            }
-                        }
-                    } else {
-                        // Should not happen if navigated correctly, but handle it
-                        self.page_navigator.navigate_back();
-                    }
+                    let shared_state = crate::shared::SharedState {
+                        app_state: self.state.clone(),
+                        theme: self.theme.clone(),
+                    };
+                    let action = self.organization_feature.render(ctx, &shared_state);
 
                     match action {
                         crate::features::organization::OrganizationAction::Apply => {
-                            if let Some(panel) = &self.organization_feature.organize_panel {
-                                if let Some(plan) = &panel.preview_plan {
+                            if let Some(page) = &self.organization_feature.organizer_page {
+                                if let Some(plan) = &page.panel.session.preview_plan {
                                     let shared_state = crate::shared::SharedState {
                                         app_state: self.state.clone(),
                                         theme: self.theme.clone(),
@@ -779,8 +770,11 @@ impl eframe::App for ArclainApp {
                                     }
                                 }
                             }
-                            self.organization_feature.organize_panel = None;
+                            self.organization_feature.organizer_page = None;
                             self.page_navigator.navigate_back();
+                        }
+                        crate::features::organization::OrganizationAction::ManageRules => {
+                            self.page_navigator.navigate_to(crate::core::AppPage::Settings(crate::core::SettingsPage::OrganizationRules));
                         }
                         crate::features::organization::OrganizationAction::None => {}
                     }

@@ -145,6 +145,9 @@ impl eframe::App for AppCoordinator {
                         // Apply organization and navigate back
                         self.navigate_back();
                     }
+                    organization::OrganizationAction::ManageRules => {
+                        self.navigate_to(AppPage::Settings(SettingsPage::OrganizationRules));
+                    }
                     organization::OrganizationAction::None => {}
                 }
             }

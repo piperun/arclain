@@ -3,7 +3,7 @@ use eframe::egui::{self, RichText};
 
 impl OrganizePanel {
     pub(super) fn render_variables_tab(&self, ui: &mut egui::Ui) {
-        if let Some(plan) = &self.preview_plan {
+        if let Some(plan) = &self.session.preview_plan {
             ui.vertical(|ui| {
                 ui.add_space(8.0);
 

@@ -4,8 +4,10 @@ members = [
     "crates/ui",
     "crates/db",
     "crates/plugins",
-    "crates/checksum"
-, "crates/db_derive"]
+    "crates/checksum",
+    "crates/db_derive",
+    "crates/components"
+]
 exclude = [
     "plugins/dlsite-metadata",
     "plugins/gstreamer-preview",

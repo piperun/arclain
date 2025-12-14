@@ -16,6 +16,7 @@ pub struct SettingsFeature {
     pub archives_state: ArchivesSettingsState,
     pub password_rules_dialog: PasswordRulesDialog,
     pub plugins_state: crate::features::plugins::types::PluginsListState,
+    pub last_visited_page: Option<SettingsPage>,
 }
 
 impl SettingsFeature {
@@ -26,14 +27,30 @@ impl SettingsFeature {
             state.user_config.open_nested_in_new_tab
         };
 
+        // Pre-load rules initially
+        let rules = {
+            let state = shared.app_state.lock();
+            state.pass_rules.iter().map(|r| crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
+                 name: r.name.clone(),
+                 pattern: r.pattern.clone(),
+                 password: r.password.clone(),
+                 priority: r.priority,
+                 enabled: r.enabled,
+            }).collect()
+        };
+
         Self {
             general_state: GeneralSettingsState {
                 open_nested_in_new_tab,
             },
             security_state: SecuritySettingsState::default(),
             archives_state: ArchivesSettingsState::default(),
-            password_rules_dialog: PasswordRulesDialog::default(),
+            password_rules_dialog: PasswordRulesDialog {
+                rules,
+                ..Default::default()
+            },
             plugins_state: crate::features::plugins::types::PluginsListState::default(),
+            last_visited_page: None,
         }
     }
 
@@ -105,6 +122,20 @@ impl SettingsFeature {
         rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
         search_text: &str,
     ) -> Option<crate::core::AppPage> {
+        // Sync rules if entering PasswordRules page
+        if *page == SettingsPage::PasswordRules && self.last_visited_page.as_ref() != Some(page) {
+             let state = shared.app_state.lock();
+             self.password_rules_dialog.rules = state.pass_rules.iter().map(|r| crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
+                 name: r.name.clone(),
+                 pattern: r.pattern.clone(),
+                 password: r.password.clone(),
+                 priority: r.priority,
+                 enabled: r.enabled,
+            }).collect();
+            tracing::debug!("Reloaded {} password rules from app state", self.password_rules_dialog.rules.len());
+        }
+        self.last_visited_page = Some(page.clone());
+
         let mut action = None;
         let mut navigate_to = None;
 
@@ -222,6 +253,10 @@ impl SettingsFeature {
                                                     navigate_to = Some(crate::core::AppPage::Settings(new_page));
                                                 }
                                             } else {
+                                                // Access plugin manager safely
+                                                let pm_arc_opt = shared.app_state.lock().plugin_manager.clone();
+                                                let pm_guard = pm_arc_opt.as_ref().map(|m| m.lock());
+
                                                 action = render_settings_content(
                                                     ui,
                                                     &shared.theme,
@@ -230,10 +265,10 @@ impl SettingsFeature {
                                                     &mut self.security_state,
                                                     &mut self.archives_state,
                                                     &mut self.password_rules_dialog,
-                                                    None, // Plugin manager not available in shared state yet?
+                                                    pm_guard.as_deref(),
                                                     &mut self.plugins_state,
                                                     rules_page,
-                                                    &shared.app_state, // Need app state for DB check in rules page
+                                                    &shared.app_state,
                                                 );
                                             }
                                         });
