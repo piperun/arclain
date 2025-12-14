@@ -5,7 +5,7 @@ use egui_extras::{Size, StripBuilder};
 
 impl OrganizePanel {
     pub(super) fn render_preview_tab(&mut self, ui: &mut egui::Ui) {
-        if let Some(plan) = &self.preview_plan.clone() {
+        if let Some(plan) = &self.session.preview_plan.clone() {
             // HEADER: Output folder with copy button
             egui::Frame::NONE
                 .fill(egui::Color32::from_rgb(35, 45, 55))
@@ -47,7 +47,7 @@ impl OrganizePanel {
                                 )))
                                 .clicked()
                             {
-                                self.export_dialog.open();
+                                self.ui_state.export_dialog.open();
                             }
                         });
                     });
@@ -58,7 +58,7 @@ impl OrganizePanel {
             // Variables moved to separate tab
 
             // STATS BAR with INTEGRITY VERIFICATION
-            let report = self.calculate_discrepancies();
+            let report = self.session.calculate_report();
 
             ui.horizontal(|ui| {
                 // Original stats
@@ -177,9 +177,9 @@ impl OrganizePanel {
                     {
                         Self::export_issues_report(
                             &report,
-                            &self.original_tree,
-                            &self.organized_tree,
-                            &self.metadata,
+                            &self.ui_state.original_tree,
+                            &self.ui_state.organized_tree,
+                            &self.session.metadata,
                         );
                     }
                 }
@@ -198,28 +198,40 @@ impl OrganizePanel {
                 for (filter, label) in filters {
                     if ui
                         .selectable_label(
-                            self.preview_filter == filter,
+                            self.ui_state.preview_filter == filter,
                             RichText::new(label).size(11.0),
                         )
                         .clicked()
                     {
-                        self.preview_filter = filter;
+                        self.ui_state.preview_filter = filter;
                     }
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     egui::ComboBox::from_id_salt("depth_limit")
-                        .selected_text(match self.depth_limit {
+                        .selected_text(match self.ui_state.depth_limit {
                             None => "Depth: All".to_string(),
                             Some(0) => "Depth: Root".to_string(),
                             Some(n) => format!("Depth: {}", n),
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.depth_limit, None, "All");
-                            ui.selectable_value(&mut self.depth_limit, Some(0), "Root Only");
-                            ui.selectable_value(&mut self.depth_limit, Some(1), "1 Level");
-                            ui.selectable_value(&mut self.depth_limit, Some(2), "2 Levels");
-                            ui.selectable_value(&mut self.depth_limit, Some(3), "3 Levels");
+                            ui.selectable_value(&mut self.ui_state.depth_limit, None, "All");
+                            ui.selectable_value(
+                                &mut self.ui_state.depth_limit,
+                                Some(0),
+                                "Root Only",
+                            );
+                            ui.selectable_value(&mut self.ui_state.depth_limit, Some(1), "1 Level");
+                            ui.selectable_value(
+                                &mut self.ui_state.depth_limit,
+                                Some(2),
+                                "2 Levels",
+                            );
+                            ui.selectable_value(
+                                &mut self.ui_state.depth_limit,
+                                Some(3),
+                                "3 Levels",
+                            );
                         });
                 });
             });
@@ -244,7 +256,8 @@ impl OrganizePanel {
                                 ui.vertical(|ui| {
                                     ui.set_height(available.y - 40.0);
 
-                                    let original_title = format!("Original: {}", self.archive_name);
+                                    let original_title =
+                                        format!("Original: {}", self.session.archive_name);
                                     ui.add(
                                         egui::Label::new(
                                             RichText::new(original_title).strong().size(12.0),
@@ -259,10 +272,10 @@ impl OrganizePanel {
                                         .show(ui, |ui| {
                                             preview_tree::render_tree(
                                                 ui,
-                                                &mut self.original_tree_state,
-                                                &self.original_tree,
-                                                self.preview_filter,
-                                                self.depth_limit,
+                                                &mut self.ui_state.original_tree_state,
+                                                &self.ui_state.original_tree,
+                                                self.ui_state.preview_filter,
+                                                self.ui_state.depth_limit,
                                             );
                                         });
                                 });
@@ -306,10 +319,10 @@ impl OrganizePanel {
                                         .show(ui, |ui| {
                                             preview_tree::render_tree(
                                                 ui,
-                                                &mut self.organized_tree_state,
-                                                &self.organized_tree,
-                                                self.preview_filter,
-                                                self.depth_limit,
+                                                &mut self.ui_state.organized_tree_state,
+                                                &self.ui_state.organized_tree,
+                                                self.ui_state.preview_filter,
+                                                self.ui_state.depth_limit,
                                             );
                                         });
                                 });

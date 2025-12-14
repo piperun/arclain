@@ -2,83 +2,10 @@
 //!
 //! Calculates discrepancies between original archive and organized output.
 
-use crate::shared::components::preview_tree::{self, PreviewTreeNode};
+use crate::shared::components::preview_tree;
+use arclain_core::features::organization::metrics::IntegrityReport;
 
-/// Report of integrity statistics
-#[derive(Debug, Clone, Default)]
-pub struct IntegrityReport {
-    pub original_files: usize,
-    pub original_folders: usize,
-    pub moved_files: usize,
-    pub generated_files: usize,
-    pub expected_screenshots: usize,
-    pub planned_screenshots: usize,
-    pub expected_modified_files: usize,
-    pub file_discrepancy: i64,
-    pub missing_original_files: Vec<String>,
-    pub original_hash: u64,
-    pub result_hash: u64,
-    pub content_match: bool,
-}
-
-/// Count files in a PreviewTreeNode tree (recursive)
-pub fn count_files(nodes: &[PreviewTreeNode]) -> usize {
-    let mut count = 0;
-    for node in nodes {
-        if node.is_dir {
-            count += count_files(&node.children);
-        } else {
-            count += 1;
-        }
-    }
-    count
-}
-
-/// FNV-1a hash for fast fingerprinting
-pub fn fnv1a_hash(data: &str) -> u64 {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET;
-    for byte in data.bytes() {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
-/// Count folders in a PreviewTreeNode tree (recursive)
-pub fn count_folders(nodes: &[PreviewTreeNode]) -> usize {
-    let mut count = 0;
-    for node in nodes {
-        if node.is_dir {
-            count += 1;
-            count += count_folders(&node.children);
-        }
-    }
-    count
-}
-
-/// Collect all file full paths from a tree
-pub fn collect_full_paths(
-    nodes: &[preview_tree::PreviewTreeNode],
-    result: &mut std::collections::HashSet<String>,
-    prefix: &str,
-) {
-    for node in nodes {
-        let path = if prefix.is_empty() {
-            node.name.clone()
-        } else {
-            format!("{}/{}", prefix, node.name)
-        };
-
-        if node.is_dir {
-            collect_full_paths(&node.children, result, &path);
-        } else {
-            result.insert(path);
-        }
-    }
-}
+// Helper functions removed as logic is now in core
 
 /// Export a report of all discrepancies (files filtered out, missing screenshots, etc.)
 pub fn export_issues_report(

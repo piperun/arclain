@@ -280,6 +280,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arclain_components"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "egui-phosphor",
+]
+
+[[package]]
 name = "arclain_core"
 version = "0.1.0"
 dependencies = [
@@ -369,6 +378,7 @@ name = "arclain_ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "arclain_components",
  "arclain_core",
  "arclain_db",
  "arclain_plugins",

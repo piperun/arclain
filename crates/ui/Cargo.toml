@@ -25,6 +25,7 @@ crc32fast = "1"
 chrono = "0.4"
 egui-phosphor = "0.11.0"
 arclain_db = { path = "../db" }
+arclain_components = { path = "../components" }
 rusqlite = "0.32"
 reqwest = { version = "0.12.24", features = ["blocking", "json"] }
 

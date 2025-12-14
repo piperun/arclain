@@ -7,8 +7,8 @@ mod network_tab;
 mod preview_tab;
 mod variables_tab;
 
-pub use integrity::IntegrityReport;
-use integrity::{collect_full_paths, count_files, count_folders, export_issues_report, fnv1a_hash};
+pub use arclain_core::features::organization::metrics::IntegrityReport;
+use integrity::export_issues_report;
 
 use crate::features::organization::export_dialog::ExportTreeDialog;
 use crate::shared::dialogs::progress::{ExtractionProgressDialog, ExtractionStatus};
@@ -18,6 +18,7 @@ use crate::shared::components::preview_tree::{
 };
 use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::features::organization::{engine::RuleEngine, OrganizationRule};
+use arclain_core::features::organization::session::OrganizationSession;
 use arclain_core::ArchiveEntry;
 use eframe::egui;
 use std::sync::mpsc::Receiver;
@@ -37,16 +38,9 @@ pub enum OrganizePanelAction {
     ManageRules,
 }
 
-pub struct OrganizePanel {
-    pub archive_name: String,
-    pub entries: Vec<ArchiveEntry>,
-    pub rules: Vec<OrganizationRule>,
+pub struct OrganizeUiState {
     pub selected_rule_index: usize,
-    pub preview_plan: Option<arclain_core::features::organization::engine::OrganizationPlan>,
-    pub metadata: Option<arclain_core::features::organization::GameMetadata>,
-    pub network_log: Vec<(std::time::SystemTime, String)>,
     pub active_tab: OrganizeTab,
-    // Tree view state
     pub preview_filter: PreviewFilter,
     pub original_tree_state: PreviewTreeState,
     pub organized_tree_state: PreviewTreeState,
@@ -54,12 +48,37 @@ pub struct OrganizePanel {
     pub organized_tree: Vec<preview_tree::PreviewTreeNode>,
     pub depth_limit: Option<usize>,
     pub export_dialog: ExportTreeDialog,
-    // Organization progress state
     pub progress_dialog: ExtractionProgressDialog,
     pub progress_rx: Option<Receiver<ProgressUpdate>>,
     pub organization_child: Option<std::process::Child>,
     pub organization_started: Option<Instant>,
     pub is_organizing: bool,
+}
+
+impl Default for OrganizeUiState {
+    fn default() -> Self {
+        Self {
+            selected_rule_index: 0,
+            active_tab: OrganizeTab::Preview,
+            preview_filter: PreviewFilter::All,
+            original_tree_state: PreviewTreeState::default(),
+            organized_tree_state: PreviewTreeState::default(),
+            original_tree: Vec::new(),
+            organized_tree: Vec::new(),
+            depth_limit: None,
+            export_dialog: ExportTreeDialog::new(),
+            progress_dialog: ExtractionProgressDialog::default(),
+            progress_rx: None,
+            organization_child: None,
+            organization_started: None,
+            is_organizing: false,
+        }
+    }
+}
+
+pub struct OrganizePanel {
+    pub session: OrganizationSession,
+    pub ui_state: OrganizeUiState,
 }
 
 impl OrganizePanel {
@@ -69,43 +88,31 @@ impl OrganizePanel {
         rules: Vec<OrganizationRule>,
         metadata: Option<arclain_core::features::organization::GameMetadata>,
     ) -> Self {
-        let mut panel = Self {
-            archive_name: archive_name.clone(),
-            entries: entries.clone(),
-            rules: rules.clone(),
-            selected_rule_index: 0,
-            preview_plan: None,
+        let session = OrganizationSession::new(
+            archive_name,
+            entries,
+            rules,
             metadata,
-            network_log: Vec::new(),
-            active_tab: OrganizeTab::Preview,
-            preview_filter: PreviewFilter::All,
-            original_tree_state: PreviewTreeState::default(),
-            organized_tree_state: PreviewTreeState::default(),
-            original_tree: Vec::new(),
-            organized_tree: Vec::new(),
-            depth_limit: None,
-            export_dialog: ExportTreeDialog::new(),
-            // Progress state
-            progress_dialog: ExtractionProgressDialog::default(),
-            progress_rx: None,
-            organization_child: None,
-            organization_started: None,
-            is_organizing: false,
+        );
+        
+        let mut panel = Self {
+            session,
+            ui_state: OrganizeUiState::default(),
         };
 
         // Auto-select rule
-        if let Some(idx) = panel.rules.iter().position(|r| {
+        if let Some(idx) = panel.session.rules.iter().position(|r| {
             r.is_enabled
                 && RuleEngine::matches_trigger(
                     &r.trigger,
-                    &panel.archive_name,
-                    &panel.entries,
-                    panel.metadata.as_ref(),
+                    &panel.session.archive_name,
+                    &panel.session.entries,
+                    panel.session.metadata.as_ref(),
                 )
         }) {
-            panel.selected_rule_index = idx;
-        } else if let Some(idx) = panel.rules.iter().position(|r| r.is_enabled) {
-            panel.selected_rule_index = idx;
+            panel.ui_state.selected_rule_index = idx;
+        } else if let Some(idx) = panel.session.rules.iter().position(|r| r.is_enabled) {
+            panel.ui_state.selected_rule_index = idx;
         }
 
         panel.update_preview();
@@ -113,48 +120,47 @@ impl OrganizePanel {
         // Debug: Log rules and selection
         tracing::debug!(
             "OrganizePanel::new - {} rules loaded, selected_rule_index={}, selected_rule={}",
-            panel.rules.len(),
-            panel.selected_rule_index,
-            panel.rules.get(panel.selected_rule_index).map(|r| format!("'{}'", r.name)).unwrap_or("None".to_string())
+            panel.session.rules.len(),
+            panel.ui_state.selected_rule_index,
+            panel.session.rules.get(panel.ui_state.selected_rule_index).map(|r| format!("'{}'", r.name)).unwrap_or("None".to_string())
         );
         
         panel
     }
 
     pub fn update_network_log(&mut self, log: Vec<(std::time::SystemTime, String)>) {
-        self.network_log = log;
+        self.session.network_log = log;
     }
 
     pub fn update_preview(&mut self) {
-        if let Some(rule) = self.rules.get(self.selected_rule_index) {
+        if let Some(rule) = self.session.rules.get(self.ui_state.selected_rule_index) {
             if let Ok(plan) = RuleEngine::create_plan(
                 rule,
-                &self.archive_name,
-                &self.entries,
-                self.metadata.as_ref(),
+                &self.session.archive_name,
+                &self.session.entries,
+                self.session.metadata.as_ref(),
             ) {
-                self.preview_plan = Some(plan.clone());
+                self.session.preview_plan = Some(plan.clone());
 
                 // Build and cache trees
                 // Use self.entries (all archive files) for original tree, NOT plan.moves
                 // Filter out directory entries - only include actual files
-                let original_paths: Vec<String> = self
-                    .entries
+                let original_paths: Vec<String> = self.session.entries
                     .iter()
                     .filter(|e| !e.is_dir) // Only include files, not directory entries
                     .map(|e| e.path.clone())
                     .collect();
 
-                self.original_tree = build_original_tree(&original_paths);
+                self.ui_state.original_tree = build_original_tree(&original_paths);
 
-                self.organized_tree = build_organized_tree(
+                self.ui_state.organized_tree = build_organized_tree(
                     &plan.moves,
                     &plan.generated_files,
                     &plan.downloads,
                     &plan.resolved_variables,
                 );
 
-                if self.metadata.is_some() {
+                if self.session.metadata.is_some() {
                     self.update_network_log(vec![(
                         std::time::SystemTime::now(),
                         "Metadata applied to preview".to_string(),
@@ -166,30 +172,30 @@ impl OrganizePanel {
 
     /// Update organization progress from channel
     pub fn update_organization_progress(&mut self) {
-        if !self.is_organizing {
+        if !self.ui_state.is_organizing {
             return;
         }
 
         // Check for progress updates from channel
-        if let Some(ref rx) = self.progress_rx {
+        if let Some(ref rx) = self.ui_state.progress_rx {
             while let Ok(update) = rx.try_recv() {
-                self.progress_dialog.percent = update.percent;
+                self.ui_state.progress_dialog.percent = update.percent;
                 if let Some(ref msg) = update.message {
-                    self.progress_dialog.file_action = msg.clone();
+                    self.ui_state.progress_dialog.file_action = msg.clone();
                 }
                 // Check for completion
                 if update.percent >= 100 {
-                    self.progress_dialog.status = ExtractionStatus::Completed;
-                    self.is_organizing = false;
-                    self.progress_dialog.show = false;
+                    self.ui_state.progress_dialog.status = ExtractionStatus::Completed;
+                    self.ui_state.is_organizing = false;
+                    self.ui_state.progress_dialog.show = false;
                 }
             }
         }
 
         // Update elapsed time
-        if let Some(started) = self.organization_started {
+        if let Some(started) = self.ui_state.organization_started {
             let elapsed = started.elapsed();
-            self.progress_dialog.elapsed_text = format!(
+            self.ui_state.progress_dialog.elapsed_text = format!(
                 "{}:{:02}",
                 elapsed.as_secs() / 60,
                 elapsed.as_secs() % 60
@@ -199,14 +205,14 @@ impl OrganizePanel {
 
     /// Cancel ongoing organization
     pub fn cancel_organization(&mut self) {
-        if let Some(ref mut child) = self.organization_child {
+        if let Some(ref mut child) = self.ui_state.organization_child {
             let _ = child.kill();
         }
-        self.organization_child = None;
-        self.progress_rx = None;
-        self.is_organizing = false;
-        self.progress_dialog.show = false;
-        self.progress_dialog.status = ExtractionStatus::Cancelled;
+        self.ui_state.organization_child = None;
+        self.ui_state.progress_rx = None;
+        self.ui_state.is_organizing = false;
+        self.ui_state.progress_dialog.show = false;
+        self.ui_state.progress_dialog.status = ExtractionStatus::Cancelled;
     }
 
     fn truncate_path(path: &str, max_len: usize) -> String {
@@ -242,16 +248,16 @@ impl OrganizePanel {
         }
     }
 
-    pub fn render(&mut self, ctx: &egui::Context) -> Option<OrganizePanelAction> {
+    pub fn render(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> Option<OrganizePanelAction> {
         // Update organization progress if running
         self.update_organization_progress();
         
         // Render progress dialog if organizing
-        if self.progress_dialog.show {
+        if self.ui_state.progress_dialog.show {
             if let Some(result) = crate::shared::dialogs::progress::render_extraction_progress_dialog(
                 ctx,
                 &crate::shared::theme::AppTheme::new(false), // TODO: Get actual theme
-                &mut self.progress_dialog,
+                &mut self.ui_state.progress_dialog,
             ) {
                 match result {
                     crate::shared::dialogs::progress::ExtractionDialogResult::Cancelled => {
@@ -262,26 +268,26 @@ impl OrganizePanel {
             }
         }
         
-        self.export_dialog.show(
+        self.ui_state.export_dialog.show(
             ctx,
-            &self.original_tree,
-            &self.organized_tree,
-            self.metadata.as_ref(),
+            &self.ui_state.original_tree,
+            &self.ui_state.organized_tree,
+            self.session.metadata.as_ref(),
         );
 
         let mut action = None;
 
         // EARLY VALIDATION: Check for DLsite rule without metadata
         let is_dlsite_rule = self
-            .rules
-            .get(self.selected_rule_index)
+            .session.rules
+            .get(self.ui_state.selected_rule_index)
             .map(|r| r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false))
             .unwrap_or(false);
-        let missing_metadata = is_dlsite_rule && self.metadata.is_none();
-        let can_apply = !missing_metadata && self.preview_plan.is_some();
+        let missing_metadata = is_dlsite_rule && self.session.metadata.is_none();
+        let can_apply = !missing_metadata && self.session.preview_plan.is_some();
 
         // Main content panel
-        egui::CentralPanel::default().show(ctx, |ui| {
+        {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
 
             // Header
@@ -299,11 +305,11 @@ impl OrganizePanel {
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
                             ui.label(egui::RichText::new("Organize Archive").size(18.0).strong());
-                            ui.label(egui::RichText::new(&self.archive_name).size(12.0).weak());
+                            ui.label(egui::RichText::new(&self.session.archive_name).size(12.0).weak());
                         });
 
                         // Metadata badge - smaller with explicit label
-                        if let Some(meta) = &self.metadata {
+                        if let Some(meta) = &self.session.metadata {
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -382,19 +388,19 @@ impl OrganizePanel {
                 ui.label(egui::RichText::new("Rule:").strong());
 
                 let current_rule = self
-                    .rules
-                    .get(self.selected_rule_index)
+                    .session.rules
+                    .get(self.ui_state.selected_rule_index)
                     .map(|r| r.name.clone())
                     .unwrap_or_else(|| "None".to_string());
 
-                let has_dlsite_code = arclain_core::utilities::has_dlsite_code(&self.archive_name);
+                let has_dlsite_code = arclain_core::utilities::has_dlsite_code(&self.session.archive_name);
 
                 egui::ComboBox::from_id_salt("rule_selector")
                     .selected_text(&current_rule)
                     .width(200.0)
                     .show_ui(ui, |ui| {
                         let mut categories: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
-                        for (i, rule) in self.rules.iter().enumerate() {
+                        for (i, rule) in self.session.rules.iter().enumerate() {
                             let cat = rule.trigger.metadata_source.clone().unwrap_or_else(|| "General".to_string());
                             categories.entry(cat).or_default().push(i);
                         }
@@ -408,7 +414,7 @@ impl OrganizePanel {
                             );
                             
                             for i in indices {
-                                let rule = &self.rules[i];
+                                let rule = &self.session.rules[i];
                                 let is_dlsite_rule = rule.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false);
                                 let is_disabled = is_dlsite_rule && !has_dlsite_code;
 
@@ -417,10 +423,10 @@ impl OrganizePanel {
                                     ui.add_enabled(
                                         false,
                                         egui::Button::new(egui::RichText::new(label).weak())
-                                            .selected(self.selected_rule_index == i),
+                                            .selected(self.ui_state.selected_rule_index == i),
                                     );
                                 } else if ui
-                                    .selectable_value(&mut self.selected_rule_index, i, &rule.name)
+                                    .selectable_value(&mut self.ui_state.selected_rule_index, i, &rule.name)
                                     .changed()
                                 {
                                     self.update_preview();
@@ -431,7 +437,7 @@ impl OrganizePanel {
                     });
 
 
-                // if let Some(rule) = self.rules.get(self.selected_rule_index) {
+                // if let Some(rule) = self.session.rules.get(self.ui_state.selected_rule_index) {
                 //     if let Some(desc) = &rule.description {
                 //         ui.label(egui::RichText::new(desc).weak().italics().size(11.0));
                 //     }
@@ -475,48 +481,48 @@ impl OrganizePanel {
                             None
                         };
 
-                        if let Some(tab) = tab_btn(ui, &format!("{} Preview", egui_phosphor::regular::EYE), OrganizeTab::Preview, self.active_tab) {
-                            self.active_tab = tab;
+                        if let Some(tab) = tab_btn(ui, &format!("{} Preview", egui_phosphor::regular::EYE), OrganizeTab::Preview, self.ui_state.active_tab) {
+                            self.ui_state.active_tab = tab;
                         }
                         
                         ui.add_space(16.0);
                         
-                        if let Some(tab) = tab_btn(ui, &format!("{} Variables", egui_phosphor::regular::CODE), OrganizeTab::Variables, self.active_tab) {
-                            self.active_tab = tab;
+                        if let Some(tab) = tab_btn(ui, &format!("{} Variables", egui_phosphor::regular::CODE), OrganizeTab::Variables, self.ui_state.active_tab) {
+                            self.ui_state.active_tab = tab;
                         }
 
                         ui.add_space(16.0);
 
-                        let net_count = self.network_log.len();
+                        let net_count = self.session.network_log.len();
                         let net_label = if net_count > 0 {
                             format!("{} Network ({})", egui_phosphor::regular::GLOBE, net_count)
                         } else {
                             format!("{} Network", egui_phosphor::regular::GLOBE)
                         };
 
-                        if let Some(tab) = tab_btn(ui, &net_label, OrganizeTab::NetworkActivity, self.active_tab) {
-                            self.active_tab = tab;
+                        if let Some(tab) = tab_btn(ui, &net_label, OrganizeTab::NetworkActivity, self.ui_state.active_tab) {
+                            self.ui_state.active_tab = tab;
                         }
                     });
 
                     ui.separator();
                     ui.add_space(4.0);
 
-                    match self.active_tab {
+                    match self.ui_state.active_tab {
                         OrganizeTab::Preview => self.render_preview_tab(ui),
                         OrganizeTab::Variables => self.render_variables_tab(ui),
                         OrganizeTab::NetworkActivity => self.render_network_tab(ui),
                     }
                 }
-            });
+        }
 
         if let Some(OrganizePanelAction::Apply) = action {
             let is_dlsite_rule = self
-                .rules
-                .get(self.selected_rule_index)
+                .session.rules
+                .get(self.ui_state.selected_rule_index)
                 .map(|r| r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false))
                 .unwrap_or(false);
-            if is_dlsite_rule && self.metadata.is_none() {
+            if is_dlsite_rule && self.session.metadata.is_none() {
                 action = None;
             }
         }
@@ -556,85 +562,7 @@ impl OrganizePanel {
         });
     }
 
-    /// Get the number of expected screenshots from metadata
-    fn expected_screenshot_count(&self) -> usize {
-        self.metadata
-            .as_ref()
-            .map(|m| m.screenshots.len())
-            .unwrap_or(0)
-    }
 
-    /// Calculate discrepancies using source coverage
-    pub fn calculate_discrepancies(&self) -> IntegrityReport {
-        let original_file_count = count_files(&self.original_tree);
-        let original_folder_count = count_folders(&self.original_tree);
-
-        let expected_screenshots = self.expected_screenshot_count();
-        let planned_screenshots = self
-            .preview_plan
-            .as_ref()
-            .map(|p| p.downloads.len())
-            .unwrap_or(0);
-        let generated_files_count = self
-            .preview_plan
-            .as_ref()
-            .map(|p| p.generated_files.len())
-            .unwrap_or(0);
-        let moved_files = self
-            .preview_plan
-            .as_ref()
-            .map(|p| p.moves.len())
-            .unwrap_or(0);
-
-        let expected_modified_files = moved_files + generated_files_count + planned_screenshots;
-        
-        
-        // 1. Original file paths
-        let mut original_set = std::collections::HashSet::new();
-        collect_full_paths(&self.original_tree, &mut original_set, "");
-        let mut original_paths: Vec<String> = original_set.iter().cloned().collect();
-        original_paths.sort();
-        let original_hash = fnv1a_hash(&original_paths.join("|"));
-        
-        // 2. Covered paths from plan (Source Hashing)
-        // We hash the SOURCE paths of the moves plan to verify that the set of files 
-        // being organized is identical to the original set of files.
-        // CRITICAL: Normalize path separators to '/' because preview_tree normalizes original paths to '/'.
-        // If plan.moves contains '\' (on Windows), straight comparison fails.
-        let mut plan_sources: Vec<String> = if let Some(plan) = &self.preview_plan {
-             plan.moves.iter().map(|(src, _)| src.replace('\\', "/")).collect()
-        } else {
-             Vec::new()
-        };
-        // Also add logic to verify if we missed any original files
-        let covered_set: std::collections::HashSet<String> = plan_sources.iter().cloned().collect();
-        let missing_original_files: Vec<String> = original_set.difference(&covered_set).cloned().collect();
-        
-        plan_sources.sort();
-        let result_hash = fnv1a_hash(&plan_sources.join("|"));
-
-        let content_match = original_hash == result_hash;
-
-        let modified_file_count = count_files(&self.organized_tree);
-        // This discrepancy calc is still vague but let's keep it for "total count"
-        let expected_total = original_file_count + generated_files_count + planned_screenshots;
-        let file_discrepancy = (modified_file_count as i64) - (expected_total as i64);
-
-        IntegrityReport {
-            original_files: original_file_count,
-            original_folders: original_folder_count,
-            moved_files,
-            generated_files: generated_files_count,
-            expected_screenshots,
-            planned_screenshots,
-            expected_modified_files,
-            file_discrepancy,
-            missing_original_files,
-            original_hash,
-            result_hash,
-            content_match,
-        }
-    }
 
     pub fn export_issues_report(
         report: &IntegrityReport,

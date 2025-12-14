@@ -1,9 +1,11 @@
 pub mod engine;
 pub mod flatten_helper;
+pub mod metrics;
 pub mod organizer;
 pub mod presets;
 #[cfg(test)]
 pub mod pruning_tests;
+pub mod session;
 
 pub mod checks;
 pub mod flatten;

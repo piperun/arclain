@@ -1,0 +1,9 @@
+[package]
+name = "arclain_components"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.33.0" # Includes egui
+egui = "0.33.0"
+egui-phosphor = "0.11.0"
