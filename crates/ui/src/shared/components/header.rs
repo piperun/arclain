@@ -1,4 +1,5 @@
-use crate::shared::theme::AppTheme;
+use arclain_theme::{AppTheme, ButtonVariant};
+
 use eframe::egui;
 use egui::Widget;
 
@@ -43,6 +44,7 @@ pub fn render(
 
                 if arclain_widgets::IconButton::new(egui_phosphor::regular::HOUSE)
                     .with_theme_colors(&theme.colors)
+                    .variant(ButtonVariant::Ghost)
                     .ui(ui)
                     .on_hover_text("Home")
                     .clicked()
@@ -51,6 +53,7 @@ pub fn render(
                 }
                 if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_LEFT)
                     .with_theme_colors(&theme.colors)
+                    .variant(ButtonVariant::Ghost)
                     .enabled(can_go_back)
                     .ui(ui)
                     .on_hover_text("Back")
@@ -162,10 +165,10 @@ pub fn render(
                 )
                 .with_theme_colors(&theme.colors)
             }
-            .fill(if is_on_settings {
-                theme.colors.on_surface_variant
+            .variant(if is_on_settings {
+                ButtonVariant::Primary
             } else {
-                theme.colors.surface_variant
+                ButtonVariant::Ghost
             });
 
             let mut response = settings_btn.ui(ui);
@@ -196,7 +199,7 @@ pub fn render(
                 )
                 .with_theme_colors(&theme.colors)
             }
-            .fill(theme.colors.surface_variant);
+            .variant(ButtonVariant::Ghost);
 
             let mut response = plugins_btn.ui(ui);
             if !show_labels {

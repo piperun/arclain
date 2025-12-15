@@ -38,7 +38,7 @@ impl<'a> Widget for ToggleButton<'a> {
             let bg = if self.selected {
                 colors.secondary
             } else {
-                colors.surface_variant
+                egui::Color32::TRANSPARENT
             };
             (bg, colors.on_surface)
         } else {

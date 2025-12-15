@@ -19,6 +19,7 @@
 mod colors;
 mod fonts;
 mod theme;
+pub mod themes;
 mod variants;
 
 // Re-export all public types
