@@ -47,6 +47,18 @@ pub struct UserConfig {
     /// Whether to open nested archives in a new tab
     #[db(default = "0")]
     pub open_nested_in_new_tab: bool,
+
+    /// Enabled plugins (JSON list of IDs)
+    #[db(nullable)]
+    pub enabled_plugins: Option<String>,
+
+    /// Plugin order (JSON list of IDs)
+    #[db(nullable)]
+    pub plugin_order: Option<String>,
+
+    /// Plugin visibility settings (JSON map)
+    #[db(nullable)]
+    pub plugin_visibility: Option<String>,
 }
 
 impl UserConfig {
@@ -72,5 +84,29 @@ impl UserConfig {
     /// Get transfer_dir as PathBuf
     pub fn transfer_dir_path(&self) -> Option<PathBuf> {
         self.transfer_dir.as_ref().map(PathBuf::from)
+    }
+
+    // --- Plugin Headers ---
+
+    pub fn get_enabled_plugins(&self) -> Vec<String> {
+        self.enabled_plugins
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_enabled_plugins(&mut self, plugins: &[String]) {
+        self.enabled_plugins = serde_json::to_string(plugins).ok();
+    }
+
+    pub fn get_plugin_order(&self) -> Vec<String> {
+        self.plugin_order
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_plugin_order(&mut self, order: &[String]) {
+        self.plugin_order = serde_json::to_string(order).ok();
     }
 }

@@ -25,6 +25,9 @@ pub struct PluginInfo {
     pub status: PluginStatus,
     /// Error message if any
     pub error: Option<String>,
+    /// Visibility settings (e.g. "toolbar": true)
+    #[serde(default)]
+    pub visibility: std::collections::HashMap<String, bool>,
 }
 
 /// Plugin status indicator
@@ -81,13 +84,27 @@ pub struct PluginsListState {
 
 impl PluginsListState {
     /// Update plugin list from plugin manager
-    pub fn update_from_manager(&mut self, manager: &arclain_plugins::PluginManager) {
+    pub fn update_from_manager(
+        &mut self,
+        manager: &arclain_plugins::PluginManager,
+        user_config: &arclain_db::UserConfig,
+    ) {
         self.plugins.clear();
-        
+
+        let visibility_json = user_config.plugin_visibility.as_deref().unwrap_or("{}");
+        let visibility_map: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, bool>,
+        > = serde_json::from_str(visibility_json).unwrap_or_default();
+
+        let mut unsorted_plugins = Vec::new();
+
         for item in manager.list_plugins() {
             let caps = item.manifest.capabilities.to_capabilities();
             let cap_strings: Vec<String> = caps.iter().map(|c| format!("{:?}", c)).collect();
-            
+
+            let plugin_vis = visibility_map.get(&item.id).cloned().unwrap_or_default();
+
             let info = PluginInfo {
                 id: item.id.clone(),
                 name: item.manifest.plugin.name.clone(),
@@ -103,8 +120,14 @@ impl PluginsListState {
                     PluginStatus::NotLoaded
                 },
                 error: None,
+                visibility: plugin_vis,
             };
-            self.plugins.push(info);
+            unsorted_plugins.push(info);
         }
+
+        // Sort plugins alphabetically
+        unsorted_plugins.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+        self.plugins = unsorted_plugins;
     }
 }

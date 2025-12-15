@@ -250,6 +250,23 @@ impl AppState {
                 } else {
                     let plugin_count = manager.list_plugins().len();
                     info!("Plugin manager initialized with {} plugins", plugin_count);
+
+                    // Apply enabled/disabled state from UserConfig
+                    if me.user_config.enabled_plugins.is_some() {
+                        let enabled_list = me.user_config.get_enabled_plugins();
+                        let enabled_set: std::collections::HashSet<_> =
+                            enabled_list.into_iter().collect();
+
+                        for plugin in manager.list_plugins() {
+                            if enabled_set.contains(&plugin.id) {
+                                // Already enabled by default, but ensuring consistency
+                                let _ = manager.enable_plugin(&plugin.id);
+                            } else {
+                                let _ = manager.disable_plugin(&plugin.id);
+                            }
+                        }
+                        info!("Applied plugin enabled/disabled state from config");
+                    }
                 }
                 if let Some(ref dbs) = me.dbs {
                     manager.set_metadata_cache(Arc::new(dbs.metadata.clone()));

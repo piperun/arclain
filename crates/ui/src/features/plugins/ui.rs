@@ -1,5 +1,5 @@
-use crate::features::plugins::types::PluginsListState;
 use crate::features::plugins::plugins_page;
+use crate::features::plugins::types::PluginsListState;
 use crate::shared::SharedState;
 use eframe::egui;
 
@@ -15,10 +15,19 @@ impl PluginsFeature {
     }
 
     pub fn render(&mut self, ctx: &egui::Context, shared: &SharedState) {
-        let state = shared.app_state.lock();
-        let plugin_manager = state.plugin_manager.as_ref();
+        let manager_arc = shared.app_state.lock().plugin_manager.clone();
 
-        // Render the plugins page
-        plugins_page::render(ctx, &shared.theme, &mut self.list_state, plugin_manager);
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let guard = manager_arc.as_ref().map(|m| m.lock());
+            let manager_ref = guard.as_deref();
+
+            plugins_page::render(
+                ui,
+                &shared.theme,
+                manager_ref,
+                &mut self.list_state,
+                &shared.app_state,
+            );
+        });
     }
 }
