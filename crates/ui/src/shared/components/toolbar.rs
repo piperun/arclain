@@ -1,4 +1,5 @@
 use crate::shared::theme::AppTheme;
+use arclain_theme::ButtonVariant;
 use eframe::egui;
 use egui::Widget;
 
@@ -57,6 +58,7 @@ pub fn render(
             ui.horizontal_centered(|ui| {
                 if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_LEFT)
                     .with_theme_colors(&theme.colors)
+                    .variant(ButtonVariant::Ghost)
                     .enabled(can_go_back)
                     .ui(ui)
                     .clicked()
@@ -65,6 +67,7 @@ pub fn render(
                 }
                 if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_RIGHT)
                     .with_theme_colors(&theme.colors)
+                    .variant(ButtonVariant::Ghost)
                     .enabled(can_go_forward)
                     .ui(ui)
                     .clicked()
@@ -73,6 +76,7 @@ pub fn render(
                 }
                 if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_UP)
                     .with_theme_colors(&theme.colors)
+                    .variant(ButtonVariant::Ghost)
                     .enabled(can_go_up)
                     .ui(ui)
                     .clicked()
@@ -97,6 +101,7 @@ pub fn render(
                     },
                 )
                 .with_theme_colors(&theme.colors)
+                .variant(ButtonVariant::Ghost)
                 .ui(ui)
                 .clicked()
                 {
@@ -112,7 +117,8 @@ pub fn render(
                                 height: 32.0,
                             },
                         )
-                        .with_theme_colors(&theme.colors),
+                        .with_theme_colors(&theme.colors)
+                        .variant(ButtonVariant::Ghost),
                     )
                     .clicked()
                 {
@@ -128,7 +134,8 @@ pub fn render(
                                 height: 32.0,
                             },
                         )
-                        .with_theme_colors(&theme.colors),
+                        .with_theme_colors(&theme.colors)
+                        .variant(ButtonVariant::Ghost),
                     )
                     .clicked()
                 {
@@ -144,7 +151,8 @@ pub fn render(
                                 height: 32.0,
                             },
                         )
-                        .with_theme_colors(&theme.colors),
+                        .with_theme_colors(&theme.colors)
+                        .variant(ButtonVariant::Ghost),
                     )
                     .clicked()
                 {
@@ -160,7 +168,8 @@ pub fn render(
                                 height: 32.0,
                             },
                         )
-                        .with_theme_colors(&theme.colors),
+                        .with_theme_colors(&theme.colors)
+                        .variant(ButtonVariant::Ghost),
                     )
                     .clicked()
                 {
@@ -176,7 +185,8 @@ pub fn render(
                                 height: 32.0,
                             },
                         )
-                        .with_theme_colors(&theme.colors),
+                        .with_theme_colors(&theme.colors)
+                        .variant(ButtonVariant::Ghost),
                     )
                     .clicked()
                 {
@@ -192,7 +202,8 @@ pub fn render(
                                 height: 32.0,
                             },
                         )
-                        .with_theme_colors(&theme.colors),
+                        .with_theme_colors(&theme.colors)
+                        .variant(ButtonVariant::Ghost),
                     )
                     .clicked()
                 {

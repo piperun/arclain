@@ -1,6 +1,6 @@
 //! Icon-only button widget
 
-use arclain_theme::ThemeColors;
+use arclain_theme::{ButtonVariant, ThemeColors};
 use egui::{Response, Ui, Widget};
 
 /// Size presets for icon buttons
@@ -39,6 +39,7 @@ pub struct IconButton<'a> {
     size: IconButtonSize,
     enabled: bool,
     colors: Option<&'a ThemeColors>,
+    variant: ButtonVariant,
 }
 
 impl<'a> IconButton<'a> {
@@ -48,6 +49,7 @@ impl<'a> IconButton<'a> {
             size: IconButtonSize::Medium,
             enabled: true,
             colors: None,
+            variant: ButtonVariant::Secondary, // Default to Secondary (surface-like) to match previous behavior closer? No, user hated it. But for compat.
         }
     }
 
@@ -65,21 +67,26 @@ impl<'a> IconButton<'a> {
         self.colors = Some(colors);
         self
     }
+
+    pub fn variant(mut self, variant: ButtonVariant) -> Self {
+        self.variant = variant;
+        self
+    }
 }
 
 impl<'a> Widget for IconButton<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
-        let (bg_fill, text_color) = if let Some(colors) = self.colors {
-            let text = if self.enabled {
-                colors.on_surface
-            } else {
-                colors.on_surface_variant
-            };
-            (colors.surface_variant, text)
+        let (bg_fill, text_color, stroke) = if let Some(colors) = self.colors {
+            (
+                self.variant.bg_color(colors),
+                self.variant.text_color(colors),
+                self.variant.stroke(colors),
+            )
         } else {
             (
                 ui.visuals().widgets.inactive.bg_fill,
                 ui.visuals().widgets.inactive.fg_stroke.color,
+                egui::Stroke::NONE,
             )
         };
 
@@ -92,7 +99,7 @@ impl<'a> Widget for IconButton<'a> {
                 .color(text_color),
         )
         .fill(bg_fill)
-        .stroke(egui::Stroke::NONE)
+        .stroke(stroke)
         .corner_radius(4.0)
         .min_size(egui::vec2(size, size));
 
