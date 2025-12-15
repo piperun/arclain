@@ -356,7 +356,7 @@ impl SettingsFeature {
                         Ok(id) => {
                             tracing::info!("Successfully installed plugin: {}", id);
                             // Refresh list
-                            self.plugins_state.update_from_manager(&mgr);
+                            self.plugins_state.update_from_manager(&mgr, &state.user_config);
                         }
                         Err(e) => {
                             tracing::error!("Failed to install plugin: {}", e);

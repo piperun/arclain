@@ -61,8 +61,9 @@ pub fn render_plugins_settings(
     theme: &AppTheme,
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
+    app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
 ) -> Option<SettingsAction> {
-    pages::plugins::render(ui, theme, plugin_manager, plugins_state)
+    pages::plugins::render(ui, theme, plugin_manager, plugins_state, app_state)
 }
 
 /// Render the appropriate settings content based on the current page
@@ -115,6 +116,8 @@ pub fn render_settings_content(
             }
             None
         }
-        SettingsPage::Plugins => render_plugins_settings(ui, theme, plugin_manager, plugins_state),
+        SettingsPage::Plugins => {
+            render_plugins_settings(ui, theme, plugin_manager, plugins_state, app_state)
+        }
     }
 }
