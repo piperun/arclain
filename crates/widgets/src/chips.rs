@@ -4,18 +4,20 @@ use arclain_theme::ThemeColors;
 use egui::{Response, Ui, Widget};
 
 /// A pill-shaped chip/badge label
-pub struct Chip<'a> {
+pub struct Chips<'a> {
     text: &'a str,
     colors: Option<&'a ThemeColors>,
     stroke_color: Option<egui::Color32>,
+    background_color: Option<egui::Color32>,
 }
 
-impl<'a> Chip<'a> {
+impl<'a> Chips<'a> {
     pub fn new(text: &'a str) -> Self {
         Self {
             text,
             colors: None,
             stroke_color: None,
+            background_color: None,
         }
     }
 
@@ -29,20 +31,26 @@ impl<'a> Chip<'a> {
         self.stroke_color = Some(color);
         self
     }
+
+    /// Override the background color
+    pub fn background_color(mut self, color: egui::Color32) -> Self {
+        self.background_color = Some(color);
+        self
+    }
 }
 
-impl<'a> Widget for Chip<'a> {
+impl<'a> Widget for Chips<'a> {
     fn ui(self, ui: &mut Ui) -> Response {
         let (bg_fill, stroke, text_color) = if let Some(colors) = self.colors {
             let stroke_col = self.stroke_color.unwrap_or(colors.outline);
-            (
-                colors.surface_variant,
-                egui::Stroke::new(1.0, stroke_col),
-                colors.on_surface,
-            )
+            let bg = self.background_color.unwrap_or(colors.surface_variant);
+            (bg, egui::Stroke::new(1.0, stroke_col), colors.on_surface)
         } else {
+            let bg = self
+                .background_color
+                .unwrap_or(ui.visuals().widgets.inactive.bg_fill);
             (
-                ui.visuals().widgets.inactive.bg_fill,
+                bg,
                 egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color),
                 ui.visuals().widgets.inactive.fg_stroke.color,
             )

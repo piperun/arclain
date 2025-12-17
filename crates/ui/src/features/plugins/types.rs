@@ -78,6 +78,8 @@ pub struct PluginsListState {
     pub selected_plugin: Option<String>,
     /// Whether to show disabled plugins
     pub show_disabled: bool,
+    /// Whether to show permission tags in the list
+    pub show_permissions: bool,
     /// Filter text for searching
     pub filter_text: String,
 }

@@ -1,12 +1,14 @@
 //! Unified Plugin Page
 //!
-//! Master-detail view for managing plugins, their settings, and visibility.
+//! Drill-down view for managing plugins and their settings.
 
 use crate::features::plugins::types::PluginsListState;
 use crate::features::settings::types::SettingsAction;
+use crate::shared::components::SettingsForm;
 use crate::shared::theme::AppTheme;
 use arclain_plugins::PluginManager;
 use arclain_widgets::toggle_switch::ToggleSwitch;
+use arclain_widgets::Chips;
 use eframe::egui;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -19,184 +21,53 @@ pub fn render(
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
 ) -> Option<SettingsAction> {
-    let mut action = None;
+    let action = None;
     let mut needs_refresh = false;
 
-    // Split into Left (List) and Right (Details)
-    // We use a predefined width for the list
-    let list_width = 300.0;
+    if let Some(selected_id) = &state.selected_plugin {
+        // --- Detail View ---
+        if let Some(plugin_info) = state.plugins.iter().find(|p| &p.id == selected_id) {
+            // We need to clone ID for the back closure to avoid borrow checker issues if we used state directly
+            // But we are passing a closure that modifies state.
+            // Wait, `on_back` takes generic `FnOnce`. We can't easily capture `state` if `render` owns it mutably?
+            // `SettingsPage::show` takes `self`, so `on_back` closure is consumed.
+            // BUT `render` has `state: &mut PluginsListState`.
+            // If we construct `SettingsPage` with a closure that uses `state`, it borrows `state`.
+            // Then `show` borrows `ui`. This should be fine.
 
-    egui::SidePanel::left("unified_plugins_list")
-        .resizable(true)
-        .default_width(list_width)
-        .min_width(250.0)
-        .max_width(400.0)
-        .frame(egui::Frame::NONE.fill(theme.colors.surface_variant))
-        .show_inside(ui, |ui| {
-            // --- Left Panel Content ---
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("Plugins")
-                        .strong()
-                        .size(16.0)
-                        .color(theme.colors.on_surface),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button(egui::RichText::new("+").size(16.0))
-                        .on_hover_text("Install Plugin")
-                        .clicked()
-                    {
-                        if let Some(file) = rfd::FileDialog::new()
-                            .add_filter("WASM Plugin", &["wasm"])
-                            .set_title("Select Plugin to Install")
-                            .pick_file()
-                        {
-                            action = Some(SettingsAction::InstallPlugin {
-                                wasm_path: file.to_string_lossy().to_string(),
-                            });
-                        }
-                    }
-                });
-            });
-            ui.add_space(8.0);
+            let mut back_clicked = false;
 
-            // Search
-            ui.horizontal(|ui| {
-                ui.label("🔍");
-                ui.add(
-                    egui::TextEdit::singleline(&mut state.filter_text)
-                        .hint_text("Search...")
-                        .desired_width(ui.available_width()),
-                );
-            });
-            ui.add_space(4.0);
-            ui.checkbox(&mut state.show_disabled, "Show Disabled");
-            ui.add_space(8.0);
-            ui.separator();
+            crate::shared::components::SettingsHeader::new(&plugin_info.name)
+                .description(format!(
+                    "v{} by {}",
+                    plugin_info.version,
+                    plugin_info.author.as_deref().unwrap_or("Unknown")
+                ))
+                .on_back(|| {
+                    back_clicked = true;
+                })
+                .show(ui, theme);
 
-            // List
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
-
-                // We use simple iteration now
-
-                for plugin in &state.plugins {
-                    // Filter logic
-                    if !state.filter_text.is_empty() {
-                        if !plugin
-                            .name
-                            .to_lowercase()
-                            .contains(&state.filter_text.to_lowercase())
-                            && !plugin
-                                .id
-                                .to_lowercase()
-                                .contains(&state.filter_text.to_lowercase())
-                        {
-                            continue;
-                        }
-                    }
-                    if !state.show_disabled && !plugin.enabled {
-                        continue;
-                    }
-
-                    let is_selected = state.selected_plugin.as_ref() == Some(&plugin.id);
-
-                    let bg = if is_selected {
-                        theme.colors.surface_variant.linear_multiply(0.5) // Darker variant
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-
-                    let response = egui::Frame::NONE
-                        .fill(bg)
-                        .inner_margin(8.0)
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                // Status Dot
-                                ui.label(
-                                    egui::RichText::new(plugin.status.icon())
-                                        .color(plugin.status.color())
-                                        .size(12.0),
-                                );
-
-                                // Name & Version
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&plugin.name)
-                                            .strong()
-                                            .color(theme.colors.on_surface),
-                                    );
-                                    ui.label(
-                                        egui::RichText::new(format!("v{}", plugin.version))
-                                            .small()
-                                            .color(theme.colors.on_surface_variant),
-                                    );
-                                });
-                            });
-                        })
-                        .response;
-
-                    if response.interact(egui::Sense::click()).clicked() {
-                        state.selected_plugin = Some(plugin.id.clone());
-                    }
+            SettingsForm::new().show(ui, theme, |ui| {
+                if let Some(desc) = &plugin_info.description {
+                    ui.label(egui::RichText::new(desc).color(theme.colors.on_surface_variant));
+                    ui.add_space(16.0);
                 }
-            });
-        });
 
-    egui::CentralPanel::default()
-        .frame(
-            egui::Frame::NONE
-                .fill(theme.colors.surface)
-                .inner_margin(24.0),
-        )
-        .show_inside(ui, |ui| {
-            if let Some(selected_id) = &state.selected_plugin {
-                // Find selected plugin into
-                if let Some(plugin_info) = state.plugins.iter().find(|p| &p.id == selected_id) {
-                    // --- Detail View ---
+                // Global Settings
+                crate::shared::components::settings_form::SectionHeader::new("Global Settings")
+                    .show(ui, &theme.colors);
 
-                    // Header
-                    ui.horizontal(|ui| {
-                        ui.heading(&plugin_info.name);
-                        ui.add_space(8.0);
-                        ui.label(
-                            egui::RichText::new(format!("v{}", plugin_info.version))
-                                .size(14.0)
-                                .color(theme.colors.on_surface_variant),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "by {}",
-                                    plugin_info.author.as_deref().unwrap_or("Unknown")
-                                ))
-                                .color(theme.colors.on_surface_variant),
-                            );
-                        });
-                    });
-
-                    if let Some(desc) = &plugin_info.description {
-                        ui.label(egui::RichText::new(desc).color(theme.colors.on_surface_variant));
-                    }
-                    ui.add_space(16.0);
-                    ui.separator();
-                    ui.add_space(16.0);
-
-                    // Global Settings
-                    ui.label(egui::RichText::new("Global Settings").strong().size(14.0));
-                    ui.add_space(8.0);
-
-                    // Enabled/Disabled Toggle
-                    ui.horizontal(|ui| {
-                        let mut enabled = plugin_info.enabled;
+                // Enabled/Disabled Toggle using SettingsRow
+                let mut enabled = plugin_info.enabled;
+                crate::shared::components::settings_form::SettingsRow::new("Plugin Status")
+                    .description("Enable or disable this plugin completely.")
+                    .action(|ui| {
                         if ui
-                            .add(ToggleSwitch::new(&mut enabled).text("Enabled", "Disabled"))
+                            .add(ToggleSwitch::new(&mut enabled).icons("⚡", "⏻"))
                             .changed()
                         {
-                            // Handle toggle
+                            // Handle toggle logic (same as before)
                             if let Some(mgr) = plugin_manager {
                                 let res = if enabled {
                                     mgr.enable_plugin(&plugin_info.id)
@@ -206,7 +77,6 @@ pub fn render(
 
                                 if res.is_ok() {
                                     // Persist enabled state
-                                    // Update UserConfig.enabled_plugins
                                     let mut app = app_state.lock();
                                     let mut enabled_list = app.user_config.get_enabled_plugins();
                                     if enabled {
@@ -229,130 +99,67 @@ pub fn render(
                                 }
                             }
                         }
-                        ui.label("Enable or disable this plugin completely.");
-                    });
-                    ui.add_space(8.0);
+                    })
+                    .show(ui, &theme.colors);
 
-                    // Visibility Settings
-                    let mut visibility = plugin_info.visibility.clone();
-                    let mut vis_changed = false;
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
 
-                    ui.horizontal(|ui| {
-                        let mut toolbar = visibility.get("toolbar").copied().unwrap_or(true);
-                        if ui.checkbox(&mut toolbar, "Show in Toolbar").changed() {
-                            visibility.insert("toolbar".to_string(), toolbar);
-                            vis_changed = true;
-                        }
-
-                        ui.add_space(16.0);
-
-                        let mut info_panel = visibility.get("info_panel").copied().unwrap_or(true);
-                        if ui.checkbox(&mut info_panel, "Show in Info Panel").changed() {
-                            visibility.insert("info_panel".to_string(), info_panel);
-                            vis_changed = true;
-                        }
-                    });
-
-                    if vis_changed {
-                        // Update UserConfig
-                        let mut app = app_state.lock();
-                        let mut vis_map: std::collections::HashMap<
-                            String,
-                            std::collections::HashMap<String, bool>,
-                        > = serde_json::from_str(
-                            app.user_config.plugin_visibility.as_deref().unwrap_or("{}"),
-                        )
-                        .unwrap_or_default();
-
-                        vis_map.insert(plugin_info.id.clone(), visibility);
-
-                        // Serialize back
-                        if let Ok(json) = serde_json::to_string(&vis_map) {
-                            app.user_config.plugin_visibility = Some(json);
-
-                            // Save DB
-                            if let Some(dbs) = &app.dbs {
-                                let _ = dbs.config.with_connection(|conn| {
-                                    app.user_config.save(conn).ok();
-                                    Ok::<_, anyhow::Error>(())
-                                });
-                            }
-                            needs_refresh = true;
-                        }
-                    }
-
-                    ui.add_space(16.0);
-                    ui.separator();
-                    ui.add_space(16.0);
-
-                    // Privileges / Capabilities
-                    ui.label(egui::RichText::new("Privileges").strong().size(14.0));
-                    ui.add_space(4.0);
-                    if plugin_info.capabilities.is_empty() {
-                        ui.label(
-                            egui::RichText::new("None declared")
-                                .italics()
-                                .color(theme.colors.on_surface_variant),
-                        );
-                    } else {
-                        ui.horizontal_wrapped(|ui| {
-                            for cap in &plugin_info.capabilities {
-                                ui.add(
-                                    arclain_widgets::chip::Chip::new(cap)
-                                        .stroke_color(theme.colors.outline),
-                                );
-                            }
-                        });
-                    }
-
-                    ui.add_space(16.0);
-                    ui.separator();
-                    ui.add_space(16.0);
-
-                    // Plugin Custom Settings
+                // Permissions / Capabilities
+                crate::shared::components::settings_form::SectionHeader::new("Permissions")
+                    .show(ui, &theme.colors);
+                if plugin_info.capabilities.is_empty() {
                     ui.label(
-                        egui::RichText::new("Plugin Configuration")
-                            .strong()
-                            .size(16.0),
+                        egui::RichText::new("None declared")
+                            .italics()
+                            .color(theme.colors.on_surface_variant),
                     );
-                    ui.add_space(8.0);
+                } else {
+                    ui.horizontal_wrapped(|ui| {
+                        for cap in &plugin_info.capabilities {
+                            ui.add(Chips::new(cap));
+                        }
+                    });
+                }
 
-                    if let Some(manager) = plugin_manager {
-                        // Only show if plugin is enabled/loaded
-                        if plugin_info.loaded {
-                            // Render Plugin UI
-                            // We need to drop the manager lock before accessing plugin instance?
-                            // Wait, plugin_manager is &PluginManager (not locked).
-                            // But inside `with_plugin_instance` it locks.
+                ui.add_space(16.0);
+                ui.separator();
+                ui.add_space(16.0);
 
-                            // Reuse logic from old `render`
-                            let mgr_arc =
-                                if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
-                                    mgr_mutex
-                                } else {
-                                    // This is awkward. plugin_manager passed in is `&PluginManager`.
-                                    // To call `with_plugin_instance`, we need interior mutability or just `&self`.
-                                    // `PluginManager` methods take `&self` and use internal RwLock.
-                                    // But `render_ui_elements` needs callback.
+                // Plugin Custom Settings
+                crate::shared::components::settings_form::SectionHeader::new(
+                    "Plugin Configuration",
+                )
+                .show(ui, &theme.colors);
 
-                                    // Actually, `PluginManager::with_plugin_instance` takes `&self`.
-                                    // But to get the *Arc* for the callback, we need access to the Arc.
-                                    // `app_state` has `plugin_manager: Option<Arc<Mutex<PluginManager>>>`.
-                                    return; // Should not happen if we are here
-                                };
+                if let Some(manager) = plugin_manager {
+                    if plugin_info.loaded {
+                        let mgr_arc =
+                            if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
+                                mgr_mutex
+                            } else {
+                                return;
+                            };
 
-                            // Wait, `app_state.plugin_manager` is `Arc<Mutex<PluginManager>>`.
-                            // But the passed `plugin_manager` is `&PluginManager`.
-                            // We should use the Arc from app_state for the callback.
+                        let ui_result = if let Some(instance_arc) =
+                            manager.get_plugin_instance(&plugin_info.id)
+                        {
+                            if let Some(mut instance) = instance_arc.try_lock() {
+                                Some(instance.get_ui_layout(
+                                    arclain_plugins::types::PluginExtensionPoint::MainPage,
+                                ))
+                            } else {
+                                None // Busy
+                            }
+                        } else {
+                            Some(Err(arclain_plugins::types::PluginError::NotFound(
+                                plugin_info.id.clone(),
+                            )))
+                        };
 
-                            let ui_result =
-                                manager.with_plugin_instance(&plugin_info.id, |instance| {
-                                    instance.get_ui_layout(
-                                        arclain_plugins::types::PluginExtensionPoint::MainPage,
-                                    )
-                                });
-
-                            if let Some(Ok(ui_elements)) = ui_result {
+                        match ui_result {
+                            Some(Ok(ui_elements)) => {
                                 if ui_elements.is_empty() {
                                     ui.label(
                                         egui::RichText::new(
@@ -364,16 +171,26 @@ pub fn render(
                                     let plugin_id_clone = plugin_info.id.clone();
                                     let mgr_clone = mgr_arc.clone();
 
-                                    // Create separate callback
                                     let mut event_callback =
                                         Box::new(move |id: &str, value: Option<String>| {
-                                            let mgr = mgr_clone.lock();
-                                            mgr.with_plugin_instance(
-                                                &plugin_id_clone,
-                                                |instance| {
-                                                    let _ = instance.send_ui_event(id, value);
-                                                },
-                                            );
+                                            // Clone data for the thread
+                                            let mgr_thread = mgr_clone.clone();
+                                            let pid_thread = plugin_id_clone.clone();
+                                            let id_thread = id.to_string();
+                                            let val_thread = value.clone();
+
+                                            // Spawn thread to avoid blocking UI
+                                            std::thread::spawn(move || {
+                                                let mgr = mgr_thread.lock();
+                                                // Blocking lock is fine in background thread
+                                                if let Some(instance_arc) =
+                                                    mgr.get_plugin_instance(&pid_thread)
+                                                {
+                                                    let mut instance = instance_arc.lock();
+                                                    let _ = instance
+                                                        .send_ui_event(&id_thread, val_thread);
+                                                }
+                                            });
                                         })
                                             as crate::features::plugins::plugin_ui::UiEventCallback;
 
@@ -385,27 +202,226 @@ pub fn render(
                                     );
                                 }
                             }
-                        } else {
-                            ui.label(
-                                egui::RichText::new("Plugin is not loaded.")
-                                    .color(theme.colors.on_surface_variant),
-                            );
+                            Some(Err(e)) => {
+                                ui.label(
+                                    egui::RichText::new(format!("Error loading UI: {}", e))
+                                        .color(theme.colors.error),
+                                );
+                            }
+                            None => {
+                                // Busy / Locked
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label(
+                                        egui::RichText::new("Plugin is busy...")
+                                            .italics()
+                                            .color(theme.colors.on_surface_variant),
+                                    );
+                                });
+                            }
                         }
+                    } else {
+                        ui.label(
+                            egui::RichText::new("Plugin is not loaded.")
+                                .color(theme.colors.on_surface_variant),
+                        );
                     }
-                } else {
-                    ui.label("Selected plugin not found.");
                 }
-            } else {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(100.0);
-                    ui.label(
-                        egui::RichText::new("Select a plugin to configure")
-                            .size(16.0)
-                            .color(theme.colors.on_surface_variant),
-                    );
-                });
+            });
+
+            if back_clicked {
+                state.selected_plugin = None;
+            }
+        } else {
+            // ID not found, reset
+            state.selected_plugin = None;
+        }
+    } else {
+        // --- List View ---
+
+        let filter_query = state.filter_text.clone();
+
+        // settings_page handles the header injection.
+        SettingsForm::new().show(ui, theme, |ui| {
+            ui.add_space(8.0);
+
+            for plugin in &state.plugins {
+                // Filter logic (Search is handled by us filtering here, text edit is in header)
+                if !filter_query.is_empty() {
+                    if !plugin
+                        .name
+                        .to_lowercase()
+                        .contains(&filter_query.to_lowercase())
+                        && !plugin
+                            .id
+                            .to_lowercase()
+                            .contains(&filter_query.to_lowercase())
+                    {
+                        continue;
+                    }
+                }
+                if !state.show_disabled && !plugin.enabled {
+                    continue;
+                }
+
+                // Card Item
+                let response = egui::Frame::NONE
+                    .fill(theme.colors.surface_variant.linear_multiply(0.3)) // Slight background
+                    .inner_margin(12.0)
+                    .corner_radius(6.0)
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        theme.colors.outline.linear_multiply(0.2),
+                    ))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            // Status Icon
+                            // Status Icon/Indicator
+                            let (status_rect, _) = ui
+                                .allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+                            if ui.is_rect_visible(status_rect) {
+                                let center = status_rect.center();
+
+                                if !plugin.enabled {
+                                    // DISABLED State (Power Icon, Gray)
+                                    let color = theme.colors.outline;
+                                    // Hollow circle
+                                    ui.painter().circle_stroke(
+                                        center,
+                                        8.0,
+                                        egui::Stroke::new(1.5, color),
+                                    );
+                                    // Icon
+                                    ui.painter().text(
+                                        center,
+                                        egui::Align2::CENTER_CENTER,
+                                        "⏻",
+                                        egui::FontId::proportional(10.0),
+                                        color,
+                                    );
+                                } else {
+                                    // ENABLED State
+                                    let status_color = plugin.status.color();
+
+                                    match plugin.status {
+                                        crate::features::plugins::types::PluginStatus::Ready => {
+                                            // Actively Running/Ready (Green Glow + Lightning)
+                                            // 1. Outer LED Glow
+                                            ui.painter().circle_filled(
+                                                center,
+                                                10.0,
+                                                status_color.linear_multiply(0.2),
+                                            );
+                                            // 2. Core Ring
+                                            ui.painter().circle_stroke(
+                                                center,
+                                                8.0,
+                                                egui::Stroke::new(2.0, status_color),
+                                            );
+                                            // 3. Icon
+                                            ui.painter().text(
+                                                center,
+                                                egui::Align2::CENTER_CENTER,
+                                                "⚡",
+                                                egui::FontId::proportional(12.0),
+                                                status_color,
+                                            );
+                                        }
+                                        crate::features::plugins::types::PluginStatus::Loading => {
+                                            // Loading (Blue + Spinner)
+                                            ui.painter().circle_stroke(
+                                                center,
+                                                8.0,
+                                                egui::Stroke::new(1.5, status_color),
+                                            );
+                                            ui.painter().text(
+                                                center,
+                                                egui::Align2::CENTER_CENTER,
+                                                "⟳",
+                                                egui::FontId::proportional(10.0),
+                                                status_color,
+                                            );
+                                        }
+                                        crate::features::plugins::types::PluginStatus::Error => {
+                                            // Error (Red + Warning)
+                                            ui.painter().circle_filled(
+                                                center,
+                                                8.0,
+                                                status_color.linear_multiply(0.2),
+                                            );
+                                            ui.painter().circle_stroke(
+                                                center,
+                                                8.0,
+                                                egui::Stroke::new(1.5, status_color),
+                                            );
+                                            ui.painter().text(
+                                                center,
+                                                egui::Align2::CENTER_CENTER,
+                                                "⚠",
+                                                egui::FontId::proportional(10.0),
+                                                status_color,
+                                            );
+                                        }
+                                        _ => {
+                                            ui.painter().circle_stroke(
+                                                center,
+                                                6.0,
+                                                egui::Stroke::new(1.0, status_color),
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            ui.add_space(8.0);
+
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&plugin.name)
+                                        .strong()
+                                        .size(16.0)
+                                        .color(theme.colors.on_surface),
+                                );
+                                ui.label(
+                                    egui::RichText::new(
+                                        plugin.description.as_deref().unwrap_or(""),
+                                    )
+                                    .color(theme.colors.on_surface_variant),
+                                );
+
+                                if state.show_permissions && !plugin.capabilities.is_empty() {
+                                    ui.add_space(8.0);
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                                        for cap in &plugin.capabilities {
+                                            ui.add(arclain_widgets::Chips::new(cap));
+                                        }
+                                    });
+                                }
+                            });
+
+                            // Right side info
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("v{}", plugin.version))
+                                            .small()
+                                            .color(theme.colors.on_surface_variant),
+                                    );
+                                },
+                            );
+                        });
+                    })
+                    .response;
+
+                if response.interact(egui::Sense::click()).clicked() {
+                    state.selected_plugin = Some(plugin.id.clone());
+                }
+
+                ui.add_space(4.0);
             }
         });
+    }
 
     if needs_refresh {
         if let Some(manager) = plugin_manager {

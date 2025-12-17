@@ -4,7 +4,7 @@ use crate::loader::{DiscoveredPlugin, PluginLoader};
 use crate::runtime::PluginInstance;
 use crate::types::{PluginError, PluginEvent, PluginMetadata, PluginResponse, Result};
 use arclain_core::ArchiveBackend;
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -67,7 +67,10 @@ impl PluginManager {
         // Propagate to all existing plugin instances
         let mut plugins = self.plugins.write();
         for plugin in plugins.values_mut() {
-            plugin.instance.set_metadata_cache(Some(cache.clone()));
+            plugin
+                .instance
+                .lock()
+                .set_metadata_cache(Some(cache.clone()));
         }
     }
 
@@ -77,6 +80,7 @@ impl PluginManager {
         for plugin in plugins.values_mut() {
             plugin
                 .instance
+                .lock()
                 .set_archive_context(archive_path.clone(), password.clone());
         }
     }
@@ -155,7 +159,7 @@ impl PluginManager {
         // Create managed plugin
         let managed = ManagedPlugin {
             metadata: metadata.clone(),
-            instance,
+            instance: Arc::new(Mutex::new(instance)),
             manifest: discovered.manifest.clone(),
             enabled: true,
         };
@@ -197,8 +201,8 @@ impl PluginManager {
 
         let mut plugins = self.plugins.write();
 
-        if let Some(mut plugin) = plugins.remove(plugin_id) {
-            plugin.instance.cleanup()?;
+        if let Some(plugin) = plugins.remove(plugin_id) {
+            plugin.instance.lock().cleanup()?;
             info!("Plugin unloaded: {}", plugin_id);
             Ok(())
         } else {
@@ -269,14 +273,29 @@ impl PluginManager {
             .map(|p| p.metadata.clone())
     }
 
+    /// Get a thread-safe handle to a plugin instance.
+    /// Returns None if the plugin is not found.
+    /// This allows the caller to manage locking strategies (blocking vs try_lock).
+    pub fn get_plugin_instance(&self, plugin_id: &str) -> Option<Arc<Mutex<PluginInstance>>> {
+        self.plugins
+            .read()
+            .get(plugin_id)
+            .map(|p| p.instance.clone())
+    }
+
     /// Access a plugin instance mutably (e.g. for UI interaction)
+    /// This now acquires a granular lock on the specific plugin instance.
     pub fn with_plugin_instance<F, R>(&self, plugin_id: &str, f: F) -> Option<R>
     where
         F: FnOnce(&mut PluginInstance) -> R,
+        R: 'static,
     {
-        let mut plugins = self.plugins.write();
-        let plugin = plugins.get_mut(plugin_id)?;
-        Some(f(&mut plugin.instance))
+        // Use helper to get owned Arc, ensuring map lock is dropped
+        let instance_arc = self.get_plugin_instance(plugin_id)?;
+
+        // Granular lock on instance
+        let mut instance = instance_arc.lock();
+        Some(f(&mut instance))
     }
 
     /// Dispatch an event to all enabled plugins
@@ -284,6 +303,7 @@ impl PluginManager {
         debug!("Dispatching event: {:?}", event);
 
         let mut responses = Vec::new();
+        // Only need read lock now since instances are internally locked
         let plugin_ids: Vec<String> = self.plugins.read().keys().cloned().collect();
 
         for plugin_id in plugin_ids {
@@ -292,20 +312,28 @@ impl PluginManager {
                 continue;
             }
 
-            // Get mutable access to plugin
-            let mut plugins = self.plugins.write();
-            if let Some(plugin) = plugins.get_mut(&plugin_id) {
-                match plugin.instance.on_event(event) {
-                    Ok(response) => {
-                        debug!("Plugin '{}' responded: {:?}", plugin_id, response);
-                        responses.push(response);
-                    }
-                    Err(e) => {
-                        error!("Plugin '{}' error handling event: {}", plugin_id, e);
-                        responses.push(PluginResponse::Error {
-                            message: e.to_string(),
-                        });
-                    }
+            // Get read access to plugins map and clone Arc
+            let instance_arc = {
+                let plugins = self.plugins.read();
+                if let Some(plugin) = plugins.get(&plugin_id) {
+                    plugin.instance.clone()
+                } else {
+                    continue;
+                }
+            };
+
+            // Acquire instance lock
+            let mut instance = instance_arc.lock();
+            match instance.on_event(event) {
+                Ok(response) => {
+                    debug!("Plugin '{}' responded: {:?}", plugin_id, response);
+                    responses.push(response);
+                }
+                Err(e) => {
+                    error!("Plugin '{}' error handling event: {}", plugin_id, e);
+                    responses.push(PluginResponse::Error {
+                        message: e.to_string(),
+                    });
                 }
             }
         }
@@ -329,12 +357,18 @@ impl PluginManager {
             )));
         }
 
-        let mut plugins = self.plugins.write();
-        let plugin = plugins
-            .get_mut(plugin_id)
-            .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
+        let instance_arc = {
+            let plugins = self.plugins.read();
+            plugins
+                .get(plugin_id)
+                .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?
+                .instance
+                .clone()
+        };
 
-        plugin.instance.on_event(event)
+        // Acquire instance lock
+        let mut instance = instance_arc.lock();
+        instance.on_event(event)
     }
 
     /// Get the plugins directory path
@@ -451,11 +485,14 @@ http_requests_per_minute = 60
     /// Get aggregated network logs from all enabled plugins
     pub fn get_network_log(&self) -> Vec<(std::time::SystemTime, String)> {
         let mut all_logs = Vec::new();
+        // Use read lock
         let plugins = self.plugins.read();
 
         for plugin in plugins.values() {
             if plugin.enabled {
-                let logs = plugin.instance.get_network_log();
+                // Acquire instance lock
+                let instance = plugin.instance.lock();
+                let logs = instance.get_network_log();
                 all_logs.extend(logs);
             }
         }
@@ -469,7 +506,7 @@ http_requests_per_minute = 60
 /// A managed plugin with its instance and metadata
 struct ManagedPlugin {
     metadata: PluginMetadata,
-    instance: PluginInstance,
+    instance: Arc<Mutex<PluginInstance>>,
     manifest: crate::types::PluginManifest,
     enabled: bool,
 }
