@@ -1,5 +1,7 @@
 // Settings feature module
 
+pub mod action_handlers;
+pub mod header_config;
 pub mod pages;
 pub mod settings_content;
 pub mod settings_page;

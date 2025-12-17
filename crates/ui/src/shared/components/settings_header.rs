@@ -7,6 +7,7 @@ pub struct SettingsHeader<'a> {
     pub icon: String,
     pub title: String,
     pub description: Option<String>,
+    pub sub_description: Option<String>,
     pub has_changes: bool,
     pub on_save: Option<Box<dyn FnOnce() + 'a>>,
     pub on_back: Option<Box<dyn FnOnce() + 'a>>,
@@ -21,6 +22,7 @@ impl<'a> SettingsHeader<'a> {
             icon: egui_phosphor::regular::PLUGS.to_string(),
             title: title.into(),
             description: None,
+            sub_description: None,
             has_changes: false,
             on_save: None,
             on_back: None,
@@ -41,6 +43,16 @@ impl<'a> SettingsHeader<'a> {
             self.description = Some(d);
         } else {
             self.description = None;
+        }
+        self
+    }
+
+    pub fn sub_description(mut self, sub_description: impl Into<String>) -> Self {
+        let d = sub_description.into();
+        if !d.is_empty() {
+            self.sub_description = Some(d);
+        } else {
+            self.sub_description = None;
         }
         self
     }
@@ -111,6 +123,15 @@ impl<'a> SettingsHeader<'a> {
                         egui::RichText::new(description)
                             .size(12.0)
                             .color(theme.colors.on_surface_variant),
+                    );
+                }
+
+                if let Some(sub_desc) = self.sub_description {
+                    ui.label(
+                        egui::RichText::new(sub_desc)
+                            .size(11.0)
+                            .italics()
+                            .color(theme.colors.on_surface_variant.linear_multiply(0.8)),
                     );
                 }
             });

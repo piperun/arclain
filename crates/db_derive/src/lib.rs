@@ -46,6 +46,7 @@ pub fn derive_db_config(input: TokenStream) -> TokenStream {
     let mut insert_columns = Vec::new();
     let mut insert_placeholders = Vec::new();
     let mut insert_values = Vec::new();
+    let mut alter_stmts: Vec<proc_macro2::TokenStream> = Vec::new();
     let mut idx = 0usize;
 
     for field in fields {
@@ -80,7 +81,16 @@ pub fn derive_db_config(input: TokenStream) -> TokenStream {
             col_def.push_str(" NOT NULL");
         }
 
-        column_defs.push(col_def);
+        column_defs.push(col_def.clone());
+
+        // Generate ALTER statement for migration (skip primary key)
+        if !attrs.primary_key {
+            let alter_query = format!("ALTER TABLE {} ADD COLUMN {}", table_name, col_def);
+            alter_stmts.push(quote! {
+                // Ignore "duplicate column name" error
+                let _ = conn.execute(#alter_query, []);
+            });
+        }
 
         // Build from_row extraction
         let idx_lit = syn::LitInt::new(&idx.to_string(), proc_macro2::Span::call_site());
@@ -204,9 +214,16 @@ pub fn derive_db_config(input: TokenStream) -> TokenStream {
                 Ok(())
             }
 
-            /// Ensure the table exists
+            /// Ensure the table exists and has all columns
             pub fn ensure_table(conn: &rusqlite::Connection) -> rusqlite::Result<()> {
+                // 1. Create table if not exists with all columns
                 conn.execute(Self::CREATE_TABLE_SQL, [])?;
+
+                // 2. Attempt to add columns (migration) - ignoring duplicates
+                // This is a simple migration strategy: try to add every column.
+                // If it exists, it fails safely.
+                #(#alter_stmts)*
+
                 Ok(())
             }
         }

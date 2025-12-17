@@ -26,11 +26,15 @@ pub struct PluginManager {
     enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
     backend: Option<Arc<dyn ArchiveBackend>>,
     metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
+    initial_settings: HashMap<String, HashMap<String, String>>,
 }
 
 impl PluginManager {
     /// Create a new plugin manager
-    pub fn new(plugins_dir: PathBuf) -> Result<Self> {
+    pub fn new(
+        plugins_dir: PathBuf,
+        initial_settings: HashMap<String, HashMap<String, String>>,
+    ) -> Result<Self> {
         let loader = PluginLoader::new(plugins_dir)?;
 
         Ok(Self {
@@ -39,11 +43,16 @@ impl PluginManager {
             enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
             backend: None,
             metadata_cache: None,
+            initial_settings,
         })
     }
 
     /// Create a new plugin manager with archive backend
-    pub fn with_backend(plugins_dir: PathBuf, backend: Arc<dyn ArchiveBackend>) -> Result<Self> {
+    pub fn with_backend(
+        plugins_dir: PathBuf,
+        backend: Arc<dyn ArchiveBackend>,
+        initial_settings: HashMap<String, HashMap<String, String>>,
+    ) -> Result<Self> {
         let loader = PluginLoader::new(plugins_dir)?;
 
         Ok(Self {
@@ -52,65 +61,45 @@ impl PluginManager {
             enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
             backend: Some(backend),
             metadata_cache: None,
+            initial_settings,
         })
     }
 
-    /// Set the archive backend for file operations
-    pub fn set_backend(&mut self, backend: Arc<dyn ArchiveBackend>) {
-        self.backend = Some(backend);
-    }
-
-    /// Set the metadata cache and propagate to all loaded plugins
-    pub fn set_metadata_cache(&mut self, cache: Arc<arclain_db::MetadataCache>) {
-        self.metadata_cache = Some(cache.clone());
-
-        // Propagate to all existing plugin instances
-        let mut plugins = self.plugins.write();
-        for plugin in plugins.values_mut() {
-            plugin
-                .instance
-                .lock()
-                .set_metadata_cache(Some(cache.clone()));
-        }
-    }
-
-    /// Set the current archive context for all plugins
-    pub fn set_archive_context(&self, archive_path: Option<String>, password: Option<String>) {
-        let mut plugins = self.plugins.write();
-        for plugin in plugins.values_mut() {
-            plugin
-                .instance
-                .lock()
-                .set_archive_context(archive_path.clone(), password.clone());
-        }
-    }
-
-    /// Initialize and load all plugins
+    /// Initialize the plugin manager and load discovered plugins
     pub fn init(&mut self) -> Result<()> {
-        info!("Initializing plugin system");
-
-        let discovered = self.loader.discover_plugins()?;
-
-        for plugin_info in discovered {
-            match self.load_plugin(&plugin_info) {
-                Ok(()) => {
-                    info!("Plugin loaded: {}", plugin_info.manifest.plugin.id);
-                }
-                Err(e) => {
-                    error!(
-                        "Failed to load plugin {}: {}",
-                        plugin_info.manifest.plugin.id, e
-                    );
-                }
+        let plugins = self.loader.discover_plugins()?;
+        for plugin in plugins {
+            match self.load_plugin(&plugin) {
+                Ok(_) => debug!("Loaded plugin: {}", plugin.manifest.plugin.id),
+                Err(e) => error!("Failed to load plugin {}: {}", plugin.manifest.plugin.id, e),
             }
         }
-
-        info!(
-            "Plugin system initialized with {} plugins",
-            self.plugins.read().len()
-        );
         Ok(())
     }
+
+    /// Update the metadata cache for all plugins
+    pub fn set_metadata_cache(&mut self, cache: Arc<arclain_db::MetadataCache>) {
+        self.metadata_cache = Some(cache.clone());
+        let plugins = self.plugins.read();
+        for plugin in plugins.values() {
+            // Re-instantiating with the new cache would be ideal, but for now we rely on the
+            // plugins to access the cache directly if they share it, or we'd need a method to update it.
+            // Since PluginInstance holds the cache in its store data, we can update it there.
+            let mut instance = plugin.instance.lock();
+            instance.set_metadata_cache(Some(cache.clone()));
+        }
+    }
+
+    /// Set the archive context for all plugins
+    pub fn set_archive_context(&mut self, archive_path: Option<String>, password: Option<String>) {
+        let plugins = self.plugins.read();
+        for plugin in plugins.values() {
+            let mut instance = plugin.instance.lock();
+            instance.set_archive_context(archive_path.clone(), password.clone());
+        }
+    }
+
+    // ... (lines 58-115 unchanged)
 
     /// Load a single plugin
     fn load_plugin(&mut self, discovered: &DiscoveredPlugin) -> Result<()> {
@@ -133,6 +122,13 @@ impl PluginManager {
         // Get rate limit from manifest
         let rate_limit = discovered.manifest.rate_limits.http_requests_per_minute;
 
+        // Get initial settings for this plugin
+        let settings = self
+            .initial_settings
+            .get(&plugin_id)
+            .cloned()
+            .unwrap_or_default();
+
         // Instantiate the plugin with backend if available
         let mut instance = if let Some(ref backend) = self.backend {
             loaded.instantiate_with_backend(
@@ -140,6 +136,7 @@ impl PluginManager {
                 rate_limit,
                 Some(backend.clone()),
                 self.metadata_cache.clone(),
+                settings,
             )?
         } else {
             loaded.instantiate_with_backend(
@@ -147,6 +144,7 @@ impl PluginManager {
                 rate_limit,
                 None,
                 self.metadata_cache.clone(),
+                settings,
             )?
         };
 
@@ -410,7 +408,7 @@ impl PluginManager {
 
         // Create a temporary instance to get metadata
         let capabilities = Vec::new(); // Empty capabilities for validation
-        let mut temp_instance = loaded.instantiate(capabilities, 60)?;
+        let mut temp_instance = loaded.instantiate(capabilities, 60, HashMap::new())?;
         temp_instance.init()?;
         let metadata = temp_instance.get_metadata()?;
         temp_instance.cleanup()?;
@@ -500,6 +498,31 @@ http_requests_per_minute = 60
         // Sort by time
         all_logs.sort_by(|a, b| a.0.cmp(&b.0));
         all_logs
+    }
+
+    /// Get a snapshot of all plugin settings for persistence
+    pub fn get_all_settings(&self) -> HashMap<String, HashMap<String, String>> {
+        let plugins = self.plugins.read();
+        let mut all_settings = HashMap::new();
+
+        for (id, plugin) in plugins.iter() {
+            let instance = plugin.instance.lock();
+            // We need to access the settings from the store data
+            // Since PluginInstance wraps the store, we need to modify PluginInstance/runtime
+            // to expose a way to get settings.
+            if let Some(settings) = (*instance).get_settings() {
+                all_settings.insert(id.clone(), settings);
+            }
+        }
+
+        // Merge with initial settings to preserve settings for plugins that failed to load or aren't active
+        for (id, settings) in &self.initial_settings {
+            if !all_settings.contains_key(id) {
+                all_settings.insert(id.clone(), settings.clone());
+            }
+        }
+
+        all_settings
     }
 }
 

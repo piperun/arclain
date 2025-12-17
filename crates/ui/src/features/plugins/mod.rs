@@ -4,6 +4,7 @@ pub mod plugin_list;
 pub mod plugin_ui;
 pub mod plugins_page;
 pub mod types;
+pub mod views;
 
 pub mod ui;
 

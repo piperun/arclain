@@ -3,6 +3,7 @@
 //! These tests verify the end-to-end functionality of the plugin system.
 
 use arclain_plugins::{PluginEvent, PluginManager};
+use std::collections::HashMap;
 use std::fs;
 use tempfile::TempDir;
 
@@ -44,7 +45,7 @@ http_requests_per_minute = 10
 #[test]
 fn test_plugin_manager_creation() {
     let temp_dir = TempDir::new().unwrap();
-    let manager = PluginManager::new(temp_dir.path().to_path_buf());
+    let manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new());
 
     assert!(manager.is_ok(), "Failed to create plugin manager");
 }
@@ -52,7 +53,7 @@ fn test_plugin_manager_creation() {
 #[test]
 fn test_plugin_manager_init_empty_directory() {
     let temp_dir = TempDir::new().unwrap();
-    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
 
     // Initialize with empty directory should succeed
     let result = manager.init();
@@ -69,7 +70,7 @@ fn test_plugin_manager_init_empty_directory() {
 #[test]
 fn test_plugin_discovery() {
     let temp_dir = create_test_plugin_dir();
-    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
 
     // Note: This will fail to load the plugin since there's no .wasm file,
     // but it should discover the manifest
@@ -82,7 +83,7 @@ fn test_plugin_discovery() {
 #[test]
 fn test_plugin_enable_disable() {
     let temp_dir = TempDir::new().unwrap();
-    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
     manager.init().unwrap();
 
     // Try to enable non-existent plugin
@@ -97,7 +98,7 @@ fn test_plugin_enable_disable() {
 #[test]
 fn test_event_dispatch_empty() {
     let temp_dir = TempDir::new().unwrap();
-    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
     manager.init().unwrap();
 
     // Dispatch event to empty plugin set
@@ -117,7 +118,7 @@ fn test_event_dispatch_empty() {
 #[test]
 fn test_get_plugin_metadata_nonexistent() {
     let temp_dir = TempDir::new().unwrap();
-    let manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
 
     let metadata = manager.get_plugin_metadata("nonexistent");
     assert!(
@@ -130,7 +131,7 @@ fn test_get_plugin_metadata_nonexistent() {
 fn test_plugins_directory_path() {
     let temp_dir = TempDir::new().unwrap();
     let expected_path = temp_dir.path().to_path_buf();
-    let manager = PluginManager::new(expected_path.clone()).unwrap();
+    let manager = PluginManager::new(expected_path.clone(), HashMap::new()).unwrap();
 
     assert_eq!(manager.plugins_dir(), expected_path.as_path());
 }
@@ -138,7 +139,7 @@ fn test_plugins_directory_path() {
 #[test]
 fn test_unload_nonexistent_plugin() {
     let temp_dir = TempDir::new().unwrap();
-    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
     manager.init().unwrap();
 
     let result = manager.unload_plugin("nonexistent");
@@ -148,7 +149,7 @@ fn test_unload_nonexistent_plugin() {
 #[test]
 fn test_reload_nonexistent_plugin() {
     let temp_dir = TempDir::new().unwrap();
-    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
     manager.init().unwrap();
 
     let result = manager.reload_plugin("nonexistent");
@@ -158,7 +159,7 @@ fn test_reload_nonexistent_plugin() {
 #[test]
 fn test_dispatch_to_specific_plugin() {
     let temp_dir = TempDir::new().unwrap();
-    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
     manager.init().unwrap();
 
     let event = PluginEvent::OnArchiveOpen {
@@ -174,7 +175,7 @@ fn test_dispatch_to_specific_plugin() {
 #[test]
 fn test_is_plugin_enabled_nonexistent() {
     let temp_dir = TempDir::new().unwrap();
-    let manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
 
     // Nonexistent plugin should return false
     assert!(!manager.is_plugin_enabled("nonexistent"));
@@ -183,7 +184,7 @@ fn test_is_plugin_enabled_nonexistent() {
 #[test]
 fn test_multiple_event_types() {
     let temp_dir = TempDir::new().unwrap();
-    let mut manager = PluginManager::new(temp_dir.path().to_path_buf()).unwrap();
+    let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
     manager.init().unwrap();
 
     // Test various event types

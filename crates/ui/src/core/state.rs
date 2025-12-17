@@ -242,7 +242,8 @@ impl AppState {
         info!("Initializing plugin system");
         let plugins_dir = PathBuf::from("plugins");
         let backend_arc = Arc::new(me.fallback_backend.clone());
-        match PluginManager::with_backend(plugins_dir, backend_arc) {
+        let settings = me.user_config.get_all_plugin_settings();
+        match PluginManager::with_backend(plugins_dir, backend_arc, settings) {
             Ok(mut manager) => {
                 // Initialize plugins
                 if let Err(e) = manager.init() {
@@ -250,23 +251,6 @@ impl AppState {
                 } else {
                     let plugin_count = manager.list_plugins().len();
                     info!("Plugin manager initialized with {} plugins", plugin_count);
-
-                    // Apply enabled/disabled state from UserConfig
-                    if me.user_config.enabled_plugins.is_some() {
-                        let enabled_list = me.user_config.get_enabled_plugins();
-                        let enabled_set: std::collections::HashSet<_> =
-                            enabled_list.into_iter().collect();
-
-                        for plugin in manager.list_plugins() {
-                            if enabled_set.contains(&plugin.id) {
-                                // Already enabled by default, but ensuring consistency
-                                let _ = manager.enable_plugin(&plugin.id);
-                            } else {
-                                let _ = manager.disable_plugin(&plugin.id);
-                            }
-                        }
-                        info!("Applied plugin enabled/disabled state from config");
-                    }
                 }
                 if let Some(ref dbs) = me.dbs {
                     manager.set_metadata_cache(Arc::new(dbs.metadata.clone()));
@@ -367,7 +351,7 @@ impl AppState {
         if let Some(ref manager_arc) = self.plugin_manager {
             // Update archive context for plugins
             {
-                let manager = manager_arc.lock();
+                let mut manager = manager_arc.lock();
                 manager.set_archive_context(
                     Some(path.to_string_lossy().to_string()),
                     self.current_password.clone(),
@@ -429,7 +413,7 @@ impl AppState {
 
         // Update plugin context
         if let Some(ref manager_arc) = self.plugin_manager {
-            let manager = manager_arc.lock();
+            let mut manager = manager_arc.lock();
             manager.set_archive_context(
                 Some(path.to_string_lossy().to_string()),
                 Some(password.to_string()),

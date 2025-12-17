@@ -40,6 +40,7 @@ impl HostFunctions {
     pub fn new(
         capabilities: std::collections::HashSet<PluginCapability>,
         requests_per_minute: u32,
+        initial_settings: HashMap<String, String>,
     ) -> Self {
         let http_client = if capabilities.contains(&PluginCapability::Network) {
             Some(HttpClient::new(requests_per_minute))
@@ -56,7 +57,7 @@ impl HostFunctions {
             archive_backend: None,
             current_archive: Arc::new(Mutex::new(None)),
             current_password: Arc::new(Mutex::new(None)),
-            settings: Arc::new(Mutex::new(HashMap::new())),
+            settings: Arc::new(Mutex::new(initial_settings)),
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             emitted_metadata: Arc::new(Mutex::new(None)),
             network_log: Arc::new(Mutex::new(Vec::new())),
@@ -70,8 +71,9 @@ impl HostFunctions {
         capabilities: std::collections::HashSet<PluginCapability>,
         requests_per_minute: u32,
         backend: Arc<dyn ArchiveBackend>,
+        initial_settings: HashMap<String, String>,
     ) -> Self {
-        let mut host_funcs = Self::new(capabilities, requests_per_minute);
+        let mut host_funcs = Self::new(capabilities, requests_per_minute, initial_settings);
         host_funcs.archive_backend = Some(backend);
         host_funcs
     }

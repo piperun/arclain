@@ -59,6 +59,10 @@ pub struct UserConfig {
     /// Plugin visibility settings (JSON map)
     #[db(nullable)]
     pub plugin_visibility: Option<String>,
+
+    /// Plugin specific settings (JSON map of PluginID -> Map<Key, Value>)
+    #[db(nullable)]
+    pub plugin_settings: Option<String>,
 }
 
 impl UserConfig {
@@ -108,5 +112,46 @@ impl UserConfig {
 
     pub fn set_plugin_order(&mut self, order: &[String]) {
         self.plugin_order = serde_json::to_string(order).ok();
+    }
+
+    pub fn get_plugin_settings(
+        &self,
+        plugin_id: &str,
+    ) -> std::collections::HashMap<String, String> {
+        if let Some(json) = &self.plugin_settings {
+            if let Ok(all_settings) = serde_json::from_str::<
+                std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+            >(json)
+            {
+                return all_settings.get(plugin_id).cloned().unwrap_or_default();
+            }
+        }
+        std::collections::HashMap::new()
+    }
+
+    pub fn get_all_plugin_settings(
+        &self,
+    ) -> std::collections::HashMap<String, std::collections::HashMap<String, String>> {
+        self.plugin_settings
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_plugin_settings(
+        &mut self,
+        plugin_id: &str,
+        settings: std::collections::HashMap<String, String>,
+    ) {
+        let mut all_settings = self.get_all_plugin_settings();
+        all_settings.insert(plugin_id.to_string(), settings);
+        self.plugin_settings = serde_json::to_string(&all_settings).ok();
+    }
+
+    pub fn set_all_plugin_settings(
+        &mut self,
+        all_settings: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
+    ) {
+        self.plugin_settings = serde_json::to_string(all_settings).ok();
     }
 }

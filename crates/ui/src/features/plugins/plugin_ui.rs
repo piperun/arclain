@@ -56,26 +56,65 @@ pub fn render_ui_element(
             }
         }
         PluginUiElement::TextInput { id, label, value } => {
-            let mut text = value.clone();
+            let temp_id = ui.make_persistent_id(&id);
+            // Retrieve temp state or default to current value
+            let mut text = ui
+                .data(|data| data.get_temp::<String>(temp_id))
+                .unwrap_or(value.clone());
+
             SettingsRow::new(label)
                 .action(|ui| {
-                    if ui
-                        .add(egui::TextEdit::singleline(&mut text).desired_width(200.0))
-                        .changed()
-                    {
-                        event_callback(id, Some(text));
-                    }
+                    ui.horizontal(|ui| {
+                        let response =
+                            ui.add(egui::TextEdit::singleline(&mut text).desired_width(200.0));
+
+                        // If changed, update temp state
+                        if response.changed() {
+                            ui.data_mut(|data| data.insert_temp(temp_id, text.clone()));
+                        }
+
+                        // Show Save button if text differs from stored value
+                        let is_modified = text != *value;
+                        if is_modified {
+                            if ui.button("Save").clicked()
+                                || (response.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                            {
+                                event_callback(id, Some(text.clone()));
+                                // Clear temp state to sync with new incoming value
+                                ui.data_mut(|data| data.remove::<String>(temp_id));
+                            }
+                        } else if response.lost_focus() {
+                            // If focus lost without changes (or reverted), assume sync
+                            // Optional: clear temp logic if needed
+                        }
+                    });
                 })
                 .show(ui, colors);
         }
         PluginUiElement::Checkbox { id, label, checked } => {
+            let temp_id = ui.make_persistent_id(id);
             let mut is_checked = *checked;
+
+            // Check for optimistic state to handle thread latency
+            if let Some(optimistic) = ui.data(|d| d.get_temp::<bool>(temp_id)) {
+                if optimistic == *checked {
+                    // Backend has caught up, clear optimistic state
+                    ui.data_mut(|d| d.remove::<bool>(temp_id));
+                } else {
+                    // Backend stale, use optimistic value
+                    is_checked = optimistic;
+                }
+            }
+
             SettingsRow::new(label)
                 .action(|ui| {
                     if ui
                         .add(arclain_widgets::ToggleSwitch::new(&mut is_checked))
                         .changed()
                     {
+                        // Set optimistic state immediately
+                        ui.data_mut(|d| d.insert_temp(temp_id, is_checked));
                         event_callback(id, Some(is_checked.to_string()));
                     }
                 })
