@@ -5,7 +5,7 @@ use crate::features::settings::settings_content::{
     SettingsAction,
 };
 use crate::features::settings::settings_page::{
-    render_breadcrumb, render_settings_header, render_settings_navigator, render_settings_overview,
+    render_breadcrumb, render_settings_navigator, render_settings_overview,
 };
 use crate::shared::SharedState;
 use eframe::egui;
@@ -178,98 +178,114 @@ impl SettingsFeature {
                                         }
                                         ui.add_space(8.0);
 
-                                        // Header
-                                        let has_changes = self.check_changes(shared, page);
+                                        // Header Configuration Dispatch
+                                        let install_clicked = std::cell::Cell::new(false); // Captured by plugins header
                                         
-                                        // Determine if we show the header
-                                        let mut show_header = true;
-                                        let install_clicked = std::cell::Cell::new(false);
+                                        let header_config = if *page == SettingsPage::Plugins {
+                                            // Delegate to Plugins Page
+                                            crate::features::plugins::plugins_page::get_header_config(
+                                                &mut self.plugins_state, 
+                                                page, 
+                                                &install_clicked
+                                            )
+                                        } else {
+                                            // Default Header for other pages
+                                            crate::features::settings::header_config::SettingsHeaderConfig::new(page.display_name())
+                                                .icon(page.icon())
+                                                .description(page.description())
+                                                .has_changes(self.check_changes(shared, page))
+                                        };
 
-                                        if *page == SettingsPage::Plugins {
-                                            // Only show main header in List View
-                                            if self.plugins_state.selected_plugin.is_some() {
-                                                show_header = false;
-                                            }
-                                        }
+                                        // Render Header
+                                        // We handle show_header logic: plugins list hides it if detail is shown...
+                                        // Wait, my get_header_config for plugins HANDLES the detail view header!
+                                        // So we ALWAYS show header if config is returned.
+                                        // But wait, the previous logic HID the header if selected_plugin was some, 
+                                        // then showed a DIFFERENT header.
+                                        // The new get_header_config handles BOTH cases (List vs Detail).
+                                        // So we just render what it returns.
 
-                                        if show_header {
-                                            // Handle Plugins Page Actions specifically here to satisfy borrow checker
-                                            if *page == SettingsPage::Plugins && self.plugins_state.selected_plugin.is_none() {
-                                                 let filter_text = &mut self.plugins_state.filter_text;
-                                                 let show_permissions = &mut self.plugins_state.show_permissions;
-                                                 let show_disabled = &mut self.plugins_state.show_disabled;
-                                                 let install_cell = &install_clicked;
-                                                 
-                                                 crate::shared::components::SettingsHeader::new(page.display_name())
-                                                    .icon(page.icon())
-                                                    .description(page.description())
-                                                    .secondary_row(move |ui| {
-                                                        ui.horizontal(|ui| {
-                                                            ui.add(crate::shared::components::SearchBar::new(filter_text).hint("Search plugins...").width(250.0));
-                                                            ui.add_space(8.0);
-                                                            if ui.add(arclain_widgets::TextButton::new("+ Install Plugin", arclain_widgets::ButtonSize::Small)).clicked() {
-                                                                install_cell.set(true);
-                                                            }
-                                                        });
-                                                    })
-                                                    .tertiary_row(move |ui| {
-                                                        ui.horizontal(|ui| {
-                                                            ui.checkbox(show_permissions, "Show Permission Tags");
-                                                            ui.add_space(16.0);
-                                                            ui.checkbox(show_disabled, "Show Disabled");
-                                                        });
-                                                    })
-                                                    .show(ui, &shared.theme);
-                                            } else {
-                                                // Standard Header
-                                                if render_settings_header(ui, &shared.theme, page, has_changes, None::<fn(&mut egui::Ui)>) {
-                                            // Handle global save
-                                            match page {
-                                                SettingsPage::General => {
-                                                    action = Some(SettingsAction::SaveGeneral {
-                                                        open_nested_in_new_tab: self.general_state.open_nested_in_new_tab,
-                                                    });
-                                                }
-                                                SettingsPage::Archives => {
-                                                    let temp_dir_opt = if self.archives_state.temp_dir.trim().is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(self.archives_state.temp_dir.trim().to_string())
-                                                    };
-                                                    action = Some(SettingsAction::SaveArchives {
-                                                        temp_dir: temp_dir_opt,
-                                                    });
-                                                }
-                                                SettingsPage::Security => {
-                                                    let key_opt = if self.security_state.key_file_path.trim().is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(self.security_state.key_file_path.trim().to_string())
-                                                    };
-                                                    let db_opt = if self.security_state.secrets_db_path.trim().is_empty() {
-                                                        None
-                                                    } else {
-                                                        Some(self.security_state.secrets_db_path.trim().to_string())
-                                                    };
-                                                    let policy_opt = Some(self.security_state.encrypted_crc_policy.as_str().to_string());
-
-                                                    action = Some(SettingsAction::SaveSecurity {
-                                                        key_file_path: key_opt,
-                                                        secrets_db_path: db_opt,
-                                                        encrypted_crc_policy: policy_opt,
-                                                    });
-                                                }
-                                                SettingsPage::PasswordRules => {
-                                                     action = Some(SettingsAction::SavePasswordRules {
-                                                        rules: self.password_rules_dialog.rules.clone(),
-                                                    });
-                                                }
-                                                _ => {}
-                                            }
+                                        // Capture signals from config before consuming it?
+                                        // Closures in config are `FnOnce`. We execute `header.show()`.
+                                        
+                                        let mut header = crate::shared::components::SettingsHeader::new(header_config.title)
+                                            .has_changes(header_config.has_changes);
+                                        
+                                        if let Some(icon) = header_config.icon {
+                                            header = header.icon(icon);
                                         }
+                                        if let Some(desc) = header_config.description {
+                                            header = header.description(desc);
                                         }
+                                        if let Some(sub_desc) = header_config.sub_description {
+                                            header = header.sub_description(sub_desc);
+                                        }
+                                        if let Some(back) = header_config.on_back {
+                                            header = header.on_back(back);
+                                        }
+                                        if let Some(row) = header_config.secondary_row {
+                                            header = header.secondary_row(row);
+                                        }
+                                        if let Some(row) = header_config.tertiary_row {
+                                            header = header.tertiary_row(row);
+                                        }
+                                        if let Some(actions) = header_config.custom_actions {
+                                            header = header.custom_actions(actions);
                                         }
                                         
+                                        // Save Action Logic
+                                        // If config provides on_save, use that directly
+                                        // Otherwise, for standard pages (non-Plugins), use built-in save logic
+                                        if let Some(save_action) = header_config.on_save {
+                                            header = header.on_save(save_action);
+                                        } else if *page != SettingsPage::Plugins { 
+                                             header = header.on_save(|| {
+                                                match page {
+                                                    SettingsPage::General => {
+                                                        action = Some(SettingsAction::SaveGeneral {
+                                                            open_nested_in_new_tab: self.general_state.open_nested_in_new_tab,
+                                                        });
+                                                    }
+                                                    SettingsPage::Archives => {
+                                                        let temp_dir_opt = if self.archives_state.temp_dir.trim().is_empty() {
+                                                            None
+                                                        } else {
+                                                            Some(self.archives_state.temp_dir.trim().to_string())
+                                                        };
+                                                        action = Some(SettingsAction::SaveArchives {
+                                                            temp_dir: temp_dir_opt,
+                                                        });
+                                                    }
+                                                    SettingsPage::Security => {
+                                                        let key_opt = if self.security_state.key_file_path.trim().is_empty() {
+                                                            None
+                                                        } else {
+                                                            Some(self.security_state.key_file_path.trim().to_string())
+                                                        };
+                                                        let db_opt = if self.security_state.secrets_db_path.trim().is_empty() {
+                                                            None
+                                                        } else {
+                                                            Some(self.security_state.secrets_db_path.trim().to_string())
+                                                        };
+                                                        let policy_opt = Some(self.security_state.encrypted_crc_policy.as_str().to_string());
+
+                                                        action = Some(SettingsAction::SaveSecurity {
+                                                            key_file_path: key_opt,
+                                                            secrets_db_path: db_opt,
+                                                            encrypted_crc_policy: policy_opt,
+                                                        });
+                                                    }
+                                                    SettingsPage::PasswordRules => {
+                                                         action = Some(SettingsAction::SavePasswordRules {
+                                                            rules: self.password_rules_dialog.rules.clone(),
+                                                        });
+                                                    }
+                                                    _ => {}
+                                                }
+                                             });
+                                        }
+
+                                        header.show(ui, &shared.theme);
                                         if install_clicked.get() {
                                             if let Some(file) = rfd::FileDialog::new()
                                                 .add_filter("WASM Plugin", &["wasm"])
@@ -343,141 +359,12 @@ impl SettingsFeature {
     }
 
     pub fn handle_action(&mut self, action: SettingsAction, shared: &SharedState) {
-        match action {
-            SettingsAction::SaveSecurity {
-                key_file_path,
-                secrets_db_path,
-                encrypted_crc_policy,
-            } => {
-                let mut state = shared.app_state.lock();
-                let key_file_str = key_file_path;
-                let secrets_db_str = secrets_db_path;
-
-                if let Err(e) =
-                    state.apply_preferences(key_file_str, secrets_db_str, encrypted_crc_policy)
-                {
-                    self.security_state.error = format!("Failed to save settings: {}", e);
-                } else {
-                    self.security_state.info = "Settings saved successfully".to_string();
-                }
-            }
-            SettingsAction::SaveArchives { temp_dir } => {
-                let mut state = shared.app_state.lock();
-                state.user_config.temp_dir = temp_dir;
-                // Save via DB if available
-                if let Some(ref dbs) = state.dbs {
-                    let _ = dbs.config.with_connection(|conn| {
-                        state.user_config.save(conn).ok();
-                        Ok::<_, anyhow::Error>(())
-                    });
-                }
-            }
-            SettingsAction::MoveVault { dest_path } => {
-                let mut state = shared.app_state.lock();
-                if let Err(e) = state.move_vault(&dest_path) {
-                    self.security_state.error = format!("Failed to move vault: {}", e);
-                } else {
-                    self.security_state.info = "Vault moved successfully".to_string();
-                }
-            }
-            SettingsAction::RekeyVault { new_key_file_path } => {
-                let mut state = shared.app_state.lock();
-                if let Err(e) = state.rekey_vault(&new_key_file_path) {
-                    self.security_state.error = format!("Failed to rekey vault: {}", e);
-                } else {
-                    self.security_state.info = "Vault rekeyed successfully".to_string();
-                }
-            }
-            SettingsAction::SavePasswordRules { rules } => {
-                let mut state = shared.app_state.lock();
-                let core_rules = rules
-                    .into_iter()
-                    .map(|r| arclain_core::PassRule {
-                        name: r.name,
-                        pattern: r.pattern,
-                        password: r.password,
-                        priority: r.priority,
-                        enabled: r.enabled,
-                    })
-                    .collect();
-                if let Err(e) = state.save_password_rules(core_rules) {
-                    // self.archives_state.error = format!("Failed to save rules: {}", e);
-                    tracing::error!("Failed to save password rules: {}", e);
-                }
-            }
-            SettingsAction::InstallPlugin { wasm_path } => {
-                let state = shared.app_state.lock();
-                if let Some(manager) = &state.plugin_manager {
-                    let mut mgr = manager.lock();
-                    match mgr.install_plugin(std::path::Path::new(&wasm_path)) {
-                        Ok(id) => {
-                            tracing::info!("Successfully installed plugin: {}", id);
-                            // Refresh list
-                            self.plugins_state.update_from_manager(&mgr, &state.user_config);
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to install plugin: {}", e);
-                        }
-                    }
-                }
-            }
-            SettingsAction::ClearCacheIndex => {
-                let mut state = shared.app_state.lock();
-                if let Some(dbs) = &mut state.dbs {
-                    // cache_index table is in metadata db (MetadataCacheDb)
-                    if let Err(e) = dbs.metadata.clear_cache_index() {
-                        self.archives_state.checksum_enabled = false; // Just to trigger a repaint/usage
-                        tracing::error!("Failed to clear cache index: {}", e);
-                    } else {
-                        tracing::info!("Cache index cleared successfully");
-                    }
-                }
-            }
-            SettingsAction::ClearCacheContent => {
-                let state = shared.app_state.lock();
-                let cache_dir = if let Some(paths) = &state.db_paths {
-                    paths
-                        .cache_db
-                        .parent()
-                        .unwrap_or(std::path::Path::new("."))
-                        .join("content")
-                } else {
-                    // Fallback if DB not loaded (unlikely in settings)
-                    std::path::PathBuf::from("data/content")
-                };
-                drop(state);
-
-                // Perform in background
-                std::thread::spawn(move || {
-                    tracing::info!("Clearing cache content at {:?}", cache_dir);
-                    if cache_dir.exists() {
-                        if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
-                            tracing::error!("Failed to remove cache dir: {}", e);
-                        }
-                        // Recreate
-                        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-                            tracing::error!("Failed to recreate cache dir: {}", e);
-                        }
-                    }
-                });
-            }
-            SettingsAction::SaveGeneral {
-                open_nested_in_new_tab,
-            } => {
-                let mut state = shared.app_state.lock();
-                state.user_config.open_nested_in_new_tab = open_nested_in_new_tab;
-                // Save via DB if available
-                if let Some(ref dbs) = state.dbs {
-                    if let Err(e) = dbs.config.with_connection(|conn| {
-                        state.user_config.save(conn).ok();
-                        Ok::<_, anyhow::Error>(())
-                    }) {
-                        tracing::error!("Failed to save general settings: {}", e);
-                    } else {
-                        tracing::info!("General settings saved");
-                    }
-                }
-            }
-        }
+        crate::features::settings::action_handlers::handle_action(
+            action,
+            &mut self.security_state,
+            &mut self.archives_state,
+            &mut self.plugins_state,
+            shared,
+        );
     }
 }

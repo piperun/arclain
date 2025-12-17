@@ -2,7 +2,7 @@
 id = "dlsite-metadata"
 name = "DLSite Metadata Enricher"
 version = "1.0.0"
-author = "Archust Team"
+author = "Arclain Team"
 description = "Extracts DLSite product codes (RJ/VJ/BJ) from archive names and enriches them with metadata from DLSite API"
 
 [capabilities]

@@ -77,8 +77,9 @@ impl LoadedPlugin {
         &self,
         capabilities: Vec<PluginCapability>,
         requests_per_minute: u32,
+        settings: std::collections::HashMap<String, String>,
     ) -> Result<PluginInstance> {
-        self.instantiate_with_backend(capabilities, requests_per_minute, None, None)
+        self.instantiate_with_backend(capabilities, requests_per_minute, None, None, settings)
     }
 
     pub fn instantiate_with_backend(
@@ -87,6 +88,7 @@ impl LoadedPlugin {
         requests_per_minute: u32,
         backend: Option<Arc<dyn ArchiveBackend>>,
         metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
+        settings: std::collections::HashMap<String, String>,
     ) -> Result<PluginInstance> {
         // Create host functions state
         let mut host_funcs = if let Some(backend) = backend {
@@ -94,9 +96,14 @@ impl LoadedPlugin {
                 capabilities.into_iter().collect(),
                 requests_per_minute,
                 backend,
+                settings,
             )
         } else {
-            HostFunctions::new(capabilities.into_iter().collect(), requests_per_minute)
+            HostFunctions::new(
+                capabilities.into_iter().collect(),
+                requests_per_minute,
+                settings,
+            )
         };
 
         if let Some(cache) = metadata_cache {
@@ -264,6 +271,13 @@ impl PluginInstance {
         let data = self.store.data();
         let logs = data.network_log.lock();
         logs.clone()
+    }
+
+    /// Get current settings from the plugin
+    pub fn get_settings(&self) -> Option<std::collections::HashMap<String, String>> {
+        let data = self.store.data();
+        let settings = data.settings.lock();
+        Some(settings.clone())
     }
 }
 

@@ -71,48 +71,6 @@ pub fn render_settings_navigator(
     selected_page
 }
 
-/// Render the settings page header with breadcrumb and global save button
-/// Returns true if the global save button was clicked
-pub fn render_settings_header<F>(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    current_page: &SettingsPage,
-    has_changes: bool,
-    custom_actions: Option<F>,
-) -> bool
-where
-    F: FnOnce(&mut egui::Ui),
-{
-    // We need to capture save_clicked in a closure, but save_clicked is a bool on stack.
-    // We can use a RefCell or just an Option to capture output?
-    // Actually, `render_settings_header` takes `FnOnce`. We can't mutate `save_clicked` easily if we need to return it after the call.
-    // Wait, the shared `render_settings_header` doesn't return anything.
-    // But we can pass a closure that *sets* an external flag?
-    // No, `FnOnce` consumes captured variables.
-    // A simplified approach: Use an internal Cell or similar?
-    // Or better: `render_settings_header` (shared) should probably just take `on_save`.
-    // We can't easily return bool from the shared component if it's void.
-    // However, we can use `std::cell::Cell` to capture the click.
-
-    let save_clicked_cell = std::cell::Cell::new(false);
-
-    let mut header = crate::shared::components::SettingsHeader::new(current_page.display_name())
-        .icon(current_page.icon())
-        .description(current_page.description())
-        .has_changes(has_changes)
-        .on_save(|| {
-            save_clicked_cell.set(true);
-        });
-
-    if let Some(actions) = custom_actions {
-        header = header.custom_actions(actions);
-    }
-
-    header.show(ui, theme);
-
-    save_clicked_cell.get()
-}
-
 /// Render the settings overview page (landing page)
 pub fn render_settings_overview(ui: &mut egui::Ui, theme: &AppTheme) -> Option<SettingsPage> {
     let mut selected_page = None;

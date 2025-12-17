@@ -191,7 +191,7 @@ http_requests_per_minute = 10
 mod host_functions_tests {
     use arclain_plugins::host_functions::{HostFunctions, RateLimiter};
     use arclain_plugins::PluginCapability;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     #[test]
     fn test_rate_limiter_creation() {
@@ -214,7 +214,7 @@ mod host_functions_tests {
         let mut caps = HashSet::new();
         caps.insert(PluginCapability::Network);
 
-        let host_funcs = HostFunctions::new(caps, 10);
+        let host_funcs = HostFunctions::new(caps, 10, HashMap::new());
 
         assert!(host_funcs.http_client.is_some(), "Should have HTTP client");
         assert!(host_funcs.check_capability(PluginCapability::Network));
@@ -224,7 +224,7 @@ mod host_functions_tests {
     #[test]
     fn test_host_functions_no_network() {
         let caps = HashSet::new();
-        let host_funcs = HostFunctions::new(caps, 10);
+        let host_funcs = HostFunctions::new(caps, 10, HashMap::new());
 
         assert!(
             host_funcs.http_client.is_none(),
