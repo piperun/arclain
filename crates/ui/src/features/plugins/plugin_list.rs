@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! Plugin list view component
 
 use super::types::{PluginInfo, PluginsListState};

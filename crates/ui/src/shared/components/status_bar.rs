@@ -70,7 +70,7 @@ pub fn render(
             } else {
                 op.clone()
             };
-            arclain_widgets::Chip::new(&label)
+            arclain_widgets::Chips::new(&label)
                 .with_theme_colors(&theme.colors)
                 .ui(ui);
         }
@@ -159,7 +159,7 @@ fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginSta
         theme.colors.on_surface_variant
     };
 
-    let response = arclain_widgets::Chip::new(&text)
+    let response = arclain_widgets::Chips::new(&text)
         .with_theme_colors(&theme.colors)
         .stroke_color(color)
         .ui(ui);

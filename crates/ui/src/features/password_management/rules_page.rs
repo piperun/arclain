@@ -304,14 +304,6 @@ pub fn render_password_rules_page(
                                                     .add(
                                                         ToggleSwitch::new(&mut enabled)
                                                             .text("ON", "OFF")
-                                                            .style_on(
-                                                                theme.colors.primary,
-                                                                theme.colors.surface,
-                                                            )
-                                                            .style_off(
-                                                                theme.colors.surface,
-                                                                theme.colors.on_surface_variant,
-                                                            )
                                                             .size(40.0, 18.0),
                                                     )
                                                     .changed()

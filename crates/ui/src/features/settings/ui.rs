@@ -180,7 +180,49 @@ impl SettingsFeature {
 
                                         // Header
                                         let has_changes = self.check_changes(shared, page);
-                                        if render_settings_header(ui, &shared.theme, page, has_changes) {
+                                        
+                                        // Determine if we show the header
+                                        let mut show_header = true;
+                                        let install_clicked = std::cell::Cell::new(false);
+
+                                        if *page == SettingsPage::Plugins {
+                                            // Only show main header in List View
+                                            if self.plugins_state.selected_plugin.is_some() {
+                                                show_header = false;
+                                            }
+                                        }
+
+                                        if show_header {
+                                            // Handle Plugins Page Actions specifically here to satisfy borrow checker
+                                            if *page == SettingsPage::Plugins && self.plugins_state.selected_plugin.is_none() {
+                                                 let filter_text = &mut self.plugins_state.filter_text;
+                                                 let show_permissions = &mut self.plugins_state.show_permissions;
+                                                 let show_disabled = &mut self.plugins_state.show_disabled;
+                                                 let install_cell = &install_clicked;
+                                                 
+                                                 crate::shared::components::SettingsHeader::new(page.display_name())
+                                                    .icon(page.icon())
+                                                    .description(page.description())
+                                                    .secondary_row(move |ui| {
+                                                        ui.horizontal(|ui| {
+                                                            ui.add(crate::shared::components::SearchBar::new(filter_text).hint("Search plugins...").width(250.0));
+                                                            ui.add_space(8.0);
+                                                            if ui.add(arclain_widgets::TextButton::new("+ Install Plugin", arclain_widgets::ButtonSize::Small)).clicked() {
+                                                                install_cell.set(true);
+                                                            }
+                                                        });
+                                                    })
+                                                    .tertiary_row(move |ui| {
+                                                        ui.horizontal(|ui| {
+                                                            ui.checkbox(show_permissions, "Show Permission Tags");
+                                                            ui.add_space(16.0);
+                                                            ui.checkbox(show_disabled, "Show Disabled");
+                                                        });
+                                                    })
+                                                    .show(ui, &shared.theme);
+                                            } else {
+                                                // Standard Header
+                                                if render_settings_header(ui, &shared.theme, page, has_changes, None::<fn(&mut egui::Ui)>) {
                                             // Handle global save
                                             match page {
                                                 SettingsPage::General => {
@@ -225,6 +267,21 @@ impl SettingsFeature {
                                                 _ => {}
                                             }
                                         }
+                                        }
+                                        }
+                                        
+                                        if install_clicked.get() {
+                                            if let Some(file) = rfd::FileDialog::new()
+                                                .add_filter("WASM Plugin", &["wasm"])
+                                                .set_title("Select Plugin to Install")
+                                                .pick_file() 
+                                            {
+                                                action = Some(SettingsAction::InstallPlugin {
+                                                     wasm_path: file.to_string_lossy().to_string(),
+                                                });
+                                            }
+                                        }
+                                        
                                         ui.add_space(20.0);
                                     });
                                 });

@@ -1,14 +1,15 @@
-use egui::{Color32, CornerRadius, FontId, Response, Sense, Ui, Vec2, Widget};
+use egui::{
+    lerp, pos2, Color32, CornerRadius, FontId, Response, Sense, Stroke, StrokeKind, Ui, Vec2,
+    Widget,
+};
 
-/// A custom toggle switch component.
+/// A custom fancy toggle switch component with animations and icons.
 pub struct ToggleSwitch<'a> {
     on: &'a mut bool,
-    text_on: String,
-    text_off: String,
-    color_on_bg: Option<Color32>,
-    color_on_text: Option<Color32>,
-    color_off_bg: Option<Color32>,
-    color_off_text: Option<Color32>,
+    text_on: Option<String>,
+    text_off: Option<String>,
+    icon_on: Option<String>,
+    icon_off: Option<String>,
     width: f32,
     height: f32,
 }
@@ -17,34 +18,24 @@ impl<'a> ToggleSwitch<'a> {
     pub fn new(on: &'a mut bool) -> Self {
         Self {
             on,
-            text_on: "ON".to_string(),
-            text_off: "OFF".to_string(),
-            color_on_bg: None,    // Will default to ui.visuals().selection.bg_fill
-            color_on_text: None,  // Will default to ui.visuals().selection.stroke.color
-            color_off_bg: None,   // Will default to ui.visuals().faint_bg_color
-            color_off_text: None, // Will default to ui.visuals().text_color() with opacity
-            width: 40.0,
-            height: 20.0,
+            text_on: None,
+            text_off: None,
+            icon_on: None,
+            icon_off: None,
+            width: 44.0,
+            height: 22.0,
         }
     }
 
     pub fn text(mut self, on: impl Into<String>, off: impl Into<String>) -> Self {
-        self.text_on = on.into();
-        self.text_off = off.into();
+        self.text_on = Some(on.into());
+        self.text_off = Some(off.into());
         self
     }
 
-    /// Set styling for the ON state
-    pub fn style_on(mut self, bg: Color32, text: Color32) -> Self {
-        self.color_on_bg = Some(bg);
-        self.color_on_text = Some(text);
-        self
-    }
-
-    /// Set styling for the OFF state
-    pub fn style_off(mut self, bg: Color32, text: Color32) -> Self {
-        self.color_off_bg = Some(bg);
-        self.color_off_text = Some(text);
+    pub fn icons(mut self, on: impl Into<String>, off: impl Into<String>) -> Self {
+        self.icon_on = Some(on.into());
+        self.icon_off = Some(off.into());
         self
     }
 
@@ -68,36 +59,84 @@ impl<'a> Widget for ToggleSwitch<'a> {
         if ui.is_rect_visible(rect) {
             let visuals = ui.style().visuals.clone();
 
-            // Determine colors
-            let (bg_color, text_color, text) = if *self.on {
-                (
-                    self.color_on_bg.unwrap_or(visuals.selection.bg_fill),
-                    self.color_on_text.unwrap_or(visuals.strong_text_color()),
-                    &self.text_on,
-                )
+            // Animation state
+            let how_on = ui.ctx().animate_bool(response.id, *self.on);
+
+            // layout
+            let thumb_radius = (self.height / 2.0) - 2.0;
+            let padding = 2.0;
+
+            // Background Color
+            let color_off = visuals.widgets.inactive.bg_fill;
+            let color_on = visuals.selection.bg_fill;
+            let bg_color = Color32::from_rgb(
+                lerp(color_off.r() as f32..=color_on.r() as f32, how_on) as u8,
+                lerp(color_off.g() as f32..=color_on.g() as f32, how_on) as u8,
+                lerp(color_off.b() as f32..=color_on.b() as f32, how_on) as u8,
+            );
+
+            // Paint Background Pill
+            let radius = (self.height / 2.0) as u8;
+            let corner_radius = CornerRadius::same(radius);
+
+            // Use painter().rect with 5 arguments: rect, radius, fill, stroke, stroke_kind
+            let stroke = Stroke::new(1.0, bg_color.linear_multiply(1.2));
+            ui.painter()
+                .rect(rect, corner_radius, bg_color, stroke, StrokeKind::Middle);
+
+            // Thumb Position
+            let min_x = rect.min.x + padding + thumb_radius;
+            let max_x = rect.max.x - padding - thumb_radius;
+            let thumb_center_x = lerp(min_x..=max_x, how_on);
+            let thumb_center = pos2(thumb_center_x, rect.center().y);
+
+            // Thumb Color
+            let thumb_color = visuals.strong_text_color();
+
+            // Glow Effect
+            if how_on > 0.0 {
+                let glow_alpha = (how_on * 50.0) as u8;
+                let glow_color = Color32::from_rgba_premultiplied(
+                    color_on.r(),
+                    color_on.g(),
+                    color_on.b(),
+                    glow_alpha,
+                );
+                ui.painter()
+                    .circle_filled(thumb_center, thumb_radius + 4.0, glow_color);
+            }
+
+            // Paint Thumb
+            ui.painter()
+                .circle_filled(thumb_center, thumb_radius, thumb_color);
+
+            // Icon/Text
+            let icon_str = if *self.on {
+                self.icon_on
+                    .as_deref()
+                    .or(self.text_on.as_deref())
+                    .unwrap_or("")
             } else {
-                (
-                    self.color_off_bg.unwrap_or(visuals.extreme_bg_color),
-                    self.color_off_text.unwrap_or(visuals.text_color()),
-                    &self.text_off,
-                )
+                self.icon_off
+                    .as_deref()
+                    .or(self.text_off.as_deref())
+                    .unwrap_or("")
             };
 
-            // Draw background pill
-            ui.painter().rect_filled(
-                rect,
-                CornerRadius::same((self.height / 2.0) as u8),
-                bg_color,
-            );
-            // Draw text
-            // Center the text
-            let font_id = FontId::proportional(10.0);
-            let galley = ui
-                .painter()
-                .layout_no_wrap(text.clone(), font_id, text_color);
+            if !icon_str.is_empty() {
+                let font_id = FontId::proportional(thumb_radius * 1.3);
 
-            let text_pos = rect.center() - galley.rect.size() / 2.0;
-            ui.painter().galley(text_pos, galley, Color32::PLACEHOLDER);
+                let icon_r = lerp(color_off.r() as f32..=color_on.r() as f32, how_on) as u8;
+                let icon_g = lerp(color_off.g() as f32..=color_on.g() as f32, how_on) as u8;
+                let icon_b = lerp(color_off.b() as f32..=color_on.b() as f32, how_on) as u8;
+                let dynamic_icon_color = Color32::from_rgb(icon_r, icon_g, icon_b);
+
+                let galley =
+                    ui.painter()
+                        .layout_no_wrap(icon_str.to_string(), font_id, dynamic_icon_color);
+                let text_pos = thumb_center - galley.rect.size() / 2.0;
+                ui.painter().galley(text_pos, galley, Color32::PLACEHOLDER);
+            }
         }
 
         response

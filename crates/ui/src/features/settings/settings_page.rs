@@ -73,74 +73,44 @@ pub fn render_settings_navigator(
 
 /// Render the settings page header with breadcrumb and global save button
 /// Returns true if the global save button was clicked
-pub fn render_settings_header(
+pub fn render_settings_header<F>(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     current_page: &SettingsPage,
     has_changes: bool,
-) -> bool {
-    let mut save_clicked = false;
+    custom_actions: Option<F>,
+) -> bool
+where
+    F: FnOnce(&mut egui::Ui),
+{
+    // We need to capture save_clicked in a closure, but save_clicked is a bool on stack.
+    // We can use a RefCell or just an Option to capture output?
+    // Actually, `render_settings_header` takes `FnOnce`. We can't mutate `save_clicked` easily if we need to return it after the call.
+    // Wait, the shared `render_settings_header` doesn't return anything.
+    // But we can pass a closure that *sets* an external flag?
+    // No, `FnOnce` consumes captured variables.
+    // A simplified approach: Use an internal Cell or similar?
+    // Or better: `render_settings_header` (shared) should probably just take `on_save`.
+    // We can't easily return bool from the shared component if it's void.
+    // However, we can use `std::cell::Cell` to capture the click.
 
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(12.0, 0.0);
+    let save_clicked_cell = std::cell::Cell::new(false);
 
-        // Page icon and title
-        ui.label(egui::RichText::new(current_page.icon()).size(24.0));
-
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
-
-            ui.label(
-                egui::RichText::new(current_page.display_name())
-                    .size(20.0)
-                    .strong()
-                    .color(theme.colors.on_surface),
-            );
-
-            ui.label(
-                egui::RichText::new(current_page.description())
-                    .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-            );
+    let mut header = crate::shared::components::SettingsHeader::new(current_page.display_name())
+        .icon(current_page.icon())
+        .description(current_page.description())
+        .has_changes(has_changes)
+        .on_save(|| {
+            save_clicked_cell.set(true);
         });
 
-        // Filler to push save button to right
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Add padding from the right edge
-            ui.add_space(20.0);
+    if let Some(actions) = custom_actions {
+        header = header.custom_actions(actions);
+    }
 
-            let save_btn = egui::Button::new(
-                egui::RichText::new(format!("{} Save", egui_phosphor::regular::FLOPPY_DISK))
-                    .size(14.0)
-                    .color(if has_changes {
-                        theme.colors.on_primary
-                    } else {
-                        theme.colors.on_surface_variant
-                    }),
-            )
-            .fill(if has_changes {
-                theme.colors.primary
-            } else {
-                theme.colors.secondary
-            })
-            .stroke(if has_changes {
-                egui::Stroke::NONE
-            } else {
-                egui::Stroke::new(1.0, theme.colors.outline)
-            })
-            .corner_radius(6.0)
-            .min_size(egui::vec2(90.0, 32.0));
+    header.show(ui, theme);
 
-            if ui.add_enabled(has_changes, save_btn).clicked() {
-                save_clicked = true;
-            }
-        });
-    });
-
-    ui.add_space(12.0);
-    ui.separator();
-
-    save_clicked
+    save_clicked_cell.get()
 }
 
 /// Render the settings overview page (landing page)
@@ -237,60 +207,7 @@ pub fn render_breadcrumb(
     theme: &AppTheme,
     breadcrumb: &[(String, crate::core::AppPage)],
 ) -> Option<crate::core::AppPage> {
-    let mut navigate_to = None;
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 0.0);
-
-        // Home button with Phosphor icon
-        let home_btn = egui::Button::new(
-            egui::RichText::new(format!("{} Home", egui_phosphor::regular::HOUSE))
-                .size(13.0)
-                .color(theme.colors.on_surface_variant),
-        )
-        .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::NONE)
-        .frame(false);
-
-        if ui.add(home_btn).clicked() {
-            navigate_to = Some(crate::core::AppPage::Main);
-        }
-
-        for (i, (label, page)) in breadcrumb.iter().enumerate() {
-            ui.label(
-                egui::RichText::new(">")
-                    .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-
-            let is_last = i == breadcrumb.len() - 1;
-
-            if is_last {
-                // Current page - not clickable
-                ui.label(
-                    egui::RichText::new(label.as_str())
-                        .size(13.0)
-                        .color(theme.colors.on_surface),
-                );
-            } else {
-                // Previous pages - clickable
-                let btn = egui::Button::new(
-                    egui::RichText::new(label.as_str())
-                        .size(13.0)
-                        .color(theme.colors.on_surface_variant),
-                )
-                .fill(egui::Color32::TRANSPARENT)
-                .stroke(egui::Stroke::NONE)
-                .frame(false);
-
-                if ui.add(btn).clicked() {
-                    navigate_to = Some(page.clone());
-                }
-            }
-        }
-    });
-
-    navigate_to
+    crate::shared::components::Breadcrumbs::new(breadcrumb).show(ui, theme)
 }
 
 /// Render settings search results
