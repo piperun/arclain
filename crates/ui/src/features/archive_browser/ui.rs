@@ -274,5 +274,11 @@ fn map_file_list_action(file_action: file_list::FileListAction) -> ArchiveBrowse
         }
         file_list::FileListAction::Edit(file) => ArchiveBrowserAction::EditFile(file),
         file_list::FileListAction::Delete(file) => ArchiveBrowserAction::DeleteFile(file),
+        file_list::FileListAction::Extract(file) => ArchiveBrowserAction::Extract(file),
+        file_list::FileListAction::ExtractTo(file) => ArchiveBrowserAction::ExtractTo(file),
+        file_list::FileListAction::CopyPath(file) => ArchiveBrowserAction::CopyPath(file),
+        file_list::FileListAction::ShowProperties(file) => {
+            ArchiveBrowserAction::ShowProperties(file)
+        }
     }
 }

@@ -4,6 +4,7 @@ use crate::features::settings::settings_content::{
     render_settings_content, ArchivesSettingsState, GeneralSettingsState, SecuritySettingsState,
     SettingsAction,
 };
+use crate::features::settings::pages::interface::InterfaceSettingsState;
 use crate::features::settings::settings_page::{
     render_breadcrumb, render_settings_navigator, render_settings_overview,
 };
@@ -16,6 +17,7 @@ pub struct SettingsFeature {
     pub archives_state: ArchivesSettingsState,
     pub password_rules_dialog: PasswordRulesDialog,
     pub plugins_state: crate::features::plugins::types::PluginsListState,
+    pub interface_state: InterfaceSettingsState,
     pub last_visited_page: Option<SettingsPage>,
 }
 
@@ -50,6 +52,7 @@ impl SettingsFeature {
                 ..Default::default()
             },
             plugins_state: crate::features::plugins::types::PluginsListState::default(),
+            interface_state: InterfaceSettingsState::default(),
             last_visited_page: None,
         }
     }
@@ -341,6 +344,7 @@ impl SettingsFeature {
                                                     pm_guard.as_deref(),
                                                     &mut self.plugins_state,
                                                     rules_page,
+                                                    &mut self.interface_state,
                                                     &shared.app_state,
                                                 );
                                             }

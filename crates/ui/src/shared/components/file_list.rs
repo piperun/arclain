@@ -18,9 +18,13 @@ pub struct FileEntry {
 #[derive(Debug, Clone)]
 pub enum FileListAction {
     Navigate(String),
-    Edit(String),   // full path (relative to current path will be resolved by caller)
-    Delete(String), // same as above
-    Open(String),   // double-click open file
+    Edit(String),      // full path (relative to current path will be resolved by caller)
+    Delete(String),    // same as above
+    Open(String),      // double-click open file
+    Extract(String),   // Extract single file
+    ExtractTo(String), // Extract to custom location
+    CopyPath(String),  // Copy path to clipboard
+    ShowProperties(String), // Show properties panel
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -964,6 +968,50 @@ pub fn render_list_view(
                                     .ctx
                                     .set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
+
+                            // Right-click context menu
+                            row_response.context_menu(|ui| {
+                                if ui.button("📂  Open").clicked() {
+                                    if is_folder {
+                                        action = Some(FileListAction::Navigate(entry_name.clone()));
+                                    } else {
+                                        action = Some(FileListAction::Open(entry_name.clone()));
+                                    }
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui.button("📦  Extract").clicked() {
+                                    action = Some(FileListAction::Extract(entry_name.clone()));
+                                    ui.close();
+                                }
+                                if ui.button("📁  Extract To...").clicked() {
+                                    action = Some(FileListAction::ExtractTo(entry_name.clone()));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui.button("📋  Copy Path").clicked() {
+                                    action = Some(FileListAction::CopyPath(entry_name.clone()));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui.button("ℹ️  Properties").clicked() {
+                                    action =
+                                        Some(FileListAction::ShowProperties(entry_name.clone()));
+                                    ui.close();
+                                }
+                                ui.separator();
+                                if ui
+                                    .add_enabled(!is_folder, egui::Button::new("✏️  Edit"))
+                                    .clicked()
+                                {
+                                    action = Some(FileListAction::Edit(entry_name.clone()));
+                                    ui.close();
+                                }
+                                if ui.button("🗑️  Delete").clicked() {
+                                    action = Some(FileListAction::Delete(entry_name.clone()));
+                                    ui.close();
+                                }
+                            });
 
                             if row_response.double_clicked() {
                                 if is_folder {

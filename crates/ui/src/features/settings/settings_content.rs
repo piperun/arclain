@@ -78,6 +78,7 @@ pub fn render_settings_content(
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
     rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
+    interface_state: &mut crate::features::settings::pages::interface::InterfaceSettingsState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
 ) -> Option<SettingsAction> {
     match page {
@@ -87,7 +88,12 @@ pub fn render_settings_content(
         }
         SettingsPage::General => render_general_settings(ui, theme, general_state),
         SettingsPage::Interface => {
-            crate::features::settings::pages::render_interface_settings(ui, theme, app_state);
+            let _saved = crate::features::settings::pages::render_interface_settings(
+                ui,
+                theme,
+                app_state,
+                interface_state,
+            );
             None
         }
         SettingsPage::Archives => render_archives_settings(ui, theme, archives_state),

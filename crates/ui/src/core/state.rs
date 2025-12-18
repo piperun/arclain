@@ -46,6 +46,8 @@ pub struct AppState {
     pub checksum_service: Option<ChecksumService>,
     // UI preferences
     pub ui_preferences: UiPreferences,
+    // Toolbar config items (loaded from DB)
+    pub toolbar_items: Vec<arclain_db::UiItem>,
 }
 
 /// UI display preferences (persisted to config DB)
@@ -105,6 +107,7 @@ impl AppState {
             archive_info: crate::core::operations::archive::ArchiveInfo::default(),
             checksum_service: None,
             ui_preferences: UiPreferences::default(),
+            toolbar_items: vec![],
         };
 
         // Attempt to open DB-backed config + secrets (optional)
@@ -195,6 +198,18 @@ impl AppState {
 
                             // Sync configuration from TOML defaults
                             me.sync_configuration();
+
+                            // Load toolbar items for config-driven rendering
+                            if let Ok(items) =
+                                me.dbs.as_ref().unwrap().config.with_connection(|conn| {
+                                    arclain_db::list_items_by_region(
+                                        conn,
+                                        arclain_db::UiRegion::Toolbar,
+                                    )
+                                })
+                            {
+                                me.toolbar_items = items;
+                            }
 
                             // Initialize checksum service and recover pending operations
                             let checksum_db_path = paths

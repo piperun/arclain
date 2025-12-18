@@ -58,6 +58,14 @@ pub use arclain_db_derive::DbConfig;
 mod user_config;
 pub use user_config::UserConfig;
 
+mod ui_config;
+pub use ui_config::{
+    delete_item, ensure_ui_tables, get_display_option, get_item, get_region_config,
+    list_items_by_region, seed_defaults_if_empty, set_display_option, set_item_display_mode,
+    set_item_order, set_item_visibility, upsert_item, upsert_region_config, ActionType,
+    DisplayMode, UiItem, UiRegion, UiRegionConfig,
+};
+
 /// Re-export Connection so dependents don't need rusqlite directly.
 pub use rusqlite::Connection as DbConnection;
 

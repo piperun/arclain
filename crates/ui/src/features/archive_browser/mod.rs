@@ -36,4 +36,9 @@ pub enum ArchiveBrowserAction {
     DeleteFile(String),
     Organize,
     Metadata(String), // Metadata JSON from plugin
+    // Context menu actions
+    Extract(String),
+    ExtractTo(String),
+    CopyPath(String),
+    ShowProperties(String),
 }
