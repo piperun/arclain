@@ -79,6 +79,10 @@ impl ConfigDb {
             [],
         )?;
 
+        // Initialize UI configuration tables
+        crate::ui_config::ensure_ui_tables(conn)?;
+        crate::ui_config::seed_defaults_if_empty(conn)?;
+
         Ok(())
     }
 
@@ -153,10 +157,10 @@ pub struct DbTitleFilterSettings {
 pub fn get_title_filter_settings(conn: &Connection) -> Result<DbTitleFilterSettings> {
     let invalid_chars = crate::get_config(conn, "title_filter.invalid_chars")?;
     let replacement = crate::get_config(conn, "title_filter.replacement")?;
-    let max_length = crate::get_config(conn, "title_filter.max_length")?
-        .and_then(|s| s.parse().ok());
-    let trim_whitespace = crate::get_config(conn, "title_filter.trim_whitespace")?
-        .and_then(|s| s.parse().ok());
+    let max_length =
+        crate::get_config(conn, "title_filter.max_length")?.and_then(|s| s.parse().ok());
+    let trim_whitespace =
+        crate::get_config(conn, "title_filter.trim_whitespace")?.and_then(|s| s.parse().ok());
 
     Ok(DbTitleFilterSettings {
         invalid_chars,

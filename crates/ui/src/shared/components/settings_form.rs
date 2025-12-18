@@ -103,3 +103,58 @@ impl<'a> SettingsRow<'a> {
         ui.add_space(8.0);
     }
 }
+
+/// A grouped container for related settings (Y2K boxed style)
+/// Renders a bordered box with a title header and child content.
+pub struct SettingsGroup<'a> {
+    title: String,
+    content: Box<dyn FnOnce(&mut egui::Ui, &ThemeColors) + 'a>,
+}
+
+impl<'a> SettingsGroup<'a> {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self {
+            title: title.into(),
+            content: Box::new(|_, _| {}),
+        }
+    }
+
+    /// Set the content to render inside the group
+    pub fn content(mut self, content: impl FnOnce(&mut egui::Ui, &ThemeColors) + 'a) -> Self {
+        self.content = Box::new(content);
+        self
+    }
+
+    /// Y2K style: Sharp bordered box with header
+    pub fn show(self, ui: &mut egui::Ui, colors: &ThemeColors) {
+        ui.add_space(8.0);
+
+        // Y2K: 1px border, zero radius
+        egui::Frame::NONE
+            .stroke(egui::Stroke::new(1.0, colors.outline))
+            .inner_margin(egui::Margin::same(12))
+            .corner_radius(egui::CornerRadius::ZERO)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+
+                // Header row
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(&self.title)
+                            .strong()
+                            .size(13.0)
+                            .color(colors.on_surface),
+                    );
+                });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                // Content
+                (self.content)(ui, colors);
+            });
+
+        ui.add_space(8.0);
+    }
+}

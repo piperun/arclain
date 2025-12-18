@@ -1,12 +1,13 @@
 //! Theme definitions and the main AppTheme struct
 
-use crate::ThemeColors;
+use crate::{ThemeColors, ThemeExtensions};
 use egui::{Context, Stroke};
 
 /// The main application theme holder
 #[derive(Clone)]
 pub struct AppTheme {
     pub colors: ThemeColors,
+    pub extensions: ThemeExtensions,
     pub dark_mode: bool,
 }
 
@@ -19,12 +20,15 @@ impl Default for AppTheme {
 impl AppTheme {
     /// Create a new theme with the specified mode
     pub fn new(dark_mode: bool) -> Self {
+        let colors = if dark_mode {
+            ThemeColors::dark()
+        } else {
+            ThemeColors::light()
+        };
+        let extensions = ThemeExtensions::from_colors(&colors);
         Self {
-            colors: if dark_mode {
-                ThemeColors::dark()
-            } else {
-                ThemeColors::light()
-            },
+            colors,
+            extensions,
             dark_mode,
         }
     }
@@ -37,6 +41,7 @@ impl AppTheme {
         } else {
             ThemeColors::light()
         };
+        self.extensions = ThemeExtensions::from_colors(&self.colors);
     }
 
     /// Apply this theme to an egui Context
@@ -75,7 +80,14 @@ impl AppTheme {
         visuals.panel_fill = self.colors.surface_variant;
 
         visuals.window_stroke = Stroke::new(1.0, self.colors.outline);
-        visuals.window_corner_radius = egui::CornerRadius::same(8);
+        visuals.window_corner_radius = egui::CornerRadius::ZERO; // Y2K: Razor sharp corners
+
+        // Y2K: Zero radius for all widgets
+        visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::ZERO;
+        visuals.widgets.inactive.corner_radius = egui::CornerRadius::ZERO;
+        visuals.widgets.hovered.corner_radius = egui::CornerRadius::ZERO;
+        visuals.widgets.active.corner_radius = egui::CornerRadius::ZERO;
+        visuals.widgets.open.corner_radius = egui::CornerRadius::ZERO;
 
         visuals.override_text_color = Some(self.colors.on_surface);
 

@@ -3,18 +3,12 @@ use egui::Color32;
 
 /// Japanese Hacker / Cyberpunk Soft Theme
 pub fn theme() -> ThemeColors {
-    ThemeColors {
-        primary: Color32::WHITE,
-        on_primary: Color32::BLACK,
-        secondary: Color32::from_rgb(20, 20, 20),
-        on_secondary: Color32::from_rgb(224, 224, 224),
-        surface: Color32::from_rgb(10, 10, 10),
-        on_surface: Color32::WHITE,
-        surface_variant: Color32::from_rgb(20, 20, 20),
-        on_surface_variant: Color32::from_rgb(153, 153, 153),
-        outline: Color32::from_rgb(42, 42, 42),
-        error: Color32::from_rgb(207, 102, 121),
-        on_error: Color32::BLACK,
-        selection: Color32::from_rgba_premultiplied(255, 255, 255, 30),
-    }
+    // Use from_seed for auto-derivation of container/status colors
+    ThemeColors::from_seed(
+        Color32::WHITE,                   // primary: white
+        Color32::from_rgb(100, 100, 100), // secondary: gray
+        Color32::from_rgb(80, 150, 180),  // tertiary: cyan accent
+        Color32::from_rgb(10, 10, 10),    // surface: near-black
+        true,                             // is_dark
+    )
 }

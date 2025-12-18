@@ -1,9 +1,11 @@
+use arclain_theme::ThemeColors;
 use egui::{
     lerp, pos2, Color32, CornerRadius, FontId, Response, Sense, Stroke, StrokeKind, Ui, Vec2,
     Widget,
 };
 
 /// A custom fancy toggle switch component with animations and icons.
+/// Uses theme colors for consistent styling.
 pub struct ToggleSwitch<'a> {
     on: &'a mut bool,
     text_on: Option<String>,
@@ -12,6 +14,7 @@ pub struct ToggleSwitch<'a> {
     icon_off: Option<String>,
     width: f32,
     height: f32,
+    theme_colors: Option<&'a ThemeColors>,
 }
 
 impl<'a> ToggleSwitch<'a> {
@@ -24,6 +27,7 @@ impl<'a> ToggleSwitch<'a> {
             icon_off: None,
             width: 44.0,
             height: 22.0,
+            theme_colors: None,
         }
     }
 
@@ -44,6 +48,11 @@ impl<'a> ToggleSwitch<'a> {
         self.height = height;
         self
     }
+
+    pub fn with_theme_colors(mut self, colors: &'a ThemeColors) -> Self {
+        self.theme_colors = Some(colors);
+        self
+    }
 }
 
 impl<'a> Widget for ToggleSwitch<'a> {
@@ -57,30 +66,80 @@ impl<'a> Widget for ToggleSwitch<'a> {
         }
 
         if ui.is_rect_visible(rect) {
-            let visuals = ui.style().visuals.clone();
-
             // Animation state
             let how_on = ui.ctx().animate_bool(response.id, *self.on);
 
-            // layout
+            // Layout
             let thumb_radius = (self.height / 2.0) - 2.0;
             let padding = 2.0;
 
-            // Background Color
-            let color_off = visuals.widgets.inactive.bg_fill;
-            let color_on = visuals.selection.bg_fill;
+            // Get colors from theme or fallback to visuals
+            let visuals = ui.style().visuals.clone();
+
+            // Y2K Colors from theme:
+            // OFF: surface_variant (dark), surface (ball - dark)
+            // ON: outline (lighter), primary (ball - light)
+            let (track_off, track_on, ball_off, ball_on, ring_off, ring_on) =
+                if let Some(colors) = self.theme_colors {
+                    (
+                        colors.surface_variant,    // track when off
+                        colors.outline,            // track when on (slightly lighter)
+                        colors.surface,            // ball when off (matches bg)
+                        colors.primary,            // ball when on (signal color)
+                        colors.surface_variant,    // ring when off
+                        colors.on_surface_variant, // ring when on
+                    )
+                } else if visuals.dark_mode {
+                    // Y2K Dark mode: OFF = black ball, ON = white ball
+                    (
+                        Color32::from_rgb(24, 24, 24),    // #181818 track off
+                        Color32::from_rgb(64, 64, 64),    // #404040 track on
+                        Color32::from_rgb(0, 0, 0),       // BLACK ball off
+                        Color32::from_rgb(255, 255, 255), // WHITE ball on
+                        Color32::from_rgb(40, 40, 40),    // dark ring off
+                        Color32::from_rgb(180, 180, 180), // light ring on
+                    )
+                } else {
+                    // Y2K Light mode: inverted
+                    (
+                        Color32::from_rgb(220, 220, 220), // light track off
+                        Color32::from_rgb(160, 160, 160), // darker track on
+                        Color32::from_rgb(255, 255, 255), // WHITE ball off
+                        Color32::from_rgb(0, 0, 0),       // BLACK ball on
+                        Color32::from_rgb(200, 200, 200), // light ring off
+                        Color32::from_rgb(60, 60, 60),    // dark ring on
+                    )
+                };
+
+            // Interpolate track color
             let bg_color = Color32::from_rgb(
-                lerp(color_off.r() as f32..=color_on.r() as f32, how_on) as u8,
-                lerp(color_off.g() as f32..=color_on.g() as f32, how_on) as u8,
-                lerp(color_off.b() as f32..=color_on.b() as f32, how_on) as u8,
+                lerp(track_off.r() as f32..=track_on.r() as f32, how_on) as u8,
+                lerp(track_off.g() as f32..=track_on.g() as f32, how_on) as u8,
+                lerp(track_off.b() as f32..=track_on.b() as f32, how_on) as u8,
             );
 
-            // Paint Background Pill
+            // Interpolate ball color
+            let thumb_color = Color32::from_rgb(
+                lerp(ball_off.r() as f32..=ball_on.r() as f32, how_on) as u8,
+                lerp(ball_off.g() as f32..=ball_on.g() as f32, how_on) as u8,
+                lerp(ball_off.b() as f32..=ball_on.b() as f32, how_on) as u8,
+            );
+
+            // Interpolate ring color (animated)
+            let ring_color = Color32::from_rgb(
+                lerp(ring_off.r() as f32..=ring_on.r() as f32, how_on) as u8,
+                lerp(ring_off.g() as f32..=ring_on.g() as f32, how_on) as u8,
+                lerp(ring_off.b() as f32..=ring_on.b() as f32, how_on) as u8,
+            );
+
+            // Paint Background Pill (rounded for toggle)
             let radius = (self.height / 2.0) as u8;
             let corner_radius = CornerRadius::same(radius);
-
-            // Use painter().rect with 5 arguments: rect, radius, fill, stroke, stroke_kind
-            let stroke = Stroke::new(1.0, bg_color.linear_multiply(1.2));
+            let border_color = self
+                .theme_colors
+                .map(|c| c.outline)
+                .unwrap_or(visuals.widgets.inactive.bg_stroke.color);
+            let stroke = Stroke::new(1.0, border_color);
             ui.painter()
                 .rect(rect, corner_radius, bg_color, stroke, StrokeKind::Middle);
 
@@ -90,27 +149,15 @@ impl<'a> Widget for ToggleSwitch<'a> {
             let thumb_center_x = lerp(min_x..=max_x, how_on);
             let thumb_center = pos2(thumb_center_x, rect.center().y);
 
-            // Thumb Color
-            let thumb_color = visuals.strong_text_color();
+            // Ring/glow around ball (+4px, animated color)
+            ui.painter()
+                .circle_filled(thumb_center, thumb_radius + 4.0, ring_color);
 
-            // Glow Effect
-            if how_on > 0.0 {
-                let glow_alpha = (how_on * 50.0) as u8;
-                let glow_color = Color32::from_rgba_premultiplied(
-                    color_on.r(),
-                    color_on.g(),
-                    color_on.b(),
-                    glow_alpha,
-                );
-                ui.painter()
-                    .circle_filled(thumb_center, thumb_radius + 4.0, glow_color);
-            }
-
-            // Paint Thumb
+            // Paint Thumb (ball)
             ui.painter()
                 .circle_filled(thumb_center, thumb_radius, thumb_color);
 
-            // Icon/Text
+            // Icon/Text on the ball
             let icon_str = if *self.on {
                 self.icon_on
                     .as_deref()
@@ -125,15 +172,24 @@ impl<'a> Widget for ToggleSwitch<'a> {
 
             if !icon_str.is_empty() {
                 let font_id = FontId::proportional(thumb_radius * 1.3);
+                // Icon color is opposite of ball for contrast
+                let icon_color = if let Some(colors) = self.theme_colors {
+                    if how_on > 0.5 {
+                        colors.on_primary
+                    } else {
+                        colors.on_surface_variant
+                    }
+                } else {
+                    if how_on > 0.5 {
+                        Color32::BLACK
+                    } else {
+                        Color32::from_rgb(80, 80, 80)
+                    }
+                };
 
-                let icon_r = lerp(color_off.r() as f32..=color_on.r() as f32, how_on) as u8;
-                let icon_g = lerp(color_off.g() as f32..=color_on.g() as f32, how_on) as u8;
-                let icon_b = lerp(color_off.b() as f32..=color_on.b() as f32, how_on) as u8;
-                let dynamic_icon_color = Color32::from_rgb(icon_r, icon_g, icon_b);
-
-                let galley =
-                    ui.painter()
-                        .layout_no_wrap(icon_str.to_string(), font_id, dynamic_icon_color);
+                let galley = ui
+                    .painter()
+                    .layout_no_wrap(icon_str.to_string(), font_id, icon_color);
                 let text_pos = thumb_center - galley.rect.size() / 2.0;
                 ui.painter().galley(text_pos, galley, Color32::PLACEHOLDER);
             }

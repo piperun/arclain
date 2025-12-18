@@ -63,6 +63,14 @@ pub struct UserConfig {
     /// Plugin specific settings (JSON map of PluginID -> Map<Key, Value>)
     #[db(nullable)]
     pub plugin_settings: Option<String>,
+
+    /// Toolbar button order (JSON list of button IDs)
+    #[db(nullable)]
+    pub toolbar_order: Option<String>,
+
+    /// Info panel section order (JSON list of section IDs)
+    #[db(nullable)]
+    pub info_panel_order: Option<String>,
 }
 
 impl UserConfig {
@@ -153,5 +161,31 @@ impl UserConfig {
         all_settings: &std::collections::HashMap<String, std::collections::HashMap<String, String>>,
     ) {
         self.plugin_settings = serde_json::to_string(all_settings).ok();
+    }
+
+    // --- Toolbar Order ---
+
+    pub fn get_toolbar_order(&self) -> Vec<String> {
+        self.toolbar_order
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_toolbar_order(&mut self, order: &[String]) {
+        self.toolbar_order = serde_json::to_string(order).ok();
+    }
+
+    // --- Info Panel Order ---
+
+    pub fn get_info_panel_order(&self) -> Vec<String> {
+        self.info_panel_order
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_info_panel_order(&mut self, order: &[String]) {
+        self.info_panel_order = serde_json::to_string(order).ok();
     }
 }

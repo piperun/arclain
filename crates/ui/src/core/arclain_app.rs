@@ -224,6 +224,7 @@ impl eframe::App for ArclainApp {
                     let archive_loaded = state.current_archive.is_some();
                     let has_selection = false; // TODO: Implement selection tracking
                     let has_metadata = state.plugin_metadata.is_some();
+                    let toolbar_config = components::toolbar::ToolbarConfig::new(state.toolbar_items.clone());
                     drop(state);
 
                     let actions = components::toolbar::render(
@@ -236,6 +237,7 @@ impl eframe::App for ArclainApp {
                         archive_loaded,
                         has_selection,
                         has_metadata,
+                        Some(&toolbar_config),
                     );
 
                     // Handle toolbar actions
@@ -676,6 +678,59 @@ impl eframe::App for ArclainApp {
                                 ));
                                 
                                 self.page_navigator.navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
+                            }
+                        }
+                        // Context menu actions
+                        crate::features::archive_browser::ArchiveBrowserAction::Extract(file) => {
+                            // Extract single file to default location
+                            let _browser_state = self.archive_browser.state_mut();
+                            let ops_state = self.archive_operations.state_mut();
+                            // Create a temporary selection for just this file
+                            let entries: Vec<crate::shared::components::file_list::FileEntry> = vec![
+                                crate::shared::components::file_list::FileEntry {
+                                    name: file,
+                                    selected: true,
+                                    size: String::new(),
+                                    compressed: String::new(),
+                                    ratio: String::new(),
+                                    modified: String::new(),
+                                    crc32: String::new(),
+                                    encrypted: false,
+                                    is_folder: false,
+                                }
+                            ];
+                            operations::extraction::extract_selected(
+                                &self.state,
+                                &entries,
+                                &mut ops_state.extraction_dialog,
+                                &mut ops_state.extraction_rx,
+                                &mut ops_state.extraction_child,
+                                &mut ops_state.extraction_minimized,
+                                &mut ops_state.extraction_started,
+                                &mut self.status_info,
+                            );
+                        }
+                        crate::features::archive_browser::ArchiveBrowserAction::ExtractTo(file) => {
+                            // TODO: Show folder picker dialog then extract
+                            self.status_info.message = format!("Extract to... for '{}' - not yet implemented", file);
+                        }
+                        crate::features::archive_browser::ArchiveBrowserAction::CopyPath(file) => {
+                            // Copy file path to clipboard
+                            let state = self.state.lock();
+                            let full_path = if state.navigation.current_path.is_empty() {
+                                file.clone()
+                            } else {
+                                format!("{}/{}", state.navigation.current_path, file)
+                            };
+                            drop(state);
+                            ctx.copy_text(full_path.clone());
+                            self.status_info.message = format!("Copied path: {}", full_path);
+                        }
+                        crate::features::archive_browser::ArchiveBrowserAction::ShowProperties(file) => {
+                            // Enable properties panel and select only this file
+                            self.archive_browser.state_mut().toolbar_state.show_properties_panel = true;
+                            for entry in &mut self.archive_browser.state_mut().entries {
+                                entry.selected = entry.name == file;
                             }
                         }
                         crate::features::archive_browser::ArchiveBrowserAction::None => {}
