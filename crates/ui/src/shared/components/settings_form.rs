@@ -106,11 +106,13 @@ impl<'a> SettingsRow<'a> {
 
 /// A grouped container for related settings (Y2K boxed style)
 /// Renders a bordered box with a title header and child content.
+#[allow(dead_code)]
 pub struct SettingsGroup<'a> {
     title: String,
     content: Box<dyn FnOnce(&mut egui::Ui, &ThemeColors) + 'a>,
 }
 
+#[allow(dead_code)]
 impl<'a> SettingsGroup<'a> {
     pub fn new(title: impl Into<String>) -> Self {
         Self {

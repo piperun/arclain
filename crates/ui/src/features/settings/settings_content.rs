@@ -79,6 +79,7 @@ pub fn render_settings_content(
     plugins_state: &mut PluginsListState,
     rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
     interface_state: &mut crate::features::settings::pages::interface::InterfaceSettingsState,
+    toolbar_layout_state: &mut crate::features::settings::pages::ToolbarLayoutState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
 ) -> Option<SettingsAction> {
     match page {
@@ -87,15 +88,12 @@ pub fn render_settings_content(
             None
         }
         SettingsPage::General => render_general_settings(ui, theme, general_state),
-        SettingsPage::Interface => {
-            let _saved = crate::features::settings::pages::render_interface_settings(
-                ui,
-                theme,
-                app_state,
-                interface_state,
-            );
-            None
-        }
+        SettingsPage::Interface => crate::features::settings::pages::render_interface_settings(
+            ui,
+            theme,
+            app_state,
+            interface_state,
+        ),
         SettingsPage::Archives => render_archives_settings(ui, theme, archives_state),
         SettingsPage::Security => render_security_settings(ui, theme, security_state),
         SettingsPage::PasswordRules => {
@@ -124,6 +122,30 @@ pub fn render_settings_content(
         }
         SettingsPage::Plugins => {
             render_plugins_settings(ui, theme, plugin_manager, plugins_state, app_state)
+        }
+        SettingsPage::ToolbarLayout => crate::features::settings::pages::render_toolbar_layout(
+            ui,
+            theme,
+            app_state,
+            toolbar_layout_state,
+        ),
+        SettingsPage::InfoPanelLayout => {
+            // TODO: Render info panel layout editor
+            ui.vertical_centered(|ui| {
+                ui.add_space(40.0);
+                ui.label(
+                    egui::RichText::new("Info Panel Layout Editor")
+                        .size(18.0)
+                        .strong()
+                        .color(theme.colors.on_surface),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Coming soon - customize info panel sections")
+                        .color(theme.colors.on_surface_variant),
+                );
+            });
+            None
         }
     }
 }

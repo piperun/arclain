@@ -61,6 +61,8 @@ pub enum SettingsAction {
     ClearCacheContent,
     /// Save general settings
     SaveGeneral { open_nested_in_new_tab: bool },
+    /// Navigate to another settings page
+    NavigateTo(crate::core::navigation::SettingsPage),
 }
 
 /// State for the general settings page

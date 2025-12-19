@@ -182,7 +182,10 @@ fn render_group(
                     });
                 });
 
-                ui.add_space(4.0);
+                // Separator between items (not after last item)
+                if idx < item_count - 1 {
+                    ui.add(egui::Separator::default().spacing(8.0));
+                }
             }
         });
 
@@ -193,15 +196,6 @@ fn render_group(
             // Swap sort_order values
             let order_a = items[idx].sort_order;
             let order_b = items[new_idx].sort_order;
-            tracing::info!(
-                "Reordering items: idx={} ({}) sort_order {} <-> idx={} ({}) sort_order {}",
-                idx,
-                items[idx].id,
-                order_a,
-                new_idx,
-                items[new_idx].id,
-                order_b
-            );
             items[idx].sort_order = order_b;
             items[new_idx].sort_order = order_a;
             *on_change = true;
