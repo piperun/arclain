@@ -5,7 +5,6 @@
 //! - Selection area with move left/right arrows
 //! - Item picker grid for toggling visibility
 
-use crate::features::settings::types::SettingsAction;
 use crate::shared::theme::AppTheme;
 use arclain_db::{DisplayMode, UiItem, UiRegion};
 use eframe::egui;
@@ -59,9 +58,7 @@ pub fn render_toolbar_layout(
     theme: &AppTheme,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     state: &mut ToolbarLayoutState,
-) -> Option<SettingsAction> {
-    let mut action: Option<SettingsAction> = None;
-
+) {
     // Load items from database
     if !state.loaded {
         let state_guard = app_state.lock();
@@ -73,67 +70,8 @@ pub fn render_toolbar_layout(
         }
     }
 
-    // Header with back button and save/reset
-    ui.horizontal(|ui| {
-        if ui
-            .button(format!(
-                "{} Back to Interface",
-                egui_phosphor::regular::ARROW_LEFT
-            ))
-            .clicked()
-        {
-            action = Some(SettingsAction::NavigateTo(
-                crate::core::navigation::SettingsPage::Interface,
-            ));
-        }
-
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Save button
-            let save_btn = ui.add_enabled(
-                state.dirty,
-                egui::Button::new(format!("{} Save", egui_phosphor::regular::FLOPPY_DISK)),
-            );
-            if save_btn.clicked() {
-                // Save to database
-                {
-                    let state_guard = app_state.lock();
-                    if let Some(dbs) = &state_guard.dbs {
-                        let _ = dbs.config.with_connection(|conn| {
-                            state.save_to_db(conn);
-                            Ok::<_, anyhow::Error>(())
-                        });
-                    }
-                }
-                // Update main toolbar
-                {
-                    let state_guard = app_state.lock();
-                    if let Some(dbs) = &state_guard.dbs {
-                        if let Ok(items) = dbs.config.with_connection(|conn| {
-                            arclain_db::list_items_by_region(conn, UiRegion::Toolbar)
-                        }) {
-                            drop(state_guard);
-                            app_state.lock().toolbar_items = items;
-                        }
-                    }
-                }
-            }
-
-            // Reset button
-            if ui
-                .button(format!(
-                    "{} Reset",
-                    egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE
-                ))
-                .clicked()
-            {
-                state.loaded = false;
-                state.dirty = false;
-                state.selected_item_id = None;
-            }
-        });
-    });
-
-    ui.add_space(16.0);
+    // The header with Save/Reset is now rendered by SettingsHeader in ui.rs
+    // This page only renders the content area
 
     // Section: Live Preview (click to select)
     ui.label(
@@ -176,8 +114,6 @@ pub fn render_toolbar_layout(
         &mut state.selected_item_id,
         &mut state.dirty,
     );
-
-    action
 }
 
 /// Render clickable toolbar preview - clicking selects an item
