@@ -5,7 +5,7 @@ use crate::features::settings::settings_content::{
     SettingsAction,
 };
 use crate::features::settings::pages::interface::InterfaceSettingsState;
-use crate::features::settings::pages::ToolbarLayoutState;
+use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
 use crate::features::settings::settings_page::{
     render_breadcrumb, render_settings_navigator, render_settings_overview,
 };
@@ -20,6 +20,7 @@ pub struct SettingsFeature {
     pub plugins_state: crate::features::plugins::types::PluginsListState,
     pub interface_state: InterfaceSettingsState,
     pub toolbar_layout_state: ToolbarLayoutState,
+    pub info_panel_layout_state: InfoPanelLayoutState,
     pub last_visited_page: Option<SettingsPage>,
 }
 
@@ -56,6 +57,7 @@ impl SettingsFeature {
             plugins_state: crate::features::plugins::types::PluginsListState::default(),
             interface_state: InterfaceSettingsState::default(),
             toolbar_layout_state: ToolbarLayoutState::default(),
+            info_panel_layout_state: InfoPanelLayoutState::default(),
             last_visited_page: None,
         }
     }
@@ -186,6 +188,10 @@ impl SettingsFeature {
 
                                         // Header Configuration Dispatch
                                         let install_clicked = std::cell::Cell::new(false); // Captured by plugins header
+                                        let toolbar_save_clicked = std::cell::Cell::new(false);
+                                        let toolbar_reset_clicked = std::cell::Cell::new(false);
+                                        let info_panel_save_clicked = std::cell::Cell::new(false);
+                                        let info_panel_reset_clicked = std::cell::Cell::new(false);
                                         
                                         let header_config = if *page == SettingsPage::Plugins {
                                             // Delegate to Plugins Page
@@ -194,6 +200,36 @@ impl SettingsFeature {
                                                 page, 
                                                 &install_clicked
                                             )
+                                        } else if *page == SettingsPage::ToolbarLayout {
+                                            // Toolbar Layout Page header
+                                            let has_changes = self.toolbar_layout_state.dirty;
+                                            crate::features::settings::header_config::SettingsHeaderConfig::new("Toolbar Layout")
+                                                .icon(egui_phosphor::regular::STACK.to_string())
+                                                .description("Customize toolbar button layout")
+                                                .has_changes(has_changes)
+                                                .on_save(|| {
+                                                    toolbar_save_clicked.set(true);
+                                                })
+                                                .custom_actions(|ui| {
+                                                    if ui.button(format!("{} Reset", egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                                                        toolbar_reset_clicked.set(true);
+                                                    }
+                                                })
+                                        } else if *page == SettingsPage::InfoPanelLayout {
+                                            // Info Panel Layout Page header
+                                            let has_changes = self.info_panel_layout_state.dirty;
+                                            crate::features::settings::header_config::SettingsHeaderConfig::new("Info Panel Layout")
+                                                .icon(egui_phosphor::regular::SIDEBAR.to_string())
+                                                .description("Customize info panel sections")
+                                                .has_changes(has_changes)
+                                                .on_save(|| {
+                                                    info_panel_save_clicked.set(true);
+                                                })
+                                                .custom_actions(|ui| {
+                                                    if ui.button(format!("{} Reset", egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE)).clicked() {
+                                                        info_panel_reset_clicked.set(true);
+                                                    }
+                                                })
                                         } else {
                                             // Default Header for other pages
                                             crate::features::settings::header_config::SettingsHeaderConfig::new(page.display_name())
@@ -304,6 +340,52 @@ impl SettingsFeature {
                                             }
                                         }
                                         
+                                        // Handle toolbar layout save
+                                        if toolbar_save_clicked.get() {
+                                            let state_guard = shared.app_state.lock();
+                                            if let Some(dbs) = &state_guard.dbs {
+                                                let _ = dbs.config.with_connection(|conn| {
+                                                    self.toolbar_layout_state.save_to_db(conn);
+                                                    Ok::<_, anyhow::Error>(())
+                                                });
+                                            }
+                                            drop(state_guard);
+                                            // Reload main toolbar
+                                            let state_guard = shared.app_state.lock();
+                                            if let Some(dbs) = &state_guard.dbs {
+                                                if let Ok(items) = dbs.config.with_connection(|conn| {
+                                                    arclain_db::list_items_by_region(conn, arclain_db::UiRegion::Toolbar)
+                                                }) {
+                                                    drop(state_guard);
+                                                    shared.app_state.lock().toolbar_items = items;
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Handle toolbar layout reset
+                                        if toolbar_reset_clicked.get() {
+                                            self.toolbar_layout_state.loaded = false;
+                                            self.toolbar_layout_state.dirty = false;
+                                        }
+                                        
+                                        // Handle info panel layout save
+                                        if info_panel_save_clicked.get() {
+                                            let state_guard = shared.app_state.lock();
+                                            if let Some(dbs) = &state_guard.dbs {
+                                                let _ = dbs.config.with_connection(|conn| {
+                                                    self.info_panel_layout_state.save_to_db(conn);
+                                                    Ok::<_, anyhow::Error>(())
+                                                });
+                                            }
+                                            // Info panel items are loaded per-page, no global state to update
+                                        }
+                                        
+                                        // Handle info panel layout reset
+                                        if info_panel_reset_clicked.get() {
+                                            self.info_panel_layout_state.loaded = false;
+                                            self.info_panel_layout_state.dirty = false;
+                                        }
+                                        
                                         ui.add_space(20.0);
                                     });
                                 });
@@ -349,6 +431,7 @@ impl SettingsFeature {
                                                     rules_page,
                                                     &mut self.interface_state,
                                                     &mut self.toolbar_layout_state,
+                                                    &mut self.info_panel_layout_state,
                                                     &shared.app_state,
                                                 );
                                             }

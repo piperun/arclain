@@ -80,6 +80,7 @@ pub fn render_settings_content(
     rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
     interface_state: &mut crate::features::settings::pages::interface::InterfaceSettingsState,
     toolbar_layout_state: &mut crate::features::settings::pages::ToolbarLayoutState,
+    info_panel_layout_state: &mut crate::features::settings::pages::InfoPanelLayoutState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
 ) -> Option<SettingsAction> {
     match page {
@@ -123,28 +124,22 @@ pub fn render_settings_content(
         SettingsPage::Plugins => {
             render_plugins_settings(ui, theme, plugin_manager, plugins_state, app_state)
         }
-        SettingsPage::ToolbarLayout => crate::features::settings::pages::render_toolbar_layout(
-            ui,
-            theme,
-            app_state,
-            toolbar_layout_state,
-        ),
+        SettingsPage::ToolbarLayout => {
+            crate::features::settings::pages::render_toolbar_layout(
+                ui,
+                theme,
+                app_state,
+                toolbar_layout_state,
+            );
+            None
+        }
         SettingsPage::InfoPanelLayout => {
-            // TODO: Render info panel layout editor
-            ui.vertical_centered(|ui| {
-                ui.add_space(40.0);
-                ui.label(
-                    egui::RichText::new("Info Panel Layout Editor")
-                        .size(18.0)
-                        .strong()
-                        .color(theme.colors.on_surface),
-                );
-                ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new("Coming soon - customize info panel sections")
-                        .color(theme.colors.on_surface_variant),
-                );
-            });
+            crate::features::settings::pages::render_info_panel_layout(
+                ui,
+                theme,
+                app_state,
+                info_panel_layout_state,
+            );
             None
         }
     }
