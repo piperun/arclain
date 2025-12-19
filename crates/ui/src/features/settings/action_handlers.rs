@@ -2,11 +2,20 @@
 //!
 //! Extracted from ui.rs to reduce file size and improve organization.
 
+use crate::core::navigation::SettingsPage;
 use crate::features::plugins::types::PluginsListState;
 use crate::features::settings::settings_content::{
     ArchivesSettingsState, SecuritySettingsState, SettingsAction,
 };
 use crate::shared::SharedState;
+
+/// Check if action is navigation and extract target page
+pub fn extract_navigation(action: &SettingsAction) -> Option<SettingsPage> {
+    match action {
+        SettingsAction::NavigateTo(page) => Some(page.clone()),
+        _ => None,
+    }
+}
 
 /// Handle a settings action, mutating the appropriate state
 pub fn handle_action(
@@ -144,6 +153,9 @@ pub fn handle_action(
                     tracing::info!("General settings saved");
                 }
             }
+        }
+        SettingsAction::NavigateTo(_) => {
+            // Navigation is handled by extract_navigation before this function is called
         }
     }
 }

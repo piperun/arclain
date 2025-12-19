@@ -5,6 +5,7 @@ use crate::features::settings::settings_content::{
     SettingsAction,
 };
 use crate::features::settings::pages::interface::InterfaceSettingsState;
+use crate::features::settings::pages::ToolbarLayoutState;
 use crate::features::settings::settings_page::{
     render_breadcrumb, render_settings_navigator, render_settings_overview,
 };
@@ -18,6 +19,7 @@ pub struct SettingsFeature {
     pub password_rules_dialog: PasswordRulesDialog,
     pub plugins_state: crate::features::plugins::types::PluginsListState,
     pub interface_state: InterfaceSettingsState,
+    pub toolbar_layout_state: ToolbarLayoutState,
     pub last_visited_page: Option<SettingsPage>,
 }
 
@@ -53,6 +55,7 @@ impl SettingsFeature {
             },
             plugins_state: crate::features::plugins::types::PluginsListState::default(),
             interface_state: InterfaceSettingsState::default(),
+            toolbar_layout_state: ToolbarLayoutState::default(),
             last_visited_page: None,
         }
     }
@@ -345,6 +348,7 @@ impl SettingsFeature {
                                                     &mut self.plugins_state,
                                                     rules_page,
                                                     &mut self.interface_state,
+                                                    &mut self.toolbar_layout_state,
                                                     &shared.app_state,
                                                 );
                                             }
@@ -356,7 +360,13 @@ impl SettingsFeature {
             });
 
         if let Some(action) = action {
-            self.handle_action(action, shared);
+            // Check if this is a navigation action
+            if let Some(target_page) = crate::features::settings::action_handlers::extract_navigation(&action) {
+                navigate_to = Some(crate::core::AppPage::Settings(target_page));
+            } else {
+                // Handle non-navigation actions
+                self.handle_action(action, shared);
+            }
         }
 
         navigate_to

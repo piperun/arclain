@@ -36,6 +36,10 @@ pub enum SettingsPage {
     Security,
     /// Plugin management
     Plugins,
+    /// Toolbar layout editor
+    ToolbarLayout,
+    /// Info panel layout editor
+    InfoPanelLayout,
 }
 
 impl SettingsPage {
@@ -50,6 +54,8 @@ impl SettingsPage {
             SettingsPage::OrganizationRules => "Organization Rules",
             SettingsPage::Security => "Security",
             SettingsPage::Plugins => "Plugins",
+            SettingsPage::ToolbarLayout => "Toolbar Layout",
+            SettingsPage::InfoPanelLayout => "Info Panel Layout",
         }
     }
 
@@ -64,6 +70,8 @@ impl SettingsPage {
             SettingsPage::OrganizationRules => egui_phosphor::regular::LIST_CHECKS,
             SettingsPage::Security => egui_phosphor::regular::SHIELD,
             SettingsPage::Plugins => egui_phosphor::regular::PUZZLE_PIECE,
+            SettingsPage::ToolbarLayout => egui_phosphor::regular::STACK,
+            SettingsPage::InfoPanelLayout => egui_phosphor::regular::SIDEBAR,
         }
     }
 
@@ -78,6 +86,8 @@ impl SettingsPage {
             SettingsPage::OrganizationRules => "Manage archive organization rules",
             SettingsPage::Security => "Encryption and security settings",
             SettingsPage::Plugins => "Manage and configure plugins",
+            SettingsPage::ToolbarLayout => "Customize toolbar button layout",
+            SettingsPage::InfoPanelLayout => "Customize info panel sections",
         }
     }
 

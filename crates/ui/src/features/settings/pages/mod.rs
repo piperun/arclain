@@ -5,12 +5,14 @@
 pub mod archives;
 pub mod general;
 pub mod interface;
+pub mod layout_editor;
 pub mod organization_rules;
 pub mod plugins;
 pub mod security;
 
 // Re-export for convenience
 pub use interface::render_interface_settings;
+pub use layout_editor::{render_toolbar_layout, ToolbarLayoutState};
 pub use organization_rules::RulesPage;
 
 use crate::shared::theme::AppTheme;

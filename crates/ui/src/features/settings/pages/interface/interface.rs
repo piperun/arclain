@@ -1,3 +1,4 @@
+use crate::features::settings::types::SettingsAction;
 use crate::shared::theme::AppTheme;
 use arclain_db::{UiItem, UiRegion};
 use eframe::egui;
@@ -10,6 +11,8 @@ pub struct InterfaceSettingsState {
     pub layout_options: sections::layout_section::LayoutOptions,
     pub dirty: bool,
     pub loaded: bool,
+    /// Show the layout type selection dialog
+    pub layout_dialog_open: bool,
 }
 
 impl Default for InterfaceSettingsState {
@@ -25,6 +28,7 @@ impl Default for InterfaceSettingsState {
             },
             dirty: false,
             loaded: false,
+            layout_dialog_open: false,
         }
     }
 }
@@ -89,14 +93,14 @@ impl InterfaceSettingsState {
 }
 
 /// Render the Interface settings page
-/// Returns true if settings were saved
+/// Returns Some(SettingsAction) if navigation is requested
 pub fn render_interface_settings(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     interface_state: &mut InterfaceSettingsState,
-) -> bool {
-    let mut saved = false;
+) -> Option<SettingsAction> {
+    let mut action: Option<SettingsAction> = None;
 
     // Load items from database if not already loaded
     if !interface_state.loaded {
@@ -116,6 +120,20 @@ pub fn render_interface_settings(
 
         // Toolbar section
         render_section(ui, theme, "Toolbar", |ui| {
+            // Edit Layout button - opens dialog
+            ui.horizontal(|ui| {
+                if ui
+                    .button(format!(
+                        "{} Edit Layout",
+                        egui_phosphor::regular::PENCIL_SIMPLE
+                    ))
+                    .clicked()
+                {
+                    interface_state.layout_dialog_open = true;
+                }
+            });
+            ui.add_space(8.0);
+
             sections::toolbar_section::render(
                 ui,
                 theme,
@@ -204,13 +222,79 @@ pub fn render_interface_settings(
                         state.toolbar_items = items;
                     }
 
-                    saved = true;
+                    // Saved successfully - no action needed
                 }
             }
         }
     });
 
-    saved
+    // Layout type selection dialog
+    if interface_state.layout_dialog_open {
+        egui::Window::new("Choose Layout to Edit")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.set_min_width(280.0);
+
+                ui.vertical_centered(|ui| {
+                    ui.add_space(8.0);
+                    ui.label(
+                        egui::RichText::new("What would you like to customize?")
+                            .size(14.0)
+                            .color(theme.colors.on_surface),
+                    );
+                    ui.add_space(16.0);
+
+                    ui.horizontal(|ui| {
+                        // Toolbar button
+                        if ui
+                            .add_sized(
+                                [120.0, 40.0],
+                                egui::Button::new(format!(
+                                    "{} Toolbar",
+                                    egui_phosphor::regular::STACK
+                                )),
+                            )
+                            .clicked()
+                        {
+                            interface_state.layout_dialog_open = false;
+                            action = Some(SettingsAction::NavigateTo(
+                                crate::core::navigation::SettingsPage::ToolbarLayout,
+                            ));
+                        }
+
+                        ui.add_space(16.0);
+
+                        // Info Panel button
+                        if ui
+                            .add_sized(
+                                [120.0, 40.0],
+                                egui::Button::new(format!(
+                                    "{} Info Panel",
+                                    egui_phosphor::regular::SIDEBAR
+                                )),
+                            )
+                            .clicked()
+                        {
+                            interface_state.layout_dialog_open = false;
+                            action = Some(SettingsAction::NavigateTo(
+                                crate::core::navigation::SettingsPage::InfoPanelLayout,
+                            ));
+                        }
+                    });
+
+                    ui.add_space(12.0);
+
+                    // Cancel button
+                    if ui.button("Cancel").clicked() {
+                        interface_state.layout_dialog_open = false;
+                    }
+                });
+            });
+    }
+
+    action
 }
 
 /// Helper function to render a settings section with consistent styling

@@ -16,7 +16,7 @@ pub mod tree_panel;
 
 pub use breadcrumbs::Breadcrumbs;
 pub use search_bar::SearchBar;
-pub use settings_form::{SettingsForm, SettingsGroup};
+pub use settings_form::SettingsForm;
 pub use settings_header::SettingsHeader;
 
 // Re-export commonly used types and states
