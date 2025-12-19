@@ -7,6 +7,8 @@
 
 use crate::shared::theme::AppTheme;
 use arclain_db::{list_items_by_region, upsert_item, UiItem, UiRegion};
+use arclain_plugins::manager::PluginManager;
+use arclain_plugins::types::PluginExtensionPoint;
 use eframe::egui;
 
 /// State for info panel layout editor
@@ -53,6 +55,7 @@ pub fn render_info_panel_layout(
     theme: &AppTheme,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     state: &mut InfoPanelLayoutState,
+    plugin_manager: Option<&PluginManager>,
 ) {
     // Load items from database
     if !state.loaded {
@@ -110,6 +113,11 @@ pub fn render_info_panel_layout(
         &mut state.selected_item_id,
         &mut state.dirty,
     );
+
+    // Plugin info panel items section
+    if let Some(manager) = plugin_manager {
+        render_plugin_info_panel_section(ui, theme, manager);
+    }
 }
 
 /// Render clickable panel section preview - vertical list of sections
@@ -391,6 +399,78 @@ fn render_section_picker(
                 }
                 *dirty = true;
             }
+        }
+    });
+}
+
+/// Render section showing plugins that provide Info Panel UI
+fn render_plugin_info_panel_section(ui: &mut egui::Ui, theme: &AppTheme, manager: &PluginManager) {
+    let enabled_plugins: Vec<_> = manager
+        .list_plugins()
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| (p.id.clone(), p.manifest.plugin.name.clone()))
+        .collect();
+
+    if enabled_plugins.is_empty() {
+        return;
+    }
+
+    // Check which plugins provide InfoPanel UI
+    let mut info_panel_plugins: Vec<(String, String)> = Vec::new();
+    for (plugin_id, plugin_name) in &enabled_plugins {
+        let has_info_panel = manager.with_plugin_instance(plugin_id, |instance| {
+            if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::InfoPanel) {
+                !elements.is_empty()
+            } else {
+                false
+            }
+        });
+        if has_info_panel == Some(true) {
+            info_panel_plugins.push((plugin_id.clone(), plugin_name.clone()));
+        }
+    }
+
+    if info_panel_plugins.is_empty() {
+        return;
+    }
+
+    ui.add_space(16.0);
+
+    // Render the plugin section
+    ui.label(
+        egui::RichText::new("Plugin Info Panel Sections (auto-inserted)")
+            .size(14.0)
+            .strong()
+            .color(theme.colors.on_surface),
+    );
+    ui.add_space(8.0);
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+        for (plugin_id, plugin_name) in &info_panel_plugins {
+            let chip = egui::Frame::NONE
+                .fill(theme.colors.tertiary_container)
+                .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} {}",
+                            egui_phosphor::regular::PUZZLE_PIECE,
+                            plugin_name
+                        ))
+                        .color(theme.colors.on_tertiary_container),
+                    );
+                });
+
+            // Tooltip on hover
+            chip.response.on_hover_ui(|ui| {
+                ui.label(format!("Plugin: {}", plugin_id));
+                ui.label("This plugin provides info panel sections.");
+                ui.label("Enable/disable the plugin in Plugins settings.");
+            });
         }
     });
 }

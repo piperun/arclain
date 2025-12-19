@@ -225,6 +225,7 @@ impl eframe::App for ArclainApp {
                     let has_selection = false; // TODO: Implement selection tracking
                     let has_metadata = state.plugin_metadata.is_some();
                     let toolbar_config = components::toolbar::ToolbarConfig::new(state.toolbar_items.clone());
+                    let plugin_manager = state.plugin_manager.clone();
                     drop(state);
 
                     let actions = components::toolbar::render(
@@ -238,6 +239,7 @@ impl eframe::App for ArclainApp {
                         has_selection,
                         has_metadata,
                         Some(&toolbar_config),
+                        plugin_manager.as_ref(),
                     );
 
                     // Handle toolbar actions

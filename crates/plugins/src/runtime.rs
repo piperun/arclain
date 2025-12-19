@@ -193,6 +193,8 @@ impl PluginInstance {
             PluginExtensionPoint::MainPage => "MainPage",
             PluginExtensionPoint::Sidebar => "Sidebar",
             PluginExtensionPoint::ContextMenu => "ContextMenu",
+            PluginExtensionPoint::Toolbar => "Toolbar",
+            PluginExtensionPoint::InfoPanel => "InfoPanel",
         };
 
         let ui_elements = self

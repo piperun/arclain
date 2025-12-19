@@ -1,8 +1,12 @@
 use crate::shared::theme::AppTheme;
 use arclain_db::{DisplayMode, UiItem, UiRegion};
+use arclain_plugins::manager::PluginManager;
+use arclain_plugins::types::PluginExtensionPoint;
 use arclain_theme::ButtonVariant;
 use eframe::egui;
 use egui::Widget;
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 /// Configuration for toolbar items loaded from database
 pub struct ToolbarConfig {
@@ -361,6 +365,7 @@ pub fn render(
     has_selection: bool,
     _has_metadata: bool,
     config: Option<&ToolbarConfig>,
+    plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
 ) -> ToolbarActions {
     let mut actions = ToolbarActions::default();
 
@@ -403,6 +408,41 @@ pub fn render(
             });
 
             ui.add_space(4.0);
+        }
+
+        // Render plugin toolbar UI elements
+        if let Some(manager_arc) = plugin_manager {
+            let manager = manager_arc.lock();
+            let plugins: Vec<String> = manager
+                .list_plugins()
+                .iter()
+                .filter(|p| p.enabled)
+                .map(|p| p.id.clone())
+                .collect();
+
+            for plugin_id in plugins {
+                let _ = manager.with_plugin_instance(&plugin_id, |instance| {
+                    if let Ok(ui_elements) = instance.get_ui_layout(PluginExtensionPoint::Toolbar) {
+                        if !ui_elements.is_empty() {
+                            ui.separator();
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                                let mut callback: Box<dyn FnMut(&str, Option<String>)> =
+                                    Box::new(|element_id: &str, value: Option<String>| {
+                                        let _ = instance.send_ui_event(element_id, value);
+                                    });
+                                crate::features::plugins::plugin_ui::render_ui_elements(
+                                    ui,
+                                    &ui_elements,
+                                    &mut callback,
+                                    &theme.colors,
+                                );
+                            });
+                        }
+                    }
+                    Ok::<_, anyhow::Error>(())
+                });
+            }
         }
 
         // Panel toggles - right aligned

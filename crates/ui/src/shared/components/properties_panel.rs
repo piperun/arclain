@@ -98,6 +98,41 @@ pub fn render(
                         }
                     }
 
+                    // Also check for InfoPanel extension point
+                    if let Ok(info_elements) =
+                        instance.get_ui_layout(PluginExtensionPoint::InfoPanel)
+                    {
+                        if !info_elements.is_empty() {
+                            ui.add_space(8.0);
+
+                            let plugin_name = instance
+                                .get_metadata()
+                                .map(|m| m.name)
+                                .unwrap_or_else(|_| "Unknown".to_string());
+
+                            arclain_widgets::CollapsibleSection::new(
+                                &format!("{}_info", plugin_id),
+                                &format!("{} Info", plugin_name),
+                            )
+                            .with_theme_colors(&theme.colors)
+                            .show(ui, |ui| {
+                                ui.add_space(4.0);
+
+                                let mut callback: Box<dyn FnMut(&str, Option<String>)> =
+                                    Box::new(|element_id: &str, value: Option<String>| {
+                                        let _ = instance.send_ui_event(element_id, value);
+                                    });
+
+                                plugin_ui::render_ui_elements(
+                                    ui,
+                                    &info_elements,
+                                    &mut callback,
+                                    &theme.colors,
+                                );
+                            });
+                        }
+                    }
+
                     // Check for emitted metadata
                     instance.get_emitted_metadata()
                 });
