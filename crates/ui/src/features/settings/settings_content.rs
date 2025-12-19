@@ -130,6 +130,7 @@ pub fn render_settings_content(
                 theme,
                 app_state,
                 toolbar_layout_state,
+                plugin_manager,
             );
             None
         }
@@ -139,6 +140,7 @@ pub fn render_settings_content(
                 theme,
                 app_state,
                 info_panel_layout_state,
+                plugin_manager,
             );
             None
         }

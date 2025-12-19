@@ -7,6 +7,8 @@
 
 use crate::shared::theme::AppTheme;
 use arclain_db::{DisplayMode, UiItem, UiRegion};
+use arclain_plugins::manager::PluginManager;
+use arclain_plugins::types::PluginExtensionPoint;
 use eframe::egui;
 
 /// State for toolbar layout editor
@@ -58,6 +60,7 @@ pub fn render_toolbar_layout(
     theme: &AppTheme,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     state: &mut ToolbarLayoutState,
+    plugin_manager: Option<&PluginManager>,
 ) {
     // Load items from database
     if !state.loaded {
@@ -114,6 +117,11 @@ pub fn render_toolbar_layout(
         &mut state.selected_item_id,
         &mut state.dirty,
     );
+
+    // Plugin toolbar items section
+    if let Some(manager) = plugin_manager {
+        render_plugin_toolbar_section(ui, theme, manager);
+    }
 }
 
 /// Render clickable toolbar preview - clicking selects an item
@@ -466,4 +474,76 @@ fn icon_name_to_char(name: &str) -> &'static str {
         "INFO" => egui_phosphor::regular::INFO,
         _ => egui_phosphor::regular::QUESTION,
     }
+}
+
+/// Render section showing plugins that provide Toolbar UI
+fn render_plugin_toolbar_section(ui: &mut egui::Ui, theme: &AppTheme, manager: &PluginManager) {
+    let enabled_plugins: Vec<_> = manager
+        .list_plugins()
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| (p.id.clone(), p.manifest.plugin.name.clone()))
+        .collect();
+
+    if enabled_plugins.is_empty() {
+        return;
+    }
+
+    // Check which plugins provide Toolbar UI
+    let mut toolbar_plugins: Vec<(String, String)> = Vec::new();
+    for (plugin_id, plugin_name) in &enabled_plugins {
+        let has_toolbar = manager.with_plugin_instance(plugin_id, |instance| {
+            if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::Toolbar) {
+                !elements.is_empty()
+            } else {
+                false
+            }
+        });
+        if has_toolbar == Some(true) {
+            toolbar_plugins.push((plugin_id.clone(), plugin_name.clone()));
+        }
+    }
+
+    if toolbar_plugins.is_empty() {
+        return;
+    }
+
+    ui.add_space(16.0);
+
+    // Render the plugin section
+    ui.label(
+        egui::RichText::new("Plugin Toolbar Items (auto-inserted)")
+            .size(14.0)
+            .strong()
+            .color(theme.colors.on_surface),
+    );
+    ui.add_space(8.0);
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+
+        for (plugin_id, plugin_name) in &toolbar_plugins {
+            let chip = egui::Frame::NONE
+                .fill(theme.colors.tertiary_container)
+                .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+                .inner_margin(egui::Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{} {}",
+                            egui_phosphor::regular::PUZZLE_PIECE,
+                            plugin_name
+                        ))
+                        .color(theme.colors.on_tertiary_container),
+                    );
+                });
+
+            // Tooltip on hover
+            chip.response.on_hover_ui(|ui| {
+                ui.label(format!("Plugin: {}", plugin_id));
+                ui.label("This plugin provides toolbar buttons.");
+                ui.label("Enable/disable the plugin in Plugins settings.");
+            });
+        }
+    });
 }

@@ -162,6 +162,10 @@ pub enum PluginExtensionPoint {
     Sidebar,
     /// Future: context menu items
     ContextMenu,
+    /// Toolbar button slot
+    Toolbar,
+    /// Info panel section
+    InfoPanel,
 }
 
 /// UI element that a plugin can define
