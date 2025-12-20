@@ -17,17 +17,26 @@ pub struct ContentCache {
 }
 
 impl ContentCache {
-    /// Create a new content cache at the given directory
-    pub fn new(cache_dir: PathBuf, index_db: SqliteDb) -> Result<Self> {
-        // Ensure cache directory exists
-        std::fs::create_dir_all(&cache_dir)
-            .with_context(|| format!("Creating cache directory {:?}", cache_dir))?;
+    /// Create a new content cache at the given base directory.
+    ///
+    /// Creates the following structure:
+    /// ```text
+    /// <base_cache_dir>/
+    ///   content/
+    ///     images/    <- cacache stores content here
+    /// ```
+    pub fn new(base_cache_dir: PathBuf, index_db: SqliteDb) -> Result<Self> {
+        // Create organized folder structure
+        let images_dir = base_cache_dir.join("content").join("images");
+
+        std::fs::create_dir_all(&images_dir)
+            .with_context(|| format!("Creating cache directory {:?}", images_dir))?;
 
         // Initialize SQLite schema
         index_db.init_schema(init_cache_index_schema)?;
 
         Ok(Self {
-            cache_dir,
+            cache_dir: images_dir,
             index_db,
         })
     }

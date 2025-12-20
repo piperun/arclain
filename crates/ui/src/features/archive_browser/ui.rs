@@ -2,6 +2,8 @@ use crate::shared::components::{file_list, tree_panel};
 
 use super::{ArchiveBrowserAction, ArchiveBrowserState};
 use crate::shared::SharedState;
+use arclain_db::ActionType;
+use arclain_plugins::types::PluginExtensionPoint;
 
 pub fn render_archive_browser(
     ctx: &egui::Context,
@@ -116,45 +118,100 @@ fn render_properties_panel(
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let app_state = shared.app_state.lock();
                 let archive_info = &app_state.archive_info;
+                let items = &app_state.info_panel_items;
 
-                let mut groups = Vec::new();
+                let mut sections: Vec<properties_panel::PanelSection> = Vec::new();
 
-                // Archive Info Group
-                if archive_info.archive_loaded {
-                    groups.push(properties_panel::create_archive_info_group(
-                        &archive_info.archive_format,
-                        archive_info.file_count,
-                        &format_size(archive_info.total_size),
-                        &format_size(archive_info.compressed_size),
-                        archive_info.total_crc32.as_deref(),
-                        archive_info.archive_encrypted,
-                        archive_info.headers_encrypted,
-                        archive_info.encryption_method.as_deref(),
-                    ));
-                }
-
-                // Selected File Info
+                // Helper to get selected entry
                 let selected_entries: Vec<_> =
                     state.entries.iter().filter(|e| e.selected).collect();
-                if selected_entries.len() == 1 {
-                    let entry = selected_entries[0];
-                    groups.push(properties_panel::create_file_info_group(
-                        &entry.name,
-                        &entry.size,
-                        &entry.compressed,
-                        &entry.ratio,
-                    ));
-                    groups.push(properties_panel::create_attributes_group(
-                        &entry.modified,
-                        &entry.crc32,
-                        if entry.encrypted { "Encrypted" } else { "None" },
-                    ));
-                }
+                let selected_entry = if selected_entries.len() == 1 {
+                    Some(selected_entries[0])
+                } else {
+                    None
+                };
 
-                // Plugin Metadata Group
-                if let Some(metadata) = &archive_info.plugin_metadata {
-                    if let Some(group) = properties_panel::create_plugin_metadata_group(metadata) {
-                        groups.push(group);
+                for item in items.iter().filter(|i| i.visible) {
+                    match item.id.as_str() {
+                        "info.archive" => {
+                            if archive_info.archive_loaded {
+                                sections.push(properties_panel::PanelSection::Group(
+                                    properties_panel::create_archive_info_group(
+                                        &archive_info.archive_format,
+                                        archive_info.file_count,
+                                        &format_size(archive_info.total_size),
+                                        &format_size(archive_info.compressed_size),
+                                        archive_info.total_crc32.as_deref(),
+                                        archive_info.archive_encrypted,
+                                        archive_info.headers_encrypted,
+                                        archive_info.encryption_method.as_deref(),
+                                    ),
+                                ));
+                            }
+                        }
+                        "info.file" => {
+                            if let Some(entry) = selected_entry {
+                                sections.push(properties_panel::PanelSection::Group(
+                                    properties_panel::create_file_info_group(
+                                        &entry.name,
+                                        &entry.size,
+                                        &entry.compressed,
+                                        &entry.ratio,
+                                    ),
+                                ));
+                            }
+                        }
+                        "info.attributes" => {
+                            if let Some(entry) = selected_entry {
+                                sections.push(properties_panel::PanelSection::Group(
+                                    properties_panel::create_attributes_group(
+                                        &entry.modified,
+                                        &entry.crc32,
+                                        if entry.encrypted { "Encrypted" } else { "None" },
+                                    ),
+                                ));
+                            }
+                        }
+                        "info.plugin_metadata" => {
+                            if let Some(metadata) = &archive_info.plugin_metadata {
+                                if let Some(group) =
+                                    properties_panel::create_plugin_metadata_group(metadata)
+                                {
+                                    sections.push(properties_panel::PanelSection::Group(group));
+                                }
+                            }
+                        }
+                        _ => {
+                            // Check for plugin custom UI
+                            if item.action_type == ActionType::Plugin {
+                                if let Some(plugin_id) = &item.action_data {
+                                    if let Some(manager_arc) = &app_state.plugin_manager {
+                                        let manager = manager_arc.lock();
+                                        // Attempt to get UI layout for this item from plugin
+                                        // We can't actually send arbitrary IDs to "get_ui_layout" unless we modify the plugin API
+                                        // or interpret action_data specifically.
+                                        // But the `get_ui_layout` for InfoPanel typically returns a full list.
+                                        // The item in DB represents the whole plugin block?
+                                        // Yes, sync_plugin_items creates one item per plugin for InfoPanel.
+
+                                        let elements = manager
+                                            .with_plugin_instance(plugin_id, |instance| {
+                                                instance
+                                                    .get_ui_layout(PluginExtensionPoint::Panel)
+                                                    .unwrap_or_default()
+                                            })
+                                            .unwrap_or_default();
+
+                                        if !elements.is_empty() {
+                                            sections.push(properties_panel::PanelSection::Plugin {
+                                                plugin_id: plugin_id.clone(),
+                                                elements,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -163,8 +220,9 @@ fn render_properties_panel(
                 let panel_action = properties_panel::render(
                     ui,
                     &shared.theme,
-                    &groups,
-                    shared.app_state.lock().plugin_manager.as_ref(),
+                    &sections,
+                    shared.app_state.lock().plugin_manager.as_ref(), // Needs access for callbacks
+                    Some(shared),
                 );
 
                 match panel_action {

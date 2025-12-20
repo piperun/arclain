@@ -6,7 +6,7 @@
 //! - Item picker grid for toggling visibility
 
 use crate::shared::theme::AppTheme;
-use arclain_db::{DisplayMode, UiItem, UiRegion};
+use arclain_db::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::PluginExtensionPoint;
 use eframe::egui;
@@ -73,6 +73,11 @@ pub fn render_toolbar_layout(
         }
     }
 
+    // Sync plugin items into the list
+    if let Some(manager) = plugin_manager {
+        sync_plugin_items(state, manager);
+    }
+
     // The header with Save/Reset is now rendered by SettingsHeader in ui.rs
     // This page only renders the content area
 
@@ -117,10 +122,65 @@ pub fn render_toolbar_layout(
         &mut state.selected_item_id,
         &mut state.dirty,
     );
+}
 
-    // Plugin toolbar items section
-    if let Some(manager) = plugin_manager {
-        render_plugin_toolbar_section(ui, theme, manager);
+/// Sync plugins into the items list
+fn sync_plugin_items(state: &mut ToolbarLayoutState, manager: &PluginManager) {
+    let enabled_plugins: Vec<_> = manager
+        .list_plugins()
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| (p.id.clone(), p.manifest.plugin.name.clone()))
+        .collect();
+
+    let mut changed = false;
+
+    for (plugin_id, plugin_name) in enabled_plugins {
+        // Check if plugin provides Toolbar UI
+        let has_toolbar = manager
+            .with_plugin_instance(&plugin_id, |instance| {
+                if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::PluginButton) {
+                    !elements.is_empty()
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+
+        if !has_toolbar {
+            continue;
+        }
+
+        // Check if item exists
+        let exists = state.items.iter().any(|item| {
+            item.action_type == ActionType::Plugin && item.action_data.as_ref() == Some(&plugin_id)
+        });
+
+        if !exists {
+            // Add new item
+            // Find max sort order
+            let max_sort = state.items.iter().map(|i| i.sort_order).max().unwrap_or(0);
+
+            let id = format!("plugin_{}", plugin_id);
+
+            state.items.push(UiItem {
+                id,
+                region: UiRegion::Toolbar,
+                group_id: Some("plugins".to_string()),
+                label: plugin_name,
+                icon: Some("PUZZLE_PIECE".to_string()), // Will be mapped to puzzle piece icon
+                action_type: ActionType::Plugin,
+                action_data: Some(plugin_id),
+                visible: true, // Visible by default when first discovered
+                sort_order: max_sort + 10,
+                display_mode: DisplayMode::IconAndText,
+            });
+            changed = true;
+        }
+    }
+
+    if changed {
+        state.dirty = true;
     }
 }
 
@@ -351,7 +411,7 @@ fn render_item_picker(
     selected_id: &mut Option<String>,
     dirty: &mut bool,
 ) {
-    let groups = ["navigation", "file_actions", "view", "panels"];
+    let groups = ["navigation", "file_actions", "view", "panels", "plugins"];
 
     for group_name in groups {
         let pretty_name = match group_name {
@@ -359,6 +419,7 @@ fn render_item_picker(
             "file_actions" => "File Actions",
             "view" => "View Mode",
             "panels" => "Panel Toggles",
+            "plugins" => "Plugins",
             _ => group_name,
         };
 
@@ -474,76 +535,4 @@ fn icon_name_to_char(name: &str) -> &'static str {
         "INFO" => egui_phosphor::regular::INFO,
         _ => egui_phosphor::regular::QUESTION,
     }
-}
-
-/// Render section showing plugins that provide Toolbar UI
-fn render_plugin_toolbar_section(ui: &mut egui::Ui, theme: &AppTheme, manager: &PluginManager) {
-    let enabled_plugins: Vec<_> = manager
-        .list_plugins()
-        .iter()
-        .filter(|p| p.enabled)
-        .map(|p| (p.id.clone(), p.manifest.plugin.name.clone()))
-        .collect();
-
-    if enabled_plugins.is_empty() {
-        return;
-    }
-
-    // Check which plugins provide Toolbar UI
-    let mut toolbar_plugins: Vec<(String, String)> = Vec::new();
-    for (plugin_id, plugin_name) in &enabled_plugins {
-        let has_toolbar = manager.with_plugin_instance(plugin_id, |instance| {
-            if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::Toolbar) {
-                !elements.is_empty()
-            } else {
-                false
-            }
-        });
-        if has_toolbar == Some(true) {
-            toolbar_plugins.push((plugin_id.clone(), plugin_name.clone()));
-        }
-    }
-
-    if toolbar_plugins.is_empty() {
-        return;
-    }
-
-    ui.add_space(16.0);
-
-    // Render the plugin section
-    ui.label(
-        egui::RichText::new("Plugin Toolbar Items (auto-inserted)")
-            .size(14.0)
-            .strong()
-            .color(theme.colors.on_surface),
-    );
-    ui.add_space(8.0);
-
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-
-        for (plugin_id, plugin_name) in &toolbar_plugins {
-            let chip = egui::Frame::NONE
-                .fill(theme.colors.tertiary_container)
-                .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-                .inner_margin(egui::Margin::symmetric(12, 6))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} {}",
-                            egui_phosphor::regular::PUZZLE_PIECE,
-                            plugin_name
-                        ))
-                        .color(theme.colors.on_tertiary_container),
-                    );
-                });
-
-            // Tooltip on hover
-            chip.response.on_hover_ui(|ui| {
-                ui.label(format!("Plugin: {}", plugin_id));
-                ui.label("This plugin provides toolbar buttons.");
-                ui.label("Enable/disable the plugin in Plugins settings.");
-            });
-        }
-    });
 }

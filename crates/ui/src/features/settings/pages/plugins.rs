@@ -5,6 +5,7 @@
 use crate::features::plugins::types::PluginsListState;
 use crate::features::settings::types::SettingsAction;
 use crate::shared::theme::AppTheme;
+use crate::shared::SharedState;
 use arclain_plugins::PluginManager;
 use eframe::egui;
 
@@ -15,6 +16,7 @@ pub fn render(
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
+    shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
     // Update plugin list from manager if available
     if let Some(manager) = plugin_manager {
@@ -31,5 +33,6 @@ pub fn render(
         plugin_manager,
         plugins_state,
         app_state,
+        shared,
     )
 }

@@ -42,22 +42,27 @@ interface host {
     // Caching
     get-cached-metadata: func(id: string) -> option<string>;
     save-cached-metadata: func(id: string, json: string);
+    list-cached-entries: func() -> list<string>;
+    export-cache: func() -> result<string, string>;
+    import-cache: func() -> result<string, string>;
+
+    // Async Fetching
+    start-async-fetch: func(url: string) -> string;
+    poll-async-fetch: func(request-id: string) -> option<result<string, string>>;
 }
 
 interface ui {
-    // UI Types
-    variant ui-element {
-        label(label-config),
-        button(button-config),
-        text-input(text-input-config),
-        checkbox(checkbox-config),
-        radio-group(radio-group-config),
-        slider(slider-config),
-        dropdown(dropdown-config),
-        separator,
-        space(f32),
+    // Button actions (declarative navigation)
+    variant button-action {
+        none,
+        show-dialog(string),
+        close-dialog,
+        open-page(string),
+        close-page,
+        custom(string),
     }
-    
+
+    // UI Element configs
     record label-config {
         text: string,
         bold: bool,
@@ -67,6 +72,7 @@ interface ui {
     record button-config {
         id: string,
         label: string,
+        action: option<button-action>,
     }
     
     record text-input-config {
@@ -102,6 +108,70 @@ interface ui {
         label: string,
         options: list<string>,
         selected: string,
+    }
+
+    // New: Image config
+    record image-config {
+        cache-key: option<string>,
+        url: option<string>,
+        max-height: option<f32>,
+    }
+
+    // UI Element variant
+    // Note: Layout containers (row, column, grid) are handled by the host.
+    // Plugins return flat lists of elements.
+    variant ui-element {
+        label(label-config),
+        button(button-config),
+        text-input(text-input-config),
+        checkbox(checkbox-config),
+        radio-group(radio-group-config),
+        slider(slider-config),
+        dropdown(dropdown-config),
+        separator,
+        space(f32),
+        image(image-config),
+    }
+
+    // Plugin actions (returned from on-ui-event)
+    enum toast-level {
+        info,
+        success,
+        warning,
+        error,
+    }
+
+    record toast-config {
+        message: string,
+        level: toast-level,
+    }
+
+    record message-config {
+        title: string,
+        message: string,
+    }
+
+    record cache-request {
+        key: string,
+        url: string,
+    }
+
+    record element-update {
+        id: string,
+        value: string,
+    }
+
+    variant plugin-action {
+        none,
+        // Data actions
+        emit-metadata(string),
+        cache-content(cache-request),
+        // Notification actions
+        show-toast(toast-config),
+        show-message(message-config),
+        // UI update actions
+        refresh-panel(string),
+        update-element(element-update),
     }
 }
 
@@ -154,7 +224,7 @@ world plugin-world {
     export get-default-rules: func() -> list<plugin-rule-definition>;
     
     // UI exports
-    use ui.{ui-element};
+    use ui.{ui-element, plugin-action};
     export get-ui-layout: func(extension-point: string) -> list<ui-element>;
-    export on-ui-event: func(id: string, value: option<string>);
+    export on-ui-event: func(id: string, value: option<string>) -> list<plugin-action>;
 }

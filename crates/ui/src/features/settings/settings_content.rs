@@ -7,6 +7,7 @@ use crate::features::password_management::dialogs::zip_pass_rules::PasswordRules
 use crate::features::password_management::rules_page as password_rules_page;
 use crate::features::plugins::types::PluginsListState;
 use crate::shared::theme::AppTheme;
+use crate::shared::SharedState;
 use arclain_plugins::PluginManager;
 use eframe::egui;
 
@@ -62,8 +63,9 @@ pub fn render_plugins_settings(
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
+    shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
-    pages::plugins::render(ui, theme, plugin_manager, plugins_state, app_state)
+    pages::plugins::render(ui, theme, plugin_manager, plugins_state, app_state, shared)
 }
 
 /// Render the appropriate settings content based on the current page
@@ -82,6 +84,7 @@ pub fn render_settings_content(
     toolbar_layout_state: &mut crate::features::settings::pages::ToolbarLayoutState,
     info_panel_layout_state: &mut crate::features::settings::pages::InfoPanelLayoutState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
+    shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
     match page {
         SettingsPage::Overview => {
@@ -122,7 +125,7 @@ pub fn render_settings_content(
             None
         }
         SettingsPage::Plugins => {
-            render_plugins_settings(ui, theme, plugin_manager, plugins_state, app_state)
+            render_plugins_settings(ui, theme, plugin_manager, plugins_state, app_state, shared)
         }
         SettingsPage::ToolbarLayout => {
             crate::features::settings::pages::render_toolbar_layout(

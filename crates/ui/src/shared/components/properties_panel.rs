@@ -1,14 +1,25 @@
 use crate::features::plugins::plugin_ui;
 use crate::shared::theme::AppTheme;
+use crate::shared::SharedState;
 use arclain_plugins::manager::PluginManager;
-use arclain_plugins::types::PluginExtensionPoint;
+use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct PropertyGroup {
     pub title: String,
     pub properties: Vec<(String, String)>,
+}
+
+#[derive(Clone)]
+pub enum PanelSection {
+    Group(PropertyGroup),
+    Plugin {
+        plugin_id: String,
+        elements: Vec<PluginUiElement>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,133 +27,168 @@ pub enum PropertiesPanelAction {
     None,
     #[allow(dead_code)] // Used in pattern matching but never constructed yet
     Organize,
+    #[allow(dead_code)] // Future use for metadata from plugin actions
     Metadata(String),
 }
 
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    groups: &[PropertyGroup],
+    sections: &[PanelSection],
     plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
+    shared: Option<&SharedState>,
 ) -> PropertiesPanelAction {
-    let mut action = PropertiesPanelAction::None;
+    let action = PropertiesPanelAction::None;
+
+    // Collect actions from plugin UI events to process after rendering
+    let collected_actions: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+
+    // Also collect dialog control signals
+    let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // Collect page navigation signals
+    let page_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
 
     ui.vertical(|ui| {
         ui.add_space(4.0);
 
-        for (idx, group) in groups.iter().enumerate() {
+        for (idx, section) in sections.iter().enumerate() {
             if idx > 0 {
                 ui.add_space(8.0);
             }
 
-            render_property_group(ui, theme, group);
-        }
+            match section {
+                PanelSection::Group(group) => {
+                    render_property_group(ui, theme, group);
+                }
+                PanelSection::Plugin {
+                    plugin_id,
+                    elements,
+                } => {
+                    if let Some(manager_arc) = plugin_manager {
+                        let manager = manager_arc.lock();
+                        // Get plugin name for header
+                        let plugin_name = manager
+                            .with_plugin_instance(plugin_id, |instance| {
+                                instance
+                                    .get_metadata()
+                                    .map(|m| m.name)
+                                    .unwrap_or_else(|_| "Unknown".to_string())
+                            })
+                            .unwrap_or_else(|| "Unknown".to_string());
 
-        // Render Plugin Sidebar UI
-        if let Some(manager_arc) = plugin_manager {
-            let manager = manager_arc.lock();
+                        arclain_widgets::CollapsibleSection::new(
+                            &format!("{}_info", plugin_id),
+                            &format!("{} Info", plugin_name),
+                        )
+                        .with_theme_colors(&theme.colors)
+                        .show(ui, |ui| {
+                            ui.add_space(4.0);
 
-            let plugins: Vec<String> = manager
-                .list_plugins()
-                .iter()
-                .filter(|p| p.enabled)
-                .map(|p| p.id.clone())
-                .collect();
-
-            for plugin_id in plugins {
-                let metadata_opt = manager.with_plugin_instance(&plugin_id, |instance| {
-                    if let Ok(ui_elements) = instance.get_ui_layout(PluginExtensionPoint::Sidebar) {
-                        // Check for pending messages
-                        let messages = instance.get_pending_messages();
-                        for (title, message) in messages {
-                            tracing::info!("PLUGIN MESSAGE: {} - {}", title, message);
-                        }
-
-                        if !ui_elements.is_empty() {
-                            ui.add_space(8.0);
-
-                            let plugin_name = instance
-                                .get_metadata()
-                                .map(|m| m.name)
-                                .unwrap_or_else(|_| "Unknown".to_string());
-
-                            // Smart suffix: only add "Plugin" if not already present
-                            let display_name = if plugin_name.to_lowercase().ends_with("plugin") {
-                                plugin_name.clone()
-                            } else {
-                                format!("{} Plugin", plugin_name)
-                            };
-
-                            arclain_widgets::CollapsibleSection::new(&plugin_id, &display_name)
-                                .with_theme_colors(&theme.colors)
-                                .show(ui, |ui| {
-                                    ui.add_space(4.0);
-
-                                    let mut callback: Box<dyn FnMut(&str, Option<String>)> =
-                                        Box::new(|element_id: &str, value: Option<String>| {
-                                            tracing::info!(
-                                                "UI Event: {} = {:?}",
-                                                element_id,
-                                                value
-                                            );
-                                            let _ = instance.send_ui_event(element_id, value);
-                                        });
-
-                                    plugin_ui::render_ui_elements(
-                                        ui,
-                                        &ui_elements,
-                                        &mut callback,
-                                        &theme.colors,
-                                    );
-                                });
-                        }
-                    }
-
-                    // Also check for InfoPanel extension point
-                    if let Ok(info_elements) =
-                        instance.get_ui_layout(PluginExtensionPoint::InfoPanel)
-                    {
-                        if !info_elements.is_empty() {
-                            ui.add_space(8.0);
-
-                            let plugin_name = instance
-                                .get_metadata()
-                                .map(|m| m.name)
-                                .unwrap_or_else(|_| "Unknown".to_string());
-
-                            arclain_widgets::CollapsibleSection::new(
-                                &format!("{}_info", plugin_id),
-                                &format!("{} Info", plugin_name),
-                            )
-                            .with_theme_colors(&theme.colors)
-                            .show(ui, |ui| {
-                                ui.add_space(4.0);
-
+                            // Callback wrapper
+                            if let Some(manager_arc) = plugin_manager {
+                                let manager_arc = manager_arc.clone();
+                                let pid = plugin_id.clone();
+                                let actions_sink = collected_actions.clone();
+                                let dialog_sink = dialog_signals.clone();
+                                let page_sink = page_signals.clone();
                                 let mut callback: Box<dyn FnMut(&str, Option<String>)> =
-                                    Box::new(|element_id: &str, value: Option<String>| {
-                                        let _ = instance.send_ui_event(element_id, value);
+                                    Box::new(move |element_id: &str, value: Option<String>| {
+                                        // Check for dialog control signals
+                                        if element_id.starts_with("__dialog_open:") {
+                                            let dialog_id = element_id
+                                                .trim_start_matches("__dialog_open:")
+                                                .to_string();
+                                            dialog_sink.lock().push((pid.clone(), dialog_id));
+                                            return;
+                                        }
+                                        if element_id == "__dialog_close" {
+                                            dialog_sink
+                                                .lock()
+                                                .push((pid.clone(), "__close".to_string()));
+                                            return;
+                                        }
+                                        if element_id.starts_with("__page_open:") {
+                                            let page_id = element_id
+                                                .trim_start_matches("__page_open:")
+                                                .to_string();
+                                            page_sink.lock().push((pid.clone(), page_id));
+                                            return;
+                                        }
+                                        if element_id == "__page_close" {
+                                            page_sink
+                                                .lock()
+                                                .push((pid.clone(), "__close".to_string()));
+                                            return;
+                                        }
+
+                                        // Normal event - send to plugin
+                                        let manager = manager_arc.lock();
+                                        if let Some(actions) = manager
+                                            .with_plugin_instance(&pid, |instance| {
+                                                instance.send_ui_event(element_id, value).ok()
+                                            })
+                                            .flatten()
+                                        {
+                                            let mut sink = actions_sink.lock();
+                                            for a in actions {
+                                                sink.push((pid.clone(), a));
+                                            }
+                                        }
                                     });
 
                                 plugin_ui::render_ui_elements(
                                     ui,
-                                    &info_elements,
+                                    elements,
                                     &mut callback,
                                     &theme.colors,
+                                    None, // TODO: wire content_cache through
                                 );
-                            });
-                        }
+                            }
+                        });
                     }
-
-                    // Check for emitted metadata
-                    instance.get_emitted_metadata()
-                });
-
-                if let Some(Some(metadata)) = metadata_opt {
-                    action = PropertiesPanelAction::Metadata(metadata);
                 }
             }
         }
     });
+
+    // Process collected plugin actions
+    if let Some(shared) = shared {
+        let actions = collected_actions.lock();
+        let mut toaster = shared.toaster.lock();
+        let mut dialog_state = shared.plugin_dialog_state.lock();
+
+        for (plugin_id, plugin_action) in actions.iter() {
+            crate::features::plugins::action_handler::process_plugin_actions(
+                vec![plugin_action.clone()],
+                plugin_id,
+                &mut dialog_state,
+                &mut toaster,
+                Some(&shared.refresh_requests),
+            );
+        }
+
+        // Process dialog control signals
+        let signals = dialog_signals.lock();
+        for (plugin_id, dialog_id) in signals.iter() {
+            if dialog_id == "__close" {
+                dialog_state.close_dialog();
+            } else {
+                dialog_state.open_dialog(plugin_id, dialog_id);
+            }
+        }
+
+        // Process page navigation signals
+        let page_sigs = page_signals.lock();
+        for (plugin_id, page_id) in page_sigs.iter() {
+            if page_id == "__close" {
+                dialog_state.close_page();
+            } else {
+                dialog_state.open_page(plugin_id, page_id);
+            }
+        }
+    }
 
     action
 }

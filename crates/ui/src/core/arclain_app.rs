@@ -19,9 +19,8 @@ use std::sync::Arc;
 
 /// Main application struct coordinating all features
 pub struct ArclainApp {
-    // Core state
-    pub(crate) state: Arc<Mutex<AppState>>,
-    pub(crate) theme: AppTheme,
+    // Core shared state (contains app_state, theme, toaster, plugin_dialog_state)
+    pub(crate) shared_state: crate::shared::SharedState,
 
     // Navigation
     pub(crate) page_navigator: PageNavigator,
@@ -83,11 +82,13 @@ impl ArclainApp {
         let shared_state = crate::shared::SharedState {
             app_state: state.clone(),
             theme: theme.clone(),
+            toaster: Arc::new(parking_lot::Mutex::new(arclain_widgets::Toaster::new())),
+            plugin_dialog_state: Arc::new(parking_lot::Mutex::new(plugins::PluginDialogState::new())),
+            refresh_requests: Arc::new(parking_lot::Mutex::new(Vec::new())),
         };
 
         Self {
-            state,
-            theme,
+            shared_state: shared_state.clone(),
             page_navigator: PageNavigator::new(),
             header_state: components::HeaderState::default(),
             archive_browser: crate::features::archive_browser::ArchiveBrowser::new(&shared_state),
@@ -121,12 +122,22 @@ impl ArclainApp {
 // For now, this is just a stub that will be filled in as we extract feature rendering
 impl eframe::App for ArclainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Check for pending refresh requests from plugins
+        {
+            let mut requests = self.shared_state.refresh_requests.lock();
+            if !requests.is_empty() {
+                tracing::debug!("Processing {} refresh requests: {:?}", requests.len(), requests);
+                requests.clear();
+                ctx.request_repaint(); // Ensure we redraw after plugin requested refresh
+            }
+        }
+        
         // Apply theme
-        self.theme.apply_to_context(ctx);
+        self.shared_state.theme.apply_to_context(ctx);
 
         // Update window title
         let title = {
-            let state = self.state.lock();
+            let state = self.shared_state.app_state.lock();
             if let Some(path) = &state.current_archive {
                 path.file_name()
                     .map(|n| n.to_string_lossy().to_string())
@@ -151,7 +162,7 @@ impl eframe::App for ArclainApp {
         // Process pending file opens (double-click on file in archive)
         if let Some(file_path) = self.archive_operations.state_mut().pending_open_file.take() {
             if let Some(nested_archive_path) = crate::features::archive_operations::open_file_from_archive(
-                &self.state,
+                &self.shared_state.app_state,
                 &file_path,
                 &mut self.status_info,
             ) {
@@ -159,7 +170,7 @@ impl eframe::App for ArclainApp {
                 let browser_state = self.archive_browser.state_mut();
                 let mut archive_info = operations::archive::ArchiveInfo::default();
                 operations::archive::open_archive_by_path(
-                    &self.state,
+                    &self.shared_state.app_state,
                     &nested_archive_path,
                     &mut browser_state.current_path,
                     &mut self.password_feature.password_dialog,
@@ -172,7 +183,7 @@ impl eframe::App for ArclainApp {
 
         // Render Header
         egui::TopBottomPanel::top("header_panel")
-            .frame(egui::Frame::NONE.fill(self.theme.colors.surface_variant))
+            .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface_variant))
             .show(ctx, |ui| {
                 let mut theme_toggle = false;
                 let can_go_back = self.page_navigator.can_go_back();
@@ -180,13 +191,13 @@ impl eframe::App for ArclainApp {
                 
                 // Sync UI preferences from AppState
                 {
-                    let state = self.state.lock();
+                    let state = self.shared_state.app_state.lock();
                     self.header_state.show_button_labels = state.ui_preferences.show_button_labels;
                 }
                 
                 let actions = components::header::render(
                     ui,
-                    &self.theme,
+                    &self.shared_state.theme,
                     &mut self.header_state,
                     &mut theme_toggle,
                     true, // Always show nav buttons for now
@@ -195,7 +206,7 @@ impl eframe::App for ArclainApp {
                 );
 
                 if theme_toggle {
-                    self.theme.toggle();
+                    self.shared_state.theme.toggle();
                 }
 
                 if actions.navigate_home {
@@ -215,9 +226,9 @@ impl eframe::App for ArclainApp {
         // Render Toolbar (only on Main page)
         if self.page_navigator.is_on_main() {
             egui::TopBottomPanel::top("toolbar_panel")
-                .frame(egui::Frame::NONE.fill(self.theme.colors.surface_variant))
+                .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface_variant))
                 .show(ctx, |ui| {
-                    let state = self.state.lock();
+                    let state = self.shared_state.app_state.lock();
                     let can_go_back = state.navigation.can_go_back();
                     let can_go_forward = state.navigation.can_go_forward();
                     let can_go_up = state.navigation.can_go_up();
@@ -230,7 +241,7 @@ impl eframe::App for ArclainApp {
 
                     let actions = components::toolbar::render(
                         ui,
-                        &self.theme,
+                        &self.shared_state.theme,
                         &mut self.archive_browser.state_mut().toolbar_state,
                         can_go_back,
                         can_go_forward,
@@ -240,13 +251,11 @@ impl eframe::App for ArclainApp {
                         has_metadata,
                         Some(&toolbar_config),
                         plugin_manager.as_ref(),
+                        Some(&self.shared_state),
                     );
 
                     // Handle toolbar actions
-                    let shared_state = crate::shared::SharedState {
-                        app_state: self.state.clone(),
-                        theme: self.theme.clone(),
-                    };
+                    let shared_state = self.shared_state.clone();
 
                     if actions.go_back {
                         crate::features::archive_browser::navigation::navigate_back(
@@ -270,7 +279,7 @@ impl eframe::App for ArclainApp {
                         let mut archive_info = operations::archive::ArchiveInfo::default();
                         let browser_state = self.archive_browser.state_mut();
                         operations::archive::open_archive(
-                            &self.state,
+                            &self.shared_state.app_state,
                             &mut browser_state.current_path,
                             &mut self.password_feature.password_dialog,
                             &mut self._pending_archive_path,
@@ -283,7 +292,7 @@ impl eframe::App for ArclainApp {
                         let browser_state = self.archive_browser.state_mut();
                         let ops_state = self.archive_operations.state_mut();
                         operations::extraction::extract_selected(
-                            &self.state,
+                            &self.shared_state.app_state,
                             &browser_state.entries,
                             &mut ops_state.extraction_dialog,
                             &mut ops_state.extraction_rx,
@@ -296,7 +305,7 @@ impl eframe::App for ArclainApp {
                     if actions.extract_all {
                         let ops_state = self.archive_operations.state_mut();
                         operations::extraction::extract_all(
-                            &self.state,
+                            &self.shared_state.app_state,
                             &mut ops_state.extraction_dialog,
                             &mut ops_state.extraction_rx,
                             &mut ops_state.extraction_child,
@@ -306,14 +315,14 @@ impl eframe::App for ArclainApp {
                         );
                     }
                     if actions.add {
-                        operations::file::add_files(&self.state, &mut self.status_info);
+                        operations::file::add_files(&self.shared_state.app_state, &mut self.status_info);
                     }
                     if actions.delete_selected {
                         let mut archive_info = operations::archive::ArchiveInfo::default();
                         let browser_state = self.archive_browser.state_mut();
                         let entries_clone = browser_state.entries.clone();
                         operations::file::delete_selected(
-                            &self.state,
+                            &self.shared_state.app_state,
                             &entries_clone,
                             &mut self.status_info,
                             &mut browser_state.entries,
@@ -323,7 +332,7 @@ impl eframe::App for ArclainApp {
                     if actions.convert_to_7z {
                         let ops_state = self.archive_operations.state_mut();
                         operations::archive::convert_archive(
-                            &self.state,
+                            &self.shared_state.app_state,
                             &mut self.status_info,
                             &mut ops_state.conversion_dialog,
                             &mut ops_state.conversion_rx,
@@ -332,7 +341,7 @@ impl eframe::App for ArclainApp {
                         );
                     }
                     if actions.organize_archive {
-                        let state = self.state.lock();
+                        let state = self.shared_state.app_state.lock();
                         if let Some(archive) = &state.current_archive {
                             let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
                             drop(state);
@@ -340,7 +349,7 @@ impl eframe::App for ArclainApp {
                             // Load rules directly from DB and filter by enabled plugins
                             let mut rules = Vec::new(); // Default empty
                             {
-                                let state = self.state.lock();
+                                let state = self.shared_state.app_state.lock();
                                 
                                 // Check enabled plugins (specifically DLsite)
                                 let dlsite_enabled = if let Some(manager) = &state.plugin_manager {
@@ -366,7 +375,7 @@ impl eframe::App for ArclainApp {
                             }
                             
                             // Initialize panel
-                            let state = self.state.lock();
+                            let state = self.shared_state.app_state.lock();
                             let entries = state.all_entries.clone();
                             let metadata = state.current_game_metadata.clone();
                             drop(state);
@@ -388,9 +397,9 @@ impl eframe::App for ArclainApp {
 
         // Render Status Bar
         egui::TopBottomPanel::bottom("status_bar")
-            .frame(egui::Frame::NONE.fill(self.theme.colors.surface_variant))
+            .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface_variant))
             .show(ctx, |ui| {
-                let state = self.state.lock();
+                let state = self.shared_state.app_state.lock();
                 let archive_loaded = state.current_archive.is_some();
                 
                 // Update status info from state
@@ -417,7 +426,7 @@ impl eframe::App for ArclainApp {
 
                 components::status_bar::render(
                     ui,
-                    &self.theme,
+                    &self.shared_state.theme,
                     &self.status_info,
                     archive_loaded,
                     plugin_info.as_ref(),
@@ -425,10 +434,7 @@ impl eframe::App for ArclainApp {
             });
 
         // Render Password Dialog
-        let shared_state = crate::shared::SharedState {
-            app_state: self.state.clone(),
-            theme: self.theme.clone(),
-        };
+        let shared_state = self.shared_state.clone();
         match password_management::handle_password_dialogs(
             &mut self.password_feature,
             ctx,
@@ -438,7 +444,7 @@ impl eframe::App for ArclainApp {
                 let mut archive_info = operations::archive::ArchiveInfo::default();
                 let browser_state = self.archive_browser.state_mut();
                 if operations::archive::try_open_with_password(
-                    &self.state,
+                    &self.shared_state.app_state,
                     &path,
                     &password,
                     &mut self.password_feature.password_dialog,
@@ -459,7 +465,7 @@ impl eframe::App for ArclainApp {
         // Render Password Rules Dialog
         if let Some(result) = password_management::dialogs::zip_pass_rules::render_password_rules_dialog(
             ctx,
-            &self.theme,
+            &self.shared_state.theme,
             &mut self.settings_feature.password_rules_dialog,
         ) {
             match result {
@@ -469,10 +475,7 @@ impl eframe::App for ArclainApp {
                 password_management::dialogs::zip_pass_rules::PasswordRulesResult::Save { rules } => {
                     self.settings_feature.handle_action(
                         crate::features::settings::settings_content::SettingsAction::SavePasswordRules { rules },
-                        &crate::shared::SharedState {
-                            app_state: self.state.clone(),
-                            theme: self.theme.clone(),
-                        },
+                        &self.shared_state,
                     );
                     self.settings_feature.password_rules_dialog.show = false;
                 }
@@ -482,7 +485,7 @@ impl eframe::App for ArclainApp {
         // Render Extraction Progress Dialog
         if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
             ctx,
-            &self.theme,
+            &self.shared_state.theme,
             &mut self.archive_operations.state_mut().extraction_dialog,
         ) {
             match result {
@@ -507,13 +510,13 @@ impl eframe::App for ArclainApp {
         // Render File Edit Dialog
         if let Some(result) = crate::features::file_editing::file_edit_dialog::render_file_edit_dialog(
             ctx,
-            &self.theme,
+            &self.shared_state.theme,
             &mut self.edit_dialog,
         ) {
             match result {
                 crate::features::file_editing::file_edit_dialog::FileEditResult::Save { new_name, content } => {
                     if let Some(_file) = &self._pending_edit_file {
-                        let state = self.state.lock();
+                        let state = self.shared_state.app_state.lock();
                         if let Some(archive) = state.current_archive.clone() {
                             match state.add_or_update_file_from_str(&archive, &new_name, &content) {
                                 Ok(_) => {
@@ -536,16 +539,18 @@ impl eframe::App for ArclainApp {
             }
         }
 
-        // Render Main Content
-        egui::CentralPanel::default().show(ctx, |_ui| {
-            let current_page = self.page_navigator.current_page.clone();
+        // Check for plugin page first - if open, render it instead of normal content
+        if self.render_plugin_page(ctx) {
+            // Plugin page handled content, skip normal rendering
+            // But still need to:
+        } else {
+            // Render Main Content
+            egui::CentralPanel::default().show(ctx, |_ui| {
+                let current_page = self.page_navigator.current_page.clone();
             match current_page {
                 AppPage::Main => {
 
-                    let shared_state = crate::shared::SharedState {
-                        app_state: self.state.clone(),
-                        theme: self.theme.clone(),
-                    };
+                    let shared_state = self.shared_state.clone();
 
                     let action = self.archive_browser.render(
                         ctx,
@@ -577,7 +582,7 @@ impl eframe::App for ArclainApp {
                         crate::features::archive_browser::ArchiveBrowserAction::OpenArchiveInTab(archive_path) => {
                             // Extract nested archive to temp and open as current archive
                             if let Some(extracted_path) = crate::features::archive_operations::open_file_from_archive(
-                                &self.state,
+                                &self.shared_state.app_state,
                                 &archive_path,
                                 &mut self.status_info,
                             ) {
@@ -585,7 +590,7 @@ impl eframe::App for ArclainApp {
                                 let browser_state = self.archive_browser.state_mut();
                                 let mut archive_info = operations::archive::ArchiveInfo::default();
                                 operations::archive::open_archive_by_path(
-                                    &self.state,
+                                    &self.shared_state.app_state,
                                     &extracted_path,
                                     &mut browser_state.current_path,
                                     &mut self.password_feature.password_dialog,
@@ -600,7 +605,7 @@ impl eframe::App for ArclainApp {
                             self.edit_dialog.show = true;
                             self.edit_dialog.full_path_in_archive = file.clone();
                             
-                            let state = self.state.lock();
+                            let state = self.shared_state.app_state.lock();
                             if let Some(archive) = &state.current_archive {
                                 match state.read_text_file(archive, &file) {
                                     Ok(content) => {
@@ -623,7 +628,7 @@ impl eframe::App for ArclainApp {
                             match serde_json::from_str::<arclain_core::features::organization::GameMetadata>(&json) {
                                 Ok(metadata) => {
                                     tracing::info!("Received metadata from plugin: {:?}", metadata.title);
-                                    let mut state = self.state.lock();
+                                    let mut state = self.shared_state.app_state.lock();
                                     state.current_game_metadata = Some(metadata);
                                 }
                                 Err(e) => {
@@ -633,7 +638,7 @@ impl eframe::App for ArclainApp {
                         }
                         crate::features::archive_browser::ArchiveBrowserAction::Organize => {
                             // Trigger organization flow same as toolbar
-                            let state = self.state.lock();
+                            let state = self.shared_state.app_state.lock();
                             if let Some(archive) = &state.current_archive {
                                 let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
                                 drop(state);
@@ -641,7 +646,7 @@ impl eframe::App for ArclainApp {
                                 // Load rules directly from DB and filter by enabled plugins
                                 let mut rules = Vec::new(); // Default empty
                                 {
-                                    let state = self.state.lock();
+                                    let state = self.shared_state.app_state.lock();
                                     
                                     // Check enabled plugins (specifically DLsite)
                                     let dlsite_enabled = if let Some(manager) = &state.plugin_manager {
@@ -665,7 +670,7 @@ impl eframe::App for ArclainApp {
                                     }
                                 }
                                 
-                                let state = self.state.lock();
+                                let state = self.shared_state.app_state.lock();
                                 let entries = state.all_entries.clone();
                                 let metadata = state.current_game_metadata.clone();
                                 drop(state);
@@ -702,7 +707,7 @@ impl eframe::App for ArclainApp {
                                 }
                             ];
                             operations::extraction::extract_selected(
-                                &self.state,
+                                &self.shared_state.app_state,
                                 &entries,
                                 &mut ops_state.extraction_dialog,
                                 &mut ops_state.extraction_rx,
@@ -718,7 +723,7 @@ impl eframe::App for ArclainApp {
                         }
                         crate::features::archive_browser::ArchiveBrowserAction::CopyPath(file) => {
                             // Copy file path to clipboard
-                            let state = self.state.lock();
+                            let state = self.shared_state.app_state.lock();
                             let full_path = if state.navigation.current_path.is_empty() {
                                 file.clone()
                             } else {
@@ -745,10 +750,7 @@ impl eframe::App for ArclainApp {
                     egui::CentralPanel::default().show(ctx, |ui| {
                         if let Some(target) = self.settings_feature.render(
                             ui,
-                            &crate::shared::SharedState {
-                                app_state: self.state.clone(),
-                                theme: self.theme.clone(),
-                            },
+                            &self.shared_state,
                             &page,
                             breadcrumb,
                             Some(&mut self.organization_feature.rules_page),
@@ -761,17 +763,14 @@ impl eframe::App for ArclainApp {
                 AppPage::Plugins => {
                     self.plugins_feature.render(
                         ctx,
-                        &crate::shared::SharedState {
-                            app_state: self.state.clone(),
-                            theme: self.theme.clone(),
-                        },
+                        &self.shared_state,
                     );
                 }
                 AppPage::Organize => {
                     egui::CentralPanel::default().show(ctx, |ui| {
                          // Extract DB (generic way, minimal lock)
                          let db_opt = {
-                             let state = self.state.lock();
+                             let state = self.shared_state.app_state.lock();
                              if let Some(dbs) = &state.dbs {
                                  Some(dbs.config.clone()) // Clone ConfigDb (cheap Arc)
                              } else {
@@ -780,29 +779,23 @@ impl eframe::App for ArclainApp {
                          };
 
                          if let Some(cfg_db) = db_opt {
-                             self.organization_feature.rules_page.render(ui, &self.theme, &cfg_db);
+                             self.organization_feature.rules_page.render(ui, &self.shared_state.theme, &cfg_db);
                          } else {
                              ui.label("Database not available.");
                          }
                     });
                 }
                 AppPage::OrganizeArchive(_name) => {
-                    let shared_state = crate::shared::SharedState {
-                        app_state: self.state.clone(),
-                        theme: self.theme.clone(),
-                    };
+                    let shared_state = self.shared_state.clone();
                     let action = self.organization_feature.render(ctx, &shared_state);
 
                     match action {
                         crate::features::organization::OrganizationAction::Apply => {
                             if let Some(page) = &self.organization_feature.organizer_page {
                                 if let Some(plan) = &page.panel.session.preview_plan {
-                                    let shared_state = crate::shared::SharedState {
-                                        app_state: self.state.clone(),
-                                        theme: self.theme.clone(),
-                                    };
+                                    let shared_state = self.shared_state.clone();
                                     
-                                    let archive_path = if let Some(state) = self.state.try_lock() {
+                                    let archive_path = if let Some(state) = self.shared_state.app_state.try_lock() {
                                         state.current_archive.clone()
                                     } else {
                                         None
@@ -838,5 +831,204 @@ impl eframe::App for ArclainApp {
                 }
             }
         });
+        } // Close else block for plugin page check
+        
+        // Render toast notifications (always on top)
+        self.shared_state.toaster.lock().show(ctx);
+        
+        // Render plugin dialog if open
+        self.render_plugin_dialog(ctx);
     }
 }
+
+impl ArclainApp {
+    /// Render an open plugin dialog as a modal overlay
+    fn render_plugin_dialog(&mut self, ctx: &egui::Context) {
+        // Check if a dialog is open (get info before locking for rendering)
+        let dialog_info = {
+            let dialog_state = self.shared_state.plugin_dialog_state.lock();
+            dialog_state.open_dialog.clone()
+        };
+        
+        if let Some((plugin_id, dialog_id)) = dialog_info {
+            // Get dialog UI elements from plugin
+            let dialog_elements = {
+                let state = self.shared_state.app_state.lock();
+                if let Some(pm_arc) = &state.plugin_manager {
+                    let pm = pm_arc.lock();
+                    pm.with_plugin_instance(&plugin_id, |instance| {
+                        instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()))
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default()
+                } else {
+                    vec![]
+                }
+            };
+            
+            // Render modal dialog
+            let mut open = true;
+            egui::Window::new(format!("Plugin Dialog - {}", dialog_id))
+                .collapsible(false)
+                .resizable(true)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .fixed_size([400.0, 300.0])
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    // Set up callback for dialog events
+                    let state_arc = self.shared_state.app_state.clone();
+                    let pid = plugin_id.clone();
+                    let dialog_state_arc = self.shared_state.plugin_dialog_state.clone();
+                    let toaster_arc = self.shared_state.toaster.clone();
+                    
+                    let mut callback: Box<dyn FnMut(&str, Option<String>)> = 
+                        Box::new(move |element_id: &str, value: Option<String>| {
+                            // Check for close dialog signal
+                            if element_id == "__dialog_close" {
+                                dialog_state_arc.lock().close_dialog();
+                                return;
+                            }
+                            
+                            // Normal event
+                            let state = state_arc.lock();
+                            if let Some(pm_arc) = &state.plugin_manager {
+                                let pm = pm_arc.lock();
+                                if let Some(actions) = pm
+                                    .with_plugin_instance(&pid, |instance| {
+                                        instance.send_ui_event(element_id, value).ok()
+                                    })
+                                    .flatten()
+                                {
+                                    drop(pm); // Release plugin manager lock before locking toaster
+                                    let mut toaster = toaster_arc.lock();
+                                    let mut ds = dialog_state_arc.lock();
+                                    for action in actions {
+                                        crate::features::plugins::action_handler::process_plugin_actions(
+                                            vec![action],
+                                            &pid,
+                                            &mut ds,
+                                            &mut toaster,
+                                            None, // No refresh requests for dialog callbacks
+                                        );
+                                    }
+                                }
+                            }
+                        });
+                    
+                    crate::features::plugins::plugin_ui::render_ui_elements(
+                        ui,
+                        &dialog_elements,
+                        &mut callback,
+                        &self.shared_state.theme.colors,
+                        None,
+                    );
+                });
+            
+            // If window was closed via X button
+            if !open {
+                self.shared_state.plugin_dialog_state.lock().close_dialog();
+            }
+        }
+    }
+    
+    /// Render an open plugin page (replaces main content area)
+    /// Returns true if a page is being rendered (caller should skip normal content)
+    fn render_plugin_page(&mut self, ctx: &egui::Context) -> bool {
+        // Check if a page is open
+        let page_info = {
+            let dialog_state = self.shared_state.plugin_dialog_state.lock();
+            dialog_state.current_page().map(|(p, d)| (p.to_string(), d.to_string()))
+        };
+        
+        let Some((plugin_id, page_id)) = page_info else {
+            return false;
+        };
+        
+        // Get page UI elements from plugin
+        let page_elements = {
+            let state = self.shared_state.app_state.lock();
+            if let Some(pm_arc) = &state.plugin_manager {
+                let pm = pm_arc.lock();
+                pm.with_plugin_instance(&plugin_id, |instance| {
+                    instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()))
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default()
+            } else {
+                vec![]
+            }
+        };
+        
+        // Render as full page content
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface))
+            .show(ctx, |ui| {
+                // Back button at top
+                ui.horizontal(|ui| {
+                    if ui.button("← Back").clicked() {
+                        self.shared_state.plugin_dialog_state.lock().close_page();
+                    }
+                    ui.label(egui::RichText::new(&page_id).strong());
+                });
+                ui.separator();
+                
+                // Set up callback for page events
+                let state_arc = self.shared_state.app_state.clone();
+                let pid = plugin_id.clone();
+                let dialog_state_arc = self.shared_state.plugin_dialog_state.clone();
+                let toaster_arc = self.shared_state.toaster.clone();
+                
+                let mut callback: Box<dyn FnMut(&str, Option<String>)> = 
+                    Box::new(move |element_id: &str, value: Option<String>| {
+                        // Check for close page signal
+                        if element_id == "__page_close" {
+                            dialog_state_arc.lock().close_page();
+                            return;
+                        }
+                        
+                        // Check for open page signal (nested navigation)
+                        if element_id.starts_with("__page_open:") {
+                            let new_page_id = element_id.trim_start_matches("__page_open:").to_string();
+                            dialog_state_arc.lock().open_page(&pid, &new_page_id);
+                            return;
+                        }
+                        
+                        // Normal event
+                        let state = state_arc.lock();
+                        if let Some(pm_arc) = &state.plugin_manager {
+                            let pm = pm_arc.lock();
+                            if let Some(actions) = pm
+                                .with_plugin_instance(&pid, |instance| {
+                                    instance.send_ui_event(element_id, value).ok()
+                                })
+                                .flatten()
+                            {
+                                drop(pm);
+                                let mut toaster = toaster_arc.lock();
+                                let mut ds = dialog_state_arc.lock();
+                                for action in actions {
+                                    crate::features::plugins::action_handler::process_plugin_actions(
+                                        vec![action],
+                                        &pid,
+                                        &mut ds,
+                                        &mut toaster,
+                                        None, // No refresh requests for page callbacks
+                                    );
+                                }
+                            }
+                        }
+                    });
+                
+                crate::features::plugins::plugin_ui::render_ui_elements(
+                    ui,
+                    &page_elements,
+                    &mut callback,
+                    &self.shared_state.theme.colors,
+                    None,
+                );
+            });
+        
+        true
+    }
+}
+

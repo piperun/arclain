@@ -163,4 +163,77 @@ impl HostFunctions {
 
         result
     }
+
+    pub(super) fn impl_start_async_fetch(&mut self, url: String) -> String {
+        if !self.check_capability(PluginCapability::Network) {
+            return "error:no_network_capability".to_string();
+        }
+
+        let client = match self.http_client.as_ref() {
+            Some(c) => c.clone(),
+            None => return "error:client_not_initialized".to_string(),
+        };
+
+        // Generate simple ID
+        let id = format!(
+            "req_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+
+        let id_clone = id.clone();
+        let results = self.async_results.clone();
+        let logger = self.network_log.clone();
+
+        // Initialize as None (pending)
+        results.lock().insert(id.clone(), None);
+
+        // Log start
+        self.log_network_activity(format!("ASYNC START [{}] GET {}", id, url));
+
+        // Spawn thread for blocking request
+        std::thread::spawn(move || {
+            let result = client.get(&url).map_err(|e| e.to_string());
+
+            // Log completion
+            {
+                let mut log = logger.lock();
+                let msg = match &result {
+                    Ok(resp) => format!("ASYNC DONE [{}] Response: {} bytes", id_clone, resp.len()),
+                    Err(e) => format!("ASYNC ERROR [{}] {}", id_clone, e),
+                };
+                log.push((std::time::SystemTime::now(), msg));
+            }
+
+            // Store result
+            results.lock().insert(id_clone, Some(result));
+        });
+
+        id
+    }
+
+    pub(super) fn impl_poll_async_fetch(
+        &mut self,
+        id: String,
+    ) -> Option<std::result::Result<String, String>> {
+        let mut results = self.async_results.lock();
+        if let Some(res_opt) = results.get(&id) {
+            if let Some(res) = res_opt {
+                // Result is ready, remove and return it (one-time consume)
+                let result = res.clone();
+                // We keep it in map? Or remove?
+                // Better to remove to clean up memory.
+                results.remove(&id);
+                Some(result)
+            } else {
+                // Pending
+                None
+            }
+        } else {
+            // ID not found (or already consumed)
+            None
+        }
+    }
 }

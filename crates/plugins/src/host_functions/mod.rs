@@ -32,6 +32,7 @@ pub struct HostFunctions {
     pub emitted_metadata: Arc<Mutex<Option<String>>>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
     pub metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
+    pub async_results: Arc<Mutex<HashMap<String, Option<Result<String, String>>>>>,
     pub table: ResourceTable,
     pub ctx: WasiCtx,
 }
@@ -62,6 +63,7 @@ impl HostFunctions {
             emitted_metadata: Arc::new(Mutex::new(None)),
             network_log: Arc::new(Mutex::new(Vec::new())),
             metadata_cache: None,
+            async_results: Arc::new(Mutex::new(HashMap::new())),
             table: ResourceTable::new(),
             ctx,
         }
@@ -164,6 +166,29 @@ impl Host for HostFunctions {
 
     fn save_cached_metadata(&mut self, id: String, json: String) {
         self.impl_save_cached_metadata(id, json)
+    }
+
+    fn list_cached_entries(&mut self) -> Vec<String> {
+        self.impl_list_cached_entries()
+    }
+
+    fn export_cache(&mut self) -> Result<String, String> {
+        self.impl_export_cache()
+    }
+
+    fn import_cache(&mut self) -> Result<String, String> {
+        self.impl_import_cache()
+    }
+
+    fn start_async_fetch(&mut self, url: String) -> String {
+        self.impl_start_async_fetch(url)
+    }
+
+    fn poll_async_fetch(
+        &mut self,
+        request_id: String,
+    ) -> Option<std::result::Result<String, String>> {
+        self.impl_poll_async_fetch(request_id)
     }
 }
 

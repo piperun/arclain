@@ -6,6 +6,7 @@
 use crate::features::plugins::types::PluginsListState;
 use crate::features::settings::types::SettingsAction;
 use crate::shared::theme::AppTheme;
+use crate::shared::SharedState;
 use arclain_plugins::PluginManager;
 use eframe::egui;
 use parking_lot::Mutex;
@@ -19,6 +20,7 @@ pub fn render(
     plugin_manager: Option<&PluginManager>,
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
+    shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
     let action = None;
 
@@ -30,6 +32,7 @@ pub fn render(
             plugin_manager,
             state,
             app_state,
+            shared,
         );
 
         if needs_refresh {

@@ -3,7 +3,7 @@ use anyhow::Result;
 use rusqlite::{params, OptionalExtension};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CachedMetadata {
     pub product_id: String,
     pub title: String,
@@ -130,5 +130,20 @@ impl MetadataCache {
     pub fn clear_cache_index(&self) -> Result<()> {
         self.db
             .with_connection(|conn| crate::cache_index::clear_all_entries(conn))
+    }
+
+    /// List all cached product IDs
+    pub fn list_all(&self) -> Result<Vec<String>> {
+        self.db.with_connection(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT product_id FROM dlsite_metadata_cache ORDER BY cached_at DESC")?;
+
+            let entries = stmt
+                .query_map([], |row| row.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            Ok(entries)
+        })
     }
 }

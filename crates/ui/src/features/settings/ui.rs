@@ -377,7 +377,9 @@ impl SettingsFeature {
                                                     Ok::<_, anyhow::Error>(())
                                                 });
                                             }
-                                            // Info panel items are loaded per-page, no global state to update
+                                            // Reload UI config to update main window
+                                            drop(state_guard);
+                                            shared.app_state.lock().reload_ui_config();
                                         }
                                         
                                         // Handle info panel layout reset
@@ -433,6 +435,7 @@ impl SettingsFeature {
                                                     &mut self.toolbar_layout_state,
                                                     &mut self.info_panel_layout_state,
                                                     &shared.app_state,
+                                                    Some(shared),
                                                 );
                                             }
                                         });

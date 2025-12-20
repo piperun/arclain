@@ -5,7 +5,7 @@ use arclain_core::config::database::{
     get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
-use arclain_core::utilities::{auto_password_for, ChecksumService, PassRule};
+use arclain_core::utilities::{auto_password_for, ChecksumService, ContentCache, PassRule};
 use arclain_core::NavigationState;
 use arclain_db::UserConfig;
 use arclain_plugins::PluginManager;
@@ -44,10 +44,13 @@ pub struct AppState {
     pub archive_info: crate::core::operations::archive::ArchiveInfo,
     // Checksum verification service
     pub checksum_service: Option<ChecksumService>,
+    // Content cache for plugin images
+    pub content_cache: Option<Arc<ContentCache>>,
     // UI preferences
     pub ui_preferences: UiPreferences,
     // Toolbar config items (loaded from DB)
     pub toolbar_items: Vec<arclain_db::UiItem>,
+    pub info_panel_items: Vec<arclain_db::UiItem>,
 }
 
 /// UI display preferences (persisted to config DB)
@@ -106,8 +109,10 @@ impl AppState {
             current_game_metadata: None,
             archive_info: crate::core::operations::archive::ArchiveInfo::default(),
             checksum_service: None,
+            content_cache: None,
             ui_preferences: UiPreferences::default(),
             toolbar_items: vec![],
+            info_panel_items: vec![],
         };
 
         // Attempt to open DB-backed config + secrets (optional)
@@ -199,16 +204,23 @@ impl AppState {
                             // Sync configuration from TOML defaults
                             me.sync_configuration();
 
-                            // Load toolbar items for config-driven rendering
-                            if let Ok(items) =
-                                me.dbs.as_ref().unwrap().config.with_connection(|conn| {
-                                    arclain_db::list_items_by_region(
+                            // Load UI items for config-driven rendering
+                            if let Ok(dbs) = me.dbs.as_ref().ok_or(anyhow::anyhow!("No DBs")) {
+                                let _ = dbs.config.with_connection(|conn| {
+                                    if let Ok(items) = arclain_db::list_items_by_region(
                                         conn,
                                         arclain_db::UiRegion::Toolbar,
-                                    )
-                                })
-                            {
-                                me.toolbar_items = items;
+                                    ) {
+                                        me.toolbar_items = items;
+                                    }
+                                    if let Ok(items) = arclain_db::list_items_by_region(
+                                        conn,
+                                        arclain_db::UiRegion::InfoPanel,
+                                    ) {
+                                        me.info_panel_items = items;
+                                    }
+                                    Ok::<(), anyhow::Error>(())
+                                });
                             }
 
                             // Initialize checksum service and recover pending operations
@@ -235,6 +247,27 @@ impl AppState {
                                 }
                                 Err(e) => {
                                     warn!("Failed to initialize checksum service: {}", e);
+                                }
+                            }
+
+                            // Initialize content cache for plugin images
+                            let cache_base_dir = paths
+                                .config_db
+                                .parent()
+                                .unwrap_or(Path::new("."))
+                                .join("cache");
+                            let cache_index_db_path = cache_base_dir.join("cache_index.sqlite");
+
+                            // Create index DB for cache
+                            if let Ok(cache_db) = arclain_db::SqliteDb::open(&cache_index_db_path) {
+                                match ContentCache::new(cache_base_dir, cache_db) {
+                                    Ok(cache) => {
+                                        me.content_cache = Some(Arc::new(cache));
+                                        info!("Content cache initialized");
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to initialize content cache: {}", e);
+                                    }
                                 }
                             }
                         }
@@ -777,6 +810,25 @@ impl AppState {
                     }
                 }
             }
+        }
+    }
+
+    /// Refresh UI configuration (toolbar/info panel items) from DB
+    pub fn reload_ui_config(&mut self) {
+        if let Some(ref dbs) = self.dbs {
+            let _ = dbs.config.with_connection(|conn| {
+                if let Ok(items) =
+                    arclain_db::list_items_by_region(conn, arclain_db::UiRegion::Toolbar)
+                {
+                    self.toolbar_items = items;
+                }
+                if let Ok(items) =
+                    arclain_db::list_items_by_region(conn, arclain_db::UiRegion::InfoPanel)
+                {
+                    self.info_panel_items = items;
+                }
+                Ok::<(), anyhow::Error>(())
+            });
         }
     }
 }

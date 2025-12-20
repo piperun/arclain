@@ -1,4 +1,5 @@
 use crate::shared::theme::AppTheme;
+use crate::shared::SharedState;
 use arclain_db::{DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::PluginExtensionPoint;
@@ -366,8 +367,13 @@ pub fn render(
     _has_metadata: bool,
     config: Option<&ToolbarConfig>,
     plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
+    shared: Option<&SharedState>,
 ) -> ToolbarActions {
     let mut actions = ToolbarActions::default();
+
+    // Collect plugin actions for processing after render
+    let collected_actions: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
+        Arc::new(Mutex::new(Vec::new()));
 
     let ctx = ButtonContext {
         theme,
@@ -421,21 +427,39 @@ pub fn render(
                 .collect();
 
             for plugin_id in plugins {
+                let pid = plugin_id.clone();
+                let actions_sink = collected_actions.clone();
                 let _ = manager.with_plugin_instance(&plugin_id, |instance| {
-                    if let Ok(ui_elements) = instance.get_ui_layout(PluginExtensionPoint::Toolbar) {
+                    if let Ok(ui_elements) =
+                        instance.get_ui_layout(PluginExtensionPoint::PluginButton)
+                    {
                         if !ui_elements.is_empty() {
                             ui.separator();
                             ui.scope(|ui| {
                                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
+                                let pid_inner = pid.clone();
+                                let sink = actions_sink.clone();
                                 let mut callback: Box<dyn FnMut(&str, Option<String>)> =
-                                    Box::new(|element_id: &str, value: Option<String>| {
-                                        let _ = instance.send_ui_event(element_id, value);
+                                    Box::new(move |element_id: &str, value: Option<String>| {
+                                        // Check for dialog/page control signals
+                                        if element_id.starts_with("__") {
+                                            // Dialog/page signals handled via sink (same as normal events)
+                                        }
+                                        if let Some(actions) =
+                                            instance.send_ui_event(element_id, value).ok()
+                                        {
+                                            let mut s = sink.lock();
+                                            for a in actions {
+                                                s.push((pid_inner.clone(), a));
+                                            }
+                                        }
                                     });
                                 crate::features::plugins::plugin_ui::render_ui_elements(
                                     ui,
                                     &ui_elements,
                                     &mut callback,
                                     &theme.colors,
+                                    None, // TODO: wire content_cache through
                                 );
                             });
                         }
@@ -464,6 +488,23 @@ pub fn render(
             });
         }
     });
+
+    // Process collected plugin actions
+    if let Some(shared) = shared {
+        let actions_list = collected_actions.lock();
+        let mut toaster = shared.toaster.lock();
+        let mut dialog_state = shared.plugin_dialog_state.lock();
+
+        for (plugin_id, plugin_action) in actions_list.iter() {
+            crate::features::plugins::action_handler::process_plugin_actions(
+                vec![plugin_action.clone()],
+                plugin_id,
+                &mut dialog_state,
+                &mut toaster,
+                Some(&shared.refresh_requests),
+            );
+        }
+    }
 
     actions
 }

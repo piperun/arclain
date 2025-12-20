@@ -27,6 +27,7 @@ impl archust_plugin_sdk::Guest for Component {
                 UiElement::Button(ButtonConfig {
                     id: "demo_btn".to_string(),
                     label: "Click Me!".to_string(),
+                    action: None,
                 }),
                 UiElement::TextInput(TextInputConfig {
                     id: "demo_input".to_string(),
@@ -65,12 +66,33 @@ impl archust_plugin_sdk::Guest for Component {
                     selected: "Simple".to_string(),
                 }),
             ],
+            "PluginButton" => vec![UiElement::Button(ButtonConfig {
+                id: "plugin_toolbar_btn".to_string(),
+                label: "Plugin Action".to_string(),
+                action: None,
+            })],
+            "Panel" => vec![
+                UiElement::Label(LabelConfig {
+                    text: "Plugin Info".to_string(),
+                    bold: true,
+                    size: None,
+                }),
+                UiElement::Label(LabelConfig {
+                    text: "Status: Active".to_string(),
+                    bold: false,
+                    size: None,
+                }),
+            ],
             _ => vec![],
         }
     }
 
-    fn on_ui_event(id: String, value: Option<String>) {
+    fn on_ui_event(
+        id: String,
+        value: Option<String>,
+    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
         info(&format!("UI Event: {} = {:?}", id, value));
+        vec![]
     }
 }
 
