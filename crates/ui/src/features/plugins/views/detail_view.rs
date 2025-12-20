@@ -5,6 +5,7 @@
 use crate::features::plugins::types::PluginsListState;
 use crate::shared::components::SettingsForm;
 use crate::shared::theme::AppTheme;
+use crate::shared::SharedState;
 use arclain_plugins::PluginManager;
 use arclain_widgets::toggle_switch::ToggleSwitch;
 use arclain_widgets::Chips;
@@ -20,6 +21,7 @@ pub fn render(
     plugin_manager: Option<&PluginManager>,
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
+    shared: Option<&SharedState>,
 ) -> bool {
     let mut needs_refresh = false;
 
@@ -117,7 +119,7 @@ pub fn render(
 
         if let Some(manager) = plugin_manager {
             if plugin_info.loaded {
-                render_plugin_ui(ui, theme, manager, &plugin_info.id, app_state);
+                render_plugin_ui(ui, theme, manager, &plugin_info.id, app_state, shared);
             } else {
                 ui.label(
                     egui::RichText::new("Plugin is not loaded.")
@@ -137,6 +139,7 @@ fn render_plugin_ui(
     manager: &PluginManager,
     plugin_id: &str,
     app_state: &Arc<Mutex<crate::core::AppState>>,
+    _shared: Option<&SharedState>,
 ) {
     let mgr_arc = if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
         mgr_mutex
@@ -168,32 +171,50 @@ fn render_plugin_ui(
                 let mgr_clone = mgr_arc.clone();
                 let app_state_clone = app_state.clone();
 
+                // Collect actions for processing after callback
+                let collected_actions: Arc<Mutex<Vec<arclain_plugins::types::PluginAction>>> =
+                    Arc::new(Mutex::new(Vec::new()));
+                let actions_sink = collected_actions.clone();
+
                 let mut event_callback = Box::new(move |id: &str, value: Option<String>| {
                     let mgr_thread = mgr_clone.clone();
                     let pid_thread = plugin_id_clone.clone();
                     let id_thread = id.to_string();
                     let val_thread = value.clone();
                     let state_thread = app_state_clone.clone();
+                    let sink = actions_sink.clone();
 
                     std::thread::spawn(move || {
-                        let settings_to_save = {
+                        let (settings_to_save, actions) = {
                             let mgr = mgr_thread.lock();
                             if let Some(instance_arc) = mgr.get_plugin_instance(&pid_thread) {
                                 let mut instance = instance_arc.lock();
-                                let _ = instance.send_ui_event(&id_thread, val_thread);
+                                let actions = instance.send_ui_event(&id_thread, val_thread).ok();
+                                (Some(mgr.get_all_settings()), actions)
+                            } else {
+                                (None, None)
                             }
-                            mgr.get_all_settings()
                         };
 
-                        let mut state = state_thread.lock();
-                        state.user_config.set_all_plugin_settings(&settings_to_save);
+                        // Collect actions for later processing (though async)
+                        if let Some(actions) = actions {
+                            let mut s = sink.lock();
+                            for a in actions {
+                                s.push(a);
+                            }
+                        }
 
-                        if let Some(ref dbs) = state.dbs {
-                            if let Err(e) = dbs.config.with_connection(|conn| {
-                                state.user_config.save(conn)?;
-                                Ok(())
-                            }) {
-                                eprintln!("Failed to save plugin settings: {}", e);
+                        if let Some(settings_to_save) = settings_to_save {
+                            let mut state = state_thread.lock();
+                            state.user_config.set_all_plugin_settings(&settings_to_save);
+
+                            if let Some(ref dbs) = state.dbs {
+                                if let Err(e) = dbs.config.with_connection(|conn| {
+                                    state.user_config.save(conn)?;
+                                    Ok(())
+                                }) {
+                                    eprintln!("Failed to save plugin settings: {}", e);
+                                }
                             }
                         }
                     });
@@ -205,7 +226,12 @@ fn render_plugin_ui(
                     &ui_elements,
                     &mut event_callback,
                     &theme.colors,
+                    None, // TODO: wire content_cache through
                 );
+
+                // Note: Actions are collected async via thread, so we can't process them
+                // synchronously here. For detail_view, toasts etc. will fire after thread completes.
+                // A future improvement could use channels for immediate processing.
             }
         }
         Some(Err(e)) => {

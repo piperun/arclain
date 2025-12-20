@@ -44,13 +44,27 @@ impl archust_plugin_sdk::Guest for Component {
                 UiElement::Button(ButtonConfig {
                     id: "generate_preview".to_string(),
                     label: "Generate Preview".to_string(),
+                    action: None,
                 }),
             ],
+            "PluginButton" => vec![UiElement::Button(ButtonConfig {
+                id: "gstreamer_play".to_string(),
+                label: "Play Preview".to_string(),
+                action: None,
+            })],
+            "Panel" => vec![UiElement::Label(LabelConfig {
+                text: "Video Stats".to_string(),
+                bold: true,
+                size: None,
+            })],
             _ => vec![],
         }
     }
 
-    fn on_ui_event(id: String, value: Option<String>) {
+    fn on_ui_event(
+        id: String,
+        value: Option<String>,
+    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
         match id.as_str() {
             "enable_hw_accel" => {
                 if let Some(val) = value {
@@ -67,6 +81,7 @@ impl archust_plugin_sdk::Guest for Component {
             }
             _ => {}
         }
+        vec![]
     }
 }
 

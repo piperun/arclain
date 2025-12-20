@@ -190,16 +190,19 @@ impl PluginInstance {
         extension_point: PluginExtensionPoint,
     ) -> Result<Vec<PluginUiElement>> {
         let ep_str = match extension_point {
-            PluginExtensionPoint::MainPage => "MainPage",
-            PluginExtensionPoint::Sidebar => "Sidebar",
-            PluginExtensionPoint::ContextMenu => "ContextMenu",
-            PluginExtensionPoint::Toolbar => "Toolbar",
-            PluginExtensionPoint::InfoPanel => "InfoPanel",
+            PluginExtensionPoint::MainPage => "MainPage".to_string(),
+            PluginExtensionPoint::Sidebar => "Sidebar".to_string(),
+            PluginExtensionPoint::ContextMenu => "ContextMenu".to_string(),
+            PluginExtensionPoint::PluginButton => "PluginButton".to_string(),
+            PluginExtensionPoint::Panel => "Panel".to_string(),
+            PluginExtensionPoint::Settings => "Settings".to_string(),
+            PluginExtensionPoint::Dialog(ref id) => format!("Dialog:{}", id),
+            PluginExtensionPoint::Page(ref id) => format!("Page:{}", id),
         };
 
         let ui_elements = self
             .plugin
-            .call_get_ui_layout(&mut self.store, ep_str)
+            .call_get_ui_layout(&mut self.store, &ep_str)
             .map_err(|e| PluginError::ExecutionError(e.to_string()))?;
 
         let converted: Vec<PluginUiElement> = ui_elements
@@ -210,14 +213,19 @@ impl PluginInstance {
         Ok(converted)
     }
 
-    /// Send a UI event to the plugin
-    pub fn send_ui_event(&mut self, element_id: &str, value: Option<String>) -> Result<bool> {
+    /// Send a UI event to the plugin and get actions back
+    pub fn send_ui_event(
+        &mut self,
+        element_id: &str,
+        value: Option<String>,
+    ) -> Result<Vec<crate::types::PluginAction>> {
         info!(
             "PluginInstance::send_ui_event: Calling plugin handler for {}",
             element_id
         );
 
-        self.plugin
+        let actions = self
+            .plugin
             .call_on_ui_event(&mut self.store, element_id, value.as_deref())
             .map_err(|e| {
                 error!(
@@ -227,8 +235,12 @@ impl PluginInstance {
                 PluginError::ExecutionError(e.to_string())
             })?;
 
-        info!("PluginInstance::send_ui_event: Plugin handler returned successfully");
-        Ok(true)
+        info!(
+            "PluginInstance::send_ui_event: Plugin returned {} actions",
+            actions.len()
+        );
+
+        Ok(actions.into_iter().map(convert_plugin_action).collect())
     }
 
     /// Clean up the plugin
@@ -293,10 +305,14 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
             bold: config.bold,
             size: config.size,
         },
-        UiElement::Button(config) => InternalElement::Button {
-            id: config.id,
-            label: config.label,
-        },
+        UiElement::Button(config) => {
+            let action = config.action.map(|a| convert_button_action(a));
+            InternalElement::Button {
+                id: config.id,
+                label: config.label,
+                action,
+            }
+        }
         UiElement::TextInput(config) => InternalElement::TextInput {
             id: config.id,
             label: config.label,
@@ -329,5 +345,62 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
         },
         UiElement::Separator => InternalElement::Separator,
         UiElement::Space(size) => InternalElement::Space { size },
+        UiElement::Image(config) => InternalElement::Image {
+            cache_key: config.cache_key,
+            url: config.url,
+            max_height: config.max_height,
+        },
+    }
+}
+
+fn convert_button_action(
+    action: crate::arclain::plugin::ui::ButtonAction,
+) -> crate::types::ButtonAction {
+    use crate::arclain::plugin::ui::ButtonAction as WitAction;
+    use crate::types::ButtonAction as InternalAction;
+
+    match action {
+        WitAction::None => InternalAction::None,
+        WitAction::ShowDialog(id) => InternalAction::ShowDialog { id },
+        WitAction::CloseDialog => InternalAction::CloseDialog,
+        WitAction::OpenPage(id) => InternalAction::OpenPage { id },
+        WitAction::ClosePage => InternalAction::ClosePage,
+        WitAction::Custom(id) => InternalAction::Custom(id),
+    }
+}
+
+fn convert_plugin_action(
+    action: crate::arclain::plugin::ui::PluginAction,
+) -> crate::types::PluginAction {
+    use crate::arclain::plugin::ui::PluginAction as WitAction;
+    use crate::types::{PluginAction as InternalAction, ToastLevel};
+
+    match action {
+        WitAction::None => InternalAction::None,
+        WitAction::EmitMetadata(json) => InternalAction::EmitMetadata { json },
+        WitAction::CacheContent(req) => InternalAction::CacheContent {
+            key: req.key,
+            url: req.url,
+        },
+        WitAction::ShowToast(config) => InternalAction::ShowToast {
+            message: config.message,
+            level: match config.level {
+                crate::arclain::plugin::ui::ToastLevel::Info => ToastLevel::Info,
+                crate::arclain::plugin::ui::ToastLevel::Success => ToastLevel::Success,
+                crate::arclain::plugin::ui::ToastLevel::Warning => ToastLevel::Warning,
+                crate::arclain::plugin::ui::ToastLevel::Error => ToastLevel::Error,
+            },
+        },
+        WitAction::ShowMessage(config) => InternalAction::ShowMessage {
+            title: config.title,
+            message: config.message,
+        },
+        WitAction::RefreshPanel(ep) => InternalAction::RefreshPanel {
+            extension_point: ep,
+        },
+        WitAction::UpdateElement(update) => InternalAction::UpdateElement {
+            id: update.id,
+            value: update.value,
+        },
     }
 }

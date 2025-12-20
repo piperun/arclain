@@ -1,7 +1,9 @@
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use crate::shared::theme::ThemeColors;
+use arclain_core::utilities::ContentCache;
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
+use std::sync::Arc;
 
 /// Callback for when a UI event occurs
 pub type UiEventCallback<'a> = Box<dyn FnMut(&str, Option<String>) + 'a>;
@@ -12,21 +14,40 @@ pub fn render_ui_element(
     element: &PluginUiElement,
     event_callback: &mut UiEventCallback<'_>,
     colors: &ThemeColors,
+    content_cache: Option<&Arc<ContentCache>>,
 ) {
     match element {
-        PluginUiElement::Column { children } => {
+        PluginUiElement::Column { children, spacing } => {
             ui.vertical(|ui| {
+                if let Some(sp) = spacing {
+                    ui.spacing_mut().item_spacing.y = *sp;
+                }
                 for child in children {
-                    render_ui_element(ui, child, event_callback, colors);
+                    render_ui_element(ui, child, event_callback, colors, content_cache);
                 }
             });
         }
-        PluginUiElement::Row { children } => {
+        PluginUiElement::Row { children, spacing } => {
             ui.horizontal(|ui| {
+                if let Some(sp) = spacing {
+                    ui.spacing_mut().item_spacing.x = *sp;
+                }
                 for child in children {
-                    render_ui_element(ui, child, event_callback, colors);
+                    render_ui_element(ui, child, event_callback, colors, content_cache);
                 }
             });
+        }
+        PluginUiElement::Grid { columns, children } => {
+            egui::Grid::new("plugin_grid")
+                .num_columns(*columns as usize)
+                .show(ui, |ui| {
+                    for (i, child) in children.iter().enumerate() {
+                        render_ui_element(ui, child, event_callback, colors, content_cache);
+                        if (i + 1) % (*columns as usize) == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
         }
         PluginUiElement::Label { text, bold, size } => {
             // Use SectionHeader if bold and large-ish, otherwise plain label
@@ -43,8 +64,8 @@ pub fn render_ui_element(
                 ui.label(rich_text);
             }
         }
-        PluginUiElement::Button { id, label } => {
-            // Buttons might be standalone actions
+        PluginUiElement::Button { id, label, action } => {
+            // Render button and handle action based on button_action field
             if ui
                 .add(arclain_widgets::TextButton::new(
                     label,
@@ -52,7 +73,31 @@ pub fn render_ui_element(
                 ))
                 .clicked()
             {
-                event_callback(id, None);
+                match action
+                    .as_ref()
+                    .unwrap_or(&arclain_plugins::types::ButtonAction::None)
+                {
+                    arclain_plugins::types::ButtonAction::ShowDialog { id: dialog_id } => {
+                        // Use special prefix to signal dialog open intent
+                        event_callback(&format!("__dialog_open:{}", dialog_id), None);
+                    }
+                    arclain_plugins::types::ButtonAction::CloseDialog => {
+                        event_callback("__dialog_close", None);
+                    }
+                    arclain_plugins::types::ButtonAction::OpenPage { id: page_id } => {
+                        event_callback(&format!("__page_open:{}", page_id), None);
+                    }
+                    arclain_plugins::types::ButtonAction::ClosePage => {
+                        event_callback("__page_close", None);
+                    }
+                    arclain_plugins::types::ButtonAction::Custom(custom_id) => {
+                        event_callback(custom_id, None);
+                    }
+                    arclain_plugins::types::ButtonAction::None => {
+                        // Normal button click - send to plugin
+                        event_callback(id, None);
+                    }
+                }
             }
         }
         PluginUiElement::TextInput { id, label, value } => {
@@ -212,6 +257,67 @@ pub fn render_ui_element(
                 })
                 .show(ui, colors);
         }
+        PluginUiElement::Image {
+            cache_key,
+            url,
+            max_height,
+        } => {
+            // Try to load image from cache
+            if let Some(key) = cache_key {
+                if let Some(cache) = content_cache {
+                    match cache.get(key) {
+                        Ok(Some(bytes)) => {
+                            // Try to decode image and display
+                            if let Some(size) = try_render_image(ui, key, &bytes, *max_height) {
+                                // Successfully rendered
+                                let _ = size;
+                            } else {
+                                // Failed to decode
+                                ui.label(
+                                    egui::RichText::new("🖼 [Invalid image data]")
+                                        .color(colors.on_surface_variant)
+                                        .italics(),
+                                );
+                            }
+                        }
+                        Ok(None) => {
+                            // Not in cache yet
+                            ui.label(
+                                egui::RichText::new(format!("🖼 [Loading: {}]", key))
+                                    .color(colors.on_surface_variant)
+                                    .italics(),
+                            );
+                        }
+                        Err(e) => {
+                            ui.label(
+                                egui::RichText::new(format!("🖼 [Error: {}]", e))
+                                    .color(colors.error)
+                                    .italics(),
+                            );
+                        }
+                    }
+                } else {
+                    ui.label(
+                        egui::RichText::new("🖼 [No cache available]")
+                            .color(colors.on_surface_variant)
+                            .italics(),
+                    );
+                }
+            } else if let Some(url_str) = url {
+                // URL without cache key - show placeholder
+                ui.label(
+                    egui::RichText::new(format!("🖼 [Image: {}]", url_str))
+                        .color(colors.on_surface_variant)
+                        .italics(),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("🖼 [No image source]")
+                        .color(colors.on_surface_variant)
+                        .italics(),
+                );
+            }
+        }
     }
 }
 
@@ -221,8 +327,64 @@ pub fn render_ui_elements(
     elements: &[PluginUiElement],
     event_callback: &mut UiEventCallback<'_>,
     colors: &ThemeColors,
+    content_cache: Option<&Arc<ContentCache>>,
 ) {
     for element in elements {
-        render_ui_element(ui, element, event_callback, colors);
+        render_ui_element(ui, element, event_callback, colors, content_cache);
     }
+}
+
+/// Try to render an image from raw bytes
+/// Returns the displayed size if successful, None if decoding failed
+fn try_render_image(
+    ui: &mut egui::Ui,
+    cache_key: &str,
+    bytes: &[u8],
+    max_height: Option<f32>,
+) -> Option<egui::Vec2> {
+    let ctx = ui.ctx();
+
+    // Generate a stable ID for this image's texture
+    let texture_id = egui::Id::new(("plugin_image", cache_key));
+
+    // Check if texture is already loaded in egui's memory
+    let existing_handle: Option<egui::TextureHandle> = ctx.data(|d| d.get_temp(texture_id));
+
+    let handle = if let Some(h) = existing_handle {
+        h
+    } else {
+        // Try to decode the image bytes using the image crate
+        let img = image::load_from_memory(bytes).ok()?;
+        let rgba = img.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let pixels = rgba.into_raw();
+
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+
+        // Load into egui
+        let handle = ctx.load_texture(cache_key, color_image, egui::TextureOptions::default());
+
+        // Cache the handle for future frames
+        ctx.data_mut(|d| d.insert_temp(texture_id, handle.clone()));
+
+        handle
+    };
+
+    // Calculate display size respecting max_height
+    let tex_size = handle.size_vec2();
+    let max_h = max_height.unwrap_or(200.0);
+    let scale = if tex_size.y > max_h {
+        max_h / tex_size.y
+    } else {
+        1.0
+    };
+    let display_size = egui::vec2(tex_size.x * scale, tex_size.y * scale);
+
+    // Render the image
+    ui.image(egui::load::SizedTexture {
+        id: handle.id(),
+        size: display_size,
+    });
+
+    Some(display_size)
 }

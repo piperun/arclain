@@ -6,7 +6,7 @@
 //! - Section list for toggling visibility
 
 use crate::shared::theme::AppTheme;
-use arclain_db::{list_items_by_region, upsert_item, UiItem, UiRegion};
+use arclain_db::{list_items_by_region, upsert_item, ActionType, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::PluginExtensionPoint;
 use eframe::egui;
@@ -68,6 +68,11 @@ pub fn render_info_panel_layout(
         }
     }
 
+    // Sync plugin items into the list
+    if let Some(manager) = plugin_manager {
+        sync_plugin_items(state, manager);
+    }
+
     // The header with Save/Reset is now rendered by SettingsHeader in ui.rs
     // This page only renders the content area
 
@@ -113,10 +118,66 @@ pub fn render_info_panel_layout(
         &mut state.selected_item_id,
         &mut state.dirty,
     );
+}
 
-    // Plugin info panel items section
-    if let Some(manager) = plugin_manager {
-        render_plugin_info_panel_section(ui, theme, manager);
+/// Sync plugins into the items list
+fn sync_plugin_items(state: &mut InfoPanelLayoutState, manager: &PluginManager) {
+    let enabled_plugins: Vec<_> = manager
+        .list_plugins()
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| (p.id.clone(), p.manifest.plugin.name.clone()))
+        .collect();
+
+    let mut changed = false;
+
+    for (plugin_id, plugin_name) in enabled_plugins {
+        // Check if plugin provides InfoPanel UI
+        let has_info_panel = manager
+            .with_plugin_instance(&plugin_id, |instance| {
+                if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::Panel) {
+                    !elements.is_empty()
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+
+        if !has_info_panel {
+            continue;
+        }
+
+        // Check if item exists
+        let exists = state.items.iter().any(|item| {
+            item.action_type == ActionType::Plugin && item.action_data.as_ref() == Some(&plugin_id)
+        });
+
+        if !exists {
+            // Add new item
+            // Find max sort order
+            let max_sort = state.items.iter().map(|i| i.sort_order).max().unwrap_or(0);
+
+            let id = format!("plugin_{}", plugin_id);
+
+            state.items.push(UiItem {
+                id,
+                region: UiRegion::InfoPanel,
+                group_id: Some("plugins".to_string()),
+                label: plugin_name,
+                icon: Some("PUZZLE_PIECE".to_string()),
+                action_type: ActionType::Plugin,
+                action_data: Some(plugin_id),
+                visible: true,
+                sort_order: max_sort + 10,
+                // InfoPanel doesn't really use DisplayMode but we set a default
+                display_mode: arclain_db::DisplayMode::default(),
+            });
+            changed = true;
+        }
+    }
+
+    if changed {
+        state.dirty = true;
     }
 }
 
@@ -400,77 +461,14 @@ fn render_section_picker(
                 *dirty = true;
             }
         }
-    });
-}
-
-/// Render section showing plugins that provide Info Panel UI
-fn render_plugin_info_panel_section(ui: &mut egui::Ui, theme: &AppTheme, manager: &PluginManager) {
-    let enabled_plugins: Vec<_> = manager
-        .list_plugins()
-        .iter()
-        .filter(|p| p.enabled)
-        .map(|p| (p.id.clone(), p.manifest.plugin.name.clone()))
-        .collect();
-
-    if enabled_plugins.is_empty() {
-        return;
-    }
-
-    // Check which plugins provide InfoPanel UI
-    let mut info_panel_plugins: Vec<(String, String)> = Vec::new();
-    for (plugin_id, plugin_name) in &enabled_plugins {
-        let has_info_panel = manager.with_plugin_instance(plugin_id, |instance| {
-            if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::InfoPanel) {
-                !elements.is_empty()
-            } else {
-                false
+        // Sync sort_order for all visible items
+        if *dirty {
+            let mut visible_items: Vec<&mut UiItem> =
+                items.iter_mut().filter(|i| i.visible).collect();
+            visible_items.sort_by_key(|i| i.sort_order);
+            for (idx, item) in visible_items.iter_mut().enumerate() {
+                item.sort_order = idx as i32;
             }
-        });
-        if has_info_panel == Some(true) {
-            info_panel_plugins.push((plugin_id.clone(), plugin_name.clone()));
-        }
-    }
-
-    if info_panel_plugins.is_empty() {
-        return;
-    }
-
-    ui.add_space(16.0);
-
-    // Render the plugin section
-    ui.label(
-        egui::RichText::new("Plugin Info Panel Sections (auto-inserted)")
-            .size(14.0)
-            .strong()
-            .color(theme.colors.on_surface),
-    );
-    ui.add_space(8.0);
-
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
-
-        for (plugin_id, plugin_name) in &info_panel_plugins {
-            let chip = egui::Frame::NONE
-                .fill(theme.colors.tertiary_container)
-                .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-                .inner_margin(egui::Margin::symmetric(12, 6))
-                .show(ui, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} {}",
-                            egui_phosphor::regular::PUZZLE_PIECE,
-                            plugin_name
-                        ))
-                        .color(theme.colors.on_tertiary_container),
-                    );
-                });
-
-            // Tooltip on hover
-            chip.response.on_hover_ui(|ui| {
-                ui.label(format!("Plugin: {}", plugin_id));
-                ui.label("This plugin provides info panel sections.");
-                ui.label("Enable/disable the plugin in Plugins settings.");
-            });
         }
     });
 }

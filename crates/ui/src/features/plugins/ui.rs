@@ -27,6 +27,7 @@ impl PluginsFeature {
                 manager_ref,
                 &mut self.list_state,
                 &shared.app_state,
+                Some(shared),
             );
         });
     }

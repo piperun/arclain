@@ -70,3 +70,23 @@ pub fn get_cached_metadata(id: &str) -> Option<String> {
 pub fn save_cached_metadata(id: &str, json: &str) {
     arclain::plugin::host::save_cached_metadata(id, json);
 }
+
+pub fn list_cached_entries() -> Vec<String> {
+    arclain::plugin::host::list_cached_entries()
+}
+
+pub fn export_cache() -> Result<String, String> {
+    arclain::plugin::host::export_cache()
+}
+
+pub fn import_cache() -> Result<String, String> {
+    arclain::plugin::host::import_cache()
+}
+
+pub fn start_async_fetch(url: &str) -> String {
+    arclain::plugin::host::start_async_fetch(url)
+}
+
+pub fn poll_async_fetch(id: &str) -> Option<Result<String, String>> {
+    arclain::plugin::host::poll_async_fetch(id)
+}

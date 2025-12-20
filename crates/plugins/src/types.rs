@@ -154,18 +154,43 @@ pub struct PluginInfo {
 }
 
 /// Extension point where a plugin provides UI
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PluginExtensionPoint {
-    /// Main page when plugin is selected in Plugins page
+    /// Main plugin settings page
     MainPage,
-    /// Widget to inject into archive properties sidebar
-    Sidebar,
-    /// Future: context menu items
-    ContextMenu,
     /// Toolbar button slot
-    Toolbar,
-    /// Info panel section
-    InfoPanel,
+    PluginButton,
+    /// Context menu items
+    ContextMenu,
+    /// Sidebar panel section (renamed from InfoPanel)
+    Panel,
+    /// Deprecated - use Panel
+    #[serde(alias = "Sidebar")]
+    Sidebar,
+    /// Plugin settings page
+    Settings,
+    /// Modal dialog (parameterized by ID)
+    Dialog(String),
+    /// Full page view (parameterized by ID)
+    Page(String),
+}
+
+/// Button action for declarative navigation
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type")]
+pub enum ButtonAction {
+    None,
+    ShowDialog { id: String },
+    CloseDialog,
+    OpenPage { id: String },
+    ClosePage,
+    Custom(String),
+}
+
+impl Default for ButtonAction {
+    fn default() -> Self {
+        ButtonAction::None
+    }
 }
 
 /// UI element that a plugin can define
@@ -176,9 +201,19 @@ pub enum PluginUiElement {
     Column {
         #[serde(default)]
         children: Vec<PluginUiElement>,
+        #[serde(default)]
+        spacing: Option<f32>,
     },
     /// Horizontal layout container
     Row {
+        #[serde(default)]
+        children: Vec<PluginUiElement>,
+        #[serde(default)]
+        spacing: Option<f32>,
+    },
+    /// Grid layout container
+    Grid {
+        columns: u32,
         #[serde(default)]
         children: Vec<PluginUiElement>,
     },
@@ -190,8 +225,13 @@ pub enum PluginUiElement {
         #[serde(default)]
         size: Option<f32>,
     },
-    /// Button
-    Button { id: String, label: String },
+    /// Button with optional navigation action
+    Button {
+        id: String,
+        label: String,
+        #[serde(default)]
+        action: Option<ButtonAction>,
+    },
     /// Text input
     TextInput {
         id: String,
@@ -227,6 +267,15 @@ pub enum PluginUiElement {
         options: Vec<String>,
         selected: String,
     },
+    /// Image display
+    Image {
+        #[serde(default)]
+        cache_key: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        max_height: Option<f32>,
+    },
     /// Separator line
     Separator,
     /// Spacing
@@ -234,6 +283,35 @@ pub enum PluginUiElement {
         #[serde(default = "default_space_size")]
         size: f32,
     },
+}
+
+/// Toast notification level
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ToastLevel {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// Action that a plugin can request from the host
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PluginAction {
+    /// No action
+    None,
+    /// Emit metadata to the host
+    EmitMetadata { json: String },
+    /// Request host to cache content from URL
+    CacheContent { key: String, url: String },
+    /// Show a toast notification
+    ShowToast { message: String, level: ToastLevel },
+    /// Show a message dialog
+    ShowMessage { title: String, message: String },
+    /// Request UI refresh for an extension point
+    RefreshPanel { extension_point: String },
+    /// Update a specific element's value
+    UpdateElement { id: String, value: String },
 }
 
 fn default_space_size() -> f32 {
