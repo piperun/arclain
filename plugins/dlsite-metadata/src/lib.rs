@@ -6,9 +6,11 @@ struct PluginState {
     found_metadata: Option<(String, serde_json::Value, Option<ScrapedData>)>, // (product_id, json, scraped)
     search_query: String,
     search_results: Vec<(String, String, String)>, // (code, title, maker)
-    auto_load_enabled: bool, // Cache for the auto_load_cache setting
+    auto_fetch_enabled: bool, // Master switch: auto-fetch when archive opens
+    enable_cache: bool, // Sub-option: cache fetched results (only relevant if auto_fetch enabled)
     fetch_in_progress: bool, // Prevent double-fetch when spamming buttons
     last_archive_path: Option<String>, // Track current archive to reset state on change
+    pending_auto_fetch: bool, // Flag to trigger auto-fetch on next frame
 }
 
 // Global state (thread-local for WASM component)
@@ -17,9 +19,11 @@ thread_local! {
         found_metadata: None,
         search_query: String::new(),
         search_results: Vec::new(),
-        auto_load_enabled: true,
+        auto_fetch_enabled: true,
+        enable_cache: true,
         fetch_in_progress: false,
         last_archive_path: None,
+        pending_auto_fetch: false,
     });
 }
 
@@ -29,12 +33,16 @@ impl archust_plugin_sdk::Guest for Component {
     fn init() {
         info("DLSite Metadata plugin initialized");
         
-        // Just read the auto-load setting, don't try to load yet (no archive open)
-        let auto_load = archust_plugin_sdk::arclain::plugin::host::get_setting("auto_load_cache")
+        // Just read the auto-fetch setting, don't try to load yet (no archive open)
+        let auto_fetch = archust_plugin_sdk::arclain::plugin::host::get_setting("auto_fetch_enabled")
+            .unwrap_or_else(|| "true".to_string()) == "true";
+        let enable_cache = archust_plugin_sdk::arclain::plugin::host::get_setting("enable_cache")
             .unwrap_or_else(|| "true".to_string()) == "true";
         
         STATE.with(|state| {
-            state.borrow_mut().auto_load_enabled = auto_load;
+            let mut s = state.borrow_mut();
+            s.auto_fetch_enabled = auto_fetch;
+            s.enable_cache = enable_cache;
         });
         
         // NOTE: Auto-load happens when archive is opened, not at init time
@@ -74,56 +82,57 @@ impl archust_plugin_sdk::Guest for Component {
 
         match extension_point.as_str() {
             "PluginButton" => {
-                use archust_plugin_sdk::current_archive_info;
+                // Fetch button - always visible for layout registration
+                let mut buttons = vec![
+                    UiElement::Button(ButtonConfig {
+                        id: "fetch_metadata".to_string(),
+                        label: "Fetch DLSite".to_string(),
+                        action: None,
+                    }),
+                ];
                 
-                // Only show toolbar button when archive is open
-                let archive_info = current_archive_info();
-                if archive_info.is_none() {
-                    return vec![];
-                }
-                
-                // Check if we already have metadata - don't show button if we do
-                let has_metadata = STATE.with(|state| state.borrow().found_metadata.is_some());
+                // DLSite Info button - only shown when we have metadata
+                let has_metadata = STATE.with(|s| s.borrow().found_metadata.is_some());
                 if has_metadata {
-                    return vec![];
+                    buttons.push(UiElement::Button(ButtonConfig {
+                        id: "show_dlsite_info".to_string(),
+                        label: "DLSite Info".to_string(),
+                        action: Some(ButtonAction::ShowDialog("dlsite_info".to_string())),
+                    }));
                 }
                 
-                // Check if DLSite code detected
-                let archive_name = archive_info.as_ref()
-                    .map(|i| i.filename.clone())
-                    .unwrap_or_default();
-                let detected_code = detect_dlsite_code(&archive_name);
-                
-                if detected_code.is_some() {
-                    vec![
-                        UiElement::Button(ButtonConfig {
-                            id: "fetch_metadata".to_string(),
-                            label: "Fetch DLSite Data".to_string(),
-                            action: None,
-                        }),
-                    ]
-                } else {
-                    // No code detected - no toolbar button
-                    vec![]
-                }
+                buttons
             },
-            "MainPage" => vec![
-                UiElement::TextInput(TextInputConfig {
+            "MainPage" => {
+                let auto_fetch_enabled = STATE.with(|s| s.borrow().auto_fetch_enabled);
+                let enable_cache = STATE.with(|s| s.borrow().enable_cache);
+                
+                let mut elements = vec![
+                    // Master switch: auto-fetch when archive opens
+                    UiElement::Checkbox(CheckboxConfig {
+                        id: "auto_fetch_enabled".to_string(),
+                        label: "Auto-fetch metadata when archive opens".to_string(),
+                        checked: auto_fetch_enabled,
+                    }),
+                ];
+                
+                // Only show cache option if auto-fetch is enabled
+                if auto_fetch_enabled {
+                    elements.push(UiElement::Checkbox(CheckboxConfig {
+                        id: "enable_cache".to_string(),
+                        label: "Cache fetched metadata".to_string(),
+                        checked: enable_cache,
+                    }));
+                }
+                
+                elements.push(UiElement::TextInput(TextInputConfig {
                     id: "request_timeout".to_string(),
                     label: "API Request Timeout (seconds)".to_string(),
                     value: "30".to_string(),
-                }),
-                UiElement::Checkbox(CheckboxConfig {
-                    id: "enable_cache".to_string(),
-                    label: "Enable Metadata Caching".to_string(),
-                    checked: true,
-                }),
-                UiElement::Checkbox(CheckboxConfig {
-                    id: "auto_load_cache".to_string(),
-                    label: "Auto-load cached metadata on archive open".to_string(),
-                    checked: true,
-                }),
-            ],
+                }));
+                
+                elements
+            },
             "Panel" => {
                 use archust_plugin_sdk::current_archive_info;
                 
@@ -168,6 +177,9 @@ impl archust_plugin_sdk::Guest for Component {
                     .unwrap_or_default();
                 let detected_code = detect_dlsite_code(&archive_name);
                 
+                // NOTE: Auto-fetch is NOT done here because get_ui_layout runs on main thread.
+                // Auto-fetch should be triggered via proper async event mechanism.
+                
                 let mut elements = vec![];
 
                 STATE.with(|state| {
@@ -180,10 +192,10 @@ impl archust_plugin_sdk::Guest for Component {
                         
                         // Cover image at top (if available from scraped data)
                         if let Some(scraped_data) = scraped {
-                            if let Some(screenshot_url) = scraped_data.screenshots.first() {
+                            if let Some(cover_url) = &scraped_data.cover_image {
                                 elements.push(UiElement::Image(ImageConfig {
-                                    cache_key: Some(format!("dlsite:img:{}", id)),
-                                    url: Some(screenshot_url.clone()),
+                                    cache_key: Some(format!("dlsite:cover:{}", id)),
+                                    url: Some(cover_url.clone()),
                                     max_height: Some(150.0),
                                 }));
                             }
@@ -529,20 +541,24 @@ impl archust_plugin_sdk::Guest for Component {
         }
 
         match id.as_str() {
-            "auto_load_cache" => {
+            "auto_fetch_enabled" => {
                 if let Some(val) = value {
                     let enabled = val == "true";
                     STATE.with(|state| {
-                        state.borrow_mut().auto_load_enabled = enabled;
+                        state.borrow_mut().auto_fetch_enabled = enabled;
                     });
-                    archust_plugin_sdk::arclain::plugin::host::set_setting("auto_load_cache", &val);
-                    info(&format!("[DLSite Plugin] Auto-load cache setting changed to: {}", enabled));
+                    archust_plugin_sdk::arclain::plugin::host::set_setting("auto_fetch_enabled", &val);
+                    info(&format!("[DLSite Plugin] Auto-fetch setting changed to: {}", enabled));
                 }
             }
             "enable_cache" => {
                 if let Some(val) = value {
+                    let enabled = val == "true";
+                    STATE.with(|state| {
+                        state.borrow_mut().enable_cache = enabled;
+                    });
                     archust_plugin_sdk::arclain::plugin::host::set_setting("enable_cache", &val);
-                    info(&format!("[DLSite Plugin] Cache enabled setting changed to: {}", val));
+                    info(&format!("[DLSite Plugin] Cache setting changed to: {}", enabled));
                 }
             }
 
@@ -775,6 +791,7 @@ struct ScrapedData {
     release_date: Option<String>,
     tags: Vec<String>,
     description: Option<String>,
+    cover_image: Option<String>,
     screenshots: Vec<String>,
 }
 
@@ -788,6 +805,7 @@ fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
     let mut release_date = None;
     let mut tags = Vec::new();
     let mut description = None;
+    let mut cover_image = None;
     let mut screenshots = Vec::new();
 
     // 1. Parse Tables (work_maker and work_outline)
@@ -802,41 +820,39 @@ fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
             Some(el) => el.text().collect::<String>().trim().to_string(),
             None => continue,
         };
+        
         let td = match tr.select(&td_selector).next() {
             Some(el) => el,
             None => continue,
         };
-
+        
         match th.as_str() {
-            "Circle" | "サークル名" | "Brand" | "ブランド名" | "Publisher" | "出版社名" | "Label" | "レーベル" => {
-                if let Some(span) = td.select(&maker_selector).next() {
-                    circle = Some(span.text().collect::<String>().trim().to_string());
-                } else {
-                    circle = Some(td.text().collect::<String>().trim().to_string());
+            "サークル名" | "ブランド名" | "著者" | "出版社名" => {
+                // Circle/Maker
+                if let Some(maker) = td.select(&maker_selector).next() {
+                    circle = Some(maker.text().collect::<String>().trim().to_string());
                 }
-            },
-            "Published date" | "販売日" | "予告開始日" => {
-                let date_str = td.text().collect::<String>().trim().to_string();
-                // Try to clean up date string (e.g. "2024年01月01日" -> "2024-01-01")
-                // For now just keep it as is, or do simple replacement
-                release_date = Some(date_str.replace("年", "-").replace("月", "-").replace("日", ""));
-            },
-            "Genre" | "ジャンル" => {
+            }
+            "販売日" => {
+                // Release date
+                release_date = Some(td.text().collect::<String>().trim().to_string());
+            }
+            "ジャンル" => {
+                // Tags/Genres
                 for a in td.select(&a_selector) {
-                    tags.push(a.text().collect::<String>().trim().to_string());
+                    let tag = a.text().collect::<String>().trim().to_string();
+                    if !tag.is_empty() {
+                        tags.push(tag);
+                    }
                 }
-            },
-            "Series" | "シリーズ名" => {
-                // Could extract series here if needed
-            },
+            }
             _ => {}
         }
     }
-
-    // 2. Parse Description
-    // Try meta description first
-    let meta_desc_selector = Selector::parse("meta[name='description']").unwrap();
-    if let Some(meta) = document.select(&meta_desc_selector).next() {
+    
+    // 2. Parse Description (from meta or work_parts)
+    let meta_selector = Selector::parse("meta[name='description']").unwrap();
+    if let Some(meta) = document.select(&meta_selector).next() {
         if let Some(content) = meta.value().attr("content") {
             description = Some(content.trim().to_string());
         }
@@ -856,8 +872,36 @@ fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
         title = Some(h1.text().collect::<String>().trim().to_string());
     }
 
-    // 4. Parse Screenshots
-    // Look for slider data
+    // 4. Parse Main Cover Image
+    // Try to find the main product image
+    let img_selector = Selector::parse("div.product-slider-data div[data-src]").unwrap();
+    if let Some(div) = document.select(&img_selector).next() {
+        if let Some(src) = div.value().attr("data-src") {
+            let full_url = if src.starts_with("//") {
+                format!("https:{}", src)
+            } else {
+                src.to_string()
+            };
+            cover_image = Some(full_url);
+        }
+    }
+    
+    // Fallback: try to find the work_img element
+    if cover_image.is_none() {
+        let work_img_selector = Selector::parse("div#work_left img, img.work_img").unwrap();
+        if let Some(img) = document.select(&work_img_selector).next() {
+            if let Some(src) = img.value().attr("src") {
+                let full_url = if src.starts_with("//") {
+                    format!("https:{}", src)
+                } else {
+                    src.to_string()
+                };
+                cover_image = Some(full_url);
+            }
+        }
+    }
+
+    // 5. Parse Screenshots
     let slider_selector = Selector::parse("div.product-slider-data div").unwrap();
     for div in document.select(&slider_selector) {
         if let Some(src) = div.value().attr("data-src") {
@@ -878,6 +922,7 @@ fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
         release_date,
         tags,
         description,
+        cover_image,
         screenshots,
     })
 }
