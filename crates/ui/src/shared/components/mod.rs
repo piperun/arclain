@@ -12,6 +12,7 @@ pub mod settings_form;
 pub mod settings_header;
 pub mod status_bar;
 pub mod toolbar;
+pub mod top_tab_bar;
 pub mod tree_panel;
 
 pub use breadcrumbs::Breadcrumbs;

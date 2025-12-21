@@ -318,6 +318,133 @@ pub fn render_ui_element(
                 );
             }
         }
+        PluginUiElement::Tabs { id, tabs, selected } => {
+            ui.horizontal(|ui| {
+                for tab in tabs {
+                    let is_selected = tab == selected;
+                    let style = if is_selected {
+                        egui::RichText::new(tab).strong().color(colors.primary)
+                    } else {
+                        egui::RichText::new(tab).color(colors.on_surface_variant)
+                    };
+
+                    if ui.selectable_label(is_selected, style).clicked() {
+                        event_callback(id, Some(tab.clone()));
+                    }
+                }
+            });
+        }
+        PluginUiElement::ListItem {
+            id,
+            title,
+            subtitle,
+            badge,
+            image_key,
+            selected,
+        } => {
+            let frame = if *selected {
+                egui::Frame::NONE
+                    .fill(colors.primary.gamma_multiply(0.15))
+                    .inner_margin(8.0)
+                    .corner_radius(4.0)
+            } else {
+                egui::Frame::NONE.inner_margin(8.0).corner_radius(4.0)
+            };
+
+            let response = frame
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        // Optional thumbnail
+                        if let Some(key) = image_key {
+                            if let Some(cache) = content_cache {
+                                if let Ok(Some(bytes)) = cache.get(key) {
+                                    // Small thumbnail (48x48)
+                                    if let Some(_size) =
+                                        try_render_image(ui, key, &bytes, Some(48.0))
+                                    {
+                                        // rendered
+                                    }
+                                }
+                            }
+                        }
+
+                        ui.vertical(|ui| {
+                            ui.label(egui::RichText::new(title).strong().color(colors.on_surface));
+                            if let Some(sub) = subtitle {
+                                ui.label(
+                                    egui::RichText::new(sub)
+                                        .small()
+                                        .color(colors.on_surface_variant),
+                                );
+                            }
+                        });
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(badge_text) = badge {
+                                ui.label(
+                                    egui::RichText::new(badge_text)
+                                        .small()
+                                        .color(colors.primary)
+                                        .background_color(colors.primary.gamma_multiply(0.1)),
+                                );
+                            }
+                        });
+                    });
+                })
+                .response;
+
+            if response.interact(egui::Sense::click()).clicked() {
+                event_callback(id, None);
+            }
+        }
+        PluginUiElement::ListContainer {
+            id: _,
+            items,
+            max_height,
+            empty_message,
+        } => {
+            let height = max_height.unwrap_or(300.0);
+
+            egui::Frame::NONE
+                .fill(colors.surface_variant)
+                .corner_radius(6.0)
+                .inner_margin(4.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(height)
+                        .show(ui, |ui| {
+                            if items.is_empty() {
+                                let msg = empty_message.as_deref().unwrap_or("No items");
+                                ui.vertical_centered(|ui| {
+                                    ui.add_space(40.0);
+                                    ui.label(
+                                        egui::RichText::new(msg).color(colors.on_surface_variant),
+                                    );
+                                    ui.add_space(40.0);
+                                });
+                            } else {
+                                for item in items {
+                                    render_ui_element(
+                                        ui,
+                                        item,
+                                        event_callback,
+                                        colors,
+                                        content_cache,
+                                    );
+                                    ui.add_space(2.0);
+                                }
+                            }
+                        });
+                });
+        }
+        PluginUiElement::Loading { message } => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                if let Some(msg) = message {
+                    ui.label(egui::RichText::new(msg).color(colors.on_surface_variant));
+                }
+            });
+        }
     }
 }
 

@@ -1,0 +1,182 @@
+//! Top Tab Bar Component
+//!
+//! Renders the main application tab bar with host tabs and plugin-registered tabs.
+//! Supports badge rendering (numeric count and dot indicators).
+
+use arclain_plugins::BadgeConfig;
+use arclain_theme::ThemeColors;
+use egui::{Color32, RichText, Ui, Vec2};
+
+/// A top-level tab definition (host or plugin)
+#[derive(Debug, Clone)]
+pub struct TopTab {
+    /// Tab identifier
+    pub id: String,
+    /// Display label
+    pub label: String,
+    /// Icon (emoji or text)
+    pub icon: String,
+    /// Optional badge
+    pub badge: Option<BadgeConfig>,
+    /// Source: None for host, Some(plugin_id) for plugin
+    pub source: Option<String>,
+}
+
+/// State for the top tab bar
+#[derive(Debug, Clone, Default)]
+pub struct TopTabBarState {
+    /// Currently selected tab ID
+    pub selected_tab: String,
+}
+
+impl TopTabBarState {
+    pub fn new(default_tab: &str) -> Self {
+        Self {
+            selected_tab: default_tab.to_string(),
+        }
+    }
+}
+
+/// Actions returned from tab bar interactions
+#[derive(Debug, Clone)]
+pub enum TopTabAction {
+    /// User clicked a host tab
+    SelectHostTab(String),
+    /// User clicked a plugin tab
+    SelectPluginTab { plugin_id: String, tab_id: String },
+}
+
+/// Render the top tab bar
+pub fn render(
+    ui: &mut Ui,
+    colors: &ThemeColors,
+    state: &mut TopTabBarState,
+    tabs: &[TopTab],
+) -> Option<TopTabAction> {
+    let mut action = None;
+
+    ui.horizontal(|ui| {
+        ui.add_space(8.0);
+
+        for tab in tabs {
+            let is_selected = state.selected_tab == tab.id;
+
+            // Tab styling
+            let bg_color = if is_selected {
+                colors.surface_variant
+            } else {
+                Color32::TRANSPARENT
+            };
+
+            let text_color = if is_selected {
+                colors.on_surface
+            } else {
+                colors.on_surface_variant
+            };
+
+            // Render tab button
+            let response = ui
+                .horizontal(|ui| {
+                    // Background frame
+                    let frame_response = egui::Frame::NONE
+                        .fill(bg_color)
+                        .inner_margin(egui::Margin {
+                            left: 12,
+                            right: 12,
+                            top: 8,
+                            bottom: 8,
+                        })
+                        .corner_radius(4.0)
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                // Icon (convert name to Phosphor glyph)
+                                ui.label(
+                                    RichText::new(icon_to_phosphor(&tab.icon)).color(text_color),
+                                );
+
+                                // Label
+                                ui.label(RichText::new(&tab.label).color(text_color).size(13.0));
+
+                                // Badge
+                                if let Some(badge) = &tab.badge {
+                                    render_badge(ui, badge);
+                                }
+                            });
+                        });
+
+                    frame_response.response
+                })
+                .inner;
+
+            // Handle click
+            if response.interact(egui::Sense::click()).clicked() {
+                state.selected_tab = tab.id.clone();
+                action = Some(if let Some(plugin_id) = &tab.source {
+                    TopTabAction::SelectPluginTab {
+                        plugin_id: plugin_id.clone(),
+                        tab_id: tab.id.clone(),
+                    }
+                } else {
+                    TopTabAction::SelectHostTab(tab.id.clone())
+                });
+            }
+
+            // Hover effect
+            if response.hovered() && !is_selected {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+        }
+    });
+
+    action
+}
+
+/// Render a badge (count or dot)
+fn render_badge(ui: &mut Ui, badge: &BadgeConfig) {
+    let color = badge_color(&badge.color);
+
+    if let Some(count) = badge.count {
+        if count > 0 {
+            // Numeric badge
+            ui.label(
+                RichText::new(format!("{}", count))
+                    .size(10.0)
+                    .color(Color32::WHITE)
+                    .background_color(color),
+            );
+        }
+    } else if badge.dot {
+        // Dot badge
+        let (_, rect) = ui.allocate_space(Vec2::splat(8.0));
+        ui.painter().circle_filled(rect.center(), 4.0, color);
+    }
+}
+
+/// Convert badge color string to Color32
+fn badge_color(color: &str) -> Color32 {
+    match color {
+        "red" => Color32::from_rgb(248, 81, 73),
+        "green" => Color32::from_rgb(63, 185, 80),
+        "blue" => Color32::from_rgb(88, 166, 255),
+        "orange" => Color32::from_rgb(210, 153, 34),
+        _ => Color32::from_rgb(88, 166, 255), // Default to blue
+    }
+}
+
+/// Convert icon name to Phosphor icon glyph
+/// If the icon is already a glyph (single char or Phosphor char), return as-is
+fn icon_to_phosphor(icon: &str) -> &str {
+    match icon {
+        "FOLDER_OPEN" => egui_phosphor::regular::FOLDER_OPEN,
+        "MAGNIFYING_GLASS" => egui_phosphor::regular::MAGNIFYING_GLASS,
+        "GLOBE" => egui_phosphor::regular::GLOBE,
+        "GEAR" => egui_phosphor::regular::GEAR,
+        "PUZZLE_PIECE" => egui_phosphor::regular::PUZZLE_PIECE,
+        "HOUSE" => egui_phosphor::regular::HOUSE,
+        "FILE" => egui_phosphor::regular::FILE,
+        "INFO" => egui_phosphor::regular::INFO,
+        "DATABASE" => egui_phosphor::regular::DATABASE,
+        // If not a recognized name, return as-is (could be a Phosphor glyph already)
+        _ => icon,
+    }
+}

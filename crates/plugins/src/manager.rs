@@ -308,6 +308,39 @@ impl PluginManager {
             .map(|p| p.metadata.clone())
     }
 
+    /// Get all top-level tabs registered by enabled plugins
+    /// Returns tabs sorted by priority (lower priority = earlier in list)
+    pub fn get_all_top_tabs(&self) -> Vec<(String, crate::types::TopTabConfig)> {
+        let mut all_tabs = Vec::new();
+        let plugins = self.plugins.read();
+        let enabled = self.enabled_plugins.read();
+
+        for (plugin_id, plugin) in plugins.iter() {
+            // Only get tabs from enabled plugins
+            if !enabled.get(plugin_id).copied().unwrap_or(false) {
+                continue;
+            }
+
+            // Try to get tabs from the plugin
+            if let Some(mut instance) = plugin.instance.try_lock() {
+                match instance.get_top_tabs() {
+                    Ok(tabs) => {
+                        for tab in tabs {
+                            all_tabs.push((plugin_id.clone(), tab));
+                        }
+                    }
+                    Err(e) => {
+                        debug!("Failed to get top tabs from {}: {:?}", plugin_id, e);
+                    }
+                }
+            }
+        }
+
+        // Sort by priority (lower = first)
+        all_tabs.sort_by(|a, b| a.1.priority.cmp(&b.1.priority));
+        all_tabs
+    }
+
     /// Get a thread-safe handle to a plugin instance.
     /// Returns None if the plugin is not found.
     /// This allows the caller to manage locking strategies (blocking vs try_lock).

@@ -148,6 +148,36 @@ interface ui {
         max-height: option<f32>,
     }
 
+    // Tabs for view switching
+    record tabs-config {
+        id: string,
+        tabs: list<string>,
+        selected: string,
+    }
+
+    // Single list item (card-like display)
+    record list-item-config {
+        id: string,
+        title: string,
+        subtitle: option<string>,
+        badge: option<string>,
+        image-key: option<string>,
+        selected: bool,
+    }
+
+    // Scrollable list container
+    record list-container-config {
+        id: string,
+        items: list<list-item-config>,
+        max-height: option<f32>,
+        empty-message: option<string>,
+    }
+
+    // Loading indicator
+    record loading-config {
+        message: option<string>,
+    }
+
     // UI Element variant
     // Note: Layout containers (row, column, grid) are handled by the host.
     // Plugins return flat lists of elements.
@@ -162,6 +192,28 @@ interface ui {
         separator,
         space(f32),
         image(image-config),
+        tabs(tabs-config),
+        list-container(list-container-config),
+        loading(loading-config),
+    }
+
+    // === Top Tab Registration ===
+    // Plugins can register top-level tabs in the app
+
+    // Badge configuration for tabs
+    record badge-config {
+        count: option<u32>,      // Numeric badge (e.g., "3")
+        dot: bool,               // Just a dot indicator
+        color: string,           // "red", "green", "blue"
+    }
+
+    // Top-level tab configuration
+    record top-tab-config {
+        id: string,              // Unique tab identifier
+        label: string,           // Display label
+        icon: string,            // Emoji or icon string
+        badge: option<badge-config>,
+        priority: u32,           // Lower = more left (0-100 reserved for host)
     }
 
     // Plugin actions (returned from on-ui-event)
@@ -255,7 +307,10 @@ world plugin-world {
     export get-default-rules: func() -> list<plugin-rule-definition>;
     
     // UI exports
-    use ui.{ui-element, plugin-action};
+    use ui.{ui-element, plugin-action, top-tab-config};
     export get-ui-layout: func(extension-point: string) -> list<ui-element>;
     export on-ui-event: func(id: string, value: option<string>) -> list<plugin-action>;
+    
+    // Top Tab registration
+    export get-top-tabs: func() -> list<top-tab-config>;
 }

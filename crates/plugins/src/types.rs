@@ -283,6 +283,39 @@ pub enum PluginUiElement {
         #[serde(default = "default_space_size")]
         size: f32,
     },
+    /// Tabs for view switching
+    Tabs {
+        id: String,
+        tabs: Vec<String>,
+        selected: String,
+    },
+    /// List item (card-like display)
+    ListItem {
+        id: String,
+        title: String,
+        #[serde(default)]
+        subtitle: Option<String>,
+        #[serde(default)]
+        badge: Option<String>,
+        #[serde(default)]
+        image_key: Option<String>,
+        #[serde(default)]
+        selected: bool,
+    },
+    /// Scrollable list container
+    ListContainer {
+        id: String,
+        items: Vec<PluginUiElement>, // Should contain ListItem elements
+        #[serde(default)]
+        max_height: Option<f32>,
+        #[serde(default)]
+        empty_message: Option<String>,
+    },
+    /// Loading indicator
+    Loading {
+        #[serde(default)]
+        message: Option<String>,
+    },
 }
 
 /// Toast notification level
@@ -396,4 +429,24 @@ impl From<wit_rules::MoveFileRule> for arclain_core::MoveAction {
             target: m.target,
         }
     }
+}
+
+// === Top Tab Registration Types ===
+
+/// Badge configuration for tabs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BadgeConfig {
+    pub count: Option<u32>,
+    pub dot: bool,
+    pub color: String,
+}
+
+/// Top-level tab configuration from a plugin
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopTabConfig {
+    pub id: String,
+    pub label: String,
+    pub icon: String,
+    pub badge: Option<BadgeConfig>,
+    pub priority: u32,
 }
