@@ -87,6 +87,7 @@ fn init_cache_schema(conn: &rusqlite::Connection) -> Result<()> {
     };
 
     // Migrate old schema by adding missing columns
+    add_column_if_missing("creator", "TEXT")?; // Author/Artist - separate from Circle
     add_column_if_missing("description", "TEXT")?;
     add_column_if_missing("work_type", "TEXT")?;
     add_column_if_missing("file_format", "TEXT")?;

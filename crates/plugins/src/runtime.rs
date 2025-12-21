@@ -33,7 +33,7 @@ impl WasmRuntime {
     }
 
     /// Load a WASM component from a file
-    pub fn load_module(&self, path: &Path) -> Result<LoadedPlugin> {
+    pub fn load_module(&self, id: String, path: &Path) -> Result<LoadedPlugin> {
         debug!("Loading WASM component from: {}", path.display());
 
         let component = Component::from_file(&self.engine, path)
@@ -42,6 +42,7 @@ impl WasmRuntime {
         info!("WASM component loaded successfully: {}", path.display());
 
         Ok(LoadedPlugin {
+            id,
             component,
             engine: self.engine.clone(),
             _path: path.to_path_buf(),
@@ -49,7 +50,7 @@ impl WasmRuntime {
     }
 
     /// Load a WASM component from bytes
-    pub fn load_module_from_bytes(&self, bytes: &[u8]) -> Result<LoadedPlugin> {
+    pub fn load_module_from_bytes(&self, id: String, bytes: &[u8]) -> Result<LoadedPlugin> {
         debug!("Loading WASM component from bytes ({} bytes)", bytes.len());
 
         let component = Component::from_binary(&self.engine, bytes)
@@ -58,6 +59,7 @@ impl WasmRuntime {
         info!("WASM component loaded successfully from bytes");
 
         Ok(LoadedPlugin {
+            id,
             component,
             engine: self.engine.clone(),
             _path: std::path::PathBuf::from("<bytes>"),
@@ -67,6 +69,7 @@ impl WasmRuntime {
 
 /// A loaded WASM plugin ready for execution
 pub struct LoadedPlugin {
+    pub id: String,
     component: Component,
     engine: Engine,
     _path: std::path::PathBuf,
@@ -93,6 +96,7 @@ impl LoadedPlugin {
         // Create host functions state
         let mut host_funcs = if let Some(backend) = backend {
             HostFunctions::with_backend(
+                self.id.clone(),
                 capabilities.into_iter().collect(),
                 requests_per_minute,
                 backend,
@@ -100,6 +104,7 @@ impl LoadedPlugin {
             )
         } else {
             HostFunctions::new(
+                self.id.clone(),
                 capabilities.into_iter().collect(),
                 requests_per_minute,
                 settings,
@@ -250,13 +255,6 @@ impl PluginInstance {
         Ok(())
     }
 
-    /// Set the metadata cache for this plugin instance
-    pub fn set_metadata_cache(&mut self, cache: Option<Arc<arclain_db::MetadataCache>>) {
-        if let Some(cache) = cache {
-            self.store.data_mut().set_metadata_cache(cache);
-        }
-    }
-
     /// Get pending messages from the plugin
     pub fn get_pending_messages(&self) -> Vec<(String, String)> {
         let data = self.store.data();
@@ -273,11 +271,50 @@ impl PluginInstance {
         metadata.take()
     }
 
-    /// Set the current archive context for the plugin
+    /// Set the content cache for host functions
+    pub fn set_content_cache(&mut self, cache: Option<Arc<arclain_core::utilities::ContentCache>>) {
+        let host = self.store.data_mut();
+        match cache {
+            Some(c) => host.set_content_cache(c),
+            None => host.content_cache = None,
+        }
+    }
+
+    /// Set the resource manager for host functions
+    pub fn set_resource_manager(
+        &mut self,
+        manager: Option<Arc<arclain_core::features::resource::ResourceManager>>,
+    ) {
+        let host = self.store.data_mut();
+        match manager {
+            Some(m) => host.set_resource_manager(m),
+            None => host.resource_manager = None,
+        }
+    }
+
+    /// Set the async HTTP client for host functions
+    pub fn set_async_http_client(&mut self, client: Option<Arc<arclain_http::AsyncHttpClient>>) {
+        let host = self.store.data_mut();
+        match client {
+            Some(c) => host.set_async_http_client(c),
+            None => host.async_http_client = None,
+        }
+    }
+
+    /// Set archive context
     pub fn set_archive_context(&mut self, archive_path: Option<String>, password: Option<String>) {
         self.store
-            .data()
+            .data_mut()
             .set_archive_context(archive_path, password);
+    }
+
+    /// Set the metadata cache for host functions
+    pub fn set_metadata_cache(&mut self, cache: Option<Arc<arclain_db::MetadataCache>>) {
+        let host = self.store.data_mut();
+        match cache {
+            Some(c) => host.set_metadata_cache(c),
+            None => host.metadata_cache = None,
+        }
     }
 
     /// Get network logs from the plugin
@@ -365,7 +402,7 @@ fn convert_button_action(
         WitAction::CloseDialog => InternalAction::CloseDialog,
         WitAction::OpenPage(id) => InternalAction::OpenPage { id },
         WitAction::ClosePage => InternalAction::ClosePage,
-        WitAction::Custom(id) => InternalAction::Custom(id),
+        WitAction::Custom(s) => InternalAction::Custom(s),
     }
 }
 

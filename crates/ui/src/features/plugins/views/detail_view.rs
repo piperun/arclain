@@ -22,6 +22,7 @@ pub fn render(
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
+    content_cache: Option<&Arc<arclain_core::utilities::ContentCache>>,
 ) -> bool {
     let mut needs_refresh = false;
 
@@ -37,6 +38,17 @@ pub fn render(
             state.selected_plugin = None;
             return false;
         }
+    };
+
+    // Fetch whitelist entries for this plugin
+    let whitelist_entries = {
+        let app = app_state.lock();
+        let whitelist = app.domain_whitelist.read();
+        whitelist
+            .get_all_entries()
+            .into_iter()
+            .filter(|e| e.plugin_id == selected_id)
+            .collect::<Vec<_>>()
     };
 
     SettingsForm::new().show(ui, theme, |ui| {
@@ -113,13 +125,44 @@ pub fn render(
         ui.separator();
         ui.add_space(16.0);
 
+        // Domain Access
+        crate::shared::components::settings_form::SectionHeader::new("Domain Access")
+            .show(ui, &theme.colors);
+
+        if whitelist_entries.is_empty() {
+            ui.label(
+                egui::RichText::new("No network domains requested.")
+                    .italics()
+                    .color(theme.colors.on_surface_variant),
+            );
+        } else {
+            for entry in &whitelist_entries {
+                if render_domain_row(ui, theme, entry, app_state) {
+                    needs_refresh = true;
+                }
+                ui.add_space(8.0);
+            }
+        }
+
+        ui.add_space(16.0);
+        ui.separator();
+        ui.add_space(16.0);
+
         // Plugin Custom Settings
         crate::shared::components::settings_form::SectionHeader::new("Plugin Configuration")
             .show(ui, &theme.colors);
 
         if let Some(manager) = plugin_manager {
             if plugin_info.loaded {
-                render_plugin_ui(ui, theme, manager, &plugin_info.id, app_state, shared);
+                render_plugin_ui(
+                    ui,
+                    theme,
+                    manager,
+                    &plugin_info.id,
+                    app_state,
+                    shared,
+                    content_cache,
+                );
             } else {
                 ui.label(
                     egui::RichText::new("Plugin is not loaded.")
@@ -132,6 +175,91 @@ pub fn render(
     needs_refresh
 }
 
+/// Helper to render domain access row
+fn render_domain_row(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    entry: &arclain_http::features::whitelist::WhitelistEntry,
+    app_state: &Arc<Mutex<crate::core::AppState>>,
+) -> bool {
+    let mut changed = false;
+    let domain = &entry.domain;
+    let is_approved = entry.approved;
+
+    ui.horizontal(|ui| {
+        // Status Icon
+        // Status Icon
+        if is_approved {
+            ui.label(
+                egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
+                    .color(theme.colors.success)
+                    .size(16.0),
+            );
+        } else {
+            ui.label(
+                egui::RichText::new(egui_phosphor::regular::WARNING)
+                    .color(theme.colors.warning)
+                    .size(16.0),
+            );
+        }
+
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new(domain).strong());
+
+            // Security Analysis
+            let url_for_check = format!("https://{}", domain);
+            if let Ok(info) = arclain_http::features::security::analyze_url(&url_for_check) {
+                if !info.warnings.is_empty() {
+                    ui.horizontal_wrapped(|ui| {
+                        for warning in info.warnings {
+                            ui.label(
+                                egui::RichText::new(format!("⚠ {}", warning.description()))
+                                    .small()
+                                    .color(theme.colors.error),
+                            );
+                        }
+                    });
+                }
+            }
+        });
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut approved_state = is_approved;
+            if ui.add(ToggleSwitch::new(&mut approved_state)).changed() {
+                let app = app_state.lock();
+
+                // Update in-memory whitelist
+                if approved_state {
+                    app.domain_whitelist
+                        .write()
+                        .approve(&entry.plugin_id, domain);
+                    // Update DB
+                    if let Some(dbs) = &app.dbs {
+                        let _ = dbs.config.with_connection(|conn| {
+                            arclain_db::approve_domain(conn, &entry.plugin_id, domain)?;
+                            Ok::<_, anyhow::Error>(())
+                        });
+                    }
+                } else {
+                    app.domain_whitelist
+                        .write()
+                        .revoke(&entry.plugin_id, domain);
+                    // Update DB
+                    if let Some(dbs) = &app.dbs {
+                        let _ = dbs.config.with_connection(|conn| {
+                            arclain_db::revoke_domain(conn, &entry.plugin_id, domain)?;
+                            Ok::<_, anyhow::Error>(())
+                        });
+                    }
+                }
+                changed = true;
+            }
+        });
+    });
+
+    changed
+}
+
 /// Render the plugin's custom UI elements
 fn render_plugin_ui(
     ui: &mut egui::Ui,
@@ -140,6 +268,7 @@ fn render_plugin_ui(
     plugin_id: &str,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     _shared: Option<&SharedState>,
+    content_cache: Option<&Arc<arclain_core::utilities::ContentCache>>,
 ) {
     let mgr_arc = if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
         mgr_mutex
@@ -226,7 +355,7 @@ fn render_plugin_ui(
                     &ui_elements,
                     &mut event_callback,
                     &theme.colors,
-                    None, // TODO: wire content_cache through
+                    content_cache,
                 );
 
                 // Note: Actions are collected async via thread, so we can't process them

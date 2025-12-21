@@ -17,13 +17,50 @@ interface host {
     get-setting: func(key: string) -> option<string>;
     set-setting: func(key: string, value: string);
 
-    // HTTP
-    http-get: func(url: string) -> result<string, string>;
-    http-post: func(url: string, body: string) -> result<string, string>;
+    // === Data API (unified) ===
+    // Replaces scattered http-get, cache-put, etc.
+    // Plugin requests data, host handles network + storage transparently.
 
-    // File I/O
-    file-read: func(archive: string, file: string) -> result<string, string>;
-    file-write: func(archive: string, file: string, data: string) -> result<string, string>;
+    record data-request {
+        key: string,              // Unique identifier for this resource
+        url: string,              // Source URL
+        resource-type: resource-type,
+        product-id: option<string>,  // For organization
+    }
+
+    enum resource-type {
+        image,
+        json,
+        binary,
+    }
+
+    enum data-status {
+        pending,
+        fetching,
+        ready,
+        failed,
+        cached,  // Already had it
+    }
+
+    record data-result {
+        status: data-status,
+        data: option<list<u8>>,
+        error: option<string>,
+    }
+
+    // Request data - host downloads async, caches transparently
+    request-data: func(request: data-request) -> string;  // returns request-id
+
+    // Poll for data status/result
+    poll-data: func(request-id: string) -> data-result;
+
+    // Check if data exists (in cache/storage)
+    has-data: func(key: string) -> bool;
+
+    // Get data from storage (no fetch, returns None if not cached)
+    get-data: func(key: string) -> option<list<u8>>;
+
+
 
     // Archive Context
     record archive-info {
@@ -39,16 +76,10 @@ interface host {
     // UI Feedback
     show-message: func(title: string, message: string);
 
-    // Caching
-    get-cached-metadata: func(id: string) -> option<string>;
-    save-cached-metadata: func(id: string, json: string);
+    // Metadata Cache Management (for UI, not plugin data access)
     list-cached-entries: func() -> list<string>;
     export-cache: func() -> result<string, string>;
     import-cache: func() -> result<string, string>;
-
-    // Async Fetching
-    start-async-fetch: func(url: string) -> string;
-    poll-async-fetch: func(request-id: string) -> option<result<string, string>>;
 }
 
 interface ui {

@@ -31,6 +31,7 @@ tempfile = "3"
 sevenz-rust2 = { version = "0.19.4", features = ["compress", "aes256"] }
 cacache = "13"
 ssri = "9"
+parking_lot = "0.12"
 
 [dev-dependencies]
 tempfile = "3"

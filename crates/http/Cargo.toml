@@ -1,0 +1,34 @@
+[package]
+name = "arclain-http"
+version = "0.1.0"
+edition = "2021"
+description = "Secure async HTTP client with domain security and rate limiting"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+
+# HTTP client
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+
+# URL parsing
+url = "2"
+
+# Unicode handling for homograph detection
+unicode-normalization = "0.1"
+unicode-script = "0.5"
+
+# Concurrency primitives
+parking_lot = "0.12"
+
+# Logging
+tracing = "0.1"
+
+# Error handling
+thiserror = "1"
+
+# Serialization (for whitelist entries)
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

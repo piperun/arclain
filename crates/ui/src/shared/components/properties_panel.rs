@@ -67,16 +67,24 @@ pub fn render(
                     elements,
                 } => {
                     if let Some(manager_arc) = plugin_manager {
-                        let manager = manager_arc.lock();
-                        // Get plugin name for header
-                        let plugin_name = manager
-                            .with_plugin_instance(plugin_id, |instance| {
-                                instance
-                                    .get_metadata()
-                                    .map(|m| m.name)
-                                    .unwrap_or_else(|_| "Unknown".to_string())
-                            })
-                            .unwrap_or_else(|| "Unknown".to_string());
+                        // Get plugin instance handle BEFORE creating callback to avoid nested locks
+                        let instance_arc = {
+                            let manager = manager_arc.lock();
+                            manager.get_plugin_instance(plugin_id)
+                        };
+
+                        // Get plugin name for header (separate lock scope)
+                        let plugin_name = {
+                            let manager = manager_arc.lock();
+                            manager
+                                .with_plugin_instance(plugin_id, |instance| {
+                                    instance
+                                        .get_metadata()
+                                        .map(|m| m.name)
+                                        .unwrap_or_else(|_| "Unknown".to_string())
+                                })
+                                .unwrap_or_else(|| "Unknown".to_string())
+                        };
 
                         arclain_widgets::CollapsibleSection::new(
                             &format!("{}_info", plugin_id),
@@ -86,9 +94,9 @@ pub fn render(
                         .show(ui, |ui| {
                             ui.add_space(4.0);
 
-                            // Callback wrapper
-                            if let Some(manager_arc) = plugin_manager {
-                                let manager_arc = manager_arc.clone();
+                            // Only render if we have the instance
+                            if let Some(ref instance_arc) = instance_arc {
+                                let instance_arc = instance_arc.clone();
                                 let pid = plugin_id.clone();
                                 let actions_sink = collected_actions.clone();
                                 let dialog_sink = dialog_signals.clone();
@@ -123,13 +131,10 @@ pub fn render(
                                             return;
                                         }
 
-                                        // Normal event - send to plugin
-                                        let manager = manager_arc.lock();
-                                        if let Some(actions) = manager
-                                            .with_plugin_instance(&pid, |instance| {
-                                                instance.send_ui_event(element_id, value).ok()
-                                            })
-                                            .flatten()
+                                        // Normal event - send to plugin instance directly (no manager lock!)
+                                        let mut instance = instance_arc.lock();
+                                        if let Ok(actions) =
+                                            instance.send_ui_event(element_id, value)
                                         {
                                             let mut sink = actions_sink.lock();
                                             for a in actions {

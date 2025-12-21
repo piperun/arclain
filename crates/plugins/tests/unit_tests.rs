@@ -189,49 +189,5 @@ http_requests_per_minute = 10
 }
 
 mod host_functions_tests {
-    use arclain_plugins::host_functions::{HostFunctions, RateLimiter};
-    use arclain_plugins::PluginCapability;
-    use std::collections::{HashMap, HashSet};
-
-    #[test]
-    fn test_rate_limiter_creation() {
-        let limiter = RateLimiter::new(10);
-
-        // Should allow first 10 requests
-        for _ in 0..10 {
-            assert!(limiter.check_rate_limit(), "Should allow request");
-        }
-
-        // Should deny 11th request
-        assert!(
-            !limiter.check_rate_limit(),
-            "Should deny request after limit"
-        );
-    }
-
-    #[test]
-    fn test_host_functions_creation() {
-        let mut caps = HashSet::new();
-        caps.insert(PluginCapability::Network);
-
-        let host_funcs = HostFunctions::new(caps, 10, HashMap::new());
-
-        assert!(host_funcs.http_client.is_some(), "Should have HTTP client");
-        assert!(host_funcs.check_capability(PluginCapability::Network));
-        assert!(!host_funcs.check_capability(PluginCapability::FileRead));
-    }
-
-    #[test]
-    fn test_host_functions_no_network() {
-        let caps = HashSet::new();
-        let host_funcs = HostFunctions::new(caps, 10, HashMap::new());
-
-        assert!(
-            host_funcs.http_client.is_none(),
-            "Should not have HTTP client"
-        );
-        assert!(!host_funcs.check_capability(PluginCapability::Network));
-    }
-
     // Note: Buffer allocation tests removed - Component Model handles memory automatically
 }

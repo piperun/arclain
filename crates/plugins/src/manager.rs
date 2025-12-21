@@ -26,6 +26,9 @@ pub struct PluginManager {
     enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
     backend: Option<Arc<dyn ArchiveBackend>>,
     metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
+    content_cache: Option<Arc<arclain_core::utilities::ContentCache>>,
+    resource_manager: Option<Arc<arclain_core::features::resource::ResourceManager>>,
+    async_http_client: Option<Arc<arclain_http::AsyncHttpClient>>,
     initial_settings: HashMap<String, HashMap<String, String>>,
 }
 
@@ -41,8 +44,12 @@ impl PluginManager {
             loader,
             plugins: Arc::new(RwLock::new(HashMap::new())),
             enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
+
             backend: None,
             metadata_cache: None,
+            content_cache: None,
+            resource_manager: None,
+            async_http_client: None,
             initial_settings,
         })
     }
@@ -61,6 +68,9 @@ impl PluginManager {
             enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
             backend: Some(backend),
             metadata_cache: None,
+            content_cache: None,
+            resource_manager: None,
+            async_http_client: None,
             initial_settings,
         })
     }
@@ -82,11 +92,41 @@ impl PluginManager {
         self.metadata_cache = Some(cache.clone());
         let plugins = self.plugins.read();
         for plugin in plugins.values() {
-            // Re-instantiating with the new cache would be ideal, but for now we rely on the
-            // plugins to access the cache directly if they share it, or we'd need a method to update it.
-            // Since PluginInstance holds the cache in its store data, we can update it there.
             let mut instance = plugin.instance.lock();
             instance.set_metadata_cache(Some(cache.clone()));
+        }
+    }
+
+    /// Set content cache
+    pub fn set_content_cache(&mut self, cache: Arc<arclain_core::utilities::ContentCache>) {
+        self.content_cache = Some(cache.clone());
+        let plugins = self.plugins.read();
+        for plugin in plugins.values() {
+            let mut instance = plugin.instance.lock();
+            instance.set_content_cache(Some(cache.clone()));
+        }
+    }
+
+    /// Set resource manager
+    pub fn set_resource_manager(
+        &mut self,
+        manager: Arc<arclain_core::features::resource::ResourceManager>,
+    ) {
+        self.resource_manager = Some(manager.clone());
+        let plugins = self.plugins.read();
+        for plugin in plugins.values() {
+            let mut instance = plugin.instance.lock();
+            instance.set_resource_manager(Some(manager.clone()));
+        }
+    }
+
+    /// Set async http client
+    pub fn set_async_http_client(&mut self, client: Arc<arclain_http::AsyncHttpClient>) {
+        self.async_http_client = Some(client.clone());
+        let plugins = self.plugins.read();
+        for plugin in plugins.values() {
+            let mut instance = plugin.instance.lock();
+            instance.set_async_http_client(Some(client.clone()));
         }
     }
 
@@ -294,6 +334,49 @@ impl PluginManager {
         // Granular lock on instance
         let mut instance = instance_arc.lock();
         Some(f(&mut instance))
+    }
+
+    /// Send a UI event to a plugin asynchronously (non-blocking).
+    /// The callback will be called on the background thread with the plugin's response.
+    /// This prevents the UI from freezing during plugin execution.
+    pub fn send_event_async<F>(
+        &self,
+        plugin_id: &str,
+        event_id: &str,
+        value: Option<String>,
+        callback: F,
+    ) where
+        F: FnOnce(std::result::Result<Vec<crate::types::PluginUiElement>, String>) + Send + 'static,
+    {
+        // Get the plugin instance Arc before spawning thread
+        let Some(instance_arc) = self.get_plugin_instance(plugin_id) else {
+            callback(Err(format!("Plugin '{}' not found", plugin_id)));
+            return;
+        };
+
+        let event_id = event_id.to_string();
+
+        std::thread::spawn(move || {
+            // Lock the instance on the background thread
+            let mut instance = instance_arc.lock();
+
+            match instance.send_ui_event(&event_id, value) {
+                Ok(actions) => {
+                    // Convert PluginAction to PluginUiElement for the callback
+                    // For now, just pass an empty vec since actions are handled differently
+                    callback(Ok(vec![]));
+
+                    // Actions would need to be processed here or passed to a channel
+                    // For UI refresh purposes, we'll handle this differently
+                    if !actions.is_empty() {
+                        tracing::debug!("Plugin returned {} actions (async)", actions.len());
+                    }
+                }
+                Err(e) => {
+                    callback(Err(format!("Plugin error: {:?}", e)));
+                }
+            }
+        });
     }
 
     /// Dispatch an event to all enabled plugins

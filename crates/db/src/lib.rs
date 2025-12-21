@@ -66,6 +66,13 @@ pub use ui_config::{
     DisplayMode, UiItem, UiRegion, UiRegionConfig,
 };
 
+mod domain_whitelist;
+pub use domain_whitelist::{
+    approve_domain, delete_plugin_whitelist, delete_whitelist_entry, domain_exists,
+    ensure_whitelist_table, is_domain_approved, list_pending_approvals, list_plugin_domains,
+    list_whitelist_entries, revoke_domain, upsert_whitelist_entry, DbWhitelistEntry,
+};
+
 /// Re-export Connection so dependents don't need rusqlite directly.
 pub use rusqlite::Connection as DbConnection;
 

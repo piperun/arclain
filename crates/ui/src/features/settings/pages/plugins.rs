@@ -34,5 +34,6 @@ pub fn render(
         plugins_state,
         app_state,
         shared,
+        None, // TODO: wire content_cache from app_state
     )
 }
