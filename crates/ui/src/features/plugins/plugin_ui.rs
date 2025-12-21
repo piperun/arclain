@@ -1,6 +1,6 @@
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use crate::shared::theme::ThemeColors;
-use arclain_core::utilities::ContentCache;
+use arclain_data::ContentCache;
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 use std::sync::Arc;

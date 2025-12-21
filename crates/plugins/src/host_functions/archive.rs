@@ -40,6 +40,7 @@ impl HostFunctions {
         Ok(info.entries.into_iter().map(|e| e.path).collect())
     }
 
+    #[allow(dead_code)]
     pub(super) fn impl_file_read(
         &mut self,
         archive: String,
@@ -59,6 +60,7 @@ impl HostFunctions {
             .map_err(|e| e.to_string())
     }
 
+    #[allow(dead_code)]
     pub(super) fn impl_file_write(
         &mut self,
         archive: String,

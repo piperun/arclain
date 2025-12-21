@@ -10,7 +10,6 @@ struct PluginState {
     enable_cache: bool, // Sub-option: cache fetched results (only relevant if auto_fetch enabled)
     fetch_in_progress: bool, // Prevent double-fetch when spamming buttons
     last_archive_path: Option<String>, // Track current archive to reset state on change
-    pending_auto_fetch: bool, // Flag to trigger auto-fetch on next frame
 }
 
 // Global state (thread-local for WASM component)
@@ -23,7 +22,6 @@ thread_local! {
         enable_cache: true,
         fetch_in_progress: false,
         last_archive_path: None,
-        pending_auto_fetch: false,
     });
 }
 
@@ -88,6 +86,11 @@ impl archust_plugin_sdk::Guest for Component {
                         id: "fetch_metadata".to_string(),
                         label: "Fetch DLSite".to_string(),
                         action: None,
+                    }),
+                    UiElement::Button(ButtonConfig {
+                        id: "view_cache".to_string(),
+                        label: "View Cache".to_string(),
+                        action: Some(ButtonAction::ShowDialog("dlsite_cache".to_string())),
                     }),
                 ];
                 
@@ -499,6 +502,56 @@ impl archust_plugin_sdk::Guest for Component {
                     }));
                     
                     elements
+                // Cache viewer dialog
+                } else if dialog_id == "dlsite_cache" {
+                    use archust_plugin_sdk::list_cached_entries;
+                    let mut elements = vec![];
+
+                    elements.push(UiElement::Label(LabelConfig {
+                        text: "DLSite Metadata Cache".to_string(),
+                        bold: true,
+                        size: Some(16.0),
+                    }));
+                    
+                    elements.push(UiElement::Separator);
+
+                    let entries = list_cached_entries().unwrap_or_else(|e| {
+                         info(&format!("Failed to list cache: {}", e));
+                         vec![]
+                    });
+
+                    if entries.is_empty() {
+                         elements.push(UiElement::Label(LabelConfig {
+                            text: "Cache is empty".to_string(),
+                            bold: false,
+                            size: None,
+                        }));
+                    } else {
+                        elements.push(UiElement::Label(LabelConfig {
+                            text: format!("{} cached entries", entries.len()),
+                            bold: false,
+                            size: None,
+                        }));
+                         
+                        // Limit to top 50 for performance
+                        for id in entries.iter().take(50) {
+                            elements.push(UiElement::Button(ButtonConfig {
+                                id: format!("cache_entry_{}", id),
+                                label: id.clone(),
+                                action: None, // TODO: Open details for this entry
+                            }));
+                        }
+                    }
+
+                    elements.push(UiElement::Separator);
+                    
+                    elements.push(UiElement::Button(ButtonConfig {
+                        id: "close_cache_dialog".to_string(),
+                        label: "Close".to_string(),
+                        action: Some(ButtonAction::CloseDialog),
+                    }));
+
+                    elements
                 } else {
                     vec![]
                 }
@@ -508,8 +561,29 @@ impl archust_plugin_sdk::Guest for Component {
         }
     }
 
+
+
     fn on_ui_event(id: String, value: Option<String>) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
-        
+        // Handle system events dispatched as UI events
+        if id == "event:archive_opened" {
+            let path = value.unwrap_or_default();
+            info(&format!("[DLSite Plugin] Archive opened event: {}", path));
+
+            let auto_fetch = STATE.with(|s| s.borrow().auto_fetch_enabled);
+            if auto_fetch {
+                info("[DLSite Plugin] Auto-fetch enabled, scanning...");
+                // Note: performing scan on background thread (host spawned thread for dispatch)
+                match perform_scan() {
+                    Ok(Some((id, _, _))) => {
+                        info(&format!("[DLSite Plugin] Auto-fetched metadata for {}", id));
+                    }
+                    Ok(None) => info("[DLSite Plugin] No metadata found"),
+                    Err(e) => info(&format!("[DLSite Plugin] Scan failed: {}", e)),
+                }
+            }
+            return vec![];
+        }
+
         info(&format!(
             "[DLSite Plugin] on_ui_event called: id={}, value={:?}",
             id, value
@@ -780,6 +854,24 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
             None
         }
     };
+
+    // If we have a cover image, fetch and cache it now (for UI display)
+    if let Some(data) = &scraped_data {
+        if let Some(cover_url) = &data.cover_image {
+            let cover_key = format!("dlsite:cover:{}", product_id);
+            // Use fetch_blocking to download bytes and let Data API cache it
+            // We ignore the result, rely on side-effect of caching
+            use archust_plugin_sdk::ResourceType;
+            // logging helper imported at top of file, or use SDK prefix? 
+            // The function uses log_network_activity mostly, but on_event uses info.
+            // Let's use log_network_activity for consistency in this function
+            log_network_activity(&format!("Fetching cover image: {}", cover_url));
+            
+            if let Err(e) = archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
+                 log_network_activity(&format!("Failed to fetch/cache cover image: {}", e));
+            }
+        }
+    }
 
     Some((json_data, scraped_data))
 }
@@ -1084,46 +1176,7 @@ fn search_dlsite(query: &str) -> Vec<(String, String, String)> {
     results
 }
 
-/// Try to auto-load cached metadata for the current archive
-/// Uses Data API to check if data is cached
-fn try_auto_load_cache() -> Result<(), String> {
-    use archust_plugin_sdk::{current_archive_info, emit_metadata, info};
-    use archust_plugin_sdk::arclain::plugin::host::{has_data, get_data};
-    
-    let info_data = current_archive_info().ok_or("No archive open")?;
-    
-    // Check filename for DLsite code
-    if let Some(code) = detect_dlsite_code(&info_data.filename) {
-        let cache_key = format!("dlsite:json:{}", code);
-        info(&format!("[DLSite Plugin] Auto-checking cache for {}", code));
-        
-        // Check if data is cached using Data API
-        if has_data(&cache_key) {
-            if let Some(cached_bytes) = get_data(&cache_key) {
-                if let Ok(cached_json) = String::from_utf8(cached_bytes) {
-                    info(&format!("[DLSite Plugin] Found cached data for {}, emitting", code));
-                    
-                    // Parse and emit
-                    if let Ok(cached_value) = serde_json::from_str::<serde_json::Value>(&cached_json) {
-                        // Generate metadata JSON from cached API response
-                        let metadata_json = generate_metadata_json(&code, Some(&(cached_value.clone(), None)));
-                        emit_metadata(&metadata_json);
-                        
-                        STATE.with(|state| {
-                            let mut s = state.borrow_mut();
-                            s.found_metadata = Some((code.clone(), cached_value, None));
-                        });
-                        
-                        return Ok(());
-                    }
-                }
-            }
-        }
-        info(&format!("[DLSite Plugin] No cache found for {}", code));
-    }
-    
-    Err("No DLsite code found in archive name".to_string())
-}
+
 
 archust_plugin_sdk::export!(Component with_types_in archust_plugin_sdk);
 

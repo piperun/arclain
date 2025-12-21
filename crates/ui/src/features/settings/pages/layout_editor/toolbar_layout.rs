@@ -8,7 +8,7 @@
 use crate::shared::theme::AppTheme;
 use arclain_db::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
-use arclain_plugins::types::PluginExtensionPoint;
+use arclain_plugins::types::{PluginExtensionPoint, PluginUiElement};
 use eframe::egui;
 
 /// State for toolbar layout editor
@@ -136,46 +136,59 @@ fn sync_plugin_items(state: &mut ToolbarLayoutState, manager: &PluginManager) {
     let mut changed = false;
 
     for (plugin_id, plugin_name) in enabled_plugins {
-        // Check if plugin provides Toolbar UI
-        let has_toolbar = manager
+        // Get toolbar elements
+        let elements = manager
             .with_plugin_instance(&plugin_id, |instance| {
-                if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::PluginButton) {
-                    !elements.is_empty()
-                } else {
-                    false
-                }
+                instance
+                    .get_ui_layout(PluginExtensionPoint::PluginButton)
+                    .unwrap_or_default()
             })
-            .unwrap_or(false);
+            .unwrap_or_default();
 
-        if !has_toolbar {
+        if elements.is_empty() {
             continue;
         }
 
-        // Check if item exists
-        let exists = state.items.iter().any(|item| {
-            item.action_type == ActionType::Plugin && item.action_data.as_ref() == Some(&plugin_id)
-        });
+        // Create item for each button
+        for element in elements {
+            if let PluginUiElement::Button {
+                id: btn_id, label, ..
+            } = element
+            {
+                let unique_id = format!("plugin_{}_{}", plugin_id, btn_id);
+                // Action data format: "plugin_id:button_id"
+                let action_data = format!("{}:{}", plugin_id, btn_id);
 
-        if !exists {
-            // Add new item
-            // Find max sort order
-            let max_sort = state.items.iter().map(|i| i.sort_order).max().unwrap_or(0);
+                // Check if item exists (by ID or legacy check)
+                let exists = state.items.iter().any(|item| item.id == unique_id);
 
-            let id = format!("plugin_{}", plugin_id);
+                if !exists {
+                    // Check if there is a legacy item (whole plugin) to remove
+                    // Legacy ID format was "plugin_{plugin_id}"
+                    let legacy_id = format!("plugin_{}", plugin_id);
+                    if let Some(pos) = state.items.iter().position(|i| i.id == legacy_id) {
+                        state.items.remove(pos);
+                    }
 
-            state.items.push(UiItem {
-                id,
-                region: UiRegion::Toolbar,
-                group_id: Some("plugins".to_string()),
-                label: plugin_name,
-                icon: Some("PUZZLE_PIECE".to_string()), // Will be mapped to puzzle piece icon
-                action_type: ActionType::Plugin,
-                action_data: Some(plugin_id),
-                visible: true, // Visible by default when first discovered
-                sort_order: max_sort + 10,
-                display_mode: DisplayMode::IconAndText,
-            });
-            changed = true;
+                    // Add new item
+                    // Find max sort order
+                    let max_sort = state.items.iter().map(|i| i.sort_order).max().unwrap_or(0);
+
+                    state.items.push(UiItem {
+                        id: unique_id,
+                        region: UiRegion::Toolbar,
+                        group_id: Some("plugins".to_string()),
+                        label: format!("{} - {}", plugin_name, label),
+                        icon: Some("PUZZLE_PIECE".to_string()),
+                        action_type: ActionType::Plugin,
+                        action_data: Some(action_data),
+                        visible: true,
+                        sort_order: max_sort + 10,
+                        display_mode: DisplayMode::IconAndText,
+                    });
+                    changed = true;
+                }
+            }
         }
     }
 

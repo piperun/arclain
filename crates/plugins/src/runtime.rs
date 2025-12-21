@@ -272,7 +272,7 @@ impl PluginInstance {
     }
 
     /// Set the content cache for host functions
-    pub fn set_content_cache(&mut self, cache: Option<Arc<arclain_core::utilities::ContentCache>>) {
+    pub fn set_content_cache(&mut self, cache: Option<Arc<arclain_data::ContentCache>>) {
         let host = self.store.data_mut();
         match cache {
             Some(c) => host.set_content_cache(c),
@@ -281,10 +281,7 @@ impl PluginInstance {
     }
 
     /// Set the resource manager for host functions
-    pub fn set_resource_manager(
-        &mut self,
-        manager: Option<Arc<arclain_core::features::resource::ResourceManager>>,
-    ) {
+    pub fn set_resource_manager(&mut self, manager: Option<Arc<arclain_data::ResourceManager>>) {
         let host = self.store.data_mut();
         match manager {
             Some(m) => host.set_resource_manager(m),

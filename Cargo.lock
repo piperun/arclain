@@ -348,6 +348,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "arclain_data"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arclain-http",
+ "arclain_core",
+ "arclain_db",
+ "cacache",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "ssri",
+ "thiserror 2.0.17",
+ "tracing",
+]
+
+[[package]]
 name = "arclain_db"
 version = "0.1.0"
 dependencies = [
@@ -383,6 +400,7 @@ dependencies = [
  "anyhow",
  "arclain-http",
  "arclain_core",
+ "arclain_data",
  "arclain_db",
  "dirs 6.0.0",
  "mockito",
@@ -417,6 +435,7 @@ dependencies = [
  "anyhow",
  "arclain-http",
  "arclain_core",
+ "arclain_data",
  "arclain_db",
  "arclain_plugins",
  "arclain_theme",

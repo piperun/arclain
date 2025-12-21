@@ -26,8 +26,8 @@ pub struct PluginManager {
     enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
     backend: Option<Arc<dyn ArchiveBackend>>,
     metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
-    content_cache: Option<Arc<arclain_core::utilities::ContentCache>>,
-    resource_manager: Option<Arc<arclain_core::features::resource::ResourceManager>>,
+    content_cache: Option<Arc<arclain_data::ContentCache>>,
+    resource_manager: Option<Arc<arclain_data::ResourceManager>>,
     async_http_client: Option<Arc<arclain_http::AsyncHttpClient>>,
     initial_settings: HashMap<String, HashMap<String, String>>,
 }
@@ -98,7 +98,7 @@ impl PluginManager {
     }
 
     /// Set content cache
-    pub fn set_content_cache(&mut self, cache: Arc<arclain_core::utilities::ContentCache>) {
+    pub fn set_content_cache(&mut self, cache: Arc<arclain_data::ContentCache>) {
         self.content_cache = Some(cache.clone());
         let plugins = self.plugins.read();
         for plugin in plugins.values() {
@@ -108,10 +108,7 @@ impl PluginManager {
     }
 
     /// Set resource manager
-    pub fn set_resource_manager(
-        &mut self,
-        manager: Arc<arclain_core::features::resource::ResourceManager>,
-    ) {
+    pub fn set_resource_manager(&mut self, manager: Arc<arclain_data::ResourceManager>) {
         self.resource_manager = Some(manager.clone());
         let plugins = self.plugins.read();
         for plugin in plugins.values() {
@@ -374,6 +371,54 @@ impl PluginManager {
                 }
                 Err(e) => {
                     callback(Err(format!("Plugin error: {:?}", e)));
+                }
+            }
+        });
+    }
+
+    /// Dispatch an event to all enabled plugins asynchronously
+    pub fn dispatch_event_async(&self, event: PluginEvent) {
+        let plugins = self.plugins.clone();
+        let enabled_plugins = self.enabled_plugins.clone();
+
+        std::thread::spawn(move || {
+            debug!("Async dispatching event: {:?}", event);
+            let plugin_ids: Vec<String> = plugins.read().keys().cloned().collect();
+
+            for plugin_id in plugin_ids {
+                // Check if plugin is enabled
+                let is_enabled = enabled_plugins
+                    .read()
+                    .get(&plugin_id)
+                    .copied()
+                    .unwrap_or(false);
+
+                if !is_enabled {
+                    continue;
+                }
+
+                // Get instance handle
+                let instance_arc = {
+                    let map = plugins.read();
+                    if let Some(p) = map.get(&plugin_id) {
+                        p.instance.clone()
+                    } else {
+                        continue;
+                    }
+                };
+
+                // Call plugin
+                let mut instance = instance_arc.lock();
+
+                // Map PluginEvent to UI event for compatibility
+                // (Since on_event is not exposed in WIT yet)
+                if let PluginEvent::OnArchiveOpen { path, .. } = &event {
+                    let id = "event:archive_opened".to_string();
+                    let value = Some(path.clone());
+
+                    if let Err(e) = instance.send_ui_event(&id, value) {
+                        error!("Async event error for {}: {}", plugin_id, e);
+                    }
                 }
             }
         });
