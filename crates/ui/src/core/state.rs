@@ -5,11 +5,15 @@ use arclain_core::config::database::{
     get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
+use arclain_core::features::resource::{ResourceConfig, ResourceManager};
 use arclain_core::utilities::{auto_password_for, ChecksumService, ContentCache, PassRule};
 use arclain_core::NavigationState;
 use arclain_db::UserConfig;
+use arclain_http::features::whitelist::DomainWhitelist;
+use arclain_http::AsyncHttpClient;
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::{
     env,
     path::{Path, PathBuf},
@@ -51,6 +55,13 @@ pub struct AppState {
     // Toolbar config items (loaded from DB)
     pub toolbar_items: Vec<arclain_db::UiItem>,
     pub info_panel_items: Vec<arclain_db::UiItem>,
+    // Async Runtime and HTTP
+    #[allow(dead_code)] // Runtime is kept alive by AppState
+    pub tokio_runtime: tokio::runtime::Runtime,
+    pub async_http_client: Option<Arc<AsyncHttpClient>>,
+    pub resource_manager: Option<Arc<ResourceManager>>,
+    #[allow(dead_code)] // Used in future UI settings
+    pub domain_whitelist: Arc<RwLock<DomainWhitelist>>,
 }
 
 /// UI display preferences (persisted to config DB)
@@ -63,6 +74,19 @@ pub struct UiPreferences {
 impl AppState {
     pub fn new() -> Result<Self> {
         info!("Initializing application state");
+
+        // Initialize Tokio runtime
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
+
+        let domain_whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
+
+        // Initialize AsyncHttpClient
+        let async_http_client = Arc::new(AsyncHttpClient::new(
+            runtime.handle().clone(),
+            domain_whitelist.clone(),
+        ));
 
         // Load user config from database
         let db_paths = DbPaths::defaults("arclain")?;
@@ -113,6 +137,10 @@ impl AppState {
             ui_preferences: UiPreferences::default(),
             toolbar_items: vec![],
             info_panel_items: vec![],
+            tokio_runtime: runtime,
+            async_http_client: Some(async_http_client),
+            resource_manager: None,
+            domain_whitelist,
         };
 
         // Attempt to open DB-backed config + secrets (optional)
@@ -260,10 +288,21 @@ impl AppState {
 
                             // Create index DB for cache
                             if let Ok(cache_db) = arclain_db::SqliteDb::open(&cache_index_db_path) {
-                                match ContentCache::new(cache_base_dir, cache_db) {
+                                match ContentCache::new(cache_base_dir.clone(), cache_db) {
                                     Ok(cache) => {
-                                        me.content_cache = Some(Arc::new(cache));
+                                        let cache_arc = Arc::new(cache);
+                                        me.content_cache = Some(cache_arc.clone());
                                         info!("Content cache initialized");
+
+                                        // Initialize Resource Manager
+                                        let res_config = ResourceConfig {
+                                            fallback_dir: Some(cache_base_dir.join("resources")),
+                                            ..Default::default()
+                                        };
+                                        let resource_manager =
+                                            Arc::new(ResourceManager::new(cache_arc, res_config));
+                                        me.resource_manager = Some(resource_manager);
+                                        info!("Resource manager initialized");
                                     }
                                     Err(e) => {
                                         warn!("Failed to initialize content cache: {}", e);
@@ -303,7 +342,116 @@ impl AppState {
                 if let Some(ref dbs) = me.dbs {
                     manager.set_metadata_cache(Arc::new(dbs.metadata.clone()));
                 }
+                if let Some(ref cache) = me.content_cache {
+                    manager.set_content_cache(cache.clone());
+                }
+                if let Some(ref ref_manager) = me.resource_manager {
+                    manager.set_resource_manager(ref_manager.clone());
+                }
+                if let Some(ref client) = me.async_http_client {
+                    manager.set_async_http_client(client.clone());
+                }
                 me.plugin_manager = Some(Arc::new(Mutex::new(manager)));
+
+                // Sync plugin UI items to info_panel_items
+                if let Some(ref manager_arc) = me.plugin_manager {
+                    let manager = manager_arc.lock();
+                    for plugin in manager.list_plugins().iter().filter(|p| p.enabled) {
+                        let plugin_id = &plugin.id;
+                        info!(
+                            "Checking plugin '{}' (id: {}) for Panel UI",
+                            plugin.manifest.plugin.name, plugin_id
+                        );
+                        // Check if plugin provides Panel UI
+                        let has_panel = manager
+                            .with_plugin_instance(plugin_id, |instance| {
+                                let result = instance.get_ui_layout(
+                                    arclain_plugins::types::PluginExtensionPoint::Panel,
+                                );
+                                info!(
+                                    "  get_ui_layout result: {:?}",
+                                    result.as_ref().map(|e| e.len())
+                                );
+                                result.map(|e| !e.is_empty()).unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                        info!("  has_panel: {}", has_panel);
+
+                        if has_panel {
+                            // Check if already in info_panel_items
+                            let exists = me.info_panel_items.iter().any(|item| {
+                                item.action_type == arclain_db::ActionType::Plugin
+                                    && item.action_data.as_ref() == Some(plugin_id)
+                            });
+
+                            if !exists {
+                                let max_sort = me
+                                    .info_panel_items
+                                    .iter()
+                                    .map(|i| i.sort_order)
+                                    .max()
+                                    .unwrap_or(0);
+                                me.info_panel_items.push(arclain_db::UiItem {
+                                    id: format!("plugin_{}", plugin_id),
+                                    region: arclain_db::UiRegion::InfoPanel,
+                                    group_id: Some("plugins".to_string()),
+                                    label: plugin.manifest.plugin.name.clone(),
+                                    icon: Some("PUZZLE_PIECE".to_string()),
+                                    action_type: arclain_db::ActionType::Plugin,
+                                    action_data: Some(plugin_id.clone()),
+                                    visible: true,
+                                    sort_order: max_sort + 1,
+                                    display_mode: arclain_db::DisplayMode::IconAndText,
+                                });
+                                info!(
+                                    "Added plugin '{}' to info panel",
+                                    plugin.manifest.plugin.name
+                                );
+                            }
+                        }
+
+                        // Also check for PluginButton (toolbar)
+                        let has_button = manager
+                            .with_plugin_instance(plugin_id, |instance| {
+                                instance
+                                    .get_ui_layout(
+                                        arclain_plugins::types::PluginExtensionPoint::PluginButton,
+                                    )
+                                    .map(|e| !e.is_empty())
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+
+                        if has_button {
+                            let exists = me.toolbar_items.iter().any(|item| {
+                                item.action_type == arclain_db::ActionType::Plugin
+                                    && item.action_data.as_ref() == Some(plugin_id)
+                            });
+
+                            if !exists {
+                                let max_sort = me
+                                    .toolbar_items
+                                    .iter()
+                                    .map(|i| i.sort_order)
+                                    .max()
+                                    .unwrap_or(0);
+                                me.toolbar_items.push(arclain_db::UiItem {
+                                    id: format!("toolbar_plugin_{}", plugin_id),
+                                    region: arclain_db::UiRegion::Toolbar,
+                                    group_id: Some("plugins".to_string()),
+                                    label: plugin.manifest.plugin.name.clone(),
+                                    icon: Some("PUZZLE_PIECE".to_string()),
+                                    action_type: arclain_db::ActionType::Plugin,
+                                    action_data: Some(plugin_id.clone()),
+                                    visible: true,
+                                    sort_order: max_sort + 1,
+                                    display_mode: arclain_db::DisplayMode::IconOnly,
+                                });
+                                info!("Added plugin '{}' to toolbar", plugin.manifest.plugin.name);
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 warn!("Failed to initialize plugin manager: {}", e);

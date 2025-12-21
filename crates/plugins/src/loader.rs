@@ -183,7 +183,9 @@ impl PluginLoader {
     pub fn load_plugin(&self, discovered: &DiscoveredPlugin) -> Result<LoadedPlugin> {
         info!("Loading plugin: {}", discovered.manifest.plugin.name);
 
-        let loaded = self.runtime.load_module(&discovered.wasm_path)?;
+        let loaded = self
+            .runtime
+            .load_module(discovered.manifest.plugin.id.clone(), &discovered.wasm_path)?;
 
         info!(
             "Plugin loaded successfully: {}",
@@ -195,7 +197,10 @@ impl PluginLoader {
     /// Load a plugin directly from WASM bytes
     /// This is used for plugin installation to validate the plugin before copying files
     pub fn load_wasm(&self, wasm_bytes: &[u8]) -> Result<LoadedPlugin> {
-        self.runtime.load_module_from_bytes(wasm_bytes)
+        // For temporary validation load, we use a placeholder ID
+        // Real loading uses discover_plugin/load_plugin flow
+        self.runtime
+            .load_module_from_bytes("temp-validation".to_string(), wasm_bytes)
     }
 
     /// Get the plugins directory path

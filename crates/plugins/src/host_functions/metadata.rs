@@ -76,16 +76,16 @@ impl HostFunctions {
             debug!("[Cache SAVE] Full JSON: {}", json);
 
             let title = parsed["title"].as_str().unwrap_or("Unknown").to_string();
-            let circle = parsed["creator"].as_str().map(|s| s.to_string());
+
+            // Circle and Creator are separate fields
+            let circle = parsed["circle"].as_str().map(|s| s.to_string());
+            let creator = parsed["creator"].as_str().map(|s| s.to_string());
 
             info!(
-                "[Cache SAVE] Extracted - title: {}, circle from 'creator': {:?}",
-                title, circle
+                "[Cache SAVE] Extracted - title: {}, circle: {:?}, creator: {:?}",
+                title, circle, creator
             );
-            info!(
-                "[Cache SAVE] Also checking 'circle' field: {:?}",
-                parsed["circle"].as_str()
-            );
+
             // Price is in dlsite.price as string
             let price = parsed["dlsite"]["price"]
                 .as_str()
@@ -104,6 +104,7 @@ impl HostFunctions {
                 product_id: id.clone(),
                 title,
                 circle,
+                creator,
                 price,
                 release_date,
                 description,

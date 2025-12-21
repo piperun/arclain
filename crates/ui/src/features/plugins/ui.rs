@@ -28,6 +28,7 @@ impl PluginsFeature {
                 &mut self.list_state,
                 &shared.app_state,
                 Some(shared),
+                None, // TODO: wire content_cache from shared
             );
         });
     }

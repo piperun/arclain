@@ -83,6 +83,9 @@ impl ConfigDb {
         crate::ui_config::ensure_ui_tables(conn)?;
         crate::ui_config::seed_defaults_if_empty(conn)?;
 
+        // Initialize domain whitelist table
+        crate::domain_whitelist::ensure_whitelist_table(conn)?;
+
         Ok(())
     }
 

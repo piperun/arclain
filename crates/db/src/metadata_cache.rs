@@ -8,6 +8,7 @@ pub struct CachedMetadata {
     pub product_id: String,
     pub title: String,
     pub circle: Option<String>,
+    pub creator: Option<String>, // Author/Artist - different from Circle
     pub price: Option<i64>,
     pub release_date: Option<String>,
     pub description: Option<String>,
@@ -39,7 +40,7 @@ impl MetadataCache {
     pub fn get(&self, product_id: &str) -> Result<Option<CachedMetadata>> {
         self.db.with_connection(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT product_id, title, circle, price, release_date, description, work_type, file_format, tags_json, raw_api_json, cached_at 
+                "SELECT product_id, title, circle, creator, price, release_date, description, work_type, file_format, tags_json, raw_api_json, cached_at 
                  FROM dlsite_metadata_cache WHERE product_id = ?1",
             )?;
 
@@ -49,14 +50,15 @@ impl MetadataCache {
                         product_id: row.get(0)?,
                         title: row.get(1)?,
                         circle: row.get(2)?,
-                        price: row.get(3)?,
-                        release_date: row.get(4)?,
-                        description: row.get(5)?,
-                        work_type: row.get(6)?,
-                        file_format: row.get(7)?,
-                        tags_json: row.get(8)?,
-                        raw_api_json: row.get(9)?,
-                        cached_at: row.get(10)?,
+                        creator: row.get(3)?,
+                        price: row.get(4)?,
+                        release_date: row.get(5)?,
+                        description: row.get(6)?,
+                        work_type: row.get(7)?,
+                        file_format: row.get(8)?,
+                        tags_json: row.get(9)?,
+                        raw_api_json: row.get(10)?,
+                        cached_at: row.get(11)?,
                     })
                 })
                 .optional()?;
@@ -70,12 +72,13 @@ impl MetadataCache {
         self.db.with_connection(|conn| {
             conn.execute(
                 "INSERT OR REPLACE INTO dlsite_metadata_cache 
-                 (product_id, title, circle, price, release_date, description, work_type, file_format, tags_json, raw_api_json, cached_at) 
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 (product_id, title, circle, creator, price, release_date, description, work_type, file_format, tags_json, raw_api_json, cached_at) 
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     &metadata.product_id,
                     &metadata.title,
                     &metadata.circle,
+                    &metadata.creator,
                     &metadata.price,
                     &metadata.release_date,
                     &metadata.description,

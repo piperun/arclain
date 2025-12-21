@@ -1,6 +1,6 @@
 [plugin]
 id = "dlsite-metadata"
-name = "DLSite Metadata Enricher"
+name = "DLSite Metadata"
 version = "1.0.0"
 author = "Archust Team"
 description = "Extracts DLSite product codes (RJ/VJ/BJ) from archive names and enriches them with metadata from DLSite API"
