@@ -375,6 +375,9 @@ pub fn render(
     let collected_actions: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
         Arc::new(Mutex::new(Vec::new()));
 
+    // Collect dialog signals for processing after render
+    let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+
     let ctx = ButtonContext {
         theme,
         can_go_back,
@@ -439,12 +442,25 @@ pub fn render(
                                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
                                 let pid_inner = pid.clone();
                                 let sink = actions_sink.clone();
+                                let dialog_sink = dialog_signals.clone();
                                 let mut callback: Box<dyn FnMut(&str, Option<String>)> =
                                     Box::new(move |element_id: &str, value: Option<String>| {
-                                        // Check for dialog/page control signals
-                                        if element_id.starts_with("__") {
-                                            // Dialog/page signals handled via sink (same as normal events)
+                                        // Check for dialog control signals
+                                        if element_id.starts_with("__dialog_open:") {
+                                            let dialog_id = element_id
+                                                .trim_start_matches("__dialog_open:")
+                                                .to_string();
+                                            dialog_sink.lock().push((pid_inner.clone(), dialog_id));
+                                            return;
                                         }
+                                        if element_id == "__dialog_close" {
+                                            dialog_sink
+                                                .lock()
+                                                .push((pid_inner.clone(), "__close".to_string()));
+                                            return;
+                                        }
+
+                                        // Normal event - send to plugin
                                         if let Some(actions) =
                                             instance.send_ui_event(element_id, value).ok()
                                         {
@@ -489,7 +505,7 @@ pub fn render(
         }
     });
 
-    // Process collected plugin actions
+    // Process collected plugin actions and dialog signals
     if let Some(shared) = shared {
         let actions_list = collected_actions.lock();
         let mut toaster = shared.toaster.lock();
@@ -503,6 +519,16 @@ pub fn render(
                 &mut toaster,
                 Some(&shared.refresh_requests),
             );
+        }
+
+        // Process dialog signals
+        let dialog_sigs = dialog_signals.lock();
+        for (plugin_id, dialog_id) in dialog_sigs.iter() {
+            if dialog_id == "__close" {
+                dialog_state.close_dialog();
+            } else {
+                dialog_state.open_dialog(plugin_id, dialog_id);
+            }
         }
     }
 
