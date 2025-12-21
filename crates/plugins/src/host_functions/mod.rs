@@ -4,7 +4,6 @@
 //! via the WASI Component Model.
 
 mod archive;
-mod data;
 
 mod logging;
 mod metadata;
@@ -12,8 +11,9 @@ mod settings;
 
 use crate::arclain::plugin::host::{Host, LogLevel};
 use crate::types::PluginCapability;
-use arclain_core::features::resource::ResourceManager;
 use arclain_core::ArchiveBackend;
+use arclain_data::DataService;
+use arclain_data::ResourceManager;
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -34,12 +34,12 @@ pub struct HostFunctions {
     pub emitted_metadata: Arc<Mutex<Option<String>>>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
     pub metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
-    pub content_cache: Option<Arc<arclain_core::utilities::ContentCache>>,
+    pub content_cache: Option<Arc<arclain_data::ContentCache>>,
 
     pub resource_manager: Option<Arc<ResourceManager>>,
 
     // Data API state
-    pub data_api: Arc<data::DataApiState>,
+    pub data_service: DataService,
     pub table: ResourceTable,
     pub ctx: WasiCtx,
 }
@@ -70,7 +70,7 @@ impl HostFunctions {
 
             resource_manager: None,
 
-            data_api: Arc::new(data::DataApiState::new()),
+            data_service: DataService::new(),
             table: ResourceTable::new(),
             ctx,
         }
@@ -97,7 +97,7 @@ impl HostFunctions {
         self.metadata_cache = Some(cache);
     }
 
-    pub fn set_content_cache(&mut self, cache: Arc<arclain_core::utilities::ContentCache>) {
+    pub fn set_content_cache(&mut self, cache: Arc<arclain_data::ContentCache>) {
         self.content_cache = Some(cache);
     }
 
@@ -111,10 +111,12 @@ impl HostFunctions {
     }
 
     pub fn set_async_http_client(&mut self, client: Arc<arclain_http::AsyncHttpClient>) {
+        self.data_service.set_http_client(client.clone());
         self.async_http_client = Some(client);
     }
 
     pub fn set_resource_manager(&mut self, manager: Arc<ResourceManager>) {
+        self.data_service.set_resource_manager(manager.clone());
         self.resource_manager = Some(manager);
     }
 }
@@ -176,20 +178,47 @@ impl Host for HostFunctions {
     }
 
     // === Data API (unified) ===
+    // === Data API (unified) ===
     fn request_data(&mut self, request: crate::arclain::plugin::host::DataRequest) -> String {
-        self.impl_request_data(request)
+        // Map buf-generated request to arclain_data::DataRequest
+        use arclain_data::{DataRequest, ResourceType};
+        let req = DataRequest {
+            key: request.key,
+            url: request.url,
+            resource_type: match request.resource_type {
+                crate::arclain::plugin::host::ResourceType::Binary => ResourceType::Binary,
+                crate::arclain::plugin::host::ResourceType::Image => ResourceType::Image,
+                crate::arclain::plugin::host::ResourceType::Json => ResourceType::Metadata,
+            },
+            product_id: request.product_id,
+        };
+        self.data_service.request_data(req)
     }
 
     fn poll_data(&mut self, request_id: String) -> crate::arclain::plugin::host::DataResult {
-        self.impl_poll_data(request_id)
+        let result = self.data_service.poll_data(&request_id);
+
+        // Map arclain_data::DataResult to buf-generated DataResult
+        use crate::arclain::plugin::host::{DataResult, DataStatus};
+        DataResult {
+            status: match result.status {
+                arclain_data::DataStatus::Pending => DataStatus::Pending,
+                arclain_data::DataStatus::Fetching => DataStatus::Fetching,
+                arclain_data::DataStatus::Ready => DataStatus::Ready,
+                arclain_data::DataStatus::Failed => DataStatus::Failed,
+                arclain_data::DataStatus::Cached => DataStatus::Cached,
+            },
+            data: result.data,
+            error: result.error,
+        }
     }
 
     fn has_data(&mut self, key: String) -> bool {
-        self.impl_has_data(key)
+        self.data_service.has_data(&key)
     }
 
     fn get_data(&mut self, key: String) -> Option<Vec<u8>> {
-        self.impl_get_data(key)
+        self.data_service.get_data(&key)
     }
 }
 

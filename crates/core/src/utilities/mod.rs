@@ -10,7 +10,7 @@
 //! - Password matching
 
 pub mod checksum_service;
-pub mod content_cache;
+
 pub mod dlsite;
 pub mod file_opener;
 pub mod logging;
@@ -18,7 +18,6 @@ pub mod password_matcher;
 pub mod title_filter;
 
 pub use checksum_service::{ChecksumService, RecoveryAction, VerifyResult};
-pub use content_cache::ContentCache;
 pub use dlsite::{detect_dlsite_code, has_dlsite_code};
 pub use file_opener::{FileOpener, OpenStrategy};
 pub use logging::{init_logging, init_logging_with_filter};

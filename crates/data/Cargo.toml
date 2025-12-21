@@ -1,0 +1,18 @@
+[package]
+name = "arclain_data"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+parking_lot = "0.12"
+cacache = "13"
+ssri = "9"
+
+arclain_core = { path = "../core" }
+arclain_db = { path = "../db" }
+arclain-http = { path = "../http" }

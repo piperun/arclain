@@ -5,9 +5,9 @@ use arclain_core::config::database::{
     get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
-use arclain_core::features::resource::{ResourceConfig, ResourceManager};
-use arclain_core::utilities::{auto_password_for, ChecksumService, ContentCache, PassRule};
+use arclain_core::utilities::{auto_password_for, ChecksumService, PassRule};
 use arclain_core::NavigationState;
+use arclain_data::{ContentCache, ResourceConfig, ResourceManager};
 use arclain_db::UserConfig;
 use arclain_http::features::whitelist::DomainWhitelist;
 use arclain_http::AsyncHttpClient;
@@ -554,33 +554,16 @@ impl AppState {
                 );
             }
 
+            // Async dispatch to prevent blocking UI
+            // Metadata will be populated later via emit_metadata
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
                 path: path.to_string_lossy().to_string(),
                 kind: info.archive_kind,
             };
 
-            // Collect metadata responses from plugins
-            let mut manager = manager_arc.lock();
-            let responses = manager.dispatch_event(&event);
-            let mut combined_metadata = serde_json::Map::new();
-
-            for response in responses {
-                if let arclain_plugins::PluginResponse::Metadata { data } = response {
-                    if let Some(obj) = data.as_object() {
-                        // Merge plugin metadata into combined object
-                        for (key, value) in obj {
-                            combined_metadata.insert(key.clone(), value.clone());
-                        }
-                    }
-                }
-            }
-
-            if !combined_metadata.is_empty() {
-                let field_count = combined_metadata.len();
-                self.plugin_metadata = Some(serde_json::Value::Object(combined_metadata));
-                info!("Collected plugin metadata with {} fields", field_count);
-            }
+            let manager = manager_arc.lock();
+            manager.dispatch_event_async(event);
         }
 
         info!(

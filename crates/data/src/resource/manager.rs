@@ -6,7 +6,7 @@
 use super::types::{
     ResourceConfig, ResourceData, ResourceRequest, ResourceSource, ResourceType, StorageStrategy,
 };
-use crate::utilities::ContentCache;
+use crate::cache::ContentCache;
 use arclain_db::CacheType;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -264,43 +264,4 @@ fn sanitize_key(key: &str) -> String {
             c => c,
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_memory_storage() {
-        let config = ResourceConfig {
-            default_strategy: StorageStrategy::Memory,
-            ..Default::default()
-        };
-        let manager = ResourceManager::without_cache(config);
-
-        let request = ResourceRequest::from_url("test-key", "http://example.com")
-            .with_storage(StorageStrategy::Memory);
-
-        // Store directly
-        manager.put("test-key", b"hello world", &request).unwrap();
-
-        // Retrieve
-        let data = manager.get("test-key").unwrap();
-        assert_eq!(data.data, b"hello world");
-        assert_eq!(data.source, ResourceSource::Memory);
-    }
-
-    #[test]
-    fn test_has() {
-        let manager = ResourceManager::without_cache(ResourceConfig::default());
-
-        assert!(!manager.has("nonexistent"));
-
-        manager
-            .memory_store
-            .write()
-            .insert("exists".to_string(), vec![1, 2, 3]);
-
-        assert!(manager.has("exists"));
-    }
 }

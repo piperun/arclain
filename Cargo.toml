@@ -8,8 +8,9 @@ members = [
     "crates/db_derive",
     "crates/widgets",
     "crates/theme",
-    "crates/http"
-]
+    "crates/http",
+    "crates/data"
+, "crates/data"]
 exclude = [
     "plugins/dlsite-metadata",
     "plugins/gstreamer-preview",

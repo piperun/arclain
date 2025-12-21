@@ -21,7 +21,7 @@ pub fn render(
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
-    content_cache: Option<&Arc<arclain_core::utilities::ContentCache>>,
+    content_cache: Option<Arc<arclain_data::ContentCache>>,
 ) -> Option<SettingsAction> {
     let action = None;
 
@@ -34,7 +34,7 @@ pub fn render(
             state,
             app_state,
             shared,
-            content_cache,
+            content_cache.as_ref(),
         );
 
         if needs_refresh {

@@ -22,7 +22,7 @@ pub fn render(
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
-    content_cache: Option<&Arc<arclain_core::utilities::ContentCache>>,
+    content_cache: Option<&Arc<arclain_data::ContentCache>>,
 ) -> bool {
     let mut needs_refresh = false;
 
@@ -268,7 +268,7 @@ fn render_plugin_ui(
     plugin_id: &str,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     _shared: Option<&SharedState>,
-    content_cache: Option<&Arc<arclain_core::utilities::ContentCache>>,
+    content_cache: Option<&Arc<arclain_data::ContentCache>>,
 ) {
     let mgr_arc = if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
         mgr_mutex

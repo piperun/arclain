@@ -110,3 +110,11 @@ pub fn fetch_string_blocking(key: &str, url: &str) -> Result<String, String> {
     let bytes = fetch_blocking(key, url, ResourceType::Json)?; // Using Json as generic text
     String::from_utf8(bytes).map_err(|e| format!("UTF8 error: {}", e))
 }
+
+// Cache helpers
+pub fn list_cached_entries() -> Result<Vec<String>, String> {
+    // Note: WIT defines it as returning list<string>, verify if it returns Result or just List.
+    // WIT line 80: list-cached-entries: func() -> list<string>;
+    // So it does not return Result.
+    Ok(arclain::plugin::host::list_cached_entries())
+}

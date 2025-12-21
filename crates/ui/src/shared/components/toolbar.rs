@@ -2,11 +2,12 @@ use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_db::{DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
-use arclain_plugins::types::PluginExtensionPoint;
+use arclain_plugins::types::{ButtonAction, PluginExtensionPoint, PluginUiElement};
 use arclain_theme::ButtonVariant;
 use eframe::egui;
 use egui::Widget;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Configuration for toolbar items loaded from database
@@ -97,6 +98,8 @@ pub struct ToolbarActions {
     pub delete_selected: bool,
     pub convert_to_7z: bool,
     pub organize_archive: bool,
+    /// Collected plugin events: (plugin_id, element_id, value)
+    pub plugin_events: Vec<(String, String, Option<String>)>,
 }
 
 /// Context for button rendering
@@ -107,6 +110,8 @@ struct ButtonContext<'a> {
     can_go_up: bool,
     archive_loaded: bool,
     has_selection: bool,
+    /// Cached plugin UI elements by plugin_id
+    plugin_elements: HashMap<String, Vec<PluginUiElement>>,
 }
 
 /// Render a single toolbar button by ID, returns true if action triggered
@@ -117,6 +122,77 @@ fn render_button(
     state: &mut ToolbarState,
     actions: &mut ToolbarActions,
 ) {
+    if item.action_type == arclain_db::ActionType::Plugin {
+        if let Some(action_data) = &item.action_data {
+            // format: "plugin_id:button_id"
+            if let Some((plugin_id, btn_id)) = action_data.split_once(':') {
+                if let Some(elements) = ctx.plugin_elements.get(plugin_id) {
+                    // Find button in cached elements
+                    if let Some(PluginUiElement::Button {
+                        id: _,
+                        label,
+                        action,
+                    }) = elements
+                        .iter()
+                        .find(|e| matches!(e, PluginUiElement::Button { id, .. } if id == btn_id))
+                    {
+                        // Render button
+                        if arclain_widgets::TextButton::new(
+                            label,
+                            arclain_widgets::ButtonSize::Custom {
+                                width: 90.0,
+                                height: 32.0,
+                            },
+                        )
+                        .with_theme_colors(&ctx.theme.colors)
+                        .variant(ButtonVariant::Ghost)
+                        .ui(ui)
+                        .clicked()
+                        {
+                            // Handle action
+                            let event_id = match action.as_ref().unwrap_or(&ButtonAction::None) {
+                                ButtonAction::ShowDialog { id } => format!("__dialog_open:{}", id),
+                                ButtonAction::CloseDialog => "__dialog_close".to_string(),
+                                ButtonAction::OpenPage { id } => format!("__page_open:{}", id),
+                                ButtonAction::ClosePage => "__page_close".to_string(),
+                                ButtonAction::Custom(custom_id) => custom_id.clone(),
+                                ButtonAction::None => btn_id.to_string(),
+                            };
+
+                            actions
+                                .plugin_events
+                                .push((plugin_id.to_string(), event_id, None));
+                        }
+                    }
+                }
+            } else {
+                // Legacy: render all buttons for plugin
+                let plugin_id = action_data;
+                if let Some(elements) = ctx.plugin_elements.get(plugin_id) {
+                    let pid = plugin_id.clone();
+                    use crate::features::plugins::plugin_ui::UiEventCallback;
+                    let mut callback: UiEventCallback =
+                        Box::new(move |element_id: &str, value: Option<String>| {
+                            actions.plugin_events.push((
+                                pid.clone(),
+                                element_id.to_string(),
+                                value,
+                            ));
+                        });
+
+                    crate::features::plugins::plugin_ui::render_ui_elements(
+                        ui,
+                        elements,
+                        &mut callback,
+                        &ctx.theme.colors,
+                        None,
+                    );
+                }
+            }
+        }
+        return;
+    }
+
     match item.id.as_str() {
         // Navigation buttons (icon only)
         "toolbar.back" => {
@@ -378,6 +454,22 @@ pub fn render(
     // Collect dialog signals for processing after render
     let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
 
+    // Pre-fetch plugin elements
+    let mut plugin_elements = HashMap::new();
+    if let Some(manager_arc) = plugin_manager {
+        let manager = manager_arc.lock();
+        let plugins = manager.list_plugins();
+        for plugin in plugins.iter().filter(|p| p.enabled) {
+            let pid = plugin.id.clone();
+            let _ = manager.with_plugin_instance(&pid, |instance| {
+                if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::PluginButton) {
+                    plugin_elements.insert(pid.clone(), elements);
+                }
+                Ok::<_, anyhow::Error>(())
+            });
+        }
+    }
+
     let ctx = ButtonContext {
         theme,
         can_go_back,
@@ -385,6 +477,7 @@ pub fn render(
         can_go_up,
         archive_loaded,
         has_selection,
+        plugin_elements,
     };
 
     // If no config, render nothing (or could have a fallback)
@@ -419,71 +512,7 @@ pub fn render(
             ui.add_space(4.0);
         }
 
-        // Render plugin toolbar UI elements
-        if let Some(manager_arc) = plugin_manager {
-            let manager = manager_arc.lock();
-            let plugins: Vec<String> = manager
-                .list_plugins()
-                .iter()
-                .filter(|p| p.enabled)
-                .map(|p| p.id.clone())
-                .collect();
-
-            for plugin_id in plugins {
-                let pid = plugin_id.clone();
-                let actions_sink = collected_actions.clone();
-                let _ = manager.with_plugin_instance(&plugin_id, |instance| {
-                    if let Ok(ui_elements) =
-                        instance.get_ui_layout(PluginExtensionPoint::PluginButton)
-                    {
-                        if !ui_elements.is_empty() {
-                            ui.separator();
-                            ui.scope(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
-                                let pid_inner = pid.clone();
-                                let sink = actions_sink.clone();
-                                let dialog_sink = dialog_signals.clone();
-                                let mut callback: Box<dyn FnMut(&str, Option<String>)> =
-                                    Box::new(move |element_id: &str, value: Option<String>| {
-                                        // Check for dialog control signals
-                                        if element_id.starts_with("__dialog_open:") {
-                                            let dialog_id = element_id
-                                                .trim_start_matches("__dialog_open:")
-                                                .to_string();
-                                            dialog_sink.lock().push((pid_inner.clone(), dialog_id));
-                                            return;
-                                        }
-                                        if element_id == "__dialog_close" {
-                                            dialog_sink
-                                                .lock()
-                                                .push((pid_inner.clone(), "__close".to_string()));
-                                            return;
-                                        }
-
-                                        // Normal event - send to plugin
-                                        if let Some(actions) =
-                                            instance.send_ui_event(element_id, value).ok()
-                                        {
-                                            let mut s = sink.lock();
-                                            for a in actions {
-                                                s.push((pid_inner.clone(), a));
-                                            }
-                                        }
-                                    });
-                                crate::features::plugins::plugin_ui::render_ui_elements(
-                                    ui,
-                                    &ui_elements,
-                                    &mut callback,
-                                    &theme.colors,
-                                    None, // TODO: wire content_cache through
-                                );
-                            });
-                        }
-                    }
-                    Ok::<_, anyhow::Error>(())
-                });
-            }
-        }
+        // Legacy plugin rendering removed (now handled via standard items)
 
         // Panel toggles - right aligned
         if rendered_panels {
@@ -504,6 +533,39 @@ pub fn render(
             });
         }
     });
+
+    // Process plugin events collected from render_button
+    if let Some(manager_arc) = plugin_manager {
+        let manager = manager_arc.lock();
+        let actions_sink = collected_actions.clone();
+        let dialog_sink = dialog_signals.clone();
+
+        for (plugin_id, event_id, value) in actions.plugin_events.drain(..) {
+            // Check for dialog control signals
+            if event_id.starts_with("__dialog_open:") {
+                let dialog_id = event_id.trim_start_matches("__dialog_open:").to_string();
+                dialog_sink.lock().push((plugin_id.clone(), dialog_id));
+                continue;
+            }
+            if event_id == "__dialog_close" {
+                dialog_sink
+                    .lock()
+                    .push((plugin_id.clone(), "__close".to_string()));
+                continue;
+            }
+
+            // Send to plugin
+            let _ = manager.with_plugin_instance(&plugin_id, |instance| {
+                if let Ok(returned_actions) = instance.send_ui_event(&event_id, value.clone()) {
+                    let mut sink = actions_sink.lock();
+                    for a in returned_actions {
+                        sink.push((plugin_id.clone(), a));
+                    }
+                }
+                Ok::<_, anyhow::Error>(())
+            });
+        }
+    }
 
     // Process collected plugin actions and dialog signals
     if let Some(shared) = shared {
