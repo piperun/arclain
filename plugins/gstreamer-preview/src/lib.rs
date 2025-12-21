@@ -61,6 +61,11 @@ impl archust_plugin_sdk::Guest for Component {
         }
     }
 
+    fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
+        // GStreamer doesn't register a top tab
+        vec![]
+    }
+
     fn on_ui_event(
         id: String,
         value: Option<String>,

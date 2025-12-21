@@ -53,8 +53,8 @@ pub use loader::{DiscoveredPlugin, PluginLoader};
 pub use manager::{PluginListItem, PluginManager};
 pub use runtime::{LoadedPlugin, PluginInstance, WasmRuntime};
 pub use types::{
-    PluginCapability, PluginError, PluginEvent, PluginInfo, PluginManifest, PluginMetadata,
-    PluginResponse, Result,
+    BadgeConfig, PluginCapability, PluginError, PluginEvent, PluginInfo, PluginManifest,
+    PluginMetadata, PluginResponse, Result, TopTabConfig,
 };
 
 /// Get the default plugins directory path

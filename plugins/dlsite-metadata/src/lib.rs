@@ -9,7 +9,14 @@ struct PluginState {
     auto_fetch_enabled: bool, // Master switch: auto-fetch when archive opens
     enable_cache: bool, // Sub-option: cache fetched results (only relevant if auto_fetch enabled)
     fetch_in_progress: bool, // Prevent double-fetch when spamming buttons
+    cached_entries: Option<Vec<String>>, // Cache of checking the cache (UI spam prevention)
+    selected_cache_entry: Option<String>, // For cache viewer details
     last_archive_path: Option<String>, // Track current archive to reset state on change
+    // Browser UI state
+    browser_tab: String, // "cached" or "search"
+    browser_loading: bool,
+    // Cache for browser detail view to prevent fetch loop
+    browser_detail_cache: Option<(String, serde_json::Value, Option<ScrapedData>)>,
 }
 
 // Global state (thread-local for WASM component)
@@ -22,6 +29,11 @@ thread_local! {
         enable_cache: true,
         fetch_in_progress: false,
         last_archive_path: None,
+        cached_entries: None,
+        selected_cache_entry: None,
+        browser_tab: "cached".to_string(),
+        browser_loading: false,
+        browser_detail_cache: None,
     });
 }
 
@@ -80,19 +92,23 @@ impl archust_plugin_sdk::Guest for Component {
 
         match extension_point.as_str() {
             "PluginButton" => {
-                // Fetch button - always visible for layout registration
-                let mut buttons = vec![
-                    UiElement::Button(ButtonConfig {
+                use archust_plugin_sdk::current_archive_info;
+                
+                // Fetch button - only if archive is open
+                let mut buttons = vec![];
+                if current_archive_info().is_some() {
+                    buttons.push(UiElement::Button(ButtonConfig {
                         id: "fetch_metadata".to_string(),
                         label: "Fetch DLSite".to_string(),
                         action: None,
-                    }),
-                    UiElement::Button(ButtonConfig {
-                        id: "view_cache".to_string(),
-                        label: "View Cache".to_string(),
-                        action: Some(ButtonAction::ShowDialog("dlsite_cache".to_string())),
-                    }),
-                ];
+                    }));
+                }
+                
+                buttons.push(UiElement::Button(ButtonConfig {
+                    id: "view_cache".to_string(),
+                    label: "Browse DLSite".to_string(),
+                    action: Some(ButtonAction::OpenPage("dlsite_browser".to_string())),
+                }));
                 
                 // DLSite Info button - only shown when we have metadata
                 let has_metadata = STATE.with(|s| s.borrow().found_metadata.is_some());
@@ -507,39 +523,117 @@ impl archust_plugin_sdk::Guest for Component {
                     use archust_plugin_sdk::list_cached_entries;
                     let mut elements = vec![];
 
-                    elements.push(UiElement::Label(LabelConfig {
-                        text: "DLSite Metadata Cache".to_string(),
-                        bold: true,
-                        size: Some(16.0),
-                    }));
+                    // Check if we have a selected entry to show details for
+                    let selected = STATE.with(|s| s.borrow().selected_cache_entry.clone());
                     
-                    elements.push(UiElement::Separator);
-
-                    let entries = list_cached_entries().unwrap_or_else(|e| {
-                         info(&format!("Failed to list cache: {}", e));
-                         vec![]
-                    });
-
-                    if entries.is_empty() {
-                         elements.push(UiElement::Label(LabelConfig {
-                            text: "Cache is empty".to_string(),
-                            bold: false,
-                            size: None,
+                    if let Some(entry_id) = selected {
+                        // === DETAIL VIEW ===
+                        elements.push(UiElement::Button(ButtonConfig {
+                            id: "back_to_cache_list".to_string(),
+                            label: "< Back to List".to_string(),
+                            action: None,
                         }));
-                    } else {
+                        
+                        elements.push(UiElement::Separator);
                         elements.push(UiElement::Label(LabelConfig {
-                            text: format!("{} cached entries", entries.len()),
-                            bold: false,
-                            size: None,
+                            text: format!("Details: {}", entry_id),
+                            bold: true,
+                            size: Some(18.0),
                         }));
-                         
-                        // Limit to top 50 for performance
-                        for id in entries.iter().take(50) {
-                            elements.push(UiElement::Button(ButtonConfig {
-                                id: format!("cache_entry_{}", id),
-                                label: id.clone(),
-                                action: None, // TODO: Open details for this entry
+
+                        // Fetch the data from cache to display
+                        // We reuse the fetch_dlsite_metadata logic but it will hit the cache
+                         if let Some((json, scraped)) = fetch_dlsite_metadata(&entry_id) {
+                            // Copy-paste of info display logic (could be refactored into helper)
+                            let title = json["work_name"].as_str().unwrap_or("Unknown Title");
+                            elements.push(UiElement::Label(LabelConfig { text: title.to_string(), bold: false, size: None }));
+                            
+                             if let Some(scraped_data) = scraped {
+                                if let Some(cover_url) = &scraped_data.cover_image {
+                                    elements.push(UiElement::Image(ImageConfig {
+                                        cache_key: Some(format!("dlsite:cover:{}", entry_id)),
+                                        url: Some(cover_url.clone()),
+                                        max_height: Some(200.0),
+                                    }));
+                                }
+                                if let Some(desc) = &scraped_data.description {
+                                    elements.push(UiElement::Separator);
+                                    elements.push(UiElement::Label(LabelConfig { text: desc.clone(), bold: false, size: None }));
+                                }
+                            }
+                         } else {
+                             elements.push(UiElement::Label(LabelConfig { text: "Failed to load details".to_string(), bold: false, size: None }));
+                         }
+
+                    } else {
+                        // === LIST VIEW ===
+                        elements.push(UiElement::Label(LabelConfig {
+                            text: "DLSite Metadata Cache".to_string(),
+                            bold: true,
+                            size: Some(16.0),
+                        }));
+                        
+                        elements.push(UiElement::Separator);
+                        
+                        // Search Box
+                        STATE.with(|state| {
+                            let state = state.borrow();
+                            elements.push(UiElement::TextInput(TextInputConfig {
+                                id: "search_query".to_string(),
+                                label: "Filter Cache".to_string(),
+                                value: state.search_query.clone(),
                             }));
+                        });
+
+                        // Refresh Button
+                         elements.push(UiElement::Button(ButtonConfig {
+                            id: "refresh_cache".to_string(),
+                            label: "Refresh List".to_string(),
+                            action: None,
+                        }));
+
+                        elements.push(UiElement::Separator);
+
+                        // get list from state or fetch
+                        let entries = STATE.with(|s| {
+                            let mut state = s.borrow_mut();
+                            if state.cached_entries.is_none() {
+                                let list = list_cached_entries().unwrap_or_else(|e| {
+                                    info(&format!("Failed to list cache: {}", e));
+                                    vec![]
+                                });
+                                state.cached_entries = Some(list);
+                            }
+                            state.cached_entries.clone().unwrap()
+                        });
+                        
+                        // Filter
+                        let query = STATE.with(|s| s.borrow().search_query.to_lowercase());
+                        let filtered_entries: Vec<_> = entries.iter()
+                            .filter(|id| query.is_empty() || id.to_lowercase().contains(&query))
+                            .collect();
+
+                        if filtered_entries.is_empty() {
+                             elements.push(UiElement::Label(LabelConfig {
+                                text: "No matching entries".to_string(),
+                                bold: false,
+                                size: None,
+                            }));
+                        } else {
+                            elements.push(UiElement::Label(LabelConfig {
+                                text: format!("{} entries", filtered_entries.len()),
+                                bold: false,
+                                size: None,
+                            }));
+                             
+                            // Limit to top 50 for performance
+                            for id in filtered_entries.iter().take(50) {
+                                elements.push(UiElement::Button(ButtonConfig {
+                                    id: format!("view_cache_entry_{}", id),
+                                    label: id.to_string(),
+                                    action: None,
+                                }));
+                            }
                         }
                     }
 
@@ -557,10 +651,227 @@ impl archust_plugin_sdk::Guest for Component {
                 }
             }
             
+            "Page:dlsite_browser" => {
+                use archust_plugin_sdk::list_cached_entries;
+                
+                let (browser_tab, browser_loading, search_query, selected_entry) = STATE.with(|s| {
+                    let state = s.borrow();
+                    (
+                        state.browser_tab.clone(),
+                        state.browser_loading,
+                        state.search_query.clone(),
+                        state.selected_cache_entry.clone(),
+                    )
+                });
+                
+                let mut elements = vec![];
+                
+                // Title
+                elements.push(UiElement::Label(LabelConfig {
+                    text: "DLSite Browser".to_string(),
+                    bold: true,
+                    size: Some(20.0),
+                }));
+                
+                elements.push(UiElement::Separator);
+                
+                // Tabs for switching between Cached and Search
+                elements.push(UiElement::Tabs(TabsConfig {
+                    id: "browser_tabs".to_string(),
+                    tabs: vec!["Cached".to_string(), "Search DLSite".to_string()],
+                    selected: if browser_tab == "search" { "Search DLSite".to_string() } else { "Cached".to_string() },
+                }));
+                
+                elements.push(UiElement::Separator);
+                
+                // Search/Filter input
+                elements.push(UiElement::TextInput(TextInputConfig {
+                    id: "browser_query".to_string(),
+                    label: if browser_tab == "search" { "Search DLSite...".to_string() } else { "Filter cache...".to_string() },
+                    value: search_query.clone(),
+                }));
+                
+                // Search button (only for DLSite mode)
+                if browser_tab == "search" {
+                    elements.push(UiElement::Button(ButtonConfig {
+                        id: "do_dlsite_search".to_string(),
+                        label: "Search".to_string(),
+                        action: None,
+                    }));
+                }
+                
+                elements.push(UiElement::Separator);
+                
+                // Loading indicator
+                if browser_loading {
+                    elements.push(UiElement::Loading(LoadingConfig {
+                        message: Some("Searching...".to_string()),
+                    }));
+                } else {
+                    // Results list
+                    if browser_tab == "search" {
+                        // Search results from state
+                        let search_results = STATE.with(|s| s.borrow().search_results.clone());
+                        
+                        let items: Vec<ListItemConfig> = search_results.iter()
+                            .filter(|(code, title, _)| {
+                                search_query.is_empty() || 
+                                title.to_lowercase().contains(&search_query.to_lowercase()) ||
+                                code.to_lowercase().contains(&search_query.to_lowercase())
+                            })
+                            .map(|(code, title, maker)| ListItemConfig {
+                                id: code.clone(),
+                                title: title.clone(),
+                                subtitle: Some(maker.clone()),
+                                badge: Some(code.clone()),
+                                image_key: None,
+                                selected: selected_entry.as_ref() == Some(code),
+                            })
+                            .collect();
+                        
+                        elements.push(UiElement::ListContainer(ListContainerConfig {
+                            id: "browser_list".to_string(),
+                            items,
+                            max_height: Some(300.0),
+                            empty_message: Some("Search DLSite to see results".to_string()),
+                        }));
+                    } else {
+                        // Cached entries
+                        let entries = STATE.with(|s| {
+                            let mut state = s.borrow_mut();
+                            if state.cached_entries.is_none() {
+                                let list = list_cached_entries().unwrap_or_else(|e| {
+                                    info(&format!("Failed to list cache: {}", e));
+                                    vec![]
+                                });
+                                state.cached_entries = Some(list);
+                            }
+                            state.cached_entries.clone().unwrap()
+                        });
+                        
+                        let items: Vec<ListItemConfig> = entries.iter()
+                            .filter(|id| {
+                                search_query.is_empty() || 
+                                id.to_lowercase().contains(&search_query.to_lowercase())
+                            })
+                            .take(50)
+                            .map(|id| ListItemConfig {
+                                id: id.clone(),
+                                title: id.clone(),
+                                subtitle: Some("Cached".to_string()),
+                                badge: Some(id.clone()),
+                                image_key: None, // Could add cover key if we want thumbnails
+                                selected: selected_entry.as_ref() == Some(id),
+                            })
+                            .collect();
+                        
+                        elements.push(UiElement::ListContainer(ListContainerConfig {
+                            id: "browser_list".to_string(),
+                            items,
+                            max_height: Some(300.0),
+                            empty_message: Some("No cached entries".to_string()),
+                        }));
+                    }
+                }
+                
+                // Detail panel (if selected)
+                if let Some(selected_id) = &selected_entry {
+                    elements.push(UiElement::Separator);
+                    elements.push(UiElement::Label(LabelConfig {
+                        text: format!("Selected: {}", selected_id),
+                        bold: true,
+                        size: Some(16.0),
+                    }));
+                    
+                    // Use cached detail data if available (fetched via button click event)
+                    let detail_data = STATE.with(|s| {
+                        let state = s.borrow();
+                        if let Some((cached_id, json, scraped)) = &state.browser_detail_cache {
+                            if cached_id == selected_id {
+                                return Some((json.clone(), scraped.clone()));
+                            }
+                        }
+                        None
+                    });
+                    
+                    if let Some((json, scraped)) = detail_data {
+                        let title = json["work_name"].as_str().unwrap_or("Unknown Title");
+                        elements.push(UiElement::Label(LabelConfig { 
+                            text: title.to_string(), 
+                            bold: false, 
+                            size: None 
+                        }));
+                        
+                        if let Some(scraped_data) = scraped {
+                            if let Some(cover_url) = &scraped_data.cover_image {
+                                elements.push(UiElement::Image(ImageConfig {
+                                    cache_key: Some(format!("dlsite:cover:{}", selected_id)),
+                                    url: Some(cover_url.clone()),
+                                    max_height: Some(200.0),
+                                }));
+                            }
+                            if let Some(desc) = &scraped_data.description {
+                                elements.push(UiElement::Label(LabelConfig { 
+                                    text: desc.clone(), 
+                                    bold: false, 
+                                    size: None 
+                                }));
+                            }
+                        }
+                        
+                        // Action buttons
+                        elements.push(UiElement::Button(ButtonConfig {
+                            id: format!("apply_metadata_{}", selected_id),
+                            label: "Apply to Archive".to_string(),
+                            action: None,
+                        }));
+                    } else {
+                        // Show button to load details (one-time fetch)
+                        elements.push(UiElement::Button(ButtonConfig {
+                            id: format!("load_details_{}", selected_id),
+                            label: "📥 Load Details".to_string(),
+                            action: None,
+                        }));
+                    }
+                }
+                
+                elements.push(UiElement::Separator);
+                
+                // Close button
+                elements.push(UiElement::Button(ButtonConfig {
+                    id: "close_browser".to_string(),
+                    label: "Close".to_string(),
+                    action: Some(ButtonAction::ClosePage),
+                }));
+                
+                elements
+            }
+            
             _ => vec![],
         }
     }
 
+    fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
+        use archust_plugin_sdk::arclain::plugin::ui::{TopTabConfig, BadgeConfig};
+        
+        // Check if we have cached entries to show a badge
+        let cache_count = STATE.with(|s| {
+            let state = s.borrow();
+            state.cached_entries.as_ref().map(|v| v.len() as u32)
+        });
+        
+        vec![TopTabConfig {
+            id: "dlsite_browser".to_string(),
+            label: "DLSite".to_string(),
+            icon: "MAGNIFYING_GLASS".to_string(),
+            badge: cache_count.map(|count| BadgeConfig {
+                count: if count > 0 { Some(count) } else { None },
+                dot: count == 0,  // Show dot if no count but tab is active
+                color: "blue".to_string(),
+            }),
+            priority: 100,  // After host tabs (0-99 reserved for host)
+        }]
+    }
 
 
     fn on_ui_event(id: String, value: Option<String>) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
@@ -714,6 +1025,96 @@ impl archust_plugin_sdk::Guest for Component {
                         );
                         archust_plugin_sdk::show_message("DLSite Metadata Details", &msg);
                     }
+                });
+            }
+            "refresh_cache" => {
+                STATE.with(|state| {
+                    state.borrow_mut().cached_entries = None; // clear to force refetch
+                });
+            }
+            "back_to_cache_list" => {
+                STATE.with(|state| {
+                    state.borrow_mut().selected_cache_entry = None;
+                });
+            }
+            id if id.starts_with("view_cache_entry_") => {
+                 let entry_id = id.trim_start_matches("view_cache_entry_").to_string();
+                 STATE.with(|state| {
+                    state.borrow_mut().selected_cache_entry = Some(entry_id);
+                });
+            }
+            id if id.starts_with("load_details_") => {
+                // One-time fetch of details for the selected entry
+                let entry_id = id.trim_start_matches("load_details_").to_string();
+                info(&format!("[DLSite Plugin] Loading details for: {}", entry_id));
+                
+                if let Some((json, scraped)) = fetch_dlsite_metadata(&entry_id) {
+                    STATE.with(|state| {
+                        state.borrow_mut().browser_detail_cache = Some((entry_id.clone(), json, scraped));
+                    });
+                    info(&format!("[DLSite Plugin] Details loaded and cached for: {}", entry_id));
+                } else {
+                    info(&format!("[DLSite Plugin] Failed to load details for: {}", entry_id));
+                }
+            }
+            // Browser UI handlers
+            "browser_tabs" => {
+                if let Some(tab) = value {
+                    STATE.with(|state| {
+                        let mut s = state.borrow_mut();
+                        s.browser_tab = if tab.contains("Search") { "search".to_string() } else { "cached".to_string() };
+                        s.selected_cache_entry = None; // Clear selection on tab switch
+                        s.search_results.clear(); // Clear search results on tab switch
+                    });
+                }
+            }
+            "browser_query" => {
+                if let Some(query) = value {
+                    STATE.with(|state| {
+                        state.borrow_mut().search_query = query;
+                    });
+                }
+            }
+            "do_dlsite_search" => {
+                let query = STATE.with(|s| s.borrow().search_query.clone());
+                if !query.is_empty() {
+                    STATE.with(|s| s.borrow_mut().browser_loading = true);
+                    
+                    // Perform search
+                    let results = search_dlsite(&query);
+                    
+                    STATE.with(|s| {
+                        let mut state = s.borrow_mut();
+                        state.search_results = results;
+                        state.browser_loading = false;
+                    });
+                }
+            }
+            // List item selection (from ListContainer)
+            id if id.starts_with("RJ") || id.starts_with("VJ") || id.starts_with("BJ") => {
+                STATE.with(|state| {
+                    state.borrow_mut().selected_cache_entry = Some(id.to_string());
+                });
+            }
+            id if id.starts_with("apply_metadata_") => {
+                let code = id.trim_start_matches("apply_metadata_").to_string();
+                // Emit metadata for this code
+                if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
+                    STATE.with(|state| {
+                        state.borrow_mut().found_metadata = Some((code.clone(), json.clone(), scraped.clone()));
+                    });
+                    
+                    let metadata_json = generate_metadata_json(&code, Some(&(json, scraped)));
+                    archust_plugin_sdk::emit_metadata(&metadata_json);
+                    archust_plugin_sdk::show_message("Success", &format!("Applied metadata for {}", code));
+                }
+            }
+            "close_browser" => {
+                // Reset browser state
+                STATE.with(|state| {
+                    let mut s = state.borrow_mut();
+                    s.selected_cache_entry = None;
+                    s.search_results.clear();
                 });
             }
             _ => {}

@@ -48,6 +48,9 @@ pub struct ArclainApp {
     plugins_feature: plugins::PluginsFeature,
     organization_feature: organization::OrganizationFeature,
 
+    // Top tab bar state
+    top_tab_bar_state: components::top_tab_bar::TopTabBarState,
+
     // Data
     status_info: components::StatusBarInfo,
     _pending_archive_path: Option<PathBuf>,
@@ -102,6 +105,7 @@ impl ArclainApp {
             // plugins_state: plugins::PluginsListState::default(),
             plugins_feature: plugins::PluginsFeature::new(&shared_state),
             organization_feature: organization::OrganizationFeature::new(&shared_state),
+            top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
             status_info: components::StatusBarInfo::default(),
             _pending_archive_path: None,
             _pending_edit_file: None,
@@ -220,6 +224,74 @@ impl eframe::App for ArclainApp {
                 }
                 if actions.navigate_settings {
                     self.page_navigator.navigate_to(AppPage::Settings(SettingsPage::Overview));
+                }
+            });
+
+        // Render Top Tab Bar
+        egui::TopBottomPanel::top("top_tab_bar_panel")
+            .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface))
+            .show(ctx, |ui| {
+                // Build combined tabs list: host tabs + plugin tabs
+                let mut tabs = vec![
+                    components::top_tab_bar::TopTab {
+                        id: "archive".to_string(),
+                        label: "Archive".to_string(),
+                        icon: egui_phosphor::regular::FOLDER_OPEN.to_string(),
+                        badge: None,
+                        source: None,
+                    },
+                ];
+
+                // Collect plugin tabs
+                {
+                    let state = self.shared_state.app_state.lock();
+                    if let Some(plugin_manager) = &state.plugin_manager {
+                        if let Some(mut pm) = plugin_manager.try_lock() {
+                            for (plugin_id, tab_config) in pm.get_all_top_tabs() {
+                                tabs.push(components::top_tab_bar::TopTab {
+                                    id: tab_config.id.clone(),
+                                    label: tab_config.label,
+                                    icon: tab_config.icon,
+                                    badge: tab_config.badge,
+                                    source: Some(plugin_id),
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Note: Settings tab removed - already accessible via header button
+
+                // Render tab bar and handle actions
+                if let Some(action) = components::top_tab_bar::render(
+                    ui,
+                    &self.shared_state.theme.colors,
+                    &mut self.top_tab_bar_state,
+                    &tabs,
+                ) {
+                    match action {
+                        components::top_tab_bar::TopTabAction::SelectHostTab(id) => {
+                            match id.as_str() {
+                                "archive" => {
+                                    // Close any open plugin pages first
+                                    {
+                                        let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
+                                        dialog_state.page_stack.clear();
+                                    }
+                                    // Navigate to main without adding to history
+                                    self.page_navigator.navigate_to_main();
+                                }
+                                _ => {}
+                            }
+                        }
+                        components::top_tab_bar::TopTabAction::SelectPluginTab { plugin_id, tab_id } => {
+                            // Open plugin page for the selected tab
+                            // Clear existing pages first to avoid stacking
+                            let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
+                            dialog_state.page_stack.clear();
+                            dialog_state.open_page(&plugin_id, &tab_id);
+                        }
+                    }
                 }
             });
 
