@@ -73,6 +73,19 @@ pub use domain_whitelist::{
     list_whitelist_entries, revoke_domain, upsert_whitelist_entry, DbWhitelistEntry,
 };
 
+mod product_metadata;
+pub use product_metadata::{
+    delete as delete_product_metadata, get_by_external_id, init_product_metadata_schema,
+    list_by_source, load as load_product_metadata, save as save_product_metadata, MetadataSource,
+    ProductMetadata,
+};
+
+mod product_content;
+pub use product_content::{
+    delete_product_content, get_all_content, get_cover, get_screenshots,
+    init_product_content_schema, save as save_product_content, ContentType, ProductContent,
+};
+
 /// Re-export Connection so dependents don't need rusqlite directly.
 pub use rusqlite::Connection as DbConnection;
 

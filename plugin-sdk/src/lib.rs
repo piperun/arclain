@@ -53,18 +53,20 @@ pub fn log_network_activity(msg: &str) {
     arclain::plugin::host::log_network_activity(msg);
 }
 
-// === New Data API Helpers ===
+// === Data API Helpers ===
 
+// Only expose what plugins need - NOT cache internals
 pub use arclain::plugin::host::{DataRequest, DataResult, DataStatus, ResourceType};
 
-/// Request data from a URL using the new Async Data API
-/// Returns a request ID
+/// Request data from a URL using the Data API
+/// The host handles caching transparently.
 pub fn request_data(key: &str, url: &str, resource_type: ResourceType) -> String {
     let req = DataRequest {
         key: key.to_string(),
-        url: url.to_string(),
+        url: Some(url.to_string()),
         resource_type,
         product_id: None,
+        sources: vec![], // Host decides the best sources
     };
     arclain::plugin::host::request_data(&req)
 }
@@ -74,8 +76,8 @@ pub fn poll_data(request_id: &str) -> DataResult {
     arclain::plugin::host::poll_data(request_id)
 }
 
-/// Fetch data using the new API but blocking until complete (simulates sync)
-/// Convenient for migration, but blocks the plugin execution.
+/// Fetch data blocking until complete
+/// Host automatically checks cache before network.
 pub fn fetch_blocking(
     key: &str,
     url: &str,
@@ -87,18 +89,12 @@ pub fn fetch_blocking(
         let result = poll_data(&req_id);
         match result.status {
             DataStatus::Ready | DataStatus::Cached => {
-                return result
-                    .data
-                    .ok_or_else(|| "No data returned (unexpected)".to_string());
+                return result.data.ok_or_else(|| "No data returned".to_string());
             }
             DataStatus::Failed => {
                 return Err(result.error.unwrap_or_else(|| "Unknown error".to_string()));
             }
             DataStatus::Pending | DataStatus::Fetching => {
-                // Yield here? WASI 0.1 doesn't have yield.
-                // We just rely on host not crashing.
-                // Ideally we'd sleep but we don't have std::thread::sleep easily in wasm32-wasi without proper scheduling?
-                // Actually std::thread::sleep works in wasmtime.
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
@@ -107,14 +103,11 @@ pub fn fetch_blocking(
 
 /// String fetch helper (utf8 decode)
 pub fn fetch_string_blocking(key: &str, url: &str) -> Result<String, String> {
-    let bytes = fetch_blocking(key, url, ResourceType::Json)?; // Using Json as generic text
+    let bytes = fetch_blocking(key, url, ResourceType::Json)?;
     String::from_utf8(bytes).map_err(|e| format!("UTF8 error: {}", e))
 }
 
-// Cache helpers
+// Cache helpers (for cache management UI, not data access)
 pub fn list_cached_entries() -> Result<Vec<String>, String> {
-    // Note: WIT defines it as returning list<string>, verify if it returns Result or just List.
-    // WIT line 80: list-cached-entries: func() -> list<string>;
-    // So it does not return Result.
     Ok(arclain::plugin::host::list_cached_entries())
 }
