@@ -246,7 +246,7 @@ impl eframe::App for ArclainApp {
                 {
                     let state = self.shared_state.app_state.lock();
                     if let Some(plugin_manager) = &state.plugin_manager {
-                        if let Some(mut pm) = plugin_manager.try_lock() {
+                        if let Some(pm) = plugin_manager.try_lock() {
                             for (plugin_id, tab_config) in pm.get_all_top_tabs() {
                                 tabs.push(components::top_tab_bar::TopTab {
                                     id: tab_config.id.clone(),
@@ -934,7 +934,7 @@ impl ArclainApp {
                     })
                     .unwrap_or_default()
                 } else {
-                    vec![]
+                    arclain_plugins::types::PluginLayout::default()
                 }
             };
             
@@ -987,9 +987,10 @@ impl ArclainApp {
                             }
                         });
                     
+                    let flat_elements = dialog_elements.flatten();
                     crate::features::plugins::plugin_ui::render_ui_elements(
                         ui,
-                        &dialog_elements,
+                        &flat_elements,
                         &mut callback,
                         &self.shared_state.theme.colors,
                         None,
@@ -1016,8 +1017,8 @@ impl ArclainApp {
             return false;
         };
         
-        // Get page UI elements from plugin
-        let page_elements = {
+        // Get page UI layout from plugin
+        let page_layout = {
             let state = self.shared_state.app_state.lock();
             if let Some(pm_arc) = &state.plugin_manager {
                 let pm = pm_arc.lock();
@@ -1027,7 +1028,7 @@ impl ArclainApp {
                 })
                 .unwrap_or_default()
             } else {
-                vec![]
+                arclain_plugins::types::PluginLayout::default()
             }
         };
         
@@ -1091,13 +1092,46 @@ impl ArclainApp {
                         }
                     });
                 
-                crate::features::plugins::plugin_ui::render_ui_elements(
-                    ui,
-                    &page_elements,
-                    &mut callback,
-                    &self.shared_state.theme.colors,
-                    None,
-                );
+                use arclain_plugins::types::PluginLayout;
+                match page_layout {
+                    PluginLayout::Single { elements } => {
+                        crate::features::plugins::plugin_ui::render_ui_elements(
+                            ui,
+                            &elements,
+                            &mut callback,
+                            &self.shared_state.theme.colors,
+                            None,
+                        );
+                    }
+                    PluginLayout::Split { sidebar, content, sidebar_width } => {
+                       egui::SidePanel::left(format!("plugin_split_sidebar_{}", page_id))
+                            .resizable(true)
+                            .default_width(sidebar_width.unwrap_or(250.0))
+                            .show_inside(ui, |ui| {
+                                egui::ScrollArea::vertical().show(ui, |ui| {
+                                    crate::features::plugins::plugin_ui::render_ui_elements(
+                                        ui,
+                                        &sidebar,
+                                        &mut callback,
+                                        &self.shared_state.theme.colors,
+                                        None,
+                                    );
+                                });
+                            });
+                        
+                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                crate::features::plugins::plugin_ui::render_ui_elements(
+                                    ui,
+                                    &content,
+                                    &mut callback,
+                                    &self.shared_state.theme.colors,
+                                    None,
+                                );
+                            });
+                        });
+                    }
+                }
             });
         
         true

@@ -16,6 +16,7 @@ pub struct PropertyGroup {
 #[derive(Clone)]
 pub enum PanelSection {
     Group(PropertyGroup),
+    #[allow(dead_code)]
     Plugin {
         plugin_id: String,
         elements: Vec<PluginUiElement>,

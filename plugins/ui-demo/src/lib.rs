@@ -14,11 +14,11 @@ impl archust_plugin_sdk::Guest for Component {
 
     fn get_ui_layout(
         extension_point: String,
-    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::UiElement> {
+    ) -> archust_plugin_sdk::arclain::plugin::ui::PluginLayout {
         use archust_plugin_sdk::arclain::plugin::ui::*;
 
         match extension_point.as_str() {
-            "Sidebar" => vec![
+            "Sidebar" => PluginLayout::Single(vec![
                 UiElement::Label(LabelConfig {
                     text: "UI Demo Plugin".to_string(),
                     bold: true,
@@ -65,13 +65,13 @@ impl archust_plugin_sdk::Guest for Component {
                     options: vec!["Simple".to_string(), "Advanced".to_string()],
                     selected: "Simple".to_string(),
                 }),
-            ],
-            "PluginButton" => vec![UiElement::Button(ButtonConfig {
+            ]),
+            "PluginButton" => PluginLayout::Single(vec![UiElement::Button(ButtonConfig {
                 id: "plugin_toolbar_btn".to_string(),
                 label: "Plugin Action".to_string(),
                 action: None,
-            })],
-            "Panel" => vec![
+            })]),
+            "Panel" => PluginLayout::Single(vec![
                 UiElement::Label(LabelConfig {
                     text: "Plugin Info".to_string(),
                     bold: true,
@@ -82,8 +82,8 @@ impl archust_plugin_sdk::Guest for Component {
                     bold: false,
                     size: None,
                 }),
-            ],
-            _ => vec![],
+            ]),
+            _ => PluginLayout::Single(vec![]),
         }
     }
 

@@ -450,3 +450,61 @@ pub struct TopTabConfig {
     pub badge: Option<BadgeConfig>,
     pub priority: u32,
 }
+
+// === Layout Types ===
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum PluginLayout {
+    Single {
+        elements: Vec<PluginUiElement>,
+    },
+    Split {
+        sidebar: Vec<PluginUiElement>,
+        content: Vec<PluginUiElement>,
+        #[serde(default)]
+        sidebar_width: Option<f32>,
+    },
+}
+
+impl Default for PluginLayout {
+    fn default() -> Self {
+        PluginLayout::Single { elements: vec![] }
+    }
+}
+
+impl PluginLayout {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            PluginLayout::Single { elements } => elements.is_empty(),
+            PluginLayout::Split {
+                sidebar, content, ..
+            } => sidebar.is_empty() && content.is_empty(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            PluginLayout::Single { elements } => elements.len(),
+            PluginLayout::Split {
+                sidebar, content, ..
+            } => sidebar.len() + content.len(),
+        }
+    }
+
+    /// Returns a flat list of elements if it's a Single layout, or concatenates sidebar+content if Split.
+    /// Useful for legacy views that expect a single list.
+    pub fn flatten(self) -> Vec<PluginUiElement> {
+        match self {
+            PluginLayout::Single { elements } => elements,
+            PluginLayout::Split {
+                mut sidebar,
+                mut content,
+                ..
+            } => {
+                sidebar.append(&mut content);
+                sidebar
+            }
+        }
+    }
+}

@@ -203,10 +203,22 @@ fn render_properties_panel(
                                             .unwrap_or_default();
 
                                         if !elements.is_empty() {
-                                            sections.push(properties_panel::PanelSection::Plugin {
-                                                plugin_id: plugin_id.clone(),
-                                                elements,
-                                            });
+                                            let flat = elements.flatten();
+                                            let pid = plugin_id.clone();
+                                            let mut callback: crate::features::plugins::plugin_ui::UiEventCallback = 
+                                                Box::new(move |id, val| {
+                                                    // We can't easily dispatch back to main loop here without channels
+                                                    // For now, logging, or we need to pass a channel sender down
+                                                    tracing::debug!("[{}] Plugin Action in InfoPanel: {} -> {:?} (not handled fully yet)", pid, id, val);
+                                                });
+                                                
+                                            crate::features::plugins::plugin_ui::render_ui_elements(
+                                                ui,
+                                                &flat,
+                                                &mut callback,
+                                                &shared.theme.colors,
+                                                None, // Content cache not strictly needed for basic info panel buttons/labels
+                                            );
                                         }
                                     }
                                 }

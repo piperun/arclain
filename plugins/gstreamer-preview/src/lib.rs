@@ -14,11 +14,11 @@ impl archust_plugin_sdk::Guest for Component {
 
     fn get_ui_layout(
         extension_point: String,
-    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::UiElement> {
+    ) -> archust_plugin_sdk::arclain::plugin::ui::PluginLayout {
         use archust_plugin_sdk::arclain::plugin::ui::*;
 
         match extension_point.as_str() {
-            "MainPage" => vec![
+            "MainPage" => PluginLayout::Single(vec![
                 UiElement::Checkbox(CheckboxConfig {
                     id: "enable_hw_accel".to_string(),
                     label: "Enable Hardware Acceleration".to_string(),
@@ -29,8 +29,8 @@ impl archust_plugin_sdk::Guest for Component {
                     label: "Preview Quality (1-10)".to_string(),
                     value: "8".to_string(),
                 }),
-            ],
-            "Sidebar" => vec![
+            ]),
+            "Sidebar" => PluginLayout::Single(vec![
                 UiElement::Label(LabelConfig {
                     text: "Video Preview".to_string(),
                     bold: true,
@@ -46,18 +46,18 @@ impl archust_plugin_sdk::Guest for Component {
                     label: "Generate Preview".to_string(),
                     action: None,
                 }),
-            ],
-            "PluginButton" => vec![UiElement::Button(ButtonConfig {
+            ]),
+            "PluginButton" => PluginLayout::Single(vec![UiElement::Button(ButtonConfig {
                 id: "gstreamer_play".to_string(),
                 label: "Play Preview".to_string(),
                 action: None,
-            })],
-            "Panel" => vec![UiElement::Label(LabelConfig {
+            })]),
+            "Panel" => PluginLayout::Single(vec![UiElement::Label(LabelConfig {
                 text: "Video Stats".to_string(),
                 bold: true,
                 size: None,
-            })],
-            _ => vec![],
+            })]),
+            _ => PluginLayout::Single(vec![]),
         }
     }
 

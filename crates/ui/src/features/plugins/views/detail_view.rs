@@ -350,9 +350,10 @@ fn render_plugin_ui(
                 })
                     as crate::features::plugins::plugin_ui::UiEventCallback;
 
+                let flat_elements = ui_elements.flatten();
                 crate::features::plugins::plugin_ui::render_ui_elements(
                     ui,
-                    &ui_elements,
+                    &flat_elements,
                     &mut event_callback,
                     &theme.colors,
                     content_cache,

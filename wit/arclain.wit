@@ -178,9 +178,7 @@ interface ui {
         message: option<string>,
     }
 
-    // UI Element variant
-    // Note: Layout containers (row, column, grid) are handled by the host.
-    // Plugins return flat lists of elements.
+    // UI Element variant (Leaf nodes and simple containers)
     variant ui-element {
         label(label-config),
         button(button-config),
@@ -195,6 +193,18 @@ interface ui {
         tabs(tabs-config),
         list-container(list-container-config),
         loading(loading-config),
+    }
+
+    // Top-level layout structure
+    record split-config {
+        sidebar: list<ui-element>,
+        content: list<ui-element>,
+        sidebar-width: option<f32>,
+    }
+
+    variant plugin-layout {
+        single(list<ui-element>),
+        split(split-config),
     }
 
     // === Top Tab Registration ===
@@ -307,8 +317,8 @@ world plugin-world {
     export get-default-rules: func() -> list<plugin-rule-definition>;
     
     // UI exports
-    use ui.{ui-element, plugin-action, top-tab-config};
-    export get-ui-layout: func(extension-point: string) -> list<ui-element>;
+    use ui.{ui-element, plugin-action, top-tab-config, plugin-layout};
+    export get-ui-layout: func(extension-point: string) -> plugin-layout;
     export on-ui-event: func(id: string, value: option<string>) -> list<plugin-action>;
     
     // Top Tab registration
