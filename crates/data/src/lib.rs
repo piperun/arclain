@@ -15,7 +15,7 @@ pub use features::api::{
 };
 pub use features::content_cache::ContentCache;
 pub use features::resolver::{
-    ContentCacheResolver, DataSourceResolver, MemoryResolver, MetadataCacheResolver,
+    ContentCacheResolver, DataSourceResolver, MemoryResolver, MetadataStoreResolver,
     NetworkResolver, ResolveError,
 };
 pub use features::resource_manager::ResourceManager;

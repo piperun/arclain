@@ -33,7 +33,7 @@ pub struct HostFunctions {
     pub pending_messages: Arc<Mutex<Vec<(String, String)>>>,
     pub emitted_metadata: Arc<Mutex<Option<String>>>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
-    pub metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
+    pub metadata_store: Option<Arc<arclain_db::MetadataStore>>,
     pub content_cache: Option<Arc<arclain_data::ContentCache>>,
     pub cache_db: Option<Arc<arclain_db::SqliteDb>>,
 
@@ -66,7 +66,7 @@ impl HostFunctions {
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             emitted_metadata: Arc::new(Mutex::new(None)),
             network_log: Arc::new(Mutex::new(Vec::new())),
-            metadata_cache: None,
+            metadata_store: None,
             content_cache: None,
             cache_db: None,
 
@@ -95,12 +95,13 @@ impl HostFunctions {
         host_funcs
     }
 
-    pub fn set_metadata_cache(&mut self, cache: Arc<arclain_db::MetadataCache>) {
-        // Register MetadataCache resolver with DataService
-        let resolver = Arc::new(arclain_data::MetadataCacheResolver::new(cache.clone()));
+    pub fn set_metadata_store(&mut self, store: Arc<arclain_db::MetadataStore>) {
+        // Register MetadataStore resolver with DataService
+        let resolver = Arc::new(arclain_data::MetadataStoreResolver::new(store.clone()));
+
         self.data_service
-            .register_resolver(arclain_data::DataSource::MetadataCache, resolver);
-        self.metadata_cache = Some(cache);
+            .register_resolver(arclain_data::DataSource::MetadataStore, resolver);
+        self.metadata_store = Some(store);
     }
 
     pub fn set_content_cache(&mut self, cache: Arc<arclain_data::ContentCache>) {
@@ -224,7 +225,7 @@ impl Host for HostFunctions {
             for src in request.sources {
                 let ds = match src {
                     crate::arclain::plugin::host::DataSource::MetadataCache => {
-                        DataSource::MetadataCache
+                        DataSource::MetadataStore
                     }
                     crate::arclain::plugin::host::DataSource::ContentCache => {
                         DataSource::ContentCache
@@ -239,7 +240,7 @@ impl Host for HostFunctions {
         } else if resource_type == ResourceType::Metadata {
             // Default: for metadata type, check MetadataCache first
             let mut sources = arclain_data::IndexSet::new();
-            sources.insert(DataSource::MetadataCache);
+            sources.insert(DataSource::MetadataStore);
             sources.insert(DataSource::ContentCache);
             sources.insert(DataSource::Network);
             req = req.with_sources(sources);

@@ -91,7 +91,7 @@ impl LoadedPlugin {
         capabilities: Vec<PluginCapability>,
         requests_per_minute: u32,
         backend: Option<Arc<dyn ArchiveBackend>>,
-        metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
+        metadata_store: Option<Arc<arclain_db::MetadataStore>>,
         settings: std::collections::HashMap<String, String>,
     ) -> Result<PluginInstance> {
         // Create host functions state
@@ -112,8 +112,8 @@ impl LoadedPlugin {
             )
         };
 
-        if let Some(cache) = metadata_cache {
-            host_funcs.set_metadata_cache(cache);
+        if let Some(store) = metadata_store {
+            host_funcs.set_metadata_store(store);
         }
 
         let mut store = Store::new(&self.engine, host_funcs);
@@ -303,12 +303,12 @@ impl PluginInstance {
             .set_archive_context(archive_path, password);
     }
 
-    /// Set the metadata cache for host functions
-    pub fn set_metadata_cache(&mut self, cache: Option<Arc<arclain_db::MetadataCache>>) {
+    /// Set the metadata store for host functions
+    pub fn set_metadata_store(&mut self, store: Option<Arc<arclain_db::MetadataStore>>) {
         let host = self.store.data_mut();
-        match cache {
-            Some(c) => host.set_metadata_cache(c),
-            None => host.metadata_cache = None,
+        match store {
+            Some(c) => host.set_metadata_store(c),
+            None => host.metadata_store = None,
         }
     }
 

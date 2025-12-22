@@ -1,5 +1,5 @@
-use crate::sqlite_db::SqliteDb;
 use anyhow::Result;
+use mini_orm::SqliteDb;
 use rusqlite::Connection;
 use std::path::Path;
 

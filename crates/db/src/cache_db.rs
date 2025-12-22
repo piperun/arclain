@@ -1,5 +1,5 @@
-use crate::sqlite_db::SqliteDb;
 use anyhow::{Context, Result};
+use mini_orm::SqliteDb;
 use std::path::Path;
 
 /// Cache database for transient data like metadata cache

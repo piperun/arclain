@@ -31,6 +31,7 @@ struct DataApiState {
 }
 
 struct PendingRequest {
+    #[allow(dead_code)] // Kept for debugging/logging
     request: DataRequest,
     result: Option<DataResult>,
 }
@@ -73,6 +74,23 @@ impl DataService {
     /// Set the default source chain
     pub fn set_default_chain(&mut self, chain: SourceChain) {
         self.default_chain = chain;
+    }
+
+    /// Save data to a specific source
+    pub fn save_data(
+        &self,
+        source: DataSource,
+        key: &str,
+        data: &[u8],
+    ) -> Result<(), crate::features::resolver::ResolveError> {
+        let resolvers = self.resolvers.read();
+        if let Some(resolver) = resolvers.get(&source) {
+            // Create a dummy request for the context
+            let request = DataRequest::new(key);
+            resolver.try_store(key, data, &request)
+        } else {
+            Err(crate::features::resolver::ResolveError::NotConfigured)
+        }
     }
 
     /// Resolve data synchronously using the source chain
@@ -194,7 +212,7 @@ impl DataService {
 
         // Check cache sources only
         for source in [
-            DataSource::MetadataCache,
+            DataSource::MetadataStore,
             DataSource::ContentCache,
             DataSource::Memory,
         ] {

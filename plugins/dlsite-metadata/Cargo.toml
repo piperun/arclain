@@ -8,6 +8,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 archust-plugin-sdk = { path = "../../plugin-sdk" }
+metastore-providers = { path = "../../crates/metastore/providers" }
+metastore-types = { path = "../../crates/metastore/types" }
+metastore-abstract = { path = "../../crates/metastore/abstract" }
 serde = { version = "1", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1", features = ["alloc"], default-features = false }
 regex = "1.10"

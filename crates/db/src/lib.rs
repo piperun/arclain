@@ -9,8 +9,8 @@ use zeroize::Zeroizing;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-mod sqlite_db;
-pub use sqlite_db::SqliteDb;
+// SqliteDb comes from mini-orm (shared ORM crate)
+pub use mini_orm::SqliteDb;
 
 mod redb_wrapper;
 pub use redb_wrapper::ReDb;
@@ -28,8 +28,8 @@ pub use cache_db::CacheDb;
 mod secrets;
 pub use secrets::{PassRule as DbPassRule, SecretsDb};
 
-mod metadata_cache;
-pub use metadata_cache::{CachedMetadata, MetadataCache};
+mod metadata_store;
+pub use metadata_store::MetadataStore;
 
 mod organization;
 pub use organization::{delete_rule, get_rule, list_rules, save_rule, DbOrganizationRule};
@@ -52,8 +52,8 @@ pub use cache_index::{
     CacheType,
 };
 
-/// Re-export derive macro for database config structs
-pub use arclain_db_derive::DbConfig;
+/// Re-export derive macro from mini-orm
+pub use mini_orm::DbConfig;
 
 mod user_config;
 pub use user_config::UserConfig;
@@ -125,7 +125,7 @@ impl DbPaths {
 
         Ok(Self {
             config_db: base.join("config.sqlite"),
-            cache_db: base.join("cache.sqlite"),
+            cache_db: base.join("metadata.sqlite"),
             secrets_db: secrets_dir.join("pass.redb"),
             key_file: Some(secrets_dir.join("master.key")),
         })
@@ -229,7 +229,7 @@ fn validate_path(path: &Path) -> Result<()> {
 pub struct ConfigDbs {
     pub config: SqliteDb,
     pub secrets: SecretsDb,
-    pub metadata: MetadataCache,
+    pub metadata: MetadataStore,
 }
 
 /// Open all databases, initializing schemas if needed
@@ -255,7 +255,14 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
     Ok(ConfigDbs {
         config: config_db.into_sqlite_db(),
         secrets: secrets_db,
-        metadata: MetadataCache::new(cache_db.into_sqlite_db()),
+        metadata: MetadataStore::new(
+            cache_db.into_sqlite_db(),
+            paths
+                .cache_db
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("metadata"),
+        ),
     })
 }
 
@@ -289,7 +296,5 @@ fn hex_encode_upper(bytes: &[u8]) -> String {
     s
 }
 
-#[cfg(test)]
-mod metadata_cache_tests;
 #[cfg(test)]
 mod tests;

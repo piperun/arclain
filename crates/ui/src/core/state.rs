@@ -340,7 +340,7 @@ impl AppState {
                     info!("Plugin manager initialized with {} plugins", plugin_count);
                 }
                 if let Some(ref dbs) = me.dbs {
-                    manager.set_metadata_cache(Arc::new(dbs.metadata.clone()));
+                    manager.set_metadata_store(Arc::new(dbs.metadata.clone()));
                     // Also set cache_db for new ProductMetadata table
                     manager.set_cache_db(Arc::new(dbs.metadata.db().clone()));
                 }
@@ -709,7 +709,7 @@ impl AppState {
             if let Some(ref manager_arc) = self.plugin_manager {
                 manager_arc
                     .lock()
-                    .set_metadata_cache(Arc::new(dbs.metadata.clone()));
+                    .set_metadata_store(Arc::new(dbs.metadata.clone()));
                 manager_arc
                     .lock()
                     .set_cache_db(Arc::new(dbs.metadata.db().clone()));
@@ -781,7 +781,7 @@ impl AppState {
             if let Some(ref manager_arc) = self.plugin_manager {
                 manager_arc
                     .lock()
-                    .set_metadata_cache(Arc::new(dbs.metadata.clone()));
+                    .set_metadata_store(Arc::new(dbs.metadata.clone()));
                 manager_arc
                     .lock()
                     .set_cache_db(Arc::new(dbs.metadata.db().clone()));
@@ -859,7 +859,7 @@ impl AppState {
         if let Some(ref manager_arc) = self.plugin_manager {
             manager_arc
                 .lock()
-                .set_metadata_cache(Arc::new(new_dbs.metadata.clone()));
+                .set_metadata_store(Arc::new(new_dbs.metadata.clone()));
             manager_arc
                 .lock()
                 .set_cache_db(Arc::new(new_dbs.metadata.db().clone()));

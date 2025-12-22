@@ -25,7 +25,7 @@ pub struct PluginManager {
     plugins: Arc<RwLock<HashMap<String, ManagedPlugin>>>,
     enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
     backend: Option<Arc<dyn ArchiveBackend>>,
-    metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
+    metadata_store: Option<Arc<arclain_db::MetadataStore>>,
     content_cache: Option<Arc<arclain_data::ContentCache>>,
     resource_manager: Option<Arc<arclain_data::ResourceManager>>,
     async_http_client: Option<Arc<arclain_http::AsyncHttpClient>>,
@@ -46,7 +46,7 @@ impl PluginManager {
             enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
 
             backend: None,
-            metadata_cache: None,
+            metadata_store: None,
             content_cache: None,
             resource_manager: None,
             async_http_client: None,
@@ -67,7 +67,7 @@ impl PluginManager {
             plugins: Arc::new(RwLock::new(HashMap::new())),
             enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
             backend: Some(backend),
-            metadata_cache: None,
+            metadata_store: None,
             content_cache: None,
             resource_manager: None,
             async_http_client: None,
@@ -88,12 +88,12 @@ impl PluginManager {
     }
 
     /// Update the metadata cache for all plugins
-    pub fn set_metadata_cache(&mut self, cache: Arc<arclain_db::MetadataCache>) {
-        self.metadata_cache = Some(cache.clone());
+    pub fn set_metadata_store(&mut self, store: Arc<arclain_db::MetadataStore>) {
+        self.metadata_store = Some(store.clone());
         let plugins = self.plugins.read();
         for plugin in plugins.values() {
             let mut instance = plugin.instance.lock();
-            instance.set_metadata_cache(Some(cache.clone()));
+            instance.set_metadata_store(Some(store.clone()));
         }
     }
 
@@ -181,7 +181,7 @@ impl PluginManager {
                 capabilities.clone(),
                 rate_limit,
                 Some(backend.clone()),
-                self.metadata_cache.clone(),
+                self.metadata_store.clone(),
                 settings,
             )?
         } else {
@@ -189,7 +189,7 @@ impl PluginManager {
                 capabilities.clone(),
                 rate_limit,
                 None,
-                self.metadata_cache.clone(),
+                self.metadata_store.clone(),
                 settings,
             )?
         };
