@@ -7,8 +7,8 @@ use std::path::PathBuf;
 /// Individual data source
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DataSource {
-    /// Structured metadata stored in SQLite (arclain_db::MetadataCache)
-    MetadataCache,
+    /// Structured metadata stored in SQLite (arclain_db::MetadataStore)
+    MetadataStore,
     /// Binary content stored in cacache (via ResourceManager)
     ContentCache,
     /// Local file system
@@ -144,7 +144,7 @@ impl DataRequest {
     /// Cache only - for viewing cached entries (never fetches)
     pub fn cache_only(key: impl Into<String>) -> Self {
         let mut sources = IndexSet::new();
-        sources.insert(DataSource::MetadataCache);
+        sources.insert(DataSource::MetadataStore);
         sources.insert(DataSource::ContentCache);
 
         Self {
@@ -191,7 +191,7 @@ impl DataRequest {
     /// Metadata cache first, then network
     pub fn metadata_first(key: impl Into<String>, url: impl Into<String>) -> Self {
         let mut sources = IndexSet::new();
-        sources.insert(DataSource::MetadataCache);
+        sources.insert(DataSource::MetadataStore);
         sources.insert(DataSource::Network);
 
         Self {

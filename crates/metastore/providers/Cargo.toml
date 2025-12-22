@@ -1,0 +1,19 @@
+[package]
+name = "metastore-providers"
+version = "0.1.0"
+edition = "2021"
+description = "Metadata providers for metastore"
+
+[features]
+default = ["dlsite"]
+dlsite = []
+itchio = []
+steam = []
+
+[dependencies]
+metastore-types = { path = "../types" }
+metastore-abstract = { path = "../abstract" }
+regex = "1"
+scraper = "0.21"
+serde_json = "1.0"
+urlencoding = "2.1"

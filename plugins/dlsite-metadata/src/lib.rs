@@ -1230,19 +1230,9 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
     Ok(None)
 }
 
-/// Detect DLSite code using Regex
+/// Detect DLSite code using metastore provider
 fn detect_dlsite_code(text: &str) -> Option<String> {
-    use regex::Regex;
-    // RJ/VJ/BJ followed by 6-8 digits
-    // Case insensitive is handled by (?i)
-    let re = Regex::new(r"(?i)(RJ|VJ|BJ)(\d{6,8})").unwrap();
-
-    if let Some(caps) = re.captures(text) {
-        let prefix = caps.get(1)?.as_str().to_uppercase();
-        let digits = caps.get(2)?.as_str();
-        return Some(format!("{}{}", prefix, digits));
-    }
-    None
+    metastore_providers::dlsite::detect_dlsite_code(text)
 }
 
 /// Read metadata from local cache ONLY - no network fetch!
@@ -1382,6 +1372,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
     Some((json_data, scraped_data))
 }
 
+/// Scraped data from HTML - wraps metastore provider's type
 #[derive(Debug, Clone)]
 struct ScrapedData {
     title: Option<String>,
@@ -1393,135 +1384,21 @@ struct ScrapedData {
     screenshots: Vec<String>,
 }
 
+/// Scrape HTML using metastore provider
 fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
-    use scraper::{Html, Selector};
-
-    let document = Html::parse_document(html);
+    use metastore_providers::dlsite::parse_html_response;
     
-    let mut title = None;
-    let mut circle = None;
-    let mut release_date = None;
-    let mut tags = Vec::new();
-    let mut description = None;
-    let mut cover_image = None;
-    let mut screenshots = Vec::new();
-
-    // 1. Parse Tables (work_maker and work_outline)
-    let tr_selector = Selector::parse("table#work_maker tr, table#work_outline tr").unwrap();
-    let th_selector = Selector::parse("th").unwrap();
-    let td_selector = Selector::parse("td").unwrap();
-    let maker_selector = Selector::parse("span.maker_name").unwrap();
-    let a_selector = Selector::parse("a").unwrap();
-
-    for tr in document.select(&tr_selector) {
-        let th = match tr.select(&th_selector).next() {
-            Some(el) => el.text().collect::<String>().trim().to_string(),
-            None => continue,
-        };
-        
-        let td = match tr.select(&td_selector).next() {
-            Some(el) => el,
-            None => continue,
-        };
-        
-        match th.as_str() {
-            "サークル名" | "ブランド名" | "著者" | "出版社名" => {
-                // Circle/Maker
-                if let Some(maker) = td.select(&maker_selector).next() {
-                    circle = Some(maker.text().collect::<String>().trim().to_string());
-                }
-            }
-            "販売日" => {
-                // Release date
-                release_date = Some(td.text().collect::<String>().trim().to_string());
-            }
-            "ジャンル" => {
-                // Tags/Genres
-                for a in td.select(&a_selector) {
-                    let tag = a.text().collect::<String>().trim().to_string();
-                    if !tag.is_empty() {
-                        tags.push(tag);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
+    let scraped = parse_html_response(html)?;
     
-    // 2. Parse Description (from meta or work_parts)
-    let meta_selector = Selector::parse("meta[name='description']").unwrap();
-    if let Some(meta) = document.select(&meta_selector).next() {
-        if let Some(content) = meta.value().attr("content") {
-            description = Some(content.trim().to_string());
-        }
-    }
-
-    // Fallback to work_parts_area if meta is empty
-    if description.is_none() {
-        let parts_selector = Selector::parse("div.work_parts_area").unwrap();
-        if let Some(div) = document.select(&parts_selector).next() {
-            description = Some(div.text().collect::<String>().trim().to_string());
-        }
-    }
-    
-    // 3. Parse Title (h1#work_name)
-    let title_selector = Selector::parse("h1#work_name").unwrap();
-    if let Some(h1) = document.select(&title_selector).next() {
-        title = Some(h1.text().collect::<String>().trim().to_string());
-    }
-
-    // 4. Parse Main Cover Image
-    // Try to find the main product image
-    let img_selector = Selector::parse("div.product-slider-data div[data-src]").unwrap();
-    if let Some(div) = document.select(&img_selector).next() {
-        if let Some(src) = div.value().attr("data-src") {
-            let full_url = if src.starts_with("//") {
-                format!("https:{}", src)
-            } else {
-                src.to_string()
-            };
-            cover_image = Some(full_url);
-        }
-    }
-    
-    // Fallback: try to find the work_img element
-    if cover_image.is_none() {
-        let work_img_selector = Selector::parse("div#work_left img, img.work_img").unwrap();
-        if let Some(img) = document.select(&work_img_selector).next() {
-            if let Some(src) = img.value().attr("src") {
-                let full_url = if src.starts_with("//") {
-                    format!("https:{}", src)
-                } else {
-                    src.to_string()
-                };
-                cover_image = Some(full_url);
-            }
-        }
-    }
-
-    // 5. Parse Screenshots
-    let slider_selector = Selector::parse("div.product-slider-data div").unwrap();
-    for div in document.select(&slider_selector) {
-        if let Some(src) = div.value().attr("data-src") {
-             if !src.contains("_img_main") {
-                let full_url = if src.starts_with("//") {
-                    format!("https:{}", src)
-                } else {
-                    src.to_string()
-                };
-                screenshots.push(full_url);
-             }
-        }
-    }
-
+    // Convert metastore's ScrapedData to our local type
     Some(ScrapedData {
-        title,
-        circle,
-        release_date,
-        tags,
-        description,
-        cover_image,
-        screenshots,
+        title: scraped.title,
+        circle: scraped.circle,
+        release_date: scraped.release_date,
+        tags: scraped.tags,
+        description: scraped.description,
+        cover_image: scraped.cover_image,
+        screenshots: scraped.screenshots,
     })
 }
 
@@ -1622,7 +1499,7 @@ fn generate_metadata_json(
 /// Search DLSite for a query and return list of (code, title, maker)
 fn search_dlsite(query: &str) -> Vec<(String, String, String)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
-    use scraper::{Html, Selector};
+    use metastore_providers::dlsite::parse_search_response;
 
     let url = format!(
         "https://www.dlsite.com/home/fsr/=/keyword/{}",
@@ -1641,45 +1518,17 @@ fn search_dlsite(query: &str) -> Vec<(String, String, String)> {
         }
     };
 
-    let document = Html::parse_document(&html);
-    let mut results = Vec::new();
-
-    // Select search results
-    // Try multiple selectors as DLSite layout might vary
-    let item_selector = Selector::parse("li.search_result_img_box_inner, tr.n_worklist_item").unwrap();
-    let title_selector = Selector::parse("dt.work_name a, a.work_name").unwrap();
-    let maker_selector = Selector::parse("dd.maker_name a, span.maker_name a").unwrap();
-
-    for item in document.select(&item_selector) {
-        let mut title = "Unknown".to_string();
-        let mut maker = "Unknown".to_string();
-        let mut code = String::new();
-
-        if let Some(link) = item.select(&title_selector).next() {
-            title = link.text().collect::<String>().trim().to_string();
-            if let Some(href) = link.value().attr("href") {
-                // Extract code from URL (.../product_id/RJ123456.html)
-                if let Some(c) = detect_dlsite_code(href) {
-                    code = c;
-                }
-            }
-        }
-
-        if let Some(maker_link) = item.select(&maker_selector).next() {
-            maker = maker_link.text().collect::<String>().trim().to_string();
-        }
-
-        if !code.is_empty() {
-            results.push((code, title, maker));
-        }
-        
-        if results.len() >= 10 {
-            break;
-        }
-    }
+    // Use metastore provider for parsing
+    let results = parse_search_response(&html);
     
     log_network_activity(&format!("Found {} results", results.len()));
+    
+    // Convert SearchResult to (code, title, maker) tuple
     results
+        .into_iter()
+        .take(10)
+        .map(|r| (r.external_id, r.title, r.creator.unwrap_or_else(|| "Unknown".to_string())))
+        .collect()
 }
 
 

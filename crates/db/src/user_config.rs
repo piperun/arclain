@@ -3,7 +3,7 @@
 //! This struct uses the `DbConfig` derive macro to automatically generate
 //! SQL table creation and CRUD methods.
 
-use arclain_db_derive::DbConfig;
+use mini_orm::DbConfig;
 use std::path::PathBuf;
 
 /// User configuration settings stored in the database.

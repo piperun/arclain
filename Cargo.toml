@@ -9,8 +9,17 @@ members = [
     "crates/widgets",
     "crates/theme",
     "crates/http",
-    "crates/data"
-, "crates/data"]
+    "crates/data",
+    # Shared ORM
+    "crates/mini-orm",
+    "crates/mini-orm/derive",
+    # Metastore sub-crates
+    "crates/metastore/types",
+    "crates/metastore/abstract",
+    "crates/metastore/providers",
+    "crates/metastore/database",
+    "crates/metastore/ui",
+]
 exclude = [
     "plugins/dlsite-metadata",
     "plugins/gstreamer-preview",

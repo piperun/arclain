@@ -1,0 +1,13 @@
+[package]
+name = "metastore-database"
+version = "0.1.0"
+edition = "2021"
+description = "Database backends for metastore"
+
+[dependencies]
+metastore-types = { path = "../types" }
+metastore-abstract = { path = "../abstract" }
+mini-orm = { path = "../../mini-orm" }
+anyhow = "1.0"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1.0"
