@@ -150,7 +150,7 @@ fn sync_plugin_items(state: &mut ToolbarLayoutState, manager: &PluginManager) {
         }
 
         // Create item for each button
-        for element in elements {
+        for element in elements.flatten() {
             if let PluginUiElement::Button {
                 id: btn_id, label, ..
             } = element

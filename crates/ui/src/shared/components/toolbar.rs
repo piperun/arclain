@@ -462,8 +462,8 @@ pub fn render(
         for plugin in plugins.iter().filter(|p| p.enabled) {
             let pid = plugin.id.clone();
             let _ = manager.with_plugin_instance(&pid, |instance| {
-                if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::PluginButton) {
-                    plugin_elements.insert(pid.clone(), elements);
+                if let Ok(layout) = instance.get_ui_layout(PluginExtensionPoint::PluginButton) {
+                    plugin_elements.insert(pid.clone(), layout.flatten());
                 }
                 Ok::<_, anyhow::Error>(())
             });
