@@ -18,14 +18,24 @@ interface host {
     set-setting: func(key: string, value: string);
 
     // === Data API (unified) ===
-    // Replaces scattered http-get, cache-put, etc.
-    // Plugin requests data, host handles network + storage transparently.
+    // Plugin requests data, host handles resolution transparently.
+    // Sources are tried in order (waterfall pattern).
+
+    // Data source types
+    enum data-source {
+        metadata-cache,  // Structured metadata (SQLite)
+        content-cache,   // Binary blobs (cacache)
+        local-file,      // File system
+        memory,          // In-memory ephemeral
+        network,         // HTTP fetch
+    }
 
     record data-request {
-        key: string,              // Unique identifier for this resource
-        url: string,              // Source URL
+        key: string,                    // Unique identifier for this resource
+        url: option<string>,            // Source URL (required if network in sources)
         resource-type: resource-type,
-        product-id: option<string>,  // For organization
+        product-id: option<string>,     // For organization
+        sources: list<data-source>,     // Resolution chain (empty = default)
     }
 
     enum resource-type {
@@ -47,6 +57,7 @@ interface host {
         data: option<list<u8>>,
         error: option<string>,
     }
+
 
     // Request data - host downloads async, caches transparently
     request-data: func(request: data-request) -> string;  // returns request-id

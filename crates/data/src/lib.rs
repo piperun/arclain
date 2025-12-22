@@ -1,12 +1,29 @@
-pub mod api;
-pub mod cache;
-pub mod resource;
+//! arclain-data: Unified data access layer
+//!
+//! Provides data management functionality with:
+//! - Content caching (images, binary data)
+//! - Resource management (network, disk, memory storage)
+//! - Plugin/UI facing API with modular data resolution
+//! - Trait-based resolver pattern for extensibility
 
-pub use api::{DataRequest, DataResult, DataService, DataStatus};
-pub use cache::ContentCache;
-pub use resource::{
-    ResourceConfig, ResourceManager, ResourceRequest, ResourceType, StorageStrategy,
+pub mod features;
+pub mod shared;
+
+// Re-export main types at crate root
+pub use features::api::{
+    DataRequest, DataResult, DataService, DataSource, DataStatus, SourceChain,
+};
+pub use features::content_cache::ContentCache;
+pub use features::resolver::{
+    ContentCacheResolver, DataSourceResolver, MemoryResolver, MetadataCacheResolver,
+    NetworkResolver, ResolveError,
+};
+pub use features::resource_manager::ResourceManager;
+pub use shared::{
+    ResourceConfig, ResourceData, ResourceRequest, ResourceSource, ResourceStatus, ResourceType,
+    StorageStrategy,
 };
 
-// Re-export common errors or useful types
+// Re-export common types
 pub use anyhow::Result;
+pub use indexmap::IndexSet;

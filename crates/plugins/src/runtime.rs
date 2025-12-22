@@ -312,6 +312,15 @@ impl PluginInstance {
         }
     }
 
+    /// Set the cache database for host functions (new ProductMetadata table)
+    pub fn set_cache_db(&mut self, db: Option<Arc<arclain_db::SqliteDb>>) {
+        let host = self.store.data_mut();
+        match db {
+            Some(d) => host.set_cache_db(d),
+            None => host.cache_db = None,
+        }
+    }
+
     /// Get network logs from the plugin
     pub fn get_network_log(&self) -> Vec<(std::time::SystemTime, String)> {
         let data = self.store.data();

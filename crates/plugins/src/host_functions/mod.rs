@@ -35,6 +35,7 @@ pub struct HostFunctions {
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
     pub metadata_cache: Option<Arc<arclain_db::MetadataCache>>,
     pub content_cache: Option<Arc<arclain_data::ContentCache>>,
+    pub cache_db: Option<Arc<arclain_db::SqliteDb>>,
 
     pub resource_manager: Option<Arc<ResourceManager>>,
 
@@ -67,6 +68,7 @@ impl HostFunctions {
             network_log: Arc::new(Mutex::new(Vec::new())),
             metadata_cache: None,
             content_cache: None,
+            cache_db: None,
 
             resource_manager: None,
 
@@ -94,11 +96,19 @@ impl HostFunctions {
     }
 
     pub fn set_metadata_cache(&mut self, cache: Arc<arclain_db::MetadataCache>) {
+        // Register MetadataCache resolver with DataService
+        let resolver = Arc::new(arclain_data::MetadataCacheResolver::new(cache.clone()));
+        self.data_service
+            .register_resolver(arclain_data::DataSource::MetadataCache, resolver);
         self.metadata_cache = Some(cache);
     }
 
     pub fn set_content_cache(&mut self, cache: Arc<arclain_data::ContentCache>) {
         self.content_cache = Some(cache);
+    }
+
+    pub fn set_cache_db(&mut self, db: Arc<arclain_db::SqliteDb>) {
+        self.cache_db = Some(db);
     }
 
     pub fn set_archive_context(&self, archive_path: Option<String>, password: Option<String>) {
@@ -111,12 +121,18 @@ impl HostFunctions {
     }
 
     pub fn set_async_http_client(&mut self, client: Arc<arclain_http::AsyncHttpClient>) {
-        self.data_service.set_http_client(client.clone());
+        // Register Network resolver with DataService
+        let resolver = Arc::new(arclain_data::NetworkResolver::new(client.clone()));
+        self.data_service
+            .register_resolver(arclain_data::DataSource::Network, resolver);
         self.async_http_client = Some(client);
     }
 
     pub fn set_resource_manager(&mut self, manager: Arc<ResourceManager>) {
-        self.data_service.set_resource_manager(manager.clone());
+        // Register ContentCache resolver with DataService
+        let resolver = Arc::new(arclain_data::ContentCacheResolver::new(manager.clone()));
+        self.data_service
+            .register_resolver(arclain_data::DataSource::ContentCache, resolver);
         self.resource_manager = Some(manager);
     }
 }
@@ -181,17 +197,54 @@ impl Host for HostFunctions {
     // === Data API (unified) ===
     fn request_data(&mut self, request: crate::arclain::plugin::host::DataRequest) -> String {
         // Map buf-generated request to arclain_data::DataRequest
-        use arclain_data::{DataRequest, ResourceType};
-        let req = DataRequest {
-            key: request.key,
-            url: request.url,
-            resource_type: match request.resource_type {
-                crate::arclain::plugin::host::ResourceType::Binary => ResourceType::Binary,
-                crate::arclain::plugin::host::ResourceType::Image => ResourceType::Image,
-                crate::arclain::plugin::host::ResourceType::Json => ResourceType::Metadata,
-            },
-            product_id: request.product_id,
+        use arclain_data::{DataRequest, DataSource, ResourceType};
+
+        let resource_type = match request.resource_type {
+            crate::arclain::plugin::host::ResourceType::Binary => ResourceType::Binary,
+            crate::arclain::plugin::host::ResourceType::Image => ResourceType::Image,
+            crate::arclain::plugin::host::ResourceType::Json => ResourceType::Metadata,
         };
+
+        // Build request
+        let mut req = DataRequest::new(&request.key).with_type(resource_type);
+
+        // Set URL if provided
+        if let Some(url) = request.url {
+            req = req.with_url(url);
+        }
+
+        // Set product ID if provided
+        if let Some(pid) = request.product_id {
+            req = req.with_product(pid);
+        }
+
+        // Map WIT sources to internal DataSource
+        if !request.sources.is_empty() {
+            let mut sources = arclain_data::IndexSet::new();
+            for src in request.sources {
+                let ds = match src {
+                    crate::arclain::plugin::host::DataSource::MetadataCache => {
+                        DataSource::MetadataCache
+                    }
+                    crate::arclain::plugin::host::DataSource::ContentCache => {
+                        DataSource::ContentCache
+                    }
+                    crate::arclain::plugin::host::DataSource::LocalFile => DataSource::LocalFile,
+                    crate::arclain::plugin::host::DataSource::Memory => DataSource::Memory,
+                    crate::arclain::plugin::host::DataSource::Network => DataSource::Network,
+                };
+                sources.insert(ds);
+            }
+            req = req.with_sources(sources);
+        } else if resource_type == ResourceType::Metadata {
+            // Default: for metadata type, check MetadataCache first
+            let mut sources = arclain_data::IndexSet::new();
+            sources.insert(DataSource::MetadataCache);
+            sources.insert(DataSource::ContentCache);
+            sources.insert(DataSource::Network);
+            req = req.with_sources(sources);
+        }
+
         self.data_service.request_data(req)
     }
 

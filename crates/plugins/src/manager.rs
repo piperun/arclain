@@ -107,6 +107,15 @@ impl PluginManager {
         }
     }
 
+    /// Set cache database for new ProductMetadata table
+    pub fn set_cache_db(&mut self, db: Arc<arclain_db::SqliteDb>) {
+        let plugins = self.plugins.read();
+        for plugin in plugins.values() {
+            let mut instance = plugin.instance.lock();
+            instance.set_cache_db(Some(db.clone()));
+        }
+    }
+
     /// Set resource manager
     pub fn set_resource_manager(&mut self, manager: Arc<arclain_data::ResourceManager>) {
         self.resource_manager = Some(manager.clone());

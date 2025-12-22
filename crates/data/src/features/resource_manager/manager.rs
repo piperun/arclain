@@ -3,10 +3,10 @@
 //! Provides a unified interface for getting data from network, disk, or cache
 //! without exposing storage details to consumers.
 
-use super::types::{
+use crate::features::content_cache::ContentCache;
+use crate::shared::{
     ResourceConfig, ResourceData, ResourceRequest, ResourceSource, ResourceType, StorageStrategy,
 };
-use crate::cache::ContentCache;
 use arclain_db::CacheType;
 use parking_lot::RwLock;
 use std::collections::HashMap;

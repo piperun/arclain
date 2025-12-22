@@ -341,6 +341,8 @@ impl AppState {
                 }
                 if let Some(ref dbs) = me.dbs {
                     manager.set_metadata_cache(Arc::new(dbs.metadata.clone()));
+                    // Also set cache_db for new ProductMetadata table
+                    manager.set_cache_db(Arc::new(dbs.metadata.db().clone()));
                 }
                 if let Some(ref cache) = me.content_cache {
                     manager.set_content_cache(cache.clone());
@@ -708,6 +710,9 @@ impl AppState {
                 manager_arc
                     .lock()
                     .set_metadata_cache(Arc::new(dbs.metadata.clone()));
+                manager_arc
+                    .lock()
+                    .set_cache_db(Arc::new(dbs.metadata.db().clone()));
             }
 
             self.dbs = Some(dbs);
@@ -777,6 +782,9 @@ impl AppState {
                 manager_arc
                     .lock()
                     .set_metadata_cache(Arc::new(dbs.metadata.clone()));
+                manager_arc
+                    .lock()
+                    .set_cache_db(Arc::new(dbs.metadata.db().clone()));
             }
 
             self.dbs = Some(dbs);
@@ -852,6 +860,9 @@ impl AppState {
             manager_arc
                 .lock()
                 .set_metadata_cache(Arc::new(new_dbs.metadata.clone()));
+            manager_arc
+                .lock()
+                .set_cache_db(Arc::new(new_dbs.metadata.db().clone()));
         }
 
         self.dbs = Some(new_dbs);

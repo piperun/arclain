@@ -8,6 +8,7 @@ struct PluginState {
     search_results: Vec<(String, String, String)>, // (code, title, maker)
     auto_fetch_enabled: bool, // Master switch: auto-fetch when archive opens
     enable_cache: bool, // Sub-option: cache fetched results (only relevant if auto_fetch enabled)
+    cache_images: bool, // Cache cover and screenshot images
     fetch_in_progress: bool, // Prevent double-fetch when spamming buttons
     cached_entries: Option<Vec<String>>, // Cache of checking the cache (UI spam prevention)
     selected_cache_entry: Option<String>, // For cache viewer details
@@ -27,6 +28,7 @@ thread_local! {
         search_results: Vec::new(),
         auto_fetch_enabled: true,
         enable_cache: true,
+        cache_images: true,
         fetch_in_progress: false,
         last_archive_path: None,
         cached_entries: None,
@@ -43,16 +45,19 @@ impl archust_plugin_sdk::Guest for Component {
     fn init() {
         info("DLSite Metadata plugin initialized");
         
-        // Just read the auto-fetch setting, don't try to load yet (no archive open)
+        // Read plugin settings
         let auto_fetch = archust_plugin_sdk::arclain::plugin::host::get_setting("auto_fetch_enabled")
             .unwrap_or_else(|| "true".to_string()) == "true";
         let enable_cache = archust_plugin_sdk::arclain::plugin::host::get_setting("enable_cache")
+            .unwrap_or_else(|| "true".to_string()) == "true";
+        let cache_images = archust_plugin_sdk::arclain::plugin::host::get_setting("cache_images")
             .unwrap_or_else(|| "true".to_string()) == "true";
         
         STATE.with(|state| {
             let mut s = state.borrow_mut();
             s.auto_fetch_enabled = auto_fetch;
             s.enable_cache = enable_cache;
+            s.cache_images = cache_images;
         });
         
         // NOTE: Auto-load happens when archive is opened, not at init time
@@ -545,9 +550,8 @@ impl archust_plugin_sdk::Guest for Component {
                             size: Some(18.0),
                         }));
 
-                        // Fetch the data from cache to display
-                        // We reuse the fetch_dlsite_metadata logic but it will hit the cache
-                         if let Some((json, scraped)) = fetch_dlsite_metadata(&entry_id) {
+                        // Read the data from cache to display (no network fetch!)
+                         if let Some((json, scraped)) = get_cached_dlsite_metadata(&entry_id) {
                             // Copy-paste of info display logic (could be refactored into helper)
                             let title = json["work_name"].as_str().unwrap_or("Unknown Title");
                             elements.push(UiElement::Label(LabelConfig { text: title.to_string(), bold: false, size: None }));
@@ -799,8 +803,15 @@ impl archust_plugin_sdk::Guest for Component {
         });
         
         if let Some((json, scraped)) = detail_data {
-             let title = json["title"].as_str().or(json["work_name"].as_str()).unwrap_or("Unknown Title");
-             let maker = json["maker_name"].as_str().or(json["brand"].as_str()).unwrap_or("Unknown Maker");
+             // Handle both DLSite API format (work_name, maker_name) and cache format (title, circle)
+             let title = json["title"].as_str()
+                 .or(json["work_name"].as_str())
+                 .unwrap_or("Unknown Title");
+             let maker = json["maker_name"].as_str()
+                 .or(json["brand"].as_str())
+                 .or(json["circle"].as_str())
+                 .or(json["creator"].as_str())
+                 .unwrap_or("Unknown Maker");
              
              // Title Header
              content_elements.push(UiElement::Label(LabelConfig {
@@ -1071,9 +1082,8 @@ impl archust_plugin_sdk::Guest for Component {
             id if id.starts_with("view_cache_entry_") => {
                  let entry_id = id.trim_start_matches("view_cache_entry_").to_string();
                  
-                 // Fetch data immediately when selected!
-                 // Since fetch_dlsite_metadata uses blocking fetch which checks cache, this is fast for cached items.
-                 if let Some((json, scraped)) = fetch_dlsite_metadata(&entry_id) {
+                 // Read from local cache only - no network fetch for cached entries!
+                 if let Some((json, scraped)) = get_cached_dlsite_metadata(&entry_id) {
                      STATE.with(|state| {
                          state.borrow_mut().browser_detail_cache = Some((entry_id.clone(), json, scraped));
                      });
@@ -1235,6 +1245,46 @@ fn detect_dlsite_code(text: &str) -> Option<String> {
     None
 }
 
+/// Read metadata from local cache ONLY - no network fetch!
+/// Use this for viewing already-cached entries.
+/// The host handles cache lookup transparently via get_data.
+fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
+    use archust_plugin_sdk::arclain::plugin::host::get_data;
+    
+    let json_key = format!("dlsite:json:{}", product_id);
+    let html_key = format!("dlsite:html:{}", product_id);
+    
+    // get_data checks MetadataCache first (handled by host), no network
+    let json_bytes = get_data(&json_key)?;
+    let json_str = String::from_utf8(json_bytes).ok()?;
+    let json_data = match serde_json::from_str::<serde_json::Value>(&json_str) {
+        Ok(json) => {
+            if let Some(arr) = json.as_array() {
+                arr.first().cloned()?
+            } else if json.is_object() {
+                json
+            } else {
+                return None;
+            }
+        }
+        Err(_) => return None,
+    };
+    
+    // Read HTML from cache and scrape
+    let scraped_data = if let Some(html_bytes) = get_data(&html_key) {
+        if let Ok(html_str) = String::from_utf8(html_bytes) {
+            scrape_html_metadata(&html_str)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    
+    Some((json_data, scraped_data))
+}
+
+/// Fetch metadata from DLSite network (for new entries or search results)
 fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
 
@@ -1299,20 +1349,32 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
         }
     };
 
-    // If we have a cover image, fetch and cache it now (for UI display)
-    if let Some(data) = &scraped_data {
-        if let Some(cover_url) = &data.cover_image {
-            let cover_key = format!("dlsite:cover:{}", product_id);
-            // Use fetch_blocking to download bytes and let Data API cache it
-            // We ignore the result, rely on side-effect of caching
+    // Check if image caching is enabled
+    let cache_images = STATE.with(|state| state.borrow().cache_images);
+
+    // If image caching is enabled and we have scraped data, fetch cover and screenshots
+    if cache_images {
+        if let Some(data) = &scraped_data {
             use archust_plugin_sdk::ResourceType;
-            // logging helper imported at top of file, or use SDK prefix? 
-            // The function uses log_network_activity mostly, but on_event uses info.
-            // Let's use log_network_activity for consistency in this function
-            log_network_activity(&format!("Fetching cover image: {}", cover_url));
-            
-            if let Err(e) = archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
-                 log_network_activity(&format!("Failed to fetch/cache cover image: {}", e));
+
+            // Fetch cover image
+            if let Some(cover_url) = &data.cover_image {
+                let cover_key = format!("dlsite:cover:{}", product_id);
+                log_network_activity(&format!("Fetching cover image: {}", cover_url));
+                
+                if let Err(e) = archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
+                    log_network_activity(&format!("Failed to fetch/cache cover image: {}", e));
+                }
+            }
+
+            // Fetch screenshots (limit to first 5 to be reasonable)
+            for (idx, screenshot_url) in data.screenshots.iter().take(5).enumerate() {
+                let screenshot_key = format!("dlsite:screenshot:{}:{}", product_id, idx);
+                log_network_activity(&format!("Fetching screenshot {}: {}", idx, screenshot_url));
+                
+                if let Err(e) = archust_plugin_sdk::fetch_blocking(&screenshot_key, screenshot_url, ResourceType::Image) {
+                    log_network_activity(&format!("Failed to fetch/cache screenshot {}: {}", idx, e));
+                }
             }
         }
     }

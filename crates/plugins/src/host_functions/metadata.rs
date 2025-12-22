@@ -58,73 +58,164 @@ impl HostFunctions {
     }
 
     pub(super) fn impl_save_cached_metadata(&mut self, id: String, json: String) {
-        if let Some(cache) = &self.metadata_cache {
-            // We need to parse the JSON to extract fields for the cache
-            // This is a bit inefficient (parsing twice), but robust
-            use arclain_db::CachedMetadata;
+        // Parse the JSON to extract fields
+        let parsed: serde_json::Value = match serde_json::from_str(&json) {
+            Ok(v) => v,
+            Err(e) => {
+                error!("Failed to parse metadata JSON for caching: {}", e);
+                return;
+            }
+        };
 
-            // Try to parse basic info
-            let parsed: serde_json::Value = match serde_json::from_str(&json) {
-                Ok(v) => v,
-                Err(e) => {
-                    error!("Failed to parse metadata JSON for caching: {}", e);
-                    return;
-                }
+        info!("[Cache SAVE] Parsing metadata for {}", id);
+        debug!("[Cache SAVE] Full JSON: {}", json);
+
+        // Extract common fields
+        let title = parsed["title"].as_str().unwrap_or("Unknown").to_string();
+        let circle = parsed["circle"].as_str().map(|s| s.to_string());
+        let creator = parsed["creator"].as_str().map(|s| s.to_string());
+        let price = parsed["dlsite"]["price"]
+            .as_str()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|p| p as i64);
+        let release_date = parsed["release_date"].as_str().map(|s| s.to_string());
+        let description = parsed["description"].as_str().map(|s| s.to_string());
+        let work_type = parsed["work_type"].as_str().map(|s| s.to_string());
+        let file_format = parsed["file_format"].as_str().map(|s| s.to_string());
+        let tags_json = parsed["tags"]
+            .as_array()
+            .map(|t| serde_json::to_string(t).unwrap_or_default());
+
+        info!(
+            "[Cache SAVE] Extracted - title: {}, circle: {:?}, creator: {:?}",
+            title, circle, creator
+        );
+
+        // Save to ProductMetadata table (unified storage)
+        if let Some(cache_db) = &self.cache_db {
+            use arclain_db::{
+                init_product_metadata_schema, save_product_metadata, MetadataSource,
+                ProductMetadata,
             };
+            use std::time::{SystemTime, UNIX_EPOCH};
 
-            info!("[Cache SAVE] Parsing metadata for {}", id);
-            debug!("[Cache SAVE] Full JSON: {}", json);
+            // Ensure table exists
+            let _ = cache_db.with_connection(|conn| init_product_metadata_schema(conn));
 
-            let title = parsed["title"].as_str().unwrap_or("Unknown").to_string();
-
-            // Circle and Creator are separate fields
-            let circle = parsed["circle"].as_str().map(|s| s.to_string());
-            let creator = parsed["creator"].as_str().map(|s| s.to_string());
-
-            info!(
-                "[Cache SAVE] Extracted - title: {}, circle: {:?}, creator: {:?}",
-                title, circle, creator
-            );
-
-            // Price is in dlsite.price as string
-            let price = parsed["dlsite"]["price"]
+            // Extract additional fields for new table
+            let rating = parsed["rating"]
+                .as_f64()
+                .or_else(|| parsed["dlsite"]["rate_average_2dp"].as_f64());
+            let rating_count = parsed["rating_count"]
+                .as_i64()
+                .or_else(|| parsed["dlsite"]["rate_count"].as_i64());
+            let purchase_count = parsed["purchase_count"]
+                .as_i64()
+                .or_else(|| parsed["dlsite"]["dl_count"].as_i64());
+            let favorite_count = parsed["favorite_count"]
+                .as_i64()
+                .or_else(|| parsed["dlsite"]["wishlist_count"].as_i64());
+            let review_count = parsed["review_count"]
+                .as_i64()
+                .or_else(|| parsed["dlsite"]["review_count"].as_i64());
+            let file_size = parsed["file_size"]
                 .as_str()
-                .and_then(|s| s.parse::<u64>().ok())
-                .map(|p| p as i64);
-            let release_date = parsed["release_date"].as_str().map(|s| s.to_string());
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    parsed["dlsite"]["file_size"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                });
+            let age_rating = parsed["age_rating"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    parsed["dlsite"]["age_category"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                });
 
-            let description = parsed["description"].as_str().map(|s| s.to_string());
-            let work_type = parsed["work_type"].as_str().map(|s| s.to_string());
-            let file_format = parsed["file_format"].as_str().map(|s| s.to_string());
-            let tags_json = parsed["tags"]
+            // Genre/tags
+            let genres_json = parsed["genres"]
+                .as_array()
+                .map(|t| serde_json::to_string(t).unwrap_or_default());
+            let languages_json = parsed["languages"]
+                .as_array()
+                .map(|t| serde_json::to_string(t).unwrap_or_default());
+            let product_formats_json = parsed["product_formats"]
                 .as_array()
                 .map(|t| serde_json::to_string(t).unwrap_or_default());
 
-            let meta = CachedMetadata {
-                product_id: id.clone(),
-                title,
-                circle,
-                creator,
-                price,
-                release_date,
+            // DLSite-specific
+            let series_name = parsed["series_name"]
+                .as_str()
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    parsed["dlsite"]["series"]["name"]
+                        .as_str()
+                        .map(|s| s.to_string())
+                });
+            let illustrator = parsed["illustrator"].as_str().map(|s| s.to_string());
+            let voice_actors_json = parsed["voice_actors"]
+                .as_array()
+                .map(|t| serde_json::to_string(t).unwrap_or_default());
+            let miscellaneous = parsed["miscellaneous"].as_str().map(|s| s.to_string());
+            let update_info = parsed["update_info"].as_str().map(|s| s.to_string());
+            let rankings_json = parsed["rankings"]
+                .as_object()
+                .map(|o| serde_json::to_string(o).unwrap_or_default());
+
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs() as i64;
+
+            let product = ProductMetadata {
+                id: format!("dlsite:{}", id),
+                source: MetadataSource::DLSite.as_str().to_string(),
+                external_id: id.clone(),
+                title: Some(title),
+                creator: creator.or(circle), // Use creator, fall back to circle
                 description,
-                work_type,
+                release_date,
+                price,
+                currency: Some("JPY".to_string()),
+                rating,
+                rating_count,
+                purchase_count,
+                favorite_count,
+                review_count,
+                file_size,
                 file_format,
+                age_rating,
+                genres_json,
                 tags_json,
-                raw_api_json: json,
-                cached_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
+                languages_json,
+                product_formats_json,
+                series_name,
+                illustrator,
+                voice_actors_json,
+                miscellaneous,
+                update_info,
+                rankings_json,
+                extras_json: None,
+                raw_api_response: Some(json),
+                raw_html: None,
+                cached_at: now,
+                updated_at: None,
+                last_accessed: None,
             };
 
-            if let Err(e) = cache.save(&meta) {
-                error!("Failed to save metadata to cache: {}", e);
-            } else {
-                self.log_network_activity(format!("Saved {} to cache", id));
+            let result = cache_db.with_connection(|conn| save_product_metadata(conn, &product));
+
+            match result {
+                Ok(_) => {
+                    info!("[Cache SAVE] Saved {} to ProductMetadata table", id);
+                }
+                Err(e) => {
+                    error!("Failed to save metadata to ProductMetadata table: {}", e);
+                }
             }
-        } else {
-            warn!("Metadata cache not initialized");
         }
     }
 

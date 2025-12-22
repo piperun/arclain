@@ -36,6 +36,11 @@ impl MetadataCache {
         Self { db }
     }
 
+    /// Get access to underlying SqliteDb (for new ProductMetadata table)
+    pub fn db(&self) -> &SqliteDb {
+        &self.db
+    }
+
     /// Get cached metadata by product ID
     pub fn get(&self, product_id: &str) -> Result<Option<CachedMetadata>> {
         self.db.with_connection(|conn| {
