@@ -23,3 +23,7 @@ plugins/*/wasm32-unknown-unknown/
 plugin-sdk/*/target/
 
 _real_data/
+
+# Framework spikes
+crates/freya-spike/
+crates/dioxus-spike/

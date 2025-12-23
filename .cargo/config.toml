@@ -1,0 +1,3 @@
+[alias]
+freya = "run -p freya-spike"
+arclain_ui = "run -p arclain_ui"

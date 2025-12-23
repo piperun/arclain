@@ -7,7 +7,7 @@ edition = "2021"
 arclain_core = { path = "../core" }
 arclain_db = { path = "../db" }
 arclain_data = { path = "../data" }
-wasmtime = { version = "26.0.0", features = ["component-model"] }
+wasmtime = { version = "26.0.0", features = ["component-model", "cache"] }
 wasmtime-wasi = "26.0.0"
 anyhow = "1"
 thiserror = "2.0"

@@ -20,12 +20,16 @@ members = [
     "crates/metastore/providers",
     "crates/metastore/database",
     "crates/metastore/ui",
+    "crates/freya-spike",
 ]
+default-members = ["crates/ui"]
 exclude = [
     "plugins/dlsite-metadata",
     "plugins/gstreamer-preview",
     "plugins/ui-demo",
-    "plugin-sdk"
+    "plugin-sdk",
+    "crates/dioxus-spike",
+    "crates/iced-spike",
 ]
 resolver = "2"
 
