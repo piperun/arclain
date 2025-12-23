@@ -927,26 +927,36 @@ impl eframe::App for ArclainApp {
 impl ArclainApp {
     /// Render an open plugin dialog as a modal overlay
     fn render_plugin_dialog(&mut self, ctx: &egui::Context) {
-        // Check if a dialog is open (get info before locking for rendering)
-        let dialog_info = {
+        // Check if a dialog is open and get cached layout
+        let (dialog_info, cached_layout) = {
             let dialog_state = self.shared_state.plugin_dialog_state.lock();
-            dialog_state.open_dialog.clone()
+            let dialog_info = dialog_state.open_dialog.clone();
+            let cached = dialog_state.cached_dialog_layout.clone();
+            (dialog_info, cached)
         };
         
         if let Some((plugin_id, dialog_id)) = dialog_info {
-            // Get dialog UI elements from plugin
-            let dialog_elements = {
-                let state = self.shared_state.app_state.lock();
-                if let Some(pm_arc) = &state.plugin_manager {
-                    let pm = pm_arc.lock();
-                    pm.with_plugin_instance(&plugin_id, |instance| {
-                        instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()))
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_default()
-                } else {
-                    arclain_plugins::types::PluginLayout::default()
-                }
+            // Use cached layout if available, otherwise fetch from plugin
+            let dialog_elements = if let Some(layout) = cached_layout {
+                layout
+            } else {
+                // Fetch layout from plugin (only on first render or after invalidation)
+                let layout = {
+                    let state = self.shared_state.app_state.lock();
+                    if let Some(pm_arc) = &state.plugin_manager {
+                        let pm = pm_arc.lock();
+                        pm.with_plugin_instance(&plugin_id, |instance| {
+                            instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()))
+                                .unwrap_or_default()
+                        })
+                        .unwrap_or_default()
+                    } else {
+                        arclain_plugins::types::PluginLayout::default()
+                    }
+                };
+                // Store in cache for next frame
+                self.shared_state.plugin_dialog_state.lock().cached_dialog_layout = Some(layout.clone());
+                layout
             };
             
             // Render modal dialog
@@ -985,6 +995,8 @@ impl ArclainApp {
                                     drop(pm); // Release plugin manager lock before locking toaster
                                     let mut toaster = toaster_arc.lock();
                                     let mut ds = dialog_state_arc.lock();
+                                    // Invalidate layout cache so next frame fetches fresh layout
+                                    ds.invalidate_dialog_layout();
                                     for action in actions {
                                         crate::features::plugins::action_handler::process_plugin_actions(
                                             vec![action],
@@ -1018,29 +1030,39 @@ impl ArclainApp {
     /// Render an open plugin page (replaces main content area)
     /// Returns true if a page is being rendered (caller should skip normal content)
     fn render_plugin_page(&mut self, ctx: &egui::Context) -> bool {
-        // Check if a page is open
-        let page_info = {
+        // Check if a page is open and get cached layout
+        let (page_info, cached_layout) = {
             let dialog_state = self.shared_state.plugin_dialog_state.lock();
-            dialog_state.current_page().map(|(p, d)| (p.to_string(), d.to_string()))
+            let page_info = dialog_state.current_page().map(|(p, d)| (p.to_string(), d.to_string()));
+            let cached = dialog_state.cached_page_layout.clone();
+            (page_info, cached)
         };
         
         let Some((plugin_id, page_id)) = page_info else {
             return false;
         };
         
-        // Get page UI layout from plugin
-        let page_layout = {
-            let state = self.shared_state.app_state.lock();
-            if let Some(pm_arc) = &state.plugin_manager {
-                let pm = pm_arc.lock();
-                pm.with_plugin_instance(&plugin_id, |instance| {
-                    instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()))
-                        .unwrap_or_default()
-                })
-                .unwrap_or_default()
-            } else {
-                arclain_plugins::types::PluginLayout::default()
-            }
+        // Use cached layout if available, otherwise fetch from plugin
+        let page_layout = if let Some(layout) = cached_layout {
+            layout
+        } else {
+            // Fetch layout from plugin (only on first render or after invalidation)
+            let layout = {
+                let state = self.shared_state.app_state.lock();
+                if let Some(pm_arc) = &state.plugin_manager {
+                    let pm = pm_arc.lock();
+                    pm.with_plugin_instance(&plugin_id, |instance| {
+                        instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()))
+                            .unwrap_or_default()
+                    })
+                    .unwrap_or_default()
+                } else {
+                    arclain_plugins::types::PluginLayout::default()
+                }
+            };
+            // Store in cache for next frame
+            self.shared_state.plugin_dialog_state.lock().cached_page_layout = Some(layout.clone());
+            layout
         };
         
         // Render as full page content
@@ -1090,6 +1112,8 @@ impl ArclainApp {
                                 drop(pm);
                                 let mut toaster = toaster_arc.lock();
                                 let mut ds = dialog_state_arc.lock();
+                                // Invalidate layout cache so next frame fetches fresh layout
+                                ds.invalidate_page_layout();
                                 for action in actions {
                                     crate::features::plugins::action_handler::process_plugin_actions(
                                         vec![action],
