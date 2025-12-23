@@ -210,7 +210,7 @@ impl HostFunctions {
             // Assume DLSite source for now as this is likely invoked by dlsite plugin context
             match store.list_by_source(arclain_db::MetadataSource::DLSite) {
                 Ok(entries) => {
-                    info!("[Cache] Listed {} cached entries", entries.len());
+                    debug!("[Cache] Listed {} cached entries", entries.len());
                     // Return external IDs
                     entries.into_iter().map(|m| m.external_id).collect()
                 }
