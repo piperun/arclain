@@ -39,9 +39,15 @@ impl DataSourceResolver for ContentCacheResolver {
     }
 
     fn try_store(&self, key: &str, data: &[u8], request: &DataRequest) -> Result<(), ResolveError> {
-        let req = ResourceRequest::from_url(key, request.url.as_deref().unwrap_or(""))
-            .with_type(ResourceType::Binary)
-            .with_product(request.product_id.as_deref().unwrap_or(""));
+        // Only set product_id if it's actually present and non-empty
+        let product_id = request.product_id.as_deref().filter(|s| !s.is_empty());
+
+        let mut req = ResourceRequest::from_url(key, request.url.as_deref().unwrap_or(""))
+            .with_type(ResourceType::Binary);
+
+        if let Some(pid) = product_id {
+            req = req.with_product(pid);
+        }
 
         self.manager
             .put(key, data, &req)

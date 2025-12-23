@@ -124,16 +124,6 @@ impl ContentCache {
             .with_connection(|conn| arclain_db::get_entries_by_product(conn, product_id))
     }
 
-    /// Generate a cache key for a screenshot
-    pub fn screenshot_key(product_id: &str, index: usize) -> String {
-        format!("dlsite:{}:screenshot_{}", product_id, index)
-    }
-
-    /// Generate a cache key for a thumbnail
-    pub fn thumbnail_key(product_id: &str) -> String {
-        format!("dlsite:{}:thumbnail", product_id)
-    }
-
     /// Get the cache directory path
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir

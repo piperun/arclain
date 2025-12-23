@@ -1,14 +1,17 @@
 //! DLSite metadata provider
 
+pub mod cache_keys;
 mod detect;
 mod parse;
+#[cfg(test)]
+mod tests;
 
 use crate::{MetadataProvider, ParseError};
 use metastore_abstract::{HttpRequest, HttpResponse};
 use metastore_types::{MetadataSource, ProductMetadata, SearchResult};
 
 pub use detect::detect_dlsite_code;
-pub use parse::{parse_api_response, parse_html_response, parse_search_response};
+pub use parse::{parse_api_response, parse_html_response, parse_search_response, ScrapedData};
 
 /// DLSite metadata provider
 pub struct DLSiteProvider;

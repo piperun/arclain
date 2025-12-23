@@ -16,4 +16,5 @@ metastore-abstract = { path = "../abstract" }
 regex = "1"
 scraper = "0.21"
 serde_json = "1.0"
+tracing = "0.1"
 urlencoding = "2.1"

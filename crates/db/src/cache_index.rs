@@ -62,8 +62,7 @@ pub fn init_cache_index_schema(conn: &Connection) -> Result<()> {
             cache_type TEXT NOT NULL DEFAULT 'other',
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             last_accessed TEXT,
-            size_bytes INTEGER,
-            FOREIGN KEY (product_id) REFERENCES dlsite_metadata_cache(product_id)
+            size_bytes INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_cache_product ON cache_index(product_id);
         CREATE INDEX IF NOT EXISTS idx_cache_type ON cache_index(cache_type);
