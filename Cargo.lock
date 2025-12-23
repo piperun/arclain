@@ -4038,6 +4038,7 @@ dependencies = [
  "regex",
  "scraper",
  "serde_json",
+ "tracing",
  "urlencoding",
 ]
 

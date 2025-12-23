@@ -222,7 +222,7 @@ impl archust_plugin_sdk::Guest for Component {
                         if let Some(scraped_data) = scraped {
                             if let Some(cover_url) = &scraped_data.cover_image {
                                 elements.push(UiElement::Image(ImageConfig {
-                                    cache_key: Some(format!("dlsite:cover:{}", id)),
+                                    cache_key: Some(metastore_providers::dlsite::cache_keys::cover_key(id)),
                                     url: Some(cover_url.clone()),
                                     max_height: Some(150.0),
                                 }));
@@ -559,7 +559,7 @@ impl archust_plugin_sdk::Guest for Component {
                              if let Some(scraped_data) = scraped {
                                 if let Some(cover_url) = &scraped_data.cover_image {
                                     elements.push(UiElement::Image(ImageConfig {
-                                        cache_key: Some(format!("dlsite:cover:{}", entry_id)),
+                                        cache_key: Some(metastore_providers::dlsite::cache_keys::cover_key(&entry_id)),
                                         url: Some(cover_url.clone()),
                                         max_height: Some(200.0),
                                     }));
@@ -850,7 +850,7 @@ impl archust_plugin_sdk::Guest for Component {
              let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
              if let Some(url) = cover_url {
                  content_elements.push(UiElement::Image(ImageConfig {
-                     cache_key: Some(format!("dlsite:cover:{}", selected_id)),
+                     cache_key: Some(metastore_providers::dlsite::cache_keys::cover_key(selected_id)),
                      url: Some(url),
                      max_height: Some(400.0),
                  }));
@@ -1313,8 +1313,8 @@ fn detect_dlsite_code(text: &str) -> Option<String> {
 fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use archust_plugin_sdk::arclain::plugin::host::get_data;
     
-    let json_key = format!("dlsite:json:{}", product_id);
-    let html_key = format!("dlsite:html:{}", product_id);
+    let json_key = metastore_providers::dlsite::cache_keys::json_key(product_id);
+    let html_key = metastore_providers::dlsite::cache_keys::html_key(product_id);
     
     // get_data checks MetadataCache first (handled by host), no network
     let json_bytes = get_data(&json_key)?;
@@ -1355,7 +1355,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
         "https://www.dlsite.com/home/api/=/product.json?work_no={}",
         product_id
     );
-    let cache_key = format!("dlsite:json:{}", product_id);
+    let cache_key = metastore_providers::dlsite::cache_keys::json_key(product_id);
 
     log_network_activity(&format!("Fetching metadata for {} from DLSite API...", product_id));
     log_network_activity(&format!("GET {}", api_url));
@@ -1395,7 +1395,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
         "https://www.dlsite.com/home/work/=/product_id/{}.html",
         product_id
     );
-    let html_key = format!("dlsite:html:{}", product_id);
+    let html_key = metastore_providers::dlsite::cache_keys::html_key(product_id);
 
     log_network_activity(&format!("Fetching HTML page for scraping..."));
     log_network_activity(&format!("GET {}", html_url));
@@ -1421,7 +1421,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
 
             // Fetch cover image
             if let Some(cover_url) = &data.cover_image {
-                let cover_key = format!("dlsite:cover:{}", product_id);
+                let cover_key = metastore_providers::dlsite::cache_keys::cover_key(product_id);
                 log_network_activity(&format!("Fetching cover image: {}", cover_url));
                 
                 if let Err(e) = archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
@@ -1450,10 +1450,24 @@ struct ScrapedData {
     title: Option<String>,
     circle: Option<String>,
     release_date: Option<String>,
+    update_date: Option<String>,
     tags: Vec<String>,
     description: Option<String>,
     cover_image: Option<String>,
     screenshots: Vec<String>,
+    voice_actors: Vec<String>,
+    authors: Vec<String>,
+    illustrators: Vec<String>,
+    scenarios: Vec<String>,
+    musicians: Vec<String>,
+    writers: Vec<String>,
+    brand: Option<String>,
+    publisher: Option<String>,
+    series: Option<String>,
+    page_count: Option<i64>,
+    file_size: Option<String>,
+    genres: Vec<String>,
+    geo_blocked: bool,
 }
 
 /// Scrape HTML using metastore provider
@@ -1467,10 +1481,24 @@ fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
         title: scraped.title,
         circle: scraped.circle,
         release_date: scraped.release_date,
+        update_date: scraped.update_date,
         tags: scraped.tags,
         description: scraped.description,
         cover_image: scraped.cover_image,
         screenshots: scraped.screenshots,
+        voice_actors: scraped.voice_actors,
+        authors: scraped.authors,
+        illustrators: scraped.illustrators,
+        scenarios: scraped.scenarios,
+        musicians: scraped.musicians,
+        writers: scraped.writers,
+        brand: scraped.brand,
+        publisher: scraped.publisher,
+        series: scraped.series,
+        page_count: scraped.page_count,
+        file_size: scraped.file_size,
+        genres: scraped.genres,
+        geo_blocked: scraped.geo_blocked,
     })
 }
 
@@ -1544,6 +1572,19 @@ fn generate_metadata_json(
         Vec::new()
     };
 
+    // Debug: log what we're generating
+    if let Some(scraped) = scraped_data {
+        info(&format!(
+            "[DLSite Plugin] Scraped: screenshots={}, voice_actors={}, genres={}, cover={}",
+            scraped.screenshots.len(),
+            scraped.voice_actors.len(),
+            scraped.genres.len(),
+            scraped.cover_image.is_some()
+        ));
+    } else {
+        info("[DLSite Plugin] No scraped data available");
+    }
+
     let metadata = serde_json::json!({
         "product_id": product_id,
         "source": "dlsite",
@@ -1554,6 +1595,20 @@ fn generate_metadata_json(
         "release_date": release_date,
         "tags": tags,
         "screenshots": screenshots,
+        "voice_actors": scraped_data.map(|s| s.voice_actors.clone()).unwrap_or_default(),
+        "authors": scraped_data.map(|s| s.authors.clone()).unwrap_or_default(),
+        "illustrators": scraped_data.map(|s| s.illustrators.clone()).unwrap_or_default(),
+        "scenarios": scraped_data.map(|s| s.scenarios.clone()).unwrap_or_default(),
+        "musicians": scraped_data.map(|s| s.musicians.clone()).unwrap_or_default(),
+        "writers": scraped_data.map(|s| s.writers.clone()).unwrap_or_default(),
+        "brand": scraped_data.and_then(|s| s.brand.clone()),
+        "publisher": scraped_data.and_then(|s| s.publisher.clone()),
+        "series": scraped_data.and_then(|s| s.series.clone()),
+        "page_count": scraped_data.and_then(|s| s.page_count),
+        "file_size": scraped_data.and_then(|s| s.file_size.clone()),
+        "update_date": scraped_data.and_then(|s| s.update_date.clone()),
+        "genres": scraped_data.map(|s| s.genres.clone()).unwrap_or_default(),
+        "geo_blocked": scraped_data.map(|s| s.geo_blocked).unwrap_or(false),
         "dlsite": {
             "id": product_id,
             "code": product_id, // Required by RuleEngine for $code

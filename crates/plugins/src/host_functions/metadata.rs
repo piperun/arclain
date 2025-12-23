@@ -152,6 +152,9 @@ impl HostFunctions {
 
         let now = chrono::Utc::now().to_rfc3339();
 
+        // Check if geo-blocked
+        let geo_blocked = parsed["geo_blocked"].as_bool();
+
         let product = ProductMetadata {
             id: format!("dlsite:{}", id),
             source: MetadataSource::DLSite.as_str().to_string(),
@@ -183,6 +186,7 @@ impl HostFunctions {
             extras_json: None,
             raw_api_response: Some(json),
             raw_html: None,
+            geo_blocked,
             cached_at: now,
             updated_at: None,
             last_accessed: None,

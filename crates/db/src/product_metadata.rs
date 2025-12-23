@@ -98,6 +98,10 @@ pub struct ProductMetadata {
     pub raw_api_response: Option<String>,
     pub raw_html: Option<String>,
 
+    // --- Fetch status ---
+    /// Whether the product page was geo-blocked when fetched
+    pub geo_blocked: Option<bool>,
+
     // --- Timestamps (ISO 8601 format) ---
     pub cached_at: String,
     pub updated_at: Option<String>,
@@ -137,6 +141,7 @@ impl Default for ProductMetadata {
             extras_json: None,
             raw_api_response: None,
             raw_html: None,
+            geo_blocked: None,
             cached_at: now_iso8601(),
             updated_at: None,
             last_accessed: None,
@@ -257,9 +262,10 @@ impl ProductMetadata {
             extras_json: row.get(27).ok(),
             raw_api_response: row.get(28).ok(),
             raw_html: row.get(29).ok(),
-            cached_at: row.get(30)?,
-            updated_at: row.get(31).ok(),
-            last_accessed: row.get(32).ok(),
+            geo_blocked: row.get(30).ok(),
+            cached_at: row.get(31)?,
+            updated_at: row.get(32).ok(),
+            last_accessed: row.get(33).ok(),
         })
     }
 }
@@ -297,6 +303,7 @@ CREATE TABLE IF NOT EXISTS product_metadata (
     extras_json TEXT,
     raw_api_response TEXT,
     raw_html TEXT,
+    geo_blocked INTEGER,
     cached_at TEXT NOT NULL,
     updated_at TEXT,
     last_accessed TEXT
@@ -309,7 +316,7 @@ const SELECT_COLS: &str = "id, source, external_id, title, creator, description,
     price, currency, rating, rating_count, purchase_count, favorite_count, review_count, \
     file_size, file_format, age_rating, genres_json, tags_json, languages_json, product_formats_json, \
     series_name, illustrator, voice_actors_json, miscellaneous, update_info, rankings_json, \
-    extras_json, raw_api_response, raw_html, cached_at, updated_at, last_accessed";
+    extras_json, raw_api_response, raw_html, geo_blocked, cached_at, updated_at, last_accessed";
 
 /// Initialize the product_metadata table
 pub fn init_product_metadata_schema(conn: &Connection) -> Result<()> {
@@ -333,14 +340,14 @@ pub fn save(conn: &Connection, m: &ProductMetadata) -> Result<()> {
             price, currency, rating, rating_count, purchase_count, favorite_count, review_count,
             file_size, file_format, age_rating, genres_json, tags_json, languages_json, product_formats_json,
             series_name, illustrator, voice_actors_json, miscellaneous, update_info, rankings_json,
-            extras_json, raw_api_response, raw_html, cached_at, updated_at, last_accessed
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
+            extras_json, raw_api_response, raw_html, geo_blocked, cached_at, updated_at, last_accessed
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34)",
         params![
             &m.id, &m.source, &m.external_id, &m.title, &m.creator, &m.description, &m.release_date,
             &m.price, &m.currency, &m.rating, &m.rating_count, &m.purchase_count, &m.favorite_count, &m.review_count,
             &m.file_size, &m.file_format, &m.age_rating, &m.genres_json, &m.tags_json, &m.languages_json, &m.product_formats_json,
             &m.series_name, &m.illustrator, &m.voice_actors_json, &m.miscellaneous, &m.update_info, &m.rankings_json,
-            &m.extras_json, &m.raw_api_response, &m.raw_html, &m.cached_at, &m.updated_at, &m.last_accessed
+            &m.extras_json, &m.raw_api_response, &m.raw_html, &m.geo_blocked, &m.cached_at, &m.updated_at, &m.last_accessed
         ],
     )?;
     Ok(())

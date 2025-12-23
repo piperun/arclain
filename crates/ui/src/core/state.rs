@@ -299,27 +299,43 @@ impl AppState {
                                 .join("cache");
                             let cache_index_db_path = cache_base_dir.join("cache_index.sqlite");
 
-                            // Create index DB for cache
-                            if let Ok(cache_db) = arclain_db::SqliteDb::open(&cache_index_db_path) {
-                                match ContentCache::new(cache_base_dir.clone(), cache_db) {
-                                    Ok(cache) => {
-                                        let cache_arc = Arc::new(cache);
-                                        me.content_cache = Some(cache_arc.clone());
-                                        info!("Content cache initialized");
+                            // Ensure cache directory exists BEFORE opening SQLite DB
+                            if let Err(e) = std::fs::create_dir_all(&cache_base_dir) {
+                                warn!("Failed to create cache directory: {}", e);
+                            }
 
-                                        // Initialize Resource Manager
-                                        let res_config = ResourceConfig {
-                                            fallback_dir: Some(cache_base_dir.join("resources")),
-                                            ..Default::default()
-                                        };
-                                        let resource_manager =
-                                            Arc::new(ResourceManager::new(cache_arc, res_config));
-                                        me.resource_manager = Some(resource_manager);
-                                        info!("Resource manager initialized");
+                            // Create index DB for cache
+                            match arclain_db::SqliteDb::open(&cache_index_db_path) {
+                                Ok(cache_db) => {
+                                    match ContentCache::new(cache_base_dir.clone(), cache_db) {
+                                        Ok(cache) => {
+                                            let cache_arc = Arc::new(cache);
+                                            me.content_cache = Some(cache_arc.clone());
+                                            info!("Content cache initialized");
+
+                                            // Initialize Resource Manager
+                                            let res_config = ResourceConfig {
+                                                fallback_dir: Some(
+                                                    cache_base_dir.join("resources"),
+                                                ),
+                                                ..Default::default()
+                                            };
+                                            let resource_manager = Arc::new(ResourceManager::new(
+                                                cache_arc, res_config,
+                                            ));
+                                            me.resource_manager = Some(resource_manager);
+                                            info!("Resource manager initialized");
+                                        }
+                                        Err(e) => {
+                                            warn!("Failed to initialize content cache: {}", e);
+                                        }
                                     }
-                                    Err(e) => {
-                                        warn!("Failed to initialize content cache: {}", e);
-                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "Failed to open cache index DB at {:?}: {}",
+                                        cache_index_db_path, e
+                                    );
                                 }
                             }
                         }
