@@ -10,6 +10,7 @@ members = [
     "crates/theme",
     "crates/http",
     "crates/data",
+    "crates/signals",
     # Shared ORM
     "crates/mini-orm",
     "crates/mini-orm/derive",

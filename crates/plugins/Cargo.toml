@@ -21,6 +21,8 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 tokio = { version = "1", features = ["rt", "sync"] }
 rfd = "0.16.0"
 arclain-http = { path = "../http" }
+arclain_signals = { path = "../signals" }
+chrono = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

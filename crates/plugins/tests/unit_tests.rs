@@ -55,6 +55,7 @@ fn test_plugin_event_types() {
         PluginEvent::OnArchiveOpen {
             path: "test.zip".to_string(),
             kind: arclain_core::ArchiveKind::Zip,
+            password: None,
         },
         PluginEvent::OnArchiveClose {
             path: "test.zip".to_string(),

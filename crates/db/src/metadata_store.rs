@@ -25,6 +25,14 @@ impl MetadataStore {
             tracing::error!("Failed to init ProductMetadata schema: {}", e);
         }
 
+        // Drop legacy table if it exists
+        if let Err(e) = db.with_connection(|conn| {
+            conn.execute("DROP TABLE IF EXISTS dlsite_metadata_cache", [])?;
+            Ok(())
+        }) {
+            tracing::warn!("Failed to drop legacy dlsite_metadata_cache table: {}", e);
+        }
+
         Self { db, root_path }
     }
 

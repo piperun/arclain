@@ -4,6 +4,7 @@ pub mod app_coordinator;
 pub mod arclain_app;
 pub mod navigation;
 pub mod operations;
+pub mod signals;
 pub mod state;
 pub mod utils;
 

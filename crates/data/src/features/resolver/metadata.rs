@@ -92,18 +92,47 @@ impl DataSourceResolver for MetadataStoreResolver {
 
     fn try_store(
         &self,
-        _key: &str,
+        key: &str,
         data: &[u8],
         _request: &DataRequest,
     ) -> Result<(), ResolveError> {
-        let store = self.store.as_ref().ok_or(ResolveError::NotConfigured)?;
+        tracing::info!("[MetadataStoreResolver] try_store called for key: {}", key);
 
-        let meta: ProductMetadata = serde_json::from_slice(data)
-            .map_err(|e| ResolveError::IoError(format!("Invalid metadata JSON: {}", e)))?;
+        // Skip raw API responses - these are not ProductMetadata structs
+        // They come from network fetches and have prefixes like dlsite:json: or dlsite:html:
+        if key.starts_with("dlsite:json:") || key.starts_with("dlsite:html:") {
+            tracing::debug!(
+                "[MetadataStoreResolver] Skipping raw API data for key: {} (not ProductMetadata)",
+                key
+            );
+            return Ok(());
+        }
 
-        store
-            .save(&meta)
-            .map_err(|e| ResolveError::IoError(e.to_string()))?;
+        let store = self.store.as_ref().ok_or_else(|| {
+            tracing::error!("[MetadataStoreResolver] Store not configured");
+            ResolveError::NotConfigured
+        })?;
+
+        let meta: ProductMetadata = serde_json::from_slice(data).map_err(|e| {
+            tracing::error!(
+                "[MetadataStoreResolver] Failed to parse metadata JSON: {}",
+                e
+            );
+            ResolveError::IoError(format!("Invalid metadata JSON: {}", e))
+        })?;
+
+        tracing::info!(
+            "[MetadataStoreResolver] Saving metadata id={} source={}",
+            meta.id,
+            meta.source
+        );
+
+        store.save(&meta).map_err(|e| {
+            tracing::error!("[MetadataStoreResolver] Save failed: {}", e);
+            ResolveError::IoError(e.to_string())
+        })?;
+
+        tracing::info!("[MetadataStoreResolver] Saved successfully: {}", meta.id);
         Ok(())
     }
 

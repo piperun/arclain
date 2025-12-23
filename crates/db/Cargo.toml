@@ -22,6 +22,7 @@ uuid = { version = "1.0", features = ["v4"] }
 cacache = "13"
 mini-orm = { path = "../mini-orm" }
 tracing = "0.1"
+chrono = "0.4"
 
 [dev-dependencies]
 tempfile = "3"

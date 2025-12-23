@@ -105,6 +105,7 @@ fn test_event_dispatch_empty() {
     let event = PluginEvent::OnArchiveOpen {
         path: "test.zip".to_string(),
         kind: arclain_core::ArchiveKind::Zip,
+        password: None,
     };
 
     let responses = manager.dispatch_event(&event);
@@ -165,6 +166,7 @@ fn test_dispatch_to_specific_plugin() {
     let event = PluginEvent::OnArchiveOpen {
         path: "test.zip".to_string(),
         kind: arclain_core::ArchiveKind::Zip,
+        password: None,
     };
 
     // Should fail for nonexistent plugin
@@ -192,6 +194,7 @@ fn test_multiple_event_types() {
         PluginEvent::OnArchiveOpen {
             path: "test.zip".to_string(),
             kind: arclain_core::ArchiveKind::Zip,
+            password: None,
         },
         PluginEvent::OnArchiveClose {
             path: "test.zip".to_string(),

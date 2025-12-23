@@ -35,6 +35,15 @@ pub fn render_archive_browser(
     // Render central file list
     render_file_list(ctx, state, shared, &mut action);
 
+    // After UI has rendered, dispatch any pending plugin events.
+    // This ensures plugins only receive archive_opened after the UI is ready.
+    {
+        let mut app_state = shared.app_state.lock();
+        if !app_state.signals.ui_ready.get() {
+            app_state.dispatch_pending_plugin_event();
+        }
+    }
+
     action
 }
 
@@ -173,9 +182,13 @@ fn render_properties_panel(
                             }
                         }
                         "info.plugin_metadata" => {
-                            if let Some(metadata) = &archive_info.plugin_metadata {
+                            // Check signal first for reactive updates
+                            let metadata = app_state.signals.metadata.get()
+                                .or_else(|| archive_info.plugin_metadata.clone());
+
+                            if let Some(metadata) = metadata {
                                 if let Some(group) =
-                                    properties_panel::create_plugin_metadata_group(metadata)
+                                    properties_panel::create_plugin_metadata_group(&metadata)
                                 {
                                     sections.push(properties_panel::PanelSection::Group(group));
                                 }

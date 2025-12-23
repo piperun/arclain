@@ -89,7 +89,6 @@ impl HostFunctions {
             .map(|t| serde_json::to_string(t).unwrap_or_default());
 
         use arclain_db::{MetadataSource, ProductMetadata};
-        use std::time::{SystemTime, UNIX_EPOCH};
 
         let rating = parsed["rating"]
             .as_f64()
@@ -151,10 +150,7 @@ impl HostFunctions {
             .as_object()
             .map(|o| serde_json::to_string(o).unwrap_or_default());
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
+        let now = chrono::Utc::now().to_rfc3339();
 
         let product = ProductMetadata {
             id: format!("dlsite:{}", id),

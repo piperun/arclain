@@ -30,6 +30,12 @@ pub struct PluginManager {
     resource_manager: Option<Arc<arclain_data::ResourceManager>>,
     async_http_client: Option<Arc<arclain_http::AsyncHttpClient>>,
     initial_settings: HashMap<String, HashMap<String, String>>,
+    /// Channel sender for async event dispatch (non-blocking)
+    event_sender: std::sync::mpsc::Sender<PluginEvent>,
+    /// Handle to the event worker thread
+    _event_worker_handle: Option<std::thread::JoinHandle<()>>,
+    /// Reactive signal for metadata updates
+    metadata_signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
 }
 
 impl PluginManager {
@@ -39,18 +45,32 @@ impl PluginManager {
         initial_settings: HashMap<String, HashMap<String, String>>,
     ) -> Result<Self> {
         let loader = PluginLoader::new(plugins_dir)?;
+        let plugins = Arc::new(RwLock::new(HashMap::new()));
+        let enabled_plugins = Arc::new(RwLock::new(HashMap::new()));
+
+        // Create channel for async event dispatch
+        let (event_sender, event_receiver) = std::sync::mpsc::channel::<PluginEvent>();
+
+        // Spawn worker thread to process events
+        let plugins_clone = plugins.clone();
+        let enabled_plugins_clone = enabled_plugins.clone();
+        let worker_handle = std::thread::spawn(move || {
+            Self::event_worker(event_receiver, plugins_clone, enabled_plugins_clone);
+        });
 
         Ok(Self {
             loader,
-            plugins: Arc::new(RwLock::new(HashMap::new())),
-            enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
-
+            plugins,
+            enabled_plugins,
             backend: None,
             metadata_store: None,
             content_cache: None,
             resource_manager: None,
             async_http_client: None,
             initial_settings,
+            event_sender,
+            _event_worker_handle: Some(worker_handle),
+            metadata_signal: None,
         })
     }
 
@@ -61,17 +81,32 @@ impl PluginManager {
         initial_settings: HashMap<String, HashMap<String, String>>,
     ) -> Result<Self> {
         let loader = PluginLoader::new(plugins_dir)?;
+        let plugins = Arc::new(RwLock::new(HashMap::new()));
+        let enabled_plugins = Arc::new(RwLock::new(HashMap::new()));
+
+        // Create channel for async event dispatch
+        let (event_sender, event_receiver) = std::sync::mpsc::channel::<PluginEvent>();
+
+        // Spawn worker thread to process events
+        let plugins_clone = plugins.clone();
+        let enabled_plugins_clone = enabled_plugins.clone();
+        let worker_handle = std::thread::spawn(move || {
+            Self::event_worker(event_receiver, plugins_clone, enabled_plugins_clone);
+        });
 
         Ok(Self {
             loader,
-            plugins: Arc::new(RwLock::new(HashMap::new())),
-            enabled_plugins: Arc::new(RwLock::new(HashMap::new())),
+            plugins,
+            enabled_plugins,
             backend: Some(backend),
             metadata_store: None,
             content_cache: None,
             resource_manager: None,
             async_http_client: None,
             initial_settings,
+            event_sender,
+            _event_worker_handle: Some(worker_handle),
+            metadata_signal: None,
         })
     }
 
@@ -85,6 +120,14 @@ impl PluginManager {
             }
         }
         Ok(())
+    }
+
+    /// Set the metadata signal for reactive updates
+    pub fn set_metadata_signal(
+        &mut self,
+        signal: arclain_signals::Signal<Option<serde_json::Value>>,
+    ) {
+        self.metadata_signal = Some(signal);
     }
 
     /// Update the metadata cache for all plugins
@@ -183,6 +226,7 @@ impl PluginManager {
                 Some(backend.clone()),
                 self.metadata_store.clone(),
                 settings,
+                self.metadata_signal.clone(),
             )?
         } else {
             loaded.instantiate_with_backend(
@@ -191,6 +235,7 @@ impl PluginManager {
                 None,
                 self.metadata_store.clone(),
                 settings,
+                self.metadata_signal.clone(),
             )?
         };
 
@@ -464,6 +509,84 @@ impl PluginManager {
                 }
             }
         });
+    }
+
+    /// Background worker that processes events from the channel.
+    /// Runs on a dedicated thread and never blocks the caller.
+    fn event_worker(
+        receiver: std::sync::mpsc::Receiver<PluginEvent>,
+        plugins: Arc<RwLock<HashMap<String, ManagedPlugin>>>,
+        enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
+    ) {
+        info!("Plugin event worker started");
+
+        while let Ok(event) = receiver.recv() {
+            debug!("Event worker processing: {:?}", event);
+
+            let plugin_ids: Vec<String> = plugins.read().keys().cloned().collect();
+
+            for plugin_id in plugin_ids {
+                // Check if plugin is enabled
+                let is_enabled = enabled_plugins
+                    .read()
+                    .get(&plugin_id)
+                    .copied()
+                    .unwrap_or(false);
+
+                if !is_enabled {
+                    continue;
+                }
+
+                // Get instance handle
+                let instance_arc = {
+                    let map = plugins.read();
+                    if let Some(p) = map.get(&plugin_id) {
+                        p.instance.clone()
+                    } else {
+                        continue;
+                    }
+                };
+
+                // Call plugin
+                let mut instance = instance_arc.lock();
+
+                // Match event to set context and dispatch
+                match &event {
+                    PluginEvent::OnArchiveOpen { path, password, .. } => {
+                        // Set context first (on background thread!)
+                        instance.set_archive_context(Some(path.clone()), password.clone());
+
+                        // Then dispatch event
+                        let id = "event:archive_opened".to_string();
+                        let value = Some(path.clone());
+
+                        if let Err(e) = instance.send_ui_event(&id, value) {
+                            error!("Event worker error for {}: {:?}", plugin_id, e);
+                        }
+                    }
+                    _ => {
+                        // Other events (future)
+                    }
+                }
+            }
+        }
+
+        info!("Plugin event worker stopped");
+    }
+
+    /// Send an event to all enabled plugins asynchronously.
+    /// This method returns immediately - never blocks the caller.
+    /// Events are processed by a background worker thread.
+    pub fn send_event(&self, event: PluginEvent) {
+        if let Err(e) = self.event_sender.send(event) {
+            error!("Failed to send event to worker: {}", e);
+        }
+    }
+
+    /// Get a cloned sender for lock-free event dispatch.
+    /// Use this to avoid needing to lock the PluginManager when sending events.
+    pub fn get_event_sender(&self) -> std::sync::mpsc::Sender<PluginEvent> {
+        self.event_sender.clone()
     }
 
     /// Dispatch an event to all enabled plugins

@@ -32,6 +32,7 @@ rusqlite = "0.32"
 reqwest = { version = "0.12.24", features = ["blocking", "json"] }
 image = "0.25.9"
 arclain-http = { path = "../http" }
+arclain_signals = { path = "../signals", features = ["egui"] }
 tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]

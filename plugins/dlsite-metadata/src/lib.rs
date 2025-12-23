@@ -812,6 +812,8 @@ impl archust_plugin_sdk::Guest for Component {
                  .or(json["circle"].as_str())
                  .or(json["creator"].as_str())
                  .unwrap_or("Unknown Maker");
+             let release_date = json["release_date"].as_str()
+                 .or(json["regist_date"].as_str());
              
              // Title Header
              content_elements.push(UiElement::Label(LabelConfig {
@@ -826,35 +828,96 @@ impl archust_plugin_sdk::Guest for Component {
                  size: Some(16.0),
              }));
              
+             // Product ID badge
+             content_elements.push(UiElement::Label(LabelConfig {
+                 text: format!("ID: {}", selected_id),
+                 bold: false,
+                 size: Some(12.0),
+             }));
+             
+             // Release date
+             if let Some(date) = release_date {
+                 content_elements.push(UiElement::Label(LabelConfig {
+                     text: format!("Released: {}", date),
+                     bold: false,
+                     size: Some(12.0),
+                 }));
+             }
+             
              content_elements.push(UiElement::Separator);
              
-             // Cover Image
-             if let Some(scraped_data) = &scraped {
-                 if let Some(cover_url) = &scraped_data.cover_image {
-                     content_elements.push(UiElement::Image(ImageConfig {
-                         cache_key: Some(format!("dlsite:cover:{}", selected_id)),
-                         url: Some(cover_url.clone()),
-                         max_height: Some(400.0),
-                     }));
-                 }
+             // Cover Image - try scraped first, then check if we have a cover URL in JSON
+             let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
+             if let Some(url) = cover_url {
+                 content_elements.push(UiElement::Image(ImageConfig {
+                     cache_key: Some(format!("dlsite:cover:{}", selected_id)),
+                     url: Some(url),
+                     max_height: Some(400.0),
+                 }));
              }
              
              content_elements.push(UiElement::Space(10.0));
              
-             // Description
-             if let Some(scraped_data) = &scraped {
-                 if let Some(desc) = &scraped_data.description {
-                     content_elements.push(UiElement::Label(LabelConfig {
-                         text: "Description".to_string(),
-                         bold: true,
-                         size: Some(18.0),
-                     }));
-                     content_elements.push(UiElement::Label(LabelConfig {
-                         text: desc.clone(),
-                         bold: false,
-                         size: None,
-                     }));
-                 }
+             // Tags - try scraped first, then fall back to JSON tags_json
+             let tags: Vec<String> = scraped.as_ref()
+                 .map(|s| s.tags.clone())
+                 .filter(|t| !t.is_empty())
+                 .or_else(|| {
+                     // Try to parse tags_json from ProductMetadata
+                     json["tags_json"].as_str()
+                         .or_else(|| json["tags"].as_str())
+                         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                         .or_else(|| {
+                             // Might be a direct array
+                             json["tags"].as_array().map(|arr| {
+                                 arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+                             })
+                         })
+                 })
+                 .unwrap_or_default();
+             
+             if !tags.is_empty() {
+                 content_elements.push(UiElement::Label(LabelConfig {
+                     text: "Tags".to_string(),
+                     bold: true,
+                     size: Some(14.0),
+                 }));
+                 content_elements.push(UiElement::Label(LabelConfig {
+                     text: tags.join(", "),
+                     bold: false,
+                     size: None,
+                 }));
+                 content_elements.push(UiElement::Space(10.0));
+             }
+             
+             // Description - try scraped first, then fall back to JSON description
+             let description = scraped.as_ref()
+                 .and_then(|s| s.description.clone())
+                 .or_else(|| json["description"].as_str().map(|s| s.to_string()));
+             
+             if let Some(desc) = description {
+                 content_elements.push(UiElement::Label(LabelConfig {
+                     text: "Description".to_string(),
+                     bold: true,
+                     size: Some(14.0),
+                 }));
+                 // Truncate long descriptions for readability (respecting UTF-8 char boundaries)
+                 let desc_display = if desc.len() > 800 {
+                     // Find the last valid char boundary at or before 800
+                     let truncate_at = desc.char_indices()
+                         .take_while(|(i, _)| *i <= 800)
+                         .last()
+                         .map(|(i, _)| i)
+                         .unwrap_or(800);
+                     format!("{}...", &desc[..truncate_at])
+                 } else {
+                     desc
+                 };
+                 content_elements.push(UiElement::Label(LabelConfig {
+                     text: desc_display,
+                     bold: false,
+                     size: None,
+                 }));
              }
              
              content_elements.push(UiElement::Separator);
@@ -925,6 +988,7 @@ impl archust_plugin_sdk::Guest for Component {
             let auto_fetch = STATE.with(|s| s.borrow().auto_fetch_enabled);
             if auto_fetch {
                 info("[DLSite Plugin] Auto-fetch enabled, scanning...");
+                
                 // Note: performing scan on background thread (host spawned thread for dispatch)
                 match perform_scan() {
                     Ok(Some((id, _, _))) => {
@@ -1187,11 +1251,19 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
     ));
 
     // Helper to process found code
-    // Data API handles caching transparently via fetch_string_blocking
+    // Check cache first, then fall back to network if not cached
     let process_code = |code: String| -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
         info(&format!("[DLSite Plugin] Found code: {}", code));
         
-        // Fetch from network (Data API handles caching transparently)
+        // Check cache first - avoids network if we already have metadata
+        if let Some((json, scraped)) = get_cached_dlsite_metadata(&code) {
+            info(&format!("[DLSite Plugin] Using cached metadata for {}", code));
+            // Update state but don't emit again (it's already persisted)
+            return Ok(Some((code, json, scraped)));
+        }
+        
+        // Not in cache, fetch from network (Data API handles caching transparently)
+        info(&format!("[DLSite Plugin] Cache miss, fetching {} from network", code));
         if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
             // Generate final JSON and emit
             let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));

@@ -1,0 +1,17 @@
+[package]
+name = "arclain_signals"
+version = "0.1.0"
+edition = "2021"
+description = "Flutter-like reactive signals for Rust"
+license = "MIT"
+
+[features]
+default = []
+egui = ["dep:egui"]
+
+[dependencies]
+parking_lot = "0.12"
+
+[dependencies.egui]
+version = "0.33"
+optional = true
