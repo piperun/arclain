@@ -43,6 +43,9 @@ pub struct HostFunctions {
     pub data_service: DataService,
     pub table: ResourceTable,
     pub ctx: WasiCtx,
+
+    // Reactive signal for UI updates
+    pub metadata_signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
 }
 
 impl HostFunctions {
@@ -75,6 +78,7 @@ impl HostFunctions {
             data_service: DataService::new(),
             table: ResourceTable::new(),
             ctx,
+            metadata_signal: None,
         }
     }
 

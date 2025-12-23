@@ -21,6 +21,8 @@ use std::{
 };
 use tracing::{debug, info, warn};
 
+use super::signals::AppSignals;
+
 pub struct AppState {
     /// User configuration loaded from database
     pub user_config: UserConfig,
@@ -42,7 +44,13 @@ pub struct AppState {
     pub dbs: Option<ConfigDbs>,
     // Plugin system
     pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
+    /// Event sender for non-blocking plugin dispatch (no mutex lock needed)
+    pub plugin_event_sender: Option<std::sync::mpsc::Sender<arclain_plugins::PluginEvent>>,
     pub plugin_metadata: Option<serde_json::Value>,
+    /// Pending plugin event to dispatch after UI is ready.
+    /// This is set when an archive opens and cleared after the UI renders
+    /// and dispatches the event.
+    pub pending_plugin_event: Option<arclain_plugins::PluginEvent>,
     // Game metadata for archive organization (from plugins like DLSite)
     pub current_game_metadata: Option<arclain_core::features::organization::GameMetadata>,
     pub archive_info: crate::core::operations::archive::ArchiveInfo,
@@ -62,6 +70,8 @@ pub struct AppState {
     pub resource_manager: Option<Arc<ResourceManager>>,
     #[allow(dead_code)] // Used in future UI settings
     pub domain_whitelist: Arc<RwLock<DomainWhitelist>>,
+    /// Reactive signals for async state updates
+    pub signals: AppSignals,
 }
 
 /// UI display preferences (persisted to config DB)
@@ -129,7 +139,9 @@ impl AppState {
             db_paths: Some(db_paths.clone()),
             dbs: None,
             plugin_manager: None,
+            plugin_event_sender: None,
             plugin_metadata: None,
+            pending_plugin_event: None,
             current_game_metadata: None,
             archive_info: crate::core::operations::archive::ArchiveInfo::default(),
             checksum_service: None,
@@ -141,6 +153,7 @@ impl AppState {
             async_http_client: Some(async_http_client),
             resource_manager: None,
             domain_whitelist,
+            signals: AppSignals::new(),
         };
 
         // Attempt to open DB-backed config + secrets (optional)
@@ -353,6 +366,14 @@ impl AppState {
                 if let Some(ref client) = me.async_http_client {
                     manager.set_async_http_client(client.clone());
                 }
+
+                // Inject reactive signal for metadata updates
+                manager.set_metadata_signal(me.signals.metadata.clone());
+
+                // Clone event sender BEFORE wrapping in Mutex for lock-free dispatch
+                let event_sender = manager.get_event_sender();
+                me.plugin_event_sender = Some(event_sender);
+
                 me.plugin_manager = Some(Arc::new(Mutex::new(manager)));
 
                 // Sync plugin UI items to info_panel_items
@@ -521,6 +542,10 @@ impl AppState {
         self.encryption_method = info.encryption_method.clone();
         self.navigation = NavigationState::new();
 
+        // Update reactive signals for async UI updates
+        self.signals.entries.set(self.all_entries.clone());
+        self.signals.archive_path.set(self.current_archive.clone());
+
         // Now attempt password detection with correct archive context
         if self.current_password.is_none() {
             let archive_name = self.current_archive.as_ref().and_then(|p| p.to_str());
@@ -544,34 +569,34 @@ impl AppState {
             );
         }
 
-        // Dispatch OnArchiveOpen event to plugins
+        // Store OnArchiveOpen event for deferred dispatch (after UI renders)
+        // This prevents plugins from fetching metadata before the UI is ready
         self.plugin_metadata = None; // Reset metadata
-        if let Some(ref manager_arc) = self.plugin_manager {
-            // Update archive context for plugins
-            {
-                let mut manager = manager_arc.lock();
-                manager.set_archive_context(
-                    Some(path.to_string_lossy().to_string()),
-                    self.current_password.clone(),
-                );
-            }
-
-            // Async dispatch to prevent blocking UI
-            // Metadata will be populated later via emit_metadata
+        if self.plugin_manager.is_some() {
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
                 path: path.to_string_lossy().to_string(),
                 kind: info.archive_kind,
+                password: self.current_password.clone(),
             };
 
-            let manager = manager_arc.lock();
-            manager.dispatch_event_async(event);
+            // Store event for deferred dispatch - will be sent after UI renders
+            self.pending_plugin_event = Some(event);
+            // Signal that UI needs to render before plugin events fire
+            self.signals.ui_ready.set(false);
+
+            info!(
+                "Archive opened successfully with {} entries (plugin event pending)",
+                self.all_entries.len()
+            );
         }
 
-        info!(
-            "Archive opened successfully with {} entries",
-            self.all_entries.len()
-        );
+        if self.plugin_manager.is_none() {
+            info!(
+                "Archive opened successfully with {} entries",
+                self.all_entries.len()
+            );
+        }
         Ok(self.all_entries.clone())
     }
 
@@ -592,16 +617,46 @@ impl AppState {
         self.navigation = NavigationState::new();
         self.current_password = Some(password.to_string());
 
-        // Update plugin context
-        if let Some(ref manager_arc) = self.plugin_manager {
-            let mut manager = manager_arc.lock();
-            manager.set_archive_context(
-                Some(path.to_string_lossy().to_string()),
-                Some(password.to_string()),
-            );
+        // Update reactive signals for async UI updates
+        self.signals.entries.set(self.all_entries.clone());
+        self.signals.archive_path.set(self.current_archive.clone());
+
+        // Store OnArchiveOpen event for deferred dispatch (after UI renders)
+        // This prevents plugins from fetching metadata before the UI is ready
+        if self.plugin_manager.is_some() {
+            use arclain_plugins::PluginEvent;
+            let event = PluginEvent::OnArchiveOpen {
+                path: path.to_string_lossy().to_string(),
+                kind: info.archive_kind.clone(),
+                password: Some(password.to_string()),
+            };
+
+            // Store event for deferred dispatch - will be sent after UI renders
+            self.pending_plugin_event = Some(event);
+            // Signal that UI needs to render before plugin events fire
+            self.signals.ui_ready.set(false);
         }
 
         Ok(self.all_entries.clone())
+    }
+
+    /// Dispatch any pending plugin event after UI has rendered.
+    /// This should be called once after the file list is first rendered
+    /// following an archive open operation.
+    pub fn dispatch_pending_plugin_event(&mut self) {
+        if let Some(event) = self.pending_plugin_event.take() {
+            debug!("Dispatching deferred plugin event after UI render");
+
+            // Send to plugin worker via channel
+            if let Some(ref sender) = self.plugin_event_sender {
+                if let Err(e) = sender.send(event) {
+                    warn!("Failed to send deferred event to plugin worker: {}", e);
+                }
+            }
+
+            // Mark UI as ready
+            self.signals.ui_ready.set(true);
+        }
     }
 
     pub fn navigate_to_folder(&mut self, folder: &str) {

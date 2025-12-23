@@ -35,7 +35,12 @@ pub enum PluginCapability {
 #[serde(tag = "type")]
 pub enum PluginEvent {
     /// Archive was opened
-    OnArchiveOpen { path: String, kind: ArchiveKind },
+    OnArchiveOpen {
+        path: String,
+        kind: ArchiveKind,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        password: Option<String>,
+    },
     /// Archive was closed
     OnArchiveClose { path: String },
     /// Archive contents were listed

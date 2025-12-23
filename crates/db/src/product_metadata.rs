@@ -3,8 +3,13 @@
 //! This stores metadata from any source (DLSite, itch.io, Steam, etc.) in a single table.
 
 use anyhow::Result;
+use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Get current time as ISO 8601 string
+fn now_iso8601() -> String {
+    Utc::now().to_rfc3339()
+}
 
 /// Metadata source platform
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,7 +44,7 @@ impl MetadataSource {
 /// Unified product metadata stored in the database.
 ///
 /// All metadata from any source (DLSite, itch.io, Steam, etc.) is stored here.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProductMetadata {
     /// Primary key: "dlsite:RJ123456", "itch:12345", etc.
     pub id: String,
@@ -93,10 +98,50 @@ pub struct ProductMetadata {
     pub raw_api_response: Option<String>,
     pub raw_html: Option<String>,
 
-    // --- Timestamps ---
-    pub cached_at: i64,
-    pub updated_at: Option<i64>,
-    pub last_accessed: Option<i64>,
+    // --- Timestamps (ISO 8601 format) ---
+    pub cached_at: String,
+    pub updated_at: Option<String>,
+    pub last_accessed: Option<String>,
+}
+
+impl Default for ProductMetadata {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            source: String::new(),
+            external_id: String::new(),
+            title: None,
+            creator: None,
+            description: None,
+            release_date: None,
+            price: None,
+            currency: None,
+            rating: None,
+            rating_count: None,
+            purchase_count: None,
+            favorite_count: None,
+            review_count: None,
+            file_size: None,
+            file_format: None,
+            age_rating: None,
+            genres_json: None,
+            tags_json: None,
+            languages_json: None,
+            product_formats_json: None,
+            series_name: None,
+            illustrator: None,
+            voice_actors_json: None,
+            miscellaneous: None,
+            update_info: None,
+            rankings_json: None,
+            extras_json: None,
+            raw_api_response: None,
+            raw_html: None,
+            cached_at: now_iso8601(),
+            updated_at: None,
+            last_accessed: None,
+        }
+    }
 }
 
 impl ProductMetadata {
@@ -107,10 +152,7 @@ impl ProductMetadata {
             id,
             source: source.as_str().to_string(),
             external_id: external_id.to_string(),
-            cached_at: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64,
+            cached_at: now_iso8601(),
             ..Default::default()
         }
     }
@@ -179,12 +221,7 @@ impl ProductMetadata {
 
     /// Touch last_accessed timestamp
     pub fn touch(&mut self) {
-        self.last_accessed = Some(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64,
-        );
+        self.last_accessed = Some(now_iso8601());
     }
 
     /// Parse from a database row
@@ -260,9 +297,9 @@ CREATE TABLE IF NOT EXISTS product_metadata (
     extras_json TEXT,
     raw_api_response TEXT,
     raw_html TEXT,
-    cached_at INTEGER NOT NULL,
-    updated_at INTEGER,
-    last_accessed INTEGER
+    cached_at TEXT NOT NULL,
+    updated_at TEXT,
+    last_accessed TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_product_source ON product_metadata(source);
 CREATE INDEX IF NOT EXISTS idx_product_external ON product_metadata(external_id);

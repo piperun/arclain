@@ -68,6 +68,7 @@ pub struct ArclainApp {
     // extraction_minimized: bool,
     // _extraction_started: Option<Instant>,
     _password_rules_loaded: bool,
+    _signals_bound: bool,
 }
 
 impl ArclainApp {
@@ -118,6 +119,7 @@ impl ArclainApp {
             // extraction_minimized: false,
             // _extraction_started: None,
             _password_rules_loaded: false,
+            _signals_bound: false,
         }
     }
 }
@@ -134,6 +136,15 @@ impl eframe::App for ArclainApp {
                 requests.clear();
                 ctx.request_repaint(); // Ensure we redraw after plugin requested refresh
             }
+        }
+
+        // Bind signals to egui context once for automatic repaint on signal changes
+        if !self._signals_bound {
+            let state = self.shared_state.app_state.lock();
+            state.signals.bind_to_context(ctx);
+            drop(state);
+            self._signals_bound = true;
+            tracing::info!("Signals bound to egui context");
         }
         
         // Apply theme
