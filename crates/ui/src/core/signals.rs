@@ -7,6 +7,19 @@ use arclain_core::ArchiveEntry;
 use arclain_signals::{Signal, SignalContext};
 use std::path::PathBuf;
 
+/// Context for which toolbar should be displayed
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ToolbarContext {
+    /// Show archive toolbar (Open, Extract, Delete, etc.)
+    #[default]
+    Archive,
+    /// Show plugin-specific toolbar (plugin provides its own buttons)
+    Plugin(String),
+    /// No toolbar
+    #[allow(dead_code)]
+    None,
+}
+
 /// Application-wide reactive signals for async state.
 ///
 /// These signals are used for state that updates asynchronously
@@ -31,6 +44,12 @@ pub struct AppSignals {
     /// the UI has rendered the file list. Used to defer plugin events
     /// until the UI is ready.
     pub ui_ready: Signal<bool>,
+
+    /// Active toolbar context - determines which toolbar to show
+    pub active_toolbar: Signal<ToolbarContext>,
+
+    /// Status bar message from plugins (e.g., "Entry selected: RJ01234567")
+    pub status_message: Signal<Option<String>>,
 }
 
 impl AppSignals {
@@ -42,6 +61,8 @@ impl AppSignals {
             loading: Signal::new(false),
             archive_path: Signal::new(None),
             ui_ready: Signal::new(true), // Start as true (no archive to render)
+            active_toolbar: Signal::new(ToolbarContext::Archive),
+            status_message: Signal::new(None),
         }
     }
 
@@ -52,6 +73,8 @@ impl AppSignals {
         signal_ctx.bind(&self.metadata);
         signal_ctx.bind(&self.loading);
         signal_ctx.bind(&self.archive_path);
+        signal_ctx.bind(&self.active_toolbar);
+        signal_ctx.bind(&self.status_message);
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
@@ -63,6 +86,8 @@ impl AppSignals {
         self.loading.set(false);
         self.archive_path.set(None);
         self.ui_ready.set(true);
+        self.active_toolbar.set(ToolbarContext::Archive);
+        self.status_message.set(None);
     }
 }
 

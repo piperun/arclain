@@ -274,6 +274,13 @@ impl AppState {
                                 }
                             }
 
+                            // Initialize Plugin Proxy Map
+                            if let Some(client) = &me.async_http_client {
+                                let map = me.user_config.get_plugin_proxy_settings();
+                                tracing::info!("[Startup] Plugin proxy map: {:?}", map);
+                                client.update_plugin_proxy_map(map);
+                            }
+
                             // Load UI items for config-driven rendering
                             if let Ok(dbs) = me.dbs.as_ref().ok_or(anyhow::anyhow!("No DBs")) {
                                 let _ = dbs.config.with_connection(|conn| {

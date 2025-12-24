@@ -46,6 +46,9 @@ pub struct HostFunctions {
 
     // Reactive signal for UI updates
     pub metadata_signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
+
+    // Pending status message from plugin (to be displayed in status bar)
+    pub pending_status_message: Arc<Mutex<Option<String>>>,
 }
 
 impl HostFunctions {
@@ -79,6 +82,7 @@ impl HostFunctions {
             table: ResourceTable::new(),
             ctx,
             metadata_signal: None,
+            pending_status_message: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -186,6 +190,11 @@ impl Host for HostFunctions {
         self.impl_show_message(title, message)
     }
 
+    fn set_status_message(&mut self, message: String) {
+        // Store the status bar message for the UI to pick up
+        *self.pending_status_message.lock() = Some(message);
+    }
+
     fn list_cached_entries(&mut self) -> Vec<String> {
         self.impl_list_cached_entries()
     }
@@ -218,7 +227,9 @@ impl Host for HostFunctions {
         };
 
         // Build request
-        let mut req = DataRequest::new(&request.key).with_type(resource_type);
+        let mut req = DataRequest::new(&request.key)
+            .with_type(resource_type)
+            .with_plugin_id(&self.plugin_id);
 
         // Set URL if provided
         if let Some(url) = request.url {
@@ -284,6 +295,46 @@ impl Host for HostFunctions {
 
     fn get_data(&mut self, key: String) -> Option<Vec<u8>> {
         self.data_service.get_data(&key)
+    }
+
+    fn invalidate_cache(&mut self, key: String) -> bool {
+        tracing::info!(
+            "[HostFunctions] Cache invalidation requested for key: {}",
+            key
+        );
+
+        let mut invalidated = false;
+
+        // Remove from content cache (key format: dlsite:json:ID or dlsite:html:ID)
+        if let Some(cache) = &self.content_cache {
+            if let Ok(true) = cache.remove(&key) {
+                tracing::info!("[HostFunctions] Invalidated content cache key: {}", key);
+                invalidated = true;
+            }
+        }
+
+        // Also try metadata store with converted key format
+        // ContentCache: dlsite:json:RJ999003 -> MetadataStore: dlsite:RJ999003
+        if let Some(store) = &self.metadata_store {
+            // Extract the metadata ID (remove :json or :html suffix)
+            let metadata_key = if key.contains(":json:") {
+                key.replace(":json:", ":")
+            } else if key.contains(":html:") {
+                key.replace(":html:", ":")
+            } else {
+                key.clone()
+            };
+
+            if store.delete(&metadata_key).is_ok() {
+                tracing::info!(
+                    "[HostFunctions] Invalidated metadata store key: {}",
+                    metadata_key
+                );
+                invalidated = true;
+            }
+        }
+
+        invalidated
     }
 }
 

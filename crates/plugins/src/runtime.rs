@@ -490,6 +490,22 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
             },
             message: config.message,
         },
+        UiElement::TagChips(config) => InternalElement::TagChips {
+            tags: config.tags,
+            max_display: config.max_display,
+        },
+        UiElement::Toolbar(config) => InternalElement::Toolbar {
+            buttons: config
+                .buttons
+                .into_iter()
+                .map(|b| crate::types::ToolbarButton {
+                    id: b.id,
+                    label: b.label,
+                    icon: b.icon,
+                    primary: b.primary,
+                })
+                .collect(),
+        },
     }
 }
 

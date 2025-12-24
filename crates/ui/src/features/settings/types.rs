@@ -79,15 +79,28 @@ pub enum SettingsAction {
     NavigateTo(crate::core::navigation::SettingsPage),
 }
 
+use arclain_signals::Signal;
+
 /// State for the network settings page
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct NetworkSettingsState {
-    pub socks5_enabled: bool,
-    pub socks5_address: String,
-    pub socks5_username: String,
-    pub socks5_password: String, // Kept in memory for UI binding
-    // Async testing status
-    pub connection_test_status: std::sync::Arc<parking_lot::Mutex<ConnectionTestStatus>>,
+    pub socks5_enabled: Signal<bool>,
+    pub socks5_address: Signal<String>,
+    pub socks5_username: Signal<String>,
+    pub socks5_password: Signal<String>,
+    pub connection_test_status: Signal<ConnectionTestStatus>,
+}
+
+impl Default for NetworkSettingsState {
+    fn default() -> Self {
+        Self {
+            socks5_enabled: Signal::new(false),
+            socks5_address: Signal::new(String::new()),
+            socks5_username: Signal::new(String::new()),
+            socks5_password: Signal::new(String::new()),
+            connection_test_status: Signal::new(ConnectionTestStatus::Idle),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Default)]
@@ -100,32 +113,65 @@ pub enum ConnectionTestStatus {
 }
 
 /// State for the general settings page
-#[derive(Default)]
+#[derive(Clone)]
 pub struct GeneralSettingsState {
     /// Whether to open nested archives in a new tab (true) or replace current view (false)
-    pub open_nested_in_new_tab: bool,
+    pub open_nested_in_new_tab: Signal<bool>,
+}
+
+impl Default for GeneralSettingsState {
+    fn default() -> Self {
+        Self {
+            open_nested_in_new_tab: Signal::new(false),
+        }
+    }
 }
 
 /// State for the security settings page
-#[derive(Default)]
+#[derive(Clone)]
 pub struct SecuritySettingsState {
-    pub key_file_path: String,
-    pub secrets_db_path: String,
-    pub encrypted_crc_policy: EncryptedCrcPolicy,
-    pub info: String,
-    pub error: String,
+    pub key_file_path: Signal<String>,
+    pub secrets_db_path: Signal<String>,
+    pub encrypted_crc_policy: Signal<EncryptedCrcPolicy>,
+    pub info: Signal<String>,
+    pub error: Signal<String>,
+}
+
+impl Default for SecuritySettingsState {
+    fn default() -> Self {
+        Self {
+            key_file_path: Signal::new(String::new()),
+            secrets_db_path: Signal::new(String::new()),
+            encrypted_crc_policy: Signal::new(EncryptedCrcPolicy::default()),
+            info: Signal::new(String::new()),
+            error: Signal::new(String::new()),
+        }
+    }
 }
 
 /// State for the archives settings page
-#[derive(Default)]
+#[derive(Clone)]
 pub struct ArchivesSettingsState {
-    pub temp_dir: String,
+    pub temp_dir: Signal<String>,
     // Checksum settings
-    pub checksum_enabled: bool,
-    pub checksum_mode: ChecksumMode,
-    pub checksum_algorithm: ChecksumAlgorithm,
-    pub verify_after_extract: bool,
-    pub verify_after_organize: bool,
+    pub checksum_enabled: Signal<bool>,
+    pub checksum_mode: Signal<ChecksumMode>,
+    pub checksum_algorithm: Signal<ChecksumAlgorithm>,
+    pub verify_after_extract: Signal<bool>,
+    pub verify_after_organize: Signal<bool>,
+}
+
+impl Default for ArchivesSettingsState {
+    fn default() -> Self {
+        Self {
+            temp_dir: Signal::new(String::new()),
+            checksum_enabled: Signal::new(false),
+            checksum_mode: Signal::new(ChecksumMode::default()),
+            checksum_algorithm: Signal::new(ChecksumAlgorithm::default()),
+            verify_after_extract: Signal::new(false),
+            verify_after_organize: Signal::new(false),
+        }
+    }
 }
 
 /// Checksum verification mode (mirrors VerifyMode)

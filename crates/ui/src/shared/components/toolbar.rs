@@ -105,6 +105,7 @@ pub struct ToolbarActions {
 /// Context for button rendering
 struct ButtonContext<'a> {
     theme: &'a AppTheme,
+    shared: Option<&'a SharedState>,
     can_go_back: bool,
     can_go_forward: bool,
     can_go_up: bool,
@@ -186,6 +187,8 @@ fn render_button(
                         &mut callback,
                         &ctx.theme.colors,
                         None,
+                        ctx.shared,
+                        Some(plugin_id.as_str()),
                     );
                 }
             }
@@ -472,6 +475,7 @@ pub fn render(
 
     let ctx = ButtonContext {
         theme,
+        shared,
         can_go_back,
         can_go_forward,
         can_go_up,

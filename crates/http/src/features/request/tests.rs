@@ -58,6 +58,8 @@ async fn test_proxy_application_failure() {
 
     let handle = Handle::current();
     let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    // Whitelist the domain for the plugin check
+    whitelist.write().approve("test-plugin", "127.0.0.1"); // Mock server runs on local loopback
 
     // Configure an invalid proxy address
     let proxy_config = ProxyConfig {
@@ -69,15 +71,39 @@ async fn test_proxy_application_failure() {
 
     let client = AsyncHttpClient::new(handle, whitelist, Some(proxy_config));
 
-    let id = client.request(HttpRequest::get(&format!("{}/test", mock_server.uri())));
+    // Enable proxy for test plugin
+    let mut map = std::collections::HashMap::new();
+    map.insert("test-plugin".to_string(), true);
+    client.update_plugin_proxy_map(map);
+
+    // Use request_for_plugin to trigger proxy usage
+    // Note: This relies on whitelist check passing. MockServer usually binds to 127.0.0.1.
+    // request_for_plugin performs security/whitelist checks.
+    // We need to make sure 127.0.0.1 is allowed or use request() if we could invoke proxied logic directly.
+    // But request() forces false.
+    // So we must satisfy request_for_plugin checks.
+
+    // Whitelist is already setup above.
+
+    let id = client
+        .request_for_plugin(
+            "test-plugin",
+            HttpRequest::get(&format!("{}/test", mock_server.uri())),
+        )
+        .expect("Request start failed");
+
     let status = wait_for_request(&client, &id).await;
 
     match status {
         RequestStatus::Failed(_) => {
             // Success - we expected it to fail due to bad proxy
         }
-        RequestStatus::Ready(_) => {
-            panic!("Request succeeded but should have failed due to invalid proxy");
+        RequestStatus::Ready(res) => {
+            // It might succeed if it somehow bypassed proxy or proxy was ignored.
+            panic!(
+                "Request succeeded: status {}, but should have failed due to invalid proxy",
+                res.status_code
+            );
         }
         _ => panic!("Unexpected status: {:?}", status),
     }
@@ -95,12 +121,24 @@ async fn test_runtime_config_update() {
 
     let handle = Handle::current();
     let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("test-plugin", "127.0.0.1");
 
     // Start Direct
     let client = AsyncHttpClient::new(handle.clone(), whitelist.clone(), None);
 
-    // 1. Verify direct connection works
-    let id = client.request(HttpRequest::get(&format!("{}/test", mock_server.uri())));
+    // Configure test plugin to use proxy (when enabled)
+    let mut map = std::collections::HashMap::new();
+    map.insert("test-plugin".to_string(), true);
+    client.update_plugin_proxy_map(map);
+
+    // 1. Verify direct connection works (even if "use proxy" is true, if proxy config is None, it should build a direct client)
+    // Actually, client_proxied is built with None, so it behaves as direct.
+    let id = client
+        .request_for_plugin(
+            "test-plugin",
+            HttpRequest::get(&format!("{}/test", mock_server.uri())),
+        )
+        .expect("Request 1 failed");
     let status = wait_for_request(&client, &id).await;
     match status {
         RequestStatus::Ready(res) => assert_eq!(res.status_code, 200),
@@ -116,8 +154,13 @@ async fn test_runtime_config_update() {
     };
     client.update_config(Some(proxy_config));
 
-    // 3. Verify request now fails
-    let id = client.request(HttpRequest::get(&format!("{}/test", mock_server.uri())));
+    // 3. Verify request now fails (because "test-plugin" is mapped to true)
+    let id = client
+        .request_for_plugin(
+            "test-plugin",
+            HttpRequest::get(&format!("{}/test", mock_server.uri())),
+        )
+        .expect("Request 2 failed");
     let status = wait_for_request(&client, &id).await;
     match status {
         RequestStatus::Failed(_) => {}
@@ -133,7 +176,12 @@ async fn test_runtime_config_update() {
     client.update_config(Some(direct_config));
 
     // 5. Verify direct connection works again
-    let id = client.request(HttpRequest::get(&format!("{}/test", mock_server.uri())));
+    let id = client
+        .request_for_plugin(
+            "test-plugin",
+            HttpRequest::get(&format!("{}/test", mock_server.uri())),
+        )
+        .expect("Request 3 failed");
     let status = wait_for_request(&client, &id).await;
     match status {
         RequestStatus::Ready(res) => assert_eq!(res.status_code, 200),

@@ -1,6 +1,9 @@
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use crate::shared::theme::ThemeColors;
+use crate::shared::SharedState;
 use arclain_data::ContentCache;
+use arclain_db::CacheType;
+use arclain_http::{HttpRequest, RequestStatus};
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 use std::sync::Arc;
@@ -15,6 +18,8 @@ pub fn render_ui_element(
     event_callback: &mut UiEventCallback<'_>,
     colors: &ThemeColors,
     content_cache: Option<&Arc<ContentCache>>,
+    shared_state: Option<&SharedState>,
+    plugin_id: Option<&str>,
 ) {
     match element {
         PluginUiElement::Column { children, spacing } => {
@@ -23,7 +28,15 @@ pub fn render_ui_element(
                     ui.spacing_mut().item_spacing.y = *sp;
                 }
                 for child in children {
-                    render_ui_element(ui, child, event_callback, colors, content_cache);
+                    render_ui_element(
+                        ui,
+                        child,
+                        event_callback,
+                        colors,
+                        content_cache,
+                        shared_state,
+                        plugin_id,
+                    );
                 }
             });
         }
@@ -33,7 +46,15 @@ pub fn render_ui_element(
                     ui.spacing_mut().item_spacing.x = *sp;
                 }
                 for child in children {
-                    render_ui_element(ui, child, event_callback, colors, content_cache);
+                    render_ui_element(
+                        ui,
+                        child,
+                        event_callback,
+                        colors,
+                        content_cache,
+                        shared_state,
+                        plugin_id,
+                    );
                 }
             });
         }
@@ -42,7 +63,15 @@ pub fn render_ui_element(
                 .num_columns(*columns as usize)
                 .show(ui, |ui| {
                     for (i, child) in children.iter().enumerate() {
-                        render_ui_element(ui, child, event_callback, colors, content_cache);
+                        render_ui_element(
+                            ui,
+                            child,
+                            event_callback,
+                            colors,
+                            content_cache,
+                            shared_state,
+                            plugin_id,
+                        );
                         if (i + 1) % (*columns as usize) == 0 {
                             ui.end_row();
                         }
@@ -258,8 +287,8 @@ pub fn render_ui_element(
                 .show(ui, colors);
         }
         PluginUiElement::Image {
-            cache_key,
-            url,
+            ref cache_key,
+            ref url,
             max_height,
         } => {
             // Try to load image from cache
@@ -281,7 +310,30 @@ pub fn render_ui_element(
                             }
                         }
                         Ok(None) => {
-                            // Not in cache yet
+                            // Not in cache yet, try to fetch
+                            if let Some(shared) = shared_state {
+                                if let Some(url_str) = url {
+                                    // Check if we already triggered a fetch for this key
+                                    let fetch_id = egui::Id::new((
+                                        "fetch",
+                                        cache_key.as_deref().unwrap_or(""),
+                                    ));
+                                    let fetching: bool =
+                                        ui.data(|d| d.get_temp(fetch_id)).unwrap_or(false);
+
+                                    if !fetching {
+                                        ui.data_mut(|d| d.insert_temp(fetch_id, true));
+                                        trigger_image_fetch(
+                                            shared,
+                                            plugin_id.map(|s| s.to_string()),
+                                            url_str.clone(),
+                                            cache_key.as_deref().unwrap_or("").to_string(),
+                                            ui.ctx().clone(),
+                                        );
+                                    }
+                                }
+                            }
+
                             ui.label(
                                 egui::RichText::new(format!("🖼 [Loading: {}]", key))
                                     .color(colors.on_surface_variant)
@@ -365,6 +417,25 @@ pub fn render_ui_element(
                                     {
                                         // rendered
                                     }
+                                } else {
+                                    // Placeholder & Fetch
+                                    ui.add(egui::Spinner::new().size(16.0));
+
+                                    if let Some(shared) = shared_state {
+                                        let fetch_id = egui::Id::new(("fetch", key.as_str()));
+                                        let fetching: bool =
+                                            ui.data(|d| d.get_temp(fetch_id)).unwrap_or(false);
+                                        if !fetching {
+                                            ui.data_mut(|d| d.insert_temp(fetch_id, true));
+                                            trigger_image_fetch(
+                                                shared,
+                                                plugin_id.map(|s| s.to_string()),
+                                                key.clone(),
+                                                key.clone(),
+                                                ui.ctx().clone(),
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -446,6 +517,8 @@ pub fn render_ui_element(
                                         event_callback,
                                         colors,
                                         content_cache,
+                                        shared_state,
+                                        plugin_id,
                                     );
                                     ui.add_space(2.0);
                                 }
@@ -487,6 +560,52 @@ pub fn render_ui_element(
                 }
             });
         }
+        PluginUiElement::TagChips { tags, max_display } => {
+            let display_count = max_display.map(|m| m as usize).unwrap_or(tags.len());
+            let visible_tags = &tags[..display_count.min(tags.len())];
+            let remaining = tags.len().saturating_sub(display_count);
+
+            ui.horizontal_wrapped(|ui| {
+                for tag in visible_tags {
+                    // Chip-style tag button
+                    let chip_frame = egui::Frame::NONE
+                        .fill(colors.primary.gamma_multiply(0.15))
+                        .inner_margin(egui::Margin::symmetric(8, 4))
+                        .corner_radius(12.0);
+
+                    chip_frame.show(ui, |ui| {
+                        ui.label(egui::RichText::new(tag).small().color(colors.primary));
+                    });
+                }
+
+                if remaining > 0 {
+                    ui.label(
+                        egui::RichText::new(format!("+{} more", remaining))
+                            .small()
+                            .color(colors.on_surface_variant),
+                    );
+                }
+            });
+        }
+        PluginUiElement::Toolbar { buttons } => {
+            ui.horizontal(|ui| {
+                for btn in buttons {
+                    // Use different styling for primary buttons
+                    let button = arclain_widgets::TextButton::new(
+                        &btn.label,
+                        if btn.primary {
+                            arclain_widgets::ButtonSize::Medium
+                        } else {
+                            arclain_widgets::ButtonSize::Small
+                        },
+                    );
+
+                    if ui.add(button).clicked() {
+                        event_callback(&btn.id, None);
+                    }
+                }
+            });
+        }
     }
 }
 
@@ -497,9 +616,19 @@ pub fn render_ui_elements(
     event_callback: &mut UiEventCallback<'_>,
     colors: &ThemeColors,
     content_cache: Option<&Arc<ContentCache>>,
+    shared_state: Option<&SharedState>,
+    plugin_id: Option<&str>,
 ) {
     for element in elements {
-        render_ui_element(ui, element, event_callback, colors, content_cache);
+        render_ui_element(
+            ui,
+            element,
+            event_callback,
+            colors,
+            content_cache,
+            shared_state,
+            plugin_id,
+        );
     }
 }
 
@@ -556,4 +685,63 @@ fn try_render_image(
     });
 
     Some(display_size)
+}
+
+fn trigger_image_fetch(
+    shared: &SharedState,
+    plugin_id: Option<String>,
+    url: String,
+    key: String,
+    ctx: egui::Context,
+) {
+    let app_state = shared.app_state.lock();
+    if let Some(client) = &app_state.async_http_client {
+        let client = client.clone();
+        if let Some(cache) = &app_state.content_cache {
+            let cache = cache.clone();
+            // Use runtime handle
+            let runtime = &app_state.tokio_runtime;
+
+            runtime.spawn(async move {
+                let request = HttpRequest::get(&url);
+
+                let id_res = if let Some(pid) = &plugin_id {
+                    client.request_for_plugin(pid, request)
+                } else {
+                    Ok(client.request(request))
+                };
+
+                if let Ok(id) = id_res {
+                    // Poll loop (max 30s)
+                    for _ in 0..300 {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        if let Some(status) = client.status(&id) {
+                            if status.is_complete() {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if let Some(status) = client.take_response(&id) {
+                        if let RequestStatus::Ready(resp) = status {
+                            if let Err(e) =
+                                cache.put(&key, &resp.body, CacheType::Screenshot, None, Some(&url))
+                            {
+                                tracing::warn!("Failed to cache image {}: {}", key, e);
+                            }
+                            ctx.request_repaint();
+                        } else if let RequestStatus::Failed(e) = status {
+                            tracing::warn!("Image fetch failed for {}: {}", url, e);
+                        }
+                    } else {
+                        client.cancel(&id);
+                    }
+                } else if let Err(e) = id_res {
+                    tracing::warn!("Failed to start image request {}: {}", url, e);
+                }
+            });
+        }
+    }
 }

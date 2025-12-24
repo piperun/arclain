@@ -284,6 +284,12 @@ impl eframe::App for ArclainApp {
                         components::top_tab_bar::TopTabAction::SelectHostTab(id) => {
                             match id.as_str() {
                                 "archive" => {
+                                    // Set toolbar context to Archive
+                                    {
+                                        let state = self.shared_state.app_state.lock();
+                                        state.signals.active_toolbar.set(crate::core::signals::ToolbarContext::Archive);
+                                        state.signals.status_message.set(None); // Clear plugin status
+                                    }
                                     // Close any open plugin pages first
                                     {
                                         let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
@@ -296,6 +302,11 @@ impl eframe::App for ArclainApp {
                             }
                         }
                         components::top_tab_bar::TopTabAction::SelectPluginTab { plugin_id, tab_id } => {
+                            // Set toolbar context to Plugin
+                            {
+                                let state = self.shared_state.app_state.lock();
+                                state.signals.active_toolbar.set(crate::core::signals::ToolbarContext::Plugin(plugin_id.clone()));
+                            }
                             // Open plugin page for the selected tab
                             // Clear existing pages first to avoid stacking
                             let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
@@ -306,8 +317,15 @@ impl eframe::App for ArclainApp {
                 }
             });
 
-        // Render Toolbar (only on Main page)
-        if self.page_navigator.is_on_main() {
+        // Render Toolbar (only on Main page AND when Archive context is active)
+        let should_show_archive_toolbar = if self.page_navigator.is_on_main() {
+            let state = self.shared_state.app_state.lock();
+            matches!(state.signals.active_toolbar.get(), crate::core::signals::ToolbarContext::Archive)
+        } else {
+            false
+        };
+
+        if should_show_archive_toolbar {
             egui::TopBottomPanel::top("toolbar_panel")
                 .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface_variant))
                 .show(ctx, |ui| {
@@ -1017,6 +1035,8 @@ impl ArclainApp {
                         &mut callback,
                         &self.shared_state.theme.colors,
                         None,
+                        Some(&self.shared_state),
+                        Some(&plugin_id),
                     );
                 });
             
@@ -1069,11 +1089,8 @@ impl ArclainApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface))
             .show(ctx, |ui| {
-                // Back button at top
+                // Page title (no back button - use tab navigation)
                 ui.horizontal(|ui| {
-                    if ui.button("← Back").clicked() {
-                        self.shared_state.plugin_dialog_state.lock().close_page();
-                    }
                     ui.label(egui::RichText::new(&page_id).strong());
                 });
                 ui.separator();
@@ -1136,6 +1153,8 @@ impl ArclainApp {
                             &mut callback,
                             &self.shared_state.theme.colors,
                             None,
+                            Some(&self.shared_state),
+                            Some(&plugin_id),
                         );
                     }
                     PluginLayout::Split { sidebar, content, sidebar_width } => {
@@ -1150,6 +1169,8 @@ impl ArclainApp {
                                         &mut callback,
                                         &self.shared_state.theme.colors,
                                         None,
+                                        Some(&self.shared_state),
+                                        Some(&plugin_id),
                                     );
                                 });
                             });
@@ -1162,6 +1183,8 @@ impl ArclainApp {
                                     &mut callback,
                                     &self.shared_state.theme.colors,
                                     None,
+                                    Some(&self.shared_state),
+                                    Some(&plugin_id),
                                 );
                             });
                         });

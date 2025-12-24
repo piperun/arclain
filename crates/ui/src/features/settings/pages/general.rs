@@ -44,11 +44,11 @@ pub fn render(
 
             // Nested archive behavior
             ui.checkbox(
-                &mut state.open_nested_in_new_tab,
+                &mut *state.open_nested_in_new_tab.write(),
                 "Open nested archives in new tab",
             );
             ui.label(
-                egui::RichText::new(if state.open_nested_in_new_tab {
+                egui::RichText::new(if *state.open_nested_in_new_tab.read() {
                     "Nested archives will open in a new tab, preserving the current view"
                 } else {
                     "Nested archives will replace the current archive view"

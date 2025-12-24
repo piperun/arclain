@@ -128,4 +128,30 @@ impl ContentCache {
     pub fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }
+
+    /// Remove a cache entry by key
+    /// Returns true if the entry was deleted, false if it didn't exist
+    pub fn remove(&self, key: &str) -> Result<bool> {
+        // First get the entry to find the content hash
+        let entry = self
+            .index_db
+            .with_connection(|conn| get_cache_entry(conn, key))?;
+
+        // Delete from SQLite index
+        let deleted = self
+            .index_db
+            .with_connection(|conn| arclain_db::delete_cache_entry(conn, key))?;
+
+        // Note: We don't delete from cacache because it's content-addressable
+        // The content may be referenced by other keys. Cacache handles garbage collection.
+        if deleted {
+            tracing::info!(
+                "Removed cache entry: {} (hash: {:?})",
+                key,
+                entry.map(|e| e.content_hash)
+            );
+        }
+
+        Ok(deleted)
+    }
 }
