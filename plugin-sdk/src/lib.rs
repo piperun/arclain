@@ -111,3 +111,12 @@ pub fn fetch_string_blocking(key: &str, url: &str) -> Result<String, String> {
 pub fn list_cached_entries() -> Result<Vec<String>, String> {
     Ok(arclain::plugin::host::list_cached_entries())
 }
+
+/// Re-export MetadataSummary for use in plugins
+pub use arclain::plugin::host::MetadataSummary;
+
+/// Batch query for metadata summaries (id, title, geo_blocked)
+/// Much faster than individual lookups for list rendering
+pub fn get_metadata_summaries(ids: Vec<String>) -> Vec<MetadataSummary> {
+    arclain::plugin::host::get_metadata_summaries(&ids)
+}

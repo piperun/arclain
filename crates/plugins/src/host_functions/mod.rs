@@ -190,6 +190,13 @@ impl Host for HostFunctions {
         self.impl_list_cached_entries()
     }
 
+    fn get_metadata_summaries(
+        &mut self,
+        ids: Vec<String>,
+    ) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
+        self.impl_get_metadata_summaries(ids)
+    }
+
     fn export_cache(&mut self) -> Result<String, String> {
         self.impl_export_cache()
     }

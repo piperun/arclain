@@ -155,41 +155,59 @@ impl HostFunctions {
         // Check if geo-blocked
         let geo_blocked = parsed["geo_blocked"].as_bool();
 
-        let product = ProductMetadata {
-            id: format!("dlsite:{}", id),
-            source: MetadataSource::DLSite.as_str().to_string(),
-            external_id: id.clone(),
-            title: Some(title),
-            creator: creator.or(circle),
-            description,
-            release_date,
-            price,
-            currency: Some("JPY".to_string()),
-            rating,
-            rating_count,
-            purchase_count,
-            favorite_count,
-            review_count,
-            file_size,
-            file_format,
-            age_rating,
-            genres_json,
-            tags_json,
-            languages_json,
-            product_formats_json,
-            series_name,
-            illustrator,
-            voice_actors_json,
-            miscellaneous,
-            update_info,
-            rankings_json,
-            extras_json: None,
-            raw_api_response: Some(json),
-            raw_html: None,
-            geo_blocked,
-            cached_at: now,
-            updated_at: None,
-            last_accessed: None,
+        let is_blocked = geo_blocked.unwrap_or(false);
+
+        let product = if is_blocked {
+            // Minimal metadata for geo-blocked items
+            ProductMetadata {
+                id: format!("dlsite:{}", id),
+                source: MetadataSource::DLSite.as_str().to_string(),
+                external_id: id.clone(),
+                title: Some(title),
+                geo_blocked,
+                cached_at: now,
+                raw_api_response: Some(json), // Keep raw data for debugging
+                // All other fields None/Default
+                ..Default::default()
+            }
+        } else {
+            // Full metadata
+            ProductMetadata {
+                id: format!("dlsite:{}", id),
+                source: MetadataSource::DLSite.as_str().to_string(),
+                external_id: id.clone(),
+                title: Some(title),
+                creator: creator.or(circle),
+                description,
+                release_date,
+                price,
+                currency: Some("JPY".to_string()),
+                rating,
+                rating_count,
+                purchase_count,
+                favorite_count,
+                review_count,
+                file_size,
+                file_format,
+                age_rating,
+                genres_json,
+                tags_json,
+                languages_json,
+                product_formats_json,
+                series_name,
+                illustrator,
+                voice_actors_json,
+                miscellaneous,
+                update_info,
+                rankings_json,
+                extras_json: None,
+                raw_api_response: Some(json),
+                raw_html: None,
+                geo_blocked,
+                cached_at: now,
+                updated_at: None,
+                last_accessed: None,
+            }
         };
 
         // Serialize the ProductMetadata
@@ -223,6 +241,50 @@ impl HostFunctions {
                     vec![]
                 }
             }
+        } else {
+            warn!("Metadata store not initialized");
+            vec![]
+        }
+    }
+
+    /// Batch query for metadata summaries (id, title, geo_blocked)
+    pub(super) fn impl_get_metadata_summaries(
+        &mut self,
+        ids: Vec<String>,
+    ) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
+        use crate::arclain::plugin::host::MetadataSummary;
+
+        if let Some(store) = &self.metadata_store {
+            ids.into_iter()
+                .map(|external_id| {
+                    // Format ID as expected by MetadataStore: "source:external_id"
+                    let full_id = format!("dlsite:{}", external_id);
+
+                    match store.get(&full_id) {
+                        Ok(Some(meta)) => MetadataSummary {
+                            id: external_id,
+                            title: meta.title,
+                            geo_blocked: meta.geo_blocked.unwrap_or(false),
+                        },
+                        Ok(None) => {
+                            // Not found - return minimal summary
+                            MetadataSummary {
+                                id: external_id,
+                                title: None,
+                                geo_blocked: false,
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to get metadata for {}: {}", external_id, e);
+                            MetadataSummary {
+                                id: external_id,
+                                title: None,
+                                geo_blocked: false,
+                            }
+                        }
+                    }
+                })
+                .collect()
         } else {
             warn!("Metadata store not initialized");
             vec![]

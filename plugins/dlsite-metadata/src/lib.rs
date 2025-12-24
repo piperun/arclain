@@ -1,5 +1,13 @@
 use archust_plugin_sdk::info;
 use std::cell::RefCell;
+use std::collections::HashMap;
+
+/// Summary info for cached entries (for fast list rendering)
+#[derive(Clone)]
+struct EntrySummary {
+    title: Option<String>,
+    geo_blocked: bool,
+}
 
 // Plugin state to store found metadata
 struct PluginState {
@@ -18,6 +26,8 @@ struct PluginState {
     browser_loading: bool,
     // Cache for browser detail view to prevent fetch loop
     browser_detail_cache: Option<(String, serde_json::Value, Option<ScrapedData>)>,
+    // Summary cache for fast list rendering (id -> title, geo_blocked)
+    entry_summaries: HashMap<String, EntrySummary>,
 }
 
 // Global state (thread-local for WASM component)
@@ -36,6 +46,7 @@ thread_local! {
         browser_tab: "cached".to_string(),
         browser_loading: false,
         browser_detail_cache: None,
+        entry_summaries: HashMap::new(),
     });
 }
 
@@ -96,7 +107,7 @@ impl archust_plugin_sdk::Guest for Component {
         use archust_plugin_sdk::arclain::plugin::ui::{
             PluginLayout, SplitConfig, UiElement, LabelConfig, TabsConfig, TextInputConfig,
             ButtonConfig, ButtonAction, ListContainerConfig, ListItemConfig, ImageConfig, LoadingConfig,
-            CheckboxConfig
+            CheckboxConfig, WarningConfig, WarningIcon
         };
 
         match extension_point.as_str() {
@@ -218,6 +229,16 @@ impl archust_plugin_sdk::Guest for Component {
                         let title = data["work_name"].as_str().unwrap_or("Unknown Title");
                         let maker = data["maker_name"].as_str().unwrap_or("Unknown");
                         
+                        // Show warning if geo-blocked
+                        if let Some(scraped_data) = scraped {
+                            if scraped_data.geo_blocked {
+                                elements.push(UiElement::Warning(WarningConfig {
+                                    icon: WarningIcon::GlobeX,
+                                    message: "This product is geo-blocked in your region. Metadata may be incomplete.".to_string(),
+                                }));
+                            }
+                        }
+
                         // Cover image at top (if available from scraped data)
                         if let Some(scraped_data) = scraped {
                             if let Some(cover_url) = &scraped_data.cover_image {
@@ -551,7 +572,29 @@ impl archust_plugin_sdk::Guest for Component {
                         }));
 
                         // Read the data from cache to display (no network fetch!)
+                        info(&format!("[DLSite Plugin] get_ui_layout detail view for entry_id={}", entry_id));
                          if let Some((json, scraped)) = get_cached_dlsite_metadata(&entry_id) {
+                            info("[DLSite Plugin] get_cached_dlsite_metadata returned Some");
+                            // Check geo-blocked status from stored JSON first (most reliable)
+                            let json_geo_blocked = json.get("geo_blocked")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false);
+                            let scraped_geo_blocked = scraped.as_ref().map(|s| s.geo_blocked).unwrap_or(false);
+                            let is_geo_blocked = json_geo_blocked || scraped_geo_blocked;
+                            
+                            info(&format!(
+                                "[DLSite Plugin] Cache browser: json_geo_blocked={}, scraped_geo_blocked={}, is_geo_blocked={}",
+                                json_geo_blocked, scraped_geo_blocked, is_geo_blocked
+                            ));
+                            
+                            if is_geo_blocked {
+                                info("[DLSite Plugin] Pushing Warning element to UI");
+                                elements.push(UiElement::Warning(WarningConfig {
+                                    icon: WarningIcon::GlobeX,
+                                    message: "This product is geo-blocked. Metadata may be incomplete.".to_string(),
+                                }));
+                            }
+                            
                             // Copy-paste of info display logic (could be refactored into helper)
                             let title = json["work_name"].as_str().unwrap_or("Unknown Title");
                             elements.push(UiElement::Label(LabelConfig { text: title.to_string(), bold: false, size: None }));
@@ -733,6 +776,7 @@ impl archust_plugin_sdk::Guest for Component {
                      badge: Some(code.clone()),
                      image_key: None,
                      selected: selected_entry.as_ref() == Some(code),
+                     warning_icon: None,
                  })
                  .collect();
              
@@ -756,19 +800,42 @@ impl archust_plugin_sdk::Guest for Component {
                  state.cached_entries.clone().unwrap()
              });
              
-             let items: Vec<ListItemConfig> = entries.iter()
+             // Filter and limit entries first
+             let filtered_ids: Vec<String> = entries.iter()
                  .filter(|id| {
                      search_query.is_empty() || 
                      id.to_lowercase().contains(&search_query.to_lowercase())
                  })
                  .take(100)
-                 .map(|id| ListItemConfig {
-                     id: format!("view_cache_entry_{}", id), // Use consistent ID format
-                     title: id.clone(),
-                     subtitle: Some("Cached".to_string()),
-                     badge: Some(id.clone()),
-                     image_key: None,
-                     selected: selected_entry.as_ref() == Some(id),
+                 .cloned()
+                 .collect();
+             
+             // Batch query for all summaries at once (single DB query!)
+             let summaries = archust_plugin_sdk::get_metadata_summaries(filtered_ids.clone());
+             
+             // Convert to our format
+             let entries_with_summaries: Vec<(String, Option<String>, bool)> = summaries
+                 .into_iter()
+                 .map(|s| (s.id, s.title, s.geo_blocked))
+                 .collect();
+             
+             let items: Vec<ListItemConfig> = entries_with_summaries.into_iter()
+                 .map(|(id, title, geo_blocked)| {
+                     let display_title = title.unwrap_or_else(|| id.clone());
+                     let selected = selected_entry.as_ref() == Some(&id);
+                     ListItemConfig {
+                         id: format!("view_cache_entry_{}", id),
+                         title: display_title,
+                         subtitle: Some("Cached".to_string()),
+                         badge: Some(id.clone()),
+                         image_key: None,
+                         selected,
+                         warning_icon: if geo_blocked {
+                             Some(WarningIcon::GlobeX)
+                         } else {
+                             None
+                         },
+                     }
                  })
                  .collect();
              
@@ -803,6 +870,19 @@ impl archust_plugin_sdk::Guest for Component {
         });
         
         if let Some((json, scraped)) = detail_data {
+             // Check if geo-blocked
+             let is_geo_blocked = json.get("geo_blocked")
+                 .and_then(|v| v.as_bool())
+                 .unwrap_or(false)
+                 || scraped.as_ref().map(|s| s.geo_blocked).unwrap_or(false);
+             
+             if is_geo_blocked {
+                 content_elements.push(UiElement::Warning(WarningConfig {
+                     icon: WarningIcon::GlobeX,
+                     message: "This product is geo-blocked. Metadata may be incomplete.".to_string(),
+                 }));
+             }
+             
              // Handle both DLSite API format (work_name, maker_name) and cache format (title, circle)
              let title = json["title"].as_str()
                  .or(json["work_name"].as_str())
@@ -1158,7 +1238,7 @@ impl archust_plugin_sdk::Guest for Component {
                 });
                 
                 // Refresh panel to show the new selection and its details
-                return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+                return vec![PluginAction::RefreshPanel("Dialog:dlsite_cache".to_string())];
             }
             id if id.starts_with("load_details_") => {
                 // One-time fetch of details for the selected entry
@@ -1414,8 +1494,11 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
     // Check if image caching is enabled
     let cache_images = STATE.with(|state| state.borrow().cache_images);
 
-    // If image caching is enabled and we have scraped data, fetch cover and screenshots
-    if cache_images {
+    // Check if content is geo-blocked (don't cache images for incomplete/geo-blocked content)
+    let is_geo_blocked = scraped_data.as_ref().map(|d| d.geo_blocked).unwrap_or(false);
+    
+    // If image caching is enabled, we have scraped data, AND content is NOT geo-blocked, fetch images
+    if cache_images && !is_geo_blocked {
         if let Some(data) = &scraped_data {
             use archust_plugin_sdk::ResourceType;
 
@@ -1439,6 +1522,8 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
                 }
             }
         }
+    } else if is_geo_blocked {
+        log_network_activity(&format!("[DLSite Plugin] Skipping image cache for geo-blocked content"));
     }
 
     Some((json_data, scraped_data))
@@ -1473,8 +1558,18 @@ struct ScrapedData {
 /// Scrape HTML using metastore provider
 fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
     use metastore_providers::dlsite::parse_html_response;
+    use archust_plugin_sdk::info;
     
     let scraped = parse_html_response(html)?;
+    
+    // Log geo_blocked status for debugging
+    info(&format!(
+        "[DLSite Plugin] Scraped geo_blocked={}, cover={}, genres={}, circle={}",
+        scraped.geo_blocked,
+        scraped.cover_image.is_some(),
+        scraped.genres.len(),
+        scraped.circle.is_some()
+    ));
     
     // Convert metastore's ScrapedData to our local type
     Some(ScrapedData {

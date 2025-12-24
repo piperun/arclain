@@ -89,6 +89,15 @@ interface host {
 
     // Metadata Cache Management (for UI, not plugin data access)
     list-cached-entries: func() -> list<string>;
+    
+    // Batch metadata summary for fast list rendering
+    record metadata-summary {
+        id: string,
+        title: option<string>,
+        geo-blocked: bool,
+    }
+    get-metadata-summaries: func(ids: list<string>) -> list<metadata-summary>;
+    
     export-cache: func() -> result<string, string>;
     import-cache: func() -> result<string, string>;
 }
@@ -174,6 +183,7 @@ interface ui {
         badge: option<string>,
         image-key: option<string>,
         selected: bool,
+        warning-icon: option<warning-icon>,  // Optional warning indicator
     }
 
     // Scrollable list container
@@ -187,6 +197,17 @@ interface ui {
     // Loading indicator
     record loading-config {
         message: option<string>,
+    }
+
+    // Warning / Alert banner
+    enum warning-icon {
+        warning,
+        globe-x,
+    }
+
+    record warning-config {
+        icon: warning-icon,
+        message: string,
     }
 
     // UI Element variant (Leaf nodes and simple containers)
@@ -204,6 +225,7 @@ interface ui {
         tabs(tabs-config),
         list-container(list-container-config),
         loading(loading-config),
+        warning(warning-config),
     }
 
     // Top-level layout structure

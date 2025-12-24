@@ -79,6 +79,11 @@ pub struct ProductMetadata {
     pub raw_api_response: Option<String>,
     pub raw_html: Option<String>,
 
+    // Availability
+    /// Whether this product is geo-blocked in user's region
+    #[serde(default)]
+    pub geo_blocked: bool,
+
     // Timestamps
     pub cached_at: i64,
     pub updated_at: Option<i64>,
@@ -110,6 +115,7 @@ impl ProductMetadata {
             extras: serde_json::Value::Null,
             raw_api_response: None,
             raw_html: None,
+            geo_blocked: false,
             cached_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()

@@ -341,6 +341,7 @@ pub fn render_ui_element(
             badge,
             image_key,
             selected,
+            warning_icon,
         } => {
             let frame = if *selected {
                 egui::Frame::NONE
@@ -380,6 +381,21 @@ pub fn render_ui_element(
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Warning icon (if present)
+                            if let Some(icon) = warning_icon {
+                                let icon_str = match icon {
+                                    arclain_plugins::types::WarningIcon::Warning => {
+                                        egui_phosphor::regular::WARNING
+                                    }
+                                    arclain_plugins::types::WarningIcon::GlobeX => {
+                                        egui_phosphor::regular::GLOBE_X
+                                    }
+                                };
+                                ui.label(
+                                    egui::RichText::new(icon_str).size(16.0).color(colors.error),
+                                );
+                            }
+
                             if let Some(badge_text) = badge {
                                 ui.label(
                                     egui::RichText::new(badge_text)
@@ -435,6 +451,32 @@ pub fn render_ui_element(
                                 }
                             }
                         });
+                });
+        }
+        PluginUiElement::Warning { icon, message } => {
+            let bg_color = colors.error.gamma_multiply(0.1);
+            let stroke_color = colors.error.gamma_multiply(0.3);
+
+            egui::Frame::NONE
+                .fill(bg_color)
+                .stroke(egui::Stroke::new(1.0, stroke_color))
+                .inner_margin(8.0)
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let icon_str = match icon {
+                            arclain_plugins::types::WarningIcon::Warning => {
+                                egui_phosphor::regular::WARNING
+                            }
+                            arclain_plugins::types::WarningIcon::GlobeX => {
+                                egui_phosphor::regular::GLOBE_X
+                            }
+                        };
+
+                        ui.label(egui::RichText::new(icon_str).size(20.0).color(colors.error));
+
+                        ui.label(egui::RichText::new(message).color(colors.on_surface));
+                    });
                 });
         }
         PluginUiElement::Loading { message } => {
