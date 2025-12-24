@@ -57,8 +57,6 @@ impl SettingsFeature {
                 socks5_address: state.user_config.socks5_address.clone().unwrap_or_default(),
                 socks5_username: state.user_config.socks5_username.clone().unwrap_or_default(),
                 socks5_password: password,
-                info: String::new(),
-                error: String::new(),
                 connection_test_status: Default::default(),
             }
         };

@@ -86,8 +86,6 @@ pub struct NetworkSettingsState {
     pub socks5_address: String,
     pub socks5_username: String,
     pub socks5_password: String, // Kept in memory for UI binding
-    pub info: String,
-    pub error: String,
     // Async testing status
     pub connection_test_status: std::sync::Arc<parking_lot::Mutex<ConnectionTestStatus>>,
 }
