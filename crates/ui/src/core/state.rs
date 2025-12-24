@@ -96,6 +96,7 @@ impl AppState {
         let async_http_client = Arc::new(AsyncHttpClient::new(
             runtime.handle().clone(),
             domain_whitelist.clone(),
+            None,
         ));
 
         // Load user config from database
@@ -244,6 +245,34 @@ impl AppState {
 
                             // Sync configuration from TOML defaults
                             me.sync_configuration();
+
+                            // Initialize Proxy
+                            if me.user_config.socks5_enabled {
+                                let password = if let Some(dbs) = &me.dbs {
+                                    dbs.secrets
+                                        .get_secret("proxy:socks5")
+                                        .unwrap_or(None)
+                                        .map(|s| s.to_string())
+                                } else {
+                                    None
+                                };
+
+                                use arclain_http::features::proxy::ProxyConfig;
+                                let config = ProxyConfig {
+                                    enabled: true,
+                                    address: me
+                                        .user_config
+                                        .socks5_address
+                                        .clone()
+                                        .unwrap_or_default(),
+                                    username: me.user_config.socks5_username.clone(),
+                                    password,
+                                };
+
+                                if let Some(client) = &me.async_http_client {
+                                    client.update_config(Some(config));
+                                }
+                            }
 
                             // Load UI items for config-driven rendering
                             if let Ok(dbs) = me.dbs.as_ref().ok_or(anyhow::anyhow!("No DBs")) {

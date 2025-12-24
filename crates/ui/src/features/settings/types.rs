@@ -61,8 +61,44 @@ pub enum SettingsAction {
     ClearCacheContent,
     /// Save general settings
     SaveGeneral { open_nested_in_new_tab: bool },
+    /// Save network settings
+    SaveNetwork {
+        socks5_enabled: bool,
+        socks5_address: Option<String>,
+        socks5_username: Option<String>,
+        socks5_password: Option<String>,
+    },
+    /// Test network settings
+    TestNetwork {
+        socks5_enabled: bool,
+        socks5_address: Option<String>,
+        socks5_username: Option<String>,
+        socks5_password: Option<String>,
+    },
     /// Navigate to another settings page
     NavigateTo(crate::core::navigation::SettingsPage),
+}
+
+/// State for the network settings page
+#[derive(Default, Clone)]
+pub struct NetworkSettingsState {
+    pub socks5_enabled: bool,
+    pub socks5_address: String,
+    pub socks5_username: String,
+    pub socks5_password: String, // Kept in memory for UI binding
+    pub info: String,
+    pub error: String,
+    // Async testing status
+    pub connection_test_status: std::sync::Arc<parking_lot::Mutex<ConnectionTestStatus>>,
+}
+
+#[derive(Clone, PartialEq, Eq, Default)]
+pub enum ConnectionTestStatus {
+    #[default]
+    Idle,
+    Testing,
+    Success(String),
+    Error(String),
 }
 
 /// State for the general settings page

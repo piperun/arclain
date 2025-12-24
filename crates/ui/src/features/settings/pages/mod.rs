@@ -6,6 +6,7 @@ pub mod archives;
 pub mod general;
 pub mod interface;
 pub mod layout_editor;
+pub mod network;
 pub mod organization_rules;
 pub mod plugins;
 pub mod security;

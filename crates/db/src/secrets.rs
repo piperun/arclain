@@ -194,6 +194,37 @@ impl SecretsDb {
         // but we keep the method for API compatibility
         Ok(())
     }
+
+    /// Get a generic secret (e.g., SOCKS5 password)
+    pub fn get_secret(&self, key: &str) -> Result<Option<Zeroizing<String>>> {
+        self.db.with_connection(|conn| {
+            let read_txn = conn.begin_read()?;
+            let table = read_txn.open_table(METADATA_TABLE)?;
+
+            if let Some(encrypted) = table.get(key)? {
+                let decrypted = self.decrypt(encrypted.value())?;
+                let s = String::from_utf8(decrypted.to_vec())
+                    .map_err(|e| anyhow!("Invalid UTF-8 in secret: {}", e))?;
+                Ok(Some(Zeroizing::new(s)))
+            } else {
+                Ok(None)
+            }
+        })
+    }
+
+    /// Set a generic secret
+    pub fn set_secret(&self, key: &str, value: &str) -> Result<()> {
+        let encrypted = self.encrypt(value.as_bytes())?;
+        self.db.with_connection(|conn| {
+            let write_txn = conn.begin_write()?;
+            {
+                let mut table = write_txn.open_table(METADATA_TABLE)?;
+                table.insert(key, encrypted.as_slice())?;
+            }
+            write_txn.commit()?;
+            Ok(())
+        })
+    }
 }
 
 /// Internal structure for encrypted storage (includes password)
