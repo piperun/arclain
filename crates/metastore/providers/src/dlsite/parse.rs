@@ -131,11 +131,39 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
     };
 
     // Check for geo-blocked page (common issue for non-JP users)
+    // Multiple patterns for different product types (RJ/VJ/BJ) and locales
     let html_lower = html.to_lowercase();
-    if html_lower.contains("お住いの国・地域からは本作品は購入できません")
-        || html_lower.contains("this product cannot be purchased")
+    let geo_blocked_patterns = [
+        "お住いの国・地域からは本作品は購入できません",
+        "this product cannot be purchased",
+        "このページはお住まいの地域からは表示できません",
+        "this page cannot be displayed",
+        "access denied",
+        "region restricted",
+        "not available in your country",
+        "geographic restrictions",
+    ];
+
+    for pattern in geo_blocked_patterns {
+        if html_lower.contains(&pattern.to_lowercase()) {
+            tracing::warn!(
+                "[DLsite HTML] Page is geo-blocked - detected pattern: {}",
+                pattern
+            );
+            data.geo_blocked = true;
+            break;
+        }
+    }
+
+    // Also check for minimal content (geo-blocked pages often have very little actual content)
+    // If we can't find the main product info table, it's likely geo-blocked
+    if !data.geo_blocked
+        && !html_lower.contains("work_outline")
+        && !html_lower.contains("work_name")
     {
-        tracing::warn!("[DLsite HTML] Page is geo-blocked - limited content available");
+        tracing::warn!(
+            "[DLsite HTML] Page appears geo-blocked - missing essential content elements"
+        );
         data.geo_blocked = true;
     }
 
@@ -152,6 +180,12 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
                 data.title = Some(clean_text(&el.text().collect::<String>()));
             }
         }
+    }
+
+    // If geo-blocked, return reliable data only (Title + ID basically)
+    if data.geo_blocked {
+        // Keep title if found, everything else is garbage on geo-blocked pages
+        return Some(data);
     }
 
     // Circle/maker from header (backup)
@@ -349,9 +383,8 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
             break;
         }
         if let Ok(sel) = Selector::parse(selector_str) {
-            data.screenshots = document
+            let potential_screenshots: Vec<String> = document
                 .select(&sel)
-                .skip(1) // First is usually cover
                 .filter_map(|el| {
                     el.value()
                         .attr("data-src")
@@ -364,6 +397,23 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
                         src.to_string()
                     } else {
                         format!("https://www.dlsite.com{}", src)
+                    }
+                })
+                .collect();
+
+            // Filter out cover image if it matches one of the screenshots
+            // This prevents duplicate cover but ensures we don't skip valid screenshots
+            data.screenshots = potential_screenshots
+                .into_iter()
+                .filter(|url| {
+                    if let Some(cover) = &data.cover_image {
+                        url != cover
+                    } else {
+                        // If we don't have a cover yet, we technically shouldn't treat the first as cover
+                        // unless we want to promote it. But usually cover is found by previous selectors.
+                        // If not found, maybe we should use the first screenshot as cover?
+                        // For now, just keep them all.
+                        true
                     }
                 })
                 .collect();
@@ -387,6 +437,23 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
         data.voice_actors.len(),
         data.genres.len()
     );
+
+    // Final geo-blocking check: if we parsed nothing useful, it's likely geo-blocked
+    // A valid product page should have at least a cover image OR description OR genres
+    if !data.geo_blocked {
+        let has_essential_content = data.cover_image.is_some()
+            || data.description.is_some()
+            || !data.screenshots.is_empty()
+            || !data.genres.is_empty()
+            || data.circle.is_some();
+
+        if !has_essential_content {
+            tracing::warn!(
+                "[DLsite HTML] Page appears geo-blocked - no essential content found after parsing"
+            );
+            data.geo_blocked = true;
+        }
+    }
 
     Some(data)
 }

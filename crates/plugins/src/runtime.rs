@@ -463,12 +463,31 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
                     badge: item.badge,
                     image_key: item.image_key,
                     selected: item.selected,
+                    warning_icon: item.warning_icon.map(|i| match i {
+                        crate::arclain::plugin::ui::WarningIcon::Warning => {
+                            crate::types::WarningIcon::Warning
+                        }
+                        crate::arclain::plugin::ui::WarningIcon::GlobeX => {
+                            crate::types::WarningIcon::GlobeX
+                        }
+                    }),
                 })
                 .collect(),
             max_height: config.max_height,
             empty_message: config.empty_message,
         },
         UiElement::Loading(config) => InternalElement::Loading {
+            message: config.message,
+        },
+        UiElement::Warning(config) => InternalElement::Warning {
+            icon: match config.icon {
+                crate::arclain::plugin::ui::WarningIcon::Warning => {
+                    crate::types::WarningIcon::Warning
+                }
+                crate::arclain::plugin::ui::WarningIcon::GlobeX => {
+                    crate::types::WarningIcon::GlobeX
+                }
+            },
             message: config.message,
         },
     }

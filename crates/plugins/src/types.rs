@@ -306,6 +306,8 @@ pub enum PluginUiElement {
         image_key: Option<String>,
         #[serde(default)]
         selected: bool,
+        #[serde(default)]
+        warning_icon: Option<WarningIcon>,
     },
     /// Scrollable list container
     ListContainer {
@@ -321,6 +323,15 @@ pub enum PluginUiElement {
         #[serde(default)]
         message: Option<String>,
     },
+    /// Warning / Alert banner
+    Warning { icon: WarningIcon, message: String },
+}
+
+/// Warning icon type
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum WarningIcon {
+    Warning,
+    GlobeX,
 }
 
 /// Toast notification level

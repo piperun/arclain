@@ -301,6 +301,7 @@ fn row_to_metadata(row: &rusqlite::Row) -> ProductMetadata {
             .unwrap_or(serde_json::Value::Null),
         raw_api_response: row.get(21).ok(),
         raw_html: row.get(22).ok(),
+        geo_blocked: false, // TODO: Add column and read from DB
         cached_at: row.get(23).unwrap_or(0),
         updated_at: row.get(24).ok(),
     }
