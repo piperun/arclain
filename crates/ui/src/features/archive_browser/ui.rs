@@ -231,6 +231,8 @@ fn render_properties_panel(
                                                 &mut callback,
                                                 &shared.theme.colors,
                                                 None, // Content cache not strictly needed for basic info panel buttons/labels
+                                                Some(shared),
+                                                Some(plugin_id.as_str()),
                                             );
                                         }
                                     }

@@ -70,6 +70,9 @@ interface host {
 
     // Get data from storage (no fetch, returns None if not cached)
     get-data: func(key: string) -> option<list<u8>>;
+    
+    // Invalidate cache entry (to force refetch from network)
+    invalidate-cache: func(key: string) -> bool;
 
 
 
@@ -86,6 +89,9 @@ interface host {
 
     // UI Feedback
     show-message: func(title: string, message: string);
+    
+    // Status bar message (for plugin to display selected entry, etc.)
+    set-status-message: func(message: string);
 
     // Metadata Cache Management (for UI, not plugin data access)
     list-cached-entries: func() -> list<string>;
@@ -210,6 +216,25 @@ interface ui {
         message: string,
     }
 
+    // Tag chips for displaying tags as styled pills
+    record tag-chips-config {
+        tags: list<string>,
+        max-display: option<u32>,  // Limit visible tags (show "+N more")
+    }
+
+    // Toolbar button for plugin pages
+    record toolbar-button-config {
+        id: string,
+        label: string,
+        icon: option<string>,      // Optional icon name
+        primary: bool,             // Primary/accent styling
+    }
+
+    // Toolbar for plugin pages
+    record toolbar-config {
+        buttons: list<toolbar-button-config>,
+    }
+
     // UI Element variant (Leaf nodes and simple containers)
     variant ui-element {
         label(label-config),
@@ -226,6 +251,8 @@ interface ui {
         list-container(list-container-config),
         loading(loading-config),
         warning(warning-config),
+        tag-chips(tag-chips-config),
+        toolbar(toolbar-config),
     }
 
     // Top-level layout structure

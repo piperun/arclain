@@ -63,7 +63,6 @@ pub fn get_header_config<'a>(
     if let Some(plugin_id) = state.selected_plugin.clone() {
         if let Some(plugin) = state.plugins.iter().find(|p| &p.id == &plugin_id) {
             let selected_plugin = &mut state.selected_plugin;
-            let plugin_id_for_save = plugin.id.clone();
 
             let mut config = SettingsHeaderConfig::new(&plugin.name)
                 .sub_description(format!(
@@ -71,12 +70,9 @@ pub fn get_header_config<'a>(
                     plugin.version,
                     plugin.author.as_deref().unwrap_or("Unknown")
                 ))
-                .has_changes(true)
+                .has_changes(false) // Plugin settings save immediately, no Save button needed
                 .on_back(|| {
                     *selected_plugin = None;
-                })
-                .on_save(move || {
-                    tracing::info!("Plugin {} settings saved", plugin_id_for_save);
                 });
 
             // Add actual plugin description if available

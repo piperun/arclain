@@ -83,6 +83,10 @@ pub struct UserConfig {
     /// Optional SOCKS5 username
     #[db(nullable)]
     pub socks5_username: Option<String>,
+
+    /// Plugin proxy settings (JSON map of PluginID -> bool)
+    #[db(nullable)]
+    pub plugin_proxy_settings: Option<String>,
 }
 
 impl UserConfig {
@@ -199,5 +203,27 @@ impl UserConfig {
 
     pub fn set_info_panel_order(&mut self, order: &[String]) {
         self.info_panel_order = serde_json::to_string(order).ok();
+    }
+
+    // --- Plugin Proxy Settings ---
+
+    pub fn get_plugin_proxy_settings(&self) -> std::collections::HashMap<String, bool> {
+        self.plugin_proxy_settings
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_plugin_proxy_settings(
+        &mut self,
+        settings: &std::collections::HashMap<String, bool>,
+    ) {
+        self.plugin_proxy_settings = serde_json::to_string(settings).ok();
+    }
+
+    pub fn set_plugin_proxy_enabled(&mut self, plugin_id: &str, enabled: bool) {
+        let mut settings = self.get_plugin_proxy_settings();
+        settings.insert(plugin_id.to_string(), enabled);
+        self.set_plugin_proxy_settings(&settings);
     }
 }

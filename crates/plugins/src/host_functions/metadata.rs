@@ -221,6 +221,12 @@ impl HostFunctions {
                     error!("Failed to save metadata via DataService: {}", e);
                 } else {
                     info!("[Cache SAVE] Saved {} via Data API", id);
+
+                    // Trigger reactive signal to notify UI of metadata update
+                    if let Some(ref signal) = self.metadata_signal {
+                        signal.set(Some(parsed.clone()));
+                        debug!("[Cache SAVE] Triggered metadata signal for {}", id);
+                    }
                 }
             }
             Err(e) => error!("Failed to serialize ProductMetadata: {}", e),

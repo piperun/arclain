@@ -28,7 +28,7 @@ pub fn render(
 
                 // Enable Proxy
                 if ui
-                    .checkbox(&mut state.socks5_enabled, "Enable SOCKS5 Proxy")
+                    .checkbox(&mut *state.socks5_enabled.write(), "Enable SOCKS5 Proxy")
                     .changed()
                 {
                     // Trigger save on toggle? Or wait for save button?
@@ -41,12 +41,12 @@ pub fn render(
                 ui.add_space(8.0);
 
                 // Enabled Section
-                ui.add_enabled_ui(state.socks5_enabled, |ui| {
+                ui.add_enabled_ui(*state.socks5_enabled.read(), |ui| {
                     ui.vertical(|ui| {
                         // Address
                         ui.label("Proxy Address");
                         ui.add(
-                            egui::TextEdit::singleline(&mut state.socks5_address)
+                            egui::TextEdit::singleline(&mut *state.socks5_address.write())
                                 .hint_text("e.g. 127.0.0.1:1080")
                                 .desired_width(f32::INFINITY),
                         );
@@ -64,12 +64,12 @@ pub fn render(
                             .spacing([12.0, 8.0])
                             .show(ui, |ui| {
                                 ui.label("Username");
-                                ui.text_edit_singleline(&mut state.socks5_username);
+                                ui.text_edit_singleline(&mut *state.socks5_username.write());
                                 ui.end_row();
 
                                 ui.label("Password");
                                 ui.add(
-                                    egui::TextEdit::singleline(&mut state.socks5_password)
+                                    egui::TextEdit::singleline(&mut *state.socks5_password.write())
                                         .password(true),
                                 );
                                 ui.end_row();
@@ -87,28 +87,28 @@ pub fn render(
                 ui.add_space(12.0);
 
                 // Test Connection
-                let status = state.connection_test_status.lock().clone();
+                let status = state.connection_test_status.read().clone();
                 ui.horizontal(|ui| {
                     if ui.button("Test Connection").clicked() {
-                        let address_opt = if state.socks5_address.trim().is_empty() {
+                        let address_opt = if state.socks5_address.read().trim().is_empty() {
                             None
                         } else {
-                            Some(state.socks5_address.trim().to_string())
+                            Some(state.socks5_address.read().trim().to_string())
                         };
-                        let username_opt = if state.socks5_username.trim().is_empty() {
+                        let username_opt = if state.socks5_username.read().trim().is_empty() {
                             None
                         } else {
-                            Some(state.socks5_username.trim().to_string())
+                            Some(state.socks5_username.read().trim().to_string())
                         };
                         // Pass current password state
-                        let password_opt = if state.socks5_password.is_empty() {
+                        let password_opt = if state.socks5_password.read().is_empty() {
                             None
                         } else {
-                            Some(state.socks5_password.clone())
+                            Some(state.socks5_password.read().clone())
                         };
 
                         action = Some(SettingsAction::TestNetwork {
-                            socks5_enabled: state.socks5_enabled,
+                            socks5_enabled: *state.socks5_enabled.read(),
                             socks5_address: address_opt,
                             socks5_username: username_opt,
                             socks5_password: password_opt,

@@ -53,6 +53,11 @@ pub fn log_network_activity(msg: &str) {
     arclain::plugin::host::log_network_activity(msg);
 }
 
+/// Invalidate a cache entry to force a refetch from network
+pub fn invalidate_cache(key: &str) -> bool {
+    arclain::plugin::host::invalidate_cache(key)
+}
+
 // === Data API Helpers ===
 
 // Only expose what plugins need - NOT cache internals

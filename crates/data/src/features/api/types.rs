@@ -91,6 +91,8 @@ pub struct DataRequest {
     pub resource_type: ResourceType,
     /// Associated product ID (for organization/caching)
     pub product_id: Option<String>,
+    /// Plugin ID making the request (for proxy routing)
+    pub plugin_id: Option<String>,
     /// Resolution chain - sources to try in order
     /// Empty = use default chain
     pub sources: SourceChain,
@@ -105,6 +107,7 @@ impl DataRequest {
             path: None,
             resource_type: ResourceType::Binary,
             product_id: None,
+            plugin_id: None,
             sources: IndexSet::new(),
         }
     }
@@ -153,6 +156,7 @@ impl DataRequest {
             path: None,
             resource_type: ResourceType::Metadata,
             product_id: None,
+            plugin_id: None,
             sources,
         }
     }
@@ -168,6 +172,7 @@ impl DataRequest {
             path: None,
             resource_type: ResourceType::Binary,
             product_id: None,
+            plugin_id: None,
             sources,
         }
     }
@@ -184,6 +189,7 @@ impl DataRequest {
             path: None,
             resource_type: ResourceType::Binary,
             product_id: None,
+            plugin_id: None,
             sources,
         }
     }
@@ -200,7 +206,14 @@ impl DataRequest {
             path: None,
             resource_type: ResourceType::Metadata,
             product_id: None,
+            plugin_id: None,
             sources,
         }
+    }
+
+    /// Set the plugin ID for proxy routing
+    pub fn with_plugin_id(mut self, plugin_id: impl Into<String>) -> Self {
+        self.plugin_id = Some(plugin_id.into());
+        self
     }
 }

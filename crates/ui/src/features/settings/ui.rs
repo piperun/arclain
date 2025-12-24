@@ -10,6 +10,7 @@ use crate::features::settings::settings_page::{
     render_breadcrumb, render_settings_navigator, render_settings_overview,
 };
 use crate::shared::SharedState;
+use arclain_signals::Signal;
 use eframe::egui;
 
 pub struct SettingsFeature {
@@ -52,18 +53,21 @@ impl SettingsFeature {
                  dbs.secrets.get_secret("proxy:socks5").unwrap_or(None).map(|s| s.to_string()).unwrap_or_default()
             } else { String::new() };
             
+            use arclain_signals::Signal;
+            use crate::features::settings::types::ConnectionTestStatus;
+            
             NetworkSettingsState {
-                socks5_enabled: state.user_config.socks5_enabled,
-                socks5_address: state.user_config.socks5_address.clone().unwrap_or_default(),
-                socks5_username: state.user_config.socks5_username.clone().unwrap_or_default(),
-                socks5_password: password,
-                connection_test_status: Default::default(),
+                socks5_enabled: Signal::new(state.user_config.socks5_enabled),
+                socks5_address: Signal::new(state.user_config.socks5_address.clone().unwrap_or_default()),
+                socks5_username: Signal::new(state.user_config.socks5_username.clone().unwrap_or_default()),
+                socks5_password: Signal::new(password),
+                connection_test_status: Signal::new(ConnectionTestStatus::Idle),
             }
         };
 
         Self {
             general_state: GeneralSettingsState {
-                open_nested_in_new_tab,
+                open_nested_in_new_tab: Signal::new(open_nested_in_new_tab),
             },
             network_state,
             security_state: SecuritySettingsState::default(),
@@ -85,7 +89,7 @@ impl SettingsFeature {
 
         match page {
             SettingsPage::General => {
-                self.general_state.open_nested_in_new_tab
+                *self.general_state.open_nested_in_new_tab.read()
                     != state.user_config.open_nested_in_new_tab
             }
             SettingsPage::Archives => {
@@ -93,10 +97,10 @@ impl SettingsFeature {
                 // Currently temp_dir depends on option. The UI state is a string. UserConfig is Option<String>.
                 // Wait, UserConfig Definition of temp_dir? I suspect it is Option<PathBuf> or Option<String>.
                 // Let's assume Option<String> based on SaveArchives handler: state.user_config.temp_dir = temp_dir;
-                let current_val = if self.archives_state.temp_dir.trim().is_empty() {
+                let current_val = if self.archives_state.temp_dir.read().trim().is_empty() {
                     None
                 } else {
-                    Some(self.archives_state.temp_dir.trim().to_string())
+                    Some(self.archives_state.temp_dir.read().trim().to_string())
                 };
 
                 // We need to know what state.user_config.temp_dir is.
@@ -107,18 +111,18 @@ impl SettingsFeature {
                 current_val != state.user_config.temp_dir
             }
             SettingsPage::Network => {
-                 self.network_state.socks5_enabled != state.user_config.socks5_enabled
-                 || self.network_state.socks5_address != state.user_config.socks5_address.clone().unwrap_or_default()
-                 || self.network_state.socks5_username != state.user_config.socks5_username.clone().unwrap_or_default()
+                 *self.network_state.socks5_enabled.read() != state.user_config.socks5_enabled
+                 || *self.network_state.socks5_address.read() != state.user_config.socks5_address.clone().unwrap_or_default()
+                 || *self.network_state.socks5_username.read() != state.user_config.socks5_username.clone().unwrap_or_default()
                  // Note: we don't check password for dirty state as we don't hold the secret in user_config
                  // and fetching it here might be expensive/complex.
             }
             SettingsPage::Security => {
                 // Check key file or secrets db
-                !self.security_state.key_file_path.trim().is_empty() 
-                || !self.security_state.secrets_db_path.trim().is_empty()
+                !self.security_state.key_file_path.read().trim().is_empty() 
+                || !self.security_state.secrets_db_path.read().trim().is_empty()
                 // Policy - assume changed if not default
-                || self.security_state.encrypted_crc_policy != crate::features::settings::types::EncryptedCrcPolicy::default()
+                || *self.security_state.encrypted_crc_policy.read() != crate::features::settings::types::EncryptedCrcPolicy::default()
             }
             SettingsPage::PasswordRules => {
                 // Compare rules
@@ -310,31 +314,31 @@ impl SettingsFeature {
                                                 match page {
                                                     SettingsPage::General => {
                                                         action = Some(SettingsAction::SaveGeneral {
-                                                            open_nested_in_new_tab: self.general_state.open_nested_in_new_tab,
+                                                            open_nested_in_new_tab: *self.general_state.open_nested_in_new_tab.read(),
                                                         });
                                                     }
                                                     SettingsPage::Archives => {
-                                                        let temp_dir_opt = if self.archives_state.temp_dir.trim().is_empty() {
+                                                        let temp_dir_opt = if self.archives_state.temp_dir.read().trim().is_empty() {
                                                             None
                                                         } else {
-                                                            Some(self.archives_state.temp_dir.trim().to_string())
+                                                            Some(self.archives_state.temp_dir.read().trim().to_string())
                                                         };
                                                         action = Some(SettingsAction::SaveArchives {
                                                             temp_dir: temp_dir_opt,
                                                         });
                                                     }
                                                     SettingsPage::Security => {
-                                                        let key_opt = if self.security_state.key_file_path.trim().is_empty() {
+                                                        let key_opt = if self.security_state.key_file_path.read().trim().is_empty() {
                                                             None
                                                         } else {
-                                                            Some(self.security_state.key_file_path.trim().to_string())
+                                                            Some(self.security_state.key_file_path.read().trim().to_string())
                                                         };
-                                                        let db_opt = if self.security_state.secrets_db_path.trim().is_empty() {
+                                                        let db_opt = if self.security_state.secrets_db_path.read().trim().is_empty() {
                                                             None
                                                         } else {
-                                                            Some(self.security_state.secrets_db_path.trim().to_string())
+                                                            Some(self.security_state.secrets_db_path.read().trim().to_string())
                                                         };
-                                                        let policy_opt = Some(self.security_state.encrypted_crc_policy.as_str().to_string());
+                                                        let policy_opt = Some(self.security_state.encrypted_crc_policy.read().as_str().to_string());
 
                                                         action = Some(SettingsAction::SaveSecurity {
                                                             key_file_path: key_opt,
@@ -348,24 +352,25 @@ impl SettingsFeature {
                                                         });
                                                     }
                                                     SettingsPage::Network => {
-                                                        let address_opt = if self.network_state.socks5_address.trim().is_empty() {
+                                                        let address_opt = if self.network_state.socks5_address.read().trim().is_empty() {
                                                             None
                                                         } else {
-                                                            Some(self.network_state.socks5_address.trim().to_string())
+                                                            Some(self.network_state.socks5_address.read().trim().to_string())
                                                         };
-                                                        let username_opt = if self.network_state.socks5_username.trim().is_empty() {
+                                                        let username_opt = if self.network_state.socks5_username.read().trim().is_empty() {
                                                             None
                                                         } else {
-                                                            Some(self.network_state.socks5_username.trim().to_string())
+                                                            Some(self.network_state.socks5_username.read().trim().to_string())
                                                         };
-                                                        let password_opt = if self.network_state.socks5_password.is_empty() {
+                                                        let password_opt = if self.network_state.socks5_password.read().is_empty() {
                                                             None
                                                         } else {
-                                                            Some(self.network_state.socks5_password.clone())
+                                                            Some(self.network_state.socks5_password.read().clone())
                                                         };
                                                         
+                                                        // tracing::info!("[SettingsUI] SaveNetwork action triggered from UI closure");
                                                         action = Some(SettingsAction::SaveNetwork {
-                                                            socks5_enabled: self.network_state.socks5_enabled,
+                                                            socks5_enabled: *self.network_state.socks5_enabled.read(),
                                                             socks5_address: address_opt,
                                                             socks5_username: username_opt,
                                                             socks5_password: password_opt,
@@ -469,7 +474,7 @@ impl SettingsFeature {
                                                 let pm_arc_opt = shared.app_state.lock().plugin_manager.clone();
                                                 let pm_guard = pm_arc_opt.as_ref().map(|m| m.lock());
 
-                                                action = render_settings_content(
+                                                let content_action = render_settings_content(
                                                     ui,
                                                     &shared.theme,
                                                     page,
@@ -487,6 +492,10 @@ impl SettingsFeature {
                                                     &shared.app_state,
                                                     Some(shared),
                                                 );
+
+                                                if action.is_none() {
+                                                    action = content_action;
+                                                }
                                             }
                                         });
                                 });

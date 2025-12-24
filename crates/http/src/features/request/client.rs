@@ -16,8 +16,14 @@ use tracing::{debug, info, warn};
 
 /// Async HTTP client with security features
 pub struct AsyncHttpClient {
-    /// Inner reqwest client (wrapped in RwLock for dynamic reconfiguration)
-    inner: RwLock<reqwest::Client>,
+    /// Client for direct connections (no proxy)
+    client_direct: RwLock<reqwest::Client>,
+    /// Client for proxied connections (uses ProxyConfig if enabled)
+    client_proxied: RwLock<reqwest::Client>,
+
+    /// Map of plugin_id -> use_proxy
+    plugin_proxy_map: Arc<RwLock<HashMap<String, bool>>>,
+
     /// Rate limiter
     rate_limiter: RwLock<RateLimiter>,
     /// Domain whitelist
@@ -37,10 +43,13 @@ impl AsyncHttpClient {
         whitelist: Arc<RwLock<DomainWhitelist>>,
         proxy_config: Option<ProxyConfig>,
     ) -> Self {
-        let client = Self::build_client(proxy_config);
+        let client_direct = Self::build_client(None);
+        let client_proxied = Self::build_client(proxy_config);
 
         Self {
-            inner: RwLock::new(client),
+            client_direct: RwLock::new(client_direct),
+            client_proxied: RwLock::new(client_proxied),
+            plugin_proxy_map: Arc::new(RwLock::new(HashMap::new())),
             rate_limiter: RwLock::new(RateLimiter::default()),
             whitelist,
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -50,9 +59,23 @@ impl AsyncHttpClient {
 
     /// Update client configuration (e.g. proxy settings)
     pub fn update_config(&self, proxy_config: Option<ProxyConfig>) {
-        let new_client = Self::build_client(proxy_config);
-        *self.inner.write() = new_client;
-        info!("AsyncHttpClient configuration updated");
+        let new_proxied = Self::build_client(proxy_config);
+        *self.client_proxied.write() = new_proxied;
+        info!("AsyncHttpClient proxied configuration updated");
+    }
+
+    /// Update the plugin proxy map
+    pub fn update_plugin_proxy_map(&self, map: HashMap<String, bool>) {
+        *self.plugin_proxy_map.write() = map;
+    }
+
+    /// Check if a plugin should use the proxy
+    pub fn should_use_proxy_for_plugin(&self, plugin_id: &str) -> bool {
+        *self
+            .plugin_proxy_map
+            .read()
+            .get(plugin_id)
+            .unwrap_or(&false)
     }
 
     fn build_client(proxy_config: Option<ProxyConfig>) -> reqwest::Client {
@@ -85,21 +108,26 @@ impl AsyncHttpClient {
         let domain_info =
             analyze_url(&request.url).map_err(|e| HttpError::InvalidUrl { reason: e })?;
 
-        // Check for critical security warnings
-        if domain_info.has_critical_warnings() {
-            let warnings: Vec<String> = domain_info
-                .warnings
-                .iter()
-                .map(|w| w.description())
-                .collect();
-            return Err(HttpError::SecurityWarning {
-                message: warnings.join("; "),
-            });
+        // Check whitelist first to allow user-approved deviations (e.g. IPs)
+        let whitelist = self.whitelist.read();
+        let access = whitelist.check(plugin_id, &domain_info.effective_domain);
+        drop(whitelist);
+
+        // If not explicitly allowed, enforce strict security checks
+        if access != AccessCheck::Allowed {
+            if domain_info.has_critical_warnings() {
+                let warnings: Vec<String> = domain_info
+                    .warnings
+                    .iter()
+                    .map(|w| w.description())
+                    .collect();
+                return Err(HttpError::SecurityWarning {
+                    message: warnings.join("; "),
+                });
+            }
         }
 
-        // Check whitelist
-        let whitelist = self.whitelist.read();
-        match whitelist.check(plugin_id, &domain_info.effective_domain) {
+        match access {
             AccessCheck::Allowed => {}
             AccessCheck::NeedsApproval => {
                 return Err(HttpError::DomainNeedsApproval {
@@ -108,7 +136,6 @@ impl AsyncHttpClient {
             }
             AccessCheck::NotWhitelisted => {
                 // Add to pending for user approval
-                drop(whitelist);
                 self.whitelist
                     .write()
                     .add_pending(plugin_id, &domain_info.effective_domain);
@@ -117,7 +144,6 @@ impl AsyncHttpClient {
                 });
             }
         }
-        drop(whitelist);
 
         // Check rate limit
         let rate_limiter = self.rate_limiter.read();
@@ -128,8 +154,15 @@ impl AsyncHttpClient {
         }
         drop(rate_limiter);
 
+        // Determine if proxy should be used
+        let use_proxy = *self
+            .plugin_proxy_map
+            .read()
+            .get(plugin_id)
+            .unwrap_or(&false);
+
         // Start the request
-        Ok(self.start_request(request))
+        Ok(self.start_request(request, use_proxy))
     }
 
     /// Start a request without plugin restrictions (for host use)
@@ -142,11 +175,12 @@ impl AsyncHttpClient {
             }
         }
 
-        self.start_request(request)
+        // Host requests default to direct connection
+        self.start_request(request, false)
     }
 
     /// Internal: start an async request
-    fn start_request(&self, request: HttpRequest) -> RequestId {
+    fn start_request(&self, request: HttpRequest, use_proxy: bool) -> RequestId {
         let id = RequestId::new();
 
         // Mark as pending
@@ -155,11 +189,19 @@ impl AsyncHttpClient {
             .insert(id.clone(), RequestStatus::Pending);
 
         // Clone what we need for the async task
-        let client = self.inner.read().clone();
+        let client = if use_proxy {
+            self.client_proxied.read().clone()
+        } else {
+            self.client_direct.read().clone()
+        };
+
         let pending = self.pending.clone();
         let request_id = id.clone();
 
-        debug!("Starting request {} to {}", request_id.0, request.url);
+        debug!(
+            "Starting request {} to {} (proxy: {})",
+            request_id.0, request.url, use_proxy
+        );
 
         // Spawn async task
         self.runtime.spawn(async move {
@@ -277,10 +319,14 @@ impl AsyncHttpClient {
 
     /// Blocking GET request (for use from background threads, NOT main thread)
     /// This uses block_on to wait for the async request to complete.
-    pub fn blocking_get(&self, url: &str) -> Result<Vec<u8>, String> {
+    pub fn blocking_get(&self, url: &str, use_proxy: bool) -> Result<Vec<u8>, String> {
         use std::time::Duration;
 
-        let client = self.inner.read().clone();
+        let client = if use_proxy {
+            self.client_proxied.read().clone()
+        } else {
+            self.client_direct.read().clone()
+        };
         let url = url.to_string();
 
         // Use the runtime handle to block on the async request

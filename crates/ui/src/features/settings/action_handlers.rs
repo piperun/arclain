@@ -39,9 +39,9 @@ pub fn handle_action(
             if let Err(e) =
                 state.apply_preferences(key_file_str, secrets_db_str, encrypted_crc_policy)
             {
-                security_state.error = format!("Failed to save settings: {}", e);
+                *security_state.error.write() = format!("Failed to save settings: {}", e);
             } else {
-                security_state.info = "Settings saved successfully".to_string();
+                *security_state.info.write() = "Settings saved successfully".to_string();
             }
         }
         SettingsAction::SaveArchives { temp_dir } => {
@@ -58,17 +58,17 @@ pub fn handle_action(
         SettingsAction::MoveVault { dest_path } => {
             let mut state = shared.app_state.lock();
             if let Err(e) = state.move_vault(&dest_path) {
-                security_state.error = format!("Failed to move vault: {}", e);
+                *security_state.error.write() = format!("Failed to move vault: {}", e);
             } else {
-                security_state.info = "Vault moved successfully".to_string();
+                *security_state.info.write() = "Vault moved successfully".to_string();
             }
         }
         SettingsAction::RekeyVault { new_key_file_path } => {
             let mut state = shared.app_state.lock();
             if let Err(e) = state.rekey_vault(&new_key_file_path) {
-                security_state.error = format!("Failed to rekey vault: {}", e);
+                *security_state.error.write() = format!("Failed to rekey vault: {}", e);
             } else {
-                security_state.info = "Vault rekeyed successfully".to_string();
+                *security_state.info.write() = "Vault rekeyed successfully".to_string();
             }
         }
         SettingsAction::SavePasswordRules { rules } => {
@@ -107,7 +107,7 @@ pub fn handle_action(
             let mut state = shared.app_state.lock();
             if let Some(dbs) = &mut state.dbs {
                 if let Err(e) = dbs.metadata.clear_cache_index() {
-                    archives_state.checksum_enabled = false;
+                    *archives_state.checksum_enabled.write() = false;
                     tracing::error!("Failed to clear cache index: {}", e);
                 } else {
                     tracing::info!("Cache index cleared successfully");
@@ -170,11 +170,17 @@ pub fn handle_action(
 
             if let Some(ref dbs) = state.dbs {
                 // Save config
-                if let Err(e) = dbs.config.with_connection(|conn| {
-                    state.user_config.save(conn).ok();
-                    Ok::<_, anyhow::Error>(())
-                }) {
-                    tracing::error!("Failed to save network settings: {}", e);
+                match dbs
+                    .config
+                    .with_connection(|conn| Ok::<_, anyhow::Error>(state.user_config.save(conn)))
+                {
+                    Ok(_) => {
+                        tracing::info!("[SaveNetwork] Network settings saved successfully: enabled={}, address={:?}", 
+                            socks5_enabled, socks5_address);
+                    }
+                    Err(e) => {
+                        tracing::error!("[SaveNetwork] Failed to save network settings: {}", e);
+                    }
                 }
 
                 // Handle password
@@ -214,8 +220,10 @@ pub fn handle_action(
             use crate::features::settings::types::ConnectionTestStatus;
 
             // Set testing state
-            *network_state.connection_test_status.lock() = ConnectionTestStatus::Testing;
-            let status_clone = network_state.connection_test_status.clone();
+            network_state
+                .connection_test_status
+                .set(ConnectionTestStatus::Testing);
+            let status_signal = network_state.connection_test_status.clone();
 
             // Create config for test
             use arclain_http::features::proxy::ProxyConfig;
@@ -259,10 +267,9 @@ pub fn handle_action(
                 }
                 .await;
 
-                let mut status = status_clone.lock();
                 match result {
-                    Ok(msg) => *status = ConnectionTestStatus::Success(msg),
-                    Err(e) => *status = ConnectionTestStatus::Error(e.to_string()),
+                    Ok(msg) => status_signal.set(ConnectionTestStatus::Success(msg)),
+                    Err(e) => status_signal.set(ConnectionTestStatus::Error(e.to_string())),
                 }
             });
         }

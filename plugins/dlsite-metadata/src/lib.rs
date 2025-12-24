@@ -107,7 +107,7 @@ impl archust_plugin_sdk::Guest for Component {
         use archust_plugin_sdk::arclain::plugin::ui::{
             PluginLayout, SplitConfig, UiElement, LabelConfig, TabsConfig, TextInputConfig,
             ButtonConfig, ButtonAction, ListContainerConfig, ListItemConfig, ImageConfig, LoadingConfig,
-            CheckboxConfig, WarningConfig, WarningIcon
+            CheckboxConfig, WarningConfig, WarningIcon, TagChipsConfig, ToolbarConfig, ToolbarButtonConfig
         };
 
         match extension_point.as_str() {
@@ -645,17 +645,10 @@ impl archust_plugin_sdk::Guest for Component {
 
                         elements.push(UiElement::Separator);
 
-                        // get list from state or fetch
-                        let entries = STATE.with(|s| {
-                            let mut state = s.borrow_mut();
-                            if state.cached_entries.is_none() {
-                                let list = list_cached_entries().unwrap_or_else(|e| {
-                                    info(&format!("Failed to list cache: {}", e));
-                                    vec![]
-                                });
-                                state.cached_entries = Some(list);
-                            }
-                            state.cached_entries.clone().unwrap()
+                        // Always fetch fresh from host to see latest data
+                        let entries = list_cached_entries().unwrap_or_else(|e| {
+                            info(&format!("Failed to list cache: {}", e));
+                            vec![]
                         });
                         
                         // Filter
@@ -787,17 +780,10 @@ impl archust_plugin_sdk::Guest for Component {
                  empty_message: Some("Search DLSite to see results".to_string()),
              }));
         } else {
-             // Cached Entries
-             let entries = STATE.with(|s| {
-                 let mut state = s.borrow_mut();
-                 if state.cached_entries.is_none() {
-                     let list = list_cached_entries().unwrap_or_else(|e| {
-                         info(&format!("Failed to list cache: {}", e));
-                         vec![]
-                     });
-                     state.cached_entries = Some(list);
-                 }
-                 state.cached_entries.clone().unwrap()
+             // Cached Entries - always fetch fresh from host to see latest data
+             let entries = list_cached_entries().unwrap_or_else(|e| {
+                 info(&format!("Failed to list cache: {}", e));
+                 vec![]
              });
              
              // Filter and limit entries first
@@ -962,10 +948,9 @@ impl archust_plugin_sdk::Guest for Component {
                      bold: true,
                      size: Some(14.0),
                  }));
-                 content_elements.push(UiElement::Label(LabelConfig {
-                     text: tags.join(", "),
-                     bold: false,
-                     size: None,
+                 content_elements.push(UiElement::TagChips(TagChipsConfig {
+                     tags: tags.clone(),
+                     max_display: Some(15),
                  }));
                  content_elements.push(UiElement::Space(10.0));
              }
@@ -1002,11 +987,28 @@ impl archust_plugin_sdk::Guest for Component {
              
              content_elements.push(UiElement::Separator);
              
-             // Actions
-             content_elements.push(UiElement::Button(ButtonConfig {
-                 id: format!("apply_metadata_{}", selected_id),
-                 label: "Apply Metadata to Archive".to_string(),
-                 action: None,
+             // Actions Toolbar
+             content_elements.push(UiElement::Toolbar(ToolbarConfig {
+                 buttons: vec![
+                     ToolbarButtonConfig {
+                         id: format!("refresh_view_{}", selected_id),
+                         label: "Refresh".to_string(),
+                         icon: None,
+                         primary: false,
+                     },
+                     ToolbarButtonConfig {
+                         id: format!("refetch_entry_{}", selected_id),
+                         label: "Refetch".to_string(),
+                         icon: None,
+                         primary: false,
+                     },
+                     ToolbarButtonConfig {
+                         id: format!("select_entry_{}", selected_id),
+                         label: "Select for Use".to_string(),
+                         icon: None,
+                         primary: true,
+                     },
+                 ],
              }));
              
         } else {
@@ -1314,6 +1316,97 @@ impl archust_plugin_sdk::Guest for Component {
                     s.search_results.clear();
                 });
             }
+            // Refresh view - re-read from cache
+            id if id.starts_with("refresh_view_") => {
+                let entry_id = id.trim_start_matches("refresh_view_").to_string();
+                info(&format!("[DLSite Plugin] Refresh view for: {}", entry_id));
+                
+                // Re-read from cache (no network)
+                if let Some((json, scraped)) = get_cached_dlsite_metadata(&entry_id) {
+                    STATE.with(|state| {
+                        state.borrow_mut().browser_detail_cache = Some((entry_id.clone(), json, scraped));
+                    });
+                    info(&format!("[DLSite Plugin] Cache re-read for: {}", entry_id));
+                }
+                
+                return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+            }
+            // Refetch from network
+            id if id.starts_with("refetch_entry_") => {
+                let entry_id = id.trim_start_matches("refetch_entry_").to_string();
+                info(&format!("[DLSite Plugin] Refetching from network: {}", entry_id));
+                
+                // Clear local state cache
+                STATE.with(|state| {
+                    state.borrow_mut().browser_detail_cache = None;
+                });
+                
+                // Get cache keys for invalidation
+                let json_key = metastore_providers::dlsite::cache_keys::json_key(&entry_id);
+                let html_key = metastore_providers::dlsite::cache_keys::html_key(&entry_id);
+                
+                // Backup current cached data before invalidating
+                // This way if refetch fails, we don't lose the existing entry
+                let backup_data = get_cached_dlsite_metadata(&entry_id);
+                
+                // Invalidate cache to force network fetch
+                archust_plugin_sdk::invalidate_cache(&json_key);
+                archust_plugin_sdk::invalidate_cache(&html_key);
+                info(&format!("[DLSite Plugin] Invalidated cache for: {}, {}", json_key, html_key));
+                
+                // Fetch from network (updates cache)
+                match fetch_dlsite_metadata(&entry_id) {
+                    Some((json, scraped)) => {
+                        STATE.with(|state| {
+                            state.borrow_mut().browser_detail_cache = Some((entry_id.clone(), json, scraped));
+                        });
+                        info(&format!("[DLSite Plugin] Refetched and cached: {}", entry_id));
+                        archust_plugin_sdk::show_message("Success", &format!("Refetched {}", entry_id));
+                    }
+                    None => {
+                        info(&format!("[DLSite Plugin] Refetch FAILED for: {}", entry_id));
+                        
+                        // Restore from backup if we had data before
+                        if let Some((json, scraped)) = backup_data {
+                            info(&format!("[DLSite Plugin] Restoring backup data for: {}", entry_id));
+                            // Re-emit the old metadata to re-persist it
+                            let metadata_json = generate_metadata_json(&entry_id, Some(&(json.clone(), scraped.clone())));
+                            archust_plugin_sdk::emit_metadata(&metadata_json);
+                            
+                            STATE.with(|state| {
+                                state.borrow_mut().browser_detail_cache = Some((entry_id.clone(), json, scraped));
+                            });
+                            archust_plugin_sdk::show_message("Warning", &format!("Refetch failed for {}. Restored previous data.", entry_id));
+                        } else {
+                            archust_plugin_sdk::show_message("Error", &format!("Failed to refetch {}. Entry may be deleted.", entry_id));
+                        }
+                    }
+                }
+                
+                return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+            }
+            // Select for use - emit metadata and set status message
+            id if id.starts_with("select_entry_") => {
+                let entry_id = id.trim_start_matches("select_entry_").to_string();
+                info(&format!("[DLSite Plugin] Selected entry: {}", entry_id));
+                
+                // Get cached data and emit metadata
+                if let Some((json, scraped)) = get_cached_dlsite_metadata(&entry_id) {
+                    STATE.with(|state| {
+                        state.borrow_mut().found_metadata = Some((entry_id.clone(), json.clone(), scraped.clone()));
+                    });
+                    
+                    let metadata_json = generate_metadata_json(&entry_id, Some(&(json, scraped)));
+                    archust_plugin_sdk::emit_metadata(&metadata_json);
+                    
+                    // Set status message via host
+                    archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!("Entry selected: {}", entry_id));
+                    
+                    archust_plugin_sdk::show_message("Selected", &format!("Entry {} selected for use", entry_id));
+                } else {
+                    archust_plugin_sdk::show_message("Error", &format!("Could not load data for {}", entry_id));
+                }
+            }
             _ => {}
         }
         
@@ -1338,7 +1431,10 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
         // Check cache first - avoids network if we already have metadata
         if let Some((json, scraped)) = get_cached_dlsite_metadata(&code) {
             info(&format!("[DLSite Plugin] Using cached metadata for {}", code));
-            // Update state but don't emit again (it's already persisted)
+            // Always emit to ensure MetadataStore (SQLite) is populated
+            // This is safe because emit_metadata is idempotent
+            let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
+            archust_plugin_sdk::emit_metadata(&metadata_json);
             return Ok(Some((code, json, scraped)));
         }
         

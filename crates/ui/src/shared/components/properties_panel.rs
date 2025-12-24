@@ -150,6 +150,8 @@ pub fn render(
                                     &mut callback,
                                     &theme.colors,
                                     None, // TODO: wire content_cache through
+                                    shared,
+                                    Some(&plugin_id),
                                 );
                             }
                         });

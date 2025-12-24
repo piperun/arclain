@@ -59,6 +59,49 @@ impl<T> Signal<T> {
             listener();
         }
     }
+
+    /// Get a read guard to the value.
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, T> {
+        self.inner.value.read()
+    }
+
+    /// Get a write guard to the value.
+    /// When the guard is dropped, listeners are notified.
+    pub fn write(&self) -> SignalWriteGuard<'_, T> {
+        SignalWriteGuard {
+            guard: self.inner.value.write(),
+            signal_inner: &self.inner,
+        }
+    }
+}
+
+/// A write guard that triggers notification when dropped.
+pub struct SignalWriteGuard<'a, T> {
+    guard: parking_lot::RwLockWriteGuard<'a, T>,
+    signal_inner: &'a SignalInner<T>,
+}
+
+impl<'a, T> std::ops::Deref for SignalWriteGuard<'a, T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &*self.guard
+    }
+}
+
+impl<'a, T> std::ops::DerefMut for SignalWriteGuard<'a, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.guard
+    }
+}
+
+impl<'a, T> Drop for SignalWriteGuard<'a, T> {
+    fn drop(&mut self) {
+        // Notify listeners on drop
+        let listeners = self.signal_inner.listeners.read();
+        for listener in listeners.iter() {
+            listener();
+        }
+    }
 }
 
 impl<T: Clone> Signal<T> {
@@ -135,6 +178,25 @@ mod tests {
         let signal = Signal::new(vec![1, 2, 3]);
         signal.update(|v| v.push(4));
         assert_eq!(signal.get(), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_signal_write_guard() {
+        let signal = Signal::new(0);
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+
+        signal.subscribe(move || {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        {
+            let mut guard = signal.write();
+            *guard = 5;
+        } // Drop happens here, should notify
+
+        assert_eq!(signal.get(), 5);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
     }
 
     #[test]

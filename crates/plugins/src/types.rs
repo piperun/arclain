@@ -325,6 +325,25 @@ pub enum PluginUiElement {
     },
     /// Warning / Alert banner
     Warning { icon: WarningIcon, message: String },
+    /// Tag chips displayed as styled pills
+    TagChips {
+        tags: Vec<String>,
+        #[serde(default)]
+        max_display: Option<u32>,
+    },
+    /// Toolbar with buttons
+    Toolbar { buttons: Vec<ToolbarButton> },
+}
+
+/// Toolbar button configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolbarButton {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub primary: bool,
 }
 
 /// Warning icon type

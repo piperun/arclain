@@ -22,9 +22,21 @@ impl DataSourceResolver for NetworkResolver {
     fn try_resolve(&self, _key: &str, request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
         let url = request.url.as_ref().ok_or(ResolveError::NotConfigured)?;
 
-        tracing::info!("[NetworkResolver] Fetching from {}", url);
+        // Determine if proxy should be used based on plugin_id
+        let use_proxy = if let Some(plugin_id) = &request.plugin_id {
+            // Check the client's plugin proxy map
+            self.client.should_use_proxy_for_plugin(plugin_id)
+        } else {
+            false
+        };
 
-        match self.client.blocking_get(url) {
+        tracing::info!(
+            "[NetworkResolver] Fetching from {} (proxy: {})",
+            url,
+            use_proxy
+        );
+
+        match self.client.blocking_get(url, use_proxy) {
             Ok(data) => {
                 tracing::debug!("[NetworkResolver] Fetched {} bytes", data.len());
                 Ok(data)

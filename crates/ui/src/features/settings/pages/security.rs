@@ -45,18 +45,19 @@ pub fn render(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let hint = default_key.as_deref().unwrap_or("Select a key file...");
-                let te = egui::TextEdit::singleline(&mut state.key_file_path).hint_text(hint);
+                let mut binding = state.key_file_path.write();
+                let te = egui::TextEdit::singleline(&mut *binding).hint_text(hint);
                 ui.add_sized([ui.available_width() - 110.0, 28.0], te);
                 if ui
                     .add(egui::Button::new("Browse…").min_size(egui::vec2(100.0, 28.0)))
                     .clicked()
                 {
                     if let Some(file) = rfd::FileDialog::new().pick_file() {
-                        state.key_file_path = file.to_string_lossy().to_string();
+                        *state.key_file_path.write() = file.to_string_lossy().to_string();
                     }
                 }
             });
-            if state.key_file_path.trim().is_empty() {
+            if state.key_file_path.read().trim().is_empty() {
                 ui.label(
                     egui::RichText::new(format!(
                         "Default: System AppData location ({})",
@@ -80,18 +81,19 @@ pub fn render(
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 let hint = default_db.as_deref().unwrap_or("Path to pass.redb...");
-                let te = egui::TextEdit::singleline(&mut state.secrets_db_path).hint_text(hint);
+                let mut binding = state.secrets_db_path.write();
+                let te = egui::TextEdit::singleline(&mut *binding).hint_text(hint);
                 ui.add_sized([ui.available_width() - 110.0, 28.0], te);
                 if ui
                     .add(egui::Button::new("Browse…").min_size(egui::vec2(100.0, 28.0)))
                     .clicked()
                 {
                     if let Some(file) = rfd::FileDialog::new().pick_file() {
-                        state.secrets_db_path = file.to_string_lossy().to_string();
+                        *state.secrets_db_path.write() = file.to_string_lossy().to_string();
                     }
                 }
             });
-            if state.secrets_db_path.trim().is_empty() {
+            if state.secrets_db_path.read().trim().is_empty() {
                 ui.label(
                     egui::RichText::new(format!(
                         "Default: System AppData location ({})",
@@ -116,20 +118,20 @@ pub fn render(
             ui.add_space(8.0);
 
             egui::ComboBox::new("crc_policy", "Encrypted CRC computation")
-                .selected_text(state.encrypted_crc_policy.display_name())
+                .selected_text(state.encrypted_crc_policy.read().display_name())
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
-                        &mut state.encrypted_crc_policy,
+                        &mut *state.encrypted_crc_policy.write(),
                         EncryptedCrcPolicy::OnOpen,
                         EncryptedCrcPolicy::OnOpen.display_name(),
                     );
                     ui.selectable_value(
-                        &mut state.encrypted_crc_policy,
+                        &mut *state.encrypted_crc_policy.write(),
                         EncryptedCrcPolicy::PromptOnOpen,
                         EncryptedCrcPolicy::PromptOnOpen.display_name(),
                     );
                     ui.selectable_value(
-                        &mut state.encrypted_crc_policy,
+                        &mut *state.encrypted_crc_policy.write(),
                         EncryptedCrcPolicy::OnAccess,
                         EncryptedCrcPolicy::OnAccess.display_name(),
                     );
@@ -176,11 +178,11 @@ pub fn render(
         ui.add_space(16.0);
 
         // Info / Error messages
-        if !state.info.is_empty() {
-            ui.colored_label(egui::Color32::from_rgb(56, 142, 60), &state.info);
+        if !state.info.read().is_empty() {
+            ui.colored_label(egui::Color32::from_rgb(56, 142, 60), &*state.info.read());
         }
-        if !state.error.is_empty() {
-            ui.colored_label(egui::Color32::from_rgb(220, 53, 69), &state.error);
+        if !state.error.read().is_empty() {
+            ui.colored_label(egui::Color32::from_rgb(220, 53, 69), &*state.error.read());
         }
     });
 

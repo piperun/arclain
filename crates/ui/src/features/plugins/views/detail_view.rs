@@ -100,6 +100,44 @@ pub fn render(
             })
             .show(ui, &theme.colors);
 
+        // Proxy Settings
+        let proxy_enabled = {
+            let app = app_state.lock();
+            app.user_config
+                .get_plugin_proxy_settings()
+                .get(&plugin_info.id)
+                .cloned()
+                .unwrap_or(false)
+        };
+        let mut proxy_toggle_val = proxy_enabled;
+
+        crate::shared::components::settings_form::SettingsRow::new("Network Proxy")
+            .description("Route this plugin's traffic through the configured SOCKS5 proxy.")
+            .action(|ui| {
+                if ui.add(ToggleSwitch::new(&mut proxy_toggle_val)).changed() {
+                    let mut app = app_state.lock();
+                    app.user_config
+                        .set_plugin_proxy_enabled(&plugin_info.id, proxy_toggle_val);
+
+                    // Persist
+                    if let Some(dbs) = &app.dbs {
+                        let _ = dbs.config.with_connection(|conn| {
+                            app.user_config.save(conn).ok();
+                            Ok::<_, anyhow::Error>(())
+                        });
+                    }
+
+                    // Update Client
+                    let map = app.user_config.get_plugin_proxy_settings();
+                    if let Some(client) = &app.async_http_client {
+                        client.update_plugin_proxy_map(map);
+                    }
+
+                    needs_refresh = true;
+                }
+            })
+            .show(ui, &theme.colors);
+
         ui.add_space(8.0);
         ui.separator();
         ui.add_space(8.0);
@@ -267,7 +305,7 @@ fn render_plugin_ui(
     manager: &PluginManager,
     plugin_id: &str,
     app_state: &Arc<Mutex<crate::core::AppState>>,
-    _shared: Option<&SharedState>,
+    shared: Option<&SharedState>,
     content_cache: Option<&Arc<arclain_data::ContentCache>>,
 ) {
     let mgr_arc = if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
@@ -357,6 +395,8 @@ fn render_plugin_ui(
                     &mut event_callback,
                     &theme.colors,
                     content_cache,
+                    shared,
+                    Some(plugin_id),
                 );
 
                 // Note: Actions are collected async via thread, so we can't process them

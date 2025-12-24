@@ -47,18 +47,19 @@ pub fn render(
             let default_temp_str = default_temp.to_string_lossy();
 
             ui.horizontal(|ui| {
-                let te = egui::TextEdit::singleline(&mut state.temp_dir).hint_text(default_temp_str.as_ref());
+                let mut binding = state.temp_dir.write();
+                let te = egui::TextEdit::singleline(&mut *binding).hint_text(default_temp_str.as_ref());
                 ui.add_sized([ui.available_width() - 110.0, 28.0], te);
                 if ui
                     .add(egui::Button::new("Browse…").min_size(egui::vec2(100.0, 28.0)))
                     .clicked()
                 {
                     if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                        state.temp_dir = path.to_string_lossy().to_string();
+                        *state.temp_dir.write() = path.to_string_lossy().to_string();
                     }
                 }
             });
-            if state.temp_dir.trim().is_empty() {
+            if state.temp_dir.read().trim().is_empty() {
                 ui.label(
                     egui::RichText::new(format!("Default: System Temporary Directory ({})", default_temp_str))
                         .size(11.0)
@@ -96,11 +97,11 @@ pub fn render(
             ui.add_space(12.0);
 
             // Enable checkbox
-            ui.checkbox(&mut state.checksum_enabled, "Enable integrity verification");
+            ui.checkbox(&mut *state.checksum_enabled.write(), "Enable integrity verification");
             ui.add_space(8.0);
 
             // Only show options if enabled
-            if state.checksum_enabled {
+            if *state.checksum_enabled.read() {
                 // Mode selector
                 ui.horizontal(|ui| {
                     ui.label(
@@ -109,15 +110,15 @@ pub fn render(
                             .color(theme.colors.on_surface),
                     );
                     egui::ComboBox::new("checksum_mode", "")
-                        .selected_text(state.checksum_mode.display_name())
+                        .selected_text(state.checksum_mode.read().display_name())
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
-                                &mut state.checksum_mode,
+                                &mut *state.checksum_mode.write(),
                                 ChecksumMode::Simple,
                                 ChecksumMode::Simple.display_name(),
                             );
                             ui.selectable_value(
-                                &mut state.checksum_mode,
+                                &mut *state.checksum_mode.write(),
                                 ChecksumMode::Full,
                                 ChecksumMode::Full.display_name(),
                             );
@@ -133,20 +134,20 @@ pub fn render(
                             .color(theme.colors.on_surface),
                     );
                     egui::ComboBox::new("checksum_algorithm", "")
-                        .selected_text(state.checksum_algorithm.display_name())
+                        .selected_text(state.checksum_algorithm.read().display_name())
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
-                                &mut state.checksum_algorithm,
+                                &mut *state.checksum_algorithm.write(),
                                 ChecksumAlgorithm::Crc32,
                                 ChecksumAlgorithm::Crc32.display_name(),
                             );
                             ui.selectable_value(
-                                &mut state.checksum_algorithm,
+                                &mut *state.checksum_algorithm.write(),
                                 ChecksumAlgorithm::XxHash,
                                 ChecksumAlgorithm::XxHash.display_name(),
                             );
                             ui.selectable_value(
-                                &mut state.checksum_algorithm,
+                                &mut *state.checksum_algorithm.write(),
                                 ChecksumAlgorithm::Sha256,
                                 ChecksumAlgorithm::Sha256.display_name(),
                             );
@@ -155,8 +156,8 @@ pub fn render(
                 ui.add_space(8.0);
 
                 // Verification triggers
-                ui.checkbox(&mut state.verify_after_extract, "Verify after extraction");
-                ui.checkbox(&mut state.verify_after_organize, "Verify after organize");
+                ui.checkbox(&mut *state.verify_after_extract.write(), "Verify after extraction");
+                ui.checkbox(&mut *state.verify_after_organize.write(), "Verify after organize");
             }
         });
 
