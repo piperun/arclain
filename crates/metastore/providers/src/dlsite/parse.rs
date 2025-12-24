@@ -102,6 +102,26 @@ fn clean_text(text: &str) -> String {
         .join(" ")
 }
 
+fn extract_text_with_breaks(element: scraper::ElementRef) -> String {
+    let mut text = String::new();
+    for node in element.descendants() {
+        if let Some(el) = node.value().as_element() {
+            if el.name() == "br" {
+                text.push('\n');
+            }
+        } else if let Some(t) = node.value().as_text() {
+            let s = t.trim();
+            if !s.is_empty() {
+                if !text.is_empty() && !text.ends_with('\n') {
+                    text.push(' ');
+                }
+                text.push_str(s);
+            }
+        }
+    }
+    text
+}
+
 /// Parse DLSite HTML page for additional data
 pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
     let document = Html::parse_document(html);
@@ -312,7 +332,7 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
     // Description
     if let Ok(sel) = Selector::parse("div.work_parts_container") {
         if let Some(el) = document.select(&sel).next() {
-            data.description = Some(clean_text(&el.text().collect::<String>()));
+            data.description = Some(extract_text_with_breaks(el));
         }
     }
     // Fallback description from meta tag
@@ -320,7 +340,8 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
         if let Ok(sel) = Selector::parse("meta[name=\"description\"]") {
             if let Some(el) = document.select(&sel).next() {
                 if let Some(content) = el.value().attr("content") {
-                    data.description = Some(clean_text(content));
+                    // Meta tag content usually has explicit newlines or is plain text
+                    data.description = Some(content.to_string());
                 }
             }
         }
@@ -376,6 +397,9 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
         "div.product-slider-data div[data-src]",
         "div.product_slider_data div[data-src]",
         "ul.product_slider li img[data-src]",
+        // Fallbacks
+        "div.slider_items div.item img",
+        "div#work_left div.product_img a",
     ];
 
     for selector_str in screenshot_selectors {
