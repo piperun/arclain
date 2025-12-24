@@ -1145,6 +1145,7 @@ impl ArclainApp {
                     });
                 
                 use arclain_plugins::types::PluginLayout;
+                let content_cache = self.shared_state.app_state.lock().content_cache.clone();
                 match page_layout {
                     PluginLayout::Single { elements } => {
                         crate::features::plugins::plugin_ui::render_ui_elements(
@@ -1152,7 +1153,7 @@ impl ArclainApp {
                             &elements,
                             &mut callback,
                             &self.shared_state.theme.colors,
-                            None,
+                            content_cache.as_ref(),
                             Some(&self.shared_state),
                             Some(&plugin_id),
                         );
@@ -1168,7 +1169,7 @@ impl ArclainApp {
                                         &sidebar,
                                         &mut callback,
                                         &self.shared_state.theme.colors,
-                                        None,
+                                        content_cache.as_ref(),
                                         Some(&self.shared_state),
                                         Some(&plugin_id),
                                     );
@@ -1182,7 +1183,7 @@ impl ArclainApp {
                                     &content,
                                     &mut callback,
                                     &self.shared_state.theme.colors,
-                                    None,
+                                    content_cache.as_ref(),
                                     Some(&self.shared_state),
                                     Some(&plugin_id),
                                 );

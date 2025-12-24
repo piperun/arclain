@@ -28,6 +28,7 @@ struct PluginState {
     browser_detail_cache: Option<(String, serde_json::Value, Option<ScrapedData>)>,
     // Summary cache for fast list rendering (id -> title, geo_blocked)
     entry_summaries: HashMap<String, EntrySummary>,
+    current_image_index: i32,
 }
 
 // Global state (thread-local for WASM component)
@@ -47,10 +48,30 @@ thread_local! {
         browser_loading: false,
         browser_detail_cache: None,
         entry_summaries: HashMap::new(),
+        current_image_index: -1, // -1 = Cover, 0+ = Sample index
     });
 }
 
 struct Component;
+
+fn format_description(text: &str) -> String {
+    let s = text.trim();
+    
+    // Check if text is flattened (few newlines)
+    let newlines = s.chars().filter(|c| *c == '\n').count();
+    // If length is substantial but newlines are rare, it's likely flat
+    let is_flat = newlines < 3 && s.len() > 200;
+
+    let mut result = s.to_string();
+    if is_flat {
+        result = result.replace("■", "\n\n■")
+            .replace("●", "\n●")
+            .replace("★", "\n★")
+            .replace("・", "\n・");
+    }
+    
+    result
+}
 
 impl archust_plugin_sdk::Guest for Component {
     fn init() {
@@ -838,6 +859,18 @@ impl archust_plugin_sdk::Guest for Component {
     let mut content_elements = Vec::new();
     
     if let Some(selected_id) = &selected_entry {
+        // Check for state change
+        STATE.with(|s| {
+            let mut state = s.borrow_mut();
+            if let Some((cached_id, _, _)) = &state.browser_detail_cache {
+                if cached_id != selected_id {
+                    // ID changed - reset cache and UI state
+                    state.browser_detail_cache = None;
+                    state.current_image_index = -1;
+                }
+            }
+        });
+
         // Retrieve loaded details
         let detail_data = STATE.with(|s| {
             let state = s.borrow();
@@ -881,50 +914,139 @@ impl archust_plugin_sdk::Guest for Component {
              let release_date = json["release_date"].as_str()
                  .or(json["regist_date"].as_str());
              
-             // Title Header
+             // ===== TOOLBAR AT TOP =====
+             content_elements.push(UiElement::Toolbar(ToolbarConfig {
+                 buttons: vec![
+                     ToolbarButtonConfig {
+                         id: format!("refresh_view_{}", selected_id),
+                         label: "Refresh".to_string(),
+                         icon: None,
+                         primary: false,
+                     },
+                     ToolbarButtonConfig {
+                         id: format!("refetch_entry_{}", selected_id),
+                         label: "Refetch".to_string(),
+                         icon: None,
+                         primary: false,
+                     },
+                     ToolbarButtonConfig {
+                         id: format!("select_entry_{}", selected_id),
+                         label: "Select for Use".to_string(),
+                         icon: None,
+                         primary: true,
+                     },
+                 ],
+             }));
+             content_elements.push(UiElement::Separator);
+             
+             // ===== TITLE (Hero) =====
              content_elements.push(UiElement::Label(LabelConfig {
                  text: title.to_string(),
                  bold: true,
                  size: Some(24.0),
              }));
              
-             content_elements.push(UiElement::Label(LabelConfig {
-                 text: maker.to_string(),
-                 bold: false,
-                 size: Some(16.0),
-             }));
+             content_elements.push(UiElement::Space(8.0));
              
-             // Product ID badge
-             content_elements.push(UiElement::Label(LabelConfig {
-                 text: format!("ID: {}", selected_id),
-                 bold: false,
-                 size: Some(12.0),
-             }));
+             // ===== HERO IMAGE WITH NAVIGATION =====
+             // Get current image index and sample count
+             let (current_idx, samples) = STATE.with(|s| {
+                 let state = s.borrow();
+                 let samples = json["sample_images"].as_array().cloned().unwrap_or_default();
+                 (state.current_image_index, samples)
+             });
              
-             // Release date
-             if let Some(date) = release_date {
+             let samples_count = samples.len();
+             
+             // Navigation Toolbar (only if we have samples)
+             if samples_count > 0 {
+                 let status_label = if current_idx == -1 {
+                     "Cover".to_string()
+                 } else {
+                     format!("Sample {}/{}", current_idx + 1, samples_count)
+                 };
+                 
+                 content_elements.push(UiElement::Toolbar(ToolbarConfig {
+                     buttons: vec![
+                         ToolbarButtonConfig {
+                             id: format!("prev_image_{}", selected_id),
+                             label: "< Prev".to_string(),
+                             icon: None,
+                             primary: false,
+                          },
+                         ToolbarButtonConfig {
+                             id: format!("reset_image_{}", selected_id), // Clicking label resets to cover
+                             label: status_label,
+                             icon: None,
+                             primary: true, // Highlight current status
+                          },
+                         ToolbarButtonConfig {
+                             id: format!("next_image_{}", selected_id),
+                             label: "Next >".to_string(),
+                             icon: None,
+                             primary: false,
+                          },
+                     ],
+                 }));
+             }
+             
+             // Determine which image to show
+             let (start_key, display_url) = if current_idx == -1 || samples_count == 0 {
+                 // Show Cover
+                 let url = scraped.as_ref().and_then(|s| s.cover_image.clone())
+                     .or_else(|| {
+                         // Fallback to first sample if no cover explicitly found? 
+                         // Logic below handled this before, let's keep it consistent
+                         samples.first().and_then(|v| v.as_str()).map(|s| s.to_string())
+                     });
+                 (Some(metastore_providers::dlsite::cache_keys::cover_key(selected_id)), url)
+             } else {
+                 // Show Sample
+                 let idx = current_idx as usize;
+                 let url = samples.get(idx).and_then(|v| v.as_str()).map(|s| s.to_string());
+                 (Some(metastore_providers::dlsite::cache_keys::screenshot_key(selected_id, idx)), url)
+             };
+             
+             if let Some(url) = display_url {
+                 content_elements.push(UiElement::Image(ImageConfig {
+                     cache_key: start_key,
+                     url: Some(url),
+                     max_height: Some(400.0), // Larger hero image
+                 }));
+             } else {
+                 // Show placeholder
                  content_elements.push(UiElement::Label(LabelConfig {
-                     text: format!("Released: {}", date),
+                     text: "📷 [Image not available]".to_string(),
                      bold: false,
                      size: Some(12.0),
                  }));
              }
              
+             content_elements.push(UiElement::Space(12.0));
+             
+             // ===== METADATA INFO (Compact Single Line) =====
+             // ===== METADATA INFO (Rows) =====
+             let release_str = release_date.unwrap_or("Unknown Release");
+             
+             content_elements.push(UiElement::Label(LabelConfig {
+                 text: format!("ID: {}", selected_id),
+                 bold: false,
+                 size: Some(13.0),
+             }));
+             content_elements.push(UiElement::Label(LabelConfig {
+                 text: format!("Released: {}", release_str),
+                 bold: false,
+                 size: Some(13.0),
+             }));
+             content_elements.push(UiElement::Label(LabelConfig {
+                 text: format!("Circle: {}", maker),
+                 bold: false,
+                 size: Some(13.0),
+             }));
+             
              content_elements.push(UiElement::Separator);
              
-             // Cover Image - try scraped first, then check if we have a cover URL in JSON
-             let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
-             if let Some(url) = cover_url {
-                 content_elements.push(UiElement::Image(ImageConfig {
-                     cache_key: Some(metastore_providers::dlsite::cache_keys::cover_key(selected_id)),
-                     url: Some(url),
-                     max_height: Some(400.0),
-                 }));
-             }
-             
-             content_elements.push(UiElement::Space(10.0));
-             
-             // Tags - try scraped first, then fall back to JSON tags_json
+             // ===== TAGS =====
              let tags: Vec<String> = scraped.as_ref()
                  .map(|s| s.tags.clone())
                  .filter(|t| !t.is_empty())
@@ -955,7 +1077,7 @@ impl archust_plugin_sdk::Guest for Component {
                  content_elements.push(UiElement::Space(10.0));
              }
              
-             // Description - try scraped first, then fall back to JSON description
+             // ===== DESCRIPTION =====
              let description = scraped.as_ref()
                  .and_then(|s| s.description.clone())
                  .or_else(|| json["description"].as_str().map(|s| s.to_string()));
@@ -967,16 +1089,18 @@ impl archust_plugin_sdk::Guest for Component {
                      size: Some(14.0),
                  }));
                  // Truncate long descriptions for readability (respecting UTF-8 char boundaries)
-                 let desc_display = if desc.len() > 800 {
-                     // Find the last valid char boundary at or before 800
-                     let truncate_at = desc.char_indices()
-                         .take_while(|(i, _)| *i <= 800)
-                         .last()
-                         .map(|(i, _)| i)
-                         .unwrap_or(800);
-                     format!("{}...", &desc[..truncate_at])
+                 // Format description to restore structure
+                 let formatted = format_description(&desc);
+                 // Truncate if excessively long (2000 chars)
+                 let desc_display = if formatted.len() > 2000 {
+                      let truncate_at = formatted.char_indices()
+                          .take_while(|(i, _)| *i <= 2000)
+                          .last()
+                          .map(|(i, _)| i)
+                          .unwrap_or(2000);
+                      format!("{}...", &formatted[..truncate_at])
                  } else {
-                     desc
+                     formatted
                  };
                  content_elements.push(UiElement::Label(LabelConfig {
                      text: desc_display,
@@ -987,29 +1111,29 @@ impl archust_plugin_sdk::Guest for Component {
              
              content_elements.push(UiElement::Separator);
              
-             // Actions Toolbar
-             content_elements.push(UiElement::Toolbar(ToolbarConfig {
-                 buttons: vec![
-                     ToolbarButtonConfig {
-                         id: format!("refresh_view_{}", selected_id),
-                         label: "Refresh".to_string(),
-                         icon: None,
-                         primary: false,
-                     },
-                     ToolbarButtonConfig {
-                         id: format!("refetch_entry_{}", selected_id),
-                         label: "Refetch".to_string(),
-                         icon: None,
-                         primary: false,
-                     },
-                     ToolbarButtonConfig {
-                         id: format!("select_entry_{}", selected_id),
-                         label: "Select for Use".to_string(),
-                         icon: None,
-                         primary: true,
-                     },
-                 ],
-             }));
+             // ===== SAMPLE IMAGES (Gallery) =====
+             if let Some(samples) = json["sample_images"].as_array() {
+                 if !samples.is_empty() {
+                     content_elements.push(UiElement::Label(LabelConfig {
+                         text: "Sample Images".to_string(),
+                         bold: true,
+                         size: Some(14.0),
+                     }));
+                     content_elements.push(UiElement::Space(5.0));
+                     
+                     // Show up to 3 samples
+                     for (i, sample) in samples.iter().take(3).enumerate() {
+                         if let Some(url) = sample.as_str() {
+                             content_elements.push(UiElement::Image(ImageConfig {
+                                 cache_key: Some(metastore_providers::dlsite::cache_keys::screenshot_key(selected_id, i)),
+                                 url: Some(url.to_string()),
+                                 max_height: Some(200.0),
+                             }));
+                             content_elements.push(UiElement::Space(8.0));
+                         }
+                     }
+                 }
+             }
              
         } else {
              content_elements.push(UiElement::Loading(LoadingConfig {
@@ -1111,6 +1235,48 @@ impl archust_plugin_sdk::Guest for Component {
             
             // Dialog will be closed when user selects a result
             return vec![];
+        }
+
+        // Image Gallery Navigation
+        if id.starts_with("prev_image_") {
+            STATE.with(|s| {
+                let mut state = s.borrow_mut();
+                 let count = if let Some((_, json, _)) = &state.browser_detail_cache {
+                     json["sample_images"].as_array().map(|a| a.len() as i32).unwrap_or(0)
+                 } else { 0 };
+
+                if count > 0 {
+                    let mut new_idx = state.current_image_index - 1;
+                    if new_idx < -1 { new_idx = count - 1; }
+                    state.current_image_index = new_idx;
+                    // Force refresh
+                }
+            });
+            return vec![archust_plugin_sdk::arclain::plugin::ui::PluginAction::RefreshPanel("dlsite_browser".to_string())];
+        }
+
+        if id.starts_with("next_image_") {
+            STATE.with(|s| {
+                let mut state = s.borrow_mut();
+                 let count = if let Some((_, json, _)) = &state.browser_detail_cache {
+                     json["sample_images"].as_array().map(|a| a.len() as i32).unwrap_or(0)
+                 } else { 0 };
+
+                if count > 0 {
+                    let mut new_idx = state.current_image_index + 1;
+                    if new_idx >= count { new_idx = -1; }
+                    state.current_image_index = new_idx;
+                }
+            });
+            return vec![archust_plugin_sdk::arclain::plugin::ui::PluginAction::RefreshPanel("dlsite_browser".to_string())];
+        }
+
+        if id.starts_with("reset_image_") {
+            STATE.with(|s| {
+                let mut state = s.borrow_mut();
+                state.current_image_index = -1;
+            });
+            return vec![archust_plugin_sdk::arclain::plugin::ui::PluginAction::RefreshPanel("dlsite_browser".to_string())];
         }
 
         match id.as_str() {
