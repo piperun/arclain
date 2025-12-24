@@ -1,8 +1,8 @@
 use crate::core::SettingsPage;
 use crate::features::password_management::dialogs::PasswordRulesDialog;
 use crate::features::settings::settings_content::{
-    render_settings_content, ArchivesSettingsState, GeneralSettingsState, SecuritySettingsState,
-    SettingsAction,
+    render_settings_content, ArchivesSettingsState, GeneralSettingsState, NetworkSettingsState,
+    SecuritySettingsState, SettingsAction,
 };
 use crate::features::settings::pages::interface::InterfaceSettingsState;
 use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
@@ -14,6 +14,7 @@ use eframe::egui;
 
 pub struct SettingsFeature {
     pub general_state: GeneralSettingsState,
+    pub network_state: NetworkSettingsState,
     pub security_state: SecuritySettingsState,
     pub archives_state: ArchivesSettingsState,
     pub password_rules_dialog: PasswordRulesDialog,
@@ -44,10 +45,29 @@ impl SettingsFeature {
             }).collect()
         };
 
+        // Load network settings
+        let network_state = {
+            let state = shared.app_state.lock();
+            let password = if let Some(dbs) = &state.dbs {
+                 dbs.secrets.get_secret("proxy:socks5").unwrap_or(None).map(|s| s.to_string()).unwrap_or_default()
+            } else { String::new() };
+            
+            NetworkSettingsState {
+                socks5_enabled: state.user_config.socks5_enabled,
+                socks5_address: state.user_config.socks5_address.clone().unwrap_or_default(),
+                socks5_username: state.user_config.socks5_username.clone().unwrap_or_default(),
+                socks5_password: password,
+                info: String::new(),
+                error: String::new(),
+                connection_test_status: Default::default(),
+            }
+        };
+
         Self {
             general_state: GeneralSettingsState {
                 open_nested_in_new_tab,
             },
+            network_state,
             security_state: SecuritySettingsState::default(),
             archives_state: ArchivesSettingsState::default(),
             password_rules_dialog: PasswordRulesDialog {
@@ -87,6 +107,13 @@ impl SettingsFeature {
                 // So state.user_config.temp_dir must be `Option<String>`.
 
                 current_val != state.user_config.temp_dir
+            }
+            SettingsPage::Network => {
+                 self.network_state.socks5_enabled != state.user_config.socks5_enabled
+                 || self.network_state.socks5_address != state.user_config.socks5_address.clone().unwrap_or_default()
+                 || self.network_state.socks5_username != state.user_config.socks5_username.clone().unwrap_or_default()
+                 // Note: we don't check password for dirty state as we don't hold the secret in user_config
+                 // and fetching it here might be expensive/complex.
             }
             SettingsPage::Security => {
                 // Check key file or secrets db
@@ -322,6 +349,30 @@ impl SettingsFeature {
                                                             rules: self.password_rules_dialog.rules.clone(),
                                                         });
                                                     }
+                                                    SettingsPage::Network => {
+                                                        let address_opt = if self.network_state.socks5_address.trim().is_empty() {
+                                                            None
+                                                        } else {
+                                                            Some(self.network_state.socks5_address.trim().to_string())
+                                                        };
+                                                        let username_opt = if self.network_state.socks5_username.trim().is_empty() {
+                                                            None
+                                                        } else {
+                                                            Some(self.network_state.socks5_username.trim().to_string())
+                                                        };
+                                                        let password_opt = if self.network_state.socks5_password.is_empty() {
+                                                            None
+                                                        } else {
+                                                            Some(self.network_state.socks5_password.clone())
+                                                        };
+                                                        
+                                                        action = Some(SettingsAction::SaveNetwork {
+                                                            socks5_enabled: self.network_state.socks5_enabled,
+                                                            socks5_address: address_opt,
+                                                            socks5_username: username_opt,
+                                                            socks5_password: password_opt,
+                                                        });
+                                                    }
                                                     _ => {}
                                                 }
                                              });
@@ -434,6 +485,7 @@ impl SettingsFeature {
                                                     &mut self.interface_state,
                                                     &mut self.toolbar_layout_state,
                                                     &mut self.info_panel_layout_state,
+                                                    &mut self.network_state,
                                                     &shared.app_state,
                                                     Some(shared),
                                                 );
@@ -464,6 +516,7 @@ impl SettingsFeature {
             &mut self.security_state,
             &mut self.archives_state,
             &mut self.plugins_state,
+            &mut self.network_state,
             shared,
         );
     }

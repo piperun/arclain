@@ -40,6 +40,8 @@ pub enum SettingsPage {
     ToolbarLayout,
     /// Info panel layout editor
     InfoPanelLayout,
+    /// Network and proxy settings
+    Network,
 }
 
 impl SettingsPage {
@@ -56,6 +58,7 @@ impl SettingsPage {
             SettingsPage::Plugins => "Plugins",
             SettingsPage::ToolbarLayout => "Toolbar Layout",
             SettingsPage::InfoPanelLayout => "Info Panel Layout",
+            SettingsPage::Network => "Network",
         }
     }
 
@@ -72,6 +75,7 @@ impl SettingsPage {
             SettingsPage::Plugins => egui_phosphor::regular::PUZZLE_PIECE,
             SettingsPage::ToolbarLayout => egui_phosphor::regular::STACK,
             SettingsPage::InfoPanelLayout => egui_phosphor::regular::SIDEBAR,
+            SettingsPage::Network => egui_phosphor::regular::GLOBE,
         }
     }
 
@@ -88,6 +92,7 @@ impl SettingsPage {
             SettingsPage::Plugins => "Manage and configure plugins",
             SettingsPage::ToolbarLayout => "Customize toolbar button layout",
             SettingsPage::InfoPanelLayout => "Customize info panel sections",
+            SettingsPage::Network => "Proxy and network configuration",
         }
     }
 
@@ -101,6 +106,7 @@ impl SettingsPage {
             SettingsPage::OrganizationRules,
             SettingsPage::Security,
             SettingsPage::Plugins,
+            SettingsPage::Network,
         ]
     }
 }

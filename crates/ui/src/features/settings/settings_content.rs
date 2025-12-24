@@ -83,6 +83,7 @@ pub fn render_settings_content(
     interface_state: &mut crate::features::settings::pages::interface::InterfaceSettingsState,
     toolbar_layout_state: &mut crate::features::settings::pages::ToolbarLayoutState,
     info_panel_layout_state: &mut crate::features::settings::pages::InfoPanelLayoutState,
+    network_state: &mut NetworkSettingsState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
@@ -92,6 +93,7 @@ pub fn render_settings_content(
             None
         }
         SettingsPage::General => render_general_settings(ui, theme, general_state),
+        SettingsPage::Network => pages::network::render(ui, theme, network_state),
         SettingsPage::Interface => crate::features::settings::pages::render_interface_settings(
             ui,
             theme,

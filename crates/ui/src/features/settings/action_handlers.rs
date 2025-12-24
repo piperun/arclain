@@ -23,6 +23,7 @@ pub fn handle_action(
     security_state: &mut SecuritySettingsState,
     archives_state: &mut ArchivesSettingsState,
     plugins_state: &mut PluginsListState,
+    network_state: &mut crate::features::settings::types::NetworkSettingsState,
     shared: &SharedState,
 ) {
     match action {
@@ -153,6 +154,117 @@ pub fn handle_action(
                     tracing::info!("General settings saved");
                 }
             }
+        }
+        SettingsAction::SaveNetwork {
+            socks5_enabled,
+            socks5_address,
+            socks5_username,
+            socks5_password,
+        } => {
+            let mut state = shared.app_state.lock();
+            state.user_config.socks5_enabled = socks5_enabled;
+            state.user_config.socks5_address = socks5_address.clone();
+            state.user_config.socks5_username = socks5_username.clone();
+
+            let mut password_to_use = None;
+
+            if let Some(ref dbs) = state.dbs {
+                // Save config
+                if let Err(e) = dbs.config.with_connection(|conn| {
+                    state.user_config.save(conn).ok();
+                    Ok::<_, anyhow::Error>(())
+                }) {
+                    tracing::error!("Failed to save network settings: {}", e);
+                }
+
+                // Handle password
+                if let Some(pwd) = &socks5_password {
+                    if let Err(e) = dbs.secrets.set_secret("proxy:socks5", pwd) {
+                        tracing::error!("Failed to save proxy password: {}", e);
+                    }
+                    password_to_use = Some(pwd.clone());
+                } else {
+                    // Try to load existing
+                    if let Ok(Some(existing)) = dbs.secrets.get_secret("proxy:socks5") {
+                        password_to_use = Some(existing.to_string());
+                    }
+                }
+            }
+
+            // Update client
+            use arclain_http::features::proxy::ProxyConfig;
+            let config = ProxyConfig {
+                enabled: socks5_enabled,
+                address: socks5_address.unwrap_or_default(),
+                username: socks5_username,
+                password: password_to_use,
+            };
+
+            if let Some(client) = &state.async_http_client {
+                client.update_config(Some(config));
+            }
+            tracing::info!("Network settings saved");
+        }
+        SettingsAction::TestNetwork {
+            socks5_enabled,
+            socks5_address,
+            socks5_username,
+            socks5_password,
+        } => {
+            use crate::features::settings::types::ConnectionTestStatus;
+
+            // Set testing state
+            *network_state.connection_test_status.lock() = ConnectionTestStatus::Testing;
+            let status_clone = network_state.connection_test_status.clone();
+
+            // Create config for test
+            use arclain_http::features::proxy::ProxyConfig;
+            let config = ProxyConfig {
+                enabled: socks5_enabled,
+                address: socks5_address.unwrap_or_default(),
+                username: socks5_username,
+                password: socks5_password,
+            };
+
+            // Spawn test task
+            let runtime = shared.app_state.lock().tokio_runtime.handle().clone();
+            runtime.spawn(async move {
+                let result = async {
+                    // Build client manually since we want to test specific config without affecting global state
+                    let mut builder = reqwest::Client::builder()
+                        .connect_timeout(std::time::Duration::from_secs(10))
+                        .timeout(std::time::Duration::from_secs(10));
+
+                    if let Some(proxy) = config.to_proxy() {
+                        builder = builder.proxy(proxy);
+                    } else if config.enabled {
+                        return Err(anyhow::anyhow!("Invalid proxy configuration"));
+                    }
+
+                    let client = builder
+                        .build()
+                        .map_err(|e| anyhow::anyhow!("Failed to build client: {}", e))?;
+
+                    // Test connection to a reliable endpoint
+                    // We use Google as a generic connectivity check, or maybe Cloudflare
+                    let _ = client
+                        .get("https://www.google.com")
+                        .send()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?
+                        .error_for_status()
+                        .map_err(|e| anyhow::anyhow!("HTTP error: {}", e))?;
+
+                    Ok::<_, anyhow::Error>("Connection successful".to_string())
+                }
+                .await;
+
+                let mut status = status_clone.lock();
+                match result {
+                    Ok(msg) => *status = ConnectionTestStatus::Success(msg),
+                    Err(e) => *status = ConnectionTestStatus::Error(e.to_string()),
+                }
+            });
         }
         SettingsAction::NavigateTo(_) => {
             // Navigation is handled by extract_navigation before this function is called

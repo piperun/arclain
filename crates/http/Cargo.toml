@@ -9,7 +9,7 @@ description = "Secure async HTTP client with domain security and rate limiting"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 # HTTP client
-reqwest = { version = "0.11", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks"] }
 
 # URL parsing
 url = "2"
@@ -32,3 +32,4 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+wiremock = "0.6"

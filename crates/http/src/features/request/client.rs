@@ -16,8 +16,8 @@ use tracing::{debug, info, warn};
 
 /// Async HTTP client with security features
 pub struct AsyncHttpClient {
-    /// Inner reqwest client
-    inner: reqwest::Client,
+    /// Inner reqwest client (wrapped in RwLock for dynamic reconfiguration)
+    inner: RwLock<reqwest::Client>,
     /// Rate limiter
     rate_limiter: RwLock<RateLimiter>,
     /// Domain whitelist
@@ -28,21 +28,41 @@ pub struct AsyncHttpClient {
     runtime: Handle,
 }
 
+use crate::features::proxy::ProxyConfig;
+
 impl AsyncHttpClient {
     /// Create a new client with the given whitelist
-    pub fn new(runtime: Handle, whitelist: Arc<RwLock<DomainWhitelist>>) -> Self {
-        let inner = reqwest::Client::builder()
-            .user_agent("Arclain/1.0")
-            .build()
-            .expect("Failed to create HTTP client");
+    pub fn new(
+        runtime: Handle,
+        whitelist: Arc<RwLock<DomainWhitelist>>,
+        proxy_config: Option<ProxyConfig>,
+    ) -> Self {
+        let client = Self::build_client(proxy_config);
 
         Self {
-            inner,
+            inner: RwLock::new(client),
             rate_limiter: RwLock::new(RateLimiter::default()),
             whitelist,
             pending: Arc::new(Mutex::new(HashMap::new())),
             runtime,
         }
+    }
+
+    /// Update client configuration (e.g. proxy settings)
+    pub fn update_config(&self, proxy_config: Option<ProxyConfig>) {
+        let new_client = Self::build_client(proxy_config);
+        *self.inner.write() = new_client;
+        info!("AsyncHttpClient configuration updated");
+    }
+
+    fn build_client(proxy_config: Option<ProxyConfig>) -> reqwest::Client {
+        let mut builder = reqwest::Client::builder().user_agent("Arclain/1.0");
+
+        if let Some(proxy) = proxy_config.and_then(|c| c.to_proxy()) {
+            builder = builder.proxy(proxy);
+        }
+
+        builder.build().expect("Failed to create HTTP client")
     }
 
     /// Update the whitelist
@@ -135,7 +155,7 @@ impl AsyncHttpClient {
             .insert(id.clone(), RequestStatus::Pending);
 
         // Clone what we need for the async task
-        let client = self.inner.clone();
+        let client = self.inner.read().clone();
         let pending = self.pending.clone();
         let request_id = id.clone();
 
@@ -260,7 +280,7 @@ impl AsyncHttpClient {
     pub fn blocking_get(&self, url: &str) -> Result<Vec<u8>, String> {
         use std::time::Duration;
 
-        let client = self.inner.clone();
+        let client = self.inner.read().clone();
         let url = url.to_string();
 
         // Use the runtime handle to block on the async request

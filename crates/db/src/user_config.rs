@@ -71,6 +71,18 @@ pub struct UserConfig {
     /// Info panel section order (JSON list of section IDs)
     #[db(nullable)]
     pub info_panel_order: Option<String>,
+
+    /// SOCKS5 proxy address (e.g., "127.0.0.1:1080")
+    #[db(nullable)]
+    pub socks5_address: Option<String>,
+
+    /// Whether SOCKS5 proxy is enabled
+    #[db(default = "0")]
+    pub socks5_enabled: bool,
+
+    /// Optional SOCKS5 username
+    #[db(nullable)]
+    pub socks5_username: Option<String>,
 }
 
 impl UserConfig {
