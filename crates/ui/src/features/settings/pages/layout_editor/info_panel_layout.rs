@@ -33,7 +33,11 @@ impl Default for InfoPanelLayoutState {
 impl InfoPanelLayoutState {
     pub fn load_from_db(&mut self, conn: &rusqlite::Connection) {
         if let Ok(items) = list_items_by_region(conn, UiRegion::InfoPanel) {
-            self.items = items;
+            // Filter out internal items that shouldn't be user-configurable
+            self.items = items
+                .into_iter()
+                .filter(|i| i.id != "info.plugin_metadata")
+                .collect();
             self.items.sort_by_key(|i| i.sort_order);
             self.loaded = true;
             self.dirty = false;
@@ -245,11 +249,13 @@ fn render_section_preview(
                             .inner_margin(egui::Margin::symmetric(12, 8))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
-                                ui.label(
-                                    egui::RichText::new(&item.label)
-                                        .size(14.0)
-                                        .color(text_color),
-                                );
+                                ui.vertical_centered(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(&item.label)
+                                            .size(14.0)
+                                            .color(text_color),
+                                    );
+                                });
                             });
 
                         // Make clickable

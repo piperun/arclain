@@ -183,7 +183,10 @@ fn render_properties_panel(
                         }
                         "info.plugin_metadata" => {
                             // Check signal first for reactive updates
-                            let metadata = app_state.signals.metadata.get()
+                            let metadata = app_state
+                                .signals
+                                .metadata
+                                .get()
                                 .or_else(|| archive_info.plugin_metadata.clone());
 
                             if let Some(metadata) = metadata {
@@ -200,12 +203,6 @@ fn render_properties_panel(
                                 if let Some(plugin_id) = &item.action_data {
                                     if let Some(manager_arc) = &app_state.plugin_manager {
                                         let manager = manager_arc.lock();
-                                        // Attempt to get UI layout for this item from plugin
-                                        // We can't actually send arbitrary IDs to "get_ui_layout" unless we modify the plugin API
-                                        // or interpret action_data specifically.
-                                        // But the `get_ui_layout` for InfoPanel typically returns a full list.
-                                        // The item in DB represents the whole plugin block?
-                                        // Yes, sync_plugin_items creates one item per plugin for InfoPanel.
 
                                         let elements = manager
                                             .with_plugin_instance(plugin_id, |instance| {
@@ -217,23 +214,12 @@ fn render_properties_panel(
 
                                         if !elements.is_empty() {
                                             let flat = elements.flatten();
-                                            let pid = plugin_id.clone();
-                                            let mut callback: crate::features::plugins::plugin_ui::UiEventCallback = 
-                                                Box::new(move |id, val| {
-                                                    // We can't easily dispatch back to main loop here without channels
-                                                    // For now, logging, or we need to pass a channel sender down
-                                                    tracing::debug!("[{}] Plugin Action in InfoPanel: {} -> {:?} (not handled fully yet)", pid, id, val);
-                                                });
-                                                
-                                            crate::features::plugins::plugin_ui::render_ui_elements(
-                                                ui,
-                                                &flat,
-                                                &mut callback,
-                                                &shared.theme.colors,
-                                                None, // Content cache not strictly needed for basic info panel buttons/labels
-                                                Some(shared),
-                                                Some(plugin_id.as_str()),
-                                            );
+                                            // Add to sections instead of rendering directly
+                                            // This ensures plugins respect the layout order
+                                            sections.push(properties_panel::PanelSection::Plugin {
+                                                plugin_id: plugin_id.clone(),
+                                                elements: flat,
+                                            });
                                         }
                                     }
                                 }

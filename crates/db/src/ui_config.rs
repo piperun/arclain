@@ -490,7 +490,6 @@ pub fn seed_defaults_if_empty(conn: &Connection) -> Result<()> {
         ("info.archive", "Archive Info"),
         ("info.file", "File Info"),
         ("info.attributes", "Attributes"),
-        ("info.plugin_metadata", "Plugin Metadata"),
     ];
     for (i, (id, label)) in info_sections.iter().enumerate() {
         upsert_item(

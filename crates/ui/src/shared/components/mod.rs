@@ -5,6 +5,7 @@ pub mod context_menu;
 pub mod file_list;
 pub mod header;
 pub mod network_log;
+pub mod panel;
 pub mod preview_tree;
 pub mod properties_panel;
 pub mod search_bar;
