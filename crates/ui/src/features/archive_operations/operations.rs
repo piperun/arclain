@@ -2,7 +2,6 @@ use super::ArchiveOperationsState;
 use crate::core::utils;
 use crate::platform::{resume_process, suspend_process};
 use crate::shared::dialogs;
-use arclain_core::ArchiveBackend;
 
 pub fn pause_extraction(state: &mut ArchiveOperationsState) {
     if let Some(child) = &state.extraction_child {
@@ -255,93 +254,149 @@ pub fn open_file_from_archive(
         file_path
     );
 
-    // Extract files
-    let temp_dir = opener.temp_dir();
-    let result = backend.extract_files(&archive, temp_dir, &files_to_extract, password.as_deref());
+    // Get temp directory for extraction
+    let temp_dir = opener.temp_dir().to_path_buf();
+    let temp_dir_for_thread = temp_dir.clone();
 
-    if let Err(e) = result {
-        status_info.message = format!("Failed to extract: {}", e);
-        return None;
-    }
+    // Get signals from state for progress updates
+    let st = state.lock();
+    let signals = st.signals.clone();
+    drop(st);
 
-    // Check if this is an archive file
-    if is_archive_file(file_path) {
-        // Return the extracted path so caller can open it as a new archive
-        let extracted_path = temp_dir.join(file_path);
-        if extracted_path.exists() {
-            status_info.message = format!("Opening nested archive: {}", file_path);
-            return Some(extracted_path);
-        }
-    }
+    // Reset cancellation token
+    signals
+        .extraction_cancel
+        .store(false, std::sync::atomic::Ordering::SeqCst);
 
-    // Find the actual file in temp directory
-    // 7z preserves full path structure, so file might be in subdirectory
-    let file_full_path = temp_dir.join(file_path);
+    // Set initial extraction progress
+    let file_path_str = file_path.to_string();
+    let total_files = files_to_extract.len();
+    signals
+        .extraction_progress
+        .set(Some(crate::core::signals::ExtractionProgressState {
+            current_file: "Starting extraction...".to_string(),
+            percent: 0,
+            current: 0,
+            total: total_files,
+            complete: false,
+            error: None,
+            file_to_open: None,
+            cancelled: false,
+        }));
 
-    // Prevent cleanup - we want to keep temp files for opening
-    // Move this BEFORE any existence checks to prevent cleanup on early return
-    let temp_dir_owned = temp_dir.to_path_buf();
-    std::mem::forget(opener);
+    // Clone data for thread
+    let archive_clone = archive.clone();
+    let files_clone = files_to_extract.clone();
+    let password_clone = password.clone();
+    let backend_clone = backend.clone();
+    let signals_clone = signals.clone();
+    let file_path_clone = file_path_str.clone();
+    let cancel_token = signals.extraction_cancel.clone();
 
-    // Debug: List what was actually extracted
-    tracing::info!("Temp directory contents at: {}", temp_dir_owned.display());
-    if let Ok(entries) = std::fs::read_dir(&temp_dir_owned) {
-        for entry in entries.flatten() {
-            tracing::info!("  -> {}", entry.path().display());
-        }
-    }
+    // Run extraction in background thread
+    std::thread::spawn(move || {
+        // Clone again for the progress callback
+        let signals_for_callback = signals_clone.clone();
 
-    let actual_file = if file_full_path.exists() {
-        file_full_path
-    } else {
-        // Try to find by filename only (in case the path structure differs)
-        let filename = std::path::Path::new(file_path)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(file_path);
-
-        tracing::info!(
-            "Searching for filename: {} in {}",
-            filename,
-            temp_dir_owned.display()
+        let result = backend_clone.extract_files_with_progress(
+            &archive_clone,
+            &temp_dir_for_thread,
+            &files_clone,
+            password_clone.as_deref(),
+            Some(&move |progress: arclain_core::ExtractionProgress| {
+                tracing::debug!(
+                    "Progress callback: {}/{} ({}%) - {}",
+                    progress.current,
+                    progress.total,
+                    progress.percent,
+                    progress.current_file
+                );
+                signals_for_callback.extraction_progress.set(Some(
+                    crate::core::signals::ExtractionProgressState {
+                        current_file: progress.current_file.clone(),
+                        percent: progress.percent,
+                        current: progress.current,
+                        total: progress.total,
+                        complete: false,
+                        error: None,
+                        file_to_open: None,
+                        cancelled: false,
+                    },
+                ));
+            }),
+            Some(&cancel_token), // Pass cancellation token
         );
 
-        // Search for the file in temp directory
-        find_file_in_dir(&temp_dir_owned, filename).unwrap_or(file_full_path)
-    };
+        match result {
+            Ok(_) => {
+                // Find the file and signal completion
+                let file_full_path = temp_dir_for_thread.join(&file_path_clone);
+                let actual_file = if file_full_path.exists() {
+                    file_full_path
+                } else {
+                    // Search for file by name
+                    find_file_in_dir_static(&temp_dir_for_thread, &file_path_clone)
+                        .unwrap_or(file_full_path)
+                };
 
-    tracing::info!("Attempting to open: {}", actual_file.display());
-
-    if !actual_file.exists() {
-        status_info.message = format!("File not found after extraction: {}", actual_file.display());
-        return None;
-    }
-
-    // Open the file with system default using the full path
-    #[cfg(target_os = "windows")]
-    {
-        use std::process::Command;
-        match Command::new("explorer").arg(&actual_file).spawn() {
-            Ok(child) => {
-                tracing::info!("Launched explorer with PID: {:?}", child.id());
+                signals_clone.extraction_progress.set(Some(
+                    crate::core::signals::ExtractionProgressState {
+                        current_file: "Extraction complete".to_string(),
+                        percent: 100,
+                        current: total_files,
+                        total: total_files,
+                        complete: true,
+                        error: None,
+                        file_to_open: Some(actual_file),
+                        cancelled: false,
+                    },
+                ));
             }
             Err(e) => {
-                status_info.message = format!("Failed to open file: {}", e);
-                return None;
+                signals_clone.extraction_progress.set(Some(
+                    crate::core::signals::ExtractionProgressState {
+                        current_file: "Extraction failed".to_string(),
+                        percent: 0,
+                        current: 0,
+                        total: total_files,
+                        complete: true,
+                        error: Some(format!("{}", e)),
+                        file_to_open: None,
+                        cancelled: false,
+                    },
+                ));
+            }
+        }
+    });
+
+    // Prevent cleanup - we want to keep temp files for opening
+    std::mem::forget(opener);
+
+    // Return None - the file will be opened when extraction signal completes
+    // The UI will handle detecting complete=true and opening the file
+    status_info.message = format!("Extracting {} files...", total_files);
+    None
+}
+
+/// Static helper to find file in directory (for use in thread)
+fn find_file_in_dir_static(dir: &std::path::Path, filename: &str) -> Option<std::path::PathBuf> {
+    // Get just the filename without path
+    let target = std::path::Path::new(filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(filename);
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if let Some(found) = find_file_in_dir_static(&path, target) {
+                    return Some(found);
+                }
+            } else if path.file_name().and_then(|n| n.to_str()) == Some(target) {
+                return Some(path);
             }
         }
     }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        use std::process::Command;
-        if let Err(e) = Command::new("xdg-open").arg(&actual_file).spawn() {
-            status_info.message = format!("Failed to open file: {}", e);
-            return None;
-        }
-    }
-
-    status_info.message = format!("Opened: {}", file_path);
-
     None
 }

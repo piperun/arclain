@@ -1,5 +1,5 @@
 //! Archive operations and management
-//! 
+//!
 //! This module provides the core archive abstraction layer, including:
 //! - Archive handle with dependency injection
 //! - ArchiveBackend trait for format implementations  
@@ -55,10 +55,7 @@ impl BackendCapabilities {
     }
 
     pub fn is_read_only(&self) -> bool {
-        !self.can_create
-            && !self.can_add_files
-            && !self.can_delete_files
-            && !self.can_modify_files
+        !self.can_create && !self.can_add_files && !self.can_delete_files && !self.can_modify_files
     }
 }
 
@@ -76,6 +73,33 @@ pub trait ArchiveBackend: Send + Sync {
         files: &[String],
         password: Option<&str>,
     ) -> Result<()>;
+
+    /// Extract files with progress callback and optional cancellation support
+    ///
+    /// # Arguments
+    /// * `path` - Path to the archive
+    /// * `dest` - Destination directory
+    /// * `files` - List of files to extract
+    /// * `password` - Optional password
+    /// * `progress` - Optional callback for progress updates
+    /// * `cancel` - Optional cancellation token - if the AtomicBool is set to true, extraction should stop
+    ///
+    /// Default implementation calls extract_files without progress or cancellation
+    fn extract_files_with_progress(
+        &self,
+        path: &Path,
+        dest: &Path,
+        files: &[String],
+        password: Option<&str>,
+        progress: Option<&ProgressCallback>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<()> {
+        // Default: ignore progress and cancel, just extract
+        let _ = progress;
+        let _ = cancel;
+        self.extract_files(path, dest, files, password)
+    }
+
     fn extract_directory(
         &self,
         path: &Path,
@@ -107,3 +131,20 @@ pub trait ArchiveBackend: Send + Sync {
         password: Option<&str>,
     ) -> Result<String>;
 }
+
+/// Progress update for extraction operations
+#[derive(Debug, Clone)]
+pub struct ExtractionProgress {
+    pub current: usize,
+    pub total: usize,
+    pub current_file: String,
+    pub percent: u8,
+}
+
+/// Callback for progress updates during extraction
+pub type ProgressCallback = dyn Fn(ExtractionProgress) + Send + Sync;
+
+/// Cancellation token for stoppable extraction operations
+/// Pass this to extract_files_with_progress and check it periodically
+/// If the AtomicBool is set to true, the operation should stop
+pub type CancellationToken = std::sync::Arc<std::sync::atomic::AtomicBool>;

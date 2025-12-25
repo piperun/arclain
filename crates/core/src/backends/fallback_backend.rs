@@ -177,6 +177,49 @@ impl ArchiveBackend for FallbackBackend {
         }
     }
 
+    fn extract_files_with_progress(
+        &self,
+        path: &Path,
+        dest: &Path,
+        files: &[String],
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        cancel: Option<&crate::CancellationToken>,
+    ) -> Result<()> {
+        info!(
+            "Trying {} backend to extract {} files with progress",
+            self.primary_name,
+            files.len()
+        );
+
+        match self
+            .primary
+            .extract_files_with_progress(path, dest, files, password, progress, cancel)
+        {
+            Ok(()) => {
+                info!(
+                    "Successfully extracted {} files with {} backend",
+                    files.len(),
+                    self.primary_name
+                );
+                Ok(())
+            }
+            Err(e) => {
+                // Don't fallback if cancelled
+                if e.to_string().contains("cancelled") {
+                    return Err(e);
+                }
+                warn!(
+                    "{} backend failed to extract files: {}. Falling back to {}",
+                    self.primary_name, e, self.fallback_name
+                );
+                self.fallback
+                    .extract_files_with_progress(path, dest, files, password, progress, cancel)
+                    .with_context(|| format!("Both backends failed to extract files"))
+            }
+        }
+    }
+
     fn extract_directory(
         &self,
         path: &Path,

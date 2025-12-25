@@ -73,9 +73,9 @@ pub fn render_extraction_progress_dialog(
 
     let params = ModalParams {
         width_frac: 0.5,
-        height_frac: 0.32,
-        min: egui::vec2(520.0, 260.0),
-        max: egui::vec2(900.0, 480.0),
+        height_frac: 0.45,
+        min: egui::vec2(550.0, 350.0),
+        max: egui::vec2(900.0, 600.0),
         padding: egui::vec2(18.0, 14.0),
         bottom_bar_height: 56.0,
         ..Default::default()
@@ -168,9 +168,11 @@ pub fn render_extraction_progress_dialog(
                     .inner_margin(egui::Margin::same(8));
                 frame.show(ui, |ui| {
                     egui::ScrollArea::vertical()
+                        .max_height(200.0) // Limit height to prevent overflow
                         .auto_shrink([false, false])
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
+                            ui.set_width(ui.available_width()); // Use full width
                             for line in &dlg.log_lines {
                                 ui.label(
                                     egui::RichText::new(line)
@@ -187,54 +189,71 @@ pub fn render_extraction_progress_dialog(
             }
         },
         |ui| {
+            // Only show buttons if at least one action is available
+            let any_button_enabled = dlg.can_cancel || dlg.can_pause || dlg.can_minimize;
+            if !any_button_enabled {
+                // Show a simple "Please wait..." message instead
+                ui.with_layout(
+                    egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new("Please wait...")
+                                .color(theme.colors.on_surface_variant),
+                        );
+                    },
+                );
+                return;
+            }
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 // Cancel
-                let cancel_enabled = dlg.can_cancel
-                    && matches!(
+                if dlg.can_cancel {
+                    let cancel_enabled = matches!(
                         dlg.status,
                         ExtractionStatus::Running | ExtractionStatus::Paused
                     );
-                let cancel = egui::Button::new(egui::RichText::new("Cancel"))
-                    .min_size(egui::vec2(100.0, 32.0));
-                if ui.add_enabled(cancel_enabled, cancel).clicked() {
-                    result = ExtractionDialogResult::Cancelled;
+                    let cancel = egui::Button::new(egui::RichText::new("Cancel"))
+                        .min_size(egui::vec2(100.0, 32.0));
+                    if ui.add_enabled(cancel_enabled, cancel).clicked() {
+                        result = ExtractionDialogResult::Cancelled;
+                    }
+                    ui.add_space(8.0);
                 }
-
-                ui.add_space(8.0);
 
                 // Pause/Resume
-                let pause_enabled = dlg.can_pause
-                    && matches!(
+                if dlg.can_pause {
+                    let pause_enabled = matches!(
                         dlg.status,
                         ExtractionStatus::Running | ExtractionStatus::Paused
                     );
-                let label = if dlg.status == ExtractionStatus::Paused {
-                    "Resume"
-                } else {
-                    "Pause"
-                };
-                let pause_btn =
-                    egui::Button::new(egui::RichText::new(label)).min_size(egui::vec2(100.0, 32.0));
-                if ui.add_enabled(pause_enabled, pause_btn).clicked() {
-                    result = if dlg.status == ExtractionStatus::Paused {
-                        ExtractionDialogResult::Resumed
+                    let label = if dlg.status == ExtractionStatus::Paused {
+                        "Resume"
                     } else {
-                        ExtractionDialogResult::Paused
+                        "Pause"
                     };
+                    let pause_btn = egui::Button::new(egui::RichText::new(label))
+                        .min_size(egui::vec2(100.0, 32.0));
+                    if ui.add_enabled(pause_enabled, pause_btn).clicked() {
+                        result = if dlg.status == ExtractionStatus::Paused {
+                            ExtractionDialogResult::Resumed
+                        } else {
+                            ExtractionDialogResult::Paused
+                        };
+                    }
+                    ui.add_space(8.0);
                 }
 
-                ui.add_space(8.0);
-
                 // Minimize (background)
-                let minimize_enabled = dlg.can_minimize
-                    && matches!(
+                if dlg.can_minimize {
+                    let minimize_enabled = matches!(
                         dlg.status,
                         ExtractionStatus::Running | ExtractionStatus::Paused
                     );
-                let minimize_btn = egui::Button::new(egui::RichText::new("Minimize"))
-                    .min_size(egui::vec2(112.0, 32.0));
-                if ui.add_enabled(minimize_enabled, minimize_btn).clicked() {
-                    result = ExtractionDialogResult::Minimized;
+                    let minimize_btn = egui::Button::new(egui::RichText::new("Minimize"))
+                        .min_size(egui::vec2(112.0, 32.0));
+                    if ui.add_enabled(minimize_enabled, minimize_btn).clicked() {
+                        result = ExtractionDialogResult::Minimized;
+                    }
                 }
             });
         },
