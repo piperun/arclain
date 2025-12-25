@@ -1,7 +1,7 @@
 use crate::backends::fallback_backend::FallbackBackend;
-use crate::backends::libarchive_backend::LibarchiveBackend;
 use crate::backends::sevenz_cli::SevenZipCli;
 use crate::backends::unrar_backend::UnrarBackend;
+use crate::backends::zip_backend::ZipBackend;
 use crate::ArchiveBackend;
 use anyhow::Result;
 use std::path::Path;
@@ -16,7 +16,7 @@ pub struct BackendSelector {
 
 impl BackendSelector {
     /// Create a new backend selector with the given mode
-    /// - "native": Use native backends where available (RAR uses UnrarBackend, 7z uses SevenZBackend, others use 7z CLI)
+    /// - "native": Use native backends where available (RAR uses UnrarBackend, ZIP uses ZipBackend, etc.)
     /// - "cli": Always use 7z.exe CLI for all formats
     pub fn new(backend_mode: String) -> Self {
         Self { backend_mode }
@@ -53,40 +53,51 @@ impl BackendSelector {
             .to_lowercase();
 
         let backend: Arc<dyn ArchiveBackend> = match ext.as_str() {
+            "zip" => {
+                // Use ZipBackend as primary, 7z CLI as fallback
+                let zip_native = Arc::new(ZipBackend::new());
+                let sevenz = Arc::new(SevenZipCli::detect(None)?);
+
+                let backend = Arc::new(FallbackBackend::new(zip_native, sevenz));
+
+                info!(
+                    "Selected {} → 7z (CLI) fallback chain for {} (extension: .{})",
+                    "Zip (Native)",
+                    archive.display(),
+                    ext
+                );
+                backend
+            }
             "rar" | "r00" | "r01" | "r02" | "r03" => {
-                // Try UnRAR Native → UnRAR CLI (if available) → libarchive → 7z CLI fallback chain
+                // Try UnRAR Native → UnRAR CLI (if available) → 7z CLI fallback chain
                 use crate::backends::unrar_cli_backend::UnrarCli;
 
                 let unrar_native = Arc::new(UnrarBackend::new());
-                let libarchive = Arc::new(LibarchiveBackend::new());
                 let sevenz = Arc::new(SevenZipCli::detect(None)?);
 
                 // Check if UnRAR CLI is available (WinRAR or standalone unrar)
                 let backend: Arc<dyn ArchiveBackend> = if let Some(unrar_cli) = UnrarCli::detect() {
-                    // Full chain: UnRAR Native → UnRAR CLI → libarchive → 7z CLI
+                    // Full chain: UnRAR Native → UnRAR CLI → 7z CLI
                     let unrar_cli = Arc::new(unrar_cli);
 
-                    // Build: libarchive → 7z CLI
-                    let tertiary = Arc::new(FallbackBackend::new(libarchive, sevenz));
-                    // Build: UnRAR CLI → (libarchive → 7z CLI)
-                    let secondary = Arc::new(FallbackBackend::new(unrar_cli, tertiary));
-                    // Build: UnRAR Native → (UnRAR CLI → libarchive → 7z CLI)
+                    // Build: UnRAR CLI → 7z CLI
+                    let secondary = Arc::new(FallbackBackend::new(unrar_cli, sevenz));
+                    // Build: UnRAR Native → (UnRAR CLI → 7z CLI)
                     let backend = Arc::new(FallbackBackend::new(unrar_native, secondary));
 
                     info!(
-                        "Selected {} → UnRAR (CLI) → Libarchive (Native) → 7z (CLI) fallback chain for {} (extension: .{})",
+                        "Selected {} → UnRAR (CLI) → 7z (CLI) fallback chain for {} (extension: .{})",
                         backend.name(),
                         archive.display(),
                         ext
                     );
                     backend
                 } else {
-                    // No UnRAR CLI: UnRAR Native → libarchive → 7z CLI
-                    let secondary = Arc::new(FallbackBackend::new(libarchive, sevenz));
-                    let backend = Arc::new(FallbackBackend::new(unrar_native, secondary));
+                    // No UnRAR CLI: UnRAR Native → 7z CLI
+                    let backend = Arc::new(FallbackBackend::new(unrar_native, sevenz));
 
                     info!(
-                        "Selected {} → Libarchive (Native) → 7z (CLI) fallback chain for {} (extension: .{})",
+                        "Selected {} → 7z (CLI) fallback chain for {} (extension: .{})",
                         backend.name(),
                         archive.display(),
                         ext
@@ -97,10 +108,10 @@ impl BackendSelector {
                 backend
             }
             "7z" => {
-                // Use 7z CLI directly for 7z files (faster than native sevenz-rust2)
+                // Use 7z CLI directly for 7z files
                 let backend = Arc::new(SevenZipCli::detect(None)?);
                 info!(
-                    "Selected {} backend for {} (extension: .{}) - using CLI for optimal performance",
+                    "Selected {} backend for {} (extension: .{})",
                     backend.name(),
                     archive.display(),
                     ext
@@ -108,14 +119,11 @@ impl BackendSelector {
                 backend
             }
             _ => {
-                // Try libarchive for other formats (zip, tar, tar.gz, etc.), fallback to 7z.exe CLI
-                let primary = Arc::new(LibarchiveBackend::new());
-                let fallback = Arc::new(SevenZipCli::detect(None)?);
-                let backend = Arc::new(FallbackBackend::new(primary, fallback));
+                // For other formats (tar, tar.gz, etc.), use 7z.exe CLI
+                let backend = Arc::new(SevenZipCli::detect(None)?);
                 info!(
-                    "Selected {} → {} fallback chain for {} (extension: .{})",
-                    "Libarchive (Native)",
-                    "7z (CLI)",
+                    "Selected {} backend for {} (extension: .{})",
+                    backend.name(),
                     archive.display(),
                     ext
                 );

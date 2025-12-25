@@ -26,7 +26,7 @@ arclain_db = { path = "../db" }
 arclain_checksum = { path = "../checksum" }
 reqwest = { version = "0.12.24", features = ["blocking", "json"] }
 unrar = "0.5"
-compress-tools = { version = "0.15", features = ["static"] }
+zip = "2"
 tempfile = "3"
 sevenz-rust2 = { version = "0.19.4", features = ["compress", "aes256"] }
 cacache = "13"
