@@ -1197,8 +1197,11 @@ impl archust_plugin_sdk::Guest for Component {
                 
                 // Note: performing scan on background thread (host spawned thread for dispatch)
                 match perform_scan() {
-                    Ok(Some((id, _, _))) => {
+                    Ok(Some((id, json, scraped))) => {
                         info(&format!("[DLSite Plugin] Auto-fetched metadata for {}", id));
+                        // Automatically emit to library so Organizer can pick it up via signals
+                        let metadata_json = generate_metadata_json(&id, Some(&(json.clone(), scraped.clone())));
+                        archust_plugin_sdk::emit_metadata(&metadata_json);
                     }
                     Ok(None) => info("[DLSite Plugin] No metadata found"),
                     Err(e) => info(&format!("[DLSite Plugin] Scan failed: {}", e)),
@@ -1422,6 +1425,43 @@ impl archust_plugin_sdk::Guest for Component {
                     info(&format!("[DLSite Plugin] Failed to load details for: {}", entry_id));
                 }
             }
+            id if id.starts_with("select_entry_") => {
+                let entry_id = id.trim_start_matches("select_entry_").to_string();
+                let meta_json = STATE.with(|s| {
+                    let state = s.borrow();
+                    if let Some((cached_id, json, _)) = &state.browser_detail_cache {
+                        if cached_id == &entry_id {
+                            return Some(serde_json::to_string(json).unwrap_or_default());
+                        }
+                    }
+                     // Fallback to found_metadata
+                     if let Some((scan_id, json, _)) = &state.found_metadata {
+                         if scan_id == &entry_id {
+                             return Some(serde_json::to_string(json).unwrap_or_default());
+                         }
+                     }
+                    None
+                });
+
+                if let Some(json) = meta_json {
+                     use archust_plugin_sdk::emit_metadata;
+                     use archust_plugin_sdk::arclain::plugin::ui::{PluginAction, ToastConfig, ToastLevel};
+                     
+                     emit_metadata(&json);
+                     
+                     return vec![PluginAction::ShowToast(ToastConfig {
+                         message: format!("Selected for Use: {}", entry_id),
+                         level: ToastLevel::Success,
+                     })];
+                } else {
+                     use archust_plugin_sdk::arclain::plugin::ui::{PluginAction, ToastConfig, ToastLevel};
+                     return vec![PluginAction::ShowToast(ToastConfig {
+                         message: "Could not find cached details".to_string(),
+                         level: ToastLevel::Error,
+                     })];
+                }
+            }
+
             // Browser UI handlers
             "browser_tabs" => {
                 if let Some(tab) = value {

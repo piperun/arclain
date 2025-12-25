@@ -127,7 +127,12 @@ impl PluginManager {
         &mut self,
         signal: arclain_signals::Signal<Option<serde_json::Value>>,
     ) {
-        self.metadata_signal = Some(signal);
+        self.metadata_signal = Some(signal.clone());
+        let plugins = self.plugins.read();
+        for plugin in plugins.values() {
+            let mut instance = plugin.instance.lock();
+            instance.set_metadata_signal(Some(signal.clone()));
+        }
     }
 
     /// Update the metadata cache for all plugins
