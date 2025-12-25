@@ -189,6 +189,106 @@ impl eframe::App for ArclainApp {
              }
         }
 
+        // Handle extraction progress from native backends
+        {
+            // Get progress from signal, clone it to release lock quickly
+            let progress_opt = {
+                let state = self.shared_state.app_state.lock();
+                state.signals.extraction_progress.get()
+            };
+            
+            if let Some(progress) = progress_opt {
+                if progress.complete {
+                    // Extraction finished - clear the signal and handle result
+                    {
+                        let state = self.shared_state.app_state.lock();
+                        state.signals.extraction_progress.set(None);
+                    }
+
+                    if let Some(file_path) = progress.file_to_open {
+                        if file_path.exists() {
+                            // Open the file with system default
+                            #[cfg(target_os = "windows")]
+                            {
+                                if let Err(e) = std::process::Command::new("explorer")
+                                    .arg(&file_path)
+                                    .spawn()
+                                {
+                                    tracing::warn!("Failed to open file: {}", e);
+                                    self.status_info.message = format!("Failed to open file: {}", e);
+                                } else {
+                                    tracing::info!("Opened extracted file: {}", file_path.display());
+                                    self.status_info.message = format!("Opened: {}", file_path.file_name().unwrap_or_default().to_string_lossy());
+                                }
+                            }
+
+                            #[cfg(not(target_os = "windows"))]
+                            {
+                                if let Err(e) = std::process::Command::new("xdg-open")
+                                    .arg(&file_path)
+                                    .spawn()
+                                {
+                                    tracing::warn!("Failed to open file: {}", e);
+                                    self.status_info.message = format!("Failed to open file: {}", e);
+                                } else {
+                                    self.status_info.message = format!("Opened: {}", file_path.file_name().unwrap_or_default().to_string_lossy());
+                                }
+                            }
+                        } else {
+                            tracing::warn!("Extracted file not found: {}", file_path.display());
+                            self.status_info.message = "Extraction completed but file not found".to_string();
+                        }
+                    } else {
+                        // No file to open - just indicate completion
+                        self.status_info.message = "Extraction completed".to_string();
+                    }
+
+                    if let Some(error) = &progress.error {
+                        tracing::error!("Extraction failed: {}", error);
+                        if error.contains("cancelled") {
+                            self.status_info.message = "Extraction cancelled".to_string();
+                        } else {
+                            self.status_info.message = format!("Extraction failed: {}", error);
+                        }
+                    }
+
+                    // Hide extraction dialog
+                    self.archive_operations.state_mut().extraction_dialog.show = false;
+                } else {
+                    // Update extraction dialog with current progress
+                    let ops_state = self.archive_operations.state_mut();
+                    if !ops_state.extraction_dialog.show {
+                        // First progress update - show the dialog
+                        ops_state.extraction_dialog = dialogs::ExtractionProgressDialog {
+                            show: true,
+                            title: "Extracting files".to_string(),
+                            file_action: format!("Extracting {} files...", progress.total),
+                            percent: progress.percent,
+                            processed_text: format!("{}/{}", progress.current, progress.total),
+                            elapsed_text: String::new(),
+                            time_left_text: String::new(),
+                            status: dialogs::ExtractionStatus::Running,
+                            can_minimize: false,
+                            can_pause: false,
+                            can_cancel: true,  // Enable cancel for native extraction
+                            error: String::new(),
+                            log_lines: vec![progress.current_file.clone()],
+                            show_log: false,  // Start with details hidden
+                            dest_path: None,
+                        };
+                    } else {
+                        ops_state.extraction_dialog.percent = progress.percent;
+                        ops_state.extraction_dialog.processed_text = format!("{}/{}", progress.current, progress.total);
+                        ops_state.extraction_dialog.file_action = progress.current_file.clone();
+                        // Don't flood log - just update current file
+                    }
+                    
+                    // Request repaint to show progress updates
+                    ctx.request_repaint();
+                }
+            }
+        }
+
         // Update window title
         let title = {
             let state = self.shared_state.app_state.lock();
@@ -630,6 +730,13 @@ impl eframe::App for ArclainApp {
         ) {
             match result {
                 dialogs::progress::ExtractionDialogResult::Cancelled => {
+                    // Set signal-based cancellation for native backends
+                    {
+                        let state = self.shared_state.app_state.lock();
+                        state.signals.extraction_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                        state.signals.extraction_progress.set(None);
+                    }
+                    // Also cancel CLI extraction if any
                     self.archive_operations.cancel_extraction();
                     self.archive_operations.state_mut().extraction_dialog.show = false;
                 }

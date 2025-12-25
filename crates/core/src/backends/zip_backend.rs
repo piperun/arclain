@@ -189,6 +189,88 @@ impl ArchiveBackend for ZipBackend {
         Ok(())
     }
 
+    fn extract_files_with_progress(
+        &self,
+        path: &Path,
+        dest: &Path,
+        files: &[String],
+        _password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        cancel: Option<&crate::CancellationToken>,
+    ) -> Result<()> {
+        info!(
+            "Using {} backend to extract {} files with progress",
+            self.name(),
+            files.len()
+        );
+
+        let file = File::open(path).context("Failed to open ZIP file")?;
+        let mut archive = ZipArchive::new(file).context("Failed to read ZIP archive")?;
+
+        std::fs::create_dir_all(dest)?;
+
+        let total = files.len();
+        for (i, filename) in files.iter().enumerate() {
+            // Check for cancellation
+            if let Some(token) = cancel {
+                if token.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("Extraction cancelled at {}/{}", i, total);
+                    return Err(anyhow!("Extraction cancelled by user"));
+                }
+            }
+
+            // Report progress
+            if let Some(cb) = progress {
+                let percent = if total > 0 {
+                    ((i * 100) / total) as u8
+                } else {
+                    0
+                };
+                cb(crate::ExtractionProgress {
+                    current: i + 1,
+                    total,
+                    current_file: filename.clone(),
+                    percent,
+                });
+            }
+
+            match archive.by_name(filename) {
+                Ok(mut zip_file) => {
+                    if zip_file.encrypted() {
+                        return Err(anyhow!("File is encrypted - use 7z CLI backend"));
+                    }
+
+                    let outpath = dest.join(zip_file.mangled_name());
+
+                    if zip_file.is_dir() {
+                        std::fs::create_dir_all(&outpath)?;
+                    } else {
+                        if let Some(parent) = outpath.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        let mut outfile = File::create(&outpath)?;
+                        std::io::copy(&mut zip_file, &mut outfile)?;
+                    }
+                }
+                Err(e) => {
+                    warn!("File not found in ZIP: {} ({})", filename, e);
+                }
+            }
+        }
+
+        // Report completion (if not cancelled)
+        if let Some(cb) = progress {
+            cb(crate::ExtractionProgress {
+                current: total,
+                total,
+                current_file: "Complete".to_string(),
+                percent: 100,
+            });
+        }
+
+        Ok(())
+    }
+
     fn extract_directory(
         &self,
         path: &Path,

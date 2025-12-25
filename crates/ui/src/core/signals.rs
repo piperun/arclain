@@ -6,6 +6,29 @@
 use arclain_core::ArchiveEntry;
 use arclain_signals::{Signal, SignalContext};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+
+/// State for extraction progress dialog
+#[derive(Clone, Debug, Default)]
+pub struct ExtractionProgressState {
+    /// Current file being extracted
+    pub current_file: String,
+    /// Progress percentage (0-100)
+    pub percent: u8,
+    /// Current file index
+    pub current: usize,
+    /// Total files to extract
+    pub total: usize,
+    /// Whether extraction is complete
+    pub complete: bool,
+    /// Error message if extraction failed
+    pub error: Option<String>,
+    /// Path to open after extraction completes (for open_file_from_archive)
+    pub file_to_open: Option<PathBuf>,
+    /// Whether extraction was cancelled
+    pub cancelled: bool,
+}
 
 /// Context for which toolbar should be displayed
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -50,6 +73,12 @@ pub struct AppSignals {
 
     /// Status bar message from plugins (e.g., "Entry selected: RJ01234567")
     pub status_message: Signal<Option<String>>,
+
+    /// Extraction progress for native backends
+    pub extraction_progress: Signal<Option<ExtractionProgressState>>,
+
+    /// Cancellation token for extraction - set to true to cancel
+    pub extraction_cancel: Arc<AtomicBool>,
 }
 
 impl AppSignals {
@@ -63,6 +92,8 @@ impl AppSignals {
             ui_ready: Signal::new(true), // Start as true (no archive to render)
             active_toolbar: Signal::new(ToolbarContext::Archive),
             status_message: Signal::new(None),
+            extraction_progress: Signal::new(None),
+            extraction_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -75,6 +106,7 @@ impl AppSignals {
         signal_ctx.bind(&self.archive_path);
         signal_ctx.bind(&self.active_toolbar);
         signal_ctx.bind(&self.status_message);
+        signal_ctx.bind(&self.extraction_progress);
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
@@ -88,6 +120,9 @@ impl AppSignals {
         self.ui_ready.set(true);
         self.active_toolbar.set(ToolbarContext::Archive);
         self.status_message.set(None);
+        self.extraction_progress.set(None);
+        self.extraction_cancel
+            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
