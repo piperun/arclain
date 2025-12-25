@@ -204,35 +204,28 @@ impl ArchiveBackend for ZipBackend {
             files.len()
         );
 
-        let file = File::open(path).context("Failed to open ZIP file")?;
-        let mut archive = ZipArchive::new(file).context("Failed to read ZIP archive")?;
-
-        std::fs::create_dir_all(dest)?;
+        // Use Rayon for parallel extraction
+        use rayon::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let total = files.len();
-        for (i, filename) in files.iter().enumerate() {
-            // Check for cancellation
+        let processed = AtomicUsize::new(0);
+
+        // We can't share the ZipArchive across threads because it requires mutable access to the reader (File)
+        // Instead, we open the file freshly in each thread. Efficient on modern OS/storage.
+        let result = files.par_iter().try_for_each(|filename| -> Result<()> {
+            // Check for cancellation (cheap atomic check)
             if let Some(token) = cancel {
-                if token.load(std::sync::atomic::Ordering::Relaxed) {
-                    info!("Extraction cancelled at {}/{}", i, total);
+                if token.load(Ordering::Relaxed) {
                     return Err(anyhow!("Extraction cancelled by user"));
                 }
             }
 
-            // Report progress
-            if let Some(cb) = progress {
-                let percent = if total > 0 {
-                    ((i * 100) / total) as u8
-                } else {
-                    0
-                };
-                cb(crate::ExtractionProgress {
-                    current: i + 1,
-                    total,
-                    current_file: filename.clone(),
-                    percent,
-                });
-            }
+            // Open a fresh handle for this thread
+            let file = File::open(path)
+                .with_context(|| format!("Failed to open zip: {}", path.display()))?;
+            let mut archive = ZipArchive::new(file)
+                .with_context(|| format!("Failed to read zip: {}", path.display()))?;
 
             match archive.by_name(filename) {
                 Ok(mut zip_file) => {
@@ -254,7 +247,38 @@ impl ArchiveBackend for ZipBackend {
                 }
                 Err(e) => {
                     warn!("File not found in ZIP: {} ({})", filename, e);
+                    // Don't fail the whole batch for one missing file, just warn
                 }
+            }
+
+            // Update progress
+            let current = processed.fetch_add(1, Ordering::Relaxed) + 1;
+            if let Some(cb) = progress {
+                let percent = if total > 0 {
+                    ((current * 100) / total) as u8
+                } else {
+                    0
+                };
+
+                // Only invoke callback periodically to avoid flooding the channel if many threads
+                // or just send every time (channel should handle it, UI updates are throttled by frame rate)
+                cb(crate::ExtractionProgress {
+                    current,
+                    total,
+                    current_file: filename.clone(),
+                    percent,
+                });
+            }
+
+            Ok(())
+        });
+
+        if let Err(e) = result {
+            if e.to_string().contains("cancelled") {
+                info!("Extraction cancelled");
+                return Err(e);
+            } else {
+                return Err(e);
             }
         }
 

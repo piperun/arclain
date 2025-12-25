@@ -1,4 +1,5 @@
 use crate::backends::fallback_backend::FallbackBackend;
+use crate::backends::sevenz_backend::SevenZBackend;
 use crate::backends::sevenz_cli::SevenZipCli;
 use crate::backends::unrar_backend::UnrarBackend;
 use crate::backends::zip_backend::ZipBackend;
@@ -107,12 +108,18 @@ impl BackendSelector {
 
                 backend
             }
-            "7z" => {
-                // Use 7z CLI directly for 7z files
-                let backend = Arc::new(SevenZipCli::detect(None)?);
+            "7z" | "exe" | "sfx" => {
+                // Use Native 7z → 7z CLI fallback
+                // This enables features like signal-based progress/cancel for 7z files
+                // while maintaining robustness of CLI for tricky archives or SFX
+                let sevenz_native = Arc::new(SevenZBackend::new());
+                let sevenz_cli = Arc::new(SevenZipCli::detect(None)?);
+
+                let backend = Arc::new(FallbackBackend::new(sevenz_native, sevenz_cli));
+
                 info!(
-                    "Selected {} backend for {} (extension: .{})",
-                    backend.name(),
+                    "Selected {} → 7z (CLI) fallback chain for {} (extension: .{})",
+                    "7z (Native)",
                     archive.display(),
                     ext
                 );
