@@ -150,6 +150,45 @@ impl eframe::App for ArclainApp {
         // Apply theme
         self.shared_state.theme.apply_to_context(ctx);
 
+        // Check for metadata updates from signals (from plugins)
+        let new_metadata = {
+             let state = self.shared_state.app_state.lock();
+             let val = state.signals.metadata.get();
+             if val.is_some() {
+                 state.signals.metadata.set(None); // Consume
+                 val
+             } else {
+                 None
+             }
+        };
+
+        if let Some(json_val) = new_metadata {
+             // Parse metadata and update state
+             let json_str = json_val.to_string();
+             match arclain_core::features::organization::GameMetadata::from_json(&json_str) {
+                 Ok(meta) => {
+                      tracing::info!("Received metadata signal update: {} (ID: {})", meta.title, meta.product_id);
+                      
+                      // 1. Update Global State
+                      {
+                          let mut state = self.shared_state.app_state.lock();
+                          state.current_game_metadata = Some(meta.clone());
+                          state.plugin_metadata = None; 
+                      }
+
+                      // 2. Update Active Organizer Panel
+                      if let Some(page) = &mut self.organization_feature.organizer_page {
+                          page.panel.session.metadata = Some(meta);
+                          page.panel.update_preview();
+                          tracing::info!("Updated Organization Panel with new metadata");
+                      }
+                 }
+                 Err(e) => {
+                     tracing::warn!("Failed to parse metadata from signal: {}", e);
+                 }
+             }
+        }
+
         // Update window title
         let title = {
             let state = self.shared_state.app_state.lock();

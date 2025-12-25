@@ -298,6 +298,19 @@ impl PluginInstance {
         }
     }
 
+    /// Set the metadata signal for host functions
+    pub fn set_metadata_signal(
+        &mut self,
+        signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
+    ) {
+        let host = self.store.data_mut();
+        if let Some(s) = signal {
+            host.set_metadata_signal(s);
+        } else {
+            host.metadata_signal = None;
+        }
+    }
+
     /// Set the async HTTP client for host functions
     pub fn set_async_http_client(&mut self, client: Option<Arc<arclain_http::AsyncHttpClient>>) {
         let host = self.store.data_mut();

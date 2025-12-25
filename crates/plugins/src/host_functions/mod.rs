@@ -120,6 +120,13 @@ impl HostFunctions {
         self.cache_db = Some(db);
     }
 
+    pub fn set_metadata_signal(
+        &mut self,
+        signal: arclain_signals::Signal<Option<serde_json::Value>>,
+    ) {
+        self.metadata_signal = Some(signal);
+    }
+
     pub fn set_archive_context(&self, archive_path: Option<String>, password: Option<String>) {
         *self.current_archive.lock() = archive_path;
         *self.current_password.lock() = password;
