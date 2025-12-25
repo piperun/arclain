@@ -27,6 +27,7 @@ pub struct ExtractionProgressState {
     /// Path to open after extraction completes (for open_file_from_archive)
     pub file_to_open: Option<PathBuf>,
     /// Whether extraction was cancelled
+    #[allow(dead_code)]
     pub cancelled: bool,
 }
 

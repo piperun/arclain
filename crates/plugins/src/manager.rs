@@ -247,8 +247,15 @@ impl PluginManager {
         // Initialize the plugin
         instance.init()?;
 
-        // Get metadata
-        let metadata = instance.get_metadata()?;
+        // Get metadata from manifest (WIT get_metadata is not yet implemented and returns defaults)
+        let manifest = &discovered.manifest;
+        let metadata = PluginMetadata {
+            id: manifest.plugin.id.clone(),
+            name: manifest.plugin.name.clone(),
+            version: manifest.plugin.version.clone(),
+            description: manifest.plugin.description.clone(),
+            author: manifest.plugin.author.clone(),
+        };
 
         // Create managed plugin
         let managed = ManagedPlugin {
