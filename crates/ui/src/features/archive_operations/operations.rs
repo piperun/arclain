@@ -130,33 +130,10 @@ pub fn update_conversion_progress(state: &mut ArchiveOperationsState, ctx: &egui
     }
 }
 
-/// Common archive file extensions
-const ARCHIVE_EXTENSIONS: &[&str] = &["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz"];
-
-/// Check if a filename has an archive extension
-fn is_archive_file(filename: &str) -> bool {
-    let lower = filename.to_lowercase();
-    ARCHIVE_EXTENSIONS
-        .iter()
-        .any(|ext| lower.ends_with(&format!(".{}", ext)))
-}
-
-/// Recursively search for a file by name in a directory
-fn find_file_in_dir(dir: &std::path::Path, filename: &str) -> Option<std::path::PathBuf> {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Some(found) = find_file_in_dir(&path, filename) {
-                    return Some(found);
-                }
-            } else if path.file_name().and_then(|n| n.to_str()) == Some(filename) {
-                return Some(path);
-            }
-        }
-    }
-    None
-}
+// Unused helper functions removed:
+// - ARCHIVE_EXTENSIONS
+// - is_archive_file
+// - find_file_in_dir (use find_file_in_dir_static instead)
 
 /// Determine the best extraction strategy based on file type
 fn determine_extraction_strategy(file_path: &str) -> arclain_core::OpenStrategy {

@@ -15,15 +15,18 @@ use std::sync::Arc;
 /// Header action types
 #[derive(Clone)]
 pub enum HeaderAction {
+    #[allow(dead_code)]
     Button {
         id: String,
         label: String,
-        icon: Option<String>,
+        on_click: Arc<dyn Fn() + Send + Sync>,
     },
+    #[allow(dead_code)]
     Toggle {
         id: String,
         label: String,
         enabled: bool,
+        on_toggle: Arc<dyn Fn(bool) + Send + Sync>,
     },
 }
 
@@ -46,11 +49,13 @@ impl PanelHeader {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
         self.subtitle = Some(subtitle.into());
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
         self.icon = Some(icon.into());
         self
@@ -68,40 +73,51 @@ pub enum PanelBody {
         elements: Vec<PluginUiElement>,
     },
     /// Separator line
+    #[allow(dead_code)]
     Separator,
     /// Space
+    #[allow(dead_code)]
     Space(f32),
 }
 
 /// Footer button configuration
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct FooterButton {
     pub id: String,
     pub label: String,
     pub primary: bool,
+    pub on_click: Arc<dyn Fn() + Send + Sync>,
 }
 
 /// Panel footer configuration
 #[derive(Clone, Default)]
+#[allow(dead_code)]
 pub struct PanelFooter {
     pub buttons: Vec<FooterButton>,
 }
 
 impl PanelFooter {
+    #[allow(dead_code)]
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            buttons: Vec::new(),
+        }
     }
 
+    #[allow(dead_code)]
     pub fn with_button(
         mut self,
         id: impl Into<String>,
         label: impl Into<String>,
         primary: bool,
+        on_click: impl Fn() + Send + Sync + 'static,
     ) -> Self {
         self.buttons.push(FooterButton {
             id: id.into(),
             label: label.into(),
             primary,
+            on_click: Arc::new(on_click),
         });
         self
     }
@@ -151,18 +167,21 @@ impl Panel {
     }
 
     /// Add multiple body sections
+    #[allow(dead_code)]
     pub fn with_bodies(mut self, bodies: Vec<PanelBody>) -> Self {
         self.body.extend(bodies);
         self
     }
 
     /// Set the panel footer
+    #[allow(dead_code)]
     pub fn with_footer(mut self, footer: PanelFooter) -> Self {
         self.footer = Some(footer);
         self
     }
 
     /// Make the panel collapsible
+    #[allow(dead_code)]
     pub fn collapsible(mut self, initially_collapsed: bool) -> Self {
         self.collapsible = true;
         self.initially_collapsed = initially_collapsed;
@@ -176,6 +195,7 @@ impl Panel {
         theme: &AppTheme,
         plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
         shared: Option<&SharedState>,
+        content_cache: Option<&Arc<arclain_data::ContentCache>>,
     ) -> PanelAction {
         let mut action = PanelAction::None;
 
@@ -200,7 +220,7 @@ impl Panel {
                     .with_theme_colors(&theme.colors)
                     .default_open(!self.initially_collapsed)
                     .show(ui, |ui| {
-                        self.render_body(ui, theme, plugin_manager, shared);
+                        self.render_body(ui, theme, plugin_manager, shared, content_cache);
                         if let Some(footer_action) = self.render_footer(ui, theme) {
                             action = footer_action;
                         }
@@ -212,7 +232,7 @@ impl Panel {
                 }
 
                 ui.add_space(8.0);
-                self.render_body(ui, theme, plugin_manager, shared);
+                self.render_body(ui, theme, plugin_manager, shared, content_cache);
 
                 if let Some(footer_action) = self.render_footer(ui, theme) {
                     action = footer_action;
@@ -269,7 +289,9 @@ impl Panel {
                                     action = Some(PanelAction::HeaderAction(id.clone()));
                                 }
                             }
-                            HeaderAction::Toggle { id, label, enabled } => {
+                            HeaderAction::Toggle {
+                                id, label, enabled, ..
+                            } => {
                                 let mut checked = *enabled;
                                 if ui.checkbox(&mut checked, label).changed() {
                                     action = Some(PanelAction::HeaderAction(id.clone()));
@@ -290,6 +312,7 @@ impl Panel {
         theme: &AppTheme,
         plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
         shared: Option<&SharedState>,
+        content_cache: Option<&Arc<arclain_data::ContentCache>>,
     ) {
         for body in &self.body {
             match body {
@@ -297,17 +320,35 @@ impl Panel {
                     for (label, value) in props {
                         ui.horizontal(|ui| {
                             ui.add_space(12.0);
-                            ui.label(
-                                egui::RichText::new(label)
-                                    .size(14.0)
-                                    .color(theme.colors.on_surface_variant),
+
+                            // Fixed width for label column (approx 40% of panel width)
+                            let label_width = (ui.available_width() * 0.4).min(120.0);
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(label_width, ui.spacing().interact_size.y),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new(label)
+                                            .size(14.0)
+                                            .color(theme.colors.on_surface_variant),
+                                    );
+                                },
                             );
+
+                            // Value takes remaining space, right-aligned
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.add_space(12.0);
+                                    // Truncate long values (char-based for UTF-8 safety)
+                                    let display_value = if value.chars().count() > 25 {
+                                        let truncated: String = value.chars().take(22).collect();
+                                        format!("{}...", truncated)
+                                    } else {
+                                        value.clone()
+                                    };
                                     ui.label(
-                                        egui::RichText::new(value)
+                                        egui::RichText::new(display_value)
                                             .size(14.0)
                                             .strong()
                                             .color(theme.colors.on_surface),
@@ -322,6 +363,8 @@ impl Panel {
                     plugin_id,
                     elements,
                 } => {
+                    // content_cache is now passed as parameter (extracted by caller before rendering)
+
                     if let Some(manager_arc) = plugin_manager {
                         // Get plugin instance handle
                         let instance_arc = {
@@ -331,7 +374,7 @@ impl Panel {
 
                         if let Some(ref instance_arc) = instance_arc {
                             let instance_arc = instance_arc.clone();
-                            let pid = plugin_id.clone();
+                            let _pid = plugin_id.clone(); // Prefixed with _ to silence warning
                             let mut callback: plugin_ui::UiEventCallback =
                                 Box::new(move |element_id: &str, value: Option<String>| {
                                     let mut instance = instance_arc.lock();
@@ -343,7 +386,7 @@ impl Panel {
                                 elements,
                                 &mut callback,
                                 &theme.colors,
-                                None,
+                                content_cache,
                                 shared,
                                 Some(plugin_id.as_str()),
                             );
@@ -358,7 +401,7 @@ impl Panel {
                             elements,
                             &mut callback,
                             &theme.colors,
-                            None,
+                            content_cache,
                             shared,
                             None,
                         );
@@ -409,64 +452,5 @@ impl Panel {
         ui.add_space(8.0);
 
         action
-    }
-}
-
-/// Builder for creating panels easily
-pub struct PanelBuilder {
-    panel: Panel,
-}
-
-impl PanelBuilder {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            panel: Panel::new(id),
-        }
-    }
-
-    pub fn header(mut self, title: impl Into<String>) -> Self {
-        self.panel.header = Some(PanelHeader::new(title));
-        self
-    }
-
-    pub fn properties(mut self, props: Vec<(impl Into<String>, impl Into<String>)>) -> Self {
-        let props: Vec<(String, String)> = props
-            .into_iter()
-            .map(|(k, v)| (k.into(), v.into()))
-            .collect();
-        self.panel.body.push(PanelBody::Properties(props));
-        self
-    }
-
-    pub fn plugin_ui(
-        mut self,
-        plugin_id: impl Into<String>,
-        elements: Vec<PluginUiElement>,
-    ) -> Self {
-        self.panel.body.push(PanelBody::PluginUI {
-            plugin_id: plugin_id.into(),
-            elements,
-        });
-        self
-    }
-
-    pub fn separator(mut self) -> Self {
-        self.panel.body.push(PanelBody::Separator);
-        self
-    }
-
-    pub fn space(mut self, amount: f32) -> Self {
-        self.panel.body.push(PanelBody::Space(amount));
-        self
-    }
-
-    pub fn collapsible(mut self, initially_collapsed: bool) -> Self {
-        self.panel.collapsible = true;
-        self.panel.initially_collapsed = initially_collapsed;
-        self
-    }
-
-    pub fn build(self) -> Panel {
-        self.panel
     }
 }

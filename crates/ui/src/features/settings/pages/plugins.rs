@@ -24,6 +24,9 @@ pub fn render(
         plugins_state.update_from_manager(manager, &state.user_config);
     }
 
+    // Extract content_cache for plugin icons
+    let content_cache = app_state.lock().content_cache.clone();
+
     // Render the plugin list
     // Render the unified plugin page
     // Note: plugins_page::render returns Option<SettingsAction>
@@ -34,6 +37,6 @@ pub fn render(
         plugins_state,
         app_state,
         shared,
-        None, // TODO: wire content_cache from app_state
+        content_cache,
     )
 }

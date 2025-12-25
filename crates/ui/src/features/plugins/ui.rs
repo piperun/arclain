@@ -16,6 +16,7 @@ impl PluginsFeature {
 
     pub fn render(&mut self, ctx: &egui::Context, shared: &SharedState) {
         let manager_arc = shared.app_state.lock().plugin_manager.clone();
+        let content_cache = shared.app_state.lock().content_cache.clone();
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let guard = manager_arc.as_ref().map(|m| m.lock());
@@ -28,7 +29,7 @@ impl PluginsFeature {
                 &mut self.list_state,
                 &shared.app_state,
                 Some(shared),
-                None, // TODO: wire content_cache from shared
+                content_cache,
             );
         });
     }

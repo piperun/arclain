@@ -218,27 +218,44 @@ impl archust_plugin_sdk::Guest for Component {
                     .map(|i| i.path.clone())
                     .unwrap_or_default();
                 
-                // Reset state if archive changed
-                STATE.with(|state| {
-                    let mut s = state.borrow_mut();
-                    if s.last_archive_path.as_ref() != Some(&archive_path) {
-                        // Archive changed - reset state
-                        s.found_metadata = None;
-                        s.search_query.clear();
-                        s.search_results.clear();
-                        s.fetch_in_progress = false;
-                        s.last_archive_path = Some(archive_path.clone());
-                    }
-                });
-                
                 // Check if DLSite code can be detected from filename
                 let archive_name = archive_info.as_ref()
                     .map(|i| i.filename.clone())
                     .unwrap_or_default();
                 let detected_code = detect_dlsite_code(&archive_name);
                 
-                // NOTE: Auto-fetch is NOT done here because get_ui_layout runs on main thread.
-                // Auto-fetch should be triggered via proper async event mechanism.
+                // Reset state if archive changed, then check cache for detected code
+                let archive_changed = STATE.with(|state| {
+                    let s = state.borrow();
+                    s.last_archive_path.as_ref() != Some(&archive_path)
+                });
+                
+                if archive_changed {
+                    // Reset state first
+                    STATE.with(|state| {
+                        let mut s = state.borrow_mut();
+                        s.found_metadata = None;
+                        s.search_query.clear();
+                        s.search_results.clear();
+                        s.fetch_in_progress = false;
+                        s.last_archive_path = Some(archive_path.clone());
+                    });
+                    
+                    // If we have a detected code, check cache and emit to signal if found
+                    if let Some(ref code) = detected_code {
+                        if let Some((api_data, scraped)) = get_cached_dlsite_metadata(code) {
+                            // Found in cache! Populate state
+                            STATE.with(|state| {
+                                let mut s = state.borrow_mut();
+                                s.found_metadata = Some((code.clone(), api_data.clone(), scraped.clone()));
+                            });
+                            
+                            // Emit to signal so Panel reads from it
+                            let metadata_json = generate_metadata_json(code, Some(&(api_data, scraped)));
+                            archust_plugin_sdk::arclain::plugin::host::emit_metadata(&metadata_json);
+                        }
+                    }
+                }
                 
                 let mut elements = vec![];
 
@@ -247,8 +264,14 @@ impl archust_plugin_sdk::Guest for Component {
 
                     if let Some((id, data, scraped)) = &state.found_metadata {
                         // Metadata found - show info
-                        let title = data["work_name"].as_str().unwrap_or("Unknown Title");
-                        let maker = data["maker_name"].as_str().unwrap_or("Unknown");
+                        // Handle both raw API format (work_name) and ProductMetadata format (title)
+                        let title = data["work_name"].as_str()
+                            .or_else(|| data["title"].as_str())
+                            .unwrap_or("Unknown Title");
+                        let maker = data["maker_name"].as_str()
+                            .or_else(|| data["circle"].as_str())
+                            .or_else(|| data["creator"].as_str())
+                            .unwrap_or("Unknown");
                         
                         // Show warning if geo-blocked
                         if let Some(scraped_data) = scraped {
@@ -260,16 +283,17 @@ impl archust_plugin_sdk::Guest for Component {
                             }
                         }
 
-                        // Cover image at top (if available from scraped data)
-                        if let Some(scraped_data) = scraped {
-                            if let Some(cover_url) = &scraped_data.cover_image {
-                                elements.push(UiElement::Image(ImageConfig {
-                                    cache_key: Some(metastore_providers::dlsite::cache_keys::cover_key(id)),
-                                    url: Some(cover_url.clone()),
-                                    max_height: Some(150.0),
-                                }));
-                            }
-                        }
+                        // Cover image at top - try to display from cache or scraped URL
+                        let cover_cache_key = metastore_providers::dlsite::cache_keys::cover_key(id);
+                        let cover_url = scraped.as_ref()
+                            .and_then(|s| s.cover_image.clone());
+                        
+                        // Always attempt to show cover - the host will check cache by key
+                        elements.push(UiElement::Image(ImageConfig {
+                            cache_key: Some(cover_cache_key),
+                            url: cover_url, // May be None, host will use cache key
+                            max_height: Some(150.0),
+                        }));
                         
                         elements.push(UiElement::Label(LabelConfig {
                             text: title.to_string(),
@@ -287,8 +311,10 @@ impl archust_plugin_sdk::Guest for Component {
                             size: None,
                         }));
                         
-                        // Release date if available
-                        if let Some(date) = data["regist_date"].as_str() {
+                        // Release date if available (check both API and ProductMetadata field names)
+                        let release_date = data["regist_date"].as_str()
+                            .or_else(|| data["release_date"].as_str());
+                        if let Some(date) = release_date {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: format!("Released: {}", date),
                                 bold: false,

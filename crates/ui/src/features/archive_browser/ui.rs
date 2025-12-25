@@ -230,11 +230,15 @@ fn render_properties_panel(
 
                 drop(app_state);
 
+                // Extract plugin_manager BEFORE calling render (not inline)
+                // This allows properties_panel to try_lock for content_cache
+                let plugin_manager = shared.app_state.lock().plugin_manager.clone();
+
                 let panel_action = properties_panel::render(
                     ui,
                     &shared.theme,
                     &sections,
-                    shared.app_state.lock().plugin_manager.as_ref(), // Needs access for callbacks
+                    plugin_manager.as_ref(),
                     Some(shared),
                 );
 
