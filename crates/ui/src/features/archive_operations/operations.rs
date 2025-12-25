@@ -215,7 +215,17 @@ pub fn open_file_from_archive(
 
     // Get all entry paths for dependency resolution
     let all_entries: Vec<String> = st.all_entries.iter().map(|e| e.path.clone()).collect();
-    let backend = st.fallback_backend.clone();
+
+    // Use the backend selector to get the proper backend for this archive type
+    let backend = match st.backend_selector.select(&archive) {
+        Ok(b) => b,
+        Err(e) => {
+            drop(st);
+            status_info.message = format!("Failed to select backend: {}", e);
+            return None;
+        }
+    };
+
     let password = st.current_password.clone();
     drop(st);
 
