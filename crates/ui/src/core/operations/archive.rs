@@ -249,6 +249,11 @@ pub fn load_archive_data(
         st.archive_info.archive_encrypted = st.archive_encrypted;
         st.archive_info.headers_encrypted = st.headers_encrypted;
         st.archive_info.encryption_method = st.encryption_method.clone();
+
+        // Sync entries to signal with Arc for O(1) cloning
+        st.signals
+            .entries
+            .set(std::sync::Arc::new(st.all_entries.clone()));
     }
 
     // Use the latest state entries for totals/CRC aggregation

@@ -620,7 +620,9 @@ impl AppState {
         self.navigation = NavigationState::new();
 
         // Update reactive signals for async UI updates
-        self.signals.entries.set(self.all_entries.clone());
+        self.signals
+            .entries
+            .set(std::sync::Arc::new(self.all_entries.clone()));
         self.signals.archive_path.set(self.current_archive.clone());
 
         // Now attempt password detection with correct archive context
@@ -695,7 +697,9 @@ impl AppState {
         self.current_password = Some(password.to_string());
 
         // Update reactive signals for async UI updates
-        self.signals.entries.set(self.all_entries.clone());
+        self.signals
+            .entries
+            .set(std::sync::Arc::new(self.all_entries.clone()));
         self.signals.archive_path.set(self.current_archive.clone());
 
         // Store OnArchiveOpen event for deferred dispatch (after UI renders)
@@ -734,31 +738,6 @@ impl AppState {
             // Mark UI as ready
             self.signals.ui_ready.set(true);
         }
-    }
-
-    pub fn navigate_to_folder(&mut self, folder: &str) {
-        debug!("Navigating to folder (relative): {}", folder);
-        self.navigation.navigate_to(folder);
-    }
-
-    pub fn navigate_to_path(&mut self, path: &str) {
-        debug!("Navigating to path (absolute): {}", path);
-        self.navigation.navigate_to_absolute(path);
-    }
-
-    pub fn navigate_back(&mut self) {
-        debug!("Navigating back from: {}", self.navigation.current_path);
-        self.navigation.navigate_back();
-    }
-
-    pub fn navigate_forward(&mut self) {
-        debug!("Navigating forward from: {}", self.navigation.current_path);
-        self.navigation.navigate_forward();
-    }
-
-    pub fn navigate_up(&mut self) {
-        debug!("Navigating up from: {}", self.navigation.current_path);
-        self.navigation.navigate_up();
     }
 
     pub fn get_current_entries(&self) -> Vec<arclain_core::ArchiveEntry> {

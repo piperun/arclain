@@ -202,7 +202,7 @@ pub fn render_toolbar_panel(
             let has_selection = false; // TODO: Implement selection tracking
             let has_metadata = state.plugin_metadata.is_some();
             let toolbar_config =
-                components::toolbar::ToolbarConfig::new(state.toolbar_items.clone());
+                components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
             let plugin_manager = state.plugin_manager.clone();
             drop(state);
 
@@ -255,12 +255,12 @@ pub fn render_status_bar_panel(
 
             // Update status info from state
             if archive_loaded {
-                status_info.file_count = state.archive_info.file_count;
-                status_info.total_size =
-                    crate::core::utils::format_size(state.archive_info.total_size);
+                let archive_info = state.signals.archive_info.get();
+                status_info.file_count = archive_info.file_count;
+                status_info.total_size = crate::core::utils::format_size(archive_info.total_size);
                 status_info.compressed_size =
-                    crate::core::utils::format_size(state.archive_info.compressed_size);
-                status_info.archive_format = state.archive_info.archive_format.clone();
+                    crate::core::utils::format_size(archive_info.compressed_size);
+                status_info.archive_format = archive_info.archive_format;
             }
 
             let plugin_info = if let Some(manager) = &state.plugin_manager {
