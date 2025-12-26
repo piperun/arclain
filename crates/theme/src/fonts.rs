@@ -33,6 +33,20 @@ pub fn load_cjk_fonts(ctx: &Context) {
         // Add Phosphor icons
         egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
 
+        // Tweak Phosphor font vertical offset to align with text baseline
+        // Positive value shifts icons DOWN, negative shifts UP
+        if let Some(phosphor_font) = fonts.font_data.get_mut("phosphor") {
+            // Adjust this value experimentally: try -0.1 to 0.1
+            // A small negative value often helps align icon fonts with text
+            let tweak = egui::FontTweak {
+                y_offset_factor: -0.15, // Shift icons UP slightly
+                ..Default::default()
+            };
+            *phosphor_font = std::sync::Arc::new(
+                egui::FontData::from_owned(phosphor_font.font.to_vec()).tweak(tweak),
+            );
+        }
+
         ctx.set_fonts(fonts);
         debug!("Loaded system CJK font from: {}", source);
     } else {

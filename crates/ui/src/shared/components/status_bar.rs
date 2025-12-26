@@ -44,15 +44,14 @@ pub fn render(
     archive_loaded: bool,
     plugin_info: Option<&PluginStatusInfo>,
 ) {
-    ui.horizontal(|ui| {
+    ui.horizontal_centered(|ui| {
         ui.add_space(12.0);
 
         // Left side - status message
-        ui.label(
-            egui::RichText::new(&info.message)
-                .size(12.0)
-                .color(theme.colors.on_surface_variant),
-        );
+        arclain_widgets::Text::new(&info.message)
+            .size(12.0)
+            .muted()
+            .show(ui);
 
         // Plugin status indicator (if plugins are loaded)
         if let Some(pinfo) = plugin_info {
@@ -79,78 +78,53 @@ pub fn render(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(12.0);
 
-                // Right side - archive info
-                ui.label(
-                    egui::RichText::new("Ready")
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
-
-                ui.label(
-                    egui::RichText::new("|")
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
-
-                ui.label(
-                    egui::RichText::new(&info.archive_format)
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
-
-                ui.label(
-                    egui::RichText::new("|")
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
-
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} ({} compressed)",
-                        info.total_size, info.compressed_size
-                    ))
+                // Right side - archive info (rendered in reverse order due to RTL)
+                arclain_widgets::Text::new("Ready")
                     .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-                );
+                    .muted()
+                    .show(ui);
 
-                ui.label(
-                    egui::RichText::new("|")
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
+                arclain_widgets::Text::new("|").size(12.0).muted().show(ui);
 
-                ui.label(
-                    egui::RichText::new(format!("{} folders", info.folder_count))
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
+                arclain_widgets::Text::new(&info.archive_format)
+                    .size(12.0)
+                    .muted()
+                    .show(ui);
 
-                ui.label(
-                    egui::RichText::new("|")
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
+                arclain_widgets::Text::new("|").size(12.0).muted().show(ui);
 
-                ui.label(
-                    egui::RichText::new(format!("{} files", info.file_count))
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
+                arclain_widgets::Text::new(&format!(
+                    "{} ({} compressed)",
+                    info.total_size, info.compressed_size
+                ))
+                .size(12.0)
+                .muted()
+                .show(ui);
+
+                arclain_widgets::Text::new("|").size(12.0).muted().show(ui);
+
+                arclain_widgets::Text::new(&format!("{} folders", info.folder_count))
+                    .size(12.0)
+                    .muted()
+                    .show(ui);
+
+                arclain_widgets::Text::new("|").size(12.0).muted().show(ui);
+
+                arclain_widgets::Text::new(&format!("{} files", info.file_count))
+                    .size(12.0)
+                    .muted()
+                    .show(ui);
             });
         }
     });
 }
 
-/// Render a small plugin status indicator
+/// Render a small plugin status indicator using StatusIcon
 fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginStatusInfo) {
-    let icon = if info.has_metadata { "🔌✓" } else { "🔌" };
-    let text = if info.enabled_plugins == info.total_plugins {
-        format!("{} {}/{}", icon, info.enabled_plugins, info.total_plugins)
+    let icon = if info.has_metadata {
+        egui_phosphor::regular::PLUGS_CONNECTED
     } else {
-        format!(
-            "{} {}/{} active",
-            icon, info.enabled_plugins, info.total_plugins
-        )
+        egui_phosphor::regular::PLUG
     };
 
     let color = if info.enabled_plugins > 0 {
@@ -159,25 +133,15 @@ fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginSta
         theme.colors.on_surface_variant
     };
 
-    let response = arclain_widgets::Chips::new(&text)
-        .with_theme_colors(&theme.colors)
-        .stroke_color(color)
-        .ui(ui);
+    let tooltip = if info.has_metadata {
+        "Plugins active with metadata"
+    } else {
+        "Plugins active"
+    };
 
-    response.on_hover_ui(|ui| {
-        ui.label(egui::RichText::new("Plugin System").strong());
-        ui.label(format!("Total plugins: {}", info.total_plugins));
-        ui.label(format!("Enabled: {}", info.enabled_plugins));
-        if info.has_metadata {
-            ui.label(
-                egui::RichText::new("✓ Metadata available")
-                    .color(egui::Color32::from_rgb(76, 175, 80)),
-            );
-        }
-        ui.label(
-            egui::RichText::new("Click Settings → Plugins to manage")
-                .size(10.0)
-                .italics(),
-        );
-    });
+    super::status_icon::StatusIcon::new(icon)
+        .count(info.enabled_plugins, info.total_plugins)
+        .color(color)
+        .tooltip(tooltip)
+        .show(ui, theme);
 }
