@@ -27,6 +27,7 @@ impl<'a> StatusIcon<'a> {
     }
 
     /// Add a text label next to the icon
+    #[allow(dead_code)]
     pub fn label(mut self, label: &'a str) -> Self {
         self.label = Some(label);
         self

@@ -288,12 +288,14 @@ impl AppState {
                                         conn,
                                         arclain_db::UiRegion::Toolbar,
                                     ) {
+                                        me.signals.toolbar_items.set(items.clone());
                                         me.toolbar_items = items;
                                     }
                                     if let Ok(items) = arclain_db::list_items_by_region(
                                         conn,
                                         arclain_db::UiRegion::InfoPanel,
                                     ) {
+                                        me.signals.info_panel_items.set(items.clone());
                                         me.info_panel_items = items;
                                     }
                                     Ok::<(), anyhow::Error>(())
@@ -485,44 +487,67 @@ impl AppState {
                             }
                         }
 
-                        // Also check for PluginButton (toolbar)
-                        let has_button = manager
+                        // Sync PluginButton items (toolbar) - iterate each button
+                        // Uses same format as toolbar_layout.rs:
+                        //   id = "plugin_{plugin_id}_{btn_id}"
+                        //   action_data = "plugin_id:btn_id"
+                        let buttons = manager
                             .with_plugin_instance(plugin_id, |instance| {
                                 instance
                                     .get_ui_layout(
                                         arclain_plugins::types::PluginExtensionPoint::PluginButton,
                                     )
-                                    .map(|e| !e.is_empty())
-                                    .unwrap_or(false)
+                                    .unwrap_or_default()
                             })
-                            .unwrap_or(false);
+                            .unwrap_or_default();
 
-                        if has_button {
-                            let exists = me.toolbar_items.iter().any(|item| {
-                                item.action_type == arclain_db::ActionType::Plugin
-                                    && item.action_data.as_ref() == Some(plugin_id)
-                            });
+                        for element in buttons.flatten() {
+                            if let arclain_plugins::types::PluginUiElement::Button {
+                                id: btn_id,
+                                label,
+                                ..
+                            } = element
+                            {
+                                // Match format from toolbar_layout.rs
+                                let unique_id = format!("plugin_{}_{}", plugin_id, btn_id);
+                                let action_data = format!("{}:{}", plugin_id, btn_id);
 
-                            if !exists {
-                                let max_sort = me
-                                    .toolbar_items
-                                    .iter()
-                                    .map(|i| i.sort_order)
-                                    .max()
-                                    .unwrap_or(0);
-                                me.toolbar_items.push(arclain_db::UiItem {
-                                    id: format!("toolbar_plugin_{}", plugin_id),
-                                    region: arclain_db::UiRegion::Toolbar,
-                                    group_id: Some("plugins".to_string()),
-                                    label: plugin.manifest.plugin.name.clone(),
-                                    icon: Some("PUZZLE_PIECE".to_string()),
-                                    action_type: arclain_db::ActionType::Plugin,
-                                    action_data: Some(plugin_id.clone()),
-                                    visible: true,
-                                    sort_order: max_sort + 1,
-                                    display_mode: arclain_db::DisplayMode::IconOnly,
-                                });
-                                info!("Added plugin '{}' to toolbar", plugin.manifest.plugin.name);
+                                // Check if item already exists in DB - respect existing settings
+                                let exists =
+                                    me.toolbar_items.iter().any(|item| item.id == unique_id);
+
+                                if !exists {
+                                    // Also remove legacy format items if present
+                                    let legacy_id = format!("toolbar_plugin_{}", plugin_id);
+                                    me.toolbar_items.retain(|item| item.id != legacy_id);
+
+                                    let max_sort = me
+                                        .toolbar_items
+                                        .iter()
+                                        .map(|i| i.sort_order)
+                                        .max()
+                                        .unwrap_or(0);
+
+                                    me.toolbar_items.push(arclain_db::UiItem {
+                                        id: unique_id,
+                                        region: arclain_db::UiRegion::Toolbar,
+                                        group_id: Some("plugins".to_string()),
+                                        label: format!(
+                                            "{} - {}",
+                                            plugin.manifest.plugin.name, label
+                                        ),
+                                        icon: Some("PUZZLE_PIECE".to_string()),
+                                        action_type: arclain_db::ActionType::Plugin,
+                                        action_data: Some(action_data),
+                                        visible: true,
+                                        sort_order: max_sort + 10,
+                                        display_mode: arclain_db::DisplayMode::IconAndText,
+                                    });
+                                    info!(
+                                        "Added plugin button '{}' - '{}' to toolbar",
+                                        plugin.manifest.plugin.name, label
+                                    );
+                                }
                             }
                         }
                     }
@@ -1069,11 +1094,13 @@ impl AppState {
                 if let Ok(items) =
                     arclain_db::list_items_by_region(conn, arclain_db::UiRegion::Toolbar)
                 {
+                    self.signals.toolbar_items.set(items.clone());
                     self.toolbar_items = items;
                 }
                 if let Ok(items) =
                     arclain_db::list_items_by_region(conn, arclain_db::UiRegion::InfoPanel)
                 {
+                    self.signals.info_panel_items.set(items.clone());
                     self.info_panel_items = items;
                 }
                 Ok::<(), anyhow::Error>(())

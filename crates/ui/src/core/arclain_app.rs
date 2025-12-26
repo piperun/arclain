@@ -124,195 +124,38 @@ impl ArclainApp {
     }
 }
 
-// TODO: Implement eframe::App trait
-// For now, this is just a stub that will be filled in as we extract feature rendering
 impl eframe::App for ArclainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // Check for pending refresh requests from plugins
+        use crate::core::{app_lifecycle, app_rendering};
+        
+        // === Lifecycle: Refresh requests, signals, theme ===
+        app_lifecycle::process_refresh_requests(&self.shared_state, ctx);
+        app_lifecycle::bind_signals_once(&self.shared_state.app_state, ctx, &mut self._signals_bound);
+        app_lifecycle::apply_theme(&self.shared_state, ctx);
+        
+        // === Lifecycle: Process metadata signal updates from plugins ===
+        app_lifecycle::process_metadata_signal(&self.shared_state, &mut self.organization_feature);
+        
+        // === Lifecycle: Handle extraction progress from native backends ===
         {
-            let mut requests = self.shared_state.refresh_requests.lock();
-            if !requests.is_empty() {
-                tracing::debug!("Processing {} refresh requests: {:?}", requests.len(), requests);
-                requests.clear();
-                ctx.request_repaint(); // Ensure we redraw after plugin requested refresh
-            }
-        }
-
-        // Bind signals to egui context once for automatic repaint on signal changes
-        if !self._signals_bound {
-            let state = self.shared_state.app_state.lock();
-            state.signals.bind_to_context(ctx);
-            drop(state);
-            self._signals_bound = true;
-            tracing::info!("Signals bound to egui context");
+            let ops_state = self.archive_operations.state_mut();
+            app_lifecycle::process_extraction_progress(
+                &self.shared_state,
+                &mut ops_state.extraction_dialog,
+                &mut self.status_info.message,
+                ctx,
+            );
         }
         
-        // Apply theme
-        self.shared_state.theme.apply_to_context(ctx);
-        
-        // Store theme colors in context for automatic retrieval by widgets
-        arclain_widgets::set_theme(ctx, self.shared_state.theme.colors.clone());
+        // === Lifecycle: Update window title ===
+        app_lifecycle::update_window_title(
+            &self.shared_state,
+            &self.page_navigator,
+            &mut self._last_window_title,
+            ctx,
+        );
 
-        // Check for metadata updates from signals (from plugins)
-        let new_metadata = {
-             let state = self.shared_state.app_state.lock();
-             let val = state.signals.metadata.get();
-             if val.is_some() {
-                 state.signals.metadata.set(None); // Consume
-                 val
-             } else {
-                 None
-             }
-        };
-
-        if let Some(json_val) = new_metadata {
-             // Parse metadata and update state
-             let json_str = json_val.to_string();
-             match arclain_core::features::organization::GameMetadata::from_json(&json_str) {
-                 Ok(meta) => {
-                      tracing::info!("Received metadata signal update: {} (ID: {})", meta.title, meta.product_id);
-                      
-                      // 1. Update Global State
-                      {
-                          let mut state = self.shared_state.app_state.lock();
-                          state.current_game_metadata = Some(meta.clone());
-                          state.plugin_metadata = None; 
-                      }
-
-                      // 2. Update Active Organizer Panel
-                      if let Some(page) = &mut self.organization_feature.organizer_page {
-                          page.panel.session.metadata = Some(meta);
-                          page.panel.update_preview();
-                          tracing::info!("Updated Organization Panel with new metadata");
-                      }
-                 }
-                 Err(e) => {
-                     tracing::warn!("Failed to parse metadata from signal: {}", e);
-                 }
-             }
-        }
-
-        // Handle extraction progress from native backends
-        {
-            // Get progress from signal, clone it to release lock quickly
-            let progress_opt = {
-                let state = self.shared_state.app_state.lock();
-                state.signals.extraction_progress.get()
-            };
-            
-            if let Some(progress) = progress_opt {
-                if progress.complete {
-                    // Extraction finished - clear the signal and handle result
-                    {
-                        let state = self.shared_state.app_state.lock();
-                        state.signals.extraction_progress.set(None);
-                    }
-
-                    if let Some(file_path) = progress.file_to_open {
-                        if file_path.exists() {
-                            // Open the file with system default
-                            #[cfg(target_os = "windows")]
-                            {
-                                if let Err(e) = std::process::Command::new("explorer")
-                                    .arg(&file_path)
-                                    .spawn()
-                                {
-                                    tracing::warn!("Failed to open file: {}", e);
-                                    self.status_info.message = format!("Failed to open file: {}", e);
-                                } else {
-                                    tracing::info!("Opened extracted file: {}", file_path.display());
-                                    self.status_info.message = format!("Opened: {}", file_path.file_name().unwrap_or_default().to_string_lossy());
-                                }
-                            }
-
-                            #[cfg(not(target_os = "windows"))]
-                            {
-                                if let Err(e) = std::process::Command::new("xdg-open")
-                                    .arg(&file_path)
-                                    .spawn()
-                                {
-                                    tracing::warn!("Failed to open file: {}", e);
-                                    self.status_info.message = format!("Failed to open file: {}", e);
-                                } else {
-                                    self.status_info.message = format!("Opened: {}", file_path.file_name().unwrap_or_default().to_string_lossy());
-                                }
-                            }
-                        } else {
-                            tracing::warn!("Extracted file not found: {}", file_path.display());
-                            self.status_info.message = "Extraction completed but file not found".to_string();
-                        }
-                    } else {
-                        // No file to open - just indicate completion
-                        self.status_info.message = "Extraction completed".to_string();
-                    }
-
-                    if let Some(error) = &progress.error {
-                        tracing::error!("Extraction failed: {}", error);
-                        if error.contains("cancelled") {
-                            self.status_info.message = "Extraction cancelled".to_string();
-                        } else {
-                            self.status_info.message = format!("Extraction failed: {}", error);
-                        }
-                    }
-
-                    // Hide extraction dialog
-                    self.archive_operations.state_mut().extraction_dialog.show = false;
-                } else {
-                    // Update extraction dialog with current progress
-                    let ops_state = self.archive_operations.state_mut();
-                    if !ops_state.extraction_dialog.show {
-                        // First progress update - show the dialog
-                        ops_state.extraction_dialog = dialogs::ExtractionProgressDialog {
-                            show: true,
-                            title: "Extracting files".to_string(),
-                            file_action: format!("Extracting {} files...", progress.total),
-                            percent: progress.percent,
-                            processed_text: format!("{}/{}", progress.current, progress.total),
-                            elapsed_text: String::new(),
-                            time_left_text: String::new(),
-                            status: dialogs::ExtractionStatus::Running,
-                            can_minimize: false,
-                            can_pause: false,
-                            can_cancel: true,  // Enable cancel for native extraction
-                            error: String::new(),
-                            log_lines: vec![progress.current_file.clone()],
-                            show_log: false,  // Start with details hidden
-                            dest_path: None,
-                        };
-                    } else {
-                        ops_state.extraction_dialog.percent = progress.percent;
-                        ops_state.extraction_dialog.processed_text = format!("{}/{}", progress.current, progress.total);
-                        ops_state.extraction_dialog.file_action = progress.current_file.clone();
-                        // Don't flood log - just update current file
-                    }
-                    
-                    // Request repaint to show progress updates
-                    ctx.request_repaint();
-                }
-            }
-        }
-
-        // Update window title
-        let title = {
-            let state = self.shared_state.app_state.lock();
-            if let Some(path) = &state.current_archive {
-                path.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "Arclain".to_string())
-            } else if let Some(settings_page) = self.page_navigator.current_settings_page() {
-                format!("Settings - {}", settings_page.display_name())
-            } else {
-                "Arclain".to_string()
-            }
-        };
-        
-        let sanitized_title = crate::core::operations::window::sanitize_window_title(&title);
-        if self._last_window_title.as_deref() != Some(&sanitized_title) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(sanitized_title.clone()));
-            self._last_window_title = Some(sanitized_title);
-        }
-
-        // Handle extraction progress
+        // Handle extraction/conversion progress from CLI backends
         self.archive_operations.update_extraction_progress(ctx);
         self.archive_operations.update_conversion_progress(ctx);
         
@@ -338,126 +181,67 @@ impl eframe::App for ArclainApp {
             }
         }
 
-        // Render Header
-        egui::TopBottomPanel::top("header_panel")
-            .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface_variant))
-            .show(ctx, |ui| {
-                let mut theme_toggle = false;
-                let can_go_back = self.page_navigator.can_go_back();
-                let is_on_settings = self.page_navigator.is_on_settings();
-                
-                // Sync UI preferences from AppState
+        // === Render Header Panel ===
+        let header_actions = app_rendering::render_header_panel(
+            ctx,
+            &self.shared_state,
+            &self.page_navigator,
+            &mut self.header_state,
+        );
+        
+        // Handle header actions
+        if header_actions.theme_toggle {
+            self.shared_state.theme.toggle();
+        }
+        if header_actions.navigate_home {
+            self.page_navigator.navigate_to_main();
+        }
+        if header_actions.navigate_back {
+            self.page_navigator.navigate_back();
+        }
+        if header_actions.navigate_plugins {
+            self.page_navigator.navigate_to(AppPage::Plugins);
+        }
+        if header_actions.navigate_settings {
+            self.page_navigator.navigate_to(AppPage::Settings(SettingsPage::Overview));
+        }
+
+        // === Render Tab Bar Panel ===
+        let tab_action = app_rendering::render_tab_bar_panel(
+            ctx,
+            &self.shared_state,
+            &mut self.top_tab_bar_state,
+        );
+        
+        // Handle tab bar actions
+        match tab_action {
+            app_rendering::TabBarAction::SelectArchiveTab => {
+                // Set toolbar context to Archive
                 {
                     let state = self.shared_state.app_state.lock();
-                    self.header_state.show_button_labels = state.ui_preferences.show_button_labels;
+                    state.signals.active_toolbar.set(crate::core::signals::ToolbarContext::Archive);
+                    state.signals.status_message.set(None);
                 }
-                
-                let actions = components::header::render(
-                    ui,
-                    &self.shared_state.theme,
-                    &mut self.header_state,
-                    &mut theme_toggle,
-                    true, // Always show nav buttons for now
-                    can_go_back,
-                    is_on_settings,
-                );
-
-                if theme_toggle {
-                    self.shared_state.theme.toggle();
+                // Close any open plugin pages
+                {
+                    let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
+                    dialog_state.page_stack.clear();
                 }
-
-                if actions.navigate_home {
-                    self.page_navigator.navigate_to_main();
-                }
-                if actions.navigate_back {
-                    self.page_navigator.navigate_back();
-                }
-                if actions.navigate_plugins {
-                    self.page_navigator.navigate_to(AppPage::Plugins);
-                }
-                if actions.navigate_settings {
-                    self.page_navigator.navigate_to(AppPage::Settings(SettingsPage::Overview));
-                }
-            });
-
-        // Render Top Tab Bar
-        egui::TopBottomPanel::top("top_tab_bar_panel")
-            .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface))
-            .show(ctx, |ui| {
-                // Build combined tabs list: host tabs + plugin tabs
-                let mut tabs = vec![
-                    components::top_tab_bar::TopTab {
-                        id: "archive".to_string(),
-                        label: "Archive".to_string(),
-                        icon: egui_phosphor::regular::FOLDER_OPEN.to_string(),
-                        badge: None,
-                        source: None,
-                    },
-                ];
-
-                // Collect plugin tabs
+                self.page_navigator.navigate_to_main();
+            }
+            app_rendering::TabBarAction::SelectPluginTab { plugin_id, tab_id } => {
+                // Set toolbar context to Plugin
                 {
                     let state = self.shared_state.app_state.lock();
-                    if let Some(plugin_manager) = &state.plugin_manager {
-                        if let Some(pm) = plugin_manager.try_lock() {
-                            for (plugin_id, tab_config) in pm.get_all_top_tabs() {
-                                tabs.push(components::top_tab_bar::TopTab {
-                                    id: tab_config.id.clone(),
-                                    label: tab_config.label,
-                                    icon: tab_config.icon,
-                                    badge: tab_config.badge,
-                                    source: Some(plugin_id),
-                                });
-                            }
-                        }
-                    }
+                    state.signals.active_toolbar.set(crate::core::signals::ToolbarContext::Plugin(plugin_id.clone()));
                 }
-
-                // Note: Settings tab removed - already accessible via header button
-
-                // Render tab bar and handle actions
-                if let Some(action) = components::top_tab_bar::render(
-                    ui,
-                    &self.shared_state.theme.colors,
-                    &mut self.top_tab_bar_state,
-                    &tabs,
-                ) {
-                    match action {
-                        components::top_tab_bar::TopTabAction::SelectHostTab(id) => {
-                            match id.as_str() {
-                                "archive" => {
-                                    // Set toolbar context to Archive
-                                    {
-                                        let state = self.shared_state.app_state.lock();
-                                        state.signals.active_toolbar.set(crate::core::signals::ToolbarContext::Archive);
-                                        state.signals.status_message.set(None); // Clear plugin status
-                                    }
-                                    // Close any open plugin pages first
-                                    {
-                                        let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
-                                        dialog_state.page_stack.clear();
-                                    }
-                                    // Navigate to main without adding to history
-                                    self.page_navigator.navigate_to_main();
-                                }
-                                _ => {}
-                            }
-                        }
-                        components::top_tab_bar::TopTabAction::SelectPluginTab { plugin_id, tab_id } => {
-                            // Set toolbar context to Plugin
-                            {
-                                let state = self.shared_state.app_state.lock();
-                                state.signals.active_toolbar.set(crate::core::signals::ToolbarContext::Plugin(plugin_id.clone()));
-                            }
-                            // Open plugin page for the selected tab
-                            // Clear existing pages first to avoid stacking
-                            let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
-                            dialog_state.page_stack.clear();
-                            dialog_state.open_page(&plugin_id, &tab_id);
-                        }
-                    }
-                }
-            });
+                // Open plugin page
+                let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
+                dialog_state.page_stack.clear();
+                dialog_state.open_page(&plugin_id, &tab_id);
+            }
+            app_rendering::TabBarAction::None => {}
+        }
 
         // Render Toolbar (only on Main page AND when Archive context is active)
         let should_show_archive_toolbar = if self.page_navigator.is_on_main() {
@@ -638,48 +422,12 @@ impl eframe::App for ArclainApp {
                 });
         }
 
-        // Render Status Bar
-        egui::TopBottomPanel::bottom("status_bar")
-            .exact_height(28.0)  // Fixed height for consistent alignment
-            .frame(
-                egui::Frame::NONE
-                    .fill(self.shared_state.theme.colors.surface_variant)
-                    .inner_margin(egui::Margin::symmetric(0, 6))  // Vertical padding for centering
-            )
-            .show(ctx, |ui| {
-                let state = self.shared_state.app_state.lock();
-                let archive_loaded = state.current_archive.is_some();
-                
-                // Update status info from state
-                // This is a simplified mapping, ideally we'd have a dedicated update method
-                if archive_loaded {
-                    self.status_info.file_count = state.archive_info.file_count;
-                    self.status_info.total_size = crate::core::utils::format_size(state.archive_info.total_size);
-                    self.status_info.compressed_size = crate::core::utils::format_size(state.archive_info.compressed_size);
-                    self.status_info.archive_format = state.archive_info.archive_format.clone();
-                }
-                
-                let plugin_info = if let Some(manager) = &state.plugin_manager {
-                    let mgr = manager.lock();
-                    let list = mgr.list_plugins();
-                    Some(components::status_bar::PluginStatusInfo {
-                        total_plugins: list.len(),
-                        enabled_plugins: list.iter().filter(|p| p.enabled).count(),
-                        has_metadata: state.plugin_metadata.is_some(),
-                    })
-                } else {
-                    None
-                };
-                drop(state);
-
-                components::status_bar::render(
-                    ui,
-                    &self.shared_state.theme,
-                    &self.status_info,
-                    archive_loaded,
-                    plugin_info.as_ref(),
-                );
-            });
+        // === Render Status Bar ===
+        app_rendering::render_status_bar_panel(
+            ctx,
+            &self.shared_state,
+            &mut self.status_info,
+        );
 
         // Render Password Dialog
         let shared_state = self.shared_state.clone();
@@ -1002,6 +750,11 @@ impl eframe::App for ArclainApp {
                     let breadcrumb = crate::core::navigation::PageNavigator::get_breadcrumb(
                         &crate::core::AppPage::Settings(page.clone())
                     );
+                    // Get search_text from signal
+                    let search_text = {
+                        let state = self.shared_state.app_state.lock();
+                        state.signals.search_text.get()
+                    };
                     egui::CentralPanel::default().show(ctx, |ui| {
                         if let Some(target) = self.settings_feature.render(
                             ui,
@@ -1009,7 +762,7 @@ impl eframe::App for ArclainApp {
                             &page,
                             breadcrumb,
                             Some(&mut self.organization_feature.rules_page),
-                            &self.header_state.search_text,
+                            &search_text,
                         ) {
                             self.page_navigator.navigate_to(target);
                         }
