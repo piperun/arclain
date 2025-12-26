@@ -320,7 +320,7 @@ pub fn load_archive_data(
     status_info.compressed_size = format_size(archive_info.compressed_size);
     status_info.archive_format = archive_info.archive_format.clone();
 
-    // Sync back to state
+    // Sync back to state and signal
     {
         let mut st = state.lock();
         st.archive_info.total_size = archive_info.total_size;
@@ -330,6 +330,8 @@ pub fn load_archive_data(
         st.archive_info.total_crc32 = archive_info.total_crc32.clone();
         st.archive_info.plugin_metadata = archive_info.plugin_metadata.clone();
         st.archive_info.archive_loaded = true;
+        // Sync to reactive signal
+        st.signals.archive_info.set(st.archive_info.clone());
     }
 }
 

@@ -3,7 +3,9 @@
 //! This module provides reactive signals for async-updated state
 //! that needs to trigger UI updates when changed from background threads.
 
+use crate::core::operations::archive::ArchiveInfo;
 use arclain_core::ArchiveEntry;
+use arclain_db::UiItem;
 use arclain_signals::{Signal, SignalContext};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -80,6 +82,18 @@ pub struct AppSignals {
 
     /// Cancellation token for extraction - set to true to cancel
     pub extraction_cancel: Arc<AtomicBool>,
+
+    /// Search text from header - used to filter entries in archive or settings
+    pub search_text: Signal<String>,
+
+    /// Toolbar items from DB - reactive for layout editor changes
+    pub toolbar_items: Signal<Vec<UiItem>>,
+
+    /// Info panel items from DB - reactive for layout editor changes
+    pub info_panel_items: Signal<Vec<UiItem>>,
+
+    /// Archive info (format, size, encryption status) - reactive
+    pub archive_info: Signal<ArchiveInfo>,
 }
 
 impl AppSignals {
@@ -95,6 +109,10 @@ impl AppSignals {
             status_message: Signal::new(None),
             extraction_progress: Signal::new(None),
             extraction_cancel: Arc::new(AtomicBool::new(false)),
+            search_text: Signal::new(String::new()),
+            toolbar_items: Signal::new(Vec::new()),
+            info_panel_items: Signal::new(Vec::new()),
+            archive_info: Signal::new(ArchiveInfo::default()),
         }
     }
 
@@ -108,6 +126,10 @@ impl AppSignals {
         signal_ctx.bind(&self.active_toolbar);
         signal_ctx.bind(&self.status_message);
         signal_ctx.bind(&self.extraction_progress);
+        signal_ctx.bind(&self.search_text);
+        signal_ctx.bind(&self.toolbar_items);
+        signal_ctx.bind(&self.info_panel_items);
+        signal_ctx.bind(&self.archive_info);
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
@@ -124,6 +146,10 @@ impl AppSignals {
         self.extraction_progress.set(None);
         self.extraction_cancel
             .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.search_text.set(String::new());
+        self.toolbar_items.set(Vec::new());
+        self.info_panel_items.set(Vec::new());
+        self.archive_info.set(ArchiveInfo::default());
     }
 }
 

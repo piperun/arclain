@@ -118,28 +118,25 @@ pub fn render_interface_settings(
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
-        // Toolbar section
+        // Toolbar section - just Edit Layout button
         render_section(ui, theme, "Toolbar", |ui| {
-            // Edit Layout button - opens dialog
-            ui.horizontal(|ui| {
-                if ui
-                    .button(format!(
-                        "{} Edit Layout",
-                        egui_phosphor::regular::PENCIL_SIMPLE
-                    ))
-                    .clicked()
-                {
-                    interface_state.layout_dialog_open = true;
-                }
-            });
+            ui.label(
+                egui::RichText::new("Customize toolbar button arrangement")
+                    .size(12.0)
+                    .color(theme.colors.on_surface_variant),
+            );
             ui.add_space(8.0);
 
-            sections::toolbar_section::render(
-                ui,
-                theme,
-                &mut interface_state.items,
-                &mut interface_state.dirty,
-            );
+            // Edit Layout button - opens dialog
+            if ui
+                .button(format!(
+                    "{} Edit Layout",
+                    egui_phosphor::regular::PENCIL_SIMPLE
+                ))
+                .clicked()
+            {
+                interface_state.layout_dialog_open = true;
+            }
         });
 
         ui.add_space(8.0);
@@ -219,6 +216,7 @@ pub fn render_interface_settings(
                     // Reload toolbar items in AppState so changes take effect immediately
                     if let Ok(items) = arclain_db::list_items_by_region(&guard, UiRegion::Toolbar) {
                         let mut state = app_state.lock();
+                        state.signals.toolbar_items.set(items.clone());
                         state.toolbar_items = items;
                     }
 

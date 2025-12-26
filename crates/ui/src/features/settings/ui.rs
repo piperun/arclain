@@ -410,6 +410,7 @@ impl SettingsFeature {
                                                 if let Ok(items) = dbs.config.with_connection(|conn| {
                                                     arclain_db::list_items_by_region(conn, arclain_db::UiRegion::Toolbar)
                                                 }) {
+                                                    state_guard.signals.toolbar_items.set(items.clone());
                                                     drop(state_guard);
                                                     shared.app_state.lock().toolbar_items = items;
                                                 }

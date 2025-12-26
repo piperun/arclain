@@ -270,24 +270,76 @@ fn render_file_list(
                 // Render breadcrumb
                 render_breadcrumb(ui, state, shared, action);
 
+                // Get search text from signal
+                let search_text = shared.app_state.lock().signals.search_text.get();
+                let search_lower = search_text.to_lowercase();
+                let is_searching = !search_text.trim().is_empty();
+
                 // Render file list
                 egui::ScrollArea::vertical()
                     .id_salt("file_list_scroll")
                     .show(ui, |ui| {
-                        if state.toolbar_state.grid_view {
-                            if let Some(file_action) =
-                                file_list::render_grid_view(ui, &shared.theme, &mut state.entries)
-                            {
+                        if is_searching {
+                            // Filtering mode: collect matching entries into a cloned Vec
+                            let matching_indices: Vec<usize> = state
+                                .entries
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, e)| e.name.to_lowercase().contains(&search_lower))
+                                .map(|(i, _)| i)
+                                .collect();
+
+                            let mut filtered: Vec<_> = matching_indices
+                                .iter()
+                                .filter_map(|&i| state.entries.get(i).cloned())
+                                .collect();
+
+                            if state.toolbar_state.grid_view {
+                                if let Some(file_action) =
+                                    file_list::render_grid_view(ui, &shared.theme, &mut filtered)
+                                {
+                                    *action = map_file_list_action(file_action);
+                                }
+                            } else if let Some(file_action) = file_list::render_list_view(
+                                ui,
+                                &shared.theme,
+                                &mut filtered,
+                                state.toolbar_state.columns_locked,
+                                &mut state.sort_state,
+                            ) {
                                 *action = map_file_list_action(file_action);
                             }
-                        } else if let Some(file_action) = file_list::render_list_view(
-                            ui,
-                            &shared.theme,
-                            &mut state.entries,
-                            state.toolbar_state.columns_locked,
-                            &mut state.sort_state,
-                        ) {
-                            *action = map_file_list_action(file_action);
+
+                            // Sync selection state back to original entries
+                            for (filtered_idx, &original_idx) in matching_indices.iter().enumerate()
+                            {
+                                if let Some(filtered_entry) = filtered.get(filtered_idx) {
+                                    if let Some(original_entry) =
+                                        state.entries.get_mut(original_idx)
+                                    {
+                                        original_entry.selected = filtered_entry.selected;
+                                    }
+                                }
+                            }
+                        } else {
+                            // Normal mode: render all entries
+                            if state.toolbar_state.grid_view {
+                                if let Some(file_action) = file_list::render_grid_view(
+                                    ui,
+                                    &shared.theme,
+                                    &mut state.entries,
+                                ) {
+                                    *action = map_file_list_action(file_action);
+                                }
+                            } else if let Some(file_action) = file_list::render_list_view(
+                                ui,
+                                &shared.theme,
+                                &mut state.entries,
+                                state.toolbar_state.columns_locked,
+                                &mut state.sort_state,
+                            ) {
+                                *action = map_file_list_action(file_action);
+                            }
                         }
                     });
             });
