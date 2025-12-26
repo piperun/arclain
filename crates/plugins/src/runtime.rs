@@ -571,5 +571,6 @@ fn convert_plugin_action(
             id: update.id,
             value: update.value,
         },
+        WitAction::OpenPage(page) => InternalAction::OpenPage { page },
     }
 }

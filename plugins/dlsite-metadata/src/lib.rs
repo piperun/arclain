@@ -337,6 +337,13 @@ impl archust_plugin_sdk::Guest for Component {
                         
                         elements.push(UiElement::Separator);
                         
+                        // Navigate to DLSite browser page with product ID
+                        elements.push(UiElement::Button(ButtonConfig {
+                            id: "show_in_browser".to_string(),
+                            label: "View in DLSite Browser".to_string(),
+                            action: Some(ButtonAction::OpenPage(format!("dlsite_browser:{}", id))),
+                        }));
+                        
                         elements.push(UiElement::Button(ButtonConfig {
                             id: "show_dlsite_info".to_string(),
                             label: "Show Full Info".to_string(),
@@ -402,8 +409,10 @@ impl archust_plugin_sdk::Guest for Component {
                         let state = state.borrow();
                         
                         if let Some((id, data, scraped)) = &state.found_metadata {
-                            // Title
-                            let title = data["work_name"].as_str().unwrap_or("Unknown Title");
+                            // Title (check both raw API and ProductMetadata field names)
+                            let title = data["work_name"].as_str()
+                                .or_else(|| data["title"].as_str())
+                                .unwrap_or("Unknown Title");
                             elements.push(UiElement::Label(LabelConfig {
                                 text: title.to_string(),
                                 bold: true,
@@ -412,8 +421,10 @@ impl archust_plugin_sdk::Guest for Component {
                             
                             elements.push(UiElement::Separator);
                             
-                            // Circle/Maker
-                            let maker = data["maker_name"].as_str().unwrap_or("Unknown");
+                            // Circle/Maker (check both field names)
+                            let maker = data["maker_name"].as_str()
+                                .or_else(|| data["creator"].as_str())
+                                .unwrap_or("Unknown");
                             elements.push(UiElement::Label(LabelConfig {
                                 text: format!("Circle: {}", maker),
                                 bold: false,
@@ -740,6 +751,22 @@ impl archust_plugin_sdk::Guest for Component {
                 } else {
                     PluginLayout::Single(vec![])
                 }
+            }
+            
+            // Handle Page:dlsite_browser:VJ012345 (navigation with product ID)
+            ext if ext.starts_with("Page:dlsite_browser:") => {
+                // Extract product ID from extension point
+                let product_id = ext.trim_start_matches("Page:dlsite_browser:").to_string();
+                
+                // Set the selected entry in state so the browser shows the detail view
+                STATE.with(|s| {
+                    let mut state = s.borrow_mut();
+                    state.selected_cache_entry = Some(product_id);
+                });
+                
+                // Fall through to the normal browser rendering (which will now show detail view)
+                // Re-call ourselves with the base extension point
+                return Self::get_ui_layout("Page:dlsite_browser".to_string());
             }
             
             "Page:dlsite_browser" => {

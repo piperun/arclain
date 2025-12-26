@@ -88,5 +88,15 @@ fn process_action(
             );
             // TODO: Implement element update if needed for server-driven UI
         }
+
+        PluginAction::OpenPage { page } => {
+            // Navigate to the plugin page
+            tracing::info!(
+                "Plugin {} requested navigation to page '{}'",
+                plugin_id,
+                page
+            );
+            _dialog_state.open_page(plugin_id, &page);
+        }
     }
 }

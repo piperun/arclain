@@ -374,9 +374,34 @@ impl Panel {
 
                         if let Some(ref instance_arc) = instance_arc {
                             let instance_arc = instance_arc.clone();
-                            let _pid = plugin_id.clone(); // Prefixed with _ to silence warning
+                            let pid = plugin_id.clone();
+
+                            // Get dialog state for navigation
+                            let dialog_state_arc = shared.map(|s| s.plugin_dialog_state.clone());
+
                             let mut callback: plugin_ui::UiEventCallback =
                                 Box::new(move |element_id: &str, value: Option<String>| {
+                                    // Handle page navigation
+                                    if element_id.starts_with("__page_open:") {
+                                        if let Some(ref ds_arc) = dialog_state_arc {
+                                            let page_id =
+                                                element_id.trim_start_matches("__page_open:");
+                                            ds_arc.lock().open_page(&pid, page_id);
+                                        }
+                                        return;
+                                    }
+
+                                    // Handle dialog open
+                                    if element_id.starts_with("__dialog_open:") {
+                                        if let Some(ref ds_arc) = dialog_state_arc {
+                                            let dialog_id =
+                                                element_id.trim_start_matches("__dialog_open:");
+                                            ds_arc.lock().open_dialog(&pid, dialog_id);
+                                        }
+                                        return;
+                                    }
+
+                                    // Normal event - send to plugin
                                     let mut instance = instance_arc.lock();
                                     let _ = instance.send_ui_event(element_id, value);
                                 });

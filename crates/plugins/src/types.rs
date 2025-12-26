@@ -380,6 +380,8 @@ pub enum PluginAction {
     RefreshPanel { extension_point: String },
     /// Update a specific element's value
     UpdateElement { id: String, value: String },
+    /// Navigate to a plugin page
+    OpenPage { page: String },
 }
 
 fn default_space_size() -> f32 {
