@@ -640,7 +640,12 @@ impl eframe::App for ArclainApp {
 
         // Render Status Bar
         egui::TopBottomPanel::bottom("status_bar")
-            .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface_variant))
+            .exact_height(28.0)  // Fixed height for consistent alignment
+            .frame(
+                egui::Frame::NONE
+                    .fill(self.shared_state.theme.colors.surface_variant)
+                    .inner_margin(egui::Margin::symmetric(0, 6))  // Vertical padding for centering
+            )
             .show(ctx, |ui| {
                 let state = self.shared_state.app_state.lock();
                 let archive_loaded = state.current_archive.is_some();
