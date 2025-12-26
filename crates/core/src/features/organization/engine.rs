@@ -459,7 +459,7 @@ impl RuleEngine {
     }
 
     /// Helper to find the "game content" root folder in entries
-    /// Mimics logic from organizer.rs::find_and_flatten_game_content
+    /// Mimics logic from flatten.rs::find_and_flatten_game_content
     fn find_game_content_root_in_entries(entries: &[ArchiveEntry]) -> PathBuf {
         let game_indicators = [
             "Game.exe",
@@ -475,23 +475,36 @@ impl RuleEngine {
         let mut best_root = PathBuf::new();
         let mut best_score = 0;
 
-        // Group entries by parent directory
+        // Group entries by parent directory - track both standard indicators and any .exe
         let mut dirs: HashMap<PathBuf, usize> = HashMap::new();
+        let mut dirs_with_exe: std::collections::HashSet<PathBuf> =
+            std::collections::HashSet::new();
 
         for entry in entries {
             let path = Path::new(&entry.path);
             if let Some(parent) = path.parent() {
-                // If this file is an indicator, score the parent
                 if let Some(fname) = path.file_name() {
                     let fname_str = fname.to_string_lossy();
+
+                    // Check for standard indicators
                     if game_indicators
                         .iter()
                         .any(|i| fname_str.eq_ignore_ascii_case(i))
                     {
                         *dirs.entry(parent.to_path_buf()).or_insert(0) += 1;
                     }
+
+                    // Check for any .exe file (flexible indicator)
+                    if !entry.is_dir && fname_str.to_lowercase().ends_with(".exe") {
+                        dirs_with_exe.insert(parent.to_path_buf());
+                    }
                 }
             }
+        }
+
+        // Any .exe file counts as +1 indicator for that directory
+        for dir in dirs_with_exe {
+            *dirs.entry(dir).or_insert(0) += 1;
         }
 
         // Find dir with >= 2 indicators
