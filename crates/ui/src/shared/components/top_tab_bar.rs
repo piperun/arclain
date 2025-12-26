@@ -55,7 +55,8 @@ pub fn render(
 ) -> Option<TopTabAction> {
     let mut action = None;
 
-    ui.horizontal(|ui| {
+    // Use horizontal_centered to align all tabs vertically in the center of the bar
+    ui.horizontal_centered(|ui| {
         ui.add_space(8.0);
 
         for tab in tabs {
@@ -75,38 +76,34 @@ pub fn render(
             };
 
             // Render tab button
-            let response = ui
-                .horizontal(|ui| {
-                    // Background frame
-                    let frame_response = egui::Frame::NONE
-                        .fill(bg_color)
-                        .inner_margin(egui::Margin {
-                            left: 12,
-                            right: 12,
-                            top: 8,
-                            bottom: 8,
-                        })
-                        .corner_radius(4.0)
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                // Icon (convert name to Phosphor glyph)
-                                ui.label(
-                                    RichText::new(icon_to_phosphor(&tab.icon)).color(text_color),
-                                );
-
-                                // Label
-                                ui.label(RichText::new(&tab.label).color(text_color).size(13.0));
-
-                                // Badge
-                                if let Some(badge) = &tab.badge {
-                                    render_badge(ui, badge);
-                                }
-                            });
-                        });
-
-                    frame_response.response
+            // We use a Frame to handle padding and background
+            let frame_response = egui::Frame::NONE
+                .fill(bg_color)
+                .inner_margin(egui::Margin {
+                    left: 12,
+                    right: 12,
+                    top: 8,
+                    bottom: 8,
                 })
-                .inner;
+                .corner_radius(4.0)
+                .show(ui, |ui| {
+                    // Use horizontal_centered to align icon and text vertically
+                    ui.horizontal_centered(|ui| {
+                        // Icon
+                        let icon_glyph = icon_to_phosphor(&tab.icon);
+                        ui.label(RichText::new(icon_glyph).color(text_color).size(14.0));
+
+                        // Label - Using Text widget for consistency if possible, or just standardized RichText
+                        ui.label(RichText::new(&tab.label).color(text_color).size(13.0));
+
+                        // Badge
+                        if let Some(badge) = &tab.badge {
+                            render_badge(ui, badge);
+                        }
+                    });
+                });
+
+            let response = frame_response.response;
 
             // Handle click
             if response.interact(egui::Sense::click()).clicked() {
