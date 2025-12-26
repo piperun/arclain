@@ -40,7 +40,8 @@ pub fn render_header_panel(
             // Sync UI preferences from AppState
             {
                 let state = shared_state.app_state.lock();
-                header_state.show_button_labels = state.ui_preferences.show_button_labels;
+                header_state.show_button_labels =
+                    state.signals.ui_preferences.get().show_button_labels;
             }
 
             // Sync search_text from signal to HeaderState before render
@@ -195,9 +196,10 @@ pub fn render_toolbar_panel(
         .frame(egui::Frame::NONE.fill(shared_state.theme.colors.surface_variant))
         .show(ctx, |ui| {
             let state = shared_state.app_state.lock();
-            let can_go_back = state.navigation.can_go_back();
-            let can_go_forward = state.navigation.can_go_forward();
-            let can_go_up = state.navigation.can_go_up();
+            let nav = state.signals.navigation.get();
+            let can_go_back = nav.can_go_back();
+            let can_go_forward = nav.can_go_forward();
+            let can_go_up = nav.can_go_up();
             let archive_loaded = state.current_archive.is_some();
             let has_selection = false; // TODO: Implement selection tracking
             let has_metadata = state.plugin_metadata.is_some();

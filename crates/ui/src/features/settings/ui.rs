@@ -412,7 +412,6 @@ impl SettingsFeature {
                                                 }) {
                                                     state_guard.signals.toolbar_items.set(items.clone());
                                                     drop(state_guard);
-                                                    shared.app_state.lock().toolbar_items = items;
                                                 }
                                             }
                                         }

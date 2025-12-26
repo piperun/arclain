@@ -37,10 +37,10 @@ pub fn extract_selected(
         }
 
         // Build full paths using navigation prefix
-        let full_paths: Vec<String> = if !st.navigation.current_path.is_empty() {
+        let full_paths: Vec<String> = if !st.signals.navigation.get().current_path.is_empty() {
             selected_files
                 .iter()
-                .map(|f| format!("{}/{}", st.navigation.current_path, f))
+                .map(|f| format!("{}/{}", st.signals.navigation.get().current_path, f))
                 .collect()
         } else {
             selected_files

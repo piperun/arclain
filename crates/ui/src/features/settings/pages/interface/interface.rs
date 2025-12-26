@@ -188,7 +188,7 @@ pub fn render_interface_settings(
 
             let mut show_labels = {
                 let state = app_state.lock();
-                state.ui_preferences.show_button_labels
+                state.signals.ui_preferences.get().show_button_labels
             };
 
             if ui
@@ -196,8 +196,10 @@ pub fn render_interface_settings(
                 .on_hover_text("Display text labels next to icons in header buttons")
                 .changed()
             {
-                let mut state = app_state.lock();
-                state.ui_preferences.show_button_labels = show_labels;
+                let state = app_state.lock();
+                let mut prefs = state.signals.ui_preferences.get();
+                prefs.show_button_labels = show_labels;
+                state.signals.ui_preferences.set(prefs);
             }
         });
 
@@ -213,11 +215,15 @@ pub fn render_interface_settings(
                 if let Ok(guard) = conn.lock() {
                     interface_state.save_to_db(&guard);
 
-                    // Reload toolbar items in AppState so changes take effect immediately
+                    // Reload toolbar items in AppSignals
                     if let Ok(items) = arclain_db::list_items_by_region(&guard, UiRegion::Toolbar) {
-                        let mut state = app_state.lock();
-                        state.signals.toolbar_items.set(items.clone());
-                        state.toolbar_items = items;
+                        app_state.lock().signals.toolbar_items.set(items);
+                    }
+
+                    // Reload info panel items in AppSignals
+                    if let Ok(items) = arclain_db::list_items_by_region(&guard, UiRegion::InfoPanel)
+                    {
+                        app_state.lock().signals.info_panel_items.set(items);
                     }
 
                     // Saved successfully - no action needed
