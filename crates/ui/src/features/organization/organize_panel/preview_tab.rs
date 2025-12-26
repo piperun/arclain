@@ -260,7 +260,10 @@ impl OrganizePanel {
                                         format!("Original: {}", self.session.archive_name);
                                     ui.add(
                                         egui::Label::new(
-                                            RichText::new(original_title).strong().size(12.0),
+                                            arclain_widgets::Text::new(&original_title)
+                                                .strong()
+                                                .size(12.0)
+                                                .to_rich_text(ui),
                                         )
                                         .truncate(),
                                     );
@@ -307,7 +310,10 @@ impl OrganizePanel {
                                     let organized_title = format!("Modified: {}", plan.root_folder);
                                     ui.add(
                                         egui::Label::new(
-                                            RichText::new(organized_title).strong().size(12.0),
+                                            arclain_widgets::Text::new(&organized_title)
+                                                .strong()
+                                                .size(12.0)
+                                                .to_rich_text(ui),
                                         )
                                         .truncate(),
                                     );

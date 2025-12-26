@@ -304,8 +304,14 @@ impl OrganizePanel {
                         );
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
-                            ui.label(egui::RichText::new("Organize Archive").size(18.0).strong());
-                            ui.label(egui::RichText::new(&self.session.archive_name).size(12.0).weak());
+                            arclain_widgets::Text::new("Organize Archive")
+                                .size(18.0)
+                                .strong()
+                                .show(ui);
+                            arclain_widgets::Text::new(&self.session.archive_name)
+                                .size(12.0)
+                                .muted()
+                                .show(ui);
                         });
 
                         // Metadata badge - smaller with explicit label
@@ -340,15 +346,28 @@ impl OrganizePanel {
                                         .inner_margin(egui::Margin::symmetric(6, 3))
                                         .corner_radius(3.0)
                                         .show(ui, |ui| {
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "{} Fetched: {}",
-                                                    egui_phosphor::regular::CHECK_CIRCLE,
-                                                    Self::truncate_path(&meta.title, 30)
-                                                ))
-                                                .color(egui::Color32::from_rgb(120, 200, 150))
-                                                .size(10.0),
-                                            );
+                                            // Use right-to-left layout to ensure tight packing (no stretching)
+                                            // Add items in REVERSE order: Text then Icon -> appears as [Icon] [Text]
+                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                                ui.spacing_mut().item_spacing.x = 4.0;
+                                                
+                                                // Text (appears on right)
+                                                ui.label(
+                                                    egui::RichText::new(format!(
+                                                        "Fetched: {}",
+                                                        Self::truncate_path(&meta.title, 30)
+                                                    ))
+                                                    .color(egui::Color32::from_rgb(120, 200, 150))
+                                                    .size(10.0),
+                                                );
+
+                                                // Icon (appears on left of text)
+                                                ui.label(
+                                                    egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
+                                                        .color(egui::Color32::from_rgb(120, 200, 150))
+                                                        .size(12.0),
+                                                );
+                                            });
                                         });
                                 },
                             );
@@ -385,7 +404,9 @@ impl OrganizePanel {
             // Rule selector
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new(egui_phosphor::regular::FUNNEL).size(14.0));
-                ui.label(egui::RichText::new("Rule:").strong());
+                arclain_widgets::Text::new("Rule:")
+                    .strong()
+                    .show(ui);
 
                 let current_rule = self
                     .session.rules
@@ -540,12 +561,11 @@ impl OrganizePanel {
             );
             ui.add_space(20.0);
             
-            ui.label(
-                egui::RichText::new("No metadata found")
-                    .size(32.0)
-                    .strong()
-                    .color(egui::Color32::from_rgb(150, 150, 150)),
-            );
+            arclain_widgets::Text::new("No metadata found")
+                .size(32.0)
+                .strong()
+                .color(egui::Color32::from_rgb(150, 150, 150))
+                .show(ui);
             ui.add_space(30.0);
             
             ui.label(

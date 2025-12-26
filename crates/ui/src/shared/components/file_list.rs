@@ -1,4 +1,5 @@
 use crate::shared::theme::AppTheme;
+use arclain_widgets::pixel_align;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
@@ -369,7 +370,7 @@ fn render_grid_item(
         let ext_text: &str = if entry.is_folder { "📁" } else { &ext };
 
         ui.painter().text(
-            icon_rect.center(),
+            pixel_align(icon_rect.center()),
             egui::Align2::CENTER_CENTER,
             ext_text,
             egui::FontId::proportional(12.0),
@@ -378,8 +379,8 @@ fn render_grid_item(
 
         // File info
         let text_x = content_rect.min.x + icon_size + 12.0;
-        let name_pos = egui::pos2(text_x, content_rect.min.y + 4.0);
-        let meta_pos = egui::pos2(text_x, content_rect.min.y + 24.0);
+        let name_pos = pixel_align(egui::pos2(text_x, content_rect.min.y + 4.0));
+        let meta_pos = pixel_align(egui::pos2(text_x, content_rect.min.y + 24.0));
 
         // Use selection text color when selected
         let text_color = if entry.selected {
