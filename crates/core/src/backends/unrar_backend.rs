@@ -157,14 +157,19 @@ impl ArchiveBackend for UnrarBackend {
             let entry_name = header.entry().filename.to_string_lossy().to_string();
             let full_dest = dest.join(&entry_name);
 
-            // Log if path is suspiciously long (Windows MAX_PATH is 260)
+            // Check if path is too long for Windows (MAX_PATH = 260)
+            // If so, fail early to trigger CLI fallback rather than getting ECreate
             let path_len = full_dest.to_string_lossy().len();
-            if path_len > 240 {
+            if path_len > 250 {
                 tracing::warn!(
-                    "Long path detected ({} chars): {}",
+                    "Path too long for native extraction ({} chars): {}",
                     path_len,
                     full_dest.display()
                 );
+                return Err(anyhow::anyhow!(
+                    "Path too long for native UnRAR ({} chars, max 250). Use CLI fallback.",
+                    path_len
+                ));
             }
 
             match header.extract_to(dest.to_path_buf()) {

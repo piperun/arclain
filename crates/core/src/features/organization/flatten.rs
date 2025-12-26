@@ -93,10 +93,13 @@ fn find_and_flatten_game_content_with_depth(
 
     // Count how many indicators we find
     let mut indicator_count = 0;
+    let mut has_any_exe = false;
+
     for entry in &entries {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
 
+        // Check for standard indicators
         for indicator in &game_indicators {
             if name_str.eq_ignore_ascii_case(indicator) {
                 indicator_count += 1;
@@ -104,10 +107,27 @@ fn find_and_flatten_game_content_with_depth(
                 break;
             }
         }
+
+        // Check for any .exe file (flexible indicator for custom-named executables)
+        if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+            && name_str.to_lowercase().ends_with(".exe")
+        {
+            has_any_exe = true;
+        }
     }
 
-    // If we found 2+ indicators, this IS the game folder
-    if indicator_count >= 2 {
+    // Any .exe file counts as an indicator (catches girlgame_600x900w.exe, etc.)
+    // An exe file alone is sufficient - many games only have exe + data files
+    if has_any_exe {
+        indicator_count += 1;
+        debug!("Found .exe file indicator");
+    }
+
+    // If we found game indicators OR have an exe file, this IS the game folder
+    // Single .exe is sufficient since that's a strong signal of game content
+    let is_game_folder = indicator_count >= 2 || has_any_exe;
+
+    if is_game_folder {
         info!(
             "Found game content folder with {} indicators, flattening {} files/dirs",
             indicator_count,
