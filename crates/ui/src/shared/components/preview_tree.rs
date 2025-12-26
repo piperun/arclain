@@ -299,7 +299,11 @@ fn render_node(
 
         // Expand/collapse button for folders
         if node.is_dir && !node.children.is_empty() {
-            let arrow = if is_expanded { "▼" } else { "▶" };
+            let arrow = if is_expanded {
+                egui_phosphor::regular::CARET_DOWN
+            } else {
+                egui_phosphor::regular::CARET_RIGHT
+            };
             if ui
                 .add(egui::Button::new(RichText::new(arrow).size(10.0)).frame(false))
                 .clicked()
@@ -333,9 +337,8 @@ fn render_node(
 
         ui.label(RichText::new(icon).size(14.0).color(icon_color));
 
-        // Name
-        let name_text = RichText::new(&node.name).size(12.0);
-        let response = ui.label(name_text);
+        // Name - use Text widget for automatic theme colors
+        let response = arclain_widgets::Text::new(&node.name).size(12.0).show(ui);
 
         // Generated/download badge
         if node.is_generated {

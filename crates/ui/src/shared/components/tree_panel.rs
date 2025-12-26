@@ -1,4 +1,5 @@
 use crate::shared::theme::AppTheme;
+use arclain_widgets::pixel_align;
 use eframe::egui;
 use std::collections::HashMap;
 
@@ -152,7 +153,7 @@ pub fn render(
             if tree_item(
                 ui,
                 theme,
-                "📦",
+                egui_phosphor::regular::PACKAGE,
                 archive_name,
                 archive_name,
                 0,
@@ -196,12 +197,12 @@ fn render_tree_node(
 
     let icon = if has_children {
         if is_expanded {
-            "📂"
+            egui_phosphor::regular::FOLDER_OPEN
         } else {
-            "📁"
+            egui_phosphor::regular::FOLDER
         }
     } else {
-        "📁"
+        egui_phosphor::regular::FOLDER
     };
 
     let response = tree_item(
@@ -283,7 +284,7 @@ fn tree_item(
         // Draw expand/collapse triangle for folders with children
         if has_children && indent_level > 0 {
             let toggle_rect = egui::Rect::from_center_size(
-                egui::pos2(rect.min.x + indent - 8.0, rect.center().y),
+                egui::pos2((rect.min.x + indent - 8.0).round(), rect.center().y.round()),
                 egui::vec2(toggle_size, toggle_size),
             );
 
@@ -296,14 +297,14 @@ fn tree_item(
                 toggle_clicked = true;
             }
 
-            // Draw triangle (▶ or ▼)
-            let triangle_icon = if icon.starts_with("📂") {
-                "▼"
+            // Draw triangle (▶ or ▼) using phosphor icons
+            let triangle_icon = if icon == egui_phosphor::regular::FOLDER_OPEN {
+                egui_phosphor::regular::CARET_DOWN
             } else {
-                "▶"
+                egui_phosphor::regular::CARET_RIGHT
             };
             ui.painter().text(
-                toggle_rect.center(),
+                pixel_align(toggle_rect.center()),
                 egui::Align2::CENTER_CENTER,
                 triangle_icon,
                 egui::FontId::proportional(10.0),
@@ -312,7 +313,7 @@ fn tree_item(
         }
 
         // Draw icon and text
-        let text_pos = egui::pos2(rect.min.x + indent, rect.center().y);
+        let text_pos = pixel_align(egui::pos2(rect.min.x + indent, rect.center().y));
         let text = format!("{} {}", icon, label);
 
         // Use selection text color when selected, otherwise primary text color

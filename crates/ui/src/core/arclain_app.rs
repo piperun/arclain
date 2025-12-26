@@ -149,6 +149,9 @@ impl eframe::App for ArclainApp {
         
         // Apply theme
         self.shared_state.theme.apply_to_context(ctx);
+        
+        // Store theme colors in context for automatic retrieval by widgets
+        arclain_widgets::set_theme(ctx, self.shared_state.theme.colors.clone());
 
         // Check for metadata updates from signals (from plugins)
         let new_metadata = {
