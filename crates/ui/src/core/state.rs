@@ -32,7 +32,7 @@ pub struct AppState {
     pub fallback_backend: SevenZipCli, // Keep for plugin compatibility
     pub last_entries: Vec<String>,
     pub all_entries: Vec<arclain_core::ArchiveEntry>,
-    pub navigation: NavigationState,
+
     pub current_archive: Option<PathBuf>,
     pub archive_encrypted: bool,
     pub headers_encrypted: bool,
@@ -58,11 +58,9 @@ pub struct AppState {
     pub checksum_service: Option<ChecksumService>,
     // Content cache for plugin images
     pub content_cache: Option<Arc<ContentCache>>,
-    // UI preferences
-    pub ui_preferences: UiPreferences,
+
     // Toolbar config items (loaded from DB)
-    pub toolbar_items: Vec<arclain_db::UiItem>,
-    pub info_panel_items: Vec<arclain_db::UiItem>,
+
     // Async Runtime and HTTP
     #[allow(dead_code)] // Runtime is kept alive by AppState
     pub tokio_runtime: tokio::runtime::Runtime,
@@ -130,7 +128,7 @@ impl AppState {
             fallback_backend,
             last_entries: vec![],
             all_entries: vec![],
-            navigation: NavigationState::new(),
+
             current_archive: None,
             archive_encrypted: false,
             headers_encrypted: false,
@@ -147,9 +145,7 @@ impl AppState {
             archive_info: crate::core::operations::archive::ArchiveInfo::default(),
             checksum_service: None,
             content_cache: None,
-            ui_preferences: UiPreferences::default(),
-            toolbar_items: vec![],
-            info_panel_items: vec![],
+
             tokio_runtime: runtime,
             async_http_client: Some(async_http_client),
             resource_manager: None,
@@ -289,14 +285,12 @@ impl AppState {
                                         arclain_db::UiRegion::Toolbar,
                                     ) {
                                         me.signals.toolbar_items.set(items.clone());
-                                        me.toolbar_items = items;
                                     }
                                     if let Ok(items) = arclain_db::list_items_by_region(
                                         conn,
                                         arclain_db::UiRegion::InfoPanel,
                                     ) {
                                         me.signals.info_panel_items.set(items.clone());
-                                        me.info_panel_items = items;
                                     }
                                     Ok::<(), anyhow::Error>(())
                                 });
@@ -433,6 +427,8 @@ impl AppState {
                 // Sync plugin UI items to info_panel_items
                 if let Some(ref manager_arc) = me.plugin_manager {
                     let manager = manager_arc.lock();
+                    let mut info_panel_items = me.signals.info_panel_items.get();
+                    let mut toolbar_items = me.signals.toolbar_items.get();
                     for plugin in manager.list_plugins().iter().filter(|p| p.enabled) {
                         let plugin_id = &plugin.id;
                         info!(
@@ -456,19 +452,18 @@ impl AppState {
 
                         if has_panel {
                             // Check if already in info_panel_items
-                            let exists = me.info_panel_items.iter().any(|item| {
+                            let exists = info_panel_items.iter().any(|item| {
                                 item.action_type == arclain_db::ActionType::Plugin
                                     && item.action_data.as_ref() == Some(plugin_id)
                             });
 
                             if !exists {
-                                let max_sort = me
-                                    .info_panel_items
+                                let max_sort = info_panel_items
                                     .iter()
                                     .map(|i| i.sort_order)
                                     .max()
                                     .unwrap_or(0);
-                                me.info_panel_items.push(arclain_db::UiItem {
+                                info_panel_items.push(arclain_db::UiItem {
                                     id: format!("plugin_{}", plugin_id),
                                     region: arclain_db::UiRegion::InfoPanel,
                                     group_id: Some("plugins".to_string()),
@@ -513,22 +508,20 @@ impl AppState {
                                 let action_data = format!("{}:{}", plugin_id, btn_id);
 
                                 // Check if item already exists in DB - respect existing settings
-                                let exists =
-                                    me.toolbar_items.iter().any(|item| item.id == unique_id);
+                                let exists = toolbar_items.iter().any(|item| item.id == unique_id);
 
                                 if !exists {
                                     // Also remove legacy format items if present
                                     let legacy_id = format!("toolbar_plugin_{}", plugin_id);
-                                    me.toolbar_items.retain(|item| item.id != legacy_id);
+                                    toolbar_items.retain(|item| item.id != legacy_id);
 
-                                    let max_sort = me
-                                        .toolbar_items
+                                    let max_sort = toolbar_items
                                         .iter()
                                         .map(|i| i.sort_order)
                                         .max()
                                         .unwrap_or(0);
 
-                                    me.toolbar_items.push(arclain_db::UiItem {
+                                    toolbar_items.push(arclain_db::UiItem {
                                         id: unique_id,
                                         region: arclain_db::UiRegion::Toolbar,
                                         group_id: Some("plugins".to_string()),
@@ -551,6 +544,8 @@ impl AppState {
                             }
                         }
                     }
+                    me.signals.info_panel_items.set(info_panel_items);
+                    me.signals.toolbar_items.set(toolbar_items);
                 }
             }
             Err(e) => {
@@ -617,7 +612,7 @@ impl AppState {
         self.archive_encrypted = info.encrypted;
         self.headers_encrypted = info.headers_encrypted;
         self.encryption_method = info.encryption_method.clone();
-        self.navigation = NavigationState::new();
+        crate::core::operations::navigation_signals::reset_navigation(&self.signals);
 
         // Update reactive signals for async UI updates
         self.signals
@@ -693,7 +688,7 @@ impl AppState {
         self.archive_encrypted = info.encrypted;
         self.headers_encrypted = info.headers_encrypted;
         self.encryption_method = info.encryption_method.clone();
-        self.navigation = NavigationState::new();
+        crate::core::operations::navigation_signals::reset_navigation(&self.signals);
         self.current_password = Some(password.to_string());
 
         // Update reactive signals for async UI updates
@@ -741,7 +736,10 @@ impl AppState {
     }
 
     pub fn get_current_entries(&self) -> Vec<arclain_core::ArchiveEntry> {
-        self.navigation.filter_entries(&self.all_entries)
+        self.signals
+            .navigation
+            .get()
+            .filter_entries(&self.all_entries)
     }
 
     pub fn add_files_to_archive(&self, archive: &Path, files: Vec<PathBuf>) -> Result<()> {
@@ -1073,14 +1071,12 @@ impl AppState {
                 if let Ok(items) =
                     arclain_db::list_items_by_region(conn, arclain_db::UiRegion::Toolbar)
                 {
-                    self.signals.toolbar_items.set(items.clone());
-                    self.toolbar_items = items;
+                    self.signals.toolbar_items.set(items);
                 }
                 if let Ok(items) =
                     arclain_db::list_items_by_region(conn, arclain_db::UiRegion::InfoPanel)
                 {
-                    self.signals.info_panel_items.set(items.clone());
-                    self.info_panel_items = items;
+                    self.signals.info_panel_items.set(items);
                 }
                 Ok::<(), anyhow::Error>(())
             });

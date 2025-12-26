@@ -89,8 +89,12 @@ fn render_tree_panel(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "archive".to_string());
 
-            let folders = app_state.navigation.get_all_folders(&app_state.all_entries);
-            let current_path = app_state.navigation.current_path.clone();
+            let folders = app_state
+                .signals
+                .navigation
+                .get()
+                .get_all_folders(&app_state.all_entries);
+            let current_path = app_state.signals.navigation.get().current_path.clone();
             drop(app_state);
 
             if let Some(path) = tree_panel::render(
@@ -364,7 +368,7 @@ fn render_breadcrumb(
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let current_path = app_state.navigation.current_path.clone();
+            let current_path = app_state.signals.navigation.get().current_path.clone();
             drop(app_state);
 
             if let Some(path) =

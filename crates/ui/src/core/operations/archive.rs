@@ -128,15 +128,19 @@ pub fn try_open_with_password(
 ) -> bool {
     let mut st = state.lock();
     // Save the current navigation state before re-listing
-    let saved_current_path = st.navigation.current_path.clone();
-    let saved_path_stack = st.navigation.path_stack.clone();
+    let saved_current_path = st.signals.navigation.get().current_path.clone();
+    let saved_path_stack = st.signals.navigation.get().path_stack.clone();
 
     match st.list_with_password(path, password) {
         Ok(archive_entries) => {
             // Restore navigation state after re-listing
-            st.navigation.current_path = saved_current_path;
-            st.navigation.path_stack = saved_path_stack;
-            st.navigation.forward_stack.clear();
+            {
+                let mut nav = st.signals.navigation.get();
+                nav.current_path = saved_current_path;
+                nav.path_stack = saved_path_stack;
+                nav.forward_stack.clear();
+                st.signals.navigation.set(nav);
+            }
 
             // Save successful password rule
             st.save_password_rule_from_archive(path, password).ok();

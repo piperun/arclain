@@ -256,13 +256,14 @@ impl eframe::App for ArclainApp {
                 .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface_variant))
                 .show(ctx, |ui| {
                     let state = self.shared_state.app_state.lock();
-                    let can_go_back = state.navigation.can_go_back();
-                    let can_go_forward = state.navigation.can_go_forward();
-                    let can_go_up = state.navigation.can_go_up();
+                    let nav = state.signals.navigation.get();
+                    let can_go_back = nav.can_go_back();
+                    let can_go_forward = nav.can_go_forward();
+                    let can_go_up = nav.can_go_up();
                     let archive_loaded = state.current_archive.is_some();
                     let has_selection = false; // TODO: Implement selection tracking
                     let has_metadata = state.plugin_metadata.is_some();
-                    let toolbar_config = components::toolbar::ToolbarConfig::new(state.toolbar_items.clone());
+                    let toolbar_config = components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
                     let plugin_manager = state.plugin_manager.clone();
                     drop(state);
 
@@ -727,10 +728,10 @@ impl eframe::App for ArclainApp {
                         crate::features::archive_browser::ArchiveBrowserAction::CopyPath(file) => {
                             // Copy file path to clipboard
                             let state = self.shared_state.app_state.lock();
-                            let full_path = if state.navigation.current_path.is_empty() {
+                            let full_path = if state.signals.navigation.get().current_path.is_empty() {
                                 file.clone()
                             } else {
-                                format!("{}/{}", state.navigation.current_path, file)
+                                format!("{}/{}", state.signals.navigation.get().current_path, file)
                             };
                             drop(state);
                             ctx.copy_text(full_path.clone());

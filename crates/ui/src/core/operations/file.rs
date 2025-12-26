@@ -37,7 +37,7 @@ pub fn delete_selected(
     // Build full paths using current navigation prefix; skip folders for delete
     let (full_paths, archive_opt) = {
         let st = state.lock();
-        let prefix = st.navigation.current_path.clone();
+        let prefix = st.signals.navigation.get().current_path.clone();
         let fulls: Vec<String> = entries
             .iter()
             .filter(|e| e.selected && !e.is_folder)
