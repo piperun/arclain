@@ -325,6 +325,8 @@ interface ui {
         // UI update actions
         refresh-panel(string),
         update-element(element-update),
+        // Navigation actions
+        open-page(string),
     }
 }
 
