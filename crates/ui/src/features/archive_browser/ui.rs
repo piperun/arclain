@@ -126,8 +126,8 @@ fn render_properties_panel(
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 let app_state = shared.app_state.lock();
-                let archive_info = &app_state.archive_info;
-                let items = &app_state.info_panel_items;
+                let archive_info = app_state.signals.archive_info.get();
+                let items = app_state.signals.info_panel_items.get();
 
                 let mut sections: Vec<properties_panel::PanelSection> = Vec::new();
 

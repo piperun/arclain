@@ -4,6 +4,9 @@
 //! that needs to trigger UI updates when changed from background threads.
 
 use crate::core::operations::archive::ArchiveInfo;
+use crate::core::state::UiPreferences;
+use arclain_core::archive::NavigationState;
+use arclain_core::features::organization::GameMetadata;
 use arclain_core::ArchiveEntry;
 use arclain_db::UiItem;
 use arclain_signals::{Signal, SignalContext};
@@ -54,7 +57,7 @@ pub enum ToolbarContext {
 #[derive(Clone)]
 pub struct AppSignals {
     /// Archive entries - set when archive is listed
-    pub entries: Signal<Vec<ArchiveEntry>>,
+    pub entries: Signal<Arc<Vec<ArchiveEntry>>>,
 
     /// Plugin metadata - set when plugin emits metadata
     pub metadata: Signal<Option<serde_json::Value>>,
@@ -94,13 +97,26 @@ pub struct AppSignals {
 
     /// Archive info (format, size, encryption status) - reactive
     pub archive_info: Signal<ArchiveInfo>,
+
+    /// Game metadata from plugins (DLSite, etc.) - reactive
+    pub game_metadata: Signal<Option<GameMetadata>>,
+
+    /// UI display preferences - reactive for settings changes
+    pub ui_preferences: Signal<UiPreferences>,
+
+    /// User preferences from config DB - reactive
+    #[allow(dead_code)]
+    pub user_config: Signal<arclain_db::UserConfig>,
+
+    /// Navigation state - reactive
+    pub navigation: Signal<NavigationState>,
 }
 
 impl AppSignals {
     /// Create new signals with default values.
     pub fn new() -> Self {
         Self {
-            entries: Signal::new(Vec::new()),
+            entries: Signal::new(Arc::new(Vec::new())),
             metadata: Signal::new(None),
             loading: Signal::new(false),
             archive_path: Signal::new(None),
@@ -113,6 +129,10 @@ impl AppSignals {
             toolbar_items: Signal::new(Vec::new()),
             info_panel_items: Signal::new(Vec::new()),
             archive_info: Signal::new(ArchiveInfo::default()),
+            game_metadata: Signal::new(None),
+            ui_preferences: Signal::new(UiPreferences::default()),
+            user_config: Signal::new(arclain_db::UserConfig::default()),
+            navigation: Signal::new(NavigationState::new()),
         }
     }
 
@@ -130,13 +150,16 @@ impl AppSignals {
         signal_ctx.bind(&self.toolbar_items);
         signal_ctx.bind(&self.info_panel_items);
         signal_ctx.bind(&self.archive_info);
+        signal_ctx.bind(&self.game_metadata);
+        signal_ctx.bind(&self.ui_preferences);
+        signal_ctx.bind(&self.navigation);
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
     /// Reset all signals to default state.
     #[allow(dead_code)]
     pub fn reset(&self) {
-        self.entries.set(Vec::new());
+        self.entries.set(Arc::new(Vec::new()));
         self.metadata.set(None);
         self.loading.set(false);
         self.archive_path.set(None);
@@ -150,6 +173,9 @@ impl AppSignals {
         self.toolbar_items.set(Vec::new());
         self.info_panel_items.set(Vec::new());
         self.archive_info.set(ArchiveInfo::default());
+        self.game_metadata.set(None);
+        self.ui_preferences.set(UiPreferences::default());
+        self.navigation.set(NavigationState::new());
     }
 }
 
