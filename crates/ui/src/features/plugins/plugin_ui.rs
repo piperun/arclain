@@ -694,54 +694,52 @@ fn trigger_image_fetch(
     key: String,
     ctx: egui::Context,
 ) {
-    let app_state = shared.app_state.lock();
-    if let Some(client) = &app_state.async_http_client {
+    let client = &shared.services.async_http_client;
+    if let Some(cache) = &shared.services.content_cache {
         let client = client.clone();
-        if let Some(cache) = &app_state.content_cache {
-            let cache = cache.clone();
-            // Use runtime handle
-            let runtime = &app_state.tokio_runtime;
+        let cache = cache.clone();
+        // Use runtime handle
+        let runtime = &shared.services.tokio_runtime;
 
-            runtime.spawn(async move {
-                let request = HttpRequest::get(&url);
+        runtime.spawn(async move {
+            let request = HttpRequest::get(&url);
 
-                let id_res = if let Some(pid) = &plugin_id {
-                    client.request_for_plugin(pid, request)
-                } else {
-                    Ok(client.request(request))
-                };
+            let id_res = if let Some(pid) = &plugin_id {
+                client.request_for_plugin(pid, request)
+            } else {
+                Ok(client.request(request))
+            };
 
-                if let Ok(id) = id_res {
-                    // Poll loop (max 30s)
-                    for _ in 0..300 {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        if let Some(status) = client.status(&id) {
-                            if status.is_complete() {
-                                break;
-                            }
-                        } else {
+            if let Ok(id) = id_res {
+                // Poll loop (max 30s)
+                for _ in 0..300 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    if let Some(status) = client.status(&id) {
+                        if status.is_complete() {
                             break;
                         }
-                    }
-
-                    if let Some(status) = client.take_response(&id) {
-                        if let RequestStatus::Ready(resp) = status {
-                            if let Err(e) =
-                                cache.put(&key, &resp.body, CacheType::Screenshot, None, Some(&url))
-                            {
-                                tracing::warn!("Failed to cache image {}: {}", key, e);
-                            }
-                            ctx.request_repaint();
-                        } else if let RequestStatus::Failed(e) = status {
-                            tracing::warn!("Image fetch failed for {}: {}", url, e);
-                        }
                     } else {
-                        client.cancel(&id);
+                        break;
                     }
-                } else if let Err(e) = id_res {
-                    tracing::warn!("Failed to start image request {}: {}", url, e);
                 }
-            });
-        }
+
+                if let Some(status) = client.take_response(&id) {
+                    if let RequestStatus::Ready(resp) = status {
+                        if let Err(e) =
+                            cache.put(&key, &resp.body, CacheType::Screenshot, None, Some(&url))
+                        {
+                            tracing::warn!("Failed to cache image {}: {}", key, e);
+                        }
+                        ctx.request_repaint();
+                    } else if let RequestStatus::Failed(e) = status {
+                        tracing::warn!("Image fetch failed for {}: {}", url, e);
+                    }
+                } else {
+                    client.cancel(&id);
+                }
+            } else if let Err(e) = id_res {
+                tracing::warn!("Failed to start image request {}: {}", url, e);
+            }
+        });
     }
 }

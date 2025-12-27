@@ -28,13 +28,13 @@ pub struct SettingsFeature {
 
 impl SettingsFeature {
     pub fn new(shared: &SharedState) -> Self {
-        // Load saved settings from config
-        let open_nested_in_new_tab = {
-            let state = shared.app_state.lock();
-            state.user_config.open_nested_in_new_tab
-        };
 
-        // Pre-load rules initially
+        // Load saved settings from config signal
+        let user_config = shared.app_state.lock().signals.user_config.get();
+        let open_nested_in_new_tab = user_config.open_nested_in_new_tab;
+
+        // Pre-load rules initially (still needs lock for pass_rules as they are not yet fully signaled?)
+        // pass_rules are in AppState, not UserConfig. So keep lock for rules.
         let rules = {
             let state = shared.app_state.lock();
             state.pass_rules.iter().map(|r| crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
@@ -43,23 +43,25 @@ impl SettingsFeature {
                  password: r.password.clone(),
                  priority: r.priority,
                  enabled: r.enabled,
-            }).collect()
+             }).collect()
         };
 
         // Load network settings
         let network_state = {
+            // Password still needs lock as it's in secrets (dbs)
             let state = shared.app_state.lock();
             let password = if let Some(dbs) = &state.dbs {
                  dbs.secrets.get_secret("proxy:socks5").unwrap_or(None).map(|s| s.to_string()).unwrap_or_default()
             } else { String::new() };
+            drop(state);
             
             use arclain_signals::Signal;
             use crate::features::settings::types::ConnectionTestStatus;
             
             NetworkSettingsState {
-                socks5_enabled: Signal::new(state.user_config.socks5_enabled),
-                socks5_address: Signal::new(state.user_config.socks5_address.clone().unwrap_or_default()),
-                socks5_username: Signal::new(state.user_config.socks5_username.clone().unwrap_or_default()),
+                socks5_enabled: Signal::new(user_config.socks5_enabled),
+                socks5_address: Signal::new(user_config.socks5_address.clone().unwrap_or_default()),
+                socks5_username: Signal::new(user_config.socks5_username.clone().unwrap_or_default()),
                 socks5_password: Signal::new(password),
                 connection_test_status: Signal::new(ConnectionTestStatus::Idle),
             }
@@ -470,8 +472,8 @@ impl SettingsFeature {
                                                     navigate_to = Some(crate::core::AppPage::Settings(new_page));
                                                 }
                                             } else {
-                                                // Access plugin manager safely
-                                                let pm_arc_opt = shared.app_state.lock().plugin_manager.clone();
+                                                // Access plugin manager from services (no lock needed)
+                                                let pm_arc_opt = shared.services.plugin_manager.clone();
                                                 let pm_guard = pm_arc_opt.as_ref().map(|m| m.lock());
 
                                                 let content_action = render_settings_content(

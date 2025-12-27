@@ -29,7 +29,7 @@ pub fn open_archive(
         let mut st = state.lock();
         match st.list_archive(&file) {
             Ok(archive_entries) => {
-                let current_archive = st.current_archive.clone();
+                let current_archive = st.signals.archive_path.get();
                 drop(st);
                 load_archive_data(
                     state,
@@ -81,7 +81,7 @@ pub fn open_archive_by_path(
     let mut st = state.lock();
     match st.list_archive(path) {
         Ok(archive_entries) => {
-            let current_archive = st.current_archive.clone();
+            let current_archive = st.signals.archive_path.get();
             drop(st);
             load_archive_data(
                 state,
@@ -145,7 +145,7 @@ pub fn try_open_with_password(
             // Save successful password rule
             st.save_password_rule_from_archive(path, password).ok();
 
-            let current_archive = st.current_archive.clone();
+            let current_archive = st.signals.archive_path.get();
             drop(st);
             load_archive_data(
                 state,
@@ -175,40 +175,56 @@ pub fn load_archive_data(
     archive_info: &mut ArchiveInfo,
 ) {
     // Optionally compute missing CRC-32 for encrypted entries
+    let signals = state.lock().signals.clone();
+
     let (policy, have_pw, pending_archive) = {
         let st = state.lock();
         (
             st.encrypted_crc_policy.clone(),
             {
-                let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
-                st.current_password.is_some()
+                let archive_name = signals
+                    .archive_path
+                    .get()
+                    .as_ref()
+                    .and_then(|p| p.to_str())
+                    .map(|s| s.to_string());
+                signals.current_password.get().is_some()
                     || arclain_core::utilities::auto_password_for(
                         &st.pass_rules,
-                        archive_name,
+                        archive_name.as_deref(),
                         &st.last_entries,
                     )
                     .is_some()
             },
-            st.current_archive.clone(),
+            signals.archive_path.get(),
         )
     };
 
     if have_pw && policy != "on_access" {
         let (backend, archive_path, password, paths_to_compute) = {
             let st = state.lock();
-            let pw_opt = st.current_password.clone().or_else(|| {
-                let archive_name = st.current_archive.as_ref().and_then(|p| p.to_str());
+            let pw_opt = signals.current_password.get().or_else(|| {
+                let archive_name = signals
+                    .archive_path
+                    .get()
+                    .as_ref()
+                    .and_then(|p| p.to_str())
+                    .map(|s| s.to_string());
                 arclain_core::utilities::auto_password_for(
                     &st.pass_rules,
-                    archive_name,
+                    archive_name.as_deref(),
                     &st.last_entries,
                 )
             });
-            let arc = st.current_archive.clone();
-            let paths: Vec<String> = st
-                .all_entries
+            let arc = signals.archive_path.get();
+            let entries_arc = signals.entries.get();
+            let paths: Vec<String> = entries_arc
                 .iter()
-                .filter(|e| !e.is_dir && (e.encrypted || st.headers_encrypted) && e.crc32.is_none())
+                .filter(|e| {
+                    !e.is_dir
+                        && (e.encrypted || st.archive_info.headers_encrypted)
+                        && e.crc32.is_none()
+                })
                 .map(|e| e.path.clone())
                 .collect();
 
@@ -223,16 +239,18 @@ pub fn load_archive_data(
                 }
             }
             if !computed.is_empty() {
-                let mut st = state.lock();
+                let mut entries_arc = signals.entries.get();
+                let st = state.lock();
                 for (p, sum) in computed {
-                    if let Some(e) = st
-                        .all_entries
+                    if let Some(e) = Arc::make_mut(&mut entries_arc)
                         .iter_mut()
                         .find(|e| e.path == p && e.encrypted && e.crc32.is_none())
                     {
                         e.crc32 = Some(sum);
                     }
                 }
+                // Update signal with modified entries
+                st.signals.entries.set(entries_arc.clone());
             }
         }
     }
@@ -245,26 +263,20 @@ pub fn load_archive_data(
             .iter()
             .map(convert_to_file_entry)
             .collect();
-        archive_info.archive_encrypted = st.archive_encrypted;
-        archive_info.headers_encrypted = st.headers_encrypted;
-        archive_info.encryption_method = st.encryption_method.clone();
+        archive_info.archive_encrypted = st.archive_info.archive_encrypted; // Use archive_info directly
+        archive_info.headers_encrypted = st.archive_info.headers_encrypted;
+        archive_info.encryption_method = st.archive_info.encryption_method.clone();
 
         // Update state's archive info
-        st.archive_info.archive_encrypted = st.archive_encrypted;
-        st.archive_info.headers_encrypted = st.headers_encrypted;
-        st.archive_info.encryption_method = st.encryption_method.clone();
+        st.archive_info.archive_encrypted = archive_info.archive_encrypted;
+        st.archive_info.headers_encrypted = archive_info.headers_encrypted;
+        st.archive_info.encryption_method = archive_info.encryption_method.clone();
 
-        // Sync entries to signal with Arc for O(1) cloning
-        st.signals
-            .entries
-            .set(std::sync::Arc::new(st.all_entries.clone()));
+        // Note: we don't need to sync entries to signal here as we did it above if changed
     }
 
     // Use the latest state entries for totals/CRC aggregation
-    let ents: Vec<ArchiveEntry> = {
-        let st = state.lock();
-        st.all_entries.clone()
-    };
+    let ents: Arc<Vec<ArchiveEntry>> = signals.entries.get();
 
     archive_info.total_size = ents.iter().map(|e| e.size).sum();
     archive_info.compressed_size = ents.iter().map(|e| e.packed_size).sum();
@@ -392,11 +404,13 @@ pub fn convert_archive(
     conversion_child: &mut Option<std::process::Child>,
     conversion_started: &mut Option<std::time::Instant>,
 ) {
-    let (current_archive, current_password, last_entries, temp_dir) = {
+    let signals = state.lock().signals.clone();
+    let current_archive = signals.archive_path.get();
+    let current_password = signals.current_password.get();
+
+    let (last_entries, temp_dir) = {
         let st = state.lock();
         (
-            st.current_archive.clone(),
-            st.current_password.clone(),
             st.last_entries.clone(),
             st.user_config.temp_dir.as_ref().map(PathBuf::from),
         )

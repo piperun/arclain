@@ -13,7 +13,7 @@ pub fn render_archive_browser(
     let mut action = ArchiveBrowserAction::None;
 
     // Check if archive is loaded
-    let archive_loaded = shared.app_state.lock().current_archive.is_some();
+    let archive_loaded = shared.app_state.lock().signals.archive_path.get().is_some();
 
     if !archive_loaded {
         render_empty_state(ctx, shared);
@@ -83,17 +83,16 @@ fn render_tree_panel(
         .show(ctx, |ui| {
             let app_state = shared.app_state.lock();
             let archive_name = app_state
-                .current_archive
+                .signals
+                .archive_path
+                .get()
                 .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "archive".to_string());
 
-            let folders = app_state
-                .signals
-                .navigation
-                .get()
-                .get_all_folders(&app_state.all_entries);
+            let entries = app_state.signals.entries.get();
+            let folders = app_state.signals.navigation.get().get_all_folders(&entries);
             let current_path = app_state.signals.navigation.get().current_path.clone();
             drop(app_state);
 
@@ -129,7 +128,7 @@ fn render_properties_panel(
         )
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let app_state = shared.app_state.lock();
+                let mut app_state = shared.app_state.lock();
                 let archive_info = app_state.signals.archive_info.get();
                 let items = app_state.signals.info_panel_items.get();
 
@@ -205,7 +204,8 @@ fn render_properties_panel(
                             // Check for plugin custom UI
                             if item.action_type == ActionType::Plugin {
                                 if let Some(plugin_id) = &item.action_data {
-                                    if let Some(manager_arc) = &app_state.plugin_manager {
+                                    drop(app_state);
+                                    if let Some(manager_arc) = &shared.services.plugin_manager {
                                         let manager = manager_arc.lock();
 
                                         let elements = manager
@@ -226,17 +226,16 @@ fn render_properties_panel(
                                             });
                                         }
                                     }
+                                    // Re-lock app_state if we need to continue
+                                    app_state = shared.app_state.lock();
                                 }
                             }
                         }
                     }
                 }
 
-                drop(app_state);
-
-                // Extract plugin_manager BEFORE calling render (not inline)
-                // This allows properties_panel to try_lock for content_cache
-                let plugin_manager = shared.app_state.lock().plugin_manager.clone();
+                // Extract plugin_manager from services (no lock needed)
+                let plugin_manager = shared.services.plugin_manager.clone();
 
                 let panel_action = properties_panel::render(
                     ui,
@@ -363,7 +362,9 @@ fn render_breadcrumb(
         .show(ui, |ui| {
             let app_state = shared.app_state.lock();
             let archive_name = app_state
-                .current_archive
+                .signals
+                .archive_path
+                .get()
                 .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().to_string())

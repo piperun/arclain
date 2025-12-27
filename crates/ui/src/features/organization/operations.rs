@@ -20,7 +20,7 @@ pub fn execute_organization_plan(
         .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let password = state.current_password.clone();
+    let password = state.signals.current_password.get();
     drop(state);
 
     info!(
@@ -72,8 +72,8 @@ pub fn try_with_auto_password(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let archive_name = source.to_str();
-    let entries = state
-        .all_entries
+    let entries_arc = state.signals.entries.get();
+    let entries = entries_arc
         .iter()
         .map(|e| e.path.clone())
         .collect::<Vec<_>>();
@@ -99,8 +99,8 @@ pub fn try_with_auto_password(
         ) {
             Ok(_) => {
                 // Success! Save the password for future use
-                let mut state = shared.app_state.lock();
-                state.current_password = Some(password.clone());
+                let state = shared.app_state.lock();
+                state.signals.current_password.set(Some(password.clone()));
                 Ok(())
             }
             Err(e) => {

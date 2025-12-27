@@ -105,11 +105,13 @@ pub struct AppSignals {
     pub ui_preferences: Signal<UiPreferences>,
 
     /// User preferences from config DB - reactive
-    #[allow(dead_code)]
     pub user_config: Signal<arclain_db::UserConfig>,
 
     /// Navigation state - reactive
     pub navigation: Signal<NavigationState>,
+
+    /// Current password for the open archive
+    pub current_password: Signal<Option<String>>,
 }
 
 impl AppSignals {
@@ -133,6 +135,7 @@ impl AppSignals {
             ui_preferences: Signal::new(UiPreferences::default()),
             user_config: Signal::new(arclain_db::UserConfig::default()),
             navigation: Signal::new(NavigationState::new()),
+            current_password: Signal::new(None),
         }
     }
 
@@ -153,6 +156,7 @@ impl AppSignals {
         signal_ctx.bind(&self.game_metadata);
         signal_ctx.bind(&self.ui_preferences);
         signal_ctx.bind(&self.navigation);
+        signal_ctx.bind(&self.current_password);
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
@@ -176,11 +180,156 @@ impl AppSignals {
         self.game_metadata.set(None);
         self.ui_preferences.set(UiPreferences::default());
         self.navigation.set(NavigationState::new());
+        self.current_password.set(None);
     }
 }
 
 impl Default for AppSignals {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_signals_initialize_with_default_values() {
+        let signals = AppSignals::new();
+
+        // Verify default values
+        assert!(signals.entries.get().is_empty());
+        assert!(signals.metadata.get().is_none());
+        assert!(!signals.loading.get());
+        assert!(signals.archive_path.get().is_none());
+        assert!(signals.ui_ready.get()); // Starts true
+        assert_eq!(signals.active_toolbar.get(), ToolbarContext::Archive);
+        assert!(signals.status_message.get().is_none());
+        assert!(signals.extraction_progress.get().is_none());
+        assert!(signals.search_text.get().is_empty());
+        assert!(signals.toolbar_items.get().is_empty());
+        assert!(signals.info_panel_items.get().is_empty());
+        assert!(signals.game_metadata.get().is_none());
+        assert!(signals.current_password.get().is_none());
+    }
+
+    #[test]
+    fn test_signals_reset_clears_all_values() {
+        let signals = AppSignals::new();
+
+        // Set some values
+        signals.loading.set(true);
+        signals.search_text.set("test".to_string());
+        signals.archive_path.set(Some(PathBuf::from("/test")));
+        signals.status_message.set(Some("message".to_string()));
+        signals.current_password.set(Some("secret".to_string()));
+
+        // Verify values are set
+        assert!(signals.loading.get());
+        assert_eq!(signals.search_text.get(), "test");
+        assert!(signals.archive_path.get().is_some());
+
+        // Reset
+        signals.reset();
+
+        // Verify all values are back to defaults
+        assert!(!signals.loading.get());
+        assert!(signals.search_text.get().is_empty());
+        assert!(signals.archive_path.get().is_none());
+        assert!(signals.status_message.get().is_none());
+        assert!(signals.current_password.get().is_none());
+    }
+
+    #[test]
+    fn test_signal_set_get_roundtrip() {
+        let signals = AppSignals::new();
+
+        // Test set/get for various signal types
+        signals.loading.set(true);
+        assert!(signals.loading.get());
+
+        signals.search_text.set("query".to_string());
+        assert_eq!(signals.search_text.get(), "query");
+
+        let path = PathBuf::from("/archive.zip");
+        signals.archive_path.set(Some(path.clone()));
+        assert_eq!(signals.archive_path.get(), Some(path));
+
+        signals
+            .current_password
+            .set(Some("password123".to_string()));
+        assert_eq!(
+            signals.current_password.get(),
+            Some("password123".to_string())
+        );
+    }
+
+    #[test]
+    fn test_signals_clone_shares_state() {
+        let signals1 = AppSignals::new();
+        let signals2 = signals1.clone();
+
+        // Modify through clone
+        signals2.loading.set(true);
+        signals2.search_text.set("shared".to_string());
+
+        // Original should see the changes (signals are Arc-wrapped)
+        assert!(signals1.loading.get());
+        assert_eq!(signals1.search_text.get(), "shared");
+    }
+
+    #[test]
+    fn test_signals_entries_update() {
+        use arclain_core::ArchiveEntry;
+
+        let signals = AppSignals::new();
+
+        // Create test entries
+        let entries = vec![
+            ArchiveEntry {
+                path: "file1.txt".to_string(),
+                size: 100,
+                packed_size: 50,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            },
+            ArchiveEntry {
+                path: "file2.txt".to_string(),
+                size: 200,
+                packed_size: 100,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            },
+        ];
+
+        signals.entries.set(Arc::new(entries));
+
+        let result = signals.entries.get();
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].path, "file1.txt");
+        assert_eq!(result[1].path, "file2.txt");
+    }
+
+    #[test]
+    fn test_extraction_cancel_atomic() {
+        use std::sync::atomic::Ordering;
+
+        let signals = AppSignals::new();
+
+        // Default is false
+        assert!(!signals.extraction_cancel.load(Ordering::SeqCst));
+
+        // Set to true
+        signals.extraction_cancel.store(true, Ordering::SeqCst);
+        assert!(signals.extraction_cancel.load(Ordering::SeqCst));
+
+        // Reset clears it
+        signals.reset();
+        assert!(!signals.extraction_cancel.load(Ordering::SeqCst));
     }
 }

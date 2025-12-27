@@ -8,7 +8,7 @@ use std::sync::Arc;
 pub fn add_files(state: &Arc<Mutex<AppState>>, status_info: &mut status_bar::StatusBarInfo) {
     let archive_path = {
         let st = state.lock();
-        st.current_archive.clone()
+        st.signals.archive_path.get() // Use signal
     };
 
     if let Some(archive) = archive_path {
@@ -49,7 +49,7 @@ pub fn delete_selected(
                 }
             })
             .collect();
-        (fulls, st.current_archive.clone())
+        (fulls, st.signals.archive_path.get()) // Use signal
     };
 
     if full_paths.is_empty() {
@@ -65,9 +65,9 @@ pub fn delete_selected(
         }
         // Refresh listing
         let mut st = state.lock();
-        if let Some(a) = st.current_archive.clone() {
+        if let Some(a) = st.signals.archive_path.get() {
             if let Ok(entries) = st.list_archive(&a) {
-                let current_archive = st.current_archive.clone();
+                let current_archive = st.signals.archive_path.get();
                 drop(st);
 
                 // We need to reload archive data - call the archive_operations module

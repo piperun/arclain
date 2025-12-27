@@ -181,18 +181,23 @@ pub fn open_file_from_archive(
     use arclain_core::FileOpener;
 
     let st = state.lock();
-    let archive = match &st.current_archive {
-        Some(a) => a.clone(),
+    let signals = st.signals.clone();
+
+    let archive = match signals.archive_path.get() {
+        Some(a) => a,
         None => {
+            drop(st);
             status_info.message = "No archive open".to_string();
             return None;
         }
     };
 
     // Get all entry paths for dependency resolution
-    let all_entries: Vec<String> = st.all_entries.iter().map(|e| e.path.clone()).collect();
+    let entries_arc = signals.entries.get();
+    let all_entries: Vec<String> = entries_arc.iter().map(|e| e.path.clone()).collect();
 
     // Use the backend selector to get the proper backend for this archive type
+    // Backend selector is still on AppState
     let backend = match st.backend_selector.select(&archive) {
         Ok(b) => b,
         Err(e) => {
@@ -202,7 +207,7 @@ pub fn open_file_from_archive(
         }
     };
 
-    let password = st.current_password.clone();
+    let password = signals.current_password.get();
     drop(st);
 
     // Create FileOpener
@@ -234,11 +239,6 @@ pub fn open_file_from_archive(
     // Get temp directory for extraction
     let temp_dir = opener.temp_dir().to_path_buf();
     let temp_dir_for_thread = temp_dir.clone();
-
-    // Get signals from state for progress updates
-    let st = state.lock();
-    let signals = st.signals.clone();
-    drop(st);
 
     // Reset cancellation token
     signals
@@ -353,6 +353,69 @@ pub fn open_file_from_archive(
     // The UI will handle detecting complete=true and opening the file
     status_info.message = format!("Extracting {} files...", total_files);
     None
+}
+
+/// Run organization plan asynchronously
+pub fn run_organization_plan(
+    shared: crate::shared::SharedState,
+    plan: arclain_core::features::organization::engine::OrganizationPlan,
+    source: std::path::PathBuf,
+    dest: std::path::PathBuf,
+) {
+    let signals = shared.app_state.lock().signals.clone();
+
+    // Set initial progress state
+    signals
+        .extraction_progress
+        .set(Some(crate::core::signals::ExtractionProgressState {
+            current_file: "Organizing archive...".to_string(),
+            percent: 0,
+            current: 0,
+            total: 100,
+            complete: false,
+            error: None,
+            file_to_open: None,
+            cancelled: false,
+        }));
+
+    // Spawn thread
+    std::thread::spawn(move || {
+        // We use the helper from features/organization/operations.rs which handles password retries
+        let result = crate::features::organization::operations::execute_organization_plan(
+            &shared, &plan, &source, &dest,
+        );
+
+        match result {
+            Ok(_) => {
+                signals.extraction_progress.set(Some(
+                    crate::core::signals::ExtractionProgressState {
+                        current_file: "Organization completed".to_string(),
+                        percent: 100,
+                        current: 100,
+                        total: 100,
+                        complete: true,
+                        error: None,
+                        file_to_open: None, // Could set to dest to open?
+                        cancelled: false,
+                    },
+                ));
+            }
+            Err(e) => {
+                signals.extraction_progress.set(Some(
+                    crate::core::signals::ExtractionProgressState {
+                        current_file: "Organization failed".to_string(),
+                        percent: 0,
+                        current: 0,
+                        total: 100,
+                        complete: true,
+                        error: Some(format!("{}", e)),
+                        file_to_open: None,
+                        cancelled: false,
+                    },
+                ));
+            }
+        }
+    });
 }
 
 /// Static helper to find file in directory (for use in thread)

@@ -209,7 +209,7 @@ pub fn update_window_title(
 ) {
     let title = {
         let state = shared_state.app_state.lock();
-        if let Some(path) = &state.current_archive {
+        if let Some(path) = state.signals.archive_path.get() {
             path.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Arclain".to_string())

@@ -6,16 +6,16 @@
 use crate::core::{
     navigation::{AppPage, PageNavigator, SettingsPage},
     operations,
-    state::AppState,
+    // state::AppState,
 };
 use crate::features::{organization, password_management, plugins, settings};
-use crate::platform::detect_dark_mode;
-use crate::shared::{components, dialogs, theme::AppTheme};
+// use crate::platform::detect_dark_mode;
+use crate::shared::{components, dialogs};
 
 use eframe::egui;
-use parking_lot::Mutex;
+// use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::sync::Arc;
+// use std::sync::Arc;
 
 /// Main application struct coordinating all features
 pub struct ArclainApp {
@@ -73,23 +73,8 @@ pub struct ArclainApp {
 
 impl ArclainApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let dark_mode = detect_dark_mode();
-        let theme = AppTheme::new(dark_mode);
-
-        // Load CJK fonts during initialization to support Japanese/Chinese characters
-        crate::shared::theme::load_cjk_fonts(&cc.egui_ctx);
-
-        let state = Arc::new(Mutex::new(
-            AppState::new().expect("Failed to initialize app state"),
-        ));
-
-        let shared_state = crate::shared::SharedState {
-            app_state: state.clone(),
-            theme: theme.clone(),
-            toaster: Arc::new(parking_lot::Mutex::new(arclain_widgets::Toaster::new())),
-            plugin_dialog_state: Arc::new(parking_lot::Mutex::new(plugins::PluginDialogState::new())),
-            refresh_requests: Arc::new(parking_lot::Mutex::new(Vec::new())),
-        };
+        // Initialize shared state (includes AppState, Services, Theme)
+        let shared_state = crate::shared::SharedState::new(cc);
 
         Self {
             shared_state: shared_state.clone(),
@@ -260,12 +245,12 @@ impl eframe::App for ArclainApp {
                     let can_go_back = nav.can_go_back();
                     let can_go_forward = nav.can_go_forward();
                     let can_go_up = nav.can_go_up();
-                    let archive_loaded = state.current_archive.is_some();
+                    let archive_loaded = state.signals.archive_path.get().is_some();
                     let has_selection = false; // TODO: Implement selection tracking
                     let has_metadata = state.plugin_metadata.is_some();
                     let toolbar_config = components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
-                    let plugin_manager = state.plugin_manager.clone();
                     drop(state);
+                    let plugin_manager = self.shared_state.services.plugin_manager.clone();
 
                     let actions = components::toolbar::render(
                         ui,
@@ -370,22 +355,22 @@ impl eframe::App for ArclainApp {
                     }
                     if actions.organize_archive {
                         let state = self.shared_state.app_state.lock();
-                        if let Some(archive) = &state.current_archive {
+                        if let Some(archive) = state.signals.archive_path.get() {
                             let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
                             drop(state);
                             
                             // Load rules directly from DB and filter by enabled plugins
                             let mut rules = Vec::new(); // Default empty
                             {
-                                let state = self.shared_state.app_state.lock();
-                                
-                                // Check enabled plugins (specifically DLsite)
-                                let dlsite_enabled = if let Some(manager) = &state.plugin_manager {
+                                // Check enabled plugins (specifically DLsite) from services
+                                let dlsite_enabled = if let Some(manager) = &self.shared_state.services.plugin_manager {
                                     let mgr = manager.lock();
                                     mgr.list_plugins().iter().any(|p| p.id.eq_ignore_ascii_case("dlsite-metadata") && p.enabled)
                                 } else {
                                     false
                                 };
+                                
+                                let state = self.shared_state.app_state.lock();
 
 
                                 if let Some(dbs) = &state.dbs {
@@ -404,7 +389,7 @@ impl eframe::App for ArclainApp {
                             
                             // Initialize panel
                             let state = self.shared_state.app_state.lock();
-                            let entries = state.all_entries.clone();
+                            let entries = state.signals.entries.get().as_ref().clone();
                             let metadata = state.current_game_metadata.clone();
                             drop(state);
 
@@ -521,7 +506,7 @@ impl eframe::App for ArclainApp {
                 crate::features::file_editing::file_edit_dialog::FileEditResult::Save { new_name, content } => {
                     if let Some(_file) = &self._pending_edit_file {
                         let state = self.shared_state.app_state.lock();
-                        if let Some(archive) = state.current_archive.clone() {
+                        if let Some(archive) = state.signals.archive_path.get() {
                             match state.add_or_update_file_from_str(&archive, &new_name, &content) {
                                 Ok(_) => {
                                     self.status_info.message = "File saved".to_string();
@@ -610,8 +595,8 @@ impl eframe::App for ArclainApp {
                             self.edit_dialog.full_path_in_archive = file.clone();
                             
                             let state = self.shared_state.app_state.lock();
-                            if let Some(archive) = &state.current_archive {
-                                match state.read_text_file(archive, &file) {
+                            if let Some(archive) = state.signals.archive_path.get() {
+                                match state.read_text_file(&archive, &file) {
                                     Ok(content) => {
                                         self.edit_dialog.content = content.clone();
                                         self.edit_dialog.original_content = content;
@@ -643,22 +628,22 @@ impl eframe::App for ArclainApp {
                         crate::features::archive_browser::ArchiveBrowserAction::Organize => {
                             // Trigger organization flow same as toolbar
                             let state = self.shared_state.app_state.lock();
-                            if let Some(archive) = &state.current_archive {
+                            if let Some(archive) = state.signals.archive_path.get() {
                                 let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
                                 drop(state);
                                 
                                 // Load rules directly from DB and filter by enabled plugins
                                 let mut rules = Vec::new(); // Default empty
                                 {
-                                    let state = self.shared_state.app_state.lock();
-                                    
-                                    // Check enabled plugins (specifically DLsite)
-                                    let dlsite_enabled = if let Some(manager) = &state.plugin_manager {
+                                    // Check enabled plugins (specifically DLsite) from services
+                                    let dlsite_enabled = if let Some(manager) = &self.shared_state.services.plugin_manager {
                                         let mgr = manager.lock();
                                         mgr.list_plugins().iter().any(|p| p.id.eq_ignore_ascii_case("dlsite") && p.enabled)
                                     } else {
                                         false
                                     };
+                                    
+                                    let state = self.shared_state.app_state.lock();
 
                                     if let Some(dbs) = &state.dbs {
                                        let db = &dbs.config;
@@ -675,7 +660,7 @@ impl eframe::App for ArclainApp {
                                 }
                                 
                                 let state = self.shared_state.app_state.lock();
-                                let entries = state.all_entries.clone();
+                                let entries = state.signals.entries.get().as_ref().clone();
                                 let metadata = state.current_game_metadata.clone();
                                 drop(state);
                                 
@@ -805,7 +790,7 @@ impl eframe::App for ArclainApp {
                                     let shared_state = self.shared_state.clone();
                                     
                                     let archive_path = if let Some(state) = self.shared_state.app_state.try_lock() {
-                                        state.current_archive.clone()
+                                        state.signals.archive_path.get()
                                     } else {
                                         None
                                     };
@@ -814,18 +799,14 @@ impl eframe::App for ArclainApp {
                                         // Build destination path by changing extension to .7z
                                         let dest_path = path.with_extension("7z");
                                         
-                                        if let Err(e) = crate::features::organization::operations::execute_organization_plan(
-                                            &shared_state,
-                                            plan,
-                                            &path,
-                                            &dest_path,
-                                        ) {
-                                            let msg = format!("Organization failed: {}", e);
-                                            crate::core::utils::log_failure("Organization", &msg);
-                                            self.status_info.message = msg;
-                                        } else {
-                                            self.status_info.message = "Organization completed successfully".to_string();
-                                        }
+                                        // Run asynchronously via ArchiveOperations
+                                        crate::features::archive_operations::run_organization_plan(
+                                            shared_state.clone(),
+                                            plan.clone(),
+                                            path,
+                                            dest_path,
+                                        );
+                                        self.status_info.message = "Organization started...".to_string();
                                     }
                                 }
                             }
@@ -868,8 +849,7 @@ impl ArclainApp {
             } else {
                 // Fetch layout from plugin (only on first render or after invalidation)
                 let layout = {
-                    let state = self.shared_state.app_state.lock();
-                    if let Some(pm_arc) = &state.plugin_manager {
+                    if let Some(pm_arc) = &self.shared_state.services.plugin_manager {
                         let pm = pm_arc.lock();
                         pm.with_plugin_instance(&plugin_id, |instance| {
                             instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()))
@@ -895,10 +875,10 @@ impl ArclainApp {
                 .open(&mut open)
                 .show(ctx, |ui| {
                     // Set up callback for dialog events
-                    let state_arc = self.shared_state.app_state.clone();
                     let pid = plugin_id.clone();
                     let dialog_state_arc = self.shared_state.plugin_dialog_state.clone();
                     let toaster_arc = self.shared_state.toaster.clone();
+                    let plugin_manager_arc = self.shared_state.services.plugin_manager.clone();
                     
                     let mut callback: Box<dyn FnMut(&str, Option<String>)> = 
                         Box::new(move |element_id: &str, value: Option<String>| {
@@ -908,9 +888,8 @@ impl ArclainApp {
                                 return;
                             }
                             
-                            // Normal event
-                            let state = state_arc.lock();
-                            if let Some(pm_arc) = &state.plugin_manager {
+                            // Normal event - use plugin_manager from services
+                            if let Some(pm_arc) = &plugin_manager_arc {
                                 let pm = pm_arc.lock();
                                 if let Some(actions) = pm
                                     .with_plugin_instance(&pid, |instance| {
@@ -976,8 +955,7 @@ impl ArclainApp {
         } else {
             // Fetch layout from plugin (only on first render or after invalidation)
             let layout = {
-                let state = self.shared_state.app_state.lock();
-                if let Some(pm_arc) = &state.plugin_manager {
+                if let Some(pm_arc) = &self.shared_state.services.plugin_manager {
                     let pm = pm_arc.lock();
                     pm.with_plugin_instance(&plugin_id, |instance| {
                         instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()))
@@ -1004,10 +982,10 @@ impl ArclainApp {
                 ui.separator();
                 
                 // Set up callback for page events
-                let state_arc = self.shared_state.app_state.clone();
                 let pid = plugin_id.clone();
                 let dialog_state_arc = self.shared_state.plugin_dialog_state.clone();
                 let toaster_arc = self.shared_state.toaster.clone();
+                let plugin_manager_arc = self.shared_state.services.plugin_manager.clone();
                 
                 let mut callback: Box<dyn FnMut(&str, Option<String>)> = 
                     Box::new(move |element_id: &str, value: Option<String>| {
@@ -1024,9 +1002,8 @@ impl ArclainApp {
                             return;
                         }
                         
-                        // Normal event
-                        let state = state_arc.lock();
-                        if let Some(pm_arc) = &state.plugin_manager {
+                        // Normal event - use plugin_manager from services
+                        if let Some(pm_arc) = &plugin_manager_arc {
                             let pm = pm_arc.lock();
                             if let Some(actions) = pm
                                 .with_plugin_instance(&pid, |instance| {
@@ -1053,7 +1030,7 @@ impl ArclainApp {
                     });
                 
                 use arclain_plugins::types::PluginLayout;
-                let content_cache = self.shared_state.app_state.lock().content_cache.clone();
+                let content_cache = self.shared_state.services.content_cache.clone();
                 match page_layout {
                     PluginLayout::Single { elements } => {
                         crate::features::plugins::plugin_ui::render_ui_elements(
