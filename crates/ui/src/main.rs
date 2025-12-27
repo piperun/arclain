@@ -1,10 +1,6 @@
-mod core;
-mod features;
-mod platform;
-mod shared;
-
 use anyhow::Result;
 use arclain_core::utilities::init_logging;
+use arclain_ui::core::arclain_app::ArclainApp;
 use eframe::egui;
 use tracing::info;
 
@@ -29,7 +25,7 @@ fn main() -> Result<()> {
     eframe::run_native(
         "Arclain",
         options,
-        Box::new(|cc| Ok(Box::new(core::arclain_app::ArclainApp::new(cc)))),
+        Box::new(|cc| Ok(Box::new(ArclainApp::new(cc)))),
     )
     .map_err(|e| anyhow::anyhow!("Failed to run app: {}", e))?;
 
