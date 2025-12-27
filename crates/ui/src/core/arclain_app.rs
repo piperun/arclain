@@ -247,7 +247,7 @@ impl eframe::App for ArclainApp {
                     let can_go_up = nav.can_go_up();
                     let archive_loaded = state.signals.archive_path.get().is_some();
                     let has_selection = false; // TODO: Implement selection tracking
-                    let has_metadata = state.plugin_metadata.is_some();
+                    let has_metadata = state.signals.metadata.get().is_some();
                     let toolbar_config = components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
                     drop(state);
                     let plugin_manager = self.shared_state.services.plugin_manager.clone();
@@ -390,7 +390,7 @@ impl eframe::App for ArclainApp {
                             // Initialize panel
                             let state = self.shared_state.app_state.lock();
                             let entries = state.signals.entries.get().as_ref().clone();
-                            let metadata = state.current_game_metadata.clone();
+                            let metadata = state.signals.game_metadata.get();
                             drop(state);
 
                             self.organization_feature.organizer_page = Some(crate::features::organization::OrganizerPage::new(
@@ -617,8 +617,8 @@ impl eframe::App for ArclainApp {
                             match serde_json::from_str::<arclain_core::features::organization::GameMetadata>(&json) {
                                 Ok(metadata) => {
                                     tracing::info!("Received metadata from plugin: {:?}", metadata.title);
-                                    let mut state = self.shared_state.app_state.lock();
-                                    state.current_game_metadata = Some(metadata);
+                                    let state = self.shared_state.app_state.lock();
+                                    state.signals.game_metadata.set(Some(metadata));
                                 }
                                 Err(e) => {
                                     tracing::warn!("Failed to parse metadata JSON: {}", e);
@@ -661,7 +661,7 @@ impl eframe::App for ArclainApp {
                                 
                                 let state = self.shared_state.app_state.lock();
                                 let entries = state.signals.entries.get().as_ref().clone();
-                                let metadata = state.current_game_metadata.clone();
+                                let metadata = state.signals.game_metadata.get();
                                 drop(state);
                                 
                                 self.organization_feature.organizer_page = Some(crate::features::organization::OrganizerPage::new(

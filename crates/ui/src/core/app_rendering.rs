@@ -201,7 +201,7 @@ pub fn render_toolbar_panel(
             let can_go_up = nav.can_go_up();
             let archive_loaded = state.signals.archive_path.get().is_some();
             let has_selection = false; // TODO: Implement selection tracking
-            let has_metadata = state.plugin_metadata.is_some();
+            let has_metadata = state.signals.metadata.get().is_some();
             let toolbar_config =
                 components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
             drop(state);
@@ -263,7 +263,7 @@ pub fn render_status_bar_panel(
                     crate::core::utils::format_size(archive_info.compressed_size);
                 status_info.archive_format = archive_info.archive_format;
             }
-            let has_metadata = state.plugin_metadata.is_some();
+            let has_metadata = state.signals.metadata.get().is_some();
             drop(state);
 
             let plugin_info = if let Some(manager) = &shared_state.services.plugin_manager {
