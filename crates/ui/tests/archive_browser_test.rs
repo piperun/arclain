@@ -1,0 +1,299 @@
+use arclain_ui::core::navigation::PageNavigator;
+use arclain_ui::core::services::Services;
+use arclain_ui::core::state::AppState;
+use arclain_ui::features::archive_browser::actions::{Action, ActionContext};
+use arclain_ui::features::archive_operations::ArchiveOperationsState;
+use arclain_ui::features::file_editing::FileEditDialog;
+use arclain_ui::features::organization::OrganizationFeature;
+use arclain_ui::features::password_management::dialogs::PasswordDialog;
+use arclain_ui::features::plugins::PluginDialogState;
+use arclain_ui::shared::components::StatusBarInfo;
+use arclain_ui::shared::theme::AppTheme;
+use arclain_ui::shared::SharedState;
+use arclain_widgets::Toaster;
+
+use arclain_core::backends::sevenz_cli::SevenZipCli;
+use arclain_core::backends::BackendSelector;
+use arclain_db::UserConfig;
+use eframe::egui;
+use parking_lot::Mutex;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tokio::runtime::Runtime;
+
+// Helper to create a minimal SharedState for testing
+fn create_test_shared_state() -> SharedState {
+    let runtime = Runtime::new().unwrap();
+    let services = Arc::new(Services::new(runtime));
+
+    // Create minimal AppState
+    let app_state = AppState {
+        user_config: UserConfig::default(),
+        pass_rules: vec![],
+        backend_selector: BackendSelector::new_native(),
+        fallback_backend: SevenZipCli::detect(None).expect("7z executable not found for tests"),
+        last_entries: vec![],
+        encrypted_crc_policy: "on_open".to_string(),
+        db_paths: None,
+        dbs: None,
+        plugin_event_sender: None,
+        pending_plugin_event: None,
+        signals: arclain_ui::core::signals::AppSignals::new(),
+    };
+
+    SharedState {
+        app_state: Arc::new(Mutex::new(app_state)),
+        services,
+        theme: AppTheme::new(false),
+        toaster: Arc::new(Mutex::new(Toaster::new())),
+        plugin_dialog_state: Arc::new(Mutex::new(PluginDialogState::new())),
+        refresh_requests: Arc::new(Mutex::new(Vec::new())),
+    }
+}
+
+pub struct TestContext {
+    pub shared: SharedState,
+    pub navigator: PageNavigator,
+    pub status: StatusBarInfo,
+    pub browser_state: arclain_ui::features::archive_browser::ArchiveBrowserState,
+    pub ops_state: ArchiveOperationsState,
+    pub pass_dialog: PasswordDialog,
+    pub edit_dialog: FileEditDialog,
+    pub org_feature: OrganizationFeature,
+    pub egui_ctx: egui::Context,
+}
+
+impl TestContext {
+    fn new() -> Self {
+        let shared = create_test_shared_state();
+        Self {
+            org_feature: OrganizationFeature::new(&shared),
+            shared,
+            navigator: PageNavigator::new(),
+            status: StatusBarInfo::default(),
+            browser_state: arclain_ui::features::archive_browser::ArchiveBrowserState::default(),
+            ops_state: ArchiveOperationsState::default(),
+            pass_dialog: PasswordDialog::default(),
+            edit_dialog: FileEditDialog::default(),
+            egui_ctx: egui::Context::default(),
+        }
+    }
+
+    fn action_context(&mut self) -> ActionContext<'_> {
+        ActionContext {
+            shared: &self.shared,
+            browser_state: &mut self.browser_state,
+            archive_ops_state: &mut self.ops_state,
+            status_info: &mut self.status,
+            password_dialog: &mut self.pass_dialog,
+            edit_dialog: &mut self.edit_dialog,
+            organization_feature: &mut self.org_feature,
+            page_navigator: &mut self.navigator,
+            egui_ctx: &self.egui_ctx,
+        }
+    }
+}
+
+// --- Logic Tests ---
+
+#[test]
+fn test_navigate_to_folder_action() {
+    let mut ctx = TestContext::new();
+    let signals = ctx.shared.app_state.lock().signals.clone();
+
+    signals.archive_path.set(Some(PathBuf::from("test.zip")));
+
+    let target = "subfolder".to_string();
+    let handled = ctx
+        .action_context()
+        .handle_navigation(&Action::NavigateToFolder(target.clone()));
+
+    assert!(handled);
+    assert_eq!(signals.navigation.get().current_path, target);
+}
+
+#[test]
+fn test_navigate_to_path_action() {
+    let mut ctx = TestContext::new();
+    let signals = ctx.shared.app_state.lock().signals.clone();
+    signals.archive_path.set(Some(PathBuf::from("test.zip")));
+
+    let target = "direct/path/folder".to_string();
+    let handled = ctx
+        .action_context()
+        .handle_navigation(&Action::NavigateToPath(target.clone()));
+
+    assert!(handled);
+    assert_eq!(signals.navigation.get().current_path, target);
+}
+
+#[test]
+fn test_show_properties_action() {
+    let mut ctx = TestContext::new();
+
+    ctx.browser_state
+        .entries
+        .push(arclain_ui::shared::components::file_list::FileEntry {
+            name: "test.txt".to_string(),
+            selected: false,
+            size: "100".to_string(),
+            compressed: "50".to_string(),
+            ratio: "50%".to_string(),
+            modified: "2024-01-01".to_string(),
+            crc32: "00000000".to_string(),
+            encrypted: false,
+            is_folder: false,
+        });
+
+    let target = "test.txt".to_string();
+    let handled = ctx
+        .action_context()
+        .handle_navigation(&Action::ShowProperties(target.clone()));
+
+    assert!(handled);
+    assert!(ctx.browser_state.toolbar_state.show_properties_panel);
+    assert!(ctx.browser_state.entries[0].selected);
+}
+
+#[test]
+fn test_copy_path_action() {
+    let mut ctx = TestContext::new();
+    let signals = ctx.shared.app_state.lock().signals.clone();
+
+    signals.navigation.get().set_current_path("root/folder");
+
+    let filename = "file.txt".to_string();
+    let handled = ctx
+        .action_context()
+        .handle_navigation(&Action::CopyPath(filename.clone()));
+
+    assert!(handled);
+
+    signals.navigation.get().set_current_path("");
+    let handled_root = ctx
+        .action_context()
+        .handle_navigation(&Action::CopyPath(filename));
+    assert!(handled_root);
+}
+
+#[test]
+fn test_open_file_action() {
+    let mut ctx = TestContext::new();
+    let filename = "document.pdf".to_string();
+
+    let handled = ctx
+        .action_context()
+        .handle_complex(&Action::OpenFile(filename.clone()));
+
+    assert!(handled);
+    assert_eq!(ctx.ops_state.pending_open_file, Some(filename));
+}
+
+#[test]
+fn test_edit_file_action() {
+    let mut ctx = TestContext::new();
+    let filename = "config.json".to_string();
+    let handled = ctx
+        .action_context()
+        .handle_complex(&Action::EditFile(filename.clone()));
+
+    assert!(handled);
+    assert!(ctx.edit_dialog.show);
+    assert_eq!(ctx.edit_dialog.full_path_in_archive, filename);
+    assert_eq!(ctx.edit_dialog.name_input, filename);
+}
+
+#[test]
+fn test_metadata_action() {
+    let mut ctx = TestContext::new();
+    let signals = ctx.shared.app_state.lock().signals.clone();
+
+    // Note: circle -> handled by GameMetadata::from_json mapping if creator is missing
+    // But direct JSON deserialization might not run from_json logic if we just parse raw JSON in the action handler.
+    // Let's check Action::Metadata handler in actions.rs.
+    // It calls serde_json::from_str::<GameMetadata>. This uses derived Deserialize, NOT from_json.
+    // So "circle" in JSON won't map to "creator" unless we use custom deserialization or the handler uses from_json.
+    // Checked actions.rs: it calls `serde_json::from_str`.
+    // Valid GameMetadata JSON requires fields matching struct or being optional.
+
+    let json = r#"{"product_id": "RJ1", "source": "dlsite", "title": "Test Game", "tags": [], "metadata_json": "{}", "screenshots": []}"#.to_string();
+    let handled = ctx.action_context().handle_simple(&Action::Metadata(json));
+
+    assert!(handled);
+
+    let metadata = signals.game_metadata.get();
+    assert!(metadata.is_some());
+    let meta = metadata.unwrap();
+    assert_eq!(meta.title, "Test Game");
+    assert_eq!(meta.product_id, "RJ1");
+}
+
+#[test]
+fn test_organize_action() {
+    let mut ctx = TestContext::new();
+    let signals = ctx.shared.app_state.lock().signals.clone();
+
+    signals.archive_path.set(Some(PathBuf::from("test.zip")));
+
+    let handled = ctx.action_context().handle_complex(&Action::Organize);
+
+    assert!(handled);
+
+    // Verify navigation
+    if let arclain_ui::core::AppPage::OrganizeArchive(name) = &ctx.navigator.current_page {
+        assert_eq!(name, "test.zip");
+    } else {
+        panic!(
+            "Expected OrganizeArchive page, got {:?}",
+            ctx.navigator.current_page
+        );
+    }
+
+    // Verify feature state
+    assert!(ctx.org_feature.organizer_page.is_some());
+}
+
+// --- UI Integration Tests ---
+
+#[test]
+fn test_ui_render_sanity() {
+    use arclain_ui::features::archive_browser::ArchiveBrowser;
+    use egui_kittest::Harness;
+
+    let ctx = TestContext::new();
+    let shared = ctx.shared.clone();
+    let mut browser = ArchiveBrowser::new(&shared);
+
+    // Setup state
+    shared
+        .app_state
+        .lock()
+        .signals
+        .archive_path
+        .set(Some(PathBuf::from("test.zip")));
+    browser
+        .state_mut()
+        .entries
+        .push(arclain_ui::shared::components::file_list::FileEntry {
+            name: "test_ui_file.txt".to_string(),
+            selected: false,
+            size: "100".to_string(),
+            compressed: "50".to_string(),
+            ratio: "50%".to_string(),
+            modified: "2024-01-01".to_string(),
+            crc32: "00000000".to_string(),
+            encrypted: false,
+            is_folder: false,
+        });
+
+    // egui_kittest harness
+    let mut harness = Harness::new(move |ctx| {
+        let _ = browser.render(ctx, &shared);
+    });
+
+    harness.run();
+
+    // In a real scenario with AccessKit support enabled in egui_kittest (requires feature flags or config),
+    // we could do: harness.get_by_label("test_ui_file.txt").exists();
+    // For now, this confirms the render loop completes without panicking on missing resources.
+}
