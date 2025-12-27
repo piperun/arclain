@@ -47,6 +47,7 @@ pub fn handle_action(
         SettingsAction::SaveArchives { temp_dir } => {
             let mut state = shared.app_state.lock();
             state.user_config.temp_dir = temp_dir;
+            state.signals.user_config.set(state.user_config.clone());
             // Save via DB if available
             if let Some(ref dbs) = state.dbs {
                 let _ = dbs.config.with_connection(|conn| {
@@ -88,13 +89,14 @@ pub fn handle_action(
             }
         }
         SettingsAction::InstallPlugin { wasm_path } => {
-            let state = shared.app_state.lock();
-            if let Some(manager) = &state.plugin_manager {
+            // Get plugin_manager from services (no lock needed)
+            if let Some(manager) = &shared.services.plugin_manager {
                 let mut mgr = manager.lock();
                 match mgr.install_plugin(std::path::Path::new(&wasm_path)) {
                     Ok(id) => {
                         tracing::info!("Successfully installed plugin: {}", id);
                         // Refresh list
+                        let state = shared.app_state.lock();
                         plugins_state.update_from_manager(&mgr, &state.user_config);
                     }
                     Err(e) => {
@@ -144,6 +146,7 @@ pub fn handle_action(
         } => {
             let mut state = shared.app_state.lock();
             state.user_config.open_nested_in_new_tab = open_nested_in_new_tab;
+            state.signals.user_config.set(state.user_config.clone());
             if let Some(ref dbs) = state.dbs {
                 if let Err(e) = dbs.config.with_connection(|conn| {
                     state.user_config.save(conn).ok();
@@ -165,6 +168,7 @@ pub fn handle_action(
             state.user_config.socks5_enabled = socks5_enabled;
             state.user_config.socks5_address = socks5_address.clone();
             state.user_config.socks5_username = socks5_username.clone();
+            state.signals.user_config.set(state.user_config.clone());
 
             let mut password_to_use = None;
 
@@ -206,9 +210,10 @@ pub fn handle_action(
                 password: password_to_use,
             };
 
-            if let Some(client) = &state.async_http_client {
-                client.update_config(Some(config));
-            }
+            shared
+                .services
+                .async_http_client
+                .update_config(Some(config));
             tracing::info!("Network settings saved");
         }
         SettingsAction::TestNetwork {
@@ -235,7 +240,7 @@ pub fn handle_action(
             };
 
             // Spawn test task
-            let runtime = shared.app_state.lock().tokio_runtime.handle().clone();
+            let runtime = shared.services.tokio_runtime.handle().clone();
             runtime.spawn(async move {
                 let result = async {
                     // Build client manually since we want to test specific config without affecting global state

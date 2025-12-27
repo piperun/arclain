@@ -9,6 +9,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct SharedState {
     pub app_state: Arc<Mutex<AppState>>,
+    /// Read-only services container (Runtime, HTTP, Plugins, etc.)
+    pub services: Arc<crate::core::services::Services>,
     pub theme: AppTheme,
     pub toaster: Arc<Mutex<Toaster>>,
     #[allow(dead_code)] // Future use for dialog rendering
@@ -25,12 +27,13 @@ impl SharedState {
         // Load CJK fonts during initialization
         load_cjk_fonts(&cc.egui_ctx);
 
-        let app_state = Arc::new(Mutex::new(
-            AppState::new().expect("Failed to initialize app state"),
-        ));
+        let (app_state_inner, services) = AppState::new().expect("Failed to initialize app state");
+        let app_state = Arc::new(Mutex::new(app_state_inner));
+        let services = Arc::new(services);
 
         Self {
             app_state,
+            services,
             theme,
             toaster: Arc::new(Mutex::new(Toaster::new())),
             plugin_dialog_state: Arc::new(Mutex::new(PluginDialogState::new())),

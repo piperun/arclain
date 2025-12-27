@@ -24,7 +24,7 @@ pub fn extract_selected(
     }
 
     let st = state.lock();
-    if let Some(archive) = &st.current_archive {
+    if let Some(archive) = st.signals.archive_path.get().as_ref() {
         let selected_files: Vec<String> = entries
             .iter()
             .filter(|e| e.selected)
@@ -54,8 +54,8 @@ pub fn extract_selected(
             archive_name,
             &st.last_entries,
         );
-        let pw_opt = st
-            .current_password
+        let signal_pw = st.signals.current_password.get();
+        let pw_opt = signal_pw
             .as_deref()
             .or(auto_pw.as_deref())
             .map(|s| s.to_string());
@@ -108,7 +108,7 @@ pub fn extract_all(
     }
 
     let st = state.lock();
-    if let Some(archive) = &st.current_archive {
+    if let Some(archive) = st.signals.archive_path.get().as_ref() {
         let archive_clone = archive.clone();
         let backend = st.fallback_backend.clone();
         let archive_name = archive.to_str();
@@ -117,8 +117,8 @@ pub fn extract_all(
             archive_name,
             &st.last_entries,
         );
-        let pw_opt = st
-            .current_password
+        let signal_pw = st.signals.current_password.get();
+        let pw_opt = signal_pw
             .as_deref()
             .or(auto_pw.as_deref())
             .map(|s| s.to_string());

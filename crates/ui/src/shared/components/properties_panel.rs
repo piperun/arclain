@@ -50,10 +50,8 @@ pub fn render(
     let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
     let page_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Extract content_cache early (before any nested locks) to pass to Panel rendering
-    let content_cache = shared
-        .and_then(|s| s.app_state.try_lock())
-        .and_then(|state| state.content_cache.clone());
+    // Extract content_cache from services (no lock needed)
+    let content_cache = shared.and_then(|s| s.services.content_cache.clone());
 
     ui.vertical(|ui| {
         for (idx, section) in sections.iter().enumerate() {

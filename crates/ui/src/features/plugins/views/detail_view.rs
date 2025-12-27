@@ -111,6 +111,9 @@ pub fn render(
         };
         let mut proxy_toggle_val = proxy_enabled;
 
+        // Extract http client from services for use in closure
+        let http_client = shared.map(|s| s.services.async_http_client.clone());
+
         crate::shared::components::settings_form::SettingsRow::new("Network Proxy")
             .description("Route this plugin's traffic through the configured SOCKS5 proxy.")
             .action(|ui| {
@@ -127,9 +130,9 @@ pub fn render(
                         });
                     }
 
-                    // Update Client
+                    // Update Client from services
                     let map = app.user_config.get_plugin_proxy_settings();
-                    if let Some(client) = &app.async_http_client {
+                    if let Some(client) = &http_client {
                         client.update_plugin_proxy_map(map);
                     }
 
@@ -308,7 +311,14 @@ fn render_plugin_ui(
     shared: Option<&SharedState>,
     content_cache: Option<&Arc<arclain_data::ContentCache>>,
 ) {
-    let mgr_arc = if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
+    let mgr_arc = if let Some(shared) = shared {
+        if let Some(mgr_mutex) = shared.services.plugin_manager.clone() {
+            mgr_mutex
+        } else {
+            return;
+        }
+    } else if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
+        // Fallback for cases where shared isn't passed
         mgr_mutex
     } else {
         return;

@@ -11,18 +11,17 @@ pub use arclain_core::features::organization::metrics::IntegrityReport;
 use integrity::export_issues_report;
 
 use crate::features::organization::export_dialog::ExportTreeDialog;
-use crate::shared::dialogs::progress::{ExtractionProgressDialog, ExtractionStatus};
+// ExtractionProgressDialog moved to ArchiveOperations
 
 use crate::shared::components::preview_tree::{
     self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
 };
-use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::features::organization::{engine::RuleEngine, OrganizationRule};
 use arclain_core::features::organization::session::OrganizationSession;
 use arclain_core::ArchiveEntry;
 use eframe::egui;
-use std::sync::mpsc::Receiver;
-use std::time::Instant;
+// std::sync::mpsc::Receiver removed
+// std::time::Instant removed
 
 #[derive(Default, PartialEq, Clone, Copy)]
 pub enum OrganizeTab {
@@ -47,12 +46,9 @@ pub struct OrganizeUiState {
     pub original_tree: Vec<preview_tree::PreviewTreeNode>,
     pub organized_tree: Vec<preview_tree::PreviewTreeNode>,
     pub depth_limit: Option<usize>,
+
     pub export_dialog: ExportTreeDialog,
-    pub progress_dialog: ExtractionProgressDialog,
-    pub progress_rx: Option<Receiver<ProgressUpdate>>,
-    pub organization_child: Option<std::process::Child>,
-    pub organization_started: Option<Instant>,
-    pub is_organizing: bool,
+    // Organization progress handled by ArchiveOperations
 }
 
 impl Default for OrganizeUiState {
@@ -66,12 +62,9 @@ impl Default for OrganizeUiState {
             original_tree: Vec::new(),
             organized_tree: Vec::new(),
             depth_limit: None,
+
             export_dialog: ExportTreeDialog::new(),
-            progress_dialog: ExtractionProgressDialog::default(),
-            progress_rx: None,
-            organization_child: None,
-            organization_started: None,
-            is_organizing: false,
+            // Organization now handled by ArchiveOperations
         }
     }
 }
@@ -170,50 +163,7 @@ impl OrganizePanel {
         }
     }
 
-    /// Update organization progress from channel
-    pub fn update_organization_progress(&mut self) {
-        if !self.ui_state.is_organizing {
-            return;
-        }
-
-        // Check for progress updates from channel
-        if let Some(ref rx) = self.ui_state.progress_rx {
-            while let Ok(update) = rx.try_recv() {
-                self.ui_state.progress_dialog.percent = update.percent;
-                if let Some(ref msg) = update.message {
-                    self.ui_state.progress_dialog.file_action = msg.clone();
-                }
-                // Check for completion
-                if update.percent >= 100 {
-                    self.ui_state.progress_dialog.status = ExtractionStatus::Completed;
-                    self.ui_state.is_organizing = false;
-                    self.ui_state.progress_dialog.show = false;
-                }
-            }
-        }
-
-        // Update elapsed time
-        if let Some(started) = self.ui_state.organization_started {
-            let elapsed = started.elapsed();
-            self.ui_state.progress_dialog.elapsed_text = format!(
-                "{}:{:02}",
-                elapsed.as_secs() / 60,
-                elapsed.as_secs() % 60
-            );
-        }
-    }
-
-    /// Cancel ongoing organization
-    pub fn cancel_organization(&mut self) {
-        if let Some(ref mut child) = self.ui_state.organization_child {
-            let _ = child.kill();
-        }
-        self.ui_state.organization_child = None;
-        self.ui_state.progress_rx = None;
-        self.ui_state.is_organizing = false;
-        self.ui_state.progress_dialog.show = false;
-        self.ui_state.progress_dialog.status = ExtractionStatus::Cancelled;
-    }
+    /* Organization progress is now handled by ArchiveOperations (global signal) */
 
     fn truncate_path(path: &str, max_len: usize) -> String {
         // Use character count, not byte count, for proper Unicode handling
@@ -249,24 +199,6 @@ impl OrganizePanel {
     }
 
     pub fn render(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> Option<OrganizePanelAction> {
-        // Update organization progress if running
-        self.update_organization_progress();
-        
-        // Render progress dialog if organizing
-        if self.ui_state.progress_dialog.show {
-            if let Some(result) = crate::shared::dialogs::progress::render_extraction_progress_dialog(
-                ctx,
-                &crate::shared::theme::AppTheme::new(false), // TODO: Get actual theme
-                &mut self.ui_state.progress_dialog,
-            ) {
-                match result {
-                    crate::shared::dialogs::progress::ExtractionDialogResult::Cancelled => {
-                        self.cancel_organization();
-                    }
-                    _ => {}
-                }
-            }
-        }
         
         self.ui_state.export_dialog.show(
             ctx,

@@ -24,8 +24,8 @@ pub fn render(
         plugins_state.update_from_manager(manager, &state.user_config);
     }
 
-    // Extract content_cache for plugin icons
-    let content_cache = app_state.lock().content_cache.clone();
+    // Extract content_cache from services (no lock needed)
+    let content_cache = shared.and_then(|s| s.services.content_cache.clone());
 
     // Render the plugin list
     // Render the unified plugin page

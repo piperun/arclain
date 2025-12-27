@@ -21,7 +21,7 @@ pub fn navigate_to(
         .collect();
 
     let nav_current_path = st.navigation.current_path.clone();
-    let current_archive = st.current_archive.clone();
+    let current_archive = st.signals.archive_path.get(); // Use signal
     drop(st);
 
     update_current_path(current_path, nav_current_path, current_archive);
@@ -42,7 +42,7 @@ pub fn navigate_back(
         .collect();
 
     let nav_current_path = st.navigation.current_path.clone();
-    let current_archive = st.current_archive.clone();
+    let current_archive = st.signals.archive_path.get(); // Use signal
     drop(st);
 
     update_current_path(current_path, nav_current_path, current_archive);
@@ -63,7 +63,7 @@ pub fn navigate_forward(
         .collect();
 
     let nav_current_path = st.navigation.current_path.clone();
-    let current_archive = st.current_archive.clone();
+    let current_archive = st.signals.archive_path.get(); // Use signal
     drop(st);
 
     update_current_path(current_path, nav_current_path, current_archive);
@@ -84,7 +84,7 @@ pub fn navigate_up(
         .collect();
 
     let nav_current_path = st.navigation.current_path.clone();
-    let current_archive = st.current_archive.clone();
+    let current_archive = st.signals.archive_path.get(); // Use signal
     drop(st);
 
     update_current_path(current_path, nav_current_path, current_archive);

@@ -105,10 +105,9 @@ pub fn render_tab_bar_panel(
                 source: None,
             }];
 
-            // Collect plugin tabs
+            // Collect plugin tabs from services (no lock needed)
             {
-                let state = shared_state.app_state.lock();
-                if let Some(plugin_manager) = &state.plugin_manager {
+                if let Some(plugin_manager) = &shared_state.services.plugin_manager {
                     if let Some(pm) = plugin_manager.try_lock() {
                         for (plugin_id, tab_config) in pm.get_all_top_tabs() {
                             tabs.push(components::top_tab_bar::TopTab {
@@ -200,13 +199,13 @@ pub fn render_toolbar_panel(
             let can_go_back = nav.can_go_back();
             let can_go_forward = nav.can_go_forward();
             let can_go_up = nav.can_go_up();
-            let archive_loaded = state.current_archive.is_some();
+            let archive_loaded = state.signals.archive_path.get().is_some();
             let has_selection = false; // TODO: Implement selection tracking
             let has_metadata = state.plugin_metadata.is_some();
             let toolbar_config =
                 components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
-            let plugin_manager = state.plugin_manager.clone();
             drop(state);
+            let plugin_manager = shared_state.services.plugin_manager.clone();
 
             let actions = components::toolbar::render(
                 ui,
@@ -253,7 +252,7 @@ pub fn render_status_bar_panel(
         )
         .show(ctx, |ui| {
             let state = shared_state.app_state.lock();
-            let archive_loaded = state.current_archive.is_some();
+            let archive_loaded = state.signals.archive_path.get().is_some();
 
             // Update status info from state
             if archive_loaded {
@@ -264,19 +263,20 @@ pub fn render_status_bar_panel(
                     crate::core::utils::format_size(archive_info.compressed_size);
                 status_info.archive_format = archive_info.archive_format;
             }
+            let has_metadata = state.plugin_metadata.is_some();
+            drop(state);
 
-            let plugin_info = if let Some(manager) = &state.plugin_manager {
+            let plugin_info = if let Some(manager) = &shared_state.services.plugin_manager {
                 let mgr = manager.lock();
                 let list = mgr.list_plugins();
                 Some(components::status_bar::PluginStatusInfo {
                     total_plugins: list.len(),
                     enabled_plugins: list.iter().filter(|p| p.enabled).count(),
-                    has_metadata: state.plugin_metadata.is_some(),
+                    has_metadata,
                 })
             } else {
                 None
             };
-            drop(state);
 
             components::status_bar::render(
                 ui,

@@ -6,7 +6,6 @@ use arclain_core::config::database::{
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
 use arclain_core::utilities::{auto_password_for, ChecksumService, PassRule};
-use arclain_core::NavigationState;
 use arclain_data::{ContentCache, ResourceConfig, ResourceManager};
 use arclain_db::UserConfig;
 use arclain_http::features::whitelist::DomainWhitelist;
@@ -31,13 +30,7 @@ pub struct AppState {
     pub backend_selector: BackendSelector,
     pub fallback_backend: SevenZipCli, // Keep for plugin compatibility
     pub last_entries: Vec<String>,
-    pub all_entries: Vec<arclain_core::ArchiveEntry>,
 
-    pub current_archive: Option<PathBuf>,
-    pub archive_encrypted: bool,
-    pub headers_encrypted: bool,
-    pub encryption_method: Option<String>,
-    pub current_password: Option<String>,
     pub encrypted_crc_policy: String,
     // DB-backed settings and secrets (optional; falls back to JSON if unavailable)
     pub db_paths: Option<DbPaths>,
@@ -55,15 +48,15 @@ pub struct AppState {
     pub current_game_metadata: Option<arclain_core::features::organization::GameMetadata>,
     pub archive_info: crate::core::operations::archive::ArchiveInfo,
     // Checksum verification service
-    pub checksum_service: Option<ChecksumService>,
+    pub checksum_service: Option<Arc<ChecksumService>>,
     // Content cache for plugin images
     pub content_cache: Option<Arc<ContentCache>>,
 
     // Toolbar config items (loaded from DB)
 
     // Async Runtime and HTTP
-    #[allow(dead_code)] // Runtime is kept alive by AppState
-    pub tokio_runtime: tokio::runtime::Runtime,
+    // Async Runtime is now in Services
+    // pub tokio_runtime: tokio::runtime::Runtime,
     pub async_http_client: Option<Arc<AsyncHttpClient>>,
     pub resource_manager: Option<Arc<ResourceManager>>,
     #[allow(dead_code)] // Used in future UI settings
@@ -80,7 +73,7 @@ pub struct UiPreferences {
 }
 
 impl AppState {
-    pub fn new() -> Result<Self> {
+    pub fn new() -> Result<(Self, crate::core::services::Services)> {
         info!("Initializing application state");
 
         // Initialize Tokio runtime
@@ -127,13 +120,7 @@ impl AppState {
             backend_selector,
             fallback_backend,
             last_entries: vec![],
-            all_entries: vec![],
 
-            current_archive: None,
-            archive_encrypted: false,
-            headers_encrypted: false,
-            encryption_method: None,
-            current_password: None,
             encrypted_crc_policy: "on_open".to_string(),
             db_paths: Some(db_paths.clone()),
             dbs: None,
@@ -146,12 +133,14 @@ impl AppState {
             checksum_service: None,
             content_cache: None,
 
-            tokio_runtime: runtime,
-            async_http_client: Some(async_http_client),
+            // tokio_runtime: runtime, // Moved to Services
+            async_http_client: Some(async_http_client.clone()), // Clone Arc
             resource_manager: None,
-            domain_whitelist,
+            domain_whitelist: domain_whitelist.clone(), // Clone Arc
             signals: AppSignals::new(),
         };
+
+        me.signals.user_config.set(me.user_config.clone());
 
         // Attempt to open DB-backed config + secrets (optional)
         if let Ok(mut paths) = DbPaths::defaults("arclain") {
@@ -315,7 +304,7 @@ impl AppState {
                                             warn!("Failed to recover checksum operations: {}", e);
                                         }
                                     }
-                                    me.checksum_service = Some(service);
+                                    me.checksum_service = Some(Arc::new(service));
                                     info!("Checksum verification service initialized");
                                 }
                                 Err(e) => {
@@ -554,11 +543,23 @@ impl AppState {
             }
         }
 
-        Ok(me)
+        let services = crate::core::services::Services {
+            tokio_runtime: runtime,
+            async_http_client,
+            domain_whitelist,
+            plugin_manager: me.plugin_manager.clone(),
+            plugin_event_sender: me.plugin_event_sender.clone(),
+            checksum_service: me.checksum_service.clone(),
+            content_cache: me.content_cache.clone(),
+            resource_manager: me.resource_manager.clone(),
+        };
+
+        Ok((me, services))
     }
 
     pub fn list_archive(&mut self, path: &Path) -> Result<Vec<arclain_core::ArchiveEntry>> {
         info!("Opening archive: {}", path.display());
+        self.signals.current_password.set(None);
 
         // Select appropriate backend based on file extension
         let backend = self.backend_selector.select(path)?;
@@ -573,7 +574,7 @@ impl AppState {
                         info!("Attempting to open encrypted archive with auto-detected password");
                         match backend.list(path, Some(password)) {
                             Ok(new_info) => {
-                                self.current_password = Some(password.clone());
+                                self.signals.current_password.set(Some(password.clone()));
                                 new_info
                             }
                             Err(e) => {
@@ -597,7 +598,7 @@ impl AppState {
                 if let Some(ref password) = pw {
                     info!("Attempting to open archive with auto-detected password");
                     let info = backend.list(path, Some(password))?;
-                    self.current_password = Some(password.clone());
+                    self.signals.current_password.set(Some(password.clone()));
                     info
                 } else {
                     debug!("No auto-password found");
@@ -606,23 +607,22 @@ impl AppState {
             }
         };
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
-        self.all_entries = info.entries.clone();
-        // IMPORTANT: Set current_archive BEFORE password detection so archive name matching works
-        self.current_archive = Some(path.to_path_buf());
-        self.archive_encrypted = info.encrypted;
-        self.headers_encrypted = info.headers_encrypted;
-        self.encryption_method = info.encryption_method.clone();
+        // IMPORTANT: Set archive_path signal BEFORE password detection so archive name matching works
+        let archive_path = Some(path.to_path_buf());
+        self.signals.archive_path.set(archive_path.clone());
+        self.archive_info.archive_encrypted = info.encrypted;
+        self.archive_info.headers_encrypted = info.headers_encrypted;
+        self.archive_info.encryption_method = info.encryption_method.clone();
         crate::core::operations::navigation_signals::reset_navigation(&self.signals);
 
         // Update reactive signals for async UI updates
         self.signals
             .entries
-            .set(std::sync::Arc::new(self.all_entries.clone()));
-        self.signals.archive_path.set(self.current_archive.clone());
+            .set(std::sync::Arc::new(info.entries.clone()));
 
         // Now attempt password detection with correct archive context
-        if self.current_password.is_none() {
-            let archive_name = self.current_archive.as_ref().and_then(|p| p.to_str());
+        if self.signals.current_password.get().is_none() {
+            let archive_name = archive_path.as_ref().and_then(|p| p.to_str());
             debug!(
                 "Attempting auto-password detection for archive: {:?}",
                 archive_name
@@ -630,7 +630,7 @@ impl AppState {
             let detected_pw = auto_password_for(&self.pass_rules, archive_name, &self.last_entries);
             if let Some(ref pwd) = detected_pw {
                 info!("Auto-detected password for archive (length: {})", pwd.len());
-                self.current_password = Some(pwd.clone());
+                self.signals.current_password.set(Some(pwd.clone()));
             } else if info.encrypted {
                 warn!("Archive is encrypted but no password was auto-detected from rules");
             } else {
@@ -639,7 +639,12 @@ impl AppState {
         } else {
             info!(
                 "Password already set (length: {})",
-                self.current_password.as_ref().map(|p| p.len()).unwrap_or(0)
+                self.signals
+                    .current_password
+                    .get()
+                    .as_ref()
+                    .map(|p| p.len())
+                    .unwrap_or(0)
             );
         }
 
@@ -651,7 +656,7 @@ impl AppState {
             let event = PluginEvent::OnArchiveOpen {
                 path: path.to_string_lossy().to_string(),
                 kind: info.archive_kind,
-                password: self.current_password.clone(),
+                password: self.signals.current_password.get(),
             };
 
             // Store event for deferred dispatch - will be sent after UI renders
@@ -661,17 +666,17 @@ impl AppState {
 
             info!(
                 "Archive opened successfully with {} entries (plugin event pending)",
-                self.all_entries.len()
+                self.signals.entries.get().len()
             );
         }
 
         if self.plugin_manager.is_none() {
             info!(
                 "Archive opened successfully with {} entries",
-                self.all_entries.len()
+                self.signals.entries.get().len()
             );
         }
-        Ok(self.all_entries.clone())
+        Ok(self.signals.entries.get().as_ref().clone())
     }
 
     pub fn list_with_password(
@@ -683,19 +688,20 @@ impl AppState {
         let backend = self.backend_selector.select(path)?;
         let info = backend.list(path, Some(password))?;
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
-        self.all_entries = info.entries.clone();
-        self.current_archive = Some(path.to_path_buf());
-        self.archive_encrypted = info.encrypted;
-        self.headers_encrypted = info.headers_encrypted;
-        self.encryption_method = info.encryption_method.clone();
+        let archive_path = Some(path.to_path_buf());
+        self.signals.archive_path.set(archive_path);
+        self.archive_info.archive_encrypted = info.encrypted;
+        self.archive_info.headers_encrypted = info.headers_encrypted;
+        self.archive_info.encryption_method = info.encryption_method.clone();
         crate::core::operations::navigation_signals::reset_navigation(&self.signals);
-        self.current_password = Some(password.to_string());
+        self.signals
+            .current_password
+            .set(Some(password.to_string()));
 
         // Update reactive signals for async UI updates
         self.signals
             .entries
-            .set(std::sync::Arc::new(self.all_entries.clone()));
-        self.signals.archive_path.set(self.current_archive.clone());
+            .set(std::sync::Arc::new(info.entries.clone()));
 
         // Store OnArchiveOpen event for deferred dispatch (after UI renders)
         // This prevents plugins from fetching metadata before the UI is ready
@@ -713,7 +719,7 @@ impl AppState {
             self.signals.ui_ready.set(false);
         }
 
-        Ok(self.all_entries.clone())
+        Ok(self.signals.entries.get().as_ref().clone())
     }
 
     /// Dispatch any pending plugin event after UI has rendered.
@@ -739,7 +745,7 @@ impl AppState {
         self.signals
             .navigation
             .get()
-            .filter_entries(&self.all_entries)
+            .filter_entries(&self.signals.entries.get())
     }
 
     pub fn add_files_to_archive(&self, archive: &Path, files: Vec<PathBuf>) -> Result<()> {
@@ -750,7 +756,8 @@ impl AppState {
     pub fn read_text_file(&self, archive: &Path, path_in_archive: &str) -> Result<String> {
         let archive_name = archive.to_str();
         let auto_pw = auto_password_for(&self.pass_rules, archive_name, &self.last_entries);
-        let pw = self.current_password.as_deref().or(auto_pw.as_deref());
+        let signal_pw = self.signals.current_password.get();
+        let pw = signal_pw.as_deref().or(auto_pw.as_deref());
         let backend = self.backend_selector.select(archive)?;
         backend.read_text_file(archive, path_in_archive, pw)
     }
