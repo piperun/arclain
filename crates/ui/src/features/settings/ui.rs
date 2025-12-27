@@ -508,7 +508,7 @@ impl SettingsFeature {
 
         if let Some(action) = action {
             // Check if this is a navigation action
-            if let Some(target_page) = crate::features::settings::action_handlers::extract_navigation(&action) {
+            if let Some(target_page) = crate::features::settings::actions::extract_navigation(&action) {
                 navigate_to = Some(crate::core::AppPage::Settings(target_page));
             } else {
                 // Handle non-navigation actions
@@ -520,7 +520,7 @@ impl SettingsFeature {
     }
 
     pub fn handle_action(&mut self, action: SettingsAction, shared: &SharedState) {
-        crate::features::settings::action_handlers::handle_action(
+        crate::features::settings::actions::handle_action(
             action,
             &mut self.security_state,
             &mut self.archives_state,

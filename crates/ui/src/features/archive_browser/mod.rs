@@ -1,7 +1,9 @@
+pub mod actions;
 pub mod navigation;
 pub mod state;
 pub mod ui;
 
+pub use actions::{ActionContext, ArchiveBrowserAction};
 pub use state::ArchiveBrowserState;
 
 use crate::shared::SharedState;
@@ -24,21 +26,4 @@ impl ArchiveBrowser {
     pub fn state_mut(&mut self) -> &mut ArchiveBrowserState {
         &mut self.state
     }
-}
-
-pub enum ArchiveBrowserAction {
-    None,
-    NavigateToFolder(String),
-    NavigateToPath(String),
-    OpenFile(String),
-    OpenArchiveInTab(String), // Double-click on nested archive
-    EditFile(String),
-    DeleteFile(String),
-    Organize,
-    Metadata(String), // Metadata JSON from plugin
-    // Context menu actions
-    Extract(String),
-    ExtractTo(String),
-    CopyPath(String),
-    ShowProperties(String),
 }

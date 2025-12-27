@@ -54,7 +54,6 @@ pub struct ArclainApp {
     // Data
     status_info: components::StatusBarInfo,
     _pending_archive_path: Option<PathBuf>,
-    _pending_edit_file: Option<String>,
     // _pending_open_file: Option<String>, // Moved to ArchiveOperations
 
     // Archive info
@@ -81,7 +80,9 @@ impl ArclainApp {
             page_navigator: PageNavigator::new(),
             header_state: components::HeaderState::default(),
             archive_browser: crate::features::archive_browser::ArchiveBrowser::new(&shared_state),
-            archive_operations: crate::features::archive_operations::ArchiveOperations::new(&shared_state),
+            archive_operations: crate::features::archive_operations::ArchiveOperations::new(
+                &shared_state,
+            ),
             password_feature: password_management::PasswordFeature::new(&shared_state),
             edit_dialog: crate::features::file_editing::FileEditDialog::default(),
             // password_rules_dialog: password_management::PasswordRulesDialog::default(),
@@ -94,7 +95,6 @@ impl ArclainApp {
             top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
             status_info: components::StatusBarInfo::default(),
             _pending_archive_path: None,
-            _pending_edit_file: None,
             // _pending_open_file: None,
             // archive_info: operations::archive::ArchiveInfo::default(),
             _last_window_title: None,
@@ -112,15 +112,19 @@ impl ArclainApp {
 impl eframe::App for ArclainApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         use crate::core::{app_lifecycle, app_rendering};
-        
+
         // === Lifecycle: Refresh requests, signals, theme ===
         app_lifecycle::process_refresh_requests(&self.shared_state, ctx);
-        app_lifecycle::bind_signals_once(&self.shared_state.app_state, ctx, &mut self._signals_bound);
+        app_lifecycle::bind_signals_once(
+            &self.shared_state.app_state,
+            ctx,
+            &mut self._signals_bound,
+        );
         app_lifecycle::apply_theme(&self.shared_state, ctx);
-        
+
         // === Lifecycle: Process metadata signal updates from plugins ===
         app_lifecycle::process_metadata_signal(&self.shared_state, &mut self.organization_feature);
-        
+
         // === Lifecycle: Handle extraction progress from native backends ===
         {
             let ops_state = self.archive_operations.state_mut();
@@ -131,7 +135,7 @@ impl eframe::App for ArclainApp {
                 ctx,
             );
         }
-        
+
         // === Lifecycle: Update window title ===
         app_lifecycle::update_window_title(
             &self.shared_state,
@@ -143,14 +147,16 @@ impl eframe::App for ArclainApp {
         // Handle extraction/conversion progress from CLI backends
         self.archive_operations.update_extraction_progress(ctx);
         self.archive_operations.update_conversion_progress(ctx);
-        
+
         // Process pending file opens (double-click on file in archive)
         if let Some(file_path) = self.archive_operations.state_mut().pending_open_file.take() {
-            if let Some(nested_archive_path) = crate::features::archive_operations::open_file_from_archive(
-                &self.shared_state.app_state,
-                &file_path,
-                &mut self.status_info,
-            ) {
+            if let Some(nested_archive_path) =
+                crate::features::archive_operations::open_file_from_archive(
+                    &self.shared_state.app_state,
+                    &file_path,
+                    &mut self.status_info,
+                )
+            {
                 // It's a nested archive - open it as the current archive
                 let browser_state = self.archive_browser.state_mut();
                 let mut archive_info = operations::archive::ArchiveInfo::default();
@@ -173,7 +179,7 @@ impl eframe::App for ArclainApp {
             &self.page_navigator,
             &mut self.header_state,
         );
-        
+
         // Handle header actions
         if header_actions.theme_toggle {
             self.shared_state.theme.toggle();
@@ -188,7 +194,8 @@ impl eframe::App for ArclainApp {
             self.page_navigator.navigate_to(AppPage::Plugins);
         }
         if header_actions.navigate_settings {
-            self.page_navigator.navigate_to(AppPage::Settings(SettingsPage::Overview));
+            self.page_navigator
+                .navigate_to(AppPage::Settings(SettingsPage::Overview));
         }
 
         // === Render Tab Bar Panel ===
@@ -197,14 +204,17 @@ impl eframe::App for ArclainApp {
             &self.shared_state,
             &mut self.top_tab_bar_state,
         );
-        
+
         // Handle tab bar actions
         match tab_action {
             app_rendering::TabBarAction::SelectArchiveTab => {
                 // Set toolbar context to Archive
                 {
                     let state = self.shared_state.app_state.lock();
-                    state.signals.active_toolbar.set(crate::core::signals::ToolbarContext::Archive);
+                    state
+                        .signals
+                        .active_toolbar
+                        .set(crate::core::signals::ToolbarContext::Archive);
                     state.signals.status_message.set(None);
                 }
                 // Close any open plugin pages
@@ -218,7 +228,12 @@ impl eframe::App for ArclainApp {
                 // Set toolbar context to Plugin
                 {
                     let state = self.shared_state.app_state.lock();
-                    state.signals.active_toolbar.set(crate::core::signals::ToolbarContext::Plugin(plugin_id.clone()));
+                    state
+                        .signals
+                        .active_toolbar
+                        .set(crate::core::signals::ToolbarContext::Plugin(
+                            plugin_id.clone(),
+                        ));
                 }
                 // Open plugin page
                 let mut dialog_state = self.shared_state.plugin_dialog_state.lock();
@@ -231,7 +246,10 @@ impl eframe::App for ArclainApp {
         // Render Toolbar (only on Main page AND when Archive context is active)
         let should_show_archive_toolbar = if self.page_navigator.is_on_main() {
             let state = self.shared_state.app_state.lock();
-            matches!(state.signals.active_toolbar.get(), crate::core::signals::ToolbarContext::Archive)
+            matches!(
+                state.signals.active_toolbar.get(),
+                crate::core::signals::ToolbarContext::Archive
+            )
         } else {
             false
         };
@@ -248,7 +266,8 @@ impl eframe::App for ArclainApp {
                     let archive_loaded = state.signals.archive_path.get().is_some();
                     let has_selection = false; // TODO: Implement selection tracking
                     let has_metadata = state.signals.metadata.get().is_some();
-                    let toolbar_config = components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
+                    let toolbar_config =
+                        components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
                     drop(state);
                     let plugin_manager = self.shared_state.services.plugin_manager.clone();
 
@@ -328,7 +347,10 @@ impl eframe::App for ArclainApp {
                         );
                     }
                     if actions.add {
-                        operations::file::add_files(&self.shared_state.app_state, &mut self.status_info);
+                        operations::file::add_files(
+                            &self.shared_state.app_state,
+                            &mut self.status_info,
+                        );
                     }
                     if actions.delete_selected {
                         let mut archive_info = operations::archive::ArchiveInfo::default();
@@ -356,64 +378,79 @@ impl eframe::App for ArclainApp {
                     if actions.organize_archive {
                         let state = self.shared_state.app_state.lock();
                         if let Some(archive) = state.signals.archive_path.get() {
-                            let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
+                            let archive_name = archive
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
                             drop(state);
-                            
+
                             // Load rules directly from DB and filter by enabled plugins
                             let mut rules = Vec::new(); // Default empty
                             {
                                 // Check enabled plugins (specifically DLsite) from services
-                                let dlsite_enabled = if let Some(manager) = &self.shared_state.services.plugin_manager {
+                                let dlsite_enabled = if let Some(manager) =
+                                    &self.shared_state.services.plugin_manager
+                                {
                                     let mgr = manager.lock();
-                                    mgr.list_plugins().iter().any(|p| p.id.eq_ignore_ascii_case("dlsite-metadata") && p.enabled)
+                                    mgr.list_plugins().iter().any(|p| {
+                                        p.id.eq_ignore_ascii_case("dlsite-metadata") && p.enabled
+                                    })
                                 } else {
                                     false
                                 };
-                                
+
                                 let state = self.shared_state.app_state.lock();
 
-
                                 if let Some(dbs) = &state.dbs {
-                                   let db = &dbs.config;
-                                   if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
-                                       rules = loaded.into_iter().filter(|r| {
-                                            if r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false) {
-                                                dlsite_enabled
-                                            } else {
-                                                true
-                                            }
-                                       }).collect();
-                                   }
+                                    let db = &dbs.config;
+                                    if let Ok(loaded) =
+                                        arclain_core::config::database::list_org_rules(db)
+                                    {
+                                        rules = loaded
+                                            .into_iter()
+                                            .filter(|r| {
+                                                if r.trigger
+                                                    .metadata_source
+                                                    .as_deref()
+                                                    .map(|s| s.eq_ignore_ascii_case("dlsite"))
+                                                    .unwrap_or(false)
+                                                {
+                                                    dlsite_enabled
+                                                } else {
+                                                    true
+                                                }
+                                            })
+                                            .collect();
+                                    }
                                 }
                             }
-                            
+
                             // Initialize panel
                             let state = self.shared_state.app_state.lock();
                             let entries = state.signals.entries.get().as_ref().clone();
                             let metadata = state.signals.game_metadata.get();
                             drop(state);
 
-                            self.organization_feature.organizer_page = Some(crate::features::organization::OrganizerPage::new(
-                                crate::features::organization::OrganizePanel::new(
-                                    archive_name.clone(),
-                                    entries,
-                                    rules,
-                                    metadata,
-                                )
-                            ));
-                            
-                            self.page_navigator.navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
+                            self.organization_feature.organizer_page =
+                                Some(crate::features::organization::OrganizerPage::new(
+                                    crate::features::organization::OrganizePanel::new(
+                                        archive_name.clone(),
+                                        entries,
+                                        rules,
+                                        metadata,
+                                    ),
+                                ));
+
+                            self.page_navigator
+                                .navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
                         }
                     }
                 });
         }
 
         // === Render Status Bar ===
-        app_rendering::render_status_bar_panel(
-            ctx,
-            &self.shared_state,
-            &mut self.status_info,
-        );
+        app_rendering::render_status_bar_panel(ctx, &self.shared_state, &mut self.status_info);
 
         // Render Password Dialog
         let shared_state = self.shared_state.clone();
@@ -445,16 +482,20 @@ impl eframe::App for ArclainApp {
         }
 
         // Render Password Rules Dialog
-        if let Some(result) = password_management::dialogs::zip_pass_rules::render_password_rules_dialog(
-            ctx,
-            &self.shared_state.theme,
-            &mut self.settings_feature.password_rules_dialog,
-        ) {
+        if let Some(result) =
+            password_management::dialogs::zip_pass_rules::render_password_rules_dialog(
+                ctx,
+                &self.shared_state.theme,
+                &mut self.settings_feature.password_rules_dialog,
+            )
+        {
             match result {
                 password_management::dialogs::zip_pass_rules::PasswordRulesResult::Cancel => {
                     self.settings_feature.password_rules_dialog.show = false;
                 }
-                password_management::dialogs::zip_pass_rules::PasswordRulesResult::Save { rules } => {
+                password_management::dialogs::zip_pass_rules::PasswordRulesResult::Save {
+                    rules,
+                } => {
                     self.settings_feature.handle_action(
                         crate::features::settings::settings_content::SettingsAction::SavePasswordRules { rules },
                         &self.shared_state,
@@ -475,7 +516,10 @@ impl eframe::App for ArclainApp {
                     // Set signal-based cancellation for native backends
                     {
                         let state = self.shared_state.app_state.lock();
-                        state.signals.extraction_cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                        state
+                            .signals
+                            .extraction_cancel
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
                         state.signals.extraction_progress.set(None);
                     }
                     // Also cancel CLI extraction if any
@@ -497,26 +541,29 @@ impl eframe::App for ArclainApp {
         }
 
         // Render File Edit Dialog
-        if let Some(result) = crate::features::file_editing::file_edit_dialog::render_file_edit_dialog(
-            ctx,
-            &self.shared_state.theme,
-            &mut self.edit_dialog,
-        ) {
+        if let Some(result) =
+            crate::features::file_editing::file_edit_dialog::render_file_edit_dialog(
+                ctx,
+                &self.shared_state.theme,
+                &mut self.edit_dialog,
+            )
+        {
             match result {
-                crate::features::file_editing::file_edit_dialog::FileEditResult::Save { new_name, content } => {
-                    if let Some(_file) = &self._pending_edit_file {
-                        let state = self.shared_state.app_state.lock();
-                        if let Some(archive) = state.signals.archive_path.get() {
-                            match state.add_or_update_file_from_str(&archive, &new_name, &content) {
-                                Ok(_) => {
-                                    self.status_info.message = "File saved".to_string();
-                                    // TODO: Refresh file list
-                                }
-                                Err(e) => {
-                                    let msg = format!("Failed to save file: {}", e);
-                                    crate::core::utils::log_failure("FileEdit", &msg);
-                                    self.status_info.message = msg;
-                                }
+                crate::features::file_editing::file_edit_dialog::FileEditResult::Save {
+                    new_name,
+                    content,
+                } => {
+                    let state = self.shared_state.app_state.lock();
+                    if let Some(archive) = state.signals.archive_path.get() {
+                        match state.add_or_update_file_from_str(&archive, &new_name, &content) {
+                            Ok(_) => {
+                                self.status_info.message = "File saved".to_string();
+                                // TODO: Refresh file list
+                            }
+                            Err(e) => {
+                                let msg = format!("Failed to save file: {}", e);
+                                crate::core::utils::log_failure("FileEdit", &msg);
+                                self.status_info.message = msg;
                             }
                         }
                     }
@@ -536,296 +583,101 @@ impl eframe::App for ArclainApp {
             // Render Main Content
             egui::CentralPanel::default().show(ctx, |_ui| {
                 let current_page = self.page_navigator.current_page.clone();
-            match current_page {
-                AppPage::Main => {
+                match current_page {
+                    AppPage::Main => {
+                        let shared_state = self.shared_state.clone();
 
-                    let shared_state = self.shared_state.clone();
+                        let action = self.archive_browser.render(ctx, &shared_state);
 
-                    let action = self.archive_browser.render(
-                        ctx,
-                        &shared_state,
-                    );
-                    
-                    match action {
-                        crate::features::archive_browser::ArchiveBrowserAction::NavigateToFolder(
-                            folder,
-                        ) => {
-                            crate::features::archive_browser::navigation::navigate_to_folder(
-                                self.archive_browser.state_mut(),
-                                &shared_state,
-                                &folder,
-                            );
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::NavigateToPath(
-                            path,
-                        ) => {
-                            crate::features::archive_browser::navigation::navigate_to_path(
-                                self.archive_browser.state_mut(),
-                                &shared_state,
-                                &path,
-                            );
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::OpenFile(file) => {
-                            self.archive_operations.state_mut().pending_open_file = Some(file);
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::OpenArchiveInTab(archive_path) => {
-                            // Extract nested archive to temp and open as current archive
-                            if let Some(extracted_path) = crate::features::archive_operations::open_file_from_archive(
-                                &self.shared_state.app_state,
-                                &archive_path,
-                                &mut self.status_info,
-                            ) {
-                                // Open the extracted archive as the current archive
-                                let browser_state = self.archive_browser.state_mut();
-                                let mut archive_info = operations::archive::ArchiveInfo::default();
-                                operations::archive::open_archive_by_path(
-                                    &self.shared_state.app_state,
-                                    &extracted_path,
-                                    &mut browser_state.current_path,
-                                    &mut self.password_feature.password_dialog,
-                                    &mut self.status_info,
-                                    &mut browser_state.entries,
-                                    &mut archive_info,
-                                );
-                            }
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::EditFile(file) => {
-                            self._pending_edit_file = Some(file.clone());
-                            self.edit_dialog.show = true;
-                            self.edit_dialog.full_path_in_archive = file.clone();
-                            
-                            let state = self.shared_state.app_state.lock();
-                            if let Some(archive) = state.signals.archive_path.get() {
-                                match state.read_text_file(&archive, &file) {
-                                    Ok(content) => {
-                                        self.edit_dialog.content = content.clone();
-                                        self.edit_dialog.original_content = content;
-                                    }
-                                    Err(e) => {
-                                        let msg = format!("Failed to read file: {}", e);
-                                        crate::core::utils::log_failure("FileEdit", &msg);
-                                        self.status_info.message = msg;
-                                    }
-                                }
-                            }
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::DeleteFile(_file) => {
-                            // TODO: Delete file
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::Metadata(json) => {
-                            // Parse metadata JSON and store in state
-                            match serde_json::from_str::<arclain_core::features::organization::GameMetadata>(&json) {
-                                Ok(metadata) => {
-                                    tracing::info!("Received metadata from plugin: {:?}", metadata.title);
-                                    let state = self.shared_state.app_state.lock();
-                                    state.signals.game_metadata.set(Some(metadata));
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Failed to parse metadata JSON: {}", e);
-                                }
-                            }
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::Organize => {
-                            // Trigger organization flow same as toolbar
-                            let state = self.shared_state.app_state.lock();
-                            if let Some(archive) = state.signals.archive_path.get() {
-                                let archive_name = archive.file_name().unwrap_or_default().to_string_lossy().to_string();
-                                drop(state);
-                                
-                                // Load rules directly from DB and filter by enabled plugins
-                                let mut rules = Vec::new(); // Default empty
-                                {
-                                    // Check enabled plugins (specifically DLsite) from services
-                                    let dlsite_enabled = if let Some(manager) = &self.shared_state.services.plugin_manager {
-                                        let mgr = manager.lock();
-                                        mgr.list_plugins().iter().any(|p| p.id.eq_ignore_ascii_case("dlsite") && p.enabled)
-                                    } else {
-                                        false
-                                    };
-                                    
-                                    let state = self.shared_state.app_state.lock();
-
-                                    if let Some(dbs) = &state.dbs {
-                                       let db = &dbs.config;
-                                       if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
-                                           rules = loaded.into_iter().filter(|r| {
-                                                if r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false) {
-                                                    dlsite_enabled
-                                                } else {
-                                                    true
-                                                }
-                                           }).collect();
-                                       }
-                                    }
-                                }
-                                
-                                let state = self.shared_state.app_state.lock();
-                                let entries = state.signals.entries.get().as_ref().clone();
-                                let metadata = state.signals.game_metadata.get();
-                                drop(state);
-                                
-                                self.organization_feature.organizer_page = Some(crate::features::organization::OrganizerPage::new(
-                                    crate::features::organization::OrganizePanel::new(
-                                        archive_name.clone(),
-                                        entries,
-                                        rules,
-                                        metadata,
-                                    )
-                                ));
-                                
-                                self.page_navigator.navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
-                            }
-                        }
-                        // Context menu actions
-                        crate::features::archive_browser::ArchiveBrowserAction::Extract(file) => {
-                            // Extract single file to default location
-                            let _browser_state = self.archive_browser.state_mut();
-                            let ops_state = self.archive_operations.state_mut();
-                            // Create a temporary selection for just this file
-                            let entries: Vec<crate::shared::components::file_list::FileEntry> = vec![
-                                crate::shared::components::file_list::FileEntry {
-                                    name: file,
-                                    selected: true,
-                                    size: String::new(),
-                                    compressed: String::new(),
-                                    ratio: String::new(),
-                                    modified: String::new(),
-                                    crc32: String::new(),
-                                    encrypted: false,
-                                    is_folder: false,
-                                }
-                            ];
-                            operations::extraction::extract_selected(
-                                &self.shared_state.app_state,
-                                &entries,
-                                &mut ops_state.extraction_dialog,
-                                &mut ops_state.extraction_rx,
-                                &mut ops_state.extraction_child,
-                                &mut ops_state.extraction_minimized,
-                                &mut ops_state.extraction_started,
-                                &mut self.status_info,
-                            );
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::ExtractTo(file) => {
-                            // TODO: Show folder picker dialog then extract
-                            self.status_info.message = format!("Extract to... for '{}' - not yet implemented", file);
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::CopyPath(file) => {
-                            // Copy file path to clipboard
-                            let state = self.shared_state.app_state.lock();
-                            let full_path = if state.signals.navigation.get().current_path.is_empty() {
-                                file.clone()
-                            } else {
-                                format!("{}/{}", state.signals.navigation.get().current_path, file)
+                        // Handle actions via ActionContext
+                        {
+                            let mut action_ctx = crate::features::archive_browser::ActionContext {
+                                shared: &shared_state,
+                                browser_state: self.archive_browser.state_mut(),
+                                archive_ops_state: self.archive_operations.state_mut(),
+                                status_info: &mut self.status_info,
+                                password_dialog: &mut self.password_feature.password_dialog,
+                                edit_dialog: &mut self.edit_dialog,
+                                organization_feature: &mut self.organization_feature,
+                                page_navigator: &mut self.page_navigator,
+                                egui_ctx: ctx,
                             };
-                            drop(state);
-                            ctx.copy_text(full_path.clone());
-                            self.status_info.message = format!("Copied path: {}", full_path);
-                        }
-                        crate::features::archive_browser::ArchiveBrowserAction::ShowProperties(file) => {
-                            // Enable properties panel and select only this file
-                            self.archive_browser.state_mut().toolbar_state.show_properties_panel = true;
-                            for entry in &mut self.archive_browser.state_mut().entries {
-                                entry.selected = entry.name == file;
+                            if action_ctx.handle_navigation(&action)
+                                || action_ctx.handle_simple(&action)
+                                || action_ctx.handle_complex(&action)
+                            {
+                                // Action handled
                             }
                         }
-                        crate::features::archive_browser::ArchiveBrowserAction::None => {}
                     }
-                }
-                AppPage::Settings(page) => {
-                    let breadcrumb = crate::core::navigation::PageNavigator::get_breadcrumb(
-                        &crate::core::AppPage::Settings(page.clone())
-                    );
-                    // Get search_text from signal
-                    let search_text = {
-                        let state = self.shared_state.app_state.lock();
-                        state.signals.search_text.get()
-                    };
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        if let Some(target) = self.settings_feature.render(
-                            ui,
-                            &self.shared_state,
-                            &page,
-                            breadcrumb,
-                            Some(&mut self.organization_feature.rules_page),
-                            &search_text,
-                        ) {
-                            self.page_navigator.navigate_to(target);
-                        }
-                    });
-                }
-                AppPage::Plugins => {
-                    self.plugins_feature.render(
-                        ctx,
-                        &self.shared_state,
-                    );
-                }
-                AppPage::Organize => {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                         // Extract DB (generic way, minimal lock)
-                         let db_opt = {
-                             let state = self.shared_state.app_state.lock();
-                             if let Some(dbs) = &state.dbs {
-                                 Some(dbs.config.clone()) // Clone ConfigDb (cheap Arc)
-                             } else {
-                                 None
-                             }
-                         };
-
-                         if let Some(cfg_db) = db_opt {
-                             self.organization_feature.rules_page.render(ui, &self.shared_state.theme, &cfg_db);
-                         } else {
-                             ui.label("Database not available.");
-                         }
-                    });
-                }
-                AppPage::OrganizeArchive(_name) => {
-                    let shared_state = self.shared_state.clone();
-                    let action = self.organization_feature.render(ctx, &shared_state);
-
-                    match action {
-                        crate::features::organization::OrganizationAction::Apply => {
-                            if let Some(page) = &self.organization_feature.organizer_page {
-                                if let Some(plan) = &page.panel.session.preview_plan {
-                                    let shared_state = self.shared_state.clone();
-                                    
-                                    let archive_path = if let Some(state) = self.shared_state.app_state.try_lock() {
-                                        state.signals.archive_path.get()
-                                    } else {
-                                        None
-                                    };
-
-                                    if let Some(path) = archive_path {
-                                        // Build destination path by changing extension to .7z
-                                        let dest_path = path.with_extension("7z");
-                                        
-                                        // Run asynchronously via ArchiveOperations
-                                        crate::features::archive_operations::run_organization_plan(
-                                            shared_state.clone(),
-                                            plan.clone(),
-                                            path,
-                                            dest_path,
-                                        );
-                                        self.status_info.message = "Organization started...".to_string();
-                                    }
+                    AppPage::Settings(page) => {
+                        let breadcrumb = crate::core::navigation::PageNavigator::get_breadcrumb(
+                            &crate::core::AppPage::Settings(page.clone()),
+                        );
+                        // Get search_text from signal
+                        let search_text = {
+                            let state = self.shared_state.app_state.lock();
+                            state.signals.search_text.get()
+                        };
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            if let Some(target) = self.settings_feature.render(
+                                ui,
+                                &self.shared_state,
+                                &page,
+                                breadcrumb,
+                                Some(&mut self.organization_feature.rules_page),
+                                &search_text,
+                            ) {
+                                self.page_navigator.navigate_to(target);
+                            }
+                        });
+                    }
+                    AppPage::Plugins => {
+                        self.plugins_feature.render(ctx, &self.shared_state);
+                    }
+                    AppPage::Organize => {
+                        egui::CentralPanel::default().show(ctx, |ui| {
+                            // Extract DB (generic way, minimal lock)
+                            let db_opt = {
+                                let state = self.shared_state.app_state.lock();
+                                if let Some(dbs) = &state.dbs {
+                                    Some(dbs.config.clone()) // Clone ConfigDb (cheap Arc)
+                                } else {
+                                    None
                                 }
+                            };
+
+                            if let Some(cfg_db) = db_opt {
+                                self.organization_feature.rules_page.render(
+                                    ui,
+                                    &self.shared_state.theme,
+                                    &cfg_db,
+                                );
+                            } else {
+                                ui.label("Database not available.");
                             }
-                            self.organization_feature.organizer_page = None;
-                            self.page_navigator.navigate_back();
-                        }
-                        crate::features::organization::OrganizationAction::ManageRules => {
-                            self.page_navigator.navigate_to(crate::core::AppPage::Settings(crate::core::SettingsPage::OrganizationRules));
-                        }
-                        crate::features::organization::OrganizationAction::None => {}
+                        });
+                    }
+                    AppPage::OrganizeArchive(_name) => {
+                        let shared_state = self.shared_state.clone();
+                        let action = self.organization_feature.render(ctx, &shared_state);
+
+                        let mut action_ctx =
+                            crate::features::organization::actions::ActionContext {
+                                shared: &shared_state,
+                                organization_feature: &mut self.organization_feature,
+                                page_navigator: &mut self.page_navigator,
+                                status_info: &mut self.status_info,
+                            };
+                        action_ctx.handle(&action);
                     }
                 }
-            }
-        });
+            });
         } // Close else block for plugin page check
-        
+
         // Render toast notifications (always on top)
         self.shared_state.toaster.lock().show(ctx);
-        
+
         // Render plugin dialog if open
         self.render_plugin_dialog(ctx);
     }
@@ -834,251 +686,12 @@ impl eframe::App for ArclainApp {
 impl ArclainApp {
     /// Render an open plugin dialog as a modal overlay
     fn render_plugin_dialog(&mut self, ctx: &egui::Context) {
-        // Check if a dialog is open and get cached layout
-        let (dialog_info, cached_layout) = {
-            let dialog_state = self.shared_state.plugin_dialog_state.lock();
-            let dialog_info = dialog_state.open_dialog.clone();
-            let cached = dialog_state.cached_dialog_layout.clone();
-            (dialog_info, cached)
-        };
-        
-        if let Some((plugin_id, dialog_id)) = dialog_info {
-            // Use cached layout if available, otherwise fetch from plugin
-            let dialog_elements = if let Some(layout) = cached_layout {
-                layout
-            } else {
-                // Fetch layout from plugin (only on first render or after invalidation)
-                let layout = {
-                    if let Some(pm_arc) = &self.shared_state.services.plugin_manager {
-                        let pm = pm_arc.lock();
-                        pm.with_plugin_instance(&plugin_id, |instance| {
-                            instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()))
-                                .unwrap_or_default()
-                        })
-                        .unwrap_or_default()
-                    } else {
-                        arclain_plugins::types::PluginLayout::default()
-                    }
-                };
-                // Store in cache for next frame
-                self.shared_state.plugin_dialog_state.lock().cached_dialog_layout = Some(layout.clone());
-                layout
-            };
-            
-            // Render modal dialog
-            let mut open = true;
-            egui::Window::new(format!("Plugin Dialog - {}", dialog_id))
-                .collapsible(false)
-                .resizable(true)
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-                .fixed_size([400.0, 300.0])
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    // Set up callback for dialog events
-                    let pid = plugin_id.clone();
-                    let dialog_state_arc = self.shared_state.plugin_dialog_state.clone();
-                    let toaster_arc = self.shared_state.toaster.clone();
-                    let plugin_manager_arc = self.shared_state.services.plugin_manager.clone();
-                    
-                    let mut callback: Box<dyn FnMut(&str, Option<String>)> = 
-                        Box::new(move |element_id: &str, value: Option<String>| {
-                            // Check for close dialog signal
-                            if element_id == "__dialog_close" {
-                                dialog_state_arc.lock().close_dialog();
-                                return;
-                            }
-                            
-                            // Normal event - use plugin_manager from services
-                            if let Some(pm_arc) = &plugin_manager_arc {
-                                let pm = pm_arc.lock();
-                                if let Some(actions) = pm
-                                    .with_plugin_instance(&pid, |instance| {
-                                        instance.send_ui_event(element_id, value).ok()
-                                    })
-                                    .flatten()
-                                {
-                                    drop(pm); // Release plugin manager lock before locking toaster
-                                    let mut toaster = toaster_arc.lock();
-                                    let mut ds = dialog_state_arc.lock();
-                                    // Invalidate layout cache so next frame fetches fresh layout
-                                    ds.invalidate_dialog_layout();
-                                    for action in actions {
-                                        crate::features::plugins::action_handler::process_plugin_actions(
-                                            vec![action],
-                                            &pid,
-                                            &mut ds,
-                                            &mut toaster,
-                                            None, // No refresh requests for dialog callbacks
-                                        );
-                                    }
-                                }
-                            }
-                        });
-                    
-                    let flat_elements = dialog_elements.flatten();
-                    crate::features::plugins::plugin_ui::render_ui_elements(
-                        ui,
-                        &flat_elements,
-                        &mut callback,
-                        &self.shared_state.theme.colors,
-                        None,
-                        Some(&self.shared_state),
-                        Some(&plugin_id),
-                    );
-                });
-            
-            // If window was closed via X button
-            if !open {
-                self.shared_state.plugin_dialog_state.lock().close_dialog();
-            }
-        }
+        crate::features::plugins::render_dialog(ctx, &self.shared_state);
     }
-    
+
     /// Render an open plugin page (replaces main content area)
     /// Returns true if a page is being rendered (caller should skip normal content)
     fn render_plugin_page(&mut self, ctx: &egui::Context) -> bool {
-        // Check if a page is open and get cached layout
-        let (page_info, cached_layout) = {
-            let dialog_state = self.shared_state.plugin_dialog_state.lock();
-            let page_info = dialog_state.current_page().map(|(p, d)| (p.to_string(), d.to_string()));
-            let cached = dialog_state.cached_page_layout.clone();
-            (page_info, cached)
-        };
-        
-        let Some((plugin_id, page_id)) = page_info else {
-            return false;
-        };
-        
-        // Use cached layout if available, otherwise fetch from plugin
-        let page_layout = if let Some(layout) = cached_layout {
-            layout
-        } else {
-            // Fetch layout from plugin (only on first render or after invalidation)
-            let layout = {
-                if let Some(pm_arc) = &self.shared_state.services.plugin_manager {
-                    let pm = pm_arc.lock();
-                    pm.with_plugin_instance(&plugin_id, |instance| {
-                        instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()))
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_default()
-                } else {
-                    arclain_plugins::types::PluginLayout::default()
-                }
-            };
-            // Store in cache for next frame
-            self.shared_state.plugin_dialog_state.lock().cached_page_layout = Some(layout.clone());
-            layout
-        };
-        
-        // Render as full page content
-        egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(self.shared_state.theme.colors.surface))
-            .show(ctx, |ui| {
-                // Page title (no back button - use tab navigation)
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(&page_id).strong());
-                });
-                ui.separator();
-                
-                // Set up callback for page events
-                let pid = plugin_id.clone();
-                let dialog_state_arc = self.shared_state.plugin_dialog_state.clone();
-                let toaster_arc = self.shared_state.toaster.clone();
-                let plugin_manager_arc = self.shared_state.services.plugin_manager.clone();
-                
-                let mut callback: Box<dyn FnMut(&str, Option<String>)> = 
-                    Box::new(move |element_id: &str, value: Option<String>| {
-                        // Check for close page signal
-                        if element_id == "__page_close" {
-                            dialog_state_arc.lock().close_page();
-                            return;
-                        }
-                        
-                        // Check for open page signal (nested navigation)
-                        if element_id.starts_with("__page_open:") {
-                            let new_page_id = element_id.trim_start_matches("__page_open:").to_string();
-                            dialog_state_arc.lock().open_page(&pid, &new_page_id);
-                            return;
-                        }
-                        
-                        // Normal event - use plugin_manager from services
-                        if let Some(pm_arc) = &plugin_manager_arc {
-                            let pm = pm_arc.lock();
-                            if let Some(actions) = pm
-                                .with_plugin_instance(&pid, |instance| {
-                                    instance.send_ui_event(element_id, value).ok()
-                                })
-                                .flatten()
-                            {
-                                drop(pm);
-                                let mut toaster = toaster_arc.lock();
-                                let mut ds = dialog_state_arc.lock();
-                                // Invalidate layout cache so next frame fetches fresh layout
-                                ds.invalidate_page_layout();
-                                for action in actions {
-                                    crate::features::plugins::action_handler::process_plugin_actions(
-                                        vec![action],
-                                        &pid,
-                                        &mut ds,
-                                        &mut toaster,
-                                        None, // No refresh requests for page callbacks
-                                    );
-                                }
-                            }
-                        }
-                    });
-                
-                use arclain_plugins::types::PluginLayout;
-                let content_cache = self.shared_state.services.content_cache.clone();
-                match page_layout {
-                    PluginLayout::Single { elements } => {
-                        crate::features::plugins::plugin_ui::render_ui_elements(
-                            ui,
-                            &elements,
-                            &mut callback,
-                            &self.shared_state.theme.colors,
-                            content_cache.as_ref(),
-                            Some(&self.shared_state),
-                            Some(&plugin_id),
-                        );
-                    }
-                    PluginLayout::Split { sidebar, content, sidebar_width } => {
-                       egui::SidePanel::left(format!("plugin_split_sidebar_{}", page_id))
-                            .resizable(true)
-                            .default_width(sidebar_width.unwrap_or(250.0))
-                            .show_inside(ui, |ui| {
-                                egui::ScrollArea::vertical().show(ui, |ui| {
-                                    crate::features::plugins::plugin_ui::render_ui_elements(
-                                        ui,
-                                        &sidebar,
-                                        &mut callback,
-                                        &self.shared_state.theme.colors,
-                                        content_cache.as_ref(),
-                                        Some(&self.shared_state),
-                                        Some(&plugin_id),
-                                    );
-                                });
-                            });
-                        
-                        egui::CentralPanel::default().show_inside(ui, |ui| {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                crate::features::plugins::plugin_ui::render_ui_elements(
-                                    ui,
-                                    &content,
-                                    &mut callback,
-                                    &self.shared_state.theme.colors,
-                                    content_cache.as_ref(),
-                                    Some(&self.shared_state),
-                                    Some(&plugin_id),
-                                );
-                            });
-                        });
-                    }
-                }
-            });
-        
-        true
+        crate::features::plugins::render_page(ctx, &self.shared_state)
     }
 }
-

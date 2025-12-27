@@ -1,5 +1,6 @@
 // Password management feature
 
+pub mod actions;
 pub mod dialogs;
 pub mod operations;
 pub mod rules_page;
