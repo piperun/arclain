@@ -67,11 +67,11 @@ pub fn process_metadata_signal(
                     meta.product_id
                 );
 
-                // Update global state
+                // Update global state via signals
                 {
-                    let mut state = shared_state.app_state.lock();
-                    state.current_game_metadata = Some(meta.clone());
-                    state.plugin_metadata = None;
+                    let state = shared_state.app_state.lock();
+                    state.signals.game_metadata.set(Some(meta.clone()));
+                    state.signals.metadata.set(None);
                 }
 
                 // Update active organizer panel

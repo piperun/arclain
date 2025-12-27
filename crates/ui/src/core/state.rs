@@ -38,14 +38,10 @@ pub struct AppState {
     // Plugin system - event sender stays for dispatch, manager moved to Services
     /// Event sender for non-blocking plugin dispatch (no mutex lock needed)
     pub plugin_event_sender: Option<std::sync::mpsc::Sender<arclain_plugins::PluginEvent>>,
-    pub plugin_metadata: Option<serde_json::Value>,
     /// Pending plugin event to dispatch after UI is ready.
     /// This is set when an archive opens and cleared after the UI renders
     /// and dispatches the event.
     pub pending_plugin_event: Option<arclain_plugins::PluginEvent>,
-    // Game metadata for archive organization (from plugins like DLSite)
-    pub current_game_metadata: Option<arclain_core::features::organization::GameMetadata>,
-    pub archive_info: crate::core::operations::archive::ArchiveInfo,
     /// Reactive signals for async state updates
     pub signals: AppSignals,
 }
@@ -116,10 +112,7 @@ impl AppState {
             db_paths: Some(db_paths.clone()),
             dbs: None,
             plugin_event_sender: None,
-            plugin_metadata: None,
             pending_plugin_event: None,
-            current_game_metadata: None,
-            archive_info: crate::core::operations::archive::ArchiveInfo::default(),
             signals: AppSignals::new(),
         };
 
@@ -589,9 +582,15 @@ impl AppState {
         // IMPORTANT: Set archive_path signal BEFORE password detection so archive name matching works
         let archive_path = Some(path.to_path_buf());
         self.signals.archive_path.set(archive_path.clone());
-        self.archive_info.archive_encrypted = info.encrypted;
-        self.archive_info.headers_encrypted = info.headers_encrypted;
-        self.archive_info.encryption_method = info.encryption_method.clone();
+
+        // Update archive_info signal directly (no AppState copy)
+        {
+            let mut ai = self.signals.archive_info.get();
+            ai.archive_encrypted = info.encrypted;
+            ai.headers_encrypted = info.headers_encrypted;
+            ai.encryption_method = info.encryption_method.clone();
+            self.signals.archive_info.set(ai);
+        }
         crate::core::operations::navigation_signals::reset_navigation(&self.signals);
 
         // Update reactive signals for async UI updates
@@ -629,7 +628,7 @@ impl AppState {
 
         // Store OnArchiveOpen event for deferred dispatch (after UI renders)
         // This prevents plugins from fetching metadata before the UI is ready
-        self.plugin_metadata = None; // Reset metadata
+        self.signals.metadata.set(None); // Reset metadata via signal
         if self.plugin_event_sender.is_some() {
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
@@ -669,9 +668,15 @@ impl AppState {
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         let archive_path = Some(path.to_path_buf());
         self.signals.archive_path.set(archive_path);
-        self.archive_info.archive_encrypted = info.encrypted;
-        self.archive_info.headers_encrypted = info.headers_encrypted;
-        self.archive_info.encryption_method = info.encryption_method.clone();
+
+        // Update archive_info signal directly (no AppState copy)
+        {
+            let mut ai = self.signals.archive_info.get();
+            ai.archive_encrypted = info.encrypted;
+            ai.headers_encrypted = info.headers_encrypted;
+            ai.encryption_method = info.encryption_method.clone();
+            self.signals.archive_info.set(ai);
+        }
         crate::core::operations::navigation_signals::reset_navigation(&self.signals);
         self.signals
             .current_password

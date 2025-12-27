@@ -222,7 +222,7 @@ pub fn load_archive_data(
                 .iter()
                 .filter(|e| {
                     !e.is_dir
-                        && (e.encrypted || st.archive_info.headers_encrypted)
+                        && (e.encrypted || st.signals.archive_info.get().headers_encrypted)
                         && e.crc32.is_none()
                 })
                 .map(|e| e.path.clone())
@@ -257,22 +257,19 @@ pub fn load_archive_data(
 
     // Build UI rows from potentially updated entries
     {
-        let mut st = state.lock();
+        let st = state.lock();
         *entries = st
             .get_current_entries()
             .iter()
             .map(convert_to_file_entry)
             .collect();
-        archive_info.archive_encrypted = st.archive_info.archive_encrypted; // Use archive_info directly
-        archive_info.headers_encrypted = st.archive_info.headers_encrypted;
-        archive_info.encryption_method = st.archive_info.encryption_method.clone();
 
-        // Update state's archive info
-        st.archive_info.archive_encrypted = archive_info.archive_encrypted;
-        st.archive_info.headers_encrypted = archive_info.headers_encrypted;
-        st.archive_info.encryption_method = archive_info.encryption_method.clone();
-
-        // Note: we don't need to sync entries to signal here as we did it above if changed
+        // Read encryption info from signal
+        let current_ai = st.signals.archive_info.get();
+        archive_info.archive_encrypted = current_ai.archive_encrypted;
+        archive_info.headers_encrypted = current_ai.headers_encrypted;
+        archive_info.encryption_method = current_ai.encryption_method.clone();
+        // Note: archive_info will be synced to signal at the end of this function
     }
 
     // Use the latest state entries for totals/CRC aggregation
@@ -341,18 +338,18 @@ pub fn load_archive_data(
     status_info.compressed_size = format_size(archive_info.compressed_size);
     status_info.archive_format = archive_info.archive_format.clone();
 
-    // Sync back to state and signal
+    // Sync to signal only (archive_info removed from AppState)
     {
-        let mut st = state.lock();
-        st.archive_info.total_size = archive_info.total_size;
-        st.archive_info.compressed_size = archive_info.compressed_size;
-        st.archive_info.file_count = archive_info.file_count;
-        st.archive_info.archive_format = archive_info.archive_format.clone();
-        st.archive_info.total_crc32 = archive_info.total_crc32.clone();
-        st.archive_info.plugin_metadata = archive_info.plugin_metadata.clone();
-        st.archive_info.archive_loaded = true;
-        // Sync to reactive signal
-        st.signals.archive_info.set(st.archive_info.clone());
+        let st = state.lock();
+        let mut ai = st.signals.archive_info.get();
+        ai.total_size = archive_info.total_size;
+        ai.compressed_size = archive_info.compressed_size;
+        ai.file_count = archive_info.file_count;
+        ai.archive_format = archive_info.archive_format.clone();
+        ai.total_crc32 = archive_info.total_crc32.clone();
+        ai.plugin_metadata = archive_info.plugin_metadata.clone();
+        ai.archive_loaded = true;
+        st.signals.archive_info.set(ai);
     }
 }
 
