@@ -1,5 +1,6 @@
 // Organization feature module
 
+pub mod actions;
 pub mod export_dialog;
 pub mod operations;
 pub mod organize_panel;

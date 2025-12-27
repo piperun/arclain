@@ -578,7 +578,7 @@ pub fn render(
         let mut dialog_state = shared.plugin_dialog_state.lock();
 
         for (plugin_id, plugin_action) in actions_list.iter() {
-            crate::features::plugins::action_handler::process_plugin_actions(
+            crate::features::plugins::actions::process_plugin_actions(
                 vec![plugin_action.clone()],
                 plugin_id,
                 &mut dialog_state,
