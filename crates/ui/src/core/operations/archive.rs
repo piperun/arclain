@@ -358,12 +358,11 @@ pub fn load_archive_data(
 
 /// Dispatch metadata display event to plugins
 fn dispatch_metadata_event(
-    state: &Arc<Mutex<AppState>>,
+    _state: &Arc<Mutex<AppState>>,
     archive_path: &PathBuf,
 ) -> Option<serde_json::Value> {
-    let st = state.lock();
-    let _plugin_manager = st.plugin_manager.as_ref()?;
-    drop(st);
+    // Note: This is a placeholder. The actual implementation would use
+    // shared.services.plugin_manager to dispatch the event.
 
     let _event = arclain_plugins::PluginEvent::OnMetadataDisplay {
         archive: archive_path.to_string_lossy().to_string(),
