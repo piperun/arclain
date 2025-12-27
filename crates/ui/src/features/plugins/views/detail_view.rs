@@ -41,14 +41,15 @@ pub fn render(
     };
 
     // Fetch whitelist entries for this plugin
-    let whitelist_entries = {
-        let app = app_state.lock();
-        let whitelist = app.domain_whitelist.read();
+    let whitelist_entries = if let Some(shared) = shared {
+        let whitelist = shared.services.domain_whitelist.read();
         whitelist
             .get_all_entries()
             .into_iter()
             .filter(|e| e.plugin_id == selected_id)
             .collect::<Vec<_>>()
+    } else {
+        Vec::new()
     };
 
     SettingsForm::new().show(ui, theme, |ui| {
@@ -178,7 +179,7 @@ pub fn render(
             );
         } else {
             for entry in &whitelist_entries {
-                if render_domain_row(ui, theme, entry, app_state) {
+                if render_domain_row(ui, theme, entry, app_state, shared) {
                     needs_refresh = true;
                 }
                 ui.add_space(8.0);
@@ -222,6 +223,7 @@ fn render_domain_row(
     theme: &AppTheme,
     entry: &arclain_http::features::whitelist::WhitelistEntry,
     app_state: &Arc<Mutex<crate::core::AppState>>,
+    shared: Option<&SharedState>,
 ) -> bool {
     let mut changed = false;
     let domain = &entry.domain;
@@ -267,31 +269,34 @@ fn render_domain_row(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut approved_state = is_approved;
             if ui.add(ToggleSwitch::new(&mut approved_state)).changed() {
-                let app = app_state.lock();
+                // Update in-memory whitelist via shared.services
+                if let Some(shared) = shared {
+                    if approved_state {
+                        shared
+                            .services
+                            .domain_whitelist
+                            .write()
+                            .approve(&entry.plugin_id, domain);
+                    } else {
+                        shared
+                            .services
+                            .domain_whitelist
+                            .write()
+                            .revoke(&entry.plugin_id, domain);
+                    }
+                }
 
-                // Update in-memory whitelist
-                if approved_state {
-                    app.domain_whitelist
-                        .write()
-                        .approve(&entry.plugin_id, domain);
-                    // Update DB
-                    if let Some(dbs) = &app.dbs {
-                        let _ = dbs.config.with_connection(|conn| {
+                // Update DB
+                let app = app_state.lock();
+                if let Some(dbs) = &app.dbs {
+                    let _ = dbs.config.with_connection(|conn| {
+                        if approved_state {
                             arclain_db::approve_domain(conn, &entry.plugin_id, domain)?;
-                            Ok::<_, anyhow::Error>(())
-                        });
-                    }
-                } else {
-                    app.domain_whitelist
-                        .write()
-                        .revoke(&entry.plugin_id, domain);
-                    // Update DB
-                    if let Some(dbs) = &app.dbs {
-                        let _ = dbs.config.with_connection(|conn| {
+                        } else {
                             arclain_db::revoke_domain(conn, &entry.plugin_id, domain)?;
-                            Ok::<_, anyhow::Error>(())
-                        });
-                    }
+                        }
+                        Ok::<_, anyhow::Error>(())
+                    });
                 }
                 changed = true;
             }
@@ -317,10 +322,8 @@ fn render_plugin_ui(
         } else {
             return;
         }
-    } else if let Some(mgr_mutex) = app_state.lock().plugin_manager.clone() {
-        // Fallback for cases where shared isn't passed
-        mgr_mutex
     } else {
+        // No shared state means no plugin_manager available
         return;
     };
 

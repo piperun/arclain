@@ -35,8 +35,7 @@ pub struct AppState {
     // DB-backed settings and secrets (optional; falls back to JSON if unavailable)
     pub db_paths: Option<DbPaths>,
     pub dbs: Option<ConfigDbs>,
-    // Plugin system
-    pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
+    // Plugin system - event sender stays for dispatch, manager moved to Services
     /// Event sender for non-blocking plugin dispatch (no mutex lock needed)
     pub plugin_event_sender: Option<std::sync::mpsc::Sender<arclain_plugins::PluginEvent>>,
     pub plugin_metadata: Option<serde_json::Value>,
@@ -47,20 +46,6 @@ pub struct AppState {
     // Game metadata for archive organization (from plugins like DLSite)
     pub current_game_metadata: Option<arclain_core::features::organization::GameMetadata>,
     pub archive_info: crate::core::operations::archive::ArchiveInfo,
-    // Checksum verification service
-    pub checksum_service: Option<Arc<ChecksumService>>,
-    // Content cache for plugin images
-    pub content_cache: Option<Arc<ContentCache>>,
-
-    // Toolbar config items (loaded from DB)
-
-    // Async Runtime and HTTP
-    // Async Runtime is now in Services
-    // pub tokio_runtime: tokio::runtime::Runtime,
-    pub async_http_client: Option<Arc<AsyncHttpClient>>,
-    pub resource_manager: Option<Arc<ResourceManager>>,
-    #[allow(dead_code)] // Used in future UI settings
-    pub domain_whitelist: Arc<RwLock<DomainWhitelist>>,
     /// Reactive signals for async state updates
     pub signals: AppSignals,
 }
@@ -89,6 +74,12 @@ impl AppState {
             domain_whitelist.clone(),
             None,
         ));
+
+        // Local variables for services (will be moved to Services struct at the end)
+        let mut plugin_manager: Option<Arc<Mutex<PluginManager>>> = None;
+        let mut checksum_service: Option<Arc<ChecksumService>> = None;
+        let mut content_cache: Option<Arc<ContentCache>> = None;
+        let mut resource_manager: Option<Arc<ResourceManager>> = None;
 
         // Load user config from database
         let db_paths = DbPaths::defaults("arclain")?;
@@ -124,19 +115,11 @@ impl AppState {
             encrypted_crc_policy: "on_open".to_string(),
             db_paths: Some(db_paths.clone()),
             dbs: None,
-            plugin_manager: None,
             plugin_event_sender: None,
             plugin_metadata: None,
             pending_plugin_event: None,
             current_game_metadata: None,
             archive_info: crate::core::operations::archive::ArchiveInfo::default(),
-            checksum_service: None,
-            content_cache: None,
-
-            // tokio_runtime: runtime, // Moved to Services
-            async_http_client: Some(async_http_client.clone()), // Clone Arc
-            resource_manager: None,
-            domain_whitelist: domain_whitelist.clone(), // Clone Arc
             signals: AppSignals::new(),
         };
 
@@ -254,17 +237,14 @@ impl AppState {
                                     password,
                                 };
 
-                                if let Some(client) = &me.async_http_client {
-                                    client.update_config(Some(config));
-                                }
+                                // Use local async_http_client Arc directly (not Option)
+                                async_http_client.update_config(Some(config));
                             }
 
                             // Initialize Plugin Proxy Map
-                            if let Some(client) = &me.async_http_client {
-                                let map = me.user_config.get_plugin_proxy_settings();
-                                tracing::info!("[Startup] Plugin proxy map: {:?}", map);
-                                client.update_plugin_proxy_map(map);
-                            }
+                            let map = me.user_config.get_plugin_proxy_settings();
+                            tracing::info!("[Startup] Plugin proxy map: {:?}", map);
+                            async_http_client.update_plugin_proxy_map(map);
 
                             // Load UI items for config-driven rendering
                             if let Ok(dbs) = me.dbs.as_ref().ok_or(anyhow::anyhow!("No DBs")) {
@@ -304,7 +284,7 @@ impl AppState {
                                             warn!("Failed to recover checksum operations: {}", e);
                                         }
                                     }
-                                    me.checksum_service = Some(Arc::new(service));
+                                    checksum_service = Some(Arc::new(service));
                                     info!("Checksum verification service initialized");
                                 }
                                 Err(e) => {
@@ -331,7 +311,7 @@ impl AppState {
                                     match ContentCache::new(cache_base_dir.clone(), cache_db) {
                                         Ok(cache) => {
                                             let cache_arc = Arc::new(cache);
-                                            me.content_cache = Some(cache_arc.clone());
+                                            content_cache = Some(cache_arc.clone());
                                             info!("Content cache initialized");
 
                                             // Initialize Resource Manager
@@ -341,10 +321,10 @@ impl AppState {
                                                 ),
                                                 ..Default::default()
                                             };
-                                            let resource_manager = Arc::new(ResourceManager::new(
+                                            let res_mgr = Arc::new(ResourceManager::new(
                                                 cache_arc, res_config,
                                             ));
-                                            me.resource_manager = Some(resource_manager);
+                                            resource_manager = Some(res_mgr);
                                             info!("Resource manager initialized");
                                         }
                                         Err(e) => {
@@ -394,15 +374,14 @@ impl AppState {
                     // Also set cache_db for new ProductMetadata table
                     manager.set_cache_db(Arc::new(dbs.metadata.db().clone()));
                 }
-                if let Some(ref cache) = me.content_cache {
+                if let Some(ref cache) = content_cache {
                     manager.set_content_cache(cache.clone());
                 }
-                if let Some(ref ref_manager) = me.resource_manager {
+                if let Some(ref ref_manager) = resource_manager {
                     manager.set_resource_manager(ref_manager.clone());
                 }
-                if let Some(ref client) = me.async_http_client {
-                    manager.set_async_http_client(client.clone());
-                }
+                // async_http_client is always available (not Option in Services)
+                manager.set_async_http_client(async_http_client.clone());
 
                 // Inject reactive signal for metadata updates
                 manager.set_metadata_signal(me.signals.metadata.clone());
@@ -411,10 +390,10 @@ impl AppState {
                 let event_sender = manager.get_event_sender();
                 me.plugin_event_sender = Some(event_sender);
 
-                me.plugin_manager = Some(Arc::new(Mutex::new(manager)));
+                plugin_manager = Some(Arc::new(Mutex::new(manager)));
 
                 // Sync plugin UI items to info_panel_items
-                if let Some(ref manager_arc) = me.plugin_manager {
+                if let Some(ref manager_arc) = plugin_manager {
                     let manager = manager_arc.lock();
                     let mut info_panel_items = me.signals.info_panel_items.get();
                     let mut toolbar_items = me.signals.toolbar_items.get();
@@ -547,11 +526,11 @@ impl AppState {
             tokio_runtime: runtime,
             async_http_client,
             domain_whitelist,
-            plugin_manager: me.plugin_manager.clone(),
+            plugin_manager,
             plugin_event_sender: me.plugin_event_sender.clone(),
-            checksum_service: me.checksum_service.clone(),
-            content_cache: me.content_cache.clone(),
-            resource_manager: me.resource_manager.clone(),
+            checksum_service,
+            content_cache,
+            resource_manager,
         };
 
         Ok((me, services))
@@ -651,7 +630,7 @@ impl AppState {
         // Store OnArchiveOpen event for deferred dispatch (after UI renders)
         // This prevents plugins from fetching metadata before the UI is ready
         self.plugin_metadata = None; // Reset metadata
-        if self.plugin_manager.is_some() {
+        if self.plugin_event_sender.is_some() {
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
                 path: path.to_string_lossy().to_string(),
@@ -670,7 +649,7 @@ impl AppState {
             );
         }
 
-        if self.plugin_manager.is_none() {
+        if self.plugin_event_sender.is_none() {
             info!(
                 "Archive opened successfully with {} entries",
                 self.signals.entries.get().len()
@@ -705,7 +684,7 @@ impl AppState {
 
         // Store OnArchiveOpen event for deferred dispatch (after UI renders)
         // This prevents plugins from fetching metadata before the UI is ready
-        if self.plugin_manager.is_some() {
+        if self.plugin_event_sender.is_some() {
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
                 path: path.to_string_lossy().to_string(),
@@ -786,6 +765,7 @@ impl AppState {
         key_file_path: Option<String>,
         secrets_db_path: Option<String>,
         encrypted_crc_policy: Option<String>,
+        plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
     ) -> Result<()> {
         // Start from existing paths or defaults
         let mut paths = if let Some(p) = self.db_paths.clone() {
@@ -822,7 +802,7 @@ impl AppState {
             self.db_paths = Some(paths.clone());
 
             // Update plugin manager with new cache
-            if let Some(ref manager_arc) = self.plugin_manager {
+            if let Some(manager_arc) = plugin_manager {
                 manager_arc
                     .lock()
                     .set_metadata_store(Arc::new(dbs.metadata.clone()));
@@ -847,7 +827,11 @@ impl AppState {
         Ok(())
     }
 
-    pub fn move_vault(&mut self, dest_path: &str) -> Result<()> {
+    pub fn move_vault(
+        &mut self,
+        dest_path: &str,
+        plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
+    ) -> Result<()> {
         use std::fs;
         use std::path::PathBuf;
 
@@ -894,7 +878,7 @@ impl AppState {
             let dbs = open_databases(&paths, &key)?;
 
             // Update plugin manager with new cache
-            if let Some(ref manager_arc) = self.plugin_manager {
+            if let Some(manager_arc) = plugin_manager {
                 manager_arc
                     .lock()
                     .set_metadata_store(Arc::new(dbs.metadata.clone()));
@@ -915,7 +899,11 @@ impl AppState {
         Ok(())
     }
 
-    pub fn rekey_vault(&mut self, new_key_file_path: &str) -> Result<()> {
+    pub fn rekey_vault(
+        &mut self,
+        new_key_file_path: &str,
+        plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
+    ) -> Result<()> {
         use std::path::PathBuf;
 
         // Resolve paths
@@ -972,7 +960,7 @@ impl AppState {
         self.db_paths = Some(paths.clone());
 
         // Update plugin manager with new cache
-        if let Some(ref manager_arc) = self.plugin_manager {
+        if let Some(manager_arc) = plugin_manager {
             manager_arc
                 .lock()
                 .set_metadata_store(Arc::new(new_dbs.metadata.clone()));

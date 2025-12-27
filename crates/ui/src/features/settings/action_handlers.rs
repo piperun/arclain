@@ -36,9 +36,12 @@ pub fn handle_action(
             let key_file_str = key_file_path;
             let secrets_db_str = secrets_db_path;
 
-            if let Err(e) =
-                state.apply_preferences(key_file_str, secrets_db_str, encrypted_crc_policy)
-            {
+            if let Err(e) = state.apply_preferences(
+                key_file_str,
+                secrets_db_str,
+                encrypted_crc_policy,
+                shared.services.plugin_manager.as_ref(),
+            ) {
                 *security_state.error.write() = format!("Failed to save settings: {}", e);
             } else {
                 *security_state.info.write() = "Settings saved successfully".to_string();
@@ -58,7 +61,7 @@ pub fn handle_action(
         }
         SettingsAction::MoveVault { dest_path } => {
             let mut state = shared.app_state.lock();
-            if let Err(e) = state.move_vault(&dest_path) {
+            if let Err(e) = state.move_vault(&dest_path, shared.services.plugin_manager.as_ref()) {
                 *security_state.error.write() = format!("Failed to move vault: {}", e);
             } else {
                 *security_state.info.write() = "Vault moved successfully".to_string();
@@ -66,7 +69,9 @@ pub fn handle_action(
         }
         SettingsAction::RekeyVault { new_key_file_path } => {
             let mut state = shared.app_state.lock();
-            if let Err(e) = state.rekey_vault(&new_key_file_path) {
+            if let Err(e) =
+                state.rekey_vault(&new_key_file_path, shared.services.plugin_manager.as_ref())
+            {
                 *security_state.error.write() = format!("Failed to rekey vault: {}", e);
             } else {
                 *security_state.info.write() = "Vault rekeyed successfully".to_string();
