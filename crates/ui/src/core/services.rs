@@ -8,6 +8,7 @@ use arclain_http::AsyncHttpClient;
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
 
+#[allow(dead_code)] // Some fields are stored for future use in feature development
 pub struct Services {
     pub tokio_runtime: tokio::runtime::Runtime,
     pub async_http_client: Arc<AsyncHttpClient>,
@@ -22,6 +23,7 @@ pub struct Services {
 }
 
 impl Services {
+    #[allow(dead_code)] // Constructor kept for standalone testing/future use
     pub fn new(runtime: tokio::runtime::Runtime) -> Self {
         let domain_whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
 
