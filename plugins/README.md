@@ -1,6 +1,6 @@
-# Archust WASM Plugins
+# Arclain WASM Plugins
 
-This directory contains WASM plugins that extend Archust's functionality.
+This directory contains WASM plugins that extend Arclain's functionality.
 
 ## Plugin Structure
 
