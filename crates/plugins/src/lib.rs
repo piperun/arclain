@@ -16,15 +16,18 @@
 //! ```no_run
 //! use arclain_plugins::{PluginManager, PluginEvent};
 //! use std::path::PathBuf;
+//! use std::collections::HashMap;
 //!
 //! let plugins_dir = PathBuf::from("plugins");
-//! let mut manager = PluginManager::new(plugins_dir).unwrap();
+//! let initial_settings = HashMap::new();
+//! let mut manager = PluginManager::new(plugins_dir, initial_settings).unwrap();
 //! manager.init().unwrap();
 //!
 //! // Dispatch an event to all plugins
 //! let event = PluginEvent::OnArchiveOpen {
 //!     path: "test.zip".to_string(),
 //!     kind: arclain_core::ArchiveKind::Zip,
+//!     password: None,
 //! };
 //!
 //! let responses = manager.dispatch_event(&event);

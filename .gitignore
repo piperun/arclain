@@ -17,9 +17,9 @@ logs/
 *.log
 *.json
 
-# Plugin build artifacts
-
-plugins/*/wasm32-unknown-unknown/
+plugins/*/target/
+plugins/*/release/
+plugins/*/wasm32-*/
 plugin-sdk/*/target/
 
 _real_data/
@@ -27,3 +27,4 @@ _real_data/
 # Framework spikes
 crates/freya-spike/
 crates/dioxus-spike/
+
