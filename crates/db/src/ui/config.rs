@@ -519,6 +519,143 @@ pub fn seed_defaults_if_empty(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ============================================================================
+// Diesel DSL versions
+// ============================================================================
+
+use diesel::prelude::*;
+
+/// Diesel-compatible UI item row
+#[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
+#[diesel(table_name = crate::diesel_schema::ui_items)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct DbUiItemRow {
+    pub id: String,
+    pub region: String,
+    pub group_id: Option<String>,
+    pub label: String,
+    pub icon: Option<String>,
+    pub visible: bool,
+    pub sort_order: i32,
+    pub action_type: String,
+    pub action_data: Option<String>,
+    pub display_mode: String,
+}
+
+impl DbUiItemRow {
+    pub fn to_ui_item(&self) -> UiItem {
+        UiItem {
+            id: self.id.clone(),
+            region: UiRegion::from_str(&self.region).unwrap_or(UiRegion::Toolbar),
+            group_id: self.group_id.clone(),
+            label: self.label.clone(),
+            icon: self.icon.clone(),
+            visible: self.visible,
+            sort_order: self.sort_order,
+            display_mode: DisplayMode::from_str(&self.display_mode),
+            action_type: ActionType::from_str(&self.action_type),
+            action_data: self.action_data.clone(),
+        }
+    }
+}
+
+/// List items by region using Diesel DSL
+pub fn list_items_by_region_diesel(
+    conn: &mut diesel::SqliteConnection,
+    reg: UiRegion,
+) -> Result<Vec<UiItem>> {
+    use crate::diesel_schema::ui_items::dsl::*;
+
+    let rows = ui_items
+        .filter(region.eq(reg.as_str()))
+        .order(sort_order.asc())
+        .load::<DbUiItemRow>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(rows.iter().map(|r| r.to_ui_item()).collect())
+}
+
+/// Get item by ID using Diesel DSL
+pub fn get_item_diesel(
+    conn: &mut diesel::SqliteConnection,
+    item_id: &str,
+) -> Result<Option<UiItem>> {
+    use crate::diesel_schema::ui_items::dsl::*;
+    use diesel::result::OptionalExtension;
+
+    let row = ui_items
+        .filter(id.eq(item_id))
+        .first::<DbUiItemRow>(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(row.map(|r| r.to_ui_item()))
+}
+
+/// Delete item using Diesel DSL
+pub fn delete_item_diesel(conn: &mut diesel::SqliteConnection, item_id: &str) -> Result<()> {
+    use crate::diesel_schema::ui_items::dsl::*;
+
+    diesel::delete(ui_items.filter(id.eq(item_id)))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Set item visibility using Diesel DSL
+pub fn set_item_visibility_diesel(
+    conn: &mut diesel::SqliteConnection,
+    item_id: &str,
+    is_visible: bool,
+) -> Result<()> {
+    use crate::diesel_schema::ui_items::dsl::*;
+
+    diesel::update(ui_items.filter(id.eq(item_id)))
+        .set(visible.eq(is_visible))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Get display option using Diesel DSL
+pub fn get_display_option_diesel(
+    conn: &mut diesel::SqliteConnection,
+    opt_key: &str,
+) -> Result<Option<String>> {
+    use crate::diesel_schema::ui_display_options::dsl::*;
+    use diesel::result::OptionalExtension;
+
+    let result = ui_display_options
+        .filter(key.eq(opt_key))
+        .select(value)
+        .first::<String>(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(result)
+}
+
+/// Set display option using Diesel DSL
+pub fn set_display_option_diesel(
+    conn: &mut diesel::SqliteConnection,
+    opt_key: &str,
+    opt_value: &str,
+) -> Result<()> {
+    use crate::diesel_schema::ui_display_options::dsl::*;
+
+    diesel::insert_into(ui_display_options)
+        .values((key.eq(opt_key), value.eq(opt_value)))
+        .on_conflict(key)
+        .do_update()
+        .set(value.eq(opt_value))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

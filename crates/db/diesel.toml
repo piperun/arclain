@@ -1,0 +1,7 @@
+# Diesel configuration for arclain_db
+[print_schema]
+file = "src/diesel_schema.rs"
+custom_type_derives = ["diesel::query_builder::QueryId"]
+
+[migrations_directory]
+dir = "migrations"

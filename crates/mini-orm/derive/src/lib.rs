@@ -320,3 +320,137 @@ fn to_snake_case(s: &str) -> String {
     }
     result
 }
+
+// ============================================================================
+// DbTable Derive Macro
+// ============================================================================
+
+/// Derive macro for generating type-safe table and column references.
+///
+/// # Unit Struct (Recommended - works with Select::from)
+/// ```ignore
+/// #[derive(DbTable)]
+/// #[table = "users"]
+/// #[column(id: i32)]
+/// #[column(name: String)]
+/// #[column(email: Option<String>)]
+/// struct Users;
+///
+/// // Use with Select::from:
+/// let query = Select::from(Users)
+///     .filter(Users::id.equal(1));
+/// ```
+///
+/// # Field-Based Struct (alternative - columns from fields)
+/// ```ignore
+/// #[derive(DbTable)]
+/// #[table = "users"]
+/// struct Users {
+///     id: i32,
+///     name: String,
+///     email: Option<String>,
+/// }
+/// // Note: fields are not used, only their types define columns
+/// ```
+#[proc_macro_derive(DbTable, attributes(table, column))]
+pub fn derive_db_table(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    let name = &input.ident;
+    let table_name = get_db_table_name(&input);
+
+    // Check if this is a unit struct or a struct with fields
+    let columns = match &input.data {
+        Data::Struct(data) => match &data.fields {
+            Fields::Unit => {
+                // Unit struct: get columns from #[column] attributes
+                parse_column_attributes(&input.attrs)
+            }
+            Fields::Named(fields) => {
+                // Named fields: generate columns from field names/types
+                fields
+                    .named
+                    .iter()
+                    .map(|f| {
+                        let name = f.ident.as_ref().unwrap().to_string();
+                        (name, f.ty.clone())
+                    })
+                    .collect()
+            }
+            _ => panic!("DbTable only supports unit structs or structs with named fields"),
+        },
+        _ => panic!("DbTable only supports structs"),
+    };
+
+    // Generate column constants
+    let mut column_consts = Vec::new();
+
+    for (col_name, col_type) in &columns {
+        let col_ident = syn::Ident::new(col_name, proc_macro2::Span::call_site());
+        let table_name_str = &table_name;
+        let col_name_str = col_name;
+
+        column_consts.push(quote! {
+            pub const #col_ident: mini_orm::Column<#col_type, #name> =
+                mini_orm::Column::new(
+                    mini_orm::TableId(#table_name_str),
+                    mini_orm::ColumnId(#col_name_str)
+                );
+        });
+    }
+
+    let table_name_lit = &table_name;
+
+    let expanded = quote! {
+        impl mini_orm::Table for #name {
+            const TABLE: mini_orm::TableId = mini_orm::TableId(#table_name_lit);
+        }
+
+        #[allow(non_upper_case_globals)]
+        #[allow(dead_code)]
+        impl #name {
+            #(#column_consts)*
+        }
+    };
+
+    TokenStream::from(expanded)
+}
+
+/// Parse #[column(name: Type)] attributes
+fn parse_column_attributes(attrs: &[syn::Attribute]) -> Vec<(String, syn::Type)> {
+    let mut columns = Vec::new();
+
+    for attr in attrs {
+        if attr.path().is_ident("column") {
+            // Parse #[column(name: Type)]
+            let _ = attr.parse_nested_meta(|meta| {
+                let col_name = meta.path.get_ident().unwrap().to_string();
+
+                // Expect `: Type`
+                let _colon: syn::Token![:] = meta.input.parse()?;
+                let col_type: syn::Type = meta.input.parse()?;
+
+                columns.push((col_name, col_type));
+                Ok(())
+            });
+        }
+    }
+
+    columns
+}
+
+fn get_db_table_name(input: &DeriveInput) -> String {
+    for attr in &input.attrs {
+        if attr.path().is_ident("table") {
+            if let Meta::NameValue(nv) = &attr.meta {
+                if let Expr::Lit(expr_lit) = &nv.value {
+                    if let Lit::Str(s) = &expr_lit.lit {
+                        return s.value();
+                    }
+                }
+            }
+        }
+    }
+    // Default: snake_case of struct name
+    to_snake_case(&input.ident.to_string())
+}

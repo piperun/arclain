@@ -14,6 +14,24 @@ pub struct DbOrganizationRule {
     pub is_system: bool,
 }
 
+/// Diesel-compatible query result for organization rules
+#[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
+#[diesel(table_name = crate::diesel_schema::organization_rules)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct DbOrganizationRuleRow {
+    pub id: i32,
+    pub name: String,
+    pub description: Option<String>,
+    pub category: String,
+    pub priority: i32,
+    pub is_enabled: bool,
+    pub is_system: bool,
+    pub trigger_json: String,
+    pub actions_json: String,
+    pub created_at: String,
+    pub modified_at: Option<String>,
+}
+
 pub fn list_rules(conn: &Connection) -> Result<Vec<DbOrganizationRule>> {
     let mut stmt = conn.prepare(
         "SELECT id, name, description, category, trigger_json, actions_json, priority, is_enabled, is_system 
@@ -114,5 +132,74 @@ pub fn delete_rule(conn: &Connection, id: i64) -> Result<()> {
         "DELETE FROM organization_rules WHERE id = ?1 AND is_system = 0",
         [id],
     )?;
+    Ok(())
+}
+
+// ============================================================================
+// Diesel DSL versions
+// ============================================================================
+
+use diesel::prelude::*;
+
+/// List all rules using Diesel DSL
+pub fn list_rules_diesel(conn: &mut diesel::SqliteConnection) -> Result<Vec<DbOrganizationRule>> {
+    use crate::diesel_schema::organization_rules::dsl::*;
+
+    let results = organization_rules
+        .order((priority.desc(), name.asc()))
+        .load::<DbOrganizationRuleRow>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(results
+        .into_iter()
+        .map(|r| DbOrganizationRule {
+            id: Some(r.id as i64),
+            name: r.name,
+            description: r.description,
+            category: r.category,
+            trigger_json: r.trigger_json,
+            actions_json: r.actions_json,
+            priority: r.priority,
+            is_enabled: r.is_enabled,
+            is_system: r.is_system,
+        })
+        .collect())
+}
+
+/// Get a single rule by ID using Diesel DSL
+pub fn get_rule_diesel(
+    conn: &mut diesel::SqliteConnection,
+    rule_id: i32,
+) -> Result<Option<DbOrganizationRule>> {
+    use crate::diesel_schema::organization_rules::dsl::*;
+    use diesel::result::OptionalExtension;
+
+    let result = organization_rules
+        .filter(id.eq(rule_id))
+        .first::<DbOrganizationRuleRow>(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(result.map(|r| DbOrganizationRule {
+        id: Some(r.id as i64),
+        name: r.name,
+        description: r.description,
+        category: r.category,
+        trigger_json: r.trigger_json,
+        actions_json: r.actions_json,
+        priority: r.priority,
+        is_enabled: r.is_enabled,
+        is_system: r.is_system,
+    }))
+}
+
+/// Delete a rule using Diesel DSL
+pub fn delete_rule_diesel(conn: &mut diesel::SqliteConnection, rule_id: i32) -> Result<()> {
+    use crate::diesel_schema::organization_rules::dsl::*;
+
+    diesel::delete(organization_rules.filter(id.eq(rule_id).and(is_system.eq(false))))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+
     Ok(())
 }

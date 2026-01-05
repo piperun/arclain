@@ -35,14 +35,16 @@ mod sqlite_db;
 #[cfg(test)]
 mod comprehensive_tests;
 
-// Re-export derive macro
-pub use mini_orm_derive::DbConfig;
+// Re-export derive macros
+pub use mini_orm_derive::{DbConfig, DbTable};
 
 // Type-safe API exports
 pub use delete::Delete;
 pub use insert::{Conflict, Insert};
 pub use select::{Join, Select};
-pub use typed::{Column, ColumnId, ColumnRef, Expr, JoinOn, Order, Table, TableId, Value};
+pub use typed::{
+    Column, ColumnId, ColumnRef, Expr, JoinOn, Order, ParamExpr, Table, TableId, Value,
+};
 pub use update::Update;
 
 // Connection management

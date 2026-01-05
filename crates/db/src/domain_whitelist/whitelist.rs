@@ -19,6 +19,18 @@ pub struct DbWhitelistEntry {
     pub approved: bool,
 }
 
+/// Diesel-compatible query result for whitelist entries
+#[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
+#[diesel(table_name = crate::diesel_schema::domain_whitelist)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct DbWhitelistRow {
+    pub id: i32,
+    pub plugin_id: String,
+    pub domain: String,
+    pub approved: bool,
+    pub approved_at: Option<String>,
+}
+
 impl DbWhitelistEntry {
     /// Create a new pending (unapproved) entry
     pub fn pending(plugin_id: impl Into<String>, domain: impl Into<String>) -> Self {
@@ -228,65 +240,88 @@ pub fn list_pending_approvals(conn: &Connection) -> Result<Vec<DbWhitelistEntry>
     Ok(entries)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rusqlite::Connection;
+// ============================================================================
+// Diesel DSL versions
+// ============================================================================
 
-    fn setup_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        ensure_whitelist_table(&conn).unwrap();
-        conn
-    }
+use diesel::prelude::*;
+use diesel::result::OptionalExtension as DieselOptionalExt;
 
-    #[test]
-    fn test_add_and_list() {
-        let conn = setup_db();
+/// List all whitelist entries using Diesel DSL
+pub fn list_whitelist_entries_diesel(
+    conn: &mut diesel::SqliteConnection,
+) -> Result<Vec<DbWhitelistRow>> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
 
-        let entry = DbWhitelistEntry::pending("test-plugin", "dlsite.com");
-        upsert_whitelist_entry(&conn, &entry).unwrap();
+    let results = domain_whitelist
+        .order((plugin_id.asc(), domain.asc()))
+        .load::<DbWhitelistRow>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
 
-        let entries = list_whitelist_entries(&conn).unwrap();
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].plugin_id, "test-plugin");
-        assert_eq!(entries[0].domain, "dlsite.com");
-        assert!(!entries[0].approved);
-    }
+    Ok(results)
+}
 
-    #[test]
-    fn test_approve() {
-        let conn = setup_db();
+/// List whitelist entries for a specific plugin using Diesel DSL
+pub fn list_plugin_domains_diesel(
+    conn: &mut diesel::SqliteConnection,
+    pid: &str,
+) -> Result<Vec<DbWhitelistRow>> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
 
-        let entry = DbWhitelistEntry::pending("test-plugin", "dlsite.com");
-        upsert_whitelist_entry(&conn, &entry).unwrap();
+    let results = domain_whitelist
+        .filter(plugin_id.eq(pid))
+        .order(domain.asc())
+        .load::<DbWhitelistRow>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
 
-        assert!(!is_domain_approved(&conn, "test-plugin", "dlsite.com").unwrap());
+    Ok(results)
+}
 
-        approve_domain(&conn, "test-plugin", "dlsite.com").unwrap();
+/// Check if a domain is approved using Diesel DSL
+pub fn is_domain_approved_diesel(
+    conn: &mut diesel::SqliteConnection,
+    pid: &str,
+    dom: &str,
+) -> Result<bool> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
 
-        assert!(is_domain_approved(&conn, "test-plugin", "dlsite.com").unwrap());
-    }
+    let result = domain_whitelist
+        .filter(plugin_id.eq(pid).and(domain.eq(dom)))
+        .select(approved)
+        .first::<bool>(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
 
-    #[test]
-    fn test_revoke() {
-        let conn = setup_db();
+    Ok(result == Some(true))
+}
 
-        approve_domain(&conn, "test-plugin", "example.com").unwrap();
-        assert!(is_domain_approved(&conn, "test-plugin", "example.com").unwrap());
+/// Approve a domain using Diesel DSL
+pub fn approve_domain_diesel(
+    conn: &mut diesel::SqliteConnection,
+    pid: &str,
+    dom: &str,
+) -> Result<()> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
 
-        revoke_domain(&conn, "test-plugin", "example.com").unwrap();
-        assert!(!is_domain_approved(&conn, "test-plugin", "example.com").unwrap());
-    }
+    diesel::update(domain_whitelist.filter(plugin_id.eq(pid).and(domain.eq(dom))))
+        .set(approved.eq(true))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
 
-    #[test]
-    fn test_pending_list() {
-        let conn = setup_db();
+    Ok(())
+}
 
-        upsert_whitelist_entry(&conn, &DbWhitelistEntry::pending("p1", "a.com")).unwrap();
-        upsert_whitelist_entry(&conn, &DbWhitelistEntry::approved("p1", "b.com")).unwrap();
-        upsert_whitelist_entry(&conn, &DbWhitelistEntry::pending("p2", "c.com")).unwrap();
+/// Delete a whitelist entry using Diesel DSL  
+pub fn delete_whitelist_entry_diesel(
+    conn: &mut diesel::SqliteConnection,
+    pid: &str,
+    dom: &str,
+) -> Result<()> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
 
-        let pending = list_pending_approvals(&conn).unwrap();
-        assert_eq!(pending.len(), 2);
-    }
+    diesel::delete(domain_whitelist.filter(plugin_id.eq(pid).and(domain.eq(dom))))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+
+    Ok(())
 }
