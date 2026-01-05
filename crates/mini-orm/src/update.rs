@@ -119,6 +119,7 @@ impl Update {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(non_upper_case_globals)]
 mod tests {
     use super::*;
     use crate::typed::{ColumnId, TableId};
@@ -129,16 +130,16 @@ mod tests {
     }
 
     impl Users {
-        const ID: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
-        const NAME: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
-        const COUNT: Column<i32, Users> = Column::new(TableId("users"), ColumnId("count"));
+        const id: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
+        const name: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
+        const count: Column<i32, Users> = Column::new(TableId("users"), ColumnId("count"));
     }
 
     #[test]
     fn test_update_basic() {
         let sql = Update::table(Users)
-            .set(&Users::NAME, "Jane")
-            .filter(Users::ID.equal(1))
+            .set(&Users::name, "Jane")
+            .filter(Users::id.equal(1))
             .build();
         assert_eq!(sql, "UPDATE users SET name = 'Jane' WHERE users.id = 1");
     }
@@ -146,8 +147,8 @@ mod tests {
     #[test]
     fn test_update_multiple_sets() {
         let sql = Update::table(Users)
-            .set(&Users::NAME, "Jane")
-            .set(&Users::COUNT, 10)
+            .set(&Users::name, "Jane")
+            .set(&Users::count, 10)
             .build();
         assert_eq!(sql, "UPDATE users SET name = 'Jane', count = 10");
     }
@@ -155,8 +156,8 @@ mod tests {
     #[test]
     fn test_update_with_null() {
         let sql = Update::table(Users)
-            .set_null(&Users::NAME)
-            .filter(Users::ID.equal(1))
+            .set_null(&Users::name)
+            .filter(Users::id.equal(1))
             .build();
         assert_eq!(sql, "UPDATE users SET name = NULL WHERE users.id = 1");
     }
@@ -164,24 +165,24 @@ mod tests {
     #[test]
     fn test_update_with_expression() {
         let sql = Update::table(Users)
-            .set_expr(&Users::COUNT, "count + 1")
-            .filter(Users::ID.equal(1))
+            .set_expr(&Users::count, "count + 1")
+            .filter(Users::id.equal(1))
             .build();
         assert_eq!(sql, "UPDATE users SET count = count + 1 WHERE users.id = 1");
     }
 
     #[test]
     fn test_update_no_where() {
-        let sql = Update::table(Users).set(&Users::NAME, "All").build();
+        let sql = Update::table(Users).set(&Users::name, "All").build();
         assert_eq!(sql, "UPDATE users SET name = 'All'");
     }
 
     #[test]
     fn test_update_multiple_filters() {
         let sql = Update::table(Users)
-            .set(&Users::NAME, "Updated")
-            .filter(Users::ID.greater(10))
-            .filter(Users::COUNT.less(5))
+            .set(&Users::name, "Updated")
+            .filter(Users::id.greater(10))
+            .filter(Users::count.less(5))
             .build();
         assert!(sql.contains("users.id > 10 AND users.count < 5"));
     }

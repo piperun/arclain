@@ -67,8 +67,8 @@ impl ConfigDb {
         )?;
 
         // Initialize UI configuration tables
-        crate::ui_config::ensure_ui_tables(conn)?;
-        crate::ui_config::seed_defaults_if_empty(conn)?;
+        crate::ui::ensure_ui_tables(conn)?;
+        crate::ui::seed_defaults_if_empty(conn)?;
 
         // Initialize domain whitelist table
         crate::domain_whitelist::ensure_whitelist_table(conn)?;
@@ -90,17 +90,33 @@ impl ConfigDb {
     }
 }
 
-/// Title Replacement Model
-#[derive(Debug, Clone)]
+/// Title Replacement Model - Diesel ORM compatible
+#[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
+#[diesel(table_name = crate::diesel_schema::title_replacements)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct DbTitleReplacement {
-    pub id: i64,
+    pub id: i32,
     pub original: String,
     pub replacement: String,
     pub is_system: bool,
 }
 
+/// For inserting new title replacements
+#[derive(diesel::Insertable)]
+#[diesel(table_name = crate::diesel_schema::title_replacements)]
+pub struct NewTitleReplacement<'a> {
+    pub original: &'a str,
+    pub replacement: &'a str,
+    pub is_system: bool,
+}
+
 // DB Operations for Title Replacements
 pub fn list_title_replacements(conn: &Connection) -> Result<Vec<DbTitleReplacement>> {
+    // Still using rusqlite for existing code paths
+    // Use list_title_replacements_diesel() for Diesel DSL version
+
+    // For now, we still use rusqlite connection
+    // Full migration would convert to diesel::SqliteConnection
     let mut stmt = conn.prepare(
         "SELECT id, original, replacement, is_system FROM title_replacements ORDER BY original",
     )?;
@@ -184,5 +200,69 @@ pub fn delete_title_replacement(conn: &Connection, id: i64) -> Result<()> {
         "DELETE FROM title_replacements WHERE id = ?1 AND is_system = 0",
         [id],
     )?;
+    Ok(())
+}
+
+// ============================================================================
+// Diesel DSL versions (use these when migrating to diesel::SqliteConnection)
+// ============================================================================
+
+use diesel::prelude::*;
+use diesel::result::OptionalExtension as DieselOptional;
+
+/// List all title replacements using Diesel DSL
+pub fn list_title_replacements_diesel(
+    conn: &mut diesel::SqliteConnection,
+) -> Result<Vec<DbTitleReplacement>> {
+    use crate::diesel_schema::title_replacements::dsl::*;
+
+    let results = title_replacements
+        .select((id, original, replacement, is_system))
+        .order(original.asc())
+        .load::<(i32, String, String, bool)>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(results
+        .into_iter()
+        .map(|(i, o, r, s)| DbTitleReplacement {
+            id: i,
+            original: o,
+            replacement: r,
+            is_system: s,
+        })
+        .collect())
+}
+
+/// Save a title replacement using Diesel DSL
+pub fn save_title_replacement_diesel(
+    conn: &mut diesel::SqliteConnection,
+    orig: &str,
+    repl: &str,
+    sys: bool,
+) -> Result<()> {
+    use crate::diesel_schema::title_replacements::dsl::*;
+
+    diesel::insert_into(title_replacements)
+        .values((original.eq(orig), replacement.eq(repl), is_system.eq(sys)))
+        .on_conflict(original)
+        .do_update()
+        .set(replacement.eq(repl))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Delete a title replacement using Diesel DSL
+pub fn delete_title_replacement_diesel(
+    conn: &mut diesel::SqliteConnection,
+    rule_id: i32,
+) -> Result<()> {
+    use crate::diesel_schema::title_replacements::dsl::*;
+
+    diesel::delete(title_replacements.filter(id.eq(rule_id).and(is_system.eq(false))))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+
     Ok(())
 }

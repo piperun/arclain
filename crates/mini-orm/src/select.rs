@@ -276,6 +276,7 @@ impl Select {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(non_upper_case_globals)]
 mod tests {
     use super::*;
     use crate::typed::{Column, ColumnId, TableId};
@@ -287,9 +288,9 @@ mod tests {
     }
 
     impl Users {
-        const ID: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
-        const NAME: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
-        const AGE: Column<i32, Users> = Column::new(TableId("users"), ColumnId("age"));
+        const id: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
+        const name: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
+        const age: Column<i32, Users> = Column::new(TableId("users"), ColumnId("age"));
     }
 
     struct Orders;
@@ -298,9 +299,9 @@ mod tests {
     }
 
     impl Orders {
-        const ID: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("id"));
-        const USER_ID: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("user_id"));
-        const TOTAL: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("total"));
+        const id: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("id"));
+        const user_id: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("user_id"));
+        const total: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("total"));
     }
 
     #[test]
@@ -312,8 +313,8 @@ mod tests {
     #[test]
     fn test_select_columns() {
         let sql = Select::from(Users)
-            .column(&Users::ID)
-            .column(&Users::NAME)
+            .column(&Users::id)
+            .column(&Users::name)
             .build();
         assert_eq!(sql, "SELECT users.id, users.name FROM users");
     }
@@ -321,7 +322,7 @@ mod tests {
     #[test]
     fn test_select_with_filter() {
         let sql = Select::from(Users)
-            .filter(Users::NAME.equal("John"))
+            .filter(Users::name.equal("John"))
             .build();
         assert_eq!(sql, "SELECT * FROM users WHERE users.name = 'John'");
     }
@@ -329,8 +330,8 @@ mod tests {
     #[test]
     fn test_select_with_multiple_filters() {
         let sql = Select::from(Users)
-            .filter(Users::NAME.equal("John"))
-            .filter(Users::AGE.greater(18))
+            .filter(Users::name.equal("John"))
+            .filter(Users::age.greater(18))
             .build();
         assert!(sql.contains("users.name = 'John' AND users.age > 18"));
     }
@@ -338,7 +339,7 @@ mod tests {
     #[test]
     fn test_select_with_join() {
         let sql = Select::from(Orders)
-            .join(Users, Orders::USER_ID.equals_col(&Users::ID))
+            .join(Users, Orders::user_id.equals_col(&Users::id))
             .build();
         assert_eq!(
             sql,
@@ -349,22 +350,22 @@ mod tests {
     #[test]
     fn test_select_with_left_join() {
         let sql = Select::from(Users)
-            .left_join(Orders, Users::ID.equals_col(&Orders::USER_ID))
+            .left_join(Orders, Users::id.equals_col(&Orders::user_id))
             .build();
         assert!(sql.contains("LEFT JOIN orders ON users.id = orders.user_id"));
     }
 
     #[test]
     fn test_select_with_order() {
-        let sql = Select::from(Users).order(&Users::NAME, Order::Asc).build();
+        let sql = Select::from(Users).order(&Users::name, Order::Asc).build();
         assert_eq!(sql, "SELECT * FROM users ORDER BY users.name ASC");
     }
 
     #[test]
     fn test_select_with_multiple_orders() {
         let sql = Select::from(Users)
-            .order(&Users::AGE, Order::Desc)
-            .order(&Users::NAME, Order::Asc)
+            .order(&Users::age, Order::Desc)
+            .order(&Users::name, Order::Asc)
             .build();
         assert!(sql.contains("ORDER BY users.age DESC, users.name ASC"));
     }
@@ -384,12 +385,12 @@ mod tests {
     #[test]
     fn test_complex_query() {
         let sql = Select::from(Orders)
-            .column(&Orders::ID)
-            .column(&Orders::TOTAL)
-            .join(Users, Orders::USER_ID.equals_col(&Users::ID))
-            .filter(Users::NAME.equal("John"))
-            .filter(Orders::TOTAL.greater(100))
-            .order(&Orders::TOTAL, Order::Desc)
+            .column(&Orders::id)
+            .column(&Orders::total)
+            .join(Users, Orders::user_id.equals_col(&Users::id))
+            .filter(Users::name.equal("John"))
+            .filter(Orders::total.greater(100))
+            .order(&Orders::total, Order::Desc)
             .limit(5)
             .build();
 

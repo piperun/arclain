@@ -1,5 +1,5 @@
-use crate::cache_index;
-use crate::product_metadata::{self, MetadataSource, ProductMetadata};
+use crate::cache;
+use crate::library::{self, MetadataSource, ProductMetadata};
 use crate::SqliteDb;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -19,9 +19,7 @@ pub struct MetadataStore {
 impl MetadataStore {
     pub fn new(db: SqliteDb, root_path: PathBuf) -> Self {
         // Ensure schema exists
-        if let Err(e) =
-            db.with_connection(|conn| product_metadata::init_product_metadata_schema(conn))
-        {
+        if let Err(e) = db.with_connection(|conn| library::init_product_metadata_schema(conn)) {
             tracing::error!("Failed to init ProductMetadata schema: {}", e);
         }
 
@@ -39,25 +37,25 @@ impl MetadataStore {
     /// Get metadata by ID (e.g. "dlsite:RJ123456")
     pub fn get(&self, id: &str) -> Result<Option<ProductMetadata>> {
         self.db
-            .with_connection(|conn| product_metadata::load(conn, id))
+            .with_connection(|conn| library::load_product_metadata(conn, id))
     }
 
     /// Save metadata
     pub fn save(&self, meta: &ProductMetadata) -> Result<()> {
         self.db
-            .with_connection(|conn| product_metadata::save(conn, meta))
+            .with_connection(|conn| library::save_product_metadata(conn, meta))
     }
 
     /// List all metadata for a source
     pub fn list_by_source(&self, source: MetadataSource) -> Result<Vec<ProductMetadata>> {
         self.db
-            .with_connection(|conn| product_metadata::list_by_source(conn, source))
+            .with_connection(|conn| library::list_by_source(conn, source))
     }
 
     /// Delete metadata by ID
     pub fn delete(&self, id: &str) -> Result<()> {
         self.db
-            .with_connection(|conn| product_metadata::delete(conn, id))
+            .with_connection(|conn| library::delete_product_metadata(conn, id))
     }
 
     pub fn db(&self) -> &SqliteDb {
@@ -67,6 +65,6 @@ impl MetadataStore {
     /// Clear the cache index (legacy support)
     pub fn clear_cache_index(&self) -> Result<()> {
         self.db
-            .with_connection(|conn| cache_index::clear_all_entries(conn))
+            .with_connection(|conn| cache::clear_all_entries(conn))
     }
 }

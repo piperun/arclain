@@ -9,24 +9,24 @@ use std::marker::PhantomData;
 // Schema Identity Types
 // ============================================================================
 
-/// Table identifier - only created by derive macro
+/// Table identifier - created by DbTable derive macro
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TableId(pub(crate) &'static str);
+pub struct TableId(#[doc(hidden)] pub &'static str);
 
 impl TableId {
-    /// Get the SQL table name (internal use only)
-    pub(crate) fn as_str(&self) -> &'static str {
+    /// Get the SQL table name
+    pub fn as_str(&self) -> &'static str {
         self.0
     }
 }
 
-/// Column identifier - only created by derive macro
+/// Column identifier - created by DbTable derive macro
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ColumnId(pub(crate) &'static str);
+pub struct ColumnId(#[doc(hidden)] pub &'static str);
 
 impl ColumnId {
-    /// Get the SQL column name (internal use only)
-    pub(crate) fn as_str(&self) -> &'static str {
+    /// Get the SQL column name
+    pub fn as_str(&self) -> &'static str {
         self.0
     }
 }
@@ -63,6 +63,16 @@ impl<T, Table> Column<T, Table> {
     /// Get fully qualified name (table.column)
     pub fn qualified(&self) -> String {
         format!("{}.{}", self.table.as_str(), self.name.as_str())
+    }
+
+    /// Get just the column name (for use in parameterized SQL)
+    pub fn col_name(&self) -> &'static str {
+        self.name.as_str()
+    }
+
+    /// Get just the table name
+    pub fn table_name(&self) -> &'static str {
+        self.table.as_str()
     }
 }
 
@@ -258,6 +268,75 @@ impl Expr {
 }
 
 // ============================================================================
+// Parameterized Expressions (use ?N placeholders)
+// ============================================================================
+
+/// SQL expression using parameterized placeholders (?1, ?2, etc.)
+///
+/// Unlike `Expr` which inlines values, `ParamExpr` generates SQL with
+/// placeholders for safe parameterized queries.
+///
+/// # Example
+/// ```ignore
+/// let expr = Users::name.eq_param(1);
+/// assert_eq!(expr.to_sql(), "users.name = ?1");
+/// ```
+#[derive(Debug, Clone)]
+pub enum ParamExpr {
+    /// column = ?N
+    EqParam(ColumnRef, u32),
+    /// column != ?N
+    NeParam(ColumnRef, u32),
+    /// column > ?N
+    GtParam(ColumnRef, u32),
+    /// column < ?N
+    LtParam(ColumnRef, u32),
+    /// column >= ?N
+    GeParam(ColumnRef, u32),
+    /// column <= ?N
+    LeParam(ColumnRef, u32),
+    /// column LIKE ?N
+    LikeParam(ColumnRef, u32),
+    /// column IS NULL
+    IsNull(ColumnRef),
+    /// column IS NOT NULL
+    NotNull(ColumnRef),
+    /// expr AND expr
+    And(Box<ParamExpr>, Box<ParamExpr>),
+    /// expr OR expr
+    Or(Box<ParamExpr>, Box<ParamExpr>),
+}
+
+impl ParamExpr {
+    /// Convert to SQL string with placeholders
+    pub fn to_sql(&self) -> String {
+        match self {
+            ParamExpr::EqParam(col, n) => format!("{} = ?{}", col.to_sql(), n),
+            ParamExpr::NeParam(col, n) => format!("{} != ?{}", col.to_sql(), n),
+            ParamExpr::GtParam(col, n) => format!("{} > ?{}", col.to_sql(), n),
+            ParamExpr::LtParam(col, n) => format!("{} < ?{}", col.to_sql(), n),
+            ParamExpr::GeParam(col, n) => format!("{} >= ?{}", col.to_sql(), n),
+            ParamExpr::LeParam(col, n) => format!("{} <= ?{}", col.to_sql(), n),
+            ParamExpr::LikeParam(col, n) => format!("{} LIKE ?{}", col.to_sql(), n),
+            ParamExpr::IsNull(col) => format!("{} IS NULL", col.to_sql()),
+            ParamExpr::NotNull(col) => format!("{} IS NOT NULL", col.to_sql()),
+            ParamExpr::And(l, r) => format!("({} AND {})", l.to_sql(), r.to_sql()),
+            ParamExpr::Or(l, r) => format!("({} OR {})", l.to_sql(), r.to_sql()),
+        }
+    }
+
+    /// Combine with AND
+    pub fn and(self, other: ParamExpr) -> ParamExpr {
+        ParamExpr::And(Box::new(self), Box::new(other))
+    }
+
+    /// Combine with OR
+    pub fn or(self, other: ParamExpr) -> ParamExpr {
+        ParamExpr::Or(Box::new(self), Box::new(other))
+    }
+}
+
+// ============================================================================
 // Column Expression Methods
 // ============================================================================
 
@@ -288,6 +367,55 @@ impl<T, Table> Column<T, Table> {
             ColumnRef::from_column(self),
             values.into_iter().map(|v| v.into()).collect(),
         )
+    }
+
+    // ========================================================================
+    // Parameterized versions (generate ?N placeholders)
+    // ========================================================================
+
+    /// column = ?N (parameterized)
+    pub fn eq_param(&self, n: u32) -> ParamExpr {
+        ParamExpr::EqParam(ColumnRef::from_column(self), n)
+    }
+
+    /// column != ?N (parameterized)
+    pub fn ne_param(&self, n: u32) -> ParamExpr {
+        ParamExpr::NeParam(ColumnRef::from_column(self), n)
+    }
+
+    /// column IS NULL (parameterized version)
+    pub fn is_null_param(&self) -> ParamExpr {
+        ParamExpr::IsNull(ColumnRef::from_column(self))
+    }
+
+    /// column IS NOT NULL (parameterized version)
+    pub fn not_null_param(&self) -> ParamExpr {
+        ParamExpr::NotNull(ColumnRef::from_column(self))
+    }
+
+    /// column LIKE ?N (parameterized)
+    pub fn like_param(&self, n: u32) -> ParamExpr {
+        ParamExpr::LikeParam(ColumnRef::from_column(self), n)
+    }
+
+    /// column > ?N (parameterized)
+    pub fn gt_param(&self, n: u32) -> ParamExpr {
+        ParamExpr::GtParam(ColumnRef::from_column(self), n)
+    }
+
+    /// column < ?N (parameterized)
+    pub fn lt_param(&self, n: u32) -> ParamExpr {
+        ParamExpr::LtParam(ColumnRef::from_column(self), n)
+    }
+
+    /// column >= ?N (parameterized)
+    pub fn ge_param(&self, n: u32) -> ParamExpr {
+        ParamExpr::GeParam(ColumnRef::from_column(self), n)
+    }
+
+    /// column <= ?N (parameterized)
+    pub fn le_param(&self, n: u32) -> ParamExpr {
+        ParamExpr::LeParam(ColumnRef::from_column(self), n)
     }
 }
 
@@ -430,6 +558,7 @@ pub trait Table {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(non_upper_case_globals)]
 mod tests {
     use super::*;
 
@@ -440,11 +569,11 @@ mod tests {
     }
 
     impl Users {
-        const ID: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
-        const NAME: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
-        const EMAIL: Column<Option<String>, Users> =
+        const id: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
+        const name: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
+        const email: Column<Option<String>, Users> =
             Column::new(TableId("users"), ColumnId("email"));
-        const AGE: Column<i32, Users> = Column::new(TableId("users"), ColumnId("age"));
+        const age: Column<i32, Users> = Column::new(TableId("users"), ColumnId("age"));
     }
 
     struct Orders;
@@ -453,79 +582,79 @@ mod tests {
     }
 
     impl Orders {
-        const ID: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("id"));
-        const USER_ID: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("user_id"));
+        const id: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("id"));
+        const user_id: Column<i32, Orders> = Column::new(TableId("orders"), ColumnId("user_id"));
     }
 
     #[test]
     fn test_column_qualified_name() {
-        assert_eq!(Users::ID.qualified(), "users.id");
-        assert_eq!(Users::NAME.qualified(), "users.name");
+        assert_eq!(Users::id.qualified(), "users.id");
+        assert_eq!(Users::name.qualified(), "users.name");
     }
 
     #[test]
     fn test_equal_expr() {
-        let expr = Users::NAME.equal("John");
+        let expr = Users::name.equal("John");
         assert_eq!(expr.to_sql(), "users.name = 'John'");
     }
 
     #[test]
     fn test_not_eq_expr() {
-        let expr = Users::NAME.not_eq("John");
+        let expr = Users::name.not_eq("John");
         assert_eq!(expr.to_sql(), "users.name != 'John'");
     }
 
     #[test]
     fn test_is_null_expr() {
-        let expr = Users::EMAIL.is_null();
+        let expr = Users::email.is_null();
         assert_eq!(expr.to_sql(), "users.email IS NULL");
     }
 
     #[test]
     fn test_not_null_expr() {
-        let expr = Users::EMAIL.not_null();
+        let expr = Users::email.not_null();
         assert_eq!(expr.to_sql(), "users.email IS NOT NULL");
     }
 
     #[test]
     fn test_greater_expr() {
-        let expr = Users::AGE.greater(18);
+        let expr = Users::age.greater(18);
         assert_eq!(expr.to_sql(), "users.age > 18");
     }
 
     #[test]
     fn test_less_expr() {
-        let expr = Users::AGE.less(65);
+        let expr = Users::age.less(65);
         assert_eq!(expr.to_sql(), "users.age < 65");
     }
 
     #[test]
     fn test_between_expr() {
-        let expr = Users::AGE.between(18, 65);
+        let expr = Users::age.between(18, 65);
         assert_eq!(expr.to_sql(), "users.age BETWEEN 18 AND 65");
     }
 
     #[test]
     fn test_like_expr() {
-        let expr = Users::NAME.like("%john%");
+        let expr = Users::name.like("%john%");
         assert_eq!(expr.to_sql(), "users.name LIKE '%john%'");
     }
 
     #[test]
     fn test_in_list_expr() {
-        let expr = Users::ID.in_list(vec![1, 2, 3]);
+        let expr = Users::id.in_list(vec![1, 2, 3]);
         assert_eq!(expr.to_sql(), "users.id IN (1, 2, 3)");
     }
 
     #[test]
     fn test_and_expr() {
-        let expr = Users::NAME.equal("John").and(Users::AGE.greater(18));
+        let expr = Users::name.equal("John").and(Users::age.greater(18));
         assert_eq!(expr.to_sql(), "(users.name = 'John' AND users.age > 18)");
     }
 
     #[test]
     fn test_or_expr() {
-        let expr = Users::NAME.equal("John").or(Users::NAME.equal("Jane"));
+        let expr = Users::name.equal("John").or(Users::name.equal("Jane"));
         assert_eq!(
             expr.to_sql(),
             "(users.name = 'John' OR users.name = 'Jane')"
@@ -534,19 +663,19 @@ mod tests {
 
     #[test]
     fn test_join_on() {
-        let join = Users::ID.equals_col(&Orders::USER_ID);
+        let join = Users::id.equals_col(&Orders::user_id);
         assert_eq!(join.to_sql(), "users.id = orders.user_id");
     }
 
     #[test]
     fn test_orders_id_qualified() {
-        // Tests Orders::ID to ensure it's used
-        assert_eq!(Orders::ID.qualified(), "orders.id");
+        // Tests Orders::id to ensure it's used
+        assert_eq!(Orders::id.qualified(), "orders.id");
     }
 
     #[test]
     fn test_value_escaping() {
-        let expr = Users::NAME.equal("O'Brien");
+        let expr = Users::name.equal("O'Brien");
         assert_eq!(expr.to_sql(), "users.name = 'O''Brien'");
     }
 

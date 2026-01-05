@@ -149,6 +149,7 @@ impl Insert {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(non_upper_case_globals)]
 mod tests {
     use super::*;
     use crate::typed::{ColumnId, TableId};
@@ -159,17 +160,17 @@ mod tests {
     }
 
     impl Users {
-        const ID: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
-        const NAME: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
-        const EMAIL: Column<Option<String>, Users> =
+        const id: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
+        const name: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
+        const email: Column<Option<String>, Users> =
             Column::new(TableId("users"), ColumnId("email"));
     }
 
     #[test]
     fn test_insert_basic() {
         let sql = Insert::into(Users)
-            .set(&Users::NAME, "John")
-            .set(&Users::EMAIL, "john@example.com")
+            .set(&Users::name, "John")
+            .set(&Users::email, "john@example.com")
             .build();
         assert_eq!(
             sql,
@@ -180,8 +181,8 @@ mod tests {
     #[test]
     fn test_insert_with_null() {
         let sql = Insert::into(Users)
-            .set(&Users::NAME, "John")
-            .set_null(&Users::EMAIL)
+            .set(&Users::name, "John")
+            .set_null(&Users::email)
             .build();
         assert_eq!(sql, "INSERT INTO users (name, email) VALUES ('John', NULL)");
     }
@@ -189,7 +190,7 @@ mod tests {
     #[test]
     fn test_insert_or_ignore() {
         let sql = Insert::into(Users)
-            .set(&Users::NAME, "John")
+            .set(&Users::name, "John")
             .or_ignore()
             .build();
         assert_eq!(sql, "INSERT OR IGNORE INTO users (name) VALUES ('John')");
@@ -198,8 +199,8 @@ mod tests {
     #[test]
     fn test_insert_or_replace() {
         let sql = Insert::into(Users)
-            .set(&Users::ID, 1)
-            .set(&Users::NAME, "John")
+            .set(&Users::id, 1)
+            .set(&Users::name, "John")
             .or_replace()
             .build();
         assert_eq!(
@@ -211,11 +212,11 @@ mod tests {
     #[test]
     fn test_insert_on_conflict_update() {
         let sql = Insert::into(Users)
-            .set(&Users::ID, 1)
-            .set(&Users::NAME, "John")
-            .set(&Users::EMAIL, "john@example.com")
-            .on_conflict_update_col(&Users::NAME)
-            .on_conflict_update_col(&Users::EMAIL)
+            .set(&Users::id, 1)
+            .set(&Users::name, "John")
+            .set(&Users::email, "john@example.com")
+            .on_conflict_update_col(&Users::name)
+            .on_conflict_update_col(&Users::email)
             .build();
         assert!(sql.contains("ON CONFLICT DO UPDATE SET"));
         assert!(sql.contains("name = excluded.name"));
@@ -224,7 +225,7 @@ mod tests {
 
     #[test]
     fn test_insert_escapes_quotes() {
-        let sql = Insert::into(Users).set(&Users::NAME, "O'Brien").build();
+        let sql = Insert::into(Users).set(&Users::name, "O'Brien").build();
         assert_eq!(sql, "INSERT INTO users (name) VALUES ('O''Brien')");
     }
 }

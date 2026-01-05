@@ -64,6 +64,7 @@ impl Delete {
 // ============================================================================
 
 #[cfg(test)]
+#[allow(non_upper_case_globals)]
 mod tests {
     use super::*;
     use crate::typed::{Column, ColumnId, TableId};
@@ -74,9 +75,9 @@ mod tests {
     }
 
     impl Users {
-        const ID: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
-        const NAME: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
-        const STATUS: Column<String, Users> = Column::new(TableId("users"), ColumnId("status"));
+        const id: Column<i32, Users> = Column::new(TableId("users"), ColumnId("id"));
+        const name: Column<String, Users> = Column::new(TableId("users"), ColumnId("name"));
+        const status: Column<String, Users> = Column::new(TableId("users"), ColumnId("status"));
     }
 
     #[test]
@@ -87,29 +88,29 @@ mod tests {
 
     #[test]
     fn test_delete_with_filter() {
-        let sql = Delete::from(Users).filter(Users::ID.equal(1)).build();
+        let sql = Delete::from(Users).filter(Users::id.equal(1)).build();
         assert_eq!(sql, "DELETE FROM users WHERE users.id = 1");
     }
 
     #[test]
     fn test_delete_multiple_filters() {
         let sql = Delete::from(Users)
-            .filter(Users::STATUS.equal("inactive"))
-            .filter(Users::ID.greater(10))
+            .filter(Users::status.equal("inactive"))
+            .filter(Users::id.greater(10))
             .build();
         assert!(sql.contains("users.status = 'inactive' AND users.id > 10"));
     }
 
     #[test]
     fn test_delete_with_null_check() {
-        let sql = Delete::from(Users).filter(Users::NAME.is_null()).build();
+        let sql = Delete::from(Users).filter(Users::name.is_null()).build();
         assert_eq!(sql, "DELETE FROM users WHERE users.name IS NULL");
     }
 
     #[test]
     fn test_delete_with_in_list() {
         let sql = Delete::from(Users)
-            .filter(Users::ID.in_list(vec![1, 2, 3]))
+            .filter(Users::id.in_list(vec![1, 2, 3]))
             .build();
         assert_eq!(sql, "DELETE FROM users WHERE users.id IN (1, 2, 3)");
     }
@@ -118,9 +119,9 @@ mod tests {
     fn test_delete_with_or() {
         let sql = Delete::from(Users)
             .filter(
-                Users::STATUS
+                Users::status
                     .equal("banned")
-                    .or(Users::STATUS.equal("deleted")),
+                    .or(Users::status.equal("deleted")),
             )
             .build();
         assert!(sql.contains("(users.status = 'banned' OR users.status = 'deleted')"));

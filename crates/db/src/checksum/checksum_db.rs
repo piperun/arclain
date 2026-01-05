@@ -429,3 +429,77 @@ pub fn delete_checksum_operation(conn: &Connection, op_id: &OpId) -> Result<()> 
     )?;
     Ok(())
 }
+
+// ============================================================================
+// Diesel DSL versions
+// ============================================================================
+
+use diesel::prelude::*;
+
+/// Get checksum algorithm using Diesel DSL
+pub fn get_checksum_algorithm_diesel(conn: &mut diesel::SqliteConnection) -> Result<String> {
+    use crate::diesel_schema::checksum_settings::dsl::*;
+    use diesel::result::OptionalExtension;
+
+    let result = checksum_settings
+        .filter(key.eq("algorithm"))
+        .select(value)
+        .first::<String>(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(result.unwrap_or_else(|| "blake3".to_string()))
+}
+
+/// Set checksum algorithm using Diesel DSL
+pub fn set_checksum_algorithm_diesel(
+    conn: &mut diesel::SqliteConnection,
+    algo: &str,
+) -> Result<()> {
+    use crate::diesel_schema::checksum_settings::dsl::*;
+
+    diesel::insert_into(checksum_settings)
+        .values((key.eq("algorithm"), value.eq(algo)))
+        .on_conflict(key)
+        .do_update()
+        .set(value.eq(algo))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Get checksum mode using Diesel DSL
+pub fn get_checksum_mode_diesel(conn: &mut diesel::SqliteConnection) -> Result<VerifyMode> {
+    use crate::diesel_schema::checksum_settings::dsl::*;
+    use diesel::result::OptionalExtension;
+
+    let result = checksum_settings
+        .filter(key.eq("mode"))
+        .select(value)
+        .first::<String>(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(result
+        .and_then(|s| VerifyMode::from_str(&s))
+        .unwrap_or_default())
+}
+
+/// Set checksum mode using Diesel DSL
+pub fn set_checksum_mode_diesel(
+    conn: &mut diesel::SqliteConnection,
+    mode: VerifyMode,
+) -> Result<()> {
+    use crate::diesel_schema::checksum_settings::dsl::*;
+
+    diesel::insert_into(checksum_settings)
+        .values((key.eq("mode"), value.eq(mode.as_str())))
+        .on_conflict(key)
+        .do_update()
+        .set(value.eq(mode.as_str()))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+
+    Ok(())
+}

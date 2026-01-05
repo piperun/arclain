@@ -217,3 +217,73 @@ pub fn delete_product_content(conn: &Connection, product_id: &str) -> Result<()>
     )?;
     Ok(())
 }
+
+// ============================================================================
+// Diesel DSL versions
+// ============================================================================
+
+use diesel::prelude::*;
+
+/// Diesel-compatible product content row
+#[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
+#[diesel(table_name = crate::diesel_schema::product_content)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct DbProductContentRow {
+    pub id: i32,
+    pub product_id: String,
+    pub content_type: String,
+    pub content_index: i32,
+    pub content_hash: String,
+    pub source_url: Option<String>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub size_bytes: Option<i64>,
+    pub cached_at: i64,
+}
+
+impl DbProductContentRow {
+    pub fn to_product_content(&self) -> ProductContent {
+        ProductContent {
+            id: self.id as i64,
+            product_id: self.product_id.clone(),
+            content_type: self.content_type.clone(),
+            content_index: self.content_index as i64,
+            content_hash: self.content_hash.clone(),
+            source_url: self.source_url.clone(),
+            width: self.width.map(|w| w as i64),
+            height: self.height.map(|h| h as i64),
+            size_bytes: self.size_bytes,
+            cached_at: self.cached_at,
+        }
+    }
+}
+
+/// Delete all content for a product using Diesel DSL
+pub fn delete_product_content_diesel(
+    conn: &mut diesel::SqliteConnection,
+    prod_id: &str,
+) -> Result<()> {
+    use crate::diesel_schema::product_content::dsl::*;
+
+    diesel::delete(product_content.filter(product_id.eq(prod_id)))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Get all content for a product using Diesel DSL
+pub fn get_all_content_diesel(
+    conn: &mut diesel::SqliteConnection,
+    prod_id: &str,
+) -> Result<Vec<ProductContent>> {
+    use crate::diesel_schema::product_content::dsl::*;
+
+    let rows = product_content
+        .filter(product_id.eq(prod_id))
+        .order((content_type.asc(), content_index.asc()))
+        .load::<DbProductContentRow>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(rows.iter().map(|r| r.to_product_content()).collect())
+}

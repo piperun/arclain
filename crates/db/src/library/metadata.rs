@@ -384,3 +384,50 @@ pub fn delete(conn: &Connection, id: &str) -> Result<()> {
     conn.execute("DELETE FROM product_metadata WHERE id = ?1", [id])?;
     Ok(())
 }
+
+// ============================================================================
+// Diesel DSL versions
+// ============================================================================
+
+use diesel::prelude::*;
+
+/// Delete product metadata by ID using Diesel DSL
+pub fn delete_diesel(conn: &mut diesel::SqliteConnection, product_id: &str) -> Result<()> {
+    use crate::diesel_schema::product_metadata::dsl::*;
+
+    diesel::delete(product_metadata.filter(id.eq(product_id)))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Check if product exists using Diesel DSL
+pub fn exists_diesel(conn: &mut diesel::SqliteConnection, product_id: &str) -> Result<bool> {
+    use crate::diesel_schema::product_metadata::dsl::*;
+    use diesel::dsl::count;
+
+    let cnt: i64 = product_metadata
+        .filter(id.eq(product_id))
+        .select(count(id))
+        .first(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel count failed: {}", e))?;
+
+    Ok(cnt > 0)
+}
+
+/// List product IDs by source using Diesel DSL
+pub fn list_ids_by_source_diesel(
+    conn: &mut diesel::SqliteConnection,
+    src: MetadataSource,
+) -> Result<Vec<String>> {
+    use crate::diesel_schema::product_metadata::dsl::*;
+
+    let ids = product_metadata
+        .filter(source.eq(src.as_str()))
+        .select(id)
+        .load::<String>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    Ok(ids)
+}
