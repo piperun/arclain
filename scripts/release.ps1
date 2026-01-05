@@ -117,13 +117,35 @@ if (Test-Path $ExePath) {
     exit 1
 }
 
-# Copy plugins
+# Copy plugins from subdirectories
 $PluginsSource = Join-Path $RepoRoot "plugins"
 $PluginsDest = Join-Path $ReleaseDir "plugins"
 if (Test-Path $PluginsSource) {
     New-Item -ItemType Directory -Path $PluginsDest -Force | Out-Null
-    Get-ChildItem -Path $PluginsSource -Filter "*.wasm" | ForEach-Object {
-        Copy-Item $_.FullName -Destination $PluginsDest
+    
+    # Look for plugin directories (each plugin is in a subdirectory)
+    Get-ChildItem -Path $PluginsSource -Directory | ForEach-Object {
+        $pluginDir = $_.FullName
+        $pluginName = $_.Name
+        
+        # Skip dead/unused plugins
+        if ($pluginName -eq "gstreamer-preview" -or $pluginName -eq "ui-demo") {
+            Write-Host "  Skipping unused plugin: $pluginName" -ForegroundColor Gray
+            return
+        }
+        
+        # Copy .wasm file if it exists
+        $wasmFile = Join-Path $pluginDir "$pluginName.wasm"
+        if (Test-Path $wasmFile) {
+            Copy-Item $wasmFile -Destination $PluginsDest
+            Write-Host "  Copied plugin: $pluginName.wasm" -ForegroundColor Green
+        }
+        
+        # Copy .toml manifest if it exists
+        $tomlFile = Join-Path $pluginDir "$pluginName.toml"
+        if (Test-Path $tomlFile) {
+            Copy-Item $tomlFile -Destination $PluginsDest
+        }
     }
 }
 

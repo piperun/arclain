@@ -403,15 +403,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arclain_db_derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
 name = "arclain_plugins"
 version = "0.6.4"
 dependencies = [

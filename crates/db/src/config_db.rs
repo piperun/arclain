@@ -66,19 +66,6 @@ impl ConfigDb {
             [],
         )?;
 
-        // Ensure a meta row exists for migrations (if we want to use them later)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS meta(
-                migration INTEGER NOT NULL
-            );",
-            [],
-        )?;
-
-        conn.execute(
-            "INSERT INTO meta (migration) SELECT 0 WHERE NOT EXISTS (SELECT 1 FROM meta);",
-            [],
-        )?;
-
         // Initialize UI configuration tables
         crate::ui_config::ensure_ui_tables(conn)?;
         crate::ui_config::seed_defaults_if_empty(conn)?;

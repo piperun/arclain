@@ -36,14 +36,13 @@ pub use organization::{delete_rule, get_rule, list_rules, save_rule, DbOrganizat
 
 mod checksum_db;
 
-mod query_builder;
 pub use checksum_db::{
     begin_checksum_operation, delete_checksum_operation, get_checksum_algorithm, get_checksum_mode,
     get_file_checksum, get_merkle_root, get_pending_checksum_operations, set_checksum_algorithm,
     set_checksum_mode, store_file_checksum, store_merkle_root, update_checksum_operation,
     ChecksumDb, DbFileChecksum, DbOperation, OpId, OpState, OpType, VerifyMode,
 };
-pub use query_builder::{JoinType, OrderDirection, QueryBuilder};
+pub use mini_orm::{JoinType, OrderDirection, QueryBuilder};
 
 mod cache_index;
 pub use cache_index::{

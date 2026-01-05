@@ -1,3 +1,6 @@
+// Hide console window on Windows release builds
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use anyhow::Result;
 use arclain_core::utilities::init_logging;
 use arclain_ui::core::arclain_app::ArclainApp;

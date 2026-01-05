@@ -26,26 +26,29 @@ use tracing_subscriber::{
 /// - RUST_LOG=trace - All logging
 ///
 /// Logs are written to:
-/// - Console (stdout/stderr)
-/// - Rolling log files in `./logs/` directory (daily rotation, keeps last 7 days)
+/// - Console (stdout/stderr) - only in debug builds
+/// - Rolling log files in `%APPDATA%/arclain/logs/` directory (daily rotation)
 pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
-    // Set up file appender with daily rotation
-    let log_dir = PathBuf::from("./logs");
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "arclain.log");
+    // Use platform-specific app data directory
+    let log_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("arclain")
+        .join("logs");
+
+    // Ensure log directory exists
+    std::fs::create_dir_all(&log_dir)?;
+
+    // Create filename with format: arclain-YYYY-MM-DD.log
+    let today = chrono::Local::now().format("%Y-%m-%d");
+    let log_filename = format!("arclain-{}.log", today);
+
+    // Use 'never' rotation with our custom filename (we handle date in filename)
+    let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    // Console layer
-    let console_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_file(true)
-        .with_line_number(true)
-        .with_span_events(FmtSpan::NONE);
-
-    // File layer
+    // File layer - always write to file
     let file_layer = fmt::layer()
         .with_writer(non_blocking)
         .with_target(true)
@@ -56,11 +59,31 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
         .with_span_events(FmtSpan::NONE)
         .with_ansi(false); // Disable ANSI colors in file logs
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(console_layer)
-        .with(file_layer)
-        .try_init()?;
+    // Only add console layer in debug builds (when console is visible)
+    #[cfg(debug_assertions)]
+    {
+        let console_layer = fmt::layer()
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_file(true)
+            .with_line_number(true)
+            .with_span_events(FmtSpan::NONE);
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(console_layer)
+            .with(file_layer)
+            .try_init()?;
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(file_layer)
+            .try_init()?;
+    }
 
     // Store the guard to keep the non-blocking writer alive
     // This is a workaround since we can't return it
@@ -71,25 +94,27 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
 
 /// Initialize logging with custom filter
 ///
-/// Logs are written to both console and rolling log files in `./logs/` directory.
+/// Logs are written to rolling log files in `%APPDATA%/arclain/logs/` directory.
 pub fn init_logging_with_filter(filter: &str) -> Result<(), Box<dyn std::error::Error>> {
     let filter = EnvFilter::new(filter);
 
-    // Set up file appender with daily rotation
-    let log_dir = PathBuf::from("./logs");
-    let file_appender = tracing_appender::rolling::daily(&log_dir, "arclain.log");
+    // Use platform-specific app data directory
+    let log_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("arclain")
+        .join("logs");
+
+    // Ensure log directory exists
+    std::fs::create_dir_all(&log_dir)?;
+
+    // Create filename with format: arclain-YYYY-MM-DD.log
+    let today = chrono::Local::now().format("%Y-%m-%d");
+    let log_filename = format!("arclain-{}.log", today);
+
+    let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
-    // Console layer
-    let console_layer = fmt::layer()
-        .with_target(true)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_file(true)
-        .with_line_number(true)
-        .with_span_events(FmtSpan::NONE);
-
-    // File layer
+    // File layer - always write to file
     let file_layer = fmt::layer()
         .with_writer(non_blocking)
         .with_target(true)
@@ -98,13 +123,33 @@ pub fn init_logging_with_filter(filter: &str) -> Result<(), Box<dyn std::error::
         .with_file(true)
         .with_line_number(true)
         .with_span_events(FmtSpan::NONE)
-        .with_ansi(false); // Disable ANSI colors in file logs
+        .with_ansi(false);
 
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(console_layer)
-        .with(file_layer)
-        .try_init()?;
+    // Only add console layer in debug builds
+    #[cfg(debug_assertions)]
+    {
+        let console_layer = fmt::layer()
+            .with_target(true)
+            .with_thread_ids(false)
+            .with_thread_names(false)
+            .with_file(true)
+            .with_line_number(true)
+            .with_span_events(FmtSpan::NONE);
+
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(console_layer)
+            .with(file_layer)
+            .try_init()?;
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        tracing_subscriber::registry()
+            .with(filter)
+            .with(file_layer)
+            .try_init()?;
+    }
 
     // Store the guard to keep the non-blocking writer alive
     std::mem::forget(_guard);
@@ -136,11 +181,11 @@ pub fn init_test_logging(test_name: &str) -> Result<(), Box<dyn std::error::Erro
     // Create test-specific log directory
     let log_dir = PathBuf::from("./logs/tests");
     std::fs::create_dir_all(&log_dir)?;
-    
+
     // Use test name in filename with timestamp
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let log_filename = format!("{}_{}.log", test_name, timestamp);
-    
+
     let file_appender = tracing_appender::rolling::never(&log_dir, log_filename);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
