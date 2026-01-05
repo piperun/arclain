@@ -5,7 +5,6 @@ members = [
     "crates/db",
     "crates/plugins",
     "crates/checksum",
-    "crates/db_derive",
     "crates/widgets",
     "crates/theme",
     "crates/http",
