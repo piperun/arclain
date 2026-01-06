@@ -51,12 +51,9 @@ pub fn handle_action(
             let mut state = shared.app_state.lock();
             state.user_config.temp_dir = temp_dir;
             state.signals.user_config.set(state.user_config.clone());
-            // Save via DB if available
-            if let Some(ref dbs) = state.dbs {
-                let _ = dbs.config_pool.with_conn(|conn| {
-                    state.user_config.save_diesel(conn).ok();
-                    Ok::<_, anyhow::Error>(())
-                });
+            // Save via ConfigService if available
+            if let Some(ref config_svc) = shared.services.config_service {
+                let _ = config_svc.save_user_config(&state.user_config);
             }
         }
         SettingsAction::MoveVault { dest_path } => {
@@ -152,11 +149,8 @@ pub fn handle_action(
             let mut state = shared.app_state.lock();
             state.user_config.open_nested_in_new_tab = open_nested_in_new_tab;
             state.signals.user_config.set(state.user_config.clone());
-            if let Some(ref dbs) = state.dbs {
-                if let Err(e) = dbs.config_pool.with_conn(|conn| {
-                    state.user_config.save_diesel(conn).ok();
-                    Ok::<_, anyhow::Error>(())
-                }) {
+            if let Some(ref config_svc) = shared.services.config_service {
+                if let Err(e) = config_svc.save_user_config(&state.user_config) {
                     tracing::error!("Failed to save general settings: {}", e);
                 } else {
                     tracing::info!("General settings saved");
@@ -177,12 +171,9 @@ pub fn handle_action(
 
             let mut password_to_use = None;
 
-            if let Some(ref dbs) = state.dbs {
-                // Save config
-                match dbs
-                    .config_pool
-                    .with_conn(|conn| Ok::<_, anyhow::Error>(state.user_config.save_diesel(conn)))
-                {
+            // Save config via ConfigService
+            if let Some(ref config_svc) = shared.services.config_service {
+                match config_svc.save_user_config(&state.user_config) {
                     Ok(_) => {
                         tracing::info!("[SaveNetwork] Network settings saved successfully: enabled={}, address={:?}", 
                             socks5_enabled, socks5_address);
@@ -191,8 +182,10 @@ pub fn handle_action(
                         tracing::error!("[SaveNetwork] Failed to save network settings: {}", e);
                     }
                 }
+            }
 
-                // Handle password
+            // Handle password via secrets DB (not yet in ConfigService)
+            if let Some(ref dbs) = state.dbs {
                 if let Some(pwd) = &socks5_password {
                     if let Err(e) = dbs.secrets.set_secret("proxy:socks5", pwd) {
                         tracing::error!("Failed to save proxy password: {}", e);
