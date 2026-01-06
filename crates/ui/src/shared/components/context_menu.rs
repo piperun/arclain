@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use arclain_db::{DisplayMode, UiItem, UiRegion};
+use arclain_core::{DisplayMode, UiItem, UiRegion};
 use arclain_theme::AppTheme;
 use eframe::egui;
 

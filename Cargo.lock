@@ -464,6 +464,7 @@ dependencies = [
  "arclain_widgets",
  "chrono",
  "crc32fast",
+ "diesel",
  "dirs 6.0.0",
  "eframe",
  "egui",

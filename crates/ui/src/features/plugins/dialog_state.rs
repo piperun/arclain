@@ -6,7 +6,6 @@
 use arclain_plugins::types::PluginLayout;
 
 /// State for managing plugin dialogs and pages
-#[allow(dead_code)] // Future use for dialog/page navigation
 #[derive(Debug, Default)]
 pub struct PluginDialogState {
     /// Currently open dialog: (plugin_id, dialog_id)
@@ -26,27 +25,23 @@ impl PluginDialogState {
     }
 
     /// Open a dialog for a specific plugin
-    #[allow(dead_code)]
     pub fn open_dialog(&mut self, plugin_id: &str, dialog_id: &str) {
         self.open_dialog = Some((plugin_id.to_string(), dialog_id.to_string()));
         self.cached_dialog_layout = None; // Invalidate cache on dialog change
     }
 
     /// Close the current dialog
-    #[allow(dead_code)]
     pub fn close_dialog(&mut self) {
         self.open_dialog = None;
         self.cached_dialog_layout = None; // Clear cache
     }
 
     /// Check if a dialog is currently open
-    #[allow(dead_code)]
     pub fn has_open_dialog(&self) -> bool {
         self.open_dialog.is_some()
     }
 
     /// Push a new page onto the stack
-    #[allow(dead_code)]
     pub fn open_page(&mut self, plugin_id: &str, page_id: &str) {
         self.page_stack
             .push((plugin_id.to_string(), page_id.to_string()));
@@ -54,14 +49,12 @@ impl PluginDialogState {
     }
 
     /// Pop the current page from the stack
-    #[allow(dead_code)]
     pub fn close_page(&mut self) {
         self.page_stack.pop();
         self.cached_page_layout = None; // Clear cache
     }
 
     /// Get the current page (if any)
-    #[allow(dead_code)]
     pub fn current_page(&self) -> Option<(&str, &str)> {
         self.page_stack
             .last()
@@ -69,7 +62,6 @@ impl PluginDialogState {
     }
 
     /// Check if any pages are open
-    #[allow(dead_code)]
     pub fn has_open_page(&self) -> bool {
         !self.page_stack.is_empty()
     }

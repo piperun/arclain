@@ -53,8 +53,8 @@ pub fn handle_action(
             state.signals.user_config.set(state.user_config.clone());
             // Save via DB if available
             if let Some(ref dbs) = state.dbs {
-                let _ = dbs.config.with_connection(|conn| {
-                    state.user_config.save(conn).ok();
+                let _ = dbs.config_pool.with_conn(|conn| {
+                    state.user_config.save_diesel(conn).ok();
                     Ok::<_, anyhow::Error>(())
                 });
             }
@@ -153,8 +153,8 @@ pub fn handle_action(
             state.user_config.open_nested_in_new_tab = open_nested_in_new_tab;
             state.signals.user_config.set(state.user_config.clone());
             if let Some(ref dbs) = state.dbs {
-                if let Err(e) = dbs.config.with_connection(|conn| {
-                    state.user_config.save(conn).ok();
+                if let Err(e) = dbs.config_pool.with_conn(|conn| {
+                    state.user_config.save_diesel(conn).ok();
                     Ok::<_, anyhow::Error>(())
                 }) {
                     tracing::error!("Failed to save general settings: {}", e);
@@ -180,8 +180,8 @@ pub fn handle_action(
             if let Some(ref dbs) = state.dbs {
                 // Save config
                 match dbs
-                    .config
-                    .with_connection(|conn| Ok::<_, anyhow::Error>(state.user_config.save(conn)))
+                    .config_pool
+                    .with_conn(|conn| Ok::<_, anyhow::Error>(state.user_config.save_diesel(conn)))
                 {
                     Ok(_) => {
                         tracing::info!("[SaveNetwork] Network settings saved successfully: enabled={}, address={:?}", 

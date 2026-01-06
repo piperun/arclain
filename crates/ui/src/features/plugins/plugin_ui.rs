@@ -1,8 +1,8 @@
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use crate::shared::theme::ThemeColors;
 use crate::shared::SharedState;
+use arclain_core::CacheType;
 use arclain_data::ContentCache;
-use arclain_db::CacheType;
 use arclain_http::{HttpRequest, RequestStatus};
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;

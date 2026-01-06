@@ -1,7 +1,8 @@
 // Thin wrapper around arclain_db for UI/core stability
 use anyhow::Result;
 pub use arclain_db::{
-    get_config, open_databases, set_config, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey,
+    get_config, open_databases, set_config, ConfigDb, ConfigDbs, DbPaths, DieselPool, SecretsDb,
+    SecretsKey,
 };
 
 use crate::config::PassRule;
@@ -40,11 +41,15 @@ pub fn replace_pass_rules(db: &arclain_db::SecretsDb, rules: &[PassRule]) -> Res
 // Organization Rules
 
 use crate::features::organization::OrganizationRule;
-use arclain_db::{delete_rule, list_rules, save_rule, DbOrganizationRule};
+use arclain_db::{
+    delete_rule_diesel, delete_title_replacement_diesel, list_rules_diesel,
+    list_title_replacements_diesel, save_rule_diesel, save_title_replacement_diesel,
+    DbOrganizationRule,
+};
 
-pub fn list_org_rules(db: &arclain_db::SqliteDb) -> Result<Vec<OrganizationRule>> {
-    db.with_connection(|conn| {
-        let db_rules = list_rules(conn)?;
+pub fn list_org_rules(pool: &DieselPool) -> Result<Vec<OrganizationRule>> {
+    pool.with_conn(|conn| {
+        let db_rules = list_rules_diesel(conn)?;
         let mut rules = Vec::new();
 
         for r in db_rules {
@@ -54,9 +59,6 @@ pub fn list_org_rules(db: &arclain_db::SqliteDb) -> Result<Vec<OrganizationRule>
                 is_enabled: r.is_enabled,
                 // We ignore id, description, category, is_system as they are not in the pure business object anymore
                 // or we need to put them back if they are critical for persistence.
-                // Assuming the new OrganizationRule is the Source of Truth for *logic*,
-                // but for *persistence* we might still need them.
-                // If the user wants to keep the Refactor simple, we just map what we have.
                 trigger: serde_json::from_str(&r.trigger_json).unwrap_or_default(),
                 actions: serde_json::from_str(&r.actions_json).unwrap_or_default(),
             });
@@ -66,19 +68,11 @@ pub fn list_org_rules(db: &arclain_db::SqliteDb) -> Result<Vec<OrganizationRule>
     })
 }
 
-pub fn save_org_rule(db: &arclain_db::SqliteDb, rule: &OrganizationRule) -> Result<i64> {
-    db.with_connection(|conn| {
-        // We lack 'id' in OrganizationRule to perform updates correctly if we rely on it.
-        // HACK: For now, we might rely on name matching or just always insert new?
-        // Wait, if OrganizationRule doesn't have ID, how do we update?
-        // We likely need to find by name.
-        // Or the refactor should have kept ID for database usage.
-        // For this task, I will assume we find by name or insert new.
-        // But save_rule expects an ID.
-
+pub fn save_org_rule(pool: &DieselPool, rule: &OrganizationRule) -> Result<i64> {
+    pool.with_conn(|conn| {
         // Retrieve existing rule by name to get ID if possible
         // This is a bit inefficient but safe for this refactor scope.
-        let existing_rules = list_rules(conn)?;
+        let existing_rules = list_rules_diesel(conn)?;
         let existing_id = existing_rules
             .iter()
             .find(|r| r.name == rule.name)
@@ -87,48 +81,46 @@ pub fn save_org_rule(db: &arclain_db::SqliteDb, rule: &OrganizationRule) -> Resu
         let db_rule = DbOrganizationRule {
             id: existing_id.flatten(),
             name: rule.name.clone(),
-            description: None,               // Lost in refactor
-            category: "General".to_string(), // Lost in refactor
+            description: None,
+            category: "General".to_string(),
             priority: rule.priority,
             is_enabled: rule.is_enabled,
-            is_system: false, // Lost in refactor
+            is_system: false,
             trigger_json: serde_json::to_string(&rule.trigger).unwrap_or_default(),
             actions_json: serde_json::to_string(&rule.actions).unwrap_or_default(),
         };
-        save_rule(conn, &db_rule)
+        save_rule_diesel(conn, &db_rule)
     })
 }
 
-pub fn delete_org_rule(db: &arclain_db::SqliteDb, id: i64) -> Result<()> {
-    db.with_connection(|conn| delete_rule(conn, id))
+pub fn delete_org_rule(pool: &DieselPool, id: i64) -> Result<()> {
+    pool.with_conn(|conn| delete_rule_diesel(conn, id as i32))
 }
 
 // Title Replacements
 
-pub use arclain_db::{
-    delete_title_replacement, list_title_replacements, save_title_replacement, DbTitleReplacement,
-};
+pub use arclain_db::DbTitleReplacement;
 
-pub fn list_replacements(db: &arclain_db::SqliteDb) -> Result<Vec<DbTitleReplacement>> {
-    db.with_connection(|conn| list_title_replacements(conn))
+pub fn list_replacements(pool: &DieselPool) -> Result<Vec<DbTitleReplacement>> {
+    pool.with_conn(|conn| list_title_replacements_diesel(conn))
 }
 
 pub fn save_replacement(
-    db: &arclain_db::SqliteDb,
+    pool: &DieselPool,
     original: &str,
     replacement: &str,
     is_system: bool,
 ) -> Result<()> {
-    db.with_connection(|conn| save_title_replacement(conn, original, replacement, is_system))
+    pool.with_conn(|conn| save_title_replacement_diesel(conn, original, replacement, is_system))
 }
 
-pub fn delete_replacement(db: &arclain_db::SqliteDb, id: i64) -> Result<()> {
-    db.with_connection(|conn| delete_title_replacement(conn, id))
+pub fn delete_replacement(pool: &DieselPool, id: i64) -> Result<()> {
+    pool.with_conn(|conn| delete_title_replacement_diesel(conn, id as i32))
 }
 
 /// Ensure default rules exist in the database
-pub fn ensure_default_rules(db: &arclain_db::SqliteDb) -> Result<()> {
-    let rules = list_org_rules(db)?;
+pub fn ensure_default_rules(pool: &DieselPool) -> Result<()> {
+    let rules = list_org_rules(pool)?;
     if !rules.is_empty() {
         return Ok(());
     }
@@ -150,7 +142,7 @@ pub fn ensure_default_rules(db: &arclain_db::SqliteDb) -> Result<()> {
         },
     };
 
-    save_org_rule(db, &dlsite_rule)?;
+    save_org_rule(pool, &dlsite_rule)?;
     tracing::info!("Seeded default DLsite rule");
 
     Ok(())
@@ -159,16 +151,16 @@ pub fn ensure_default_rules(db: &arclain_db::SqliteDb) -> Result<()> {
 /// Upsert system rules (e.g. from plugins)
 /// Matches existing system rules by name and updates them.
 /// Creates new rules if not found.
-pub fn upsert_system_rules(db: &arclain_db::SqliteDb, rules: &[OrganizationRule]) -> Result<()> {
-    let existing_rules = list_org_rules(db)?;
+pub fn upsert_system_rules(pool: &DieselPool, rules: &[OrganizationRule]) -> Result<()> {
+    let existing_rules = list_org_rules(pool)?;
 
     for rule in rules {
         // Find existing rules by name
         if let Some(_) = existing_rules.iter().find(|r| r.name == rule.name) {
-            save_org_rule(db, rule)?;
+            save_org_rule(pool, rule)?;
             tracing::debug!("Updated system rule: {}", rule.name);
         } else {
-            save_org_rule(db, rule)?;
+            save_org_rule(pool, rule)?;
             tracing::info!("Inserted new system rule: {}", rule.name);
         }
     }

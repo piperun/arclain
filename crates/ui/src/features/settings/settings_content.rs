@@ -94,12 +94,16 @@ pub fn render_settings_content(
         }
         SettingsPage::General => render_general_settings(ui, theme, general_state),
         SettingsPage::Network => pages::network::render(ui, theme, network_state),
-        SettingsPage::Interface => crate::features::settings::pages::render_interface_settings(
-            ui,
-            theme,
-            app_state,
-            interface_state,
-        ),
+        SettingsPage::Interface => {
+            let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
+            crate::features::settings::pages::render_interface_settings(
+                ui,
+                theme,
+                app_state,
+                interface_state,
+                ui_service,
+            )
+        }
         SettingsPage::Archives => render_archives_settings(ui, theme, archives_state),
         SettingsPage::Security => render_security_settings(ui, theme, security_state),
         SettingsPage::PasswordRules => {
@@ -107,19 +111,14 @@ pub fn render_settings_content(
         }
         SettingsPage::OrganizationRules => {
             if let Some(rp) = rules_page {
-                let db_opt = {
-                    let state = app_state.lock();
-                    if let Some(dbs) = &state.dbs {
-                        Some(dbs.config.clone())
+                if let Some(shared_state) = shared {
+                    if let Some(org_service) = shared_state.services.organization_service.as_ref() {
+                        rp.render(ui, theme, org_service);
                     } else {
-                        None
+                        ui.label("Organization service not available.");
                     }
-                };
-
-                if let Some(db) = db_opt {
-                    rp.render(ui, theme, &db);
                 } else {
-                    ui.label("Database not available (encrypted?)");
+                    ui.label("SharedState not available.");
                 }
             } else {
                 ui.label("Rules page not available.");
@@ -130,20 +129,22 @@ pub fn render_settings_content(
             render_plugins_settings(ui, theme, plugin_manager, plugins_state, app_state, shared)
         }
         SettingsPage::ToolbarLayout => {
+            let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
             crate::features::settings::pages::render_toolbar_layout(
                 ui,
                 theme,
-                app_state,
+                ui_service,
                 toolbar_layout_state,
                 plugin_manager,
             );
             None
         }
         SettingsPage::InfoPanelLayout => {
+            let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
             crate::features::settings::pages::render_info_panel_layout(
                 ui,
                 theme,
-                app_state,
+                ui_service,
                 info_panel_layout_state,
                 plugin_manager,
             );

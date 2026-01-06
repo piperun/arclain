@@ -1,6 +1,7 @@
 use crate::features::settings::types::SettingsAction;
 use crate::shared::theme::AppTheme;
-use arclain_db::{UiItem, UiRegion};
+use arclain_core::UiService;
+use arclain_core::{UiItem, UiRegion};
 use eframe::egui;
 
 use super::sections;
@@ -34,8 +35,8 @@ impl Default for InterfaceSettingsState {
 }
 
 impl InterfaceSettingsState {
-    /// Load items from database
-    pub fn load_from_db(&mut self, conn: &rusqlite::Connection) {
+    /// Load items from database via UiService
+    pub fn load_from_service(&mut self, service: &UiService) {
         if self.loaded {
             return;
         }
@@ -48,7 +49,7 @@ impl InterfaceSettingsState {
             UiRegion::InfoPanel,
             UiRegion::ToolsDialog,
         ] {
-            if let Ok(items) = arclain_db::list_items_by_region(conn, region) {
+            if let Ok(items) = service.list_items(region) {
                 self.items.extend(items);
             }
         }
@@ -62,7 +63,7 @@ impl InterfaceSettingsState {
             "properties_panel_visible",
             "properties_panel_width",
         ] {
-            if let Ok(Some(val)) = arclain_db::get_display_option(conn, key) {
+            if let Ok(Some(val)) = service.get_display_option(key) {
                 opts_map.insert(key.to_string(), val);
             }
         }
@@ -72,20 +73,18 @@ impl InterfaceSettingsState {
         self.dirty = false;
     }
 
-    /// Save modified items back to database
-    pub fn save_to_db(&mut self, conn: &rusqlite::Connection) {
+    /// Save modified items back to database via UiService
+    pub fn save_to_service(&mut self, service: &UiService) {
         if !self.dirty {
             return;
         }
 
         // Save all items
-        for item in &self.items {
-            let _ = arclain_db::upsert_item(conn, item);
-        }
+        let _ = service.upsert_items(&self.items);
 
         // Save display options
         for (key, value) in self.layout_options.to_map() {
-            let _ = arclain_db::set_display_option(conn, &key, &value);
+            let _ = service.set_display_option(&key, &value);
         }
 
         self.dirty = false;
@@ -99,19 +98,14 @@ pub fn render_interface_settings(
     theme: &AppTheme,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     interface_state: &mut InterfaceSettingsState,
+    ui_service: Option<&UiService>,
 ) -> Option<SettingsAction> {
     let mut action: Option<SettingsAction> = None;
 
     // Load items from database if not already loaded
     if !interface_state.loaded {
-        let conn_opt = {
-            let state = app_state.lock();
-            state.dbs.as_ref().map(|dbs| dbs.config.connection())
-        };
-        if let Some(conn) = conn_opt {
-            if let Ok(guard) = conn.lock() {
-                interface_state.load_from_db(&guard);
-            }
+        if let Some(service) = ui_service {
+            interface_state.load_from_service(service);
         }
     }
 
@@ -207,26 +201,17 @@ pub fn render_interface_settings(
 
         // Auto-save: save immediately when changes are made
         if interface_state.dirty {
-            let conn_opt = {
-                let state = app_state.lock();
-                state.dbs.as_ref().map(|dbs| dbs.config.connection())
-            };
-            if let Some(conn) = conn_opt {
-                if let Ok(guard) = conn.lock() {
-                    interface_state.save_to_db(&guard);
+            if let Some(service) = ui_service {
+                interface_state.save_to_service(service);
 
-                    // Reload toolbar items in AppSignals
-                    if let Ok(items) = arclain_db::list_items_by_region(&guard, UiRegion::Toolbar) {
-                        app_state.lock().signals.toolbar_items.set(items);
-                    }
+                // Reload toolbar items in AppSignals
+                if let Ok(items) = service.list_toolbar_items() {
+                    app_state.lock().signals.toolbar_items.set(items);
+                }
 
-                    // Reload info panel items in AppSignals
-                    if let Ok(items) = arclain_db::list_items_by_region(&guard, UiRegion::InfoPanel)
-                    {
-                        app_state.lock().signals.info_panel_items.set(items);
-                    }
-
-                    // Saved successfully - no action needed
+                // Reload info panel items in AppSignals
+                if let Ok(items) = service.list_info_panel_items() {
+                    app_state.lock().signals.info_panel_items.set(items);
                 }
             }
         }

@@ -296,6 +296,7 @@ pub fn is_domain_approved_diesel(
 }
 
 /// Approve a domain using Diesel DSL
+/// Approve a domain using Diesel DSL
 pub fn approve_domain_diesel(
     conn: &mut diesel::SqliteConnection,
     pid: &str,
@@ -303,10 +304,39 @@ pub fn approve_domain_diesel(
 ) -> Result<()> {
     use crate::diesel_schema::domain_whitelist::dsl::*;
 
-    diesel::update(domain_whitelist.filter(plugin_id.eq(pid).and(domain.eq(dom))))
-        .set(approved.eq(true))
+    diesel::insert_into(domain_whitelist)
+        .values((
+            plugin_id.eq(pid),
+            domain.eq(dom),
+            approved.eq(true),
+            approved_at.eq(diesel::dsl::sql::<
+                diesel::sql_types::Nullable<diesel::sql_types::Text>,
+            >("CURRENT_TIMESTAMP")),
+        ))
+        .on_conflict((plugin_id, domain))
+        .do_update()
+        .set((
+            approved.eq(true),
+            approved_at.eq(diesel::dsl::sql("CURRENT_TIMESTAMP")),
+        ))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Diesel approve failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Revoke a domain using Diesel DSL
+pub fn revoke_domain_diesel(
+    conn: &mut diesel::SqliteConnection,
+    pid: &str,
+    dom: &str,
+) -> Result<()> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
+
+    diesel::update(domain_whitelist.filter(plugin_id.eq(pid).and(domain.eq(dom))))
+        .set(approved.eq(false))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel revoke failed: {}", e))?;
 
     Ok(())
 }

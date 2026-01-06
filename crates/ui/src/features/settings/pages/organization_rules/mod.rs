@@ -5,9 +5,8 @@
 mod add_rule_dialog;
 
 use add_rule_dialog::AddRuleDialog;
-use arclain_core::config::database::{delete_org_rule, list_org_rules, save_org_rule};
 use arclain_core::features::organization::OrganizationRule;
-use arclain_db::SqliteDb;
+use arclain_core::OrganizationService;
 
 pub struct RulesPage {
     rules: Option<Vec<OrganizationRule>>,
@@ -30,8 +29,8 @@ impl RulesPage {
         Self::default()
     }
 
-    fn refresh_rules(&mut self, db: &SqliteDb) {
-        match list_org_rules(db) {
+    fn refresh_rules(&mut self, service: &OrganizationService) {
+        match service.list_domain_rules() {
             Ok(rules) => self.rules = Some(rules),
             Err(e) => self.error = Some(format!("Failed to load rules: {}", e)),
         }
@@ -41,10 +40,10 @@ impl RulesPage {
         &mut self,
         ui: &mut egui::Ui,
         theme: &crate::shared::theme::AppTheme,
-        db: &SqliteDb,
+        service: &OrganizationService,
     ) {
         if self.rules.is_none() {
-            self.refresh_rules(db);
+            self.refresh_rules(service);
         }
 
         ui.heading("Organization Rules");
@@ -108,7 +107,7 @@ impl RulesPage {
         }
 
         if let Some(id) = rule_to_delete {
-            if let Err(e) = delete_org_rule(db, id) {
+            if let Err(e) = service.delete_domain_rule(id) {
                 self.error = Some(format!("Failed to delete: {}", e));
             } else {
                 self.rules = None; // Trigger refresh
@@ -118,7 +117,7 @@ impl RulesPage {
         // Handle Dialog
         if self.dialog.is_open() {
             if let Some(new_rule) = self.dialog.show(ui.ctx(), theme) {
-                if let Err(e) = save_org_rule(db, &new_rule) {
+                if let Err(e) = service.save_domain_rule(&new_rule) {
                     self.error = Some(format!("Failed to save rule: {}", e));
                 } else {
                     self.rules = None; // Trigger refresh

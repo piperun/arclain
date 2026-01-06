@@ -4,4 +4,7 @@
 
 mod config_db;
 
+#[cfg(test)]
+mod tests;
+
 pub use config_db::*;

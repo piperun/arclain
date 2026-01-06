@@ -1,6 +1,6 @@
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_db::{DisplayMode, UiItem, UiRegion};
+use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::{ButtonAction, PluginExtensionPoint, PluginUiElement};
 use arclain_theme::ButtonVariant;
@@ -123,7 +123,7 @@ fn render_button(
     state: &mut ToolbarState,
     actions: &mut ToolbarActions,
 ) {
-    if item.action_type == arclain_db::ActionType::Plugin {
+    if item.action_type == ActionType::Plugin {
         if let Some(action_data) = &item.action_data {
             // format: "plugin_id:button_id"
             if let Some((plugin_id, btn_id)) = action_data.split_once(':') {

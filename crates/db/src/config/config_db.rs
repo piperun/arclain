@@ -208,7 +208,6 @@ pub fn delete_title_replacement(conn: &Connection, id: i64) -> Result<()> {
 // ============================================================================
 
 use diesel::prelude::*;
-use diesel::result::OptionalExtension as DieselOptional;
 
 /// List all title replacements using Diesel DSL
 pub fn list_title_replacements_diesel(

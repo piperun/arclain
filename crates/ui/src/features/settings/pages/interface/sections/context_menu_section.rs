@@ -2,7 +2,7 @@
 
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use crate::shared::theme::AppTheme;
-use arclain_db::{UiItem, UiRegion};
+use arclain_core::{UiItem, UiRegion};
 use arclain_widgets::ToggleSwitch;
 use eframe::egui;
 

@@ -1,5 +1,8 @@
-//! Checksum/verification feature module
+//! Checksum verification feature module
 
-mod checksum_db;
+pub mod checksum_db;
+
+#[cfg(test)]
+mod tests;
 
 pub use checksum_db::*;

@@ -1,5 +1,8 @@
 //! Organization rules feature module
 
-mod rules;
+pub mod rules;
+
+#[cfg(test)]
+mod tests;
 
 pub use rules::*;

@@ -8,7 +8,7 @@ use crate::core::state::UiPreferences;
 use arclain_core::archive::NavigationState;
 use arclain_core::features::organization::GameMetadata;
 use arclain_core::ArchiveEntry;
-use arclain_db::UiItem;
+use arclain_core::UiItem;
 use arclain_signals::{Signal, SignalContext};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -105,7 +105,7 @@ pub struct AppSignals {
     pub ui_preferences: Signal<UiPreferences>,
 
     /// User preferences from config DB - reactive
-    pub user_config: Signal<arclain_db::UserConfig>,
+    pub user_config: Signal<arclain_core::UserConfig>,
 
     /// Navigation state - reactive
     pub navigation: Signal<NavigationState>,
@@ -133,7 +133,7 @@ impl AppSignals {
             archive_info: Signal::new(ArchiveInfo::default()),
             game_metadata: Signal::new(None),
             ui_preferences: Signal::new(UiPreferences::default()),
-            user_config: Signal::new(arclain_db::UserConfig::default()),
+            user_config: Signal::new(arclain_core::UserConfig::default()),
             navigation: Signal::new(NavigationState::new()),
             current_password: Signal::new(None),
         }

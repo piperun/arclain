@@ -403,9 +403,9 @@ impl eframe::App for ArclainApp {
                                 let state = self.shared_state.app_state.lock();
 
                                 if let Some(dbs) = &state.dbs {
-                                    let db = &dbs.config;
+                                    let pool = &dbs.config_pool;
                                     if let Ok(loaded) =
-                                        arclain_core::config::database::list_org_rules(db)
+                                        arclain_core::config::database::list_org_rules(pool)
                                     {
                                         rules = loaded
                                             .into_iter()
@@ -637,24 +637,17 @@ impl eframe::App for ArclainApp {
                     }
                     AppPage::Organize => {
                         egui::CentralPanel::default().show(ctx, |ui| {
-                            // Extract DB (generic way, minimal lock)
-                            let db_opt = {
-                                let state = self.shared_state.app_state.lock();
-                                if let Some(dbs) = &state.dbs {
-                                    Some(dbs.config.clone()) // Clone ConfigDb (cheap Arc)
-                                } else {
-                                    None
-                                }
-                            };
-
-                            if let Some(cfg_db) = db_opt {
+                            // Get OrganizationService from Services container
+                            if let Some(org_service) =
+                                self.shared_state.services.organization_service.as_ref()
+                            {
                                 self.organization_feature.rules_page.render(
                                     ui,
                                     &self.shared_state.theme,
-                                    &cfg_db,
+                                    org_service,
                                 );
                             } else {
-                                ui.label("Database not available.");
+                                ui.label("Organization service not available.");
                             }
                         });
                     }

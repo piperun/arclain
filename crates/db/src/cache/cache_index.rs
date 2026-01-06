@@ -3,8 +3,7 @@
 //! This module provides a SQLite-backed index that tracks where cached
 //! content is stored in the cacache content-addressable store.
 
-use anyhow::{Context, Result};
-use rusqlite::Connection;
+use anyhow::Result;
 
 /// Type of cached content
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,33 +48,76 @@ pub struct CacheEntry {
     pub size_bytes: Option<i64>,
 }
 
-/// Initialize the cache_index table schema
-pub fn init_cache_index_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS cache_index (
-            id INTEGER PRIMARY KEY,
-            key TEXT UNIQUE NOT NULL,
-            product_id TEXT,
-            content_hash TEXT NOT NULL,
-            source_url TEXT,
-            cache_type TEXT NOT NULL DEFAULT 'other',
-            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            last_accessed TEXT,
-            size_bytes INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS idx_cache_product ON cache_index(product_id);
-        CREATE INDEX IF NOT EXISTS idx_cache_type ON cache_index(cache_type);
-        CREATE INDEX IF NOT EXISTS idx_cache_key ON cache_index(key);
-        "#,
-    )
-    .context("Failed to create cache_index table")?;
-    Ok(())
+// ============================================================================
+// Diesel DSL versions (Primary)
+// ============================================================================
+
+use diesel::prelude::*;
+use diesel::result::OptionalExtension;
+
+/// Diesel-compatible cache index row
+#[derive(
+    Debug, Clone, diesel::Queryable, diesel::Selectable, diesel::Insertable, diesel::AsChangeset,
+)]
+#[diesel(table_name = crate::diesel_schema::cache_index)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
+pub struct DbCacheEntry {
+    pub id: i32,
+    pub key: String,
+    pub product_id: Option<String>,
+    pub content_hash: String,
+    pub source_url: Option<String>,
+    pub cache_type: String,
+    pub created_at: String, // DB sets default, but we might read it
+    pub last_accessed: Option<String>,
+    pub size_bytes: Option<i64>,
+}
+
+#[derive(diesel::Insertable, diesel::AsChangeset)]
+#[diesel(table_name = crate::diesel_schema::cache_index)]
+pub struct NewDbCacheEntry<'a> {
+    pub key: &'a str,
+    pub product_id: Option<&'a str>,
+    pub content_hash: &'a str,
+    pub source_url: Option<&'a str>,
+    pub cache_type: &'a str,
+    pub size_bytes: Option<i64>,
+    // created_at usually default, unless we set it explicitly?
+    // The previous code let DB set CURRENT_TIMESTAMP on insert.
+    // So we omit it from insert struct.
+}
+
+#[derive(diesel::AsChangeset)]
+#[diesel(table_name = crate::diesel_schema::cache_index)]
+pub struct UpdateDbCacheEntry<'a> {
+    pub content_hash: &'a str,
+    pub source_url: Option<&'a str>,
+    // We want to set last_accessed = CURRENT_TIMESTAMP.
+    // Diesel doesn't easily support "CURRENT_TIMESTAMP" literal in AsChangeset without expression.
+    // We can use custom update or just set it to now in Rust.
+    // Previous code used `last_accessed = CURRENT_TIMESTAMP`.
+    pub size_bytes: Option<i64>,
+}
+
+impl DbCacheEntry {
+    pub fn to_cache_entry(self) -> CacheEntry {
+        CacheEntry {
+            id: self.id as i64,
+            key: self.key,
+            product_id: self.product_id,
+            content_hash: self.content_hash,
+            source_url: self.source_url,
+            cache_type: CacheType::from_str(&self.cache_type),
+            created_at: self.created_at,
+            last_accessed: self.last_accessed,
+            size_bytes: self.size_bytes,
+        }
+    }
 }
 
 /// Insert or update a cache entry
 pub fn upsert_cache_entry(
-    conn: &Connection,
+    conn: &mut diesel::SqliteConnection,
     key: &str,
     product_id: Option<&str>,
     content_hash: &str,
@@ -83,167 +125,126 @@ pub fn upsert_cache_entry(
     cache_type: CacheType,
     size_bytes: Option<i64>,
 ) -> Result<i64> {
-    conn.execute(
-        r#"
-        INSERT INTO cache_index (key, product_id, content_hash, source_url, cache_type, size_bytes)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-        ON CONFLICT(key) DO UPDATE SET
-            content_hash = excluded.content_hash,
-            source_url = excluded.source_url,
-            last_accessed = CURRENT_TIMESTAMP,
-            size_bytes = excluded.size_bytes
-        "#,
-        rusqlite::params![
-            key,
-            product_id,
-            content_hash,
-            source_url,
-            cache_type.as_str(),
-            size_bytes
-        ],
-    )
-    .context("Failed to upsert cache entry")?;
+    use crate::diesel_schema::cache_index::dsl;
 
-    Ok(conn.last_insert_rowid())
+    // We can't use simple standard struct with CURRENT_TIMESTAMP easily in one go if we also want to return ID.
+    // But we can just use normal insert.
+
+    // Manually handle upsert because we need to set last_accessed = CURRENT_TIMESTAMP on conflict.
+    // Diesel's `do_update().set(..)` works.
+    // We can use `diesel::dsl::now` but sqlite stores strings.
+    // Actually rust `chrono::Utc::now()` is safer for consistency if we use ISO string everywhere.
+    // But previous code used `CURRENT_TIMESTAMP` (SQLite default).
+    // Let's stick to `CURRENT_TIMESTAMP` via `diesel::dsl::sql`.
+
+    diesel::insert_into(dsl::cache_index)
+        .values((
+            dsl::key.eq(key),
+            dsl::product_id.eq(product_id),
+            dsl::content_hash.eq(content_hash),
+            dsl::source_url.eq(source_url),
+            dsl::cache_type.eq(cache_type.as_str()),
+            dsl::size_bytes.eq(size_bytes),
+            // created_at defaults
+        ))
+        .on_conflict(dsl::key)
+        .do_update()
+        .set((
+            dsl::content_hash.eq(content_hash),
+            dsl::source_url.eq(source_url),
+            dsl::last_accessed.eq(diesel::dsl::sql("CURRENT_TIMESTAMP")),
+            dsl::size_bytes.eq(size_bytes),
+        ))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel upsert failed: {}", e))?;
+
+    // Fetch ID
+    let id: i32 = dsl::cache_index
+        .filter(dsl::key.eq(key))
+        .select(dsl::id)
+        .first(conn)?;
+
+    Ok(id as i64)
 }
 
 /// Get a cache entry by key
-pub fn get_cache_entry(conn: &Connection, key: &str) -> Result<Option<CacheEntry>> {
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT id, key, product_id, content_hash, source_url, cache_type, 
-               created_at, last_accessed, size_bytes
-        FROM cache_index WHERE key = ?1
-        "#,
-    )?;
+pub fn get_cache_entry(
+    conn: &mut diesel::SqliteConnection,
+    key_param: &str,
+) -> Result<Option<CacheEntry>> {
+    use crate::diesel_schema::cache_index::dsl::*;
 
-    let entry = stmt
-        .query_row([key], |row| {
-            Ok(CacheEntry {
-                id: row.get(0)?,
-                key: row.get(1)?,
-                product_id: row.get(2)?,
-                content_hash: row.get(3)?,
-                source_url: row.get(4)?,
-                cache_type: CacheType::from_str(&row.get::<_, String>(5)?),
-                created_at: row.get(6)?,
-                last_accessed: row.get(7)?,
-                size_bytes: row.get(8)?,
-            })
-        })
-        .optional()?;
+    let entry = cache_index
+        .filter(key.eq(key_param))
+        .select(DbCacheEntry::as_select())
+        .first::<DbCacheEntry>(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Diesel get failed: {}", e))?;
 
-    Ok(entry)
+    Ok(entry.map(|e| e.to_cache_entry()))
 }
 
 /// Get all cache entries for a product
-pub fn get_entries_by_product(conn: &Connection, product_id: &str) -> Result<Vec<CacheEntry>> {
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT id, key, product_id, content_hash, source_url, cache_type, 
-               created_at, last_accessed, size_bytes
-        FROM cache_index WHERE product_id = ?1
-        ORDER BY created_at DESC
-        "#,
-    )?;
+pub fn get_entries_by_product(
+    conn: &mut diesel::SqliteConnection,
+    prod_id: &str,
+) -> Result<Vec<CacheEntry>> {
+    use crate::diesel_schema::cache_index::dsl::*;
 
-    let entries = stmt
-        .query_map([product_id], |row| {
-            Ok(CacheEntry {
-                id: row.get(0)?,
-                key: row.get(1)?,
-                product_id: row.get(2)?,
-                content_hash: row.get(3)?,
-                source_url: row.get(4)?,
-                cache_type: CacheType::from_str(&row.get::<_, String>(5)?),
-                created_at: row.get(6)?,
-                last_accessed: row.get(7)?,
-                size_bytes: row.get(8)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
+    let entries = cache_index
+        .filter(product_id.eq(prod_id))
+        .order(created_at.desc())
+        .select(DbCacheEntry::as_select())
+        .load::<DbCacheEntry>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel get_entries failed: {}", e))?;
 
-    Ok(entries)
+    Ok(entries.into_iter().map(|e| e.to_cache_entry()).collect())
 }
 
 /// Check if a cache entry exists
-pub fn has_cache_entry(conn: &Connection, key: &str) -> Result<bool> {
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM cache_index WHERE key = ?1",
-        [key],
-        |row| row.get(0),
-    )?;
-    Ok(count > 0)
-}
-
-/// Delete a cache entry by key
-pub fn delete_cache_entry(conn: &Connection, key: &str) -> Result<bool> {
-    let affected = conn.execute("DELETE FROM cache_index WHERE key = ?1", [key])?;
-    Ok(affected > 0)
-}
-
-/// Update last_accessed timestamp
-pub fn touch_cache_entry(conn: &Connection, key: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE cache_index SET last_accessed = CURRENT_TIMESTAMP WHERE key = ?1",
-        [key],
-    )?;
-    Ok(())
-}
-
-use rusqlite::OptionalExtension;
-
-/// Remove all cache entries
-pub fn clear_all_entries(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM cache_index", [])
-        .context("Failed to clear cache index")?;
-    Ok(())
-}
-
-// ============================================================================
-// Diesel DSL versions
-// ============================================================================
-
-use diesel::prelude::*;
-
-/// Delete cache entry by key using Diesel DSL
-pub fn delete_cache_entry_diesel(
-    conn: &mut diesel::SqliteConnection,
-    entry_key: &str,
-) -> Result<bool> {
-    use crate::diesel_schema::cache_index::dsl::*;
-
-    let affected = diesel::delete(cache_index.filter(key.eq(entry_key)))
-        .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
-
-    Ok(affected > 0)
-}
-
-/// Check if cache entry exists using Diesel DSL
-pub fn has_cache_entry_diesel(
-    conn: &mut diesel::SqliteConnection,
-    entry_key: &str,
-) -> Result<bool> {
+pub fn has_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -> Result<bool> {
     use crate::diesel_schema::cache_index::dsl::*;
     use diesel::dsl::count;
 
     let cnt: i64 = cache_index
-        .filter(key.eq(entry_key))
+        .filter(key.eq(key_param))
         .select(count(id))
         .first(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Diesel count failed: {}", e))?;
 
     Ok(cnt > 0)
 }
 
-/// Clear all cache entries using Diesel DSL
-pub fn clear_all_entries_diesel(conn: &mut diesel::SqliteConnection) -> Result<()> {
+/// Delete a cache entry by key
+pub fn delete_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -> Result<bool> {
+    use crate::diesel_schema::cache_index::dsl::*;
+
+    let affected = diesel::delete(cache_index.filter(key.eq(key_param)))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+
+    Ok(affected > 0)
+}
+
+/// Update last_accessed timestamp
+pub fn touch_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -> Result<()> {
+    use crate::diesel_schema::cache_index::dsl::*;
+
+    diesel::update(cache_index.filter(key.eq(key_param)))
+        .set(last_accessed.eq(diesel::dsl::sql("CURRENT_TIMESTAMP")))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel touch failed: {}", e))?;
+
+    Ok(())
+}
+
+/// Remove all cache entries
+pub fn clear_all_entries(conn: &mut diesel::SqliteConnection) -> Result<()> {
     use crate::diesel_schema::cache_index::dsl::*;
 
     diesel::delete(cache_index)
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Diesel clear failed: {}", e))?;
 
     Ok(())
 }
