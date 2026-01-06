@@ -179,7 +179,7 @@ pub fn render(
             );
         } else {
             for entry in &whitelist_entries {
-                if render_domain_row(ui, theme, entry, app_state, shared) {
+                if render_domain_row(ui, theme, entry, shared) {
                     needs_refresh = true;
                 }
                 ui.add_space(8.0);
@@ -217,12 +217,10 @@ pub fn render(
     needs_refresh
 }
 
-/// Helper to render domain access row
 fn render_domain_row(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     entry: &arclain_http::features::whitelist::WhitelistEntry,
-    app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> bool {
     let mut changed = false;
@@ -230,7 +228,6 @@ fn render_domain_row(
     let is_approved = entry.approved;
 
     ui.horizontal(|ui| {
-        // Status Icon
         // Status Icon
         if is_approved {
             ui.label(
