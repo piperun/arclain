@@ -1,12 +1,12 @@
 use crate::config::database::{list_org_rules, save_org_rule};
 use anyhow::Result;
-use arclain_db::SqliteDb;
+use arclain_db::DieselPool;
 
 /// Synchronize organization rules from defaults to the database
 /// Only runs if the database is empty
-pub fn sync_rules(db: &SqliteDb) -> Result<()> {
+pub fn sync_rules(pool: &DieselPool) -> Result<()> {
     // Check if we have any rules in DB
-    let existing_rules = list_org_rules(db)?;
+    let existing_rules = list_org_rules(pool)?;
     tracing::info!("sync_rules: {} existing rules in DB", existing_rules.len());
 
     if !existing_rules.is_empty() {
@@ -20,7 +20,7 @@ pub fn sync_rules(db: &SqliteDb) -> Result<()> {
 
     for rule in &defaults {
         tracing::info!("sync_rules: Inserting rule '{}'", rule.name);
-        save_org_rule(db, rule)?;
+        save_org_rule(pool, rule)?;
     }
 
     Ok(())

@@ -89,7 +89,7 @@ impl PluginsListState {
     pub fn update_from_manager(
         &mut self,
         manager: &arclain_plugins::PluginManager,
-        user_config: &arclain_db::UserConfig,
+        user_config: &arclain_core::UserConfig,
     ) {
         self.plugins.clear();
 

@@ -4,10 +4,7 @@
 //! using cacache for content-addressable storage and SQLite for indexing.
 
 use anyhow::{Context, Result};
-use arclain_db::{
-    get_cache_entry, has_cache_entry, init_cache_index_schema, touch_cache_entry,
-    upsert_cache_entry, CacheEntry, CacheType, SqliteDb,
-};
+use arclain_db::{legacy, CacheEntry, CacheType, SqliteDb};
 use std::path::{Path, PathBuf};
 
 /// Unified content cache combining cacache blob storage with SQLite index
@@ -33,7 +30,7 @@ impl ContentCache {
             .with_context(|| format!("Creating cache directory {:?}", images_dir))?;
 
         // Initialize SQLite schema
-        index_db.init_schema(init_cache_index_schema)?;
+        index_db.init_schema(legacy::cache_index::init_cache_index_schema)?;
 
         Ok(Self {
             cache_dir: images_dir,
@@ -44,7 +41,7 @@ impl ContentCache {
     /// Check if content exists in cache
     pub fn has(&self, key: &str) -> Result<bool> {
         self.index_db
-            .with_connection(|conn| has_cache_entry(conn, key))
+            .with_connection(|conn| legacy::cache_index::has_cache_entry(conn, key))
     }
 
     /// Get content from cache
@@ -52,7 +49,7 @@ impl ContentCache {
         // First check SQLite index
         let entry = self
             .index_db
-            .with_connection(|conn| get_cache_entry(conn, key))?;
+            .with_connection(|conn| legacy::cache_index::get_cache_entry(conn, key))?;
 
         let Some(entry) = entry else {
             return Ok(None);
@@ -70,7 +67,7 @@ impl ContentCache {
                 // Update last accessed time
                 let _ = self
                     .index_db
-                    .with_connection(|conn| touch_cache_entry(conn, key));
+                    .with_connection(|conn| legacy::cache_index::touch_cache_entry(conn, key));
                 Ok(Some(data))
             }
             Err(e) => {
@@ -98,7 +95,7 @@ impl ContentCache {
 
         // Update SQLite index
         self.index_db.with_connection(|conn| {
-            upsert_cache_entry(
+            legacy::cache_index::upsert_cache_entry(
                 conn,
                 key,
                 product_id,
@@ -115,13 +112,13 @@ impl ContentCache {
     /// Get cache entry metadata (without loading content)
     pub fn get_entry(&self, key: &str) -> Result<Option<CacheEntry>> {
         self.index_db
-            .with_connection(|conn| get_cache_entry(conn, key))
+            .with_connection(|conn| legacy::cache_index::get_cache_entry(conn, key))
     }
 
     /// Get all entries for a product ID
     pub fn get_product_entries(&self, product_id: &str) -> Result<Vec<CacheEntry>> {
         self.index_db
-            .with_connection(|conn| arclain_db::get_entries_by_product(conn, product_id))
+            .with_connection(|conn| legacy::cache_index::get_entries_by_product(conn, product_id))
     }
 
     /// Get the cache directory path
@@ -135,12 +132,12 @@ impl ContentCache {
         // First get the entry to find the content hash
         let entry = self
             .index_db
-            .with_connection(|conn| get_cache_entry(conn, key))?;
+            .with_connection(|conn| legacy::cache_index::get_cache_entry(conn, key))?;
 
         // Delete from SQLite index
         let deleted = self
             .index_db
-            .with_connection(|conn| arclain_db::delete_cache_entry(conn, key))?;
+            .with_connection(|conn| legacy::cache_index::delete_cache_entry(conn, key))?;
 
         // Note: We don't delete from cacache because it's content-addressable
         // The content may be referenced by other keys. Cacache handles garbage collection.

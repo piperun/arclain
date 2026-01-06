@@ -1,6 +1,9 @@
 //! Unit tests for cache module
 
 use super::*;
+use crate::legacy::cache_index::{
+    get_cache_entry, has_cache_entry, init_cache_index_schema, upsert_cache_entry,
+};
 
 fn setup_test_db() -> rusqlite::Connection {
     let conn = rusqlite::Connection::open_in_memory().unwrap();

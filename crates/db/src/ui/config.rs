@@ -592,6 +592,42 @@ pub fn get_item_diesel(
     Ok(row.map(|r| r.to_ui_item()))
 }
 
+/// Upsert item using Diesel DSL
+pub fn upsert_item_diesel(conn: &mut diesel::SqliteConnection, item: &UiItem) -> Result<()> {
+    use crate::diesel_schema::ui_items::dsl::*;
+
+    diesel::insert_into(ui_items)
+        .values((
+            id.eq(&item.id),
+            region.eq(item.region.as_str()),
+            group_id.eq(&item.group_id),
+            label.eq(&item.label),
+            icon.eq(&item.icon),
+            visible.eq(item.visible),
+            sort_order.eq(item.sort_order),
+            display_mode.eq(item.display_mode.as_str()),
+            action_type.eq(item.action_type.as_str()),
+            action_data.eq(&item.action_data),
+        ))
+        .on_conflict(id)
+        .do_update()
+        .set((
+            region.eq(item.region.as_str()),
+            group_id.eq(&item.group_id),
+            label.eq(&item.label),
+            icon.eq(&item.icon),
+            visible.eq(item.visible),
+            sort_order.eq(item.sort_order),
+            display_mode.eq(item.display_mode.as_str()),
+            action_type.eq(item.action_type.as_str()),
+            action_data.eq(&item.action_data),
+        ))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel upsert failed: {}", e))?;
+
+    Ok(())
+}
+
 /// Delete item using Diesel DSL
 pub fn delete_item_diesel(conn: &mut diesel::SqliteConnection, item_id: &str) -> Result<()> {
     use crate::diesel_schema::ui_items::dsl::*;

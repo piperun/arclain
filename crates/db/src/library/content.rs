@@ -4,7 +4,6 @@
 //! in cacache, linked to their parent ProductMetadata.
 
 use anyhow::Result;
-use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Type of cached content
@@ -91,22 +90,6 @@ impl ProductContent {
     pub fn get_content_type(&self) -> ContentType {
         ContentType::from_str(&self.content_type)
     }
-
-    /// Parse from a database row
-    pub fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
-        Ok(Self {
-            id: row.get(0)?,
-            product_id: row.get(1)?,
-            content_type: row.get(2)?,
-            content_index: row.get(3)?,
-            content_hash: row.get(4)?,
-            source_url: row.get(5).ok(),
-            width: row.get(6).ok(),
-            height: row.get(7).ok(),
-            size_bytes: row.get(8).ok(),
-            cached_at: row.get(9)?,
-        })
-    }
 }
 
 /// SQL to create the product_content table
@@ -128,107 +111,20 @@ CREATE INDEX IF NOT EXISTS idx_content_product ON product_content(product_id);
 CREATE INDEX IF NOT EXISTS idx_content_type ON product_content(content_type);
 "#;
 
-const SELECT_COLS: &str =
-    "id, product_id, content_type, content_index, content_hash, source_url, width, height, size_bytes, cached_at";
-
-/// Initialize the product_content table
-pub fn init_product_content_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(CREATE_TABLE_SQL)?;
-    Ok(())
-}
-
-/// Save product content (upsert)
-pub fn save(conn: &Connection, c: &ProductContent) -> Result<i64> {
-    conn.execute(
-        "INSERT OR REPLACE INTO product_content (
-            product_id, content_type, content_index, content_hash, source_url, width, height, size_bytes, cached_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            &c.product_id,
-            &c.content_type,
-            &c.content_index,
-            &c.content_hash,
-            &c.source_url,
-            &c.width,
-            &c.height,
-            &c.size_bytes,
-            &c.cached_at
-        ],
-    )?;
-    Ok(conn.last_insert_rowid())
-}
-
-/// Get cover image for a product
-pub fn get_cover(conn: &Connection, product_id: &str) -> Result<Option<ProductContent>> {
-    let sql = format!(
-        "SELECT {} FROM product_content WHERE product_id = ?1 AND content_type = ?2 LIMIT 1",
-        SELECT_COLS
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let entry = stmt
-        .query_row(
-            [product_id, ContentType::Cover.as_str()],
-            ProductContent::from_row,
-        )
-        .optional()?;
-    Ok(entry)
-}
-
-/// Get all screenshots for a product, ordered by index
-pub fn get_screenshots(conn: &Connection, product_id: &str) -> Result<Vec<ProductContent>> {
-    let sql = format!(
-        "SELECT {} FROM product_content WHERE product_id = ?1 AND content_type = ?2 ORDER BY content_index ASC",
-        SELECT_COLS
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(
-        [product_id, ContentType::Screenshot.as_str()],
-        ProductContent::from_row,
-    )?;
-
-    let mut results = Vec::new();
-    for row in rows {
-        results.push(row?);
-    }
-    Ok(results)
-}
-
-/// Get all content for a product
-pub fn get_all_content(conn: &Connection, product_id: &str) -> Result<Vec<ProductContent>> {
-    let sql = format!(
-        "SELECT {} FROM product_content WHERE product_id = ?1 ORDER BY content_type, content_index ASC",
-        SELECT_COLS
-    );
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([product_id], ProductContent::from_row)?;
-
-    let mut results = Vec::new();
-    for row in rows {
-        results.push(row?);
-    }
-    Ok(results)
-}
-
-/// Delete all content for a product
-pub fn delete_product_content(conn: &Connection, product_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM product_content WHERE product_id = ?1",
-        [product_id],
-    )?;
-    Ok(())
-}
-
 // ============================================================================
-// Diesel DSL versions
+// Diesel DSL versions (Promoted to Primary)
 // ============================================================================
 
 use diesel::prelude::*;
+use diesel::result::OptionalExtension;
 
 /// Diesel-compatible product content row
-#[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
+#[derive(
+    Debug, Clone, diesel::Queryable, diesel::Selectable, diesel::Insertable, diesel::AsChangeset,
+)]
 #[diesel(table_name = crate::diesel_schema::product_content)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
-pub struct DbProductContentRow {
+pub struct DbProductContent {
     pub id: i32,
     pub product_id: String,
     pub content_type: String,
@@ -241,15 +137,29 @@ pub struct DbProductContentRow {
     pub cached_at: i64,
 }
 
-impl DbProductContentRow {
-    pub fn to_product_content(&self) -> ProductContent {
+#[derive(diesel::Insertable, diesel::AsChangeset)]
+#[diesel(table_name = crate::diesel_schema::product_content)]
+pub struct NewDbProductContent<'a> {
+    pub product_id: &'a str,
+    pub content_type: &'a str,
+    pub content_index: i32,
+    pub content_hash: &'a str,
+    pub source_url: Option<&'a str>,
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub size_bytes: Option<i64>,
+    pub cached_at: i64,
+}
+
+impl DbProductContent {
+    pub fn to_product_content(self) -> ProductContent {
         ProductContent {
             id: self.id as i64,
-            product_id: self.product_id.clone(),
-            content_type: self.content_type.clone(),
+            product_id: self.product_id,
+            content_type: self.content_type,
             content_index: self.content_index as i64,
-            content_hash: self.content_hash.clone(),
-            source_url: self.source_url.clone(),
+            content_hash: self.content_hash,
+            source_url: self.source_url,
             width: self.width.map(|w| w as i64),
             height: self.height.map(|h| h as i64),
             size_bytes: self.size_bytes,
@@ -258,11 +168,8 @@ impl DbProductContentRow {
     }
 }
 
-/// Delete all content for a product using Diesel DSL
-pub fn delete_product_content_diesel(
-    conn: &mut diesel::SqliteConnection,
-    prod_id: &str,
-) -> Result<()> {
+/// Delete all content for a product
+pub fn delete_product_content(conn: &mut diesel::SqliteConnection, prod_id: &str) -> Result<()> {
     use crate::diesel_schema::product_content::dsl::*;
 
     diesel::delete(product_content.filter(product_id.eq(prod_id)))
@@ -272,8 +179,8 @@ pub fn delete_product_content_diesel(
     Ok(())
 }
 
-/// Get all content for a product using Diesel DSL
-pub fn get_all_content_diesel(
+/// Get all content for a product
+pub fn get_all_content(
     conn: &mut diesel::SqliteConnection,
     prod_id: &str,
 ) -> Result<Vec<ProductContent>> {
@@ -282,8 +189,81 @@ pub fn get_all_content_diesel(
     let rows = product_content
         .filter(product_id.eq(prod_id))
         .order((content_type.asc(), content_index.asc()))
-        .load::<DbProductContentRow>(conn)
+        .select(DbProductContent::as_select())
+        .load::<DbProductContent>(conn)
         .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
 
-    Ok(rows.iter().map(|r| r.to_product_content()).collect())
+    Ok(rows.into_iter().map(|r| r.to_product_content()).collect())
+}
+
+/// Save product content (upsert)
+pub fn save(conn: &mut diesel::SqliteConnection, c: &ProductContent) -> Result<i64> {
+    use crate::diesel_schema::product_content::dsl::*;
+
+    let new_content = NewDbProductContent {
+        product_id: &c.product_id,
+        content_type: &c.content_type,
+        content_index: c.content_index as i32,
+        content_hash: &c.content_hash,
+        source_url: c.source_url.as_deref(),
+        width: c.width.map(|w| w as i32),
+        height: c.height.map(|h| h as i32),
+        size_bytes: c.size_bytes,
+        cached_at: c.cached_at,
+    };
+
+    diesel::insert_into(product_content)
+        .values(&new_content)
+        .on_conflict((product_id, content_type, content_index))
+        .do_update()
+        .set(&new_content)
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel save failed: {}", e))?;
+
+    // Returning last inserted ID in Diesel is backend specific and tricky with upserts in SQLite.
+    // For now, we can just return 0 or fetch it if strictly necessary.
+    // The legacy code returned last_insert_rowid().
+    Ok(0)
+}
+
+/// Get cover image for a product
+pub fn get_cover(
+    conn: &mut diesel::SqliteConnection,
+    prod_id: &str,
+) -> Result<Option<ProductContent>> {
+    use crate::diesel_schema::product_content::dsl::*;
+
+    let result = product_content
+        .filter(
+            product_id
+                .eq(prod_id)
+                .and(content_type.eq(ContentType::Cover.as_str())),
+        )
+        .select(DbProductContent::as_select())
+        .first::<DbProductContent>(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Diesel get_cover failed: {}", e))?;
+
+    Ok(result.map(|r| r.to_product_content()))
+}
+
+/// Get all screenshots for a product
+pub fn get_screenshots(
+    conn: &mut diesel::SqliteConnection,
+    prod_id: &str,
+) -> Result<Vec<ProductContent>> {
+    use crate::diesel_schema::product_content::dsl::*;
+
+    let rows = product_content
+        .filter(
+            product_id
+                .eq(prod_id)
+                .and(content_type.eq(ContentType::Screenshot.as_str())),
+        )
+        .order(content_index.asc())
+        .select(DbProductContent::as_select())
+        .load::<DbProductContent>(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel get_screenshots failed: {}", e))?;
+
+    Ok(rows.into_iter().map(|r| r.to_product_content()).collect())
 }

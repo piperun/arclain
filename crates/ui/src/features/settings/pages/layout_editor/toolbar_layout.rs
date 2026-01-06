@@ -6,7 +6,8 @@
 //! - Item picker grid for toggling visibility
 
 use crate::shared::theme::AppTheme;
-use arclain_db::{ActionType, DisplayMode, UiItem, UiRegion};
+use arclain_core::UiService;
+use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::{PluginExtensionPoint, PluginUiElement};
 use eframe::egui;
@@ -32,24 +33,24 @@ impl Default for ToolbarLayoutState {
 }
 
 impl ToolbarLayoutState {
-    pub fn load_from_db(&mut self, conn: &rusqlite::Connection) {
+    /// Load toolbar items from database via UiService
+    pub fn load_from_service(&mut self, service: &UiService) {
         if self.loaded {
             return;
         }
-        if let Ok(items) = arclain_db::list_items_by_region(conn, UiRegion::Toolbar) {
+        if let Ok(items) = service.list_toolbar_items() {
             self.items = items;
         }
         self.loaded = true;
         self.dirty = false;
     }
 
-    pub fn save_to_db(&mut self, conn: &rusqlite::Connection) {
+    /// Save toolbar items to database via UiService
+    pub fn save_to_service(&mut self, service: &UiService) {
         if !self.dirty {
             return;
         }
-        for item in &self.items {
-            let _ = arclain_db::upsert_item(conn, item);
-        }
+        let _ = service.upsert_items(&self.items);
         self.dirty = false;
     }
 }
@@ -58,18 +59,14 @@ impl ToolbarLayoutState {
 pub fn render_toolbar_layout(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
+    ui_service: Option<&UiService>,
     state: &mut ToolbarLayoutState,
     plugin_manager: Option<&PluginManager>,
 ) {
-    // Load items from database
+    // Load items from database via UiService
     if !state.loaded {
-        let state_guard = app_state.lock();
-        if let Some(dbs) = &state_guard.dbs {
-            let _ = dbs.config.with_connection(|conn| {
-                state.load_from_db(conn);
-                Ok::<_, anyhow::Error>(())
-            });
+        if let Some(service) = ui_service {
+            state.load_from_service(service);
         }
     }
 

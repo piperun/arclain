@@ -81,7 +81,7 @@ impl SecretsDb {
     }
 
     /// Encrypt data using AES-256-GCM
-    fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+    pub(crate) fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         // Generate random 96-bit nonce
         let mut nonce_bytes = [0u8; 12];
         use rand::RngCore;
@@ -101,7 +101,7 @@ impl SecretsDb {
     }
 
     /// Decrypt data using AES-256-GCM
-    fn decrypt(&self, data: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
+    pub(crate) fn decrypt(&self, data: &[u8]) -> Result<Zeroizing<Vec<u8>>> {
         if data.len() < 12 {
             return Err(anyhow!("Invalid encrypted data: too short"));
         }
@@ -236,6 +236,3 @@ struct RulePayload {
     priority: u32,
     enabled: bool,
 }
-
-#[cfg(test)]
-mod tests;

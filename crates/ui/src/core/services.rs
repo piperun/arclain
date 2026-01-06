@@ -2,6 +2,7 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 
 use arclain_core::utilities::ChecksumService;
+use arclain_core::{ConfigService, LibraryService, OrganizationService, UiService};
 use arclain_data::{ContentCache, ResourceManager};
 use arclain_http::features::whitelist::DomainWhitelist;
 use arclain_http::AsyncHttpClient;
@@ -20,6 +21,12 @@ pub struct Services {
     pub checksum_service: Option<Arc<ChecksumService>>,
     pub content_cache: Option<Arc<ContentCache>>,
     pub resource_manager: Option<Arc<ResourceManager>>,
+
+    // Core domain services
+    pub library_service: Option<Arc<LibraryService>>,
+    pub organization_service: Option<Arc<OrganizationService>>,
+    pub config_service: Option<Arc<ConfigService>>,
+    pub ui_service: Option<Arc<UiService>>,
 }
 
 impl Services {
@@ -43,6 +50,10 @@ impl Services {
             checksum_service: None,
             content_cache: None,
             resource_manager: None,
+            library_service: None,
+            organization_service: None,
+            config_service: None,
+            ui_service: None,
         }
     }
 }
@@ -83,6 +94,10 @@ mod tests {
         assert!(services.checksum_service.is_none());
         assert!(services.content_cache.is_none());
         assert!(services.resource_manager.is_none());
+        assert!(services.library_service.is_none());
+        assert!(services.organization_service.is_none());
+        assert!(services.config_service.is_none());
+        assert!(services.ui_service.is_none());
     }
 
     #[test]

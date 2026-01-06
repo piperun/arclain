@@ -6,8 +6,8 @@ use arclain_core::config::database::{
     ConfigDbs, DbPaths, SecretsDb, SecretsKey,
 };
 use arclain_core::utilities::{auto_password_for, ChecksumService, PassRule};
+use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
 use arclain_data::{ContentCache, ResourceConfig, ResourceManager};
-use arclain_db::UserConfig;
 use arclain_http::features::whitelist::DomainWhitelist;
 use arclain_http::AsyncHttpClient;
 use arclain_plugins::PluginManager;
@@ -173,20 +173,25 @@ impl AppState {
             }
 
             // Open secrets DB if key file provided and valid
-            // Open secrets DB if key file provided and valid
             if let Some(ref key_path) = paths.key_file {
                 if let Ok(key) = SecretsKey::load_from_file(key_path) {
                     match open_databases(&paths, &key) {
                         Ok(dbs) => {
+                            // Create ConfigService early for bootstrap config persistence
+                            let early_config_svc = arclain_core::ConfigService::new(
+                                dbs.config_pool.clone(),
+                                &paths.config_db,
+                            );
+
                             // Persist current paths into config DB
-                            let _ = dbs.config.with_connection(|conn| {
-                                set_config(
-                                    conn,
+                            if let Ok(cfg_svc) = &early_config_svc {
+                                let _ = cfg_svc.set_diesel(
                                     "secrets_db_path",
                                     &paths.secrets_db.to_string_lossy(),
-                                )?;
-                                set_config(conn, "key_file_path", &key_path.to_string_lossy())
-                            });
+                                );
+                                let _ = cfg_svc
+                                    .set_diesel("key_file_path", &key_path.to_string_lossy());
+                            }
 
                             // Note: Organization rules are seeded via sync_configuration() below
 
@@ -239,24 +244,8 @@ impl AppState {
                             tracing::info!("[Startup] Plugin proxy map: {:?}", map);
                             async_http_client.update_plugin_proxy_map(map);
 
-                            // Load UI items for config-driven rendering
-                            if let Ok(dbs) = me.dbs.as_ref().ok_or(anyhow::anyhow!("No DBs")) {
-                                let _ = dbs.config.with_connection(|conn| {
-                                    if let Ok(items) = arclain_db::list_items_by_region(
-                                        conn,
-                                        arclain_db::UiRegion::Toolbar,
-                                    ) {
-                                        me.signals.toolbar_items.set(items.clone());
-                                    }
-                                    if let Ok(items) = arclain_db::list_items_by_region(
-                                        conn,
-                                        arclain_db::UiRegion::InfoPanel,
-                                    ) {
-                                        me.signals.info_panel_items.set(items.clone());
-                                    }
-                                    Ok::<(), anyhow::Error>(())
-                                });
-                            }
+                            // Note: UI items (toolbar/info panel) are loaded after services are
+                            // initialized, using UiService for consistent access.
 
                             // Initialize checksum service and recover pending operations
                             let checksum_db_path = paths
@@ -414,7 +403,7 @@ impl AppState {
                         if has_panel {
                             // Check if already in info_panel_items
                             let exists = info_panel_items.iter().any(|item| {
-                                item.action_type == arclain_db::ActionType::Plugin
+                                item.action_type == ActionType::Plugin
                                     && item.action_data.as_ref() == Some(plugin_id)
                             });
 
@@ -424,17 +413,17 @@ impl AppState {
                                     .map(|i| i.sort_order)
                                     .max()
                                     .unwrap_or(0);
-                                info_panel_items.push(arclain_db::UiItem {
+                                info_panel_items.push(UiItem {
                                     id: format!("plugin_{}", plugin_id),
-                                    region: arclain_db::UiRegion::InfoPanel,
+                                    region: UiRegion::InfoPanel,
                                     group_id: Some("plugins".to_string()),
                                     label: plugin.manifest.plugin.name.clone(),
                                     icon: Some("PUZZLE_PIECE".to_string()),
-                                    action_type: arclain_db::ActionType::Plugin,
+                                    action_type: ActionType::Plugin,
                                     action_data: Some(plugin_id.clone()),
                                     visible: true,
                                     sort_order: max_sort + 1,
-                                    display_mode: arclain_db::DisplayMode::IconAndText,
+                                    display_mode: DisplayMode::IconAndText,
                                 });
                                 info!(
                                     "Added plugin '{}' to info panel",
@@ -482,20 +471,20 @@ impl AppState {
                                         .max()
                                         .unwrap_or(0);
 
-                                    toolbar_items.push(arclain_db::UiItem {
+                                    toolbar_items.push(UiItem {
                                         id: unique_id,
-                                        region: arclain_db::UiRegion::Toolbar,
+                                        region: UiRegion::Toolbar,
                                         group_id: Some("plugins".to_string()),
                                         label: format!(
                                             "{} - {}",
                                             plugin.manifest.plugin.name, label
                                         ),
                                         icon: Some("PUZZLE_PIECE".to_string()),
-                                        action_type: arclain_db::ActionType::Plugin,
+                                        action_type: ActionType::Plugin,
                                         action_data: Some(action_data),
                                         visible: true,
                                         sort_order: max_sort + 10,
-                                        display_mode: arclain_db::DisplayMode::IconAndText,
+                                        display_mode: DisplayMode::IconAndText,
                                     });
                                     info!(
                                         "Added plugin button '{}' - '{}' to toolbar",
@@ -515,6 +504,30 @@ impl AppState {
             }
         }
 
+        // Initialize domain services from the connection pool
+        let (library_service, organization_service, ui_service, config_service) =
+            if let Some(ref dbs) = me.dbs {
+                let pool = dbs.config_pool.clone();
+                // ConfigService needs both pool and config DB path for hybrid rusqlite/diesel ops
+                let cfg_svc = me
+                    .db_paths
+                    .as_ref()
+                    .and_then(|paths| {
+                        arclain_core::ConfigService::new(pool.clone(), &paths.config_db).ok()
+                    })
+                    .map(Arc::new);
+                (
+                    Some(Arc::new(arclain_core::LibraryService::new(pool.clone()))),
+                    Some(Arc::new(arclain_core::OrganizationService::new(
+                        pool.clone(),
+                    ))),
+                    Some(Arc::new(arclain_core::UiService::new(pool))),
+                    cfg_svc,
+                )
+            } else {
+                (None, None, None, None)
+            };
+
         let services = crate::core::services::Services {
             tokio_runtime: runtime,
             async_http_client,
@@ -524,7 +537,21 @@ impl AppState {
             checksum_service,
             content_cache,
             resource_manager,
+            library_service,
+            organization_service,
+            config_service,
+            ui_service: ui_service.clone(),
         };
+
+        // Load UI items via UiService now that services are ready
+        if let Some(ref svc) = ui_service {
+            if let Ok(items) = svc.list_toolbar_items() {
+                me.signals.toolbar_items.set(items);
+            }
+            if let Ok(items) = svc.list_info_panel_items() {
+                me.signals.info_panel_items.set(items);
+            }
+        }
 
         Ok((me, services))
     }
@@ -1048,9 +1075,9 @@ impl AppState {
     /// Synchronize configuration (rules, filters) from TOML defaults to DB
     pub fn sync_configuration(&self) {
         if let Some(ref dbs) = self.dbs {
-            let config_db = dbs.config.clone();
+            let config_pool = &dbs.config_pool;
             // Run sync in background or just block? Startup is fine to block briefly.
-            if let Err(e) = arclain_core::config::sync::sync_rules(&config_db) {
+            if let Err(e) = arclain_core::config::sync::sync_rules(config_pool) {
                 warn!("Failed to sync organization rules: {}", e);
             }
             // Title filters are now initialized via title_filter::init()
@@ -1064,22 +1091,13 @@ impl AppState {
         }
     }
 
-    /// Refresh UI configuration (toolbar/info panel items) from DB
-    pub fn reload_ui_config(&mut self) {
-        if let Some(ref dbs) = self.dbs {
-            let _ = dbs.config.with_connection(|conn| {
-                if let Ok(items) =
-                    arclain_db::list_items_by_region(conn, arclain_db::UiRegion::Toolbar)
-                {
-                    self.signals.toolbar_items.set(items);
-                }
-                if let Ok(items) =
-                    arclain_db::list_items_by_region(conn, arclain_db::UiRegion::InfoPanel)
-                {
-                    self.signals.info_panel_items.set(items);
-                }
-                Ok::<(), anyhow::Error>(())
-            });
+    /// Refresh UI configuration (toolbar/info panel items) from UiService
+    pub fn reload_ui_config(&mut self, ui_service: &arclain_core::UiService) {
+        if let Ok(items) = ui_service.list_toolbar_items() {
+            self.signals.toolbar_items.set(items);
+        }
+        if let Ok(items) = ui_service.list_info_panel_items() {
+            self.signals.info_panel_items.set(items);
         }
     }
 }

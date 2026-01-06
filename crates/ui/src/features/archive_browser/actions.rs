@@ -225,8 +225,9 @@ impl<'a> ActionContext<'a> {
                         let state = self.shared.app_state.lock();
 
                         if let Some(dbs) = &state.dbs {
-                            let db = &dbs.config;
-                            if let Ok(loaded) = arclain_core::config::database::list_org_rules(db) {
+                            let pool = &dbs.config_pool;
+                            if let Ok(loaded) = arclain_core::config::database::list_org_rules(pool)
+                            {
                                 rules = loaded
                                     .into_iter()
                                     .filter(|r| {

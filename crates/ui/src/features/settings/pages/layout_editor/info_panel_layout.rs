@@ -6,7 +6,8 @@
 //! - Section list for toggling visibility
 
 use crate::shared::theme::AppTheme;
-use arclain_db::{list_items_by_region, upsert_item, ActionType, UiItem, UiRegion};
+use arclain_core::UiService;
+use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::PluginExtensionPoint;
 use eframe::egui;
@@ -31,8 +32,9 @@ impl Default for InfoPanelLayoutState {
 }
 
 impl InfoPanelLayoutState {
-    pub fn load_from_db(&mut self, conn: &rusqlite::Connection) {
-        if let Ok(items) = list_items_by_region(conn, UiRegion::InfoPanel) {
+    /// Load info panel items from database via UiService
+    pub fn load_from_service(&mut self, service: &UiService) {
+        if let Ok(items) = service.list_info_panel_items() {
             // Filter out internal items that shouldn't be user-configurable
             self.items = items
                 .into_iter()
@@ -45,10 +47,9 @@ impl InfoPanelLayoutState {
         }
     }
 
-    pub fn save_to_db(&mut self, conn: &rusqlite::Connection) {
-        for item in &self.items {
-            let _ = upsert_item(conn, item);
-        }
+    /// Save info panel items to database via UiService
+    pub fn save_to_service(&mut self, service: &UiService) {
+        let _ = service.upsert_items(&self.items);
         self.dirty = false;
     }
 }
@@ -57,18 +58,14 @@ impl InfoPanelLayoutState {
 pub fn render_info_panel_layout(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
+    ui_service: Option<&UiService>,
     state: &mut InfoPanelLayoutState,
     plugin_manager: Option<&PluginManager>,
 ) {
-    // Load items from database
+    // Load items from database via UiService
     if !state.loaded {
-        let state_guard = app_state.lock();
-        if let Some(dbs) = &state_guard.dbs {
-            let _ = dbs.config.with_connection(|conn| {
-                state.load_from_db(conn);
-                Ok::<_, anyhow::Error>(())
-            });
+        if let Some(service) = ui_service {
+            state.load_from_service(service);
         }
     }
 
@@ -174,7 +171,7 @@ fn sync_plugin_items(state: &mut InfoPanelLayoutState, manager: &PluginManager) 
                 visible: true,
                 sort_order: max_sort + 10,
                 // InfoPanel doesn't really use DisplayMode but we set a default
-                display_mode: arclain_db::DisplayMode::default(),
+                display_mode: DisplayMode::default(),
             });
             changed = true;
         }

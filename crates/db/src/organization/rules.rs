@@ -203,3 +203,48 @@ pub fn delete_rule_diesel(conn: &mut diesel::SqliteConnection, rule_id: i32) -> 
 
     Ok(())
 }
+
+/// Save a rule (Insert or Update) using Diesel DSL
+pub fn save_rule_diesel(
+    conn: &mut diesel::SqliteConnection,
+    rule: &DbOrganizationRule,
+) -> Result<i64> {
+    use crate::diesel_schema::organization_rules::dsl::*;
+
+    if let Some(rule_id) = rule.id {
+        // Update
+        diesel::update(organization_rules.filter(id.eq(rule_id as i32)))
+            .set((
+                name.eq(&rule.name),
+                description.eq(&rule.description),
+                category.eq(&rule.category),
+                trigger_json.eq(&rule.trigger_json),
+                actions_json.eq(&rule.actions_json),
+                priority.eq(rule.priority),
+                is_enabled.eq(rule.is_enabled),
+                is_system.eq(rule.is_system),
+                modified_at.eq(chrono::Utc::now().to_rfc3339()), // Use formatted string for Text column
+            ))
+            .execute(conn)
+            .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+        Ok(rule_id)
+    } else {
+        // Insert
+        let new_id: i32 = diesel::insert_into(organization_rules)
+            .values((
+                name.eq(&rule.name),
+                description.eq(&rule.description),
+                category.eq(&rule.category),
+                trigger_json.eq(&rule.trigger_json),
+                actions_json.eq(&rule.actions_json),
+                priority.eq(rule.priority),
+                is_enabled.eq(rule.is_enabled),
+                is_system.eq(rule.is_system),
+            ))
+            // .returning(id) -- requires feature
+            .returning(id)
+            .get_result(conn)
+            .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+        Ok(new_id as i64)
+    }
+}

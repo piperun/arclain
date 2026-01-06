@@ -1,7 +1,7 @@
 //! Cache management feature module
 
 mod cache_db;
-mod cache_index;
+pub mod cache_index;
 
 #[cfg(test)]
 mod tests;

@@ -89,8 +89,8 @@ pub fn render(
                             app.user_config.set_enabled_plugins(&enabled_list);
 
                             if let Some(dbs) = &app.dbs {
-                                let _ = dbs.config.with_connection(|conn| {
-                                    app.user_config.save(conn).ok();
+                                let _ = dbs.config_pool.with_conn(|conn| {
+                                    app.user_config.save_diesel(conn).ok();
                                     Ok::<_, anyhow::Error>(())
                                 });
                             }
@@ -125,8 +125,8 @@ pub fn render(
 
                     // Persist
                     if let Some(dbs) = &app.dbs {
-                        let _ = dbs.config.with_connection(|conn| {
-                            app.user_config.save(conn).ok();
+                        let _ = dbs.config_pool.with_conn(|conn| {
+                            app.user_config.save_diesel(conn).ok();
                             Ok::<_, anyhow::Error>(())
                         });
                     }
@@ -286,17 +286,15 @@ fn render_domain_row(
                     }
                 }
 
-                // Update DB
-                let app = app_state.lock();
-                if let Some(dbs) = &app.dbs {
-                    let _ = dbs.config.with_connection(|conn| {
+                // Update DB via ConfigService
+                if let Some(shared) = shared {
+                    if let Some(config_svc) = shared.services.config_service.as_ref() {
                         if approved_state {
-                            arclain_db::approve_domain(conn, &entry.plugin_id, domain)?;
+                            let _ = config_svc.approve_plugin_domain(&entry.plugin_id, domain);
                         } else {
-                            arclain_db::revoke_domain(conn, &entry.plugin_id, domain)?;
+                            let _ = config_svc.revoke_plugin_domain(&entry.plugin_id, domain);
                         }
-                        Ok::<_, anyhow::Error>(())
-                    });
+                    }
                 }
                 changed = true;
             }
@@ -389,9 +387,9 @@ fn render_plugin_ui(
                             state.user_config.set_all_plugin_settings(&settings_to_save);
 
                             if let Some(ref dbs) = state.dbs {
-                                if let Err(e) = dbs.config.with_connection(|conn| {
-                                    state.user_config.save(conn)?;
-                                    Ok(())
+                                if let Err(e) = dbs.config_pool.with_conn(|conn| {
+                                    state.user_config.save_diesel(conn)?;
+                                    Ok::<_, anyhow::Error>(())
                                 }) {
                                     eprintln!("Failed to save plugin settings: {}", e);
                                 }

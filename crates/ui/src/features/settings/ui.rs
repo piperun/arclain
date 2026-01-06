@@ -398,22 +398,12 @@ impl SettingsFeature {
                                         
                                         // Handle toolbar layout save
                                         if toolbar_save_clicked.get() {
-                                            let state_guard = shared.app_state.lock();
-                                            if let Some(dbs) = &state_guard.dbs {
-                                                let _ = dbs.config.with_connection(|conn| {
-                                                    self.toolbar_layout_state.save_to_db(conn);
-                                                    Ok::<_, anyhow::Error>(())
-                                                });
-                                            }
-                                            drop(state_guard);
-                                            // Reload main toolbar
-                                            let state_guard = shared.app_state.lock();
-                                            if let Some(dbs) = &state_guard.dbs {
-                                                if let Ok(items) = dbs.config.with_connection(|conn| {
-                                                    arclain_db::list_items_by_region(conn, arclain_db::UiRegion::Toolbar)
-                                                }) {
-                                                    state_guard.signals.toolbar_items.set(items.clone());
-                                                    drop(state_guard);
+                                            if let Some(ui_service) = shared.services.ui_service.as_ref() {
+                                                self.toolbar_layout_state.save_to_service(ui_service);
+                                                // Reload main toolbar
+                                                if let Ok(items) = ui_service.list_toolbar_items() {
+                                                    let state_guard = shared.app_state.lock();
+                                                    state_guard.signals.toolbar_items.set(items);
                                                 }
                                             }
                                         }
@@ -426,16 +416,11 @@ impl SettingsFeature {
                                         
                                         // Handle info panel layout save
                                         if info_panel_save_clicked.get() {
-                                            let state_guard = shared.app_state.lock();
-                                            if let Some(dbs) = &state_guard.dbs {
-                                                let _ = dbs.config.with_connection(|conn| {
-                                                    self.info_panel_layout_state.save_to_db(conn);
-                                                    Ok::<_, anyhow::Error>(())
-                                                });
+                                            if let Some(ui_service) = shared.services.ui_service.as_ref() {
+                                                self.info_panel_layout_state.save_to_service(ui_service);
+                                                // Reload UI config to update main window
+                                                shared.app_state.lock().reload_ui_config(ui_service);
                                             }
-                                            // Reload UI config to update main window
-                                            drop(state_guard);
-                                            shared.app_state.lock().reload_ui_config();
                                         }
                                         
                                         // Handle info panel layout reset

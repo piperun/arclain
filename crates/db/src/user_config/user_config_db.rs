@@ -3,14 +3,18 @@
 //! This struct uses the `DbConfig` derive macro to automatically generate
 //! SQL table creation and CRUD methods.
 
+use anyhow::Result;
+use diesel::prelude::*;
 use mini_orm::DbConfig;
 use std::path::PathBuf;
 
 /// User configuration settings stored in the database.
 ///
 /// This replaces the old config.json file-based storage.
-#[derive(Debug, Clone, Default, DbConfig)]
+#[derive(Debug, Clone, Default, DbConfig, QueryableByName)]
 #[db_table = "user_config"]
+#[diesel(table_name = crate::diesel_schema::user_config)]
+#[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct UserConfig {
     /// Primary key (always 1 for single-row pattern)
     #[db(primary_key)]
@@ -225,5 +229,133 @@ impl UserConfig {
         let mut settings = self.get_plugin_proxy_settings();
         settings.insert(plugin_id.to_string(), enabled);
         self.set_plugin_proxy_settings(&settings);
+    }
+
+    /// Load config from Diesel connection (singleton row 1)
+    pub fn load_diesel(conn: &mut diesel::SqliteConnection) -> Result<Self> {
+        use crate::diesel_schema::user_config::dsl::*;
+
+        // Use QueryableByName to explicitly map columns if needed, or Selectable.
+        // Given the trouble with auto-derives, let's use a simpler approach.
+        // We select the tuple and map it manually.
+
+        let result = user_config
+            .find(1)
+            .select((
+                id,
+                vault_path,
+                cache_directory,
+                last_opened_archive,
+                temp_dir,
+                sevenzip_path,
+                transfer_dir,
+                backend_mode,
+                open_nested_in_new_tab,
+                enabled_plugins,
+                plugin_order,
+                plugin_visibility,
+                plugin_settings,
+                toolbar_order,
+                info_panel_order,
+                socks5_address,
+                socks5_enabled,
+                socks5_username,
+                plugin_proxy_settings,
+            ))
+            .first::<(
+                i32,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                String,
+                bool,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                bool,
+                Option<String>,
+                Option<String>,
+            )>(conn);
+
+        match result {
+            Ok(tuple) => Ok(UserConfig {
+                id: tuple.0,
+                vault_path: tuple.1,
+                cache_directory: tuple.2,
+                last_opened_archive: tuple.3,
+                temp_dir: tuple.4,
+                sevenzip_path: tuple.5,
+                transfer_dir: tuple.6,
+                backend_mode: tuple.7,
+                open_nested_in_new_tab: tuple.8,
+                enabled_plugins: tuple.9,
+                plugin_order: tuple.10,
+                plugin_visibility: tuple.11,
+                plugin_settings: tuple.12,
+                toolbar_order: tuple.13,
+                info_panel_order: tuple.14,
+                socks5_address: tuple.15,
+                socks5_enabled: tuple.16,
+                socks5_username: tuple.17,
+                plugin_proxy_settings: tuple.18,
+            }),
+            Err(diesel::result::Error::NotFound) => {
+                // If not found, create default and insert it manually (providing all non-nullable fields)
+                diesel::insert_into(user_config)
+                    .values((
+                        id.eq(1),
+                        backend_mode.eq("native"),
+                        open_nested_in_new_tab.eq(false),
+                        socks5_enabled.eq(false),
+                        created_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(
+                            "CURRENT_TIMESTAMP",
+                        )),
+                    ))
+                    .execute(conn)?;
+                Ok(UserConfig::new())
+            }
+            Err(e) => Err(anyhow::anyhow!("Failed to load user config: {}", e)),
+        }
+    }
+
+    /// Save config to Diesel connection
+    pub fn save_diesel(&self, conn: &mut diesel::SqliteConnection) -> Result<()> {
+        use crate::diesel_schema::user_config::dsl::*;
+
+        // Manual update without AsChangeset
+        diesel::update(user_config.find(1))
+            .set((
+                vault_path.eq(&self.vault_path),
+                cache_directory.eq(&self.cache_directory),
+                last_opened_archive.eq(&self.last_opened_archive),
+                temp_dir.eq(&self.temp_dir),
+                sevenzip_path.eq(&self.sevenzip_path),
+                transfer_dir.eq(&self.transfer_dir),
+                backend_mode.eq(&self.backend_mode),
+                open_nested_in_new_tab.eq(self.open_nested_in_new_tab),
+                enabled_plugins.eq(&self.enabled_plugins),
+                plugin_order.eq(&self.plugin_order),
+                plugin_visibility.eq(&self.plugin_visibility),
+                plugin_settings.eq(&self.plugin_settings),
+                toolbar_order.eq(&self.toolbar_order),
+                info_panel_order.eq(&self.info_panel_order),
+                socks5_address.eq(&self.socks5_address),
+                socks5_enabled.eq(self.socks5_enabled),
+                socks5_username.eq(&self.socks5_username),
+                plugin_proxy_settings.eq(&self.plugin_proxy_settings),
+                modified_at.eq(diesel::dsl::sql::<
+                    diesel::sql_types::Nullable<diesel::sql_types::Text>,
+                >("CURRENT_TIMESTAMP")),
+            ))
+            .execute(conn)
+            .map_err(|e| anyhow::anyhow!("Failed to save user config: {}", e))?;
+        Ok(())
     }
 }
