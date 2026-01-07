@@ -237,6 +237,97 @@ impl ProductMetadata {
     pub fn touch(&mut self) {
         self.last_accessed = Some(now_iso8601());
     }
+
+    /// Calculate a completeness score for data quality comparison.
+    /// Higher score = more complete data.
+    pub fn completeness_score(&self) -> u32 {
+        let mut score: u32 = 0;
+
+        // Core identity fields (high value)
+        if self.title.is_some() {
+            score += 10;
+        }
+        if self.creator.is_some() {
+            score += 10;
+        }
+
+        // Description and content info (medium value)
+        if self.description.is_some() {
+            score += 5;
+        }
+        if self.release_date.is_some() {
+            score += 2;
+        }
+        if self.price.is_some() {
+            score += 1;
+        }
+        if self.file_size.is_some() {
+            score += 1;
+        }
+        if self.file_format.is_some() {
+            score += 1;
+        }
+        if self.age_rating.is_some() {
+            score += 2;
+        }
+
+        // Ratings and stats (low value each, but useful)
+        if self.rating.is_some() {
+            score += 2;
+        }
+        if self.rating_count.is_some() {
+            score += 1;
+        }
+        if self.purchase_count.is_some() {
+            score += 1;
+        }
+        if self.favorite_count.is_some() {
+            score += 1;
+        }
+        if self.review_count.is_some() {
+            score += 1;
+        }
+
+        // DLSite-specific fields
+        if self.series_name.is_some() {
+            score += 2;
+        }
+        if self.illustrator.is_some() {
+            score += 2;
+        }
+        if self.miscellaneous.is_some() {
+            score += 1;
+        }
+        if self.update_info.is_some() {
+            score += 1;
+        }
+
+        // JSON array fields - count actual elements
+        score += Self::count_json_array_len(&self.genres_json) * 2; // 2 pts per genre
+        score += Self::count_json_array_len(&self.tags_json); // 1 pt per tag
+        score += Self::count_json_array_len(&self.languages_json); // 1 pt per language
+        score += Self::count_json_array_len(&self.product_formats_json); // 1 pt per format
+        score += Self::count_json_array_len(&self.voice_actors_json); // 1 pt per VA
+        score += Self::count_json_array_len(&self.rankings_json); // 1 pt per ranking
+
+        // Raw data storage (indicates full fetch)
+        if self.raw_api_response.is_some() {
+            score += 5;
+        }
+        if self.raw_html.is_some() {
+            score += 3;
+        }
+
+        score
+    }
+
+    /// Count elements in a JSON array string
+    fn count_json_array_len(json: &Option<String>) -> u32 {
+        json.as_ref()
+            .and_then(|s| serde_json::from_str::<Vec<serde_json::Value>>(s).ok())
+            .map(|arr| arr.len() as u32)
+            .unwrap_or(0)
+    }
 }
 
 /// SQL to create the product_metadata table
@@ -348,8 +439,54 @@ pub fn load(
 }
 
 /// Save product metadata (upsert)
+///
+/// Guards against data quality downgrade:
+/// 1. If new data is geo-blocked and existing is NOT → reject
+/// 2. If new data has lower completeness score than existing → reject
 pub fn save(conn: &mut diesel::SqliteConnection, meta: &ProductMetadata) -> Result<()> {
     use crate::diesel_schema::product_metadata::dsl::*;
+
+    // Check if we need to guard against overwriting better data
+    if let Ok(Some(existing)) = load(conn, &meta.id) {
+        let new_score = meta.completeness_score();
+        let existing_score = existing.completeness_score();
+
+        // Guard 1: Don't overwrite non-geo-blocked data with geo-blocked data
+        if meta.geo_blocked == Some(true) && existing.geo_blocked != Some(true) {
+            tracing::warn!(
+                "[ProductMetadata] Skipping save for '{}' - refusing to overwrite good data (geo_blocked=false) with geo-blocked data",
+                meta.id
+            );
+            return Ok(());
+        }
+
+        // Guard 2: Don't downgrade completeness score
+        if new_score < existing_score {
+            tracing::warn!(
+                "[ProductMetadata] Skipping save for '{}' - new data less complete (score {} < {})",
+                meta.id,
+                new_score,
+                existing_score
+            );
+            return Ok(());
+        }
+
+        tracing::debug!(
+            "[ProductMetadata] Updating '{}' (score {} → {}, geo_blocked: {:?} → {:?})",
+            meta.id,
+            existing_score,
+            new_score,
+            existing.geo_blocked,
+            meta.geo_blocked
+        );
+    } else {
+        tracing::debug!(
+            "[ProductMetadata] Inserting new '{}' (score {}, geo_blocked: {:?})",
+            meta.id,
+            meta.completeness_score(),
+            meta.geo_blocked
+        );
+    }
 
     diesel::insert_into(product_metadata)
         .values(meta)
@@ -360,6 +497,39 @@ pub fn save(conn: &mut diesel::SqliteConnection, meta: &ProductMetadata) -> Resu
         .map_err(|e| anyhow::anyhow!("Diesel save failed: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_completeness_score() {
+        // 1. Basic empty metadata
+        let mut m = ProductMetadata::new(MetadataSource::DLSite, "RJ100");
+        let base_score = m.completeness_score();
+        // Base score might vary if new() sets things, but expecting 0 for empty optional fields
+        // Let's check increments relative to base
+
+        // 2. Title (+10)
+        m.title = Some("Test Title".to_string());
+        assert_eq!(m.completeness_score(), base_score + 10);
+
+        // 3. Creator (+10)
+        m.creator = Some("Test Circle".to_string());
+        assert_eq!(m.completeness_score(), base_score + 20);
+
+        // 4. Description (+5 for len > 10)
+        m.description = Some("A very long description...".to_string());
+        assert_eq!(m.completeness_score(), base_score + 25);
+
+        // 5. JSON arrays (Tags +1 per tag)
+        // Note: set_tags logic might be complex, let's just set the json string directly if possible
+        // But better to use the setter if available or manual json
+        m.tags_json = Some("[\"Tag1\", \"Tag2\"]".to_string());
+        // 2 tags * 1 point = +2
+        assert_eq!(m.completeness_score(), base_score + 27);
+    }
 }
 
 /// Get product by external ID

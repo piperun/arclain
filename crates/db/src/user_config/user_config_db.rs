@@ -325,37 +325,74 @@ impl UserConfig {
         }
     }
 
-    /// Save config to Diesel connection
+    /// Save config to Diesel connection (uses UPSERT to handle missing row)
     pub fn save_diesel(&self, conn: &mut diesel::SqliteConnection) -> Result<()> {
-        use crate::diesel_schema::user_config::dsl::*;
+        // Use raw SQL for UPSERT since Diesel's on_conflict requires Insertable derive
+        let sql = r#"
+            INSERT INTO user_config (
+                id, vault_path, cache_directory, last_opened_archive, temp_dir,
+                sevenzip_path, transfer_dir, backend_mode, open_nested_in_new_tab,
+                enabled_plugins, plugin_order, plugin_visibility, plugin_settings,
+                toolbar_order, info_panel_order, socks5_address, socks5_enabled,
+                socks5_username, plugin_proxy_settings, created_at, modified_at
+            ) VALUES (
+                1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+            )
+            ON CONFLICT(id) DO UPDATE SET
+                vault_path = excluded.vault_path,
+                cache_directory = excluded.cache_directory,
+                last_opened_archive = excluded.last_opened_archive,
+                temp_dir = excluded.temp_dir,
+                sevenzip_path = excluded.sevenzip_path,
+                transfer_dir = excluded.transfer_dir,
+                backend_mode = excluded.backend_mode,
+                open_nested_in_new_tab = excluded.open_nested_in_new_tab,
+                enabled_plugins = excluded.enabled_plugins,
+                plugin_order = excluded.plugin_order,
+                plugin_visibility = excluded.plugin_visibility,
+                plugin_settings = excluded.plugin_settings,
+                toolbar_order = excluded.toolbar_order,
+                info_panel_order = excluded.info_panel_order,
+                socks5_address = excluded.socks5_address,
+                socks5_enabled = excluded.socks5_enabled,
+                socks5_username = excluded.socks5_username,
+                plugin_proxy_settings = excluded.plugin_proxy_settings,
+                modified_at = CURRENT_TIMESTAMP
+        "#;
 
-        // Manual update without AsChangeset
-        diesel::update(user_config.find(1))
-            .set((
-                vault_path.eq(&self.vault_path),
-                cache_directory.eq(&self.cache_directory),
-                last_opened_archive.eq(&self.last_opened_archive),
-                temp_dir.eq(&self.temp_dir),
-                sevenzip_path.eq(&self.sevenzip_path),
-                transfer_dir.eq(&self.transfer_dir),
-                backend_mode.eq(&self.backend_mode),
-                open_nested_in_new_tab.eq(self.open_nested_in_new_tab),
-                enabled_plugins.eq(&self.enabled_plugins),
-                plugin_order.eq(&self.plugin_order),
-                plugin_visibility.eq(&self.plugin_visibility),
-                plugin_settings.eq(&self.plugin_settings),
-                toolbar_order.eq(&self.toolbar_order),
-                info_panel_order.eq(&self.info_panel_order),
-                socks5_address.eq(&self.socks5_address),
-                socks5_enabled.eq(self.socks5_enabled),
-                socks5_username.eq(&self.socks5_username),
-                plugin_proxy_settings.eq(&self.plugin_proxy_settings),
-                modified_at.eq(diesel::dsl::sql::<
-                    diesel::sql_types::Nullable<diesel::sql_types::Text>,
-                >("CURRENT_TIMESTAMP")),
-            ))
+        diesel::sql_query(sql)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.vault_path)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.cache_directory)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
+                &self.last_opened_archive,
+            )
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.temp_dir)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.sevenzip_path)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.transfer_dir)
+            .bind::<diesel::sql_types::Text, _>(&self.backend_mode)
+            .bind::<diesel::sql_types::Bool, _>(self.open_nested_in_new_tab)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.enabled_plugins)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.plugin_order)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
+                &self.plugin_visibility,
+            )
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.plugin_settings)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.toolbar_order)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.info_panel_order)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.socks5_address)
+            .bind::<diesel::sql_types::Bool, _>(self.socks5_enabled)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.socks5_username)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
+                &self.plugin_proxy_settings,
+            )
             .execute(conn)
-            .map_err(|e| anyhow::anyhow!("Failed to save user config: {}", e))?;
+            .map_err(|e| {
+                tracing::error!("[UserConfig] save_diesel UPSERT failed: {}", e);
+                anyhow::anyhow!("Failed to save user config: {}", e)
+            })?;
+
+        tracing::info!("[UserConfig] save_diesel: config saved successfully");
         Ok(())
     }
 }

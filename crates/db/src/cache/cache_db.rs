@@ -30,8 +30,11 @@ impl CacheDb {
         // Try opening again (will create new file if we deleted the old one)
         let db = SqliteDb::open(path_ref)?;
 
-        // Initialize cache schema
+        // Initialize cache schema (legacy dlsite_metadata_cache)
         db.init_schema(init_cache_schema)?;
+
+        // Initialize cache_index table for ContentCache
+        db.with_connection(|conn| crate::legacy::cache_index::init_cache_index_schema(conn))?;
 
         Ok(Self { db })
     }

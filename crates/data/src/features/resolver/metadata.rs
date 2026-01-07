@@ -1,26 +1,26 @@
 //! MetadataStore resolver
 //!
-//! Resolves structured metadata from the persistent MetadataStore.
+//! Resolves structured metadata from the persistent LibraryService.
 //! Checks:
-//! - MetadataStore (metadata.sqlite)
+//! - LibraryService (library.sqlite via Diesel)
 //! - ContentCache (cacache) for raw data
 
 use super::{DataSourceResolver, ResolveError};
 use crate::features::api::DataRequest;
 use crate::features::resource_manager::ResourceManager;
-use arclain_db::{MetadataStore, ProductMetadata};
+use arclain_core::{LibraryService, ProductMetadata};
 use std::sync::Arc;
 
-/// Resolver for structured metadata stored in MetadataStore
+/// Resolver for structured metadata stored via LibraryService
 pub struct MetadataStoreResolver {
-    store: Option<Arc<MetadataStore>>,
+    library_service: Option<Arc<LibraryService>>,
     resource_manager: Option<Arc<ResourceManager>>,
 }
 
 impl MetadataStoreResolver {
-    pub fn new(store: Arc<MetadataStore>) -> Self {
+    pub fn new(library_service: Arc<LibraryService>) -> Self {
         Self {
-            store: Some(store),
+            library_service: Some(library_service),
             resource_manager: None,
         }
     }
@@ -65,15 +65,11 @@ impl DataSourceResolver for MetadataStoreResolver {
             return Err(ResolveError::NotFound);
         }
 
-        // For JSON/Metadata
-        if let Some(store) = &self.store {
+        // For JSON/Metadata - use LibraryService
+        if let Some(lib_svc) = &self.library_service {
             let id = Self::key_to_id(key);
-            if let Ok(Some(meta)) = store.get(&id) {
+            if let Ok(Some(meta)) = lib_svc.get_metadata(&id) {
                 // Return the ProductMetadata struct serialized as JSON
-                // Note: The previous implementation returned a custom JSON structure.
-                // We should ideally return the serialized ProductMetadata directly now,
-                // but if consumers expect the old format, we might need a transformation.
-                // For now, let's return the ProductMetadata JSON directly as the user wants to move to it.
                 let json =
                     serde_json::to_vec(&meta).map_err(|e| ResolveError::IoError(e.to_string()))?;
                 return Ok(json);
@@ -108,8 +104,8 @@ impl DataSourceResolver for MetadataStoreResolver {
             return Ok(());
         }
 
-        let store = self.store.as_ref().ok_or_else(|| {
-            tracing::error!("[MetadataStoreResolver] Store not configured");
+        let lib_svc = self.library_service.as_ref().ok_or_else(|| {
+            tracing::error!("[MetadataStoreResolver] LibraryService not configured");
             ResolveError::NotConfigured
         })?;
 
@@ -127,7 +123,7 @@ impl DataSourceResolver for MetadataStoreResolver {
             meta.source
         );
 
-        store.save(&meta).map_err(|e| {
+        lib_svc.save_metadata(&meta).map_err(|e| {
             tracing::error!("[MetadataStoreResolver] Save failed: {}", e);
             ResolveError::IoError(e.to_string())
         })?;
@@ -139,8 +135,8 @@ impl DataSourceResolver for MetadataStoreResolver {
     fn has(&self, key: &str, _request: &DataRequest) -> bool {
         let id = Self::key_to_id(key);
 
-        if let Some(store) = &self.store {
-            if let Ok(Some(_)) = store.get(&id) {
+        if let Some(lib_svc) = &self.library_service {
+            if let Ok(Some(_)) = lib_svc.get_metadata(&id) {
                 return true;
             }
         }

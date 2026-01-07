@@ -34,7 +34,7 @@ pub use config::{
     DbTitleReplacement, NewTitleReplacement,
 };
 
-mod cache;
+pub mod cache;
 
 pub use cache::{
     clear_all_entries, delete_cache_entry, get_cache_entry, get_entries_by_product,
@@ -107,7 +107,7 @@ pub use domain_whitelist::{
     DbWhitelistRow,
 };
 
-mod library;
+pub mod library;
 pub use library::{
     delete,
     // Aliases for compatibility/clarity
@@ -153,33 +153,19 @@ pub struct DbPaths {
 }
 
 impl DbPaths {
-    /// Defaults:
-    /// - config.sqlite at %APPDATA%/{app}/
-    /// - pass.redb at %APPDATA%/{app}/secrets/ (redb with AES-256-GCM)
-    /// - master key at %APPDATA%/{app}/secrets/master.key
-    pub fn defaults(app_name: &str) -> Result<Self> {
+    /// Calculate default paths without creating them.
+    /// Creation is now handled by arclain_core::dirs::AppDirectories.
+    pub fn calculate_defaults(app_name: &str) -> Result<Self> {
         let base = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(app_name);
+
+        let databases_dir = base.join("databases");
         let secrets_dir = base.join("secrets");
 
-        // Create directories with secure permissions
-        fs::create_dir_all(&base)
-            .with_context(|| format!("creating config dir {}", base.display()))?;
-        fs::create_dir_all(&secrets_dir)
-            .with_context(|| format!("creating secrets dir {}", secrets_dir.display()))?;
-
-        // Set directory permissions to 700 (user-only) on Unix
-        #[cfg(unix)]
-        {
-            let perms = fs::Permissions::from_mode(0o700);
-            fs::set_permissions(&secrets_dir, perms)
-                .with_context(|| format!("setting permissions on {}", secrets_dir.display()))?;
-        }
-
         Ok(Self {
-            config_db: base.join("config.sqlite"),
-            cache_db: base.join("metadata.sqlite"),
+            config_db: databases_dir.join("config.sqlite"),
+            cache_db: databases_dir.join("metadata.sqlite"),
             secrets_db: secrets_dir.join("pass.redb"),
             key_file: Some(secrets_dir.join("master.key")),
         })
@@ -298,11 +284,11 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
     let config_pool = DieselPool::new(&paths.config_db)
         .with_context(|| "Failed to create config database pool")?;
 
-    // Ensure cache directory exists
-    if let Some(parent) = paths.cache_db.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create cache directory at {:?}", parent))?;
-    }
+    // Ensure cache directory exists - REMOVED (Handled by AppDirectories)
+    // if let Some(parent) = paths.cache_db.parent() {
+    //     std::fs::create_dir_all(parent)
+    //         .with_context(|| format!("Failed to create cache directory at {:?}", parent))?;
+    // }
 
     // Open cache database
     let cache_db = CacheDb::open(&paths.cache_db)

@@ -33,9 +33,8 @@ pub struct HostFunctions {
     pub pending_messages: Arc<Mutex<Vec<(String, String)>>>,
     pub emitted_metadata: Arc<Mutex<Option<String>>>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
-    pub metadata_store: Option<Arc<arclain_db::MetadataStore>>,
+    pub library_service: Option<Arc<arclain_core::LibraryService>>,
     pub content_cache: Option<Arc<arclain_data::ContentCache>>,
-    pub cache_db: Option<Arc<arclain_db::SqliteDb>>,
 
     pub resource_manager: Option<Arc<ResourceManager>>,
 
@@ -72,9 +71,8 @@ impl HostFunctions {
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             emitted_metadata: Arc::new(Mutex::new(None)),
             network_log: Arc::new(Mutex::new(Vec::new())),
-            metadata_store: None,
+            library_service: None,
             content_cache: None,
-            cache_db: None,
 
             resource_manager: None,
 
@@ -103,21 +101,17 @@ impl HostFunctions {
         host_funcs
     }
 
-    pub fn set_metadata_store(&mut self, store: Arc<arclain_db::MetadataStore>) {
+    pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
         // Register MetadataStore resolver with DataService
-        let resolver = Arc::new(arclain_data::MetadataStoreResolver::new(store.clone()));
+        let resolver = Arc::new(arclain_data::MetadataStoreResolver::new(lib_svc.clone()));
 
         self.data_service
             .register_resolver(arclain_data::DataSource::MetadataStore, resolver);
-        self.metadata_store = Some(store);
+        self.library_service = Some(lib_svc);
     }
 
     pub fn set_content_cache(&mut self, cache: Arc<arclain_data::ContentCache>) {
         self.content_cache = Some(cache);
-    }
-
-    pub fn set_cache_db(&mut self, db: Arc<arclain_db::SqliteDb>) {
-        self.cache_db = Some(db);
     }
 
     pub fn set_metadata_signal(
@@ -320,9 +314,9 @@ impl Host for HostFunctions {
             }
         }
 
-        // Also try metadata store with converted key format
-        // ContentCache: dlsite:json:RJ999003 -> MetadataStore: dlsite:RJ999003
-        if let Some(store) = &self.metadata_store {
+        // Also try LibraryService with converted key format
+        // ContentCache: dlsite:json:RJ999003 -> LibraryService: dlsite:RJ999003
+        if let Some(lib_svc) = &self.library_service {
             // Extract the metadata ID (remove :json or :html suffix)
             let metadata_key = if key.contains(":json:") {
                 key.replace(":json:", ":")
@@ -332,9 +326,9 @@ impl Host for HostFunctions {
                 key.clone()
             };
 
-            if store.delete(&metadata_key).is_ok() {
+            if lib_svc.delete_metadata(&metadata_key).is_ok() {
                 tracing::info!(
-                    "[HostFunctions] Invalidated metadata store key: {}",
+                    "[HostFunctions] Invalidated metadata via LibraryService: {}",
                     metadata_key
                 );
                 invalidated = true;

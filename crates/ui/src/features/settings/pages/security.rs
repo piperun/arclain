@@ -28,7 +28,8 @@ pub fn render(
             ui.add_space(12.0);
 
             // Calculate default paths for hints
-            let defaults = arclain_core::config::database::DbPaths::defaults("arclain").ok();
+            let defaults =
+                arclain_core::config::database::DbPaths::calculate_defaults("arclain").ok();
             let default_key = defaults
                 .as_ref()
                 .and_then(|d| d.key_file.as_ref())

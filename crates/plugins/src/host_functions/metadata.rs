@@ -88,7 +88,7 @@ impl HostFunctions {
             .as_array()
             .map(|t| serde_json::to_string(t).unwrap_or_default());
 
-        use arclain_db::{MetadataSource, ProductMetadata};
+        use arclain_core::{MetadataSource, ProductMetadata};
 
         let rating = parsed["rating"]
             .as_f64()
@@ -234,13 +234,16 @@ impl HostFunctions {
     }
 
     pub(super) fn impl_list_cached_entries(&mut self) -> Vec<String> {
-        if let Some(store) = &self.metadata_store {
+        if let Some(lib_svc) = &self.library_service {
             // Assume DLSite source for now as this is likely invoked by dlsite plugin context
-            match store.list_by_source(arclain_db::MetadataSource::DLSite) {
+            match lib_svc.list_by_source(arclain_core::MetadataSource::DLSite) {
                 Ok(entries) => {
                     debug!("[Cache] Listed {} cached entries", entries.len());
-                    // Return external IDs
-                    entries.into_iter().map(|m| m.external_id).collect()
+                    // Return external IDs (strip "source:")
+                    entries
+                        .into_iter()
+                        .filter_map(|id| id.split_once(':').map(|(_, ext)| ext.to_string()))
+                        .collect()
                 }
                 Err(e) => {
                     error!("Failed to list cached entries: {}", e);
@@ -248,7 +251,7 @@ impl HostFunctions {
                 }
             }
         } else {
-            warn!("Metadata store not initialized");
+            warn!("LibraryService not initialized");
             vec![]
         }
     }
@@ -260,13 +263,13 @@ impl HostFunctions {
     ) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
         use crate::arclain::plugin::host::MetadataSummary;
 
-        if let Some(store) = &self.metadata_store {
+        if let Some(lib_svc) = &self.library_service {
             ids.into_iter()
                 .map(|external_id| {
-                    // Format ID as expected by MetadataStore: "source:external_id"
+                    // Format ID as expected by LibraryService: "source:external_id"
                     let full_id = format!("dlsite:{}", external_id);
 
-                    match store.get(&full_id) {
+                    match lib_svc.get_metadata(&full_id) {
                         Ok(Some(meta)) => MetadataSummary {
                             id: external_id,
                             title: meta.title,
@@ -292,15 +295,15 @@ impl HostFunctions {
                 })
                 .collect()
         } else {
-            warn!("Metadata store not initialized");
+            warn!("LibraryService not initialized");
             vec![]
         }
     }
 
     pub(super) fn impl_export_cache(&mut self) -> Result<String, String> {
-        if let Some(store) = &self.metadata_store {
-            use arclain_db::MetadataSource;
-            match store.list_by_source(MetadataSource::DLSite) {
+        if let Some(lib_svc) = &self.library_service {
+            use arclain_core::MetadataSource;
+            match lib_svc.list_by_source(MetadataSource::DLSite) {
                 Ok(entries) => {
                     if let Some(path) = rfd::FileDialog::new()
                         .set_file_name("arclain_metadata_export.json")
@@ -321,12 +324,12 @@ impl HostFunctions {
                 Err(e) => Err(format!("Failed to list entries: {}", e)),
             }
         } else {
-            Err("Metadata store not initialized".to_string())
+            Err("LibraryService not initialized".to_string())
         }
     }
 
     pub(super) fn impl_import_cache(&mut self) -> Result<String, String> {
-        if let Some(store) = &self.metadata_store {
+        if let Some(lib_svc) = &self.library_service {
             if let Some(path) = rfd::FileDialog::new()
                 .add_filter("JSON", &["json"])
                 .pick_file()
@@ -335,7 +338,7 @@ impl HostFunctions {
                     .map_err(|e| format!("Failed to read file: {}", e))?;
 
                 // Try to parse as list of ProductMetadata
-                let entries: Vec<arclain_db::ProductMetadata> = serde_json::from_str(&content)
+                let entries: Vec<arclain_core::ProductMetadata> = serde_json::from_str(&content)
                     .map_err(|e| {
                         format!(
                             "Invalid JSON format (expected ProductMetadata array): {}",
@@ -346,7 +349,7 @@ impl HostFunctions {
                 let count = entries.len();
                 let mut imported = 0;
                 for meta in entries {
-                    if let Err(e) = store.save(&meta) {
+                    if let Err(e) = lib_svc.save_metadata(&meta) {
                         error!("Failed to import entry {}: {}", meta.id, e);
                     } else {
                         imported += 1;
@@ -361,7 +364,7 @@ impl HostFunctions {
                 Err("Import cancelled".to_string())
             }
         } else {
-            Err("Metadata store not initialized".to_string())
+            Err("LibraryService not initialized".to_string())
         }
     }
 }

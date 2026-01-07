@@ -1,84 +1,21 @@
-//! Unified content cache API combining cacache with SQLite index
-//!
-//! This provides a high-level API for caching binary content (images, etc.)
-//! using cacache for content-addressable storage and SQLite for indexing.
+use anyhow::Result;
+use arclain_core::CacheService;
+use arclain_db::cache::cache_index::CacheType;
+use std::path::PathBuf;
+use std::sync::Arc;
+use tracing::debug;
 
-use anyhow::{Context, Result};
-use arclain_db::{legacy, CacheEntry, CacheType, SqliteDb};
-use std::path::{Path, PathBuf};
-
-/// Unified content cache combining cacache blob storage with SQLite index
+#[derive(Clone)]
 pub struct ContentCache {
-    cache_dir: PathBuf,
-    index_db: SqliteDb,
+    base_dir: PathBuf,
+    service: Arc<CacheService>,
 }
 
 impl ContentCache {
-    /// Create a new content cache at the given base directory.
-    ///
-    /// Creates the following structure:
-    /// ```text
-    /// <base_cache_dir>/
-    ///   content/
-    ///     images/    <- cacache stores content here
-    /// ```
-    pub fn new(base_cache_dir: PathBuf, index_db: SqliteDb) -> Result<Self> {
-        // Create organized folder structure
-        let images_dir = base_cache_dir.join("content").join("images");
-
-        std::fs::create_dir_all(&images_dir)
-            .with_context(|| format!("Creating cache directory {:?}", images_dir))?;
-
-        // Initialize SQLite schema
-        index_db.init_schema(legacy::cache_index::init_cache_index_schema)?;
-
-        Ok(Self {
-            cache_dir: images_dir,
-            index_db,
-        })
+    pub fn new(base_dir: PathBuf, service: Arc<CacheService>) -> Result<Self> {
+        Ok(Self { base_dir, service })
     }
 
-    /// Check if content exists in cache
-    pub fn has(&self, key: &str) -> Result<bool> {
-        self.index_db
-            .with_connection(|conn| legacy::cache_index::has_cache_entry(conn, key))
-    }
-
-    /// Get content from cache
-    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
-        // First check SQLite index
-        let entry = self
-            .index_db
-            .with_connection(|conn| legacy::cache_index::get_cache_entry(conn, key))?;
-
-        let Some(entry) = entry else {
-            return Ok(None);
-        };
-
-        // Parse the stored hash string back to Integrity
-        let integrity: ssri::Integrity = entry
-            .content_hash
-            .parse()
-            .context("Invalid integrity hash in cache index")?;
-
-        // Read from cacache using the stored hash
-        match cacache::read_hash_sync(&self.cache_dir, &integrity) {
-            Ok(data) => {
-                // Update last accessed time
-                let _ = self
-                    .index_db
-                    .with_connection(|conn| legacy::cache_index::touch_cache_entry(conn, key));
-                Ok(Some(data))
-            }
-            Err(e) => {
-                // Cache file missing - index is stale
-                tracing::warn!("Cache entry {} has stale index: {}", key, e);
-                Ok(None)
-            }
-        }
-    }
-
-    /// Store content in cache
     pub fn put(
         &self,
         key: &str,
@@ -86,69 +23,71 @@ impl ContentCache {
         cache_type: CacheType,
         product_id: Option<&str>,
         source_url: Option<&str>,
-    ) -> Result<()> {
-        // Write to cacache (content-addressable)
-        let integrity = cacache::write_hash_sync(&self.cache_dir, data)
-            .context("Failed to write to cacache")?;
+    ) -> Result<String> {
+        let sri = cacache::write_hash_sync(&self.base_dir, data)?;
 
-        let hash_str = integrity.to_string();
+        self.service.upsert(
+            key,
+            product_id,
+            &sri.to_string(),
+            source_url,
+            cache_type,
+            Some(data.len() as i64),
+        )?;
 
-        // Update SQLite index
-        self.index_db.with_connection(|conn| {
-            legacy::cache_index::upsert_cache_entry(
-                conn,
-                key,
-                product_id,
-                &hash_str,
-                source_url,
-                cache_type,
-                Some(data.len() as i64),
-            )
-        })?;
-
-        Ok(())
+        debug!("Cached {} bytes for key {}", data.len(), key);
+        Ok(sri.to_string())
     }
 
-    /// Get cache entry metadata (without loading content)
-    pub fn get_entry(&self, key: &str) -> Result<Option<CacheEntry>> {
-        self.index_db
-            .with_connection(|conn| legacy::cache_index::get_cache_entry(conn, key))
-    }
+    pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+        if let Some(entry) = self.service.get(key)? {
+            // Guard against empty/invalid hash which causes ssri to panic
+            if entry.content_hash.is_empty() {
+                tracing::warn!("Found empty content_hash for key: {}", key);
+                return Ok(None);
+            }
 
-    /// Get all entries for a product ID
-    pub fn get_product_entries(&self, product_id: &str) -> Result<Vec<CacheEntry>> {
-        self.index_db
-            .with_connection(|conn| legacy::cache_index::get_entries_by_product(conn, product_id))
-    }
+            // Parse the SRI hash
+            let sri: ssri::Integrity = match entry.content_hash.parse() {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("Failed to parse SRI hash for key {}: {}", key, e);
+                    return Ok(None);
+                }
+            };
 
-    /// Get the cache directory path
-    pub fn cache_dir(&self) -> &Path {
-        &self.cache_dir
-    }
-
-    /// Remove a cache entry by key
-    /// Returns true if the entry was deleted, false if it didn't exist
-    pub fn remove(&self, key: &str) -> Result<bool> {
-        // First get the entry to find the content hash
-        let entry = self
-            .index_db
-            .with_connection(|conn| legacy::cache_index::get_cache_entry(conn, key))?;
-
-        // Delete from SQLite index
-        let deleted = self
-            .index_db
-            .with_connection(|conn| legacy::cache_index::delete_cache_entry(conn, key))?;
-
-        // Note: We don't delete from cacache because it's content-addressable
-        // The content may be referenced by other keys. Cacache handles garbage collection.
-        if deleted {
-            tracing::info!(
-                "Removed cache entry: {} (hash: {:?})",
-                key,
-                entry.map(|e| e.content_hash)
-            );
+            // Read content
+            match cacache::read_hash_sync(&self.base_dir, &sri) {
+                Ok(data) => {
+                    // Update access time
+                    if let Err(e) = self.service.update_last_accessed(key) {
+                        debug!("Failed to update access time for {}: {}", key, e);
+                    }
+                    Ok(Some(data))
+                }
+                Err(cacache::Error::EntryNotFound(_, _)) => {
+                    // Entry in DB but not on disk (inconsistent state)
+                    Ok(None)
+                }
+                Err(e) => Err(e.into()),
+            }
+        } else {
+            Ok(None)
         }
+    }
 
-        Ok(deleted)
+    pub fn has(&self, key: &str) -> Result<bool> {
+        self.service.has(key)
+    }
+
+    pub fn base_dir(&self) -> &PathBuf {
+        &self.base_dir
+    }
+
+    pub fn remove(&self, key: &str) -> Result<bool> {
+        // Remove from DB first to invalidate
+        let removed = self.service.delete(key)?;
+        // We leave the content in cacache (garbage collection can handle orphaned blobs later)
+        Ok(removed)
     }
 }

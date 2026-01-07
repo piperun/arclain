@@ -24,11 +24,29 @@ impl ConfigDb {
                 vault_path TEXT,
                 cache_directory TEXT,
                 last_opened_archive TEXT,
+                temp_dir TEXT,
+                sevenzip_path TEXT,
+                transfer_dir TEXT,
+                backend_mode TEXT NOT NULL DEFAULT 'native',
+                open_nested_in_new_tab INTEGER NOT NULL DEFAULT 0,
+                enabled_plugins TEXT,
+                plugin_order TEXT,
+                plugin_visibility TEXT,
+                plugin_settings TEXT,
+                toolbar_order TEXT,
+                info_panel_order TEXT,
+                socks5_address TEXT,
+                socks5_enabled INTEGER NOT NULL DEFAULT 0,
+                socks5_username TEXT,
+                plugin_proxy_settings TEXT,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 modified_at TEXT
             );",
             [],
         )?;
+
+        // Migrate existing user_config tables - add missing columns
+        Self::migrate_user_config(conn)?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS app_config(
@@ -72,6 +90,50 @@ impl ConfigDb {
 
         // Initialize domain whitelist table
         crate::domain_whitelist::ensure_whitelist_table(conn)?;
+
+        Ok(())
+    }
+
+    /// Migrate user_config table to add missing columns
+    fn migrate_user_config(conn: &Connection) -> Result<()> {
+        // Helper to add column if missing
+        let add_column_if_missing = |col_name: &str, col_def: &str| -> Result<()> {
+            let check_sql = format!(
+                "SELECT COUNT(*) FROM pragma_table_info('user_config') WHERE name='{}'",
+                col_name
+            );
+            let exists: i64 = conn.query_row(&check_sql, [], |row| row.get(0))?;
+
+            if exists == 0 {
+                let alter_sql = format!(
+                    "ALTER TABLE user_config ADD COLUMN {} {}",
+                    col_name, col_def
+                );
+                tracing::info!(
+                    "[ConfigDb] Migrating: adding column {} to user_config",
+                    col_name
+                );
+                conn.execute(&alter_sql, [])?;
+            }
+            Ok(())
+        };
+
+        // Add all columns that might be missing from older schemas
+        add_column_if_missing("temp_dir", "TEXT")?;
+        add_column_if_missing("sevenzip_path", "TEXT")?;
+        add_column_if_missing("transfer_dir", "TEXT")?;
+        add_column_if_missing("backend_mode", "TEXT NOT NULL DEFAULT 'native'")?;
+        add_column_if_missing("open_nested_in_new_tab", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing("enabled_plugins", "TEXT")?;
+        add_column_if_missing("plugin_order", "TEXT")?;
+        add_column_if_missing("plugin_visibility", "TEXT")?;
+        add_column_if_missing("plugin_settings", "TEXT")?;
+        add_column_if_missing("toolbar_order", "TEXT")?;
+        add_column_if_missing("info_panel_order", "TEXT")?;
+        add_column_if_missing("socks5_address", "TEXT")?;
+        add_column_if_missing("socks5_enabled", "INTEGER NOT NULL DEFAULT 0")?;
+        add_column_if_missing("socks5_username", "TEXT")?;
+        add_column_if_missing("plugin_proxy_settings", "TEXT")?;
 
         Ok(())
     }
