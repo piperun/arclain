@@ -10,6 +10,7 @@
 pub mod archive;
 pub mod backends;
 pub mod config;
+pub mod dirs;
 pub mod features;
 pub mod services;
 pub mod utilities;
@@ -24,8 +25,9 @@ pub use config::{Config, ConfigStore, PassRule};
 pub use features::organization::{
     GameMetadata, MoveAction, OrganizationRule, RuleActions, RuleTrigger,
 };
-pub use services::{ConfigService, LibraryService, OrganizationService, UiService};
+pub use services::{CacheService, ConfigService, LibraryService, OrganizationService, UiService};
 pub use utilities::{init_logging, FileOpener, OpenStrategy};
 
 // Re-export UI/DB types so consumers don't need to import arclain_db directly
 pub use arclain_db::{ActionType, CacheType, DisplayMode, UiItem, UiRegion, UserConfig};
+pub use arclain_db::{CacheEntry, MetadataSource, ProductContent, ProductMetadata};

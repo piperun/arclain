@@ -1,13 +1,5 @@
 use archust_plugin_sdk::info;
 use std::cell::RefCell;
-use std::collections::HashMap;
-
-/// Summary info for cached entries (for fast list rendering)
-#[derive(Clone)]
-struct EntrySummary {
-    title: Option<String>,
-    geo_blocked: bool,
-}
 
 // Plugin state to store found metadata
 struct PluginState {
@@ -26,8 +18,6 @@ struct PluginState {
     browser_loading: bool,
     // Cache for browser detail view to prevent fetch loop
     browser_detail_cache: Option<(String, serde_json::Value, Option<ScrapedData>)>,
-    // Summary cache for fast list rendering (id -> title, geo_blocked)
-    entry_summaries: HashMap<String, EntrySummary>,
     current_image_index: i32,
 }
 
@@ -47,7 +37,6 @@ thread_local! {
         browser_tab: "cached".to_string(),
         browser_loading: false,
         browser_detail_cache: None,
-        entry_summaries: HashMap::new(),
         current_image_index: -1, // -1 = Cover, 0+ = Sample index
     });
 }
@@ -265,13 +254,14 @@ impl archust_plugin_sdk::Guest for Component {
                     if let Some((id, data, scraped)) = &state.found_metadata {
                         // Metadata found - show info
                         // Handle both raw API format (work_name) and ProductMetadata format (title)
+
                         let title = data["work_name"].as_str()
-                            .or_else(|| data["title"].as_str())
-                            .unwrap_or("Unknown Title");
+                            .or_else(|| data["title"].as_str());
+                            
+                        // Maker/Circle
                         let maker = data["maker_name"].as_str()
                             .or_else(|| data["circle"].as_str())
-                            .or_else(|| data["creator"].as_str())
-                            .unwrap_or("Unknown");
+                            .or_else(|| data["creator"].as_str());
                         
                         // Show warning if geo-blocked
                         if let Some(scraped_data) = scraped {
@@ -295,16 +285,21 @@ impl archust_plugin_sdk::Guest for Component {
                             max_height: Some(150.0),
                         }));
                         
-                        elements.push(UiElement::Label(LabelConfig {
-                            text: title.to_string(),
-                            bold: true,
-                            size: Some(14.0),
-                        }));
-                        elements.push(UiElement::Label(LabelConfig {
-                            text: format!("Circle: {}", maker),
-                            bold: false,
-                            size: None,
-                        }));
+                        if let Some(t) = title {
+                            elements.push(UiElement::Label(LabelConfig {
+                                text: t.to_string(),
+                                bold: true,
+                                size: Some(14.0),
+                            }));
+                        }
+                        
+                        if let Some(m) = maker {
+                            elements.push(UiElement::Label(LabelConfig {
+                                text: format!("Circle: {}", m),
+                                bold: false,
+                                size: None,
+                            }));
+                        }
                         elements.push(UiElement::Label(LabelConfig {
                             text: format!("ID: {}", id),
                             bold: false,
@@ -315,11 +310,15 @@ impl archust_plugin_sdk::Guest for Component {
                         let release_date = data["regist_date"].as_str()
                             .or_else(|| data["release_date"].as_str());
                         if let Some(date) = release_date {
-                            elements.push(UiElement::Label(LabelConfig {
-                                text: format!("Released: {}", date),
-                                bold: false,
-                                size: None,
-                            }));
+                            if !date.is_empty() {
+                                // Strip time component if present (e.g. "2026-03-06 00:00:00" -> "2026-03-06")
+                                let date_clean = date.split_whitespace().next().unwrap_or(date);
+                                elements.push(UiElement::Label(LabelConfig {
+                                    text: format!("Released: {}", date_clean),
+                                    bold: false,
+                                    size: None,
+                                }));
+                            }
                         }
                         
                         // Price removed from Panel - only shown in full info dialog
@@ -411,25 +410,29 @@ impl archust_plugin_sdk::Guest for Component {
                         if let Some((id, data, scraped)) = &state.found_metadata {
                             // Title (check both raw API and ProductMetadata field names)
                             let title = data["work_name"].as_str()
-                                .or_else(|| data["title"].as_str())
-                                .unwrap_or("Unknown Title");
-                            elements.push(UiElement::Label(LabelConfig {
-                                text: title.to_string(),
-                                bold: true,
-                                size: Some(18.0),
-                            }));
+                                .or_else(|| data["title"].as_str());
+                                
+                            if let Some(t) = title {
+                                elements.push(UiElement::Label(LabelConfig {
+                                    text: t.to_string(),
+                                    bold: true,
+                                    size: Some(18.0),
+                                }));
+                            }
                             
                             elements.push(UiElement::Separator);
                             
                             // Circle/Maker (check both field names)
                             let maker = data["maker_name"].as_str()
-                                .or_else(|| data["creator"].as_str())
-                                .unwrap_or("Unknown");
-                            elements.push(UiElement::Label(LabelConfig {
-                                text: format!("Circle: {}", maker),
-                                bold: false,
-                                size: None,
-                            }));
+                                .or_else(|| data["creator"].as_str());
+                                
+                            if let Some(m) = maker {
+                                elements.push(UiElement::Label(LabelConfig {
+                                    text: format!("Circle: {}", m),
+                                    bold: false,
+                                    size: None,
+                                }));
+                            }
                             
                             // Product ID
                             elements.push(UiElement::Label(LabelConfig {
@@ -1784,15 +1787,15 @@ fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Op
 /// Fetch metadata from DLSite network (for new entries or search results)
 fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
+    use metastore_providers::dlsite::api::{ajax_url, html_url, get_site_id};
 
-    // 1. Fetch JSON API
-    let api_url = format!(
-        "https://www.dlsite.com/home/api/=/product.json?work_no={}",
-        product_id
-    );
+    let site_id = get_site_id(product_id);
+    
+    // 1. Fetch JSON API using ajax endpoint (like dlsite-async library)
+    let api_url = ajax_url(product_id);
     let cache_key = metastore_providers::dlsite::cache_keys::json_key(product_id);
 
-    log_network_activity(&format!("Fetching metadata for {} from DLSite API...", product_id));
+    log_network_activity(&format!("Fetching metadata for {} from DLSite API (site: {})...", product_id, site_id));
     log_network_activity(&format!("GET {}", api_url));
 
     let json_data = match fetch_string_blocking(&cache_key, &api_url) {
@@ -1800,10 +1803,11 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
             log_network_activity(&format!("Response: {} bytes", response_body.len()));
             match serde_json::from_str::<serde_json::Value>(&response_body) {
                 Ok(json) => {
-                    if let Some(arr) = json.as_array() {
+                    // Ajax endpoint returns {product_id: {...}} format
+                    if let Some(obj) = json.as_object() {
+                        obj.get(product_id).cloned()
+                    } else if let Some(arr) = json.as_array() {
                         arr.first().cloned()
-                    } else if json.is_object() {
-                        Some(json)
                     } else {
                         None
                     }
@@ -1825,17 +1829,14 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
     }
     let json_data = json_data.unwrap();
 
-    // 2. Fetch HTML Page for scraping
-    let html_url = format!(
-        "https://www.dlsite.com/home/work/=/product_id/{}.html",
-        product_id
-    );
+    // 2. Fetch HTML Page for scraping (using correct site_id)
+    let html_page_url = html_url(product_id);
     let html_key = metastore_providers::dlsite::cache_keys::html_key(product_id);
 
     log_network_activity(&format!("Fetching HTML page for scraping..."));
-    log_network_activity(&format!("GET {}", html_url));
+    log_network_activity(&format!("GET {}", html_page_url));
 
-    let scraped_data = match fetch_string_blocking(&html_key, &html_url) {
+    let scraped_data = match fetch_string_blocking(&html_key, &html_page_url) {
         Ok(html) => {
             log_network_activity(&format!("Response: {} bytes", html.len()));
             scrape_html_metadata(&html)
@@ -1918,6 +1919,7 @@ fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
     let scraped = parse_html_response(html)?;
     
     // Log geo_blocked status for debugging
+    // Log geo_blocked status for debugging
     info(&format!(
         "[DLSite Plugin] Scraped geo_blocked={}, cover={}, genres={}, circle={}",
         scraped.geo_blocked,
@@ -1925,6 +1927,49 @@ fn scrape_html_metadata(html: &str) -> Option<ScrapedData> {
         scraped.genres.len(),
         scraped.circle.is_some()
     ));
+
+    if scraped.geo_blocked {
+        let snippet: String = html.chars().take(10000).collect();
+        info(&format!("[DLSite Plugin] BLOCKED CONTENT (10k chars): {}", snippet));
+        
+        // Manual content check for debugging
+        let has_outline = html.contains("work_outline");
+        let has_name = html.contains("work_name");
+        
+        info(&format!("[DLSite Plugin] Content Check: has_outline={}, has_name={}", has_outline, has_name));
+
+        // Replicate pattern match logic to find the culprit
+        let html_lower = html.to_lowercase();
+        let patterns = [
+            "お住いの国・地域からは本作品は購入できません",
+            "this product cannot be purchased",
+            "このページはお住まいの地域からは表示できません",
+            "this page cannot be displayed",
+            "access denied",
+            "region restricted",
+            "not available in your country",
+            "geographic restrictions",
+        ];
+        
+        for pattern in patterns {
+            let pattern_lower = pattern.to_lowercase();
+            if let Some((prefix, suffix)) = html_lower.split_once(&pattern_lower) {
+                info(&format!("[DLSite Plugin] DETECTED BLOCK PATTERN: '{}'", pattern));
+                // Safely extract context using iterators to handle UTF-8 chars
+                let pre_snip: String = prefix.chars().rev().take(200).collect::<String>().chars().rev().collect();
+                let post_snip: String = suffix.chars().take(200).collect();
+                info(&format!("[DLSite Plugin] PATTERN CONTEXT: ...{} >> {} << {}...", pre_snip, pattern, post_snip));
+            }
+        }
+        
+        // Log Title
+        if let Some(start) = html_lower.find("<title>") {
+            if let Some(end) = html_lower[start..].find("</title>") {
+                 let title = &html[start+7..start+end];
+                 info(&format!("[DLSite Plugin] Page Title: {}", title));
+            }
+        }
+    }
     
     // Convert metastore's ScrapedData to our local type
     Some(ScrapedData {
@@ -1964,12 +2009,26 @@ fn generate_metadata_json(
 
     // Extract from JSON first (fallback)
     let (mut title, mut circle, short_desc, price, mut release_date, mut tags) = if let Some(data) = json_data {
+        // Strip time from date (e.g. "2026-03-06 00:00:00" -> "2026-03-06")
+        let date_raw = data["regist_date"].as_str().unwrap_or("");
+        
+        // DEBUG: Trace date cleaning
+        archust_plugin_sdk::info(&format!("[DateDebug] Raw: '{}', Len: {}", date_raw, date_raw.len()));
+
+        let date_clean = if date_raw.is_empty() {
+             None 
+        } else {
+             let clean = date_raw.split_whitespace().next().unwrap_or(date_raw).to_string();
+             archust_plugin_sdk::info(&format!("[DateDebug] Clean: '{}'", clean));
+             Some(clean)
+        };
+
         (
-            data["work_name"].as_str().unwrap_or("Unknown Title").to_string(),
-            data["maker_name"].as_str().unwrap_or("Unknown Circle").to_string(),
+            data["work_name"].as_str().map(|s| s.to_string()),
+            data["maker_name"].as_str().map(|s| s.to_string()),
             data["intro_s"].as_str().unwrap_or(""),
             data["price"].as_u64().unwrap_or(0),
-            data["regist_date"].as_str().unwrap_or("").to_string(),
+            date_clean,
             data["genres"]
                 .as_array()
                 .map(|arr| {
@@ -1981,11 +2040,11 @@ fn generate_metadata_json(
         )
     } else {
         (
-            "Unknown Title".to_string(),
-            "Unknown Circle".to_string(),
+            None,
+            None,
             "",
             0,
-            "".to_string(),
+            None,
             Vec::new(),
         )
     };
@@ -1993,13 +2052,14 @@ fn generate_metadata_json(
     // Override with scraped data if available
     if let Some(scraped) = scraped_data {
         if let Some(t) = &scraped.title {
-            title = t.clone();
+            title = Some(t.clone());
         }
         if let Some(c) = &scraped.circle {
-            circle = c.clone();
+            circle = Some(c.clone());
         }
         if let Some(d) = &scraped.release_date {
-            release_date = d.clone();
+            // Also strip time from scraped date
+            release_date = Some(d.split_whitespace().next().unwrap_or(d).to_string());
         }
         if !scraped.tags.is_empty() {
             tags = scraped.tags.clone();
@@ -2063,7 +2123,7 @@ fn generate_metadata_json(
             "id": product_id,
             "code": product_id, // Required by RuleEngine for $code
             "price": price.to_string(),
-            "url": format!("https://www.dlsite.com/home/work/=/product_id/{}.html", product_id)
+            "url": format!("https://www.dlsite.com/pro/work/=/product_id/{}.html", product_id)
         },
         "common": {
             "dlsite_id": product_id
@@ -2169,11 +2229,27 @@ mod tests {
 
     #[test]
     fn test_generate_metadata_json() {
+        // Case 1: Minimal input (missing data)
         let json = generate_metadata_json("RJ123456", None);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
         assert_eq!(parsed["dlsite"]["id"], "RJ123456");
         assert_eq!(parsed["common"]["dlsite_id"], "RJ123456");
-        assert_eq!(parsed["title"], "Unknown Title");
+        // Should now be null, not "Unknown Title"
+        assert_eq!(parsed["title"], serde_json::Value::Null);
+        assert_eq!(parsed["circle"], serde_json::Value::Null);
+        assert_eq!(parsed["release_date"], serde_json::Value::Null);
+
+        // Case 2: Date with time
+        let json_time = serde_json::json!({
+            "work_name": "Test Title",
+            "maker_name": "Test Circle",
+            "regist_date": "2026-03-06 00:00:00"
+        });
+        let data_time = (json_time, None);
+        let output_time = generate_metadata_json("RJ123456", Some(&data_time));
+        let parsed_time: serde_json::Value = serde_json::from_str(&output_time).unwrap();
+        
+        assert_eq!(parsed_time["release_date"], "2026-03-06");
     }
 }

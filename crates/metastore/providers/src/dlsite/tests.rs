@@ -8,7 +8,9 @@ mod tests {
         <html>
         <body>
             <h1 id="work_name">Test Title</h1>
-            <span class="maker_name"><a href="#">Test Circle</a></span>
+            <div id="work_right">
+                <span class="maker_name"><a href="#">Test Circle</a></span>
+            </div>
             
             <table id="work_maker">
                 <tr><th>Brand</th><td>Test Brand</td></tr>
@@ -144,7 +146,9 @@ mod tests {
         <html>
         <body>
             <h1 id="work_name">Test Title</h1>
-            <span class="maker_name"><a href="#">Test Circle</a></span>
+            <div id="work_right">
+                <span class="maker_name"><a href="#">Test Circle</a></span>
+            </div>
         </body>
         </html>
         "##;

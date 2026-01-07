@@ -331,12 +331,14 @@ name = "arclain_core"
 version = "0.6.5"
 dependencies = [
  "anyhow",
+ "arclain-http",
  "arclain_checksum",
  "arclain_db",
  "base64 0.22.1",
  "cacache",
  "chrono",
  "crc32fast",
+ "diesel",
  "dirs 6.0.0",
  "fs_extra",
  "once_cell",
@@ -352,6 +354,7 @@ dependencies = [
  "ssri",
  "tempfile",
  "thiserror 2.0.17",
+ "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

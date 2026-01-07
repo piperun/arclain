@@ -1,5 +1,6 @@
 //! DLSite metadata provider
 
+pub mod api;
 pub mod cache_keys;
 mod detect;
 mod parse;
@@ -10,6 +11,7 @@ use crate::{MetadataProvider, ParseError};
 use metastore_abstract::{HttpRequest, HttpResponse};
 use metastore_types::{MetadataSource, ProductMetadata, SearchResult};
 
+pub use api::{ajax_url, get_site_id, html_url, is_geo_blocked, ConnectivityResult};
 pub use detect::detect_dlsite_code;
 pub use parse::{parse_api_response, parse_html_response, parse_search_response, ScrapedData};
 
@@ -38,22 +40,26 @@ impl MetadataProvider for DLSiteProvider {
     }
 
     fn request_metadata(&self, external_id: &str) -> Vec<HttpRequest> {
-        vec![
-            HttpRequest::get(
-                &format!(
-                    "https://www.dlsite.com/home/api/=/product.json?work_no={}",
-                    external_id
-                ),
-                &format!("dlsite:json:{}", external_id),
-            ),
-            HttpRequest::get(
-                &format!(
-                    "https://www.dlsite.com/home/work/=/product_id/{}.html",
-                    external_id
-                ),
-                &format!("dlsite:html:{}", external_id),
-            ),
-        ]
+        // Use the api module for URL construction
+        let mut ajax_req = HttpRequest::get(
+            &api::ajax_url(external_id),
+            &format!("dlsite:ajax:{}", external_id),
+        );
+        ajax_req
+            .headers
+            .insert("Cookie".to_string(), "adultchecked=1".to_string());
+        ajax_req.headers.insert("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string());
+
+        let mut html_req = HttpRequest::get(
+            &api::html_url(external_id),
+            &format!("dlsite:html:{}", external_id),
+        );
+        html_req
+            .headers
+            .insert("Cookie".to_string(), "adultchecked=1".to_string());
+        html_req.headers.insert("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string());
+
+        vec![ajax_req, html_req]
     }
 
     fn parse_responses(
@@ -61,18 +67,18 @@ impl MetadataProvider for DLSiteProvider {
         external_id: &str,
         responses: &[(&str, HttpResponse)],
     ) -> Result<ProductMetadata, ParseError> {
-        // Find JSON and HTML responses
-        let json_response = responses
+        // Find AJAX and HTML responses
+        let ajax_response = responses
             .iter()
-            .find(|(key, _)| key.contains(":json:"))
+            .find(|(key, _)| key.contains(":ajax:"))
             .map(|(_, r)| r);
         let html_response = responses
             .iter()
             .find(|(key, _)| key.contains(":html:"))
             .map(|(_, r)| r);
 
-        // Parse JSON API response
-        let mut meta = if let Some(resp) = json_response {
+        // Parse AJAX API response
+        let mut meta = if let Some(resp) = ajax_response {
             let body = resp
                 .body_str()
                 .map_err(|e| ParseError::InvalidFormat(format!("UTF-8 error: {}", e)))?;

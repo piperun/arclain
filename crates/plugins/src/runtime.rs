@@ -99,7 +99,7 @@ impl LoadedPlugin {
         capabilities: Vec<PluginCapability>,
         requests_per_minute: u32,
         backend: Option<Arc<dyn ArchiveBackend>>,
-        metadata_store: Option<Arc<arclain_db::MetadataStore>>,
+        library_service: Option<Arc<arclain_core::LibraryService>>,
         settings: HashMap<String, String>,
         metadata_signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
     ) -> Result<PluginInstance> {
@@ -121,8 +121,8 @@ impl LoadedPlugin {
             )
         };
 
-        if let Some(store) = metadata_store {
-            host_funcs.set_metadata_store(store);
+        if let Some(lib_svc) = library_service {
+            host_funcs.set_library_service(lib_svc);
         }
 
         host_funcs.metadata_signal = metadata_signal;
@@ -327,21 +327,12 @@ impl PluginInstance {
             .set_archive_context(archive_path, password);
     }
 
-    /// Set the metadata store for host functions
-    pub fn set_metadata_store(&mut self, store: Option<Arc<arclain_db::MetadataStore>>) {
+    /// Set the library service for host functions
+    pub fn set_library_service(&mut self, lib_svc: Option<Arc<arclain_core::LibraryService>>) {
         let host = self.store.data_mut();
-        match store {
-            Some(c) => host.set_metadata_store(c),
-            None => host.metadata_store = None,
-        }
-    }
-
-    /// Set the cache database for host functions (new ProductMetadata table)
-    pub fn set_cache_db(&mut self, db: Option<Arc<arclain_db::SqliteDb>>) {
-        let host = self.store.data_mut();
-        match db {
-            Some(d) => host.set_cache_db(d),
-            None => host.cache_db = None,
+        match lib_svc {
+            Some(c) => host.set_library_service(c),
+            None => host.library_service = None,
         }
     }
 

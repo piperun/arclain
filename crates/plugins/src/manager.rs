@@ -25,7 +25,7 @@ pub struct PluginManager {
     plugins: Arc<RwLock<HashMap<String, ManagedPlugin>>>,
     enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
     backend: Option<Arc<dyn ArchiveBackend>>,
-    metadata_store: Option<Arc<arclain_db::MetadataStore>>,
+    library_service: Option<Arc<arclain_core::LibraryService>>,
     content_cache: Option<Arc<arclain_data::ContentCache>>,
     resource_manager: Option<Arc<arclain_data::ResourceManager>>,
     async_http_client: Option<Arc<arclain_http::AsyncHttpClient>>,
@@ -63,7 +63,7 @@ impl PluginManager {
             plugins,
             enabled_plugins,
             backend: None,
-            metadata_store: None,
+            library_service: None,
             content_cache: None,
             resource_manager: None,
             async_http_client: None,
@@ -99,7 +99,7 @@ impl PluginManager {
             plugins,
             enabled_plugins,
             backend: Some(backend),
-            metadata_store: None,
+            library_service: None,
             content_cache: None,
             resource_manager: None,
             async_http_client: None,
@@ -135,13 +135,13 @@ impl PluginManager {
         }
     }
 
-    /// Update the metadata cache for all plugins
-    pub fn set_metadata_store(&mut self, store: Arc<arclain_db::MetadataStore>) {
-        self.metadata_store = Some(store.clone());
+    /// Update the library service for all plugins
+    pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
+        self.library_service = Some(lib_svc.clone());
         let plugins = self.plugins.read();
         for plugin in plugins.values() {
             let mut instance = plugin.instance.lock();
-            instance.set_metadata_store(Some(store.clone()));
+            instance.set_library_service(Some(lib_svc.clone()));
         }
     }
 
@@ -152,15 +152,6 @@ impl PluginManager {
         for plugin in plugins.values() {
             let mut instance = plugin.instance.lock();
             instance.set_content_cache(Some(cache.clone()));
-        }
-    }
-
-    /// Set cache database for new ProductMetadata table
-    pub fn set_cache_db(&mut self, db: Arc<arclain_db::SqliteDb>) {
-        let plugins = self.plugins.read();
-        for plugin in plugins.values() {
-            let mut instance = plugin.instance.lock();
-            instance.set_cache_db(Some(db.clone()));
         }
     }
 
@@ -229,7 +220,7 @@ impl PluginManager {
                 capabilities.clone(),
                 rate_limit,
                 Some(backend.clone()),
-                self.metadata_store.clone(),
+                self.library_service.clone(),
                 settings,
                 self.metadata_signal.clone(),
             )?
@@ -238,7 +229,7 @@ impl PluginManager {
                 capabilities.clone(),
                 rate_limit,
                 None,
-                self.metadata_store.clone(),
+                self.library_service.clone(),
                 settings,
                 self.metadata_signal.clone(),
             )?

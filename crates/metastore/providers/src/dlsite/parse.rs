@@ -24,7 +24,11 @@ pub fn parse_api_response(
     // Extract fields from JSON
     meta.title = data["work_name"].as_str().map(|s| s.to_string());
     meta.creator = data["maker_name"].as_str().map(|s| s.to_string());
-    meta.release_date = data["regist_date"].as_str().map(|s| s.to_string());
+
+    // Clean date: "2023-01-01 00:00:00" -> "2023-01-01"
+    meta.release_date = data["regist_date"]
+        .as_str()
+        .map(|s| s.split_whitespace().next().unwrap_or(s).to_string());
 
     // Price
     meta.price = data["price"]
@@ -167,7 +171,7 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
     for pattern in geo_blocked_patterns {
         if html_lower.contains(&pattern.to_lowercase()) {
             tracing::warn!(
-                "[DLsite HTML] Page is geo-blocked - detected pattern: {}",
+                "[DLsite HTML] Page is geo-blocked - detected pattern: '{}'",
                 pattern
             );
             data.geo_blocked = true;
@@ -182,9 +186,14 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
         && !html_lower.contains("work_name")
     {
         tracing::warn!(
-            "[DLsite HTML] Page appears geo-blocked - missing essential content elements"
+            "[DLsite HTML] Page appears geo-blocked - missing essential content (work_outline/work_name)"
         );
         data.geo_blocked = true;
+    }
+
+    if data.geo_blocked {
+        let snippet: String = html.chars().take(500).collect();
+        tracing::warn!("[DLsite HTML] Blocked Content Snippet: {}", snippet);
     }
 
     // Title
@@ -203,16 +212,45 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
     }
 
     // If geo-blocked, return reliable data only (Title + ID basically)
+    // If geo-blocked, return reliable data only (Title + ID basically)
     if data.geo_blocked {
+        // Try to extract circle from title if present: "Title [Circle]"
+        // Example: "【50%OFF】JK巫女姫 異種間受胎 [ZION] | DLsite 美少女ゲーム - R18"
+        if let Some(title) = &data.title {
+            if data.circle.is_none() {
+                // Look for content inside last set of brackets before typical DLsite suffixes
+                // Regex would be ideal, but string manipulation is cheaper/safer without regex crate dep here if not already imported
+                // Let's use simple rfind
+                if let Some(end_bracket) = title.rfind(']') {
+                    if let Some(start_bracket) = title[..end_bracket].rfind('[') {
+                        let potential_circle = &title[start_bracket + 1..end_bracket];
+                        // Filter out common non-circle tags if they appear in brackets at end (unlikely for " [Circle] | Suffix")
+                        data.circle = Some(potential_circle.to_string());
+                        tracing::info!(
+                            "[DLsite HTML] Extracted circle from title (blocked fallback): {}",
+                            potential_circle
+                        );
+                    }
+                }
+            }
+        }
+
         // Keep title if found, everything else is garbage on geo-blocked pages
         return Some(data);
     }
 
-    // Circle/maker from header (backup)
-    if let Ok(sel) = Selector::parse("span.maker_name a") {
+    // Circle/maker from header (backup) - Scoped to main work area to avoid sidebar/recommendations
+    if let Ok(sel) = Selector::parse("#work_right span.maker_name a, #work_maker span.maker_name a")
+    {
         if let Some(el) = document.select(&sel).next() {
-            data.circle = Some(clean_text(&el.text().collect::<String>()));
+            let text = clean_text(&el.text().collect::<String>());
+            tracing::info!("[DLsite HTML] Found circle via scoped selector: {}", text);
+            data.circle = Some(text);
+        } else {
+            tracing::warn!("[DLsite HTML] Scoped circle selector found nothing");
         }
+    } else {
+        tracing::error!("[DLsite HTML] Failed to parse circle selector");
     }
 
     // Work Maker Table (Brand, Publisher, etc.)

@@ -52,6 +52,13 @@ pub fn render(
         Vec::new()
     };
 
+    // Capture config_service for use in closures
+    let config_service: Option<Arc<arclain_core::ConfigService>> = if let Some(s) = shared {
+        s.services.config_service.clone()
+    } else {
+        None
+    };
+
     SettingsForm::new().show(ui, theme, |ui| {
         // Global Settings
         crate::shared::components::settings_form::SectionHeader::new("Global Settings")
@@ -88,11 +95,12 @@ pub fn render(
                             }
                             app.user_config.set_enabled_plugins(&enabled_list);
 
-                            if let Some(dbs) = &app.dbs {
-                                let _ = dbs.config_pool.with_conn(|conn| {
-                                    app.user_config.save_diesel(conn).ok();
-                                    Ok::<_, anyhow::Error>(())
-                                });
+                            if let Some(ref cfg_svc) = config_service {
+                                let res: anyhow::Result<()> =
+                                    cfg_svc.save_user_config(&app.user_config);
+                                if let Err(e) = res {
+                                    eprintln!("Failed to save user config: {}", e);
+                                }
                             }
                             needs_refresh = true;
                         }
@@ -123,12 +131,11 @@ pub fn render(
                     app.user_config
                         .set_plugin_proxy_enabled(&plugin_info.id, proxy_toggle_val);
 
-                    // Persist
-                    if let Some(dbs) = &app.dbs {
-                        let _ = dbs.config_pool.with_conn(|conn| {
-                            app.user_config.save_diesel(conn).ok();
-                            Ok::<_, anyhow::Error>(())
-                        });
+                    if let Some(ref cfg_svc) = config_service {
+                        let res: anyhow::Result<()> = cfg_svc.save_user_config(&app.user_config);
+                        if let Err(e) = res {
+                            eprintln!("Failed to save user config: {}", e);
+                        }
                     }
 
                     // Update Client from services
@@ -322,6 +329,13 @@ fn render_plugin_ui(
         return;
     };
 
+    // Capture config_service for use in closures
+    let config_service: Option<Arc<arclain_core::ConfigService>> = if let Some(s) = shared {
+        s.services.config_service.clone()
+    } else {
+        None
+    };
+
     let ui_result = if let Some(instance_arc) = manager.get_plugin_instance(plugin_id) {
         if let Some(mut instance) = instance_arc.try_lock() {
             Some(instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::MainPage))
@@ -345,6 +359,8 @@ fn render_plugin_ui(
                 let plugin_id_clone = plugin_id.to_string();
                 let mgr_clone = mgr_arc.clone();
                 let app_state_clone = app_state.clone();
+                let config_service_clone: Option<Arc<arclain_core::ConfigService>> =
+                    config_service.clone();
 
                 // Collect actions for processing after callback
                 let collected_actions: Arc<Mutex<Vec<arclain_plugins::types::PluginAction>>> =
@@ -358,6 +374,8 @@ fn render_plugin_ui(
                     let val_thread = value.clone();
                     let state_thread = app_state_clone.clone();
                     let sink = actions_sink.clone();
+                    let cfg_svc_thread: Option<Arc<arclain_core::ConfigService>> =
+                        config_service_clone.clone();
 
                     std::thread::spawn(move || {
                         let (settings_to_save, actions) = {
@@ -383,11 +401,10 @@ fn render_plugin_ui(
                             let mut state = state_thread.lock();
                             state.user_config.set_all_plugin_settings(&settings_to_save);
 
-                            if let Some(ref dbs) = state.dbs {
-                                if let Err(e) = dbs.config_pool.with_conn(|conn| {
-                                    state.user_config.save_diesel(conn)?;
-                                    Ok::<_, anyhow::Error>(())
-                                }) {
+                            if let Some(ref cfg_svc) = cfg_svc_thread {
+                                let res: anyhow::Result<()> =
+                                    cfg_svc.save_user_config(&state.user_config);
+                                if let Err(e) = res {
                                     eprintln!("Failed to save plugin settings: {}", e);
                                 }
                             }

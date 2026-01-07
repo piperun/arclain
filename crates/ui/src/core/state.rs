@@ -1,18 +1,16 @@
 use anyhow::Result;
 use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::backends::BackendSelector;
-use arclain_core::config::database::{
-    get_config, list_pass_rules, open_databases, replace_pass_rules, set_config, ConfigDb,
-    ConfigDbs, DbPaths, SecretsDb, SecretsKey,
-};
+use arclain_core::services::Services as CoreServices;
+use arclain_core::services::{ConfigService, SecretsService};
 use arclain_core::utilities::{auto_password_for, ChecksumService, PassRule};
 use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
 use arclain_data::{ContentCache, ResourceConfig, ResourceManager};
-use arclain_http::features::whitelist::DomainWhitelist;
-use arclain_http::AsyncHttpClient;
+use arclain_db::{
+    open_databases, set_config, ConfigDb, ConfigDbs, DbPassRule, DbPaths, SecretsKey,
+};
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
-use parking_lot::RwLock;
 use std::{
     env,
     path::{Path, PathBuf},
@@ -62,34 +60,38 @@ impl AppState {
             .enable_all()
             .build()?;
 
-        let domain_whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
-
-        // Initialize AsyncHttpClient
-        let async_http_client = Arc::new(AsyncHttpClient::new(
-            runtime.handle().clone(),
-            domain_whitelist.clone(),
-            None,
-        ));
-
         // Local variables for services (will be moved to Services struct at the end)
         let mut plugin_manager: Option<Arc<Mutex<PluginManager>>> = None;
         let mut checksum_service: Option<Arc<ChecksumService>> = None;
         let mut content_cache: Option<Arc<ContentCache>> = None;
         let mut resource_manager: Option<Arc<ResourceManager>> = None;
 
-        // Load user config from database
-        let db_paths = DbPaths::defaults("arclain")?;
-        let user_config = if let Ok(cfg_db) = ConfigDb::open(&db_paths.config_db) {
-            let cfg_conn = cfg_db.into_sqlite_db();
-            cfg_conn
-                .with_connection(|conn| {
-                    UserConfig::ensure_table(conn)?;
-                    Ok(UserConfig::load(conn)?.unwrap_or_default())
-                })
-                .unwrap_or_default()
-        } else {
-            UserConfig::default()
+        // Load startup config using ConfigService helper
+        // Initialize infrastructure (creates all dirs)
+        let app_dirs = arclain_core::dirs::AppDirectories::init("arclain", None)?;
+
+        // Construct DB paths from initialized directories
+        let db_paths = DbPaths {
+            config_db: app_dirs.databases_dir.join("config.sqlite"),
+            cache_db: app_dirs.databases_dir.join("metadata.sqlite"),
+            secrets_db: app_dirs.secrets_dir.join("pass.redb"),
+            key_file: Some(app_dirs.secrets_dir.join("master.key")),
         };
+        let (secrets_path, key_path, crc_policy) =
+            ConfigService::load_startup_config(&db_paths.config_db).unwrap_or((None, None, None));
+
+        let user_config =
+            if let Ok(cfg_db) = arclain_core::config::ConfigDb::open(&db_paths.config_db) {
+                let cfg_conn = cfg_db.into_sqlite_db();
+                cfg_conn
+                    .with_connection(|conn| {
+                        UserConfig::ensure_table(conn)?;
+                        Ok(UserConfig::load(conn)?.unwrap_or_default())
+                    })
+                    .unwrap_or_default()
+            } else {
+                UserConfig::default()
+            };
 
         // Initialize 7-Zip backend with path from config
         let sevenzip_path = user_config.sevenzip_path.as_ref().map(PathBuf::from);
@@ -108,7 +110,7 @@ impl AppState {
             fallback_backend,
             last_entries: vec![],
 
-            encrypted_crc_policy: "on_open".to_string(),
+            encrypted_crc_policy: crc_policy.unwrap_or_else(|| "on_open".to_string()),
             db_paths: Some(db_paths.clone()),
             dbs: None,
             plugin_event_sender: None,
@@ -118,433 +120,201 @@ impl AppState {
 
         me.signals.user_config.set(me.user_config.clone());
 
-        // Attempt to open DB-backed config + secrets (optional)
-        if let Ok(mut paths) = DbPaths::defaults("arclain") {
-            // Read overrides from config.sqlite if present
-            if let Ok(cfg_db) = ConfigDb::open(&paths.config_db) {
-                let cfg_conn = cfg_db.into_sqlite_db();
-
-                // Try to read secrets_db_path
-                if let Ok(Some(secrets_path)) =
-                    cfg_conn.with_connection(|conn| get_config(conn, "secrets_db_path"))
-                {
-                    paths.secrets_db = PathBuf::from(secrets_path);
-                }
-
-                // Try to read key_file_path
-                if let Ok(Some(keyfile_path)) =
-                    cfg_conn.with_connection(|conn| get_config(conn, "key_file_path"))
-                {
-                    me.db_paths = Some(paths.clone());
-                    // env var can override later
-                    paths.key_file = Some(PathBuf::from(keyfile_path));
-                }
-
-                // Try to read encrypted_crc_policy
-                if let Ok(Some(policy)) =
-                    cfg_conn.with_connection(|conn| get_config(conn, "encrypted_crc_policy"))
-                {
-                    me.encrypted_crc_policy = policy;
-                }
+        // Update paths from config if present
+        let mut current_paths = db_paths.clone();
+        if let Some(sp) = secrets_path {
+            current_paths.secrets_db = sp;
+        }
+        if let Some(kp) = key_path {
+            current_paths.key_file = Some(kp);
+        } else if let Ok(kf) = env::var("ARCLAIN_KEYFILE") {
+            if !kf.trim().is_empty() {
+                current_paths.key_file = Some(PathBuf::from(kf.trim()));
             }
+        }
 
-            // Environment variable override for key file (optional)
-            if let Ok(kf) = env::var("ARCLAIN_KEYFILE") {
-                let kf = kf.trim();
-                if !kf.is_empty() {
-                    paths.key_file = Some(PathBuf::from(kf));
-                }
-            }
-
-            // Auto-generate key if it doesn't exist yet
-            if let Some(ref key_path) = paths.key_file {
-                if !key_path.exists() {
-                    info!(
-                        "Master key file not found, generating new key at: {}",
-                        key_path.display()
-                    );
-                    let new_key = SecretsKey::generate();
-                    if let Err(e) = new_key.save_to_file(key_path) {
-                        warn!("Failed to save generated key file: {}", e);
-                    } else {
-                        info!("Master key file created successfully");
-                    }
-                }
-            }
-
-            // Open secrets DB if key file provided and valid
-            if let Some(ref key_path) = paths.key_file {
-                if let Ok(key) = SecretsKey::load_from_file(key_path) {
-                    match open_databases(&paths, &key) {
-                        Ok(dbs) => {
-                            // Create ConfigService early for bootstrap config persistence
-                            let early_config_svc = arclain_core::ConfigService::new(
-                                dbs.config_pool.clone(),
-                                &paths.config_db,
-                            );
-
-                            // Persist current paths into config DB
-                            if let Ok(cfg_svc) = &early_config_svc {
-                                let _ = cfg_svc.set_diesel(
-                                    "secrets_db_path",
-                                    &paths.secrets_db.to_string_lossy(),
-                                );
-                                let _ = cfg_svc
-                                    .set_diesel("key_file_path", &key_path.to_string_lossy());
-                            }
-
-                            // Note: Organization rules are seeded via sync_configuration() below
-
-                            // Migrate plain JSON settings -> config.sqlite if not present
-                            // Load pass rules from secrets DB
-                            if let Ok(rules) = list_pass_rules(&dbs.secrets) {
-                                me.pass_rules = rules;
-                                info!(
-                                    "Loaded {} pass rules from encrypted secrets DB",
-                                    me.pass_rules.len()
-                                );
-                            }
-
-                            // Store connections and paths
-                            me.db_paths = Some(paths.clone());
-                            me.dbs = Some(dbs);
-
-                            // Sync configuration from TOML defaults
-                            me.sync_configuration();
-
-                            // Initialize Proxy
-                            if me.user_config.socks5_enabled {
-                                let password = if let Some(dbs) = &me.dbs {
-                                    dbs.secrets
-                                        .get_secret("proxy:socks5")
-                                        .unwrap_or(None)
-                                        .map(|s| s.to_string())
-                                } else {
-                                    None
-                                };
-
-                                use arclain_http::features::proxy::ProxyConfig;
-                                let config = ProxyConfig {
-                                    enabled: true,
-                                    address: me
-                                        .user_config
-                                        .socks5_address
-                                        .clone()
-                                        .unwrap_or_default(),
-                                    username: me.user_config.socks5_username.clone(),
-                                    password,
-                                };
-
-                                // Use local async_http_client Arc directly (not Option)
-                                async_http_client.update_config(Some(config));
-                            }
-
-                            // Initialize Plugin Proxy Map
-                            let map = me.user_config.get_plugin_proxy_settings();
-                            tracing::info!("[Startup] Plugin proxy map: {:?}", map);
-                            async_http_client.update_plugin_proxy_map(map);
-
-                            // Note: UI items (toolbar/info panel) are loaded after services are
-                            // initialized, using UiService for consistent access.
-
-                            // Initialize checksum service and recover pending operations
-                            let checksum_db_path = paths
-                                .config_db
-                                .parent()
-                                .unwrap_or(Path::new("."))
-                                .join("checksum.sqlite");
-                            match ChecksumService::open(&checksum_db_path) {
-                                Ok(service) => {
-                                    // Recover any interrupted operations from previous session
-                                    match service.recover_pending() {
-                                        Ok(actions) => {
-                                            for action in &actions {
-                                                debug!("Checksum recovery: {:?}", action);
-                                            }
-                                        }
-                                        Err(e) => {
-                                            warn!("Failed to recover checksum operations: {}", e);
-                                        }
-                                    }
-                                    checksum_service = Some(Arc::new(service));
-                                    info!("Checksum verification service initialized");
-                                }
-                                Err(e) => {
-                                    warn!("Failed to initialize checksum service: {}", e);
-                                }
-                            }
-
-                            // Initialize content cache for plugin images
-                            let cache_base_dir = paths
-                                .config_db
-                                .parent()
-                                .unwrap_or(Path::new("."))
-                                .join("cache");
-                            let cache_index_db_path = cache_base_dir.join("cache_index.sqlite");
-
-                            // Ensure cache directory exists BEFORE opening SQLite DB
-                            if let Err(e) = std::fs::create_dir_all(&cache_base_dir) {
-                                warn!("Failed to create cache directory: {}", e);
-                            }
-
-                            // Create index DB for cache
-                            match arclain_db::SqliteDb::open(&cache_index_db_path) {
-                                Ok(cache_db) => {
-                                    match ContentCache::new(cache_base_dir.clone(), cache_db) {
-                                        Ok(cache) => {
-                                            let cache_arc = Arc::new(cache);
-                                            content_cache = Some(cache_arc.clone());
-                                            info!("Content cache initialized");
-
-                                            // Initialize Resource Manager
-                                            let res_config = ResourceConfig {
-                                                fallback_dir: Some(
-                                                    cache_base_dir.join("resources"),
-                                                ),
-                                                ..Default::default()
-                                            };
-                                            let res_mgr = Arc::new(ResourceManager::new(
-                                                cache_arc, res_config,
-                                            ));
-                                            resource_manager = Some(res_mgr);
-                                            info!("Resource manager initialized");
-                                        }
-                                        Err(e) => {
-                                            warn!("Failed to initialize content cache: {}", e);
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!(
-                                        "Failed to open cache index DB at {:?}: {}",
-                                        cache_index_db_path, e
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            warn!("Failed to open databases: {}", e);
-                            info!("Config DB: {}", paths.config_db.display());
-                            info!("Cache DB: {}", paths.cache_db.display());
-                            info!("Secrets DB: {}", paths.secrets_db.display());
-                            info!("Key file: {}", key_path.display());
-                            info!("Falling back to JSON config");
-                        }
-                    }
+        // Auto-generate key logic
+        if let Some(ref key_path) = current_paths.key_file {
+            if !key_path.exists() {
+                info!(
+                    "Master key file not found, generating new key at: {}",
+                    key_path.display()
+                );
+                let new_key = SecretsKey::generate();
+                if let Err(e) = new_key.save_to_file(key_path) {
+                    warn!("Failed to save generated key file: {}", e);
                 } else {
-                    warn!("Invalid key file; falling back to JSON config");
+                    info!("Master key file created successfully");
                 }
             }
         }
 
-        // Initialize plugin manager with fallback backend for compatibility
+        // Initialize Services Manager
+        let mut services = CoreServices::new(Arc::new(runtime));
+
+        // Initialize plugin proxy map on the SERVICES client (used by DataService)
+        // Note: The local async_http_client variable created earlier is disjoint from Services
+        services
+            .async_http_client
+            .update_plugin_proxy_map(me.user_config.get_plugin_proxy_settings());
+        info!("Initialized HTTP client proxy settings");
+
+        // Open Databases and Init Services
+        if let Some(ref key_path) = current_paths.key_file {
+            if let Ok(key) = SecretsKey::load_from_file(key_path) {
+                match open_databases(&current_paths, &key) {
+                    Ok(dbs) => {
+                        // Initialize Core Services
+                        if let Err(e) = services.init_db_services(&dbs, &current_paths) {
+                            warn!("Failed to initialize DB services: {}", e);
+                        } else {
+                            // Initialize Content Cache using service from core
+                            if let Some(cache_svc) = services.cache_service.clone() {
+                                let cache_dir = services.cache_dir.clone();
+                                // Ensure cache directory exists
+                                if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                                    warn!("Failed to create cache directory: {}", e);
+                                }
+
+                                if let Ok(cache) = ContentCache::new(cache_dir, cache_svc) {
+                                    content_cache = Some(Arc::new(cache));
+                                    info!("Content cache initialized via Services");
+                                }
+                            }
+
+                            // Initialize ResourceManager
+                            if let Some(ref cache) = content_cache {
+                                let res_config = ResourceConfig {
+                                    fallback_dir: Some(services.cache_dir.join("resources")),
+                                    ..Default::default()
+                                };
+                                resource_manager =
+                                    Some(Arc::new(ResourceManager::new(cache.clone(), res_config)));
+                            }
+
+                            // Load pass rules and map to Core PassRule
+                            if let Ok(rules) = dbs.secrets.list_pass_rules() {
+                                me.pass_rules = rules
+                                    .into_iter()
+                                    .map(|r| PassRule {
+                                        name: r.name,
+                                        pattern: r.pattern,
+                                        password: r.password,
+                                        priority: r.priority,
+                                        enabled: r.enabled,
+                                    })
+                                    .collect();
+                            }
+                        }
+
+                        me.dbs = Some(dbs);
+                        me.db_paths = Some(current_paths.clone());
+                        me.sync_configuration();
+                    }
+                    Err(e) => {
+                        warn!("Failed to open databases: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Initialize checksum service separately (using path from manager/paths)
+        let checksum_db_path = current_paths
+            .config_db
+            .parent()
+            .unwrap_or(Path::new("."))
+            .join("checksum.sqlite");
+        match ChecksumService::open(&checksum_db_path) {
+            Ok(svc) => {
+                let _ = svc.recover_pending();
+                checksum_service = Some(Arc::new(svc));
+            }
+            Err(e) => warn!("Failed to init checksum service: {}", e),
+        }
+        services.checksum_service = checksum_service.clone();
+        services.checksum_service = checksum_service.clone();
+
+        // Assign Plugin Manager (which stays in AppState mostly)
+        // ... (preserving plugin manager init logic as much as possible, but attaching services)
+        // Re-using existing plugin init logic but updating where it gets services from
+
         info!("Initializing plugin system");
         let plugins_dir = PathBuf::from("plugins");
         let backend_arc = Arc::new(me.fallback_backend.clone());
         let settings = me.user_config.get_all_plugin_settings();
         match PluginManager::with_backend(plugins_dir, backend_arc, settings) {
             Ok(mut manager) => {
-                // Initialize plugins
-                if let Err(e) = manager.init() {
-                    warn!("Failed to initialize plugins: {}", e);
-                } else {
-                    let plugin_count = manager.list_plugins().len();
-                    info!("Plugin manager initialized with {} plugins", plugin_count);
+                manager.init().ok(); // Ignore error
+                                     // Inject services
+                if let Some(lib_svc) = services.library_service.clone() {
+                    manager.set_library_service(lib_svc);
                 }
-                if let Some(ref dbs) = me.dbs {
-                    manager.set_metadata_store(Arc::new(dbs.metadata.clone()));
-                    // Also set cache_db for new ProductMetadata table
-                    manager.set_cache_db(Arc::new(dbs.metadata.db().clone()));
+                if let Some(ref c) = content_cache {
+                    manager.set_content_cache(c.clone());
                 }
-                if let Some(ref cache) = content_cache {
-                    manager.set_content_cache(cache.clone());
+                if let Some(ref r) = resource_manager {
+                    manager.set_resource_manager(r.clone());
                 }
-                if let Some(ref ref_manager) = resource_manager {
-                    manager.set_resource_manager(ref_manager.clone());
-                }
-                // async_http_client is always available (not Option in Services)
-                manager.set_async_http_client(async_http_client.clone());
-
-                // Inject reactive signal for metadata updates
+                manager.set_async_http_client(services.async_http_client.clone());
                 manager.set_metadata_signal(me.signals.metadata.clone());
-
-                // Clone event sender BEFORE wrapping in Mutex for lock-free dispatch
-                let event_sender = manager.get_event_sender();
-                me.plugin_event_sender = Some(event_sender);
-
+                me.plugin_event_sender = Some(manager.get_event_sender());
                 plugin_manager = Some(Arc::new(Mutex::new(manager)));
 
-                // Sync plugin UI items to info_panel_items
-                if let Some(ref manager_arc) = plugin_manager {
-                    let manager = manager_arc.lock();
-                    let mut info_panel_items = me.signals.info_panel_items.get();
-                    let mut toolbar_items = me.signals.toolbar_items.get();
-                    for plugin in manager.list_plugins().iter().filter(|p| p.enabled) {
-                        let plugin_id = &plugin.id;
-                        info!(
-                            "Checking plugin '{}' (id: {}) for Panel UI",
-                            plugin.manifest.plugin.name, plugin_id
-                        );
-                        // Check if plugin provides Panel UI
-                        let has_panel = manager
-                            .with_plugin_instance(plugin_id, |instance| {
-                                let result = instance.get_ui_layout(
-                                    arclain_plugins::types::PluginExtensionPoint::Panel,
-                                );
-                                info!(
-                                    "  get_ui_layout result: {:?}",
-                                    result.as_ref().map(|e| e.len())
-                                );
-                                result.map(|e| !e.is_empty()).unwrap_or(false)
-                            })
-                            .unwrap_or(false);
-                        info!("  has_panel: {}", has_panel);
+                // Sync UI items (preserved logic)
+                // Sync UI items (restored logic)
+                if let Some(ref pm) = plugin_manager {
+                    let pm_lock = pm.lock();
 
-                        if has_panel {
-                            // Check if already in info_panel_items
-                            let exists = info_panel_items.iter().any(|item| {
-                                item.action_type == ActionType::Plugin
-                                    && item.action_data.as_ref() == Some(plugin_id)
-                            });
+                    // Sync top-level tabs to Toolbar
+                    let top_tabs = pm_lock.get_all_top_tabs();
+                    let mut ui_items = Vec::new();
 
-                            if !exists {
-                                let max_sort = info_panel_items
-                                    .iter()
-                                    .map(|i| i.sort_order)
-                                    .max()
-                                    .unwrap_or(0);
-                                info_panel_items.push(UiItem {
-                                    id: format!("plugin_{}", plugin_id),
-                                    region: UiRegion::InfoPanel,
-                                    group_id: Some("plugins".to_string()),
-                                    label: plugin.manifest.plugin.name.clone(),
-                                    icon: Some("PUZZLE_PIECE".to_string()),
-                                    action_type: ActionType::Plugin,
-                                    action_data: Some(plugin_id.clone()),
-                                    visible: true,
-                                    sort_order: max_sort + 1,
-                                    display_mode: DisplayMode::IconAndText,
-                                });
-                                info!(
-                                    "Added plugin '{}' to info panel",
-                                    plugin.manifest.plugin.name
-                                );
-                            }
-                        }
+                    for (plugin_id, tab) in top_tabs {
+                        let item = UiItem {
+                            id: format!("plugin:{}:{}", plugin_id, tab.id),
+                            region: UiRegion::Toolbar,
+                            group_id: Some("plugins".to_string()),
+                            label: tab.label,
+                            icon: Some(tab.icon),
+                            visible: true,
+                            sort_order: tab.priority as i32, // Plugins manage their own priority relative to each other
+                            display_mode: DisplayMode::IconAndText,
+                            action_type: ActionType::Plugin,
+                            // action_data format: "plugin_id:page_id"
+                            action_data: Some(format!("{}:{}", plugin_id, tab.id)),
+                        };
+                        ui_items.push(item);
+                    }
 
-                        // Sync PluginButton items (toolbar) - iterate each button
-                        // Uses same format as toolbar_layout.rs:
-                        //   id = "plugin_{plugin_id}_{btn_id}"
-                        //   action_data = "plugin_id:btn_id"
-                        let buttons = manager
-                            .with_plugin_instance(plugin_id, |instance| {
-                                instance
-                                    .get_ui_layout(
-                                        arclain_plugins::types::PluginExtensionPoint::PluginButton,
-                                    )
-                                    .unwrap_or_default()
-                            })
-                            .unwrap_or_default();
-
-                        for element in buttons.flatten() {
-                            if let arclain_plugins::types::PluginUiElement::Button {
-                                id: btn_id,
-                                label,
-                                ..
-                            } = element
-                            {
-                                // Match format from toolbar_layout.rs
-                                let unique_id = format!("plugin_{}_{}", plugin_id, btn_id);
-                                let action_data = format!("{}:{}", plugin_id, btn_id);
-
-                                // Check if item already exists in DB - respect existing settings
-                                let exists = toolbar_items.iter().any(|item| item.id == unique_id);
-
-                                if !exists {
-                                    // Also remove legacy format items if present
-                                    let legacy_id = format!("toolbar_plugin_{}", plugin_id);
-                                    toolbar_items.retain(|item| item.id != legacy_id);
-
-                                    let max_sort = toolbar_items
-                                        .iter()
-                                        .map(|i| i.sort_order)
-                                        .max()
-                                        .unwrap_or(0);
-
-                                    toolbar_items.push(UiItem {
-                                        id: unique_id,
-                                        region: UiRegion::Toolbar,
-                                        group_id: Some("plugins".to_string()),
-                                        label: format!(
-                                            "{} - {}",
-                                            plugin.manifest.plugin.name, label
-                                        ),
-                                        icon: Some("PUZZLE_PIECE".to_string()),
-                                        action_type: ActionType::Plugin,
-                                        action_data: Some(action_data),
-                                        visible: true,
-                                        sort_order: max_sort + 10,
-                                        display_mode: DisplayMode::IconAndText,
-                                    });
-                                    info!(
-                                        "Added plugin button '{}' - '{}' to toolbar",
-                                        plugin.manifest.plugin.name, label
-                                    );
-                                }
+                    // Upsert items if we have a UI service
+                    if let Some(ui_svc) = services.ui_service.clone() {
+                        if !ui_items.is_empty() {
+                            if let Err(e) = ui_svc.upsert_items(&ui_items) {
+                                warn!("Failed to sync plugin UI items: {}", e);
+                            } else {
+                                info!("Synced {} plugin UI items to database", ui_items.len());
                             }
                         }
                     }
-                    me.signals.info_panel_items.set(info_panel_items);
-                    me.signals.toolbar_items.set(toolbar_items);
                 }
             }
-            Err(e) => {
-                warn!("Failed to initialize plugin manager: {}", e);
-                info!("Application will continue without plugin support");
-            }
+            Err(_) => {}
         }
 
-        // Initialize domain services from the connection pool
-        let (library_service, organization_service, ui_service, config_service) =
-            if let Some(ref dbs) = me.dbs {
-                let pool = dbs.config_pool.clone();
-                // ConfigService needs both pool and config DB path for hybrid rusqlite/diesel ops
-                let cfg_svc = me
-                    .db_paths
-                    .as_ref()
-                    .and_then(|paths| {
-                        arclain_core::ConfigService::new(pool.clone(), &paths.config_db).ok()
-                    })
-                    .map(Arc::new);
-                (
-                    Some(Arc::new(arclain_core::LibraryService::new(pool.clone()))),
-                    Some(Arc::new(arclain_core::OrganizationService::new(
-                        pool.clone(),
-                    ))),
-                    Some(Arc::new(arclain_core::UiService::new(pool))),
-                    cfg_svc,
-                )
-            } else {
-                (None, None, None, None)
-            };
+        // Finalize services
+        // services.plugin_manager = plugin_manager.clone(); // Removed from Services struct
 
+        // Apply UI config
         let services = crate::core::services::Services {
-            tokio_runtime: runtime,
-            async_http_client,
-            domain_whitelist,
+            core: services,
             plugin_manager,
-            plugin_event_sender: me.plugin_event_sender.clone(),
-            checksum_service,
             content_cache,
             resource_manager,
-            library_service,
-            organization_service,
-            config_service,
-            ui_service: ui_service.clone(),
         };
 
         // Load UI items via UiService now that services are ready
-        if let Some(ref svc) = ui_service {
+        // Access via Deref
+        if let Some(ref svc) = services.ui_service {
             if let Ok(items) = svc.list_toolbar_items() {
                 me.signals.toolbar_items.set(items);
             }
@@ -709,11 +479,6 @@ impl AppState {
             .current_password
             .set(Some(password.to_string()));
 
-        // Update reactive signals for async UI updates
-        self.signals
-            .entries
-            .set(std::sync::Arc::new(info.entries.clone()));
-
         // Store OnArchiveOpen event for deferred dispatch (after UI renders)
         // This prevents plugins from fetching metadata before the UI is ready
         if self.plugin_event_sender.is_some() {
@@ -803,7 +568,7 @@ impl AppState {
         let mut paths = if let Some(p) = self.db_paths.clone() {
             p
         } else {
-            DbPaths::defaults("arclain")?
+            DbPaths::calculate_defaults("arclain")?
         };
 
         if let Some(ref dbp) = secrets_db_path {
@@ -835,20 +600,25 @@ impl AppState {
 
             // Update plugin manager with new cache
             if let Some(manager_arc) = plugin_manager {
-                manager_arc
-                    .lock()
-                    .set_metadata_store(Arc::new(dbs.metadata.clone()));
-                manager_arc
-                    .lock()
-                    .set_cache_db(Arc::new(dbs.metadata.db().clone()));
+                let lib_svc = arclain_core::LibraryService::new(dbs.cache_pool.clone());
+                manager_arc.lock().set_library_service(Arc::new(lib_svc));
             }
 
             self.dbs = Some(dbs);
 
-            // Load pass rules from secrets DB
+            // Reload pass rules
             if let Some(ref dbs_ref) = self.dbs {
-                if let Ok(rules) = list_pass_rules(&dbs_ref.secrets) {
-                    self.pass_rules = rules;
+                if let Ok(rules) = dbs_ref.secrets.list_pass_rules() {
+                    self.pass_rules = rules
+                        .into_iter()
+                        .map(|r| PassRule {
+                            name: r.name,
+                            pattern: r.pattern,
+                            password: r.password,
+                            priority: r.priority,
+                            enabled: r.enabled,
+                        })
+                        .collect();
                 }
             }
         } else {
@@ -864,70 +634,40 @@ impl AppState {
         dest_path: &str,
         plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
     ) -> Result<()> {
-        use std::fs;
-        use std::path::PathBuf;
-
-        // Establish paths
-        let mut paths = if let Some(p) = self.db_paths.clone() {
-            p
-        } else {
-            DbPaths::defaults("arclain")?
-        };
-
         // Close existing DBs to avoid file locks
         if let Some(_) = self.dbs.take() {
             // dropped
         }
 
-        let src = paths.secrets_db.clone();
-        let dst = PathBuf::from(dest_path);
+        let (new_paths, new_dbs) = SecretsService::move_vault(&mut self.db_paths, dest_path)?;
 
-        // Simple file copy for redb
-        if let Some(parent) = dst.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(&src, &dst)?;
+        // Update state with new paths and DBs
+        self.db_paths = Some(new_paths.clone());
 
-        // Set secure permissions on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&dst, perms)?;
+        // Update plugin manager
+        if let Some(manager_arc) = plugin_manager {
+            let lib_svc = arclain_core::LibraryService::new(new_dbs.cache_pool.clone());
+            manager_arc.lock().set_library_service(Arc::new(lib_svc));
         }
 
-        // Persist new path in config DB
-        let cfg_conn = ConfigDb::open(&paths.config_db)?.into_sqlite_db();
-        let _ = cfg_conn
-            .with_connection(|conn| set_config(conn, "secrets_db_path", &dst.to_string_lossy()));
+        self.dbs = Some(new_dbs);
 
-        // Update paths and reopen if key is available
-        paths.secrets_db = dst;
-        self.db_paths = Some(paths.clone());
-
-        if let Some(ref kp) = paths.key_file {
-            let key = SecretsKey::load_from_file(kp)?;
-            let dbs = open_databases(&paths, &key)?;
-
-            // Update plugin manager with new cache
-            if let Some(manager_arc) = plugin_manager {
-                manager_arc
-                    .lock()
-                    .set_metadata_store(Arc::new(dbs.metadata.clone()));
-                manager_arc
-                    .lock()
-                    .set_cache_db(Arc::new(dbs.metadata.db().clone()));
-            }
-
-            self.dbs = Some(dbs);
-
-            // Reload pass rules
-            if let Some(ref dbs_ref) = self.dbs {
-                if let Ok(rules) = list_pass_rules(&dbs_ref.secrets) {
-                    self.pass_rules = rules;
-                }
+        // Reload rules
+        if let Some(ref dbs_ref) = self.dbs {
+            if let Ok(rules) = dbs_ref.secrets.list_pass_rules() {
+                self.pass_rules = rules
+                    .into_iter()
+                    .map(|r| PassRule {
+                        name: r.name,
+                        pattern: r.pattern,
+                        password: r.password,
+                        priority: r.priority,
+                        enabled: r.enabled,
+                    })
+                    .collect();
             }
         }
+
         Ok(())
     }
 
@@ -936,79 +676,33 @@ impl AppState {
         new_key_file_path: &str,
         plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
     ) -> Result<()> {
-        use std::path::PathBuf;
-
-        // Resolve paths
-        let mut paths = if let Some(p) = self.db_paths.clone() {
-            p
-        } else {
-            DbPaths::defaults("arclain")?
-        };
-
-        // Ensure current key exists
-        let old_key_path = paths
-            .key_file
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("No current key file configured"))?;
-        let old_key = SecretsKey::load_from_file(&old_key_path)?;
-        let new_key = SecretsKey::load_from_file(Path::new(new_key_file_path))?;
-
-        // For redb, we need to:
-        // 1. Read all data with old key
-        // 2. Create new database with new key
-        // 3. Write all data with new key
-
-        // Read all rules with old key
-        let rules = if let Some(ref dbs) = self.dbs {
-            list_pass_rules(&dbs.secrets)?
-        } else {
-            let old_db = SecretsDb::open(&paths.secrets_db, &old_key.as_bytes())?;
-            list_pass_rules(&old_db)?
-        };
-
-        // Close old database
+        // Close existing DBs
         if let Some(_) = self.dbs.take() {
             // dropped
         }
 
-        // Create backup
-        let backup_path = paths.secrets_db.with_extension("redb.backup");
-        std::fs::copy(&paths.secrets_db, &backup_path)?;
+        let (new_paths, new_dbs, rules) =
+            SecretsService::rekey_vault(&mut self.db_paths, new_key_file_path)?;
 
-        // Remove old database and create new one with new key
-        std::fs::remove_file(&paths.secrets_db)?;
-        let new_dbs = open_databases(&paths, &new_key)?;
+        self.db_paths = Some(new_paths.clone());
 
-        // Write rules to new database
-        replace_pass_rules(&new_dbs.secrets, &rules)?;
-
-        // Persist new key file path
-        let cfg_conn = ConfigDb::open(&paths.config_db)?.into_sqlite_db();
-        let _ =
-            cfg_conn.with_connection(|conn| set_config(conn, "key_file_path", new_key_file_path));
-
-        // Update paths in memory
-        paths.key_file = Some(PathBuf::from(new_key_file_path));
-        self.db_paths = Some(paths.clone());
-
-        // Update plugin manager with new cache
+        // Update plugin manager
         if let Some(manager_arc) = plugin_manager {
-            manager_arc
-                .lock()
-                .set_metadata_store(Arc::new(new_dbs.metadata.clone()));
-            manager_arc
-                .lock()
-                .set_cache_db(Arc::new(new_dbs.metadata.db().clone()));
+            let lib_svc = arclain_core::LibraryService::new(new_dbs.cache_pool.clone());
+            manager_arc.lock().set_library_service(Arc::new(lib_svc));
         }
 
         self.dbs = Some(new_dbs);
-
-        // Reload pass rules (should be the same, but for consistency)
-        if let Some(ref dbs_ref) = self.dbs {
-            if let Ok(rules) = list_pass_rules(&dbs_ref.secrets) {
-                self.pass_rules = rules;
-            }
-        }
+        self.pass_rules = rules
+            .into_iter()
+            .map(|r| PassRule {
+                name: r.name,
+                pattern: r.pattern,
+                password: r.password,
+                priority: r.priority,
+                enabled: r.enabled,
+            })
+            .collect();
 
         Ok(())
     }
@@ -1020,14 +714,27 @@ impl AppState {
 
         // Persist to secrets DB if available
         if let Some(ref dbs) = self.dbs {
-            arclain_core::config::database::replace_pass_rules(&dbs.secrets, &rules)?;
-            info!(
-                "Saved {} password rules to encrypted secrets DB",
-                rules.len()
-            );
+            let db_rules: Vec<DbPassRule> = rules
+                .into_iter()
+                .map(|r| DbPassRule {
+                    name: r.name,
+                    pattern: r.pattern,
+                    password: r.password,
+                    priority: r.priority,
+                    enabled: r.enabled,
+                })
+                .collect();
+            if let Err(e) = dbs.secrets.replace_all_pass_rules(&db_rules) {
+                warn!("Failed to save password rules to DB: {}", e);
+            } else {
+                info!(
+                    "Saved {} password rules to encrypted secrets DB",
+                    db_rules.len()
+                );
+            }
         } else {
             // No DB available - can't save
-            warn!("Cannot save password rules - DB not available (rules updated in memory only)",);
+            warn!("Cannot save password rules - DB not available (rules updated in memory only)");
         }
 
         Ok(())

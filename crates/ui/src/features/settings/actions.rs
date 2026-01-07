@@ -53,7 +53,10 @@ pub fn handle_action(
             state.signals.user_config.set(state.user_config.clone());
             // Save via ConfigService if available
             if let Some(ref config_svc) = shared.services.config_service {
-                let _ = config_svc.save_user_config(&state.user_config);
+                let res: anyhow::Result<()> = config_svc.save_user_config(&state.user_config);
+                if let Err(e) = res {
+                    tracing::error!("Failed to save user config: {}", e);
+                }
             }
         }
         SettingsAction::MoveVault { dest_path } => {
@@ -256,17 +259,32 @@ pub fn handle_action(
                         .build()
                         .map_err(|e| anyhow::anyhow!("Failed to build client: {}", e))?;
 
-                    // Test connection to a reliable endpoint
-                    // We use Google as a generic connectivity check, or maybe Cloudflare
-                    let _ = client
-                        .get("https://www.google.com")
+                    // Test connection using ip-api.com for IP and Location data
+                    let response = client
+                        .get("http://ip-api.com/json")
                         .send()
                         .await
-                        .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?
-                        .error_for_status()
-                        .map_err(|e| anyhow::anyhow!("HTTP error: {}", e))?;
+                        .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?;
 
-                    Ok::<_, anyhow::Error>("Connection successful".to_string())
+                    if !response.status().is_success() {
+                        return Err(anyhow::anyhow!("HTTP error: {}", response.status()));
+                    }
+
+                    let json: serde_json::Value = response
+                        .json()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {}", e))?;
+
+                    let ip = json
+                        .get("query")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown IP");
+                    let country = json
+                        .get("country")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Unknown Country");
+
+                    Ok::<_, anyhow::Error>(format!("Connected via {} ({})", ip, country))
                 }
                 .await;
 

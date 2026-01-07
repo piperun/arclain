@@ -20,12 +20,19 @@ pub struct MetadataStore {
 
 impl MetadataStore {
     pub fn new(db: SqliteDb, pool: DieselPool, root_path: PathBuf) -> Self {
-        // Ensure schema exists
         // Ensure schema exists (using legacy init because it contains valid SQL)
         if let Err(e) =
             db.with_connection(|conn| legacy::metadata::init_product_metadata_schema(conn))
         {
             tracing::error!("Failed to init ProductMetadata schema: {}", e);
+        }
+
+        // Initialize product_content table
+        if let Err(e) = db.with_connection(|conn| {
+            conn.execute_batch(library::content::CREATE_TABLE_SQL)?;
+            Ok(())
+        }) {
+            tracing::error!("Failed to init ProductContent schema: {}", e);
         }
 
         // Drop legacy table if it exists

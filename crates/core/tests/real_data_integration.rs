@@ -203,7 +203,8 @@ fn test_integration_data_full_workflow() {
 
     // Use the SAME standardized path function that the UI uses (DbPaths::defaults)
     // Use "arclain" (production) not "arclain_test" to access the REAL password database
-    let db_paths = DbPaths::defaults("arclain").expect("Failed to get default database paths");
+    let db_paths =
+        DbPaths::calculate_defaults("arclain").expect("Failed to get default database paths");
 
     info!("Using production database paths:");
     info!("  Config DB: {:?}", db_paths.config_db);
@@ -662,7 +663,8 @@ fn test_integration_data_decompress_and_flatten() {
 
     // === USE PRODUCTION SECRETS DATABASE (EXACTLY like the UI does) ===
 
-    let db_paths = DbPaths::defaults("arclain").expect("Failed to get default database paths");
+    let db_paths =
+        DbPaths::calculate_defaults("arclain").expect("Failed to get default database paths");
 
     println!("Using production database paths:");
     println!("  Config DB: {:?}", db_paths.config_db);

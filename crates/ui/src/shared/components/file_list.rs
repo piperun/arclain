@@ -178,8 +178,7 @@ pub fn render_breadcrumb(
                     );
                 }
             } else {
-                // COMPACT MODE: Show First segment ... Last 2 segments (or fit as many of last as possible)
-                // Actually, standard is: ... / grandparent / parent / current
+                // COMPACT MODE: Show ... / grandparent / parent / current
                 // We always want to show the current (last) folder.
 
                 // Construct items to show from back to front
@@ -205,14 +204,55 @@ pub fn render_breadcrumb(
                 }
 
                 // Check if we need ellipsis (if we didn't include index 0)
-                let show_ellipsis = kept_indices.front().map(|&i| i > 0).unwrap_or(false);
+                let first_visible = kept_indices.front().copied().unwrap_or(0);
+                let show_ellipsis = first_visible > 0;
 
                 if show_ellipsis {
-                    ui.label(
-                        egui::RichText::new("...")
-                            .size(14.0)
-                            .color(theme.colors.on_surface_variant),
+                    // Collect hidden segments (all before first_visible)
+                    let hidden_segments: Vec<(usize, &str)> = segments[0..first_visible]
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| (i, *s))
+                        .collect();
+
+                    // Clickable ellipsis button
+                    let ellipsis_popup_id = ui.make_persistent_id("breadcrumb_ellipsis_popup");
+                    let ellipsis_response = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("...")
+                                .size(14.0)
+                                .color(theme.colors.on_surface_variant),
+                        )
+                        .selectable(false)
+                        .sense(egui::Sense::click()),
                     );
+
+                    if ellipsis_response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+
+                    if ellipsis_response.clicked() {
+                        egui::Popup::toggle_id(ui.ctx(), ellipsis_popup_id);
+                    }
+
+                    // Popup with hidden segments
+                    #[allow(deprecated)]
+                    egui::popup_below_widget(
+                        ui,
+                        ellipsis_popup_id,
+                        &ellipsis_response,
+                        egui::PopupCloseBehavior::CloseOnClickOutside,
+                        |ui| {
+                            ui.set_min_width(150.0);
+                            for (idx, segment) in hidden_segments.iter() {
+                                let full_path = segments[0..=*idx].join("/");
+                                if ui.button(*segment).clicked() {
+                                    navigate_to = Some(full_path);
+                                }
+                            }
+                        },
+                    );
+
                     ui.label(
                         egui::RichText::new("/")
                             .size(14.0)

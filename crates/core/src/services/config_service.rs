@@ -5,7 +5,7 @@
 use anyhow::Result;
 use arclain_db::{get_config, set_config, DbConnection, DieselPool, UserConfig};
 use parking_lot::Mutex;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Service for managing application configuration
@@ -84,6 +84,25 @@ impl ConfigService {
     pub fn revoke_plugin_domain(&self, plugin_id: &str, domain: &str) -> Result<()> {
         self.pool
             .with_conn(|conn| arclain_db::revoke_domain_diesel(conn, plugin_id, domain))
+    }
+    // =========================================================================
+    // Startup Config Helpers
+    // =========================================================================
+
+    /// Load basic startup configuration without full app initialization
+    pub fn load_startup_config(
+        config_db_path: &Path,
+    ) -> Result<(Option<PathBuf>, Option<PathBuf>, Option<String>)> {
+        use arclain_db::ConfigDb;
+        let db = ConfigDb::open(config_db_path)?;
+        let conn = db.into_sqlite_db();
+
+        conn.with_connection(|c| {
+            let secrets_path = get_config(c, "secrets_db_path")?.map(PathBuf::from);
+            let key_path = get_config(c, "key_file_path")?.map(PathBuf::from);
+            let crc_policy = get_config(c, "encrypted_crc_policy")?;
+            Ok((secrets_path, key_path, crc_policy))
+        })
     }
 }
 

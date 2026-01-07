@@ -79,7 +79,7 @@ impl AsyncHttpClient {
     }
 
     fn build_client(proxy_config: Option<ProxyConfig>) -> reqwest::Client {
-        let mut builder = reqwest::Client::builder().user_agent("Arclain/1.0");
+        let mut builder = reqwest::Client::builder().user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
 
         if let Some(proxy) = proxy_config.and_then(|c| c.to_proxy()) {
             builder = builder.proxy(proxy);
@@ -218,6 +218,27 @@ impl AsyncHttpClient {
                 HttpMethod::Delete => client.delete(&request.url),
             };
 
+            // Global/Domain specific headers injection - mimic Firefox exactly
+            if request.url.contains("dlsite.com") {
+                info!("Injecting DLSite headers for {}", request.url);
+                req_builder = req_builder.header("Cookie", "adultchecked=1; locale=ja-JP");
+                req_builder = req_builder.header(
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                );
+                req_builder =
+                    req_builder.header("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7");
+                req_builder = req_builder.header("Accept-Encoding", "gzip, deflate, br");
+                req_builder = req_builder.header("Connection", "keep-alive");
+                req_builder = req_builder.header("Upgrade-Insecure-Requests", "1");
+                req_builder = req_builder.header("Sec-Fetch-Dest", "document");
+                req_builder = req_builder.header("Sec-Fetch-Mode", "navigate");
+                req_builder = req_builder.header("Sec-Fetch-Site", "none");
+                req_builder = req_builder.header("Sec-Fetch-User", "?1");
+                req_builder = req_builder.header("Cache-Control", "no-cache");
+                req_builder = req_builder.header("Pragma", "no-cache");
+            }
+
             // Add headers
             for (key, value) in &request.headers {
                 req_builder = req_builder.header(key, value);
@@ -331,8 +352,29 @@ impl AsyncHttpClient {
 
         // Use the runtime handle to block on the async request
         self.runtime.block_on(async {
-            let response = client
-                .get(&url)
+            let mut req = client.get(&url);
+
+            // Domain specific headers - mimic Firefox exactly
+            if url.contains("dlsite.com") {
+                info!("Injecting DLSite headers (blocking) for {}", url);
+                req = req.header("Cookie", "adultchecked=1; locale=ja-JP");
+                req = req.header(
+                    "Accept",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                );
+                req = req.header("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7");
+                req = req.header("Accept-Encoding", "gzip, deflate, br");
+                req = req.header("Connection", "keep-alive");
+                req = req.header("Upgrade-Insecure-Requests", "1");
+                req = req.header("Sec-Fetch-Dest", "document");
+                req = req.header("Sec-Fetch-Mode", "navigate");
+                req = req.header("Sec-Fetch-Site", "none");
+                req = req.header("Sec-Fetch-User", "?1");
+                req = req.header("Cache-Control", "no-cache");
+                req = req.header("Pragma", "no-cache");
+            }
+
+            let response = req
                 .timeout(Duration::from_secs(30))
                 .send()
                 .await
