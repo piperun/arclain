@@ -39,6 +39,16 @@ impl DataSourceResolver for NetworkResolver {
         match self.client.blocking_get(url, use_proxy) {
             Ok(data) => {
                 tracing::debug!("[NetworkResolver] Fetched {} bytes", data.len());
+                // DEBUG: Log small responses to diagnose API issues
+                if data.len() < 500 {
+                    if let Ok(text) = String::from_utf8(data.clone()) {
+                        tracing::info!(
+                            "[NetworkResolver] SHORT RESPONSE ({} bytes): {}",
+                            data.len(),
+                            text
+                        );
+                    }
+                }
                 Ok(data)
             }
             Err(e) => {

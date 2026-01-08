@@ -1,3 +1,5 @@
 [alias]
 freya = "run -p freya-spike"
 arclain_ui = "run -p arclain_ui"
+ui = "run --bin arclain_ui"
+dlsite = "run --bin dlsite-fetch"

@@ -13,7 +13,12 @@ use metastore_types::{MetadataSource, ProductMetadata, SearchResult};
 
 pub use api::{ajax_url, get_site_id, html_url, is_geo_blocked, ConnectivityResult};
 pub use detect::detect_dlsite_code;
+pub use options::DlsiteFetchOptions;
+pub use orchestrator::{plan_fetch, FetchStep};
 pub use parse::{parse_api_response, parse_html_response, parse_search_response, ScrapedData};
+
+mod options;
+mod orchestrator;
 
 /// DLSite metadata provider
 pub struct DLSiteProvider;

@@ -72,6 +72,7 @@ pub fn parse_api_response(
 }
 
 /// Scraped data from HTML
+#[derive(Debug, Clone)]
 pub struct ScrapedData {
     pub title: Option<String>,
     pub circle: Option<String>,

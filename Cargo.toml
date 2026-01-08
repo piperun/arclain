@@ -20,8 +20,9 @@ members = [
     "crates/metastore/database",
     "crates/metastore/ui",
     "crates/freya-spike",
+    "crates/dlsite-fetch",
 ]
-default-members = ["crates/ui"]
+default-members = ["crates/ui", "crates/dlsite-fetch"]
 exclude = [
     "plugins/dlsite-metadata",
     "plugins/gstreamer-preview",
