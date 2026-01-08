@@ -23,3 +23,6 @@ pub use file_opener::{FileOpener, OpenStrategy};
 pub use logging::{init_logging, init_logging_with_filter};
 pub use password_matcher::{auto_password_for, PassRule};
 pub use title_filter::{sanitize_title, TitleFilterConfig};
+
+pub mod proxy;
+pub use proxy::{apply_proxy_to_client, resolve_proxy_config};

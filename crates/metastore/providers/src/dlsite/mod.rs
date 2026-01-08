@@ -96,6 +96,14 @@ impl MetadataProvider for DLSiteProvider {
         if let Some(resp) = html_response {
             if let Ok(body) = resp.body_str() {
                 if let Some(scraped) = parse_html_response(body) {
+                    // Check for geoblocking
+                    if scraped.geo_blocked {
+                        return Err(ParseError::Geoblocked(format!(
+                            "DLSite content geo-blocked for ID: {}",
+                            external_id
+                        )));
+                    }
+
                     // Merge scraped data
                     if meta.title.is_none() {
                         meta.title = scraped.title;

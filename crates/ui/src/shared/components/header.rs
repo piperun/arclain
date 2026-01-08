@@ -15,6 +15,7 @@ pub struct HeaderActions {
     pub navigate_back: bool,
     pub navigate_plugins: bool,
     pub navigate_settings: bool,
+    pub show_logs: bool,
 }
 
 pub fn render(
@@ -179,34 +180,19 @@ pub fn render(
                 actions.navigate_settings = true;
             }
 
-            // Plugins
-            let plugins_btn = if show_labels {
-                arclain_widgets::TextButton::new(
-                    format!("{} Plugins", egui_phosphor::regular::PUZZLE_PIECE),
-                    arclain_widgets::ButtonSize::Custom {
-                        width: 80.0,
-                        height: 28.0,
-                    },
-                )
-                .with_theme_colors(&theme.colors)
-            } else {
-                arclain_widgets::TextButton::new(
-                    egui_phosphor::regular::PUZZLE_PIECE,
-                    arclain_widgets::ButtonSize::Custom {
-                        width: 32.0,
-                        height: 28.0,
-                    },
-                )
-                .with_theme_colors(&theme.colors)
-            }
+            // Logs (replaces dead extension button)
+            let logs_btn = arclain_widgets::TextButton::new(
+                egui_phosphor::regular::CLIPBOARD_TEXT,
+                arclain_widgets::ButtonSize::Custom {
+                    width: 32.0,
+                    height: 28.0,
+                },
+            )
+            .with_theme_colors(&theme.colors)
             .variant(ButtonVariant::Ghost);
 
-            let mut response = plugins_btn.ui(ui);
-            if !show_labels {
-                response = response.on_hover_text("Plugins");
-            }
-            if response.clicked() {
-                actions.navigate_plugins = true;
+            if logs_btn.ui(ui).on_hover_text("View Logs").clicked() {
+                actions.show_logs = true;
             }
         });
     });
