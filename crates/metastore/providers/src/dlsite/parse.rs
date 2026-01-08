@@ -192,11 +192,6 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
         data.geo_blocked = true;
     }
 
-    if data.geo_blocked {
-        let snippet: String = html.chars().take(500).collect();
-        tracing::warn!("[DLsite HTML] Blocked Content Snippet: {}", snippet);
-    }
-
     // Title
     if let Ok(sel) = Selector::parse("h1#work_name") {
         if let Some(el) = document.select(&sel).next() {

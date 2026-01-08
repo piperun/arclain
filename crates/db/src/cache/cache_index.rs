@@ -226,6 +226,21 @@ pub fn delete_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) 
     Ok(affected > 0)
 }
 
+/// Delete cache entries matching a pattern (SQL LIKE)
+pub fn delete_by_pattern(conn: &mut diesel::SqliteConnection, pattern: &str) -> Result<usize> {
+    use crate::diesel_schema::cache_index::dsl::*;
+
+    // Replace '*' with '%' for SQL LIKE if it's a glob pattern
+    // The plugin sends "dlsite:*", we want "dlsite:%" for SQL
+    let sql_pattern = pattern.replace('*', "%");
+
+    let affected = diesel::delete(cache_index.filter(key.like(sql_pattern)))
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel delete_by_pattern failed: {}", e))?;
+
+    Ok(affected)
+}
+
 /// Update last_accessed timestamp
 pub fn touch_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -> Result<()> {
     use crate::diesel_schema::cache_index::dsl::*;

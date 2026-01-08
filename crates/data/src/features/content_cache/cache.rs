@@ -90,4 +90,11 @@ impl ContentCache {
         // We leave the content in cacache (garbage collection can handle orphaned blobs later)
         Ok(removed)
     }
+
+    pub fn remove_by_pattern(&self, pattern: &str) -> Result<usize> {
+        // Remove from DB first to invalidate matching keys
+        let removed_count = self.service.delete_by_pattern(pattern)?;
+        // We leave the content in cacache
+        Ok(removed_count)
+    }
 }

@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 use tracing_subscriber::{
-    fmt::{self, format::FmtSpan},
+    fmt::{self, format::FmtSpan, time::OffsetTime},
     layer::SubscriberExt,
     util::SubscriberInitExt,
     EnvFilter,
@@ -48,9 +48,13 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
 
+    // Create local time formatter
+    let local_time = OffsetTime::local_rfc_3339().expect("Failed to get local time offset");
+
     // File layer - always write to file
     let file_layer = fmt::layer()
         .with_writer(non_blocking)
+        .with_timer(local_time.clone())
         .with_target(true)
         .with_thread_ids(false)
         .with_thread_names(false)
@@ -63,6 +67,7 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(debug_assertions)]
     {
         let console_layer = fmt::layer()
+            .with_timer(local_time)
             .with_target(true)
             .with_thread_ids(false)
             .with_thread_names(false)

@@ -145,6 +145,29 @@ impl HostFunctions {
             .register_resolver(arclain_data::DataSource::ContentCache, resolver);
         self.resource_manager = Some(manager);
     }
+
+    /// Create a file in the host's temp directory
+    pub(super) fn impl_create_file(
+        &self,
+        filename: String,
+        content: Vec<u8>,
+    ) -> Result<String, String> {
+        use std::io::Write;
+
+        let mut path = std::env::temp_dir();
+        // Sanitize filename to prevent path traversal
+        let safe_filename = filename.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
+        path.push(&safe_filename);
+
+        let mut file =
+            std::fs::File::create(&path).map_err(|e| format!("Failed to create file: {}", e))?;
+        file.write_all(&content)
+            .map_err(|e| format!("Failed to write file: {}", e))?;
+
+        let path_str = path.to_string_lossy().to_string();
+        tracing::info!("[HostFunctions] Created file: {}", path_str);
+        Ok(path_str)
+    }
 }
 
 // Implement WasiView for HostFunctions
@@ -273,7 +296,17 @@ impl Host for HostFunctions {
     }
 
     fn poll_data(&mut self, request_id: String) -> crate::arclain::plugin::host::DataResult {
+        tracing::debug!(
+            "[HostFunctions::poll_data] Polling for request_id: {}",
+            request_id
+        );
         let result = self.data_service.poll_data(&request_id);
+        tracing::debug!(
+            "[HostFunctions::poll_data] Result status: {:?}, has_data: {}, error: {:?}",
+            result.status,
+            result.data.is_some(),
+            result.error
+        );
 
         // Map arclain_data::DataResult to buf-generated DataResult
         use crate::arclain::plugin::host::{DataResult, DataStatus};
@@ -303,6 +336,26 @@ impl Host for HostFunctions {
             "[HostFunctions] Cache invalidation requested for key: {}",
             key
         );
+
+        // Check for wildcard pattern
+        if key.ends_with('*') {
+            tracing::info!("[HostFunctions] Wildcard pattern detected: {}", key);
+
+            // Delete from content cache using pattern
+            let mut count = 0;
+            if let Some(cache) = &self.content_cache {
+                if let Ok(c) = cache.remove_by_pattern(&key) {
+                    count = c;
+                    tracing::info!(
+                        "[HostFunctions] Removed {} entries matching wildcard pattern",
+                        count
+                    );
+                }
+            }
+
+            // LibraryService doesn't support wildcard deleting yet, but we only use this for content cache anyway
+            return count > 0;
+        }
 
         let mut invalidated = false;
 
@@ -336,6 +389,10 @@ impl Host for HostFunctions {
         }
 
         invalidated
+    }
+
+    fn create_file(&mut self, filename: String, content: Vec<u8>) -> Result<String, String> {
+        self.impl_create_file(filename, content)
     }
 }
 

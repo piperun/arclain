@@ -48,6 +48,11 @@ impl CacheService {
             .with_conn(|conn| cache_index::delete_cache_entry(conn, key))
     }
 
+    pub fn delete_by_pattern(&self, pattern: &str) -> Result<usize> {
+        self.pool
+            .with_conn(|conn| cache_index::delete_by_pattern(conn, pattern))
+    }
+
     pub fn update_last_accessed(&self, key: &str) -> Result<()> {
         self.pool
             .with_conn(|conn| cache_index::touch_cache_entry(conn, key))
