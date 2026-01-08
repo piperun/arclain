@@ -384,6 +384,24 @@ impl AsyncHttpClient {
                 return Err(format!("HTTP error: {}", response.status()));
             }
 
+            // Log response headers for debugging (especially Content-Encoding)
+            let content_encoding = response
+                .headers()
+                .get("content-encoding")
+                .map(|v| v.to_str().unwrap_or("(invalid)"))
+                .unwrap_or("(none)");
+            let content_length = response
+                .headers()
+                .get("content-length")
+                .map(|v| v.to_str().unwrap_or("?"))
+                .unwrap_or("?");
+            tracing::debug!(
+                "[HTTP] Response: status={}, content-encoding={}, content-length={}",
+                response.status(),
+                content_encoding,
+                content_length
+            );
+
             response
                 .bytes()
                 .await

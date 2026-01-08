@@ -110,7 +110,7 @@ fn fetch_arclain(
         });
 
     // Create client with the runtime handle
-    let client = AsyncHttpClient::new(rt.handle().clone(), whitelist, proxy_config.clone());
+    let _client = AsyncHttpClient::new(rt.handle().clone(), whitelist, proxy_config.clone());
 
 
     let _req = HttpRequest {

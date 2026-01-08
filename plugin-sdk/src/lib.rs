@@ -90,10 +90,33 @@ pub fn fetch_blocking(
 ) -> Result<Vec<u8>, String> {
     let req_id = request_data(key, url, resource_type);
 
+    // Debug: Log the request ID
+    info(&format!(
+        "[SDK] fetch_blocking: key={}, req_id={}",
+        key, req_id
+    ));
+
     loop {
         let result = poll_data(&req_id);
+
+        // Debug: Log what we received from host
+        info(&format!(
+            "[SDK] poll_data result: status={:?}, has_data={}, error={:?}",
+            result.status,
+            result.data.is_some(),
+            result.error
+        ));
+
         match result.status {
             DataStatus::Ready | DataStatus::Cached => {
+                if let Some(ref data) = result.data {
+                    let preview: Vec<u8> = data.iter().take(20).copied().collect();
+                    info(&format!(
+                        "[SDK] Data bytes (first 20): {:?}, len={}",
+                        preview,
+                        data.len()
+                    ));
+                }
                 return result.data.ok_or_else(|| "No data returned".to_string());
             }
             DataStatus::Failed => {
@@ -124,4 +147,10 @@ pub use arclain::plugin::host::MetadataSummary;
 /// Much faster than individual lookups for list rendering
 pub fn get_metadata_summaries(ids: Vec<String>) -> Vec<MetadataSummary> {
     arclain::plugin::host::get_metadata_summaries(&ids)
+}
+
+/// Create a file in the host's temp directory
+/// Returns the full path to the created file
+pub fn create_file(filename: &str, content: &[u8]) -> Result<String, String> {
+    arclain::plugin::host::create_file(filename, content)
 }

@@ -166,9 +166,19 @@ pub fn handle_action(
             socks5_username,
             socks5_password,
         } => {
+            // Sanitize address: strip any protocol prefixes
+            let clean_address = socks5_address.map(|addr| {
+                addr.strip_prefix("socks5h://")
+                    .or_else(|| addr.strip_prefix("socks5://"))
+                    .or_else(|| addr.strip_prefix("http://"))
+                    .or_else(|| addr.strip_prefix("https://"))
+                    .unwrap_or(&addr)
+                    .to_string()
+            });
+
             let mut state = shared.app_state.lock();
             state.user_config.socks5_enabled = socks5_enabled;
-            state.user_config.socks5_address = socks5_address.clone();
+            state.user_config.socks5_address = clean_address.clone();
             state.user_config.socks5_username = socks5_username.clone();
             state.signals.user_config.set(state.user_config.clone());
 
@@ -179,7 +189,7 @@ pub fn handle_action(
                 match config_svc.save_user_config(&state.user_config) {
                     Ok(_) => {
                         tracing::info!("[SaveNetwork] Network settings saved successfully: enabled={}, address={:?}", 
-                            socks5_enabled, socks5_address);
+                            socks5_enabled, clean_address);
                     }
                     Err(e) => {
                         tracing::error!("[SaveNetwork] Failed to save network settings: {}", e);
@@ -206,7 +216,7 @@ pub fn handle_action(
             use arclain_http::features::proxy::ProxyConfig;
             let config = ProxyConfig {
                 enabled: socks5_enabled,
-                address: socks5_address.unwrap_or_default(),
+                address: clean_address.unwrap_or_default(),
                 username: socks5_username,
                 password: password_to_use,
             };
