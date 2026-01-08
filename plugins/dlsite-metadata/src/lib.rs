@@ -9,6 +9,7 @@ struct PluginState {
     auto_fetch_enabled: bool, // Master switch: auto-fetch when archive opens
     enable_cache: bool, // Sub-option: cache fetched results (only relevant if auto_fetch enabled)
     cache_images: bool, // Cache cover and screenshot images
+    dump_html_debug: bool, // Debug: dump HTML to file when geo-blocked detected
     fetch_in_progress: bool, // Prevent double-fetch when spamming buttons
     cached_entries: Option<Vec<String>>, // Cache of checking the cache (UI spam prevention)
     selected_cache_entry: Option<String>, // For cache viewer details
@@ -30,6 +31,7 @@ thread_local! {
         auto_fetch_enabled: true,
         enable_cache: true,
         cache_images: true,
+        dump_html_debug: true, // Default to enabled for debugging
         fetch_in_progress: false,
         last_archive_path: None,
         cached_entries: None,
@@ -155,6 +157,7 @@ impl archust_plugin_sdk::Guest for Component {
             "MainPage" => {
                 let auto_fetch_enabled = STATE.with(|s| s.borrow().auto_fetch_enabled);
                 let enable_cache = STATE.with(|s| s.borrow().enable_cache);
+                let dump_html_debug = STATE.with(|s| s.borrow().dump_html_debug);
                 
                 let mut elements = vec![
                     // Master switch: auto-fetch when archive opens
@@ -198,6 +201,19 @@ impl archust_plugin_sdk::Guest for Component {
                     label: "Clear All DLSite Cache".to_string(),
                     // We trigger a warning/confirmation dialog first
                     action: Some(ButtonAction::ShowDialog("confirm_clear_cache".to_string())),
+                }));
+
+                // Debug
+                elements.push(UiElement::Label(LabelConfig {
+                    text: "Debug".to_string(),
+                    bold: true,
+                    size: Some(16.0),
+                }));
+
+                elements.push(UiElement::Checkbox(CheckboxConfig {
+                    id: "dump_html_debug".to_string(),
+                    label: "Dump HTML to file on Geo-Block".to_string(),
+                    checked: dump_html_debug,
                 }));
                 
                 PluginLayout::Single(elements)
@@ -1413,6 +1429,16 @@ impl archust_plugin_sdk::Guest for Component {
                     info(&format!("[DLSite Plugin] Cache setting changed to: {}", enabled));
                 }
             }
+            "dump_html_debug" => {
+                if let Some(val) = value {
+                    let enabled = val == "true";
+                    STATE.with(|state| {
+                        state.borrow_mut().dump_html_debug = enabled;
+                    });
+                    // We don't persist this one to disk as it's a temp debug setting, or we could if needed
+                    info(&format!("[DLSite Plugin] Dump HTML debug setting changed to: {}", enabled));
+                }
+            }
 
             "search_query" => {
                 if let Some(query) = value {
@@ -2014,7 +2040,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
                         log_network_activity(&format!("HTML parsed: title={:?}, circle={:?}, geo_blocked={}", 
                             data.title, data.circle, data.geo_blocked));
                         // If geo-blocked, dump the full HTML for debugging
-                        if data.geo_blocked {
+                        if data.geo_blocked && STATE.with(|s| s.borrow().dump_html_debug) {
                             let timestamp = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_secs())

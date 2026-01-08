@@ -14,6 +14,7 @@ pub struct HeaderActions {
     pub navigate_plugins: bool,
     pub navigate_settings: bool,
     pub theme_toggle: bool,
+    pub show_logs: bool,
 }
 
 /// Render the header panel
@@ -29,6 +30,7 @@ pub fn render_header_panel(
         navigate_plugins: false,
         navigate_settings: false,
         theme_toggle: false,
+        show_logs: false,
     };
 
     egui::TopBottomPanel::top("header_panel")
@@ -73,6 +75,7 @@ pub fn render_header_panel(
             result.navigate_back = actions.navigate_back;
             result.navigate_plugins = actions.navigate_plugins;
             result.navigate_settings = actions.navigate_settings;
+            result.show_logs = actions.show_logs;
         });
 
     result

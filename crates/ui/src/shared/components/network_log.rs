@@ -95,15 +95,16 @@ impl NetworkLog {
                         .inner_margin(egui::Margin::symmetric(10, 6))
                         .corner_radius(3.0)
                         .show(ui, |ui| {
-                            ui.horizontal(|ui| {
+                            ui.set_width(ui.available_width());
+                            ui.vertical(|ui| {
                                 ui.label(
                                     RichText::new(&time_str)
                                         .monospace()
                                         .size(10.0)
                                         .color(egui::Color32::from_rgb(100, 116, 139)),
                                 );
-                                ui.add_space(8.0);
-                                ui.label(RichText::new(msg).size(12.0));
+                                // Use Label with wrap for full text
+                                ui.add(egui::Label::new(RichText::new(msg).size(12.0)).wrap());
                             });
                         });
                 }

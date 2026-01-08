@@ -34,6 +34,7 @@ pub enum ParseError {
     MissingData(String),
     InvalidFormat(String),
     NetworkError(String),
+    Geoblocked(String),
 }
 
 impl std::fmt::Display for ParseError {
@@ -42,6 +43,7 @@ impl std::fmt::Display for ParseError {
             Self::MissingData(msg) => write!(f, "Missing data: {}", msg),
             Self::InvalidFormat(msg) => write!(f, "Invalid format: {}", msg),
             Self::NetworkError(msg) => write!(f, "Network error: {}", msg),
+            Self::Geoblocked(msg) => write!(f, "Geoblocked: {}", msg),
         }
     }
 }

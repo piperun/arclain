@@ -11,7 +11,7 @@ use arclain_http::features::whitelist::DomainWhitelist;
 use arclain_http::AsyncHttpClient;
 // PluginManager removed to avoid circular dependency
 use parking_lot::RwLock;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Container for all core domain services
@@ -90,21 +90,22 @@ impl Services {
         // UI Service
         let ui_svc = Arc::new(UiService::new(dbs.config_pool.clone()));
 
-        // --- Cache Path Fix ---
-        // Separate cache folder from DB folder.
-        // If config_db is %APPDATA%/arclain/config.sqlite, parent is %APPDATA%/arclain.
-        // We want %APPDATA%/arclain/cache.
-        // Cache Path Fix:
-        // config_db is .../databases/config.sqlite
-        // parent is .../databases
-        // grandparent is .../ (app root)
-        // we want .../cache
-        let cache_dir = paths
-            .config_db
-            .parent()
-            .and_then(|p| p.parent())
-            .unwrap_or(Path::new("."))
-            .join("cache");
+        // Use centralized directory logic
+        let app_dirs = crate::dirs::AppDirectories::init("arclain", None)?;
+        let cache_dir = app_dirs.cache_dir;
+
+        // --- Proxy Configuration ---
+        if let Ok(mut conn) = dbs.config_pool.get() {
+            if let Ok(user_config) = arclain_db::UserConfig::load_diesel(&mut conn) {
+                let proxy_config =
+                    crate::utilities::proxy::resolve_proxy_config(&user_config, &dbs.secrets);
+                crate::utilities::proxy::apply_proxy_to_client(
+                    &self.async_http_client,
+                    proxy_config,
+                    &user_config,
+                );
+            }
+        }
 
         // Directory creation removed - caller responsibility
 

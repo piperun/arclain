@@ -68,6 +68,7 @@ pub struct ArclainApp {
     // _extraction_started: Option<Instant>,
     _password_rules_loaded: bool,
     _signals_bound: bool,
+    show_log_viewer: bool,
 }
 
 impl ArclainApp {
@@ -105,6 +106,7 @@ impl ArclainApp {
             // _extraction_started: None,
             _password_rules_loaded: false,
             _signals_bound: false,
+            show_log_viewer: false,
         }
     }
 }
@@ -196,6 +198,9 @@ impl eframe::App for ArclainApp {
         if header_actions.navigate_settings {
             self.page_navigator
                 .navigate_to(AppPage::Settings(SettingsPage::Overview));
+        }
+        if header_actions.show_logs {
+            self.show_log_viewer = true;
         }
 
         // === Render Tab Bar Panel ===
@@ -673,6 +678,21 @@ impl eframe::App for ArclainApp {
 
         // Render plugin dialog if open
         self.render_plugin_dialog(ctx);
+
+        // Render log viewer modal if open
+        if self.show_log_viewer {
+            let logs = if let Some(manager) = &self.shared_state.services.plugin_manager {
+                manager.lock().get_network_log()
+            } else {
+                Vec::new()
+            };
+            dialogs::log_viewer::render(
+                ctx,
+                &self.shared_state.theme,
+                &logs,
+                &mut self.show_log_viewer,
+            );
+        }
     }
 }
 
