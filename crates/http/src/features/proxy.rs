@@ -9,14 +9,17 @@ pub struct ProxyConfig {
 
 impl ProxyConfig {
     /// Convert configuration to a reqwest Proxy
+    /// Uses socks5h:// scheme to enable remote DNS resolution through the proxy
     pub fn to_proxy(&self) -> Option<reqwest::Proxy> {
         if !self.enabled || self.address.is_empty() {
             return None;
         }
 
+        // Use socks5h:// (with 'h') to perform DNS resolution through the proxy
+        // This is required for hostnames that are only resolvable via the proxy
         let url = match (&self.username, &self.password) {
-            (Some(u), Some(p)) => format!("socks5://{}:{}@{}", u, p, self.address),
-            _ => format!("socks5://{}", self.address),
+            (Some(u), Some(p)) => format!("socks5h://{}:{}@{}", u, p, self.address),
+            _ => format!("socks5h://{}", self.address),
         };
 
         reqwest::Proxy::all(&url).ok()
