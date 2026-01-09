@@ -171,7 +171,7 @@ fn render_button(
                 let plugin_id = action_data;
                 if let Some(elements) = ctx.plugin_elements.get(plugin_id) {
                     let pid = plugin_id.clone();
-                    use crate::features::plugins::plugin_ui::UiEventCallback;
+                    use crate::features::plugins::ui::UiEventCallback;
                     let mut callback: UiEventCallback =
                         Box::new(move |element_id: &str, value: Option<String>| {
                             actions.plugin_events.push((
@@ -181,7 +181,7 @@ fn render_button(
                             ));
                         });
 
-                    crate::features::plugins::plugin_ui::render_ui_elements(
+                    crate::features::plugins::ui::render_ui_elements(
                         ui,
                         elements,
                         &mut callback,
