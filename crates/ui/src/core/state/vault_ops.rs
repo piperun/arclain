@@ -9,7 +9,6 @@ use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::warn;
 
 impl AppState {
     /// Apply Preferences changes: persist overrides and (re)open SQLCipher DBs.

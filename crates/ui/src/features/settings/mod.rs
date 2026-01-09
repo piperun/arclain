@@ -7,7 +7,8 @@ pub mod settings_content;
 pub mod settings_page;
 pub mod types;
 
-pub mod ui;
+// pub mod ui; // Removed in favor of views::Refactored
+pub mod views;
 
 // Re-export commonly used types
-pub use ui::SettingsFeature;
+pub use views::SettingsFeature;

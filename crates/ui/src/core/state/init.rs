@@ -5,8 +5,8 @@ use crate::core::signals::AppSignals;
 use anyhow::Result;
 use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::backends::BackendSelector;
+use arclain_core::services::ConfigService;
 use arclain_core::services::Services as CoreServices;
-use arclain_core::services::{ConfigService, SecretsService};
 use arclain_core::utilities::{ChecksumService, PassRule};
 use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
 use arclain_data::{ContentCache, ResourceConfig, ResourceManager};
@@ -18,7 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 impl AppState {
     pub fn new() -> Result<(Self, crate::core::services::Services)> {
