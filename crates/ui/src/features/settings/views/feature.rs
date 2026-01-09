@@ -1,0 +1,298 @@
+use crate::core::SettingsPage;
+use crate::features::password_management::dialogs::PasswordRulesDialog;
+use crate::features::settings::pages::interface::InterfaceSettingsState;
+use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
+use crate::features::settings::settings_content::{
+    render_settings_content, ArchivesSettingsState, GeneralSettingsState, NetworkSettingsState,
+    SecuritySettingsState, SettingsAction,
+};
+use crate::features::settings::views::{header, layout, navigation};
+use crate::shared::SharedState;
+use arclain_signals::Signal;
+use eframe::egui;
+
+pub struct SettingsFeature {
+    pub general_state: GeneralSettingsState,
+    pub network_state: NetworkSettingsState,
+    pub security_state: SecuritySettingsState,
+    pub archives_state: ArchivesSettingsState,
+    pub password_rules_dialog: PasswordRulesDialog,
+    pub plugins_state: crate::features::plugins::types::PluginsListState,
+    pub interface_state: InterfaceSettingsState,
+    pub toolbar_layout_state: ToolbarLayoutState,
+    pub info_panel_layout_state: InfoPanelLayoutState,
+    pub last_visited_page: Option<SettingsPage>,
+}
+
+impl SettingsFeature {
+    pub fn new(shared: &SharedState) -> Self {
+        // Load saved settings from config signal
+        let user_config = shared.app_state.lock().signals.user_config.get();
+        let open_nested_in_new_tab = user_config.open_nested_in_new_tab;
+
+        let rules = {
+            let state = shared.app_state.lock();
+            state
+                .pass_rules
+                .iter()
+                .map(|r| {
+                    crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
+                        name: r.name.clone(),
+                        pattern: r.pattern.clone(),
+                        password: r.password.clone(),
+                        priority: r.priority,
+                        enabled: r.enabled,
+                    }
+                })
+                .collect()
+        };
+
+        let network_state = {
+            let state = shared.app_state.lock();
+            let password = if let Some(dbs) = &state.dbs {
+                dbs.secrets
+                    .get_secret("proxy:socks5")
+                    .unwrap_or(None)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            drop(state);
+
+            use crate::features::settings::types::ConnectionTestStatus;
+            use arclain_signals::Signal;
+
+            NetworkSettingsState {
+                socks5_enabled: Signal::new(user_config.socks5_enabled),
+                socks5_address: Signal::new(user_config.socks5_address.clone().unwrap_or_default()),
+                socks5_username: Signal::new(
+                    user_config.socks5_username.clone().unwrap_or_default(),
+                ),
+                socks5_password: Signal::new(password),
+                connection_test_status: Signal::new(ConnectionTestStatus::Idle),
+            }
+        };
+
+        Self {
+            general_state: GeneralSettingsState {
+                open_nested_in_new_tab: Signal::new(open_nested_in_new_tab),
+            },
+            network_state,
+            security_state: SecuritySettingsState::default(),
+            archives_state: ArchivesSettingsState::default(),
+            password_rules_dialog: PasswordRulesDialog {
+                rules,
+                ..Default::default()
+            },
+            plugins_state: crate::features::plugins::types::PluginsListState::default(),
+            interface_state: InterfaceSettingsState::default(),
+            toolbar_layout_state: ToolbarLayoutState::default(),
+            info_panel_layout_state: InfoPanelLayoutState::default(),
+            last_visited_page: None,
+        }
+    }
+
+    pub fn check_changes(&self, shared: &SharedState, page: &SettingsPage) -> bool {
+        let state = shared.app_state.lock();
+
+        match page {
+            SettingsPage::General => {
+                *self.general_state.open_nested_in_new_tab.read()
+                    != state.user_config.open_nested_in_new_tab
+            }
+            SettingsPage::Archives => {
+                let current_val = if self.archives_state.temp_dir.read().trim().is_empty() {
+                    None
+                } else {
+                    Some(self.archives_state.temp_dir.read().trim().to_string())
+                };
+                current_val != state.user_config.temp_dir
+            }
+            SettingsPage::Network => {
+                *self.network_state.socks5_enabled.read() != state.user_config.socks5_enabled
+                    || *self.network_state.socks5_address.read()
+                        != state.user_config.socks5_address.clone().unwrap_or_default()
+                    || *self.network_state.socks5_username.read()
+                        != state
+                            .user_config
+                            .socks5_username
+                            .clone()
+                            .unwrap_or_default()
+            }
+            SettingsPage::Security => {
+                !self.security_state.key_file_path.read().trim().is_empty()
+                    || !self.security_state.secrets_db_path.read().trim().is_empty()
+                    || *self.security_state.encrypted_crc_policy.read()
+                        != crate::features::settings::types::EncryptedCrcPolicy::default()
+            }
+            SettingsPage::PasswordRules => {
+                if self.password_rules_dialog.rules.len() != state.pass_rules.len() {
+                    return true;
+                }
+                for (i, rule) in self.password_rules_dialog.rules.iter().enumerate() {
+                    let other = &state.pass_rules[i];
+                    if rule.name != other.name
+                        || rule.pattern != other.pattern
+                        || rule.password != other.password
+                        || rule.priority != other.priority
+                        || rule.enabled != other.enabled
+                    {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
+    pub fn render(
+        &mut self,
+        ui: &mut egui::Ui,
+        shared: &SharedState,
+        page: &SettingsPage,
+        breadcrumb: Vec<(String, crate::core::AppPage)>,
+        rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
+        search_text: &str,
+    ) -> Option<crate::core::AppPage> {
+        // Sync rules if entering PasswordRules page
+        if *page == SettingsPage::PasswordRules && self.last_visited_page.as_ref() != Some(page) {
+            let state = shared.app_state.lock();
+            self.password_rules_dialog.rules = state
+                .pass_rules
+                .iter()
+                .map(|r| {
+                    crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
+                        name: r.name.clone(),
+                        pattern: r.pattern.clone(),
+                        password: r.password.clone(),
+                        priority: r.priority,
+                        enabled: r.enabled,
+                    }
+                })
+                .collect();
+            tracing::debug!(
+                "Reloaded {} password rules from app state",
+                self.password_rules_dialog.rules.len()
+            );
+        }
+        self.last_visited_page = Some(page.clone());
+
+        let mut action = None;
+        let mut navigate_to = None;
+
+        let mut nav_target = None;
+        let mut content_nav_target = None;
+        let mut content_action = None;
+
+        layout::render_settings_layout(
+            ui,
+            &shared.theme,
+            |ui| {
+                if let Some(target) = navigation::render_settings_navigator(ui, &shared.theme, page)
+                {
+                    nav_target = Some(crate::core::AppPage::Settings(target));
+                }
+            },
+            |ui| {
+                // Breadcrumb
+                if let Some(target) = navigation::render_breadcrumb(ui, &shared.theme, &breadcrumb)
+                {
+                    content_nav_target = Some(target);
+                }
+                ui.add_space(8.0);
+
+                // Header
+                if let Some(header_action) = header::render_header(ui, self, shared, page) {
+                    content_action = Some(header_action);
+                }
+
+                ui.add_space(20.0);
+
+                // Body
+                egui::ScrollArea::vertical()
+                    .id_salt("settings_content_scroll")
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+
+                        if !search_text.trim().is_empty() {
+                            if let Some(target) = navigation::render_settings_search_results(
+                                ui,
+                                &shared.theme,
+                                search_text,
+                            ) {
+                                content_nav_target = Some(crate::core::AppPage::Settings(target));
+                            }
+                        } else if *page == SettingsPage::Overview {
+                            if let Some(target) =
+                                navigation::render_settings_overview(ui, &shared.theme)
+                            {
+                                content_nav_target = Some(crate::core::AppPage::Settings(target));
+                            }
+                        } else {
+                            let pm_arc_opt = shared.services.plugin_manager.clone();
+                            let pm_guard = pm_arc_opt.as_ref().map(|m| m.lock());
+
+                            let act = render_settings_content(
+                                ui,
+                                &shared.theme,
+                                page,
+                                &mut self.general_state,
+                                &mut self.security_state,
+                                &mut self.archives_state,
+                                &mut self.password_rules_dialog,
+                                pm_guard.as_deref(),
+                                &mut self.plugins_state,
+                                rules_page,
+                                &mut self.interface_state,
+                                &mut self.toolbar_layout_state,
+                                &mut self.info_panel_layout_state,
+                                &mut self.network_state,
+                                &shared.app_state,
+                                Some(shared),
+                            );
+
+                            if content_action.is_none() {
+                                content_action = act;
+                            }
+                        }
+                    });
+            },
+        );
+
+        if let Some(t) = nav_target {
+            navigate_to = Some(t);
+        }
+        if let Some(t) = content_nav_target {
+            navigate_to = Some(t);
+        }
+
+        if let Some(act) = content_action {
+            action = Some(act);
+        }
+
+        if let Some(action) = action {
+            if let Some(target_page) =
+                crate::features::settings::actions::extract_navigation(&action)
+            {
+                navigate_to = Some(crate::core::AppPage::Settings(target_page));
+            } else {
+                self.handle_action(action, shared);
+            }
+        }
+
+        navigate_to
+    }
+
+    pub fn handle_action(&mut self, action: SettingsAction, shared: &SharedState) {
+        crate::features::settings::actions::handle_action(
+            action,
+            &mut self.security_state,
+            &mut self.archives_state,
+            &mut self.plugins_state,
+            &mut self.network_state,
+            shared,
+        );
+    }
+}
