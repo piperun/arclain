@@ -3,7 +3,7 @@
 //! A reusable panel with optional header, body sections, and footer.
 //! Supports collapsible sections and theme-aware styling.
 
-use crate::features::plugins::plugin_ui;
+use crate::features::plugins::ui;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_plugins::manager::PluginManager;
@@ -379,7 +379,7 @@ impl Panel {
                             // Get dialog state for navigation
                             let dialog_state_arc = shared.map(|s| s.plugin_dialog_state.clone());
 
-                            let mut callback: plugin_ui::UiEventCallback =
+                            let mut callback: ui::UiEventCallback =
                                 Box::new(move |element_id: &str, value: Option<String>| {
                                     // Handle page navigation
                                     if element_id.starts_with("__page_open:") {
@@ -406,7 +406,7 @@ impl Panel {
                                     let _ = instance.send_ui_event(element_id, value);
                                 });
 
-                            plugin_ui::render_ui_elements(
+                            ui::render_ui_elements(
                                 ui,
                                 elements,
                                 &mut callback,
@@ -418,10 +418,10 @@ impl Panel {
                         }
                     } else {
                         // No plugin manager - just render elements without event handling
-                        let mut callback: plugin_ui::UiEventCallback =
+                        let mut callback: ui::UiEventCallback =
                             Box::new(|_id: &str, _val: Option<String>| {});
 
-                        plugin_ui::render_ui_elements(
+                        ui::render_ui_elements(
                             ui,
                             elements,
                             &mut callback,

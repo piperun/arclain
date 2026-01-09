@@ -411,10 +411,10 @@ fn render_plugin_ui(
                         }
                     });
                 })
-                    as crate::features::plugins::plugin_ui::UiEventCallback;
+                    as crate::features::plugins::ui::UiEventCallback;
 
                 let flat_elements = ui_elements.flatten();
-                crate::features::plugins::plugin_ui::render_ui_elements(
+                crate::features::plugins::ui::render_ui_elements(
                     ui,
                     &flat_elements,
                     &mut event_callback,

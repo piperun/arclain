@@ -55,7 +55,7 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
                     super::actions::create_dialog_callback(shared, plugin_id.clone());
 
                 let flat_elements = dialog_elements.flatten();
-                super::plugin_ui::render_ui_elements(
+                super::ui::render_ui_elements(
                     ui,
                     &flat_elements,
                     &mut callback,
@@ -132,7 +132,7 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
             let content_cache = shared.services.content_cache.clone();
             match page_layout {
                 PluginLayout::Single { elements } => {
-                    super::plugin_ui::render_ui_elements(
+                    super::ui::render_ui_elements(
                         ui,
                         &elements,
                         &mut callback,
@@ -152,7 +152,7 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                         .default_width(sidebar_width.unwrap_or(250.0))
                         .show_inside(ui, |ui| {
                             egui::ScrollArea::vertical().show(ui, |ui| {
-                                super::plugin_ui::render_ui_elements(
+                                super::ui::render_ui_elements(
                                     ui,
                                     &sidebar,
                                     &mut callback,
@@ -166,7 +166,7 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
 
                     egui::CentralPanel::default().show_inside(ui, |ui| {
                         egui::ScrollArea::vertical().show(ui, |ui| {
-                            super::plugin_ui::render_ui_elements(
+                            super::ui::render_ui_elements(
                                 ui,
                                 &content,
                                 &mut callback,
