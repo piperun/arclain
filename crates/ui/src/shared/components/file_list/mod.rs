@@ -1,498 +1,25 @@
+//! File list component for archive browsing
+//!
+//! This module provides list and grid views for displaying archive contents.
+//! Split into submodules for maintainability:
+//! - `types` - Data structures and enums
+//! - `breadcrumb` - Breadcrumb navigation
+//! - `grid` - Grid view rendering
+
+mod breadcrumb;
+mod grid;
+mod types;
+
+// Re-export public API
+pub use breadcrumb::render_breadcrumb;
+pub use grid::render_grid_view;
+pub use types::{
+    parse_ratio_pct, parse_size_to_bytes, FileEntry, FileListAction, SortColumn, SortState,
+};
+
 use crate::shared::theme::AppTheme;
-use arclain_widgets::pixel_align;
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
-
-#[derive(Clone)]
-pub struct FileEntry {
-    pub name: String,
-    pub size: String,
-    pub compressed: String,
-    pub ratio: String,
-    pub modified: String,
-    pub crc32: String,
-    pub encrypted: bool,
-    pub is_folder: bool,
-    pub selected: bool,
-}
-
-#[derive(Debug, Clone)]
-pub enum FileListAction {
-    Navigate(String),
-    Edit(String),      // full path (relative to current path will be resolved by caller)
-    Delete(String),    // same as above
-    Open(String),      // double-click open file
-    Extract(String),   // Extract single file
-    ExtractTo(String), // Extract to custom location
-    CopyPath(String),  // Copy path to clipboard
-    ShowProperties(String), // Show properties panel
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SortColumn {
-    Name,
-    Type,
-    Size,
-    Compressed,
-    Ratio,
-    Modified,
-    Crc32,
-    Encrypted,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SortState {
-    pub column: SortColumn,
-    pub ascending: bool,
-}
-impl Default for SortState {
-    fn default() -> Self {
-        Self {
-            column: SortColumn::Name,
-            ascending: true,
-        }
-    }
-}
-
-fn parse_size_to_bytes(s: &str) -> u64 {
-    // Expect formats like "123 B", "12.3 KB", "4.5 MB", "1.0 GB"
-    let mut parts = s.split_whitespace();
-    let num_str = parts.next().unwrap_or("0");
-    let unit = parts.next().unwrap_or("B").to_ascii_uppercase();
-    let val: f64 = num_str.parse().unwrap_or(0.0);
-    let mul = match unit.as_str() {
-        "KB" => 1024.0,
-        "MB" => 1024.0 * 1024.0,
-        "GB" => 1024.0 * 1024.0 * 1024.0,
-        _ => 1.0,
-    };
-    (val * mul) as u64
-}
-
-fn parse_ratio_pct(s: &str) -> u64 {
-    s.trim_end_matches('%').parse::<u64>().unwrap_or(0)
-}
-
-// ================= Breadcrumb =================
-
-pub fn render_breadcrumb(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    current_path: &str,
-    archive_name: &str,
-) -> Option<String> {
-    let mut navigate_to: Option<String> = None;
-    let available_width = ui.available_width();
-    let default_font = egui::FontId::proportional(14.0);
-
-    // Estimate width of root button
-    let root_galley = ui.painter().layout_no_wrap(
-        archive_name.to_string(),
-        default_font.clone(),
-        theme.colors.on_surface,
-    );
-    let root_width = root_galley.rect.width() + 16.0; // padding
-
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
-
-        // Root archive button (clickable)
-        let root_response = ui.add(
-            egui::Label::new(
-                egui::RichText::new(archive_name)
-                    .size(14.0)
-                    .color(theme.colors.on_surface),
-            )
-            .selectable(false)
-            .sense(egui::Sense::click()),
-        );
-
-        if root_response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            let rect = root_response.rect;
-            ui.painter().line_segment(
-                [
-                    egui::pos2(rect.min.x, rect.max.y),
-                    egui::pos2(rect.max.x, rect.max.y),
-                ],
-                egui::Stroke::new(1.0, theme.colors.on_surface),
-            );
-        }
-
-        if root_response.clicked() {
-            navigate_to = Some(String::new());
-        }
-
-        if !current_path.is_empty() {
-            // Separator after root
-            ui.label(
-                egui::RichText::new("/")
-                    .size(14.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-
-            let segments: Vec<&str> = current_path.split('/').collect();
-            let separator_width = 12.0; // approx width of " / "
-
-            // Calculate widths of all segments
-            let segment_widths: Vec<f32> = segments
-                .iter()
-                .map(|s| {
-                    ui.painter()
-                        .layout_no_wrap(
-                            s.to_string(),
-                            default_font.clone(),
-                            theme.colors.on_surface,
-                        )
-                        .rect
-                        .width()
-                })
-                .collect();
-
-            let total_segments_width: f32 = segment_widths.iter().sum::<f32>()
-                + (segment_widths.len() as f32 * separator_width);
-
-            // Determine if we need to compact
-            // We need space for Root + Current Path. If it overflows, we collapse middle items.
-            // Remaining width for path segments:
-            let path_available_width = available_width - root_width;
-
-            if total_segments_width <= path_available_width || segments.len() <= 2 {
-                // Render all segments normally
-                for (idx, segment) in segments.iter().enumerate() {
-                    if idx > 0 {
-                        ui.label(
-                            egui::RichText::new("/")
-                                .size(14.0)
-                                .color(theme.colors.on_surface_variant),
-                        );
-                    }
-                    render_breadcrumb_segment(
-                        ui,
-                        theme,
-                        segment,
-                        idx == segments.len() - 1,
-                        idx,
-                        &segments,
-                        &mut navigate_to,
-                    );
-                }
-            } else {
-                // COMPACT MODE: Show ... / grandparent / parent / current
-                // We always want to show the current (last) folder.
-
-                // Construct items to show from back to front
-                let mut kept_indices = std::collections::VecDeque::new();
-                let mut used_width = 0.0;
-                let ellipsis_width = 24.0;
-
-                // Always show last one
-                if let Some(last_idx) = segments.len().checked_sub(1) {
-                    kept_indices.push_front(last_idx);
-                    used_width += segment_widths[last_idx];
-                }
-
-                // Try adding more from the end backwards
-                for idx in (0..segments.len() - 1).rev() {
-                    let w = segment_widths[idx] + separator_width;
-                    if used_width + w + ellipsis_width + separator_width < path_available_width {
-                        kept_indices.push_front(idx);
-                        used_width += w;
-                    } else {
-                        break;
-                    }
-                }
-
-                // Check if we need ellipsis (if we didn't include index 0)
-                let first_visible = kept_indices.front().copied().unwrap_or(0);
-                let show_ellipsis = first_visible > 0;
-
-                if show_ellipsis {
-                    // Collect hidden segments (all before first_visible)
-                    let hidden_segments: Vec<(usize, &str)> = segments[0..first_visible]
-                        .iter()
-                        .enumerate()
-                        .map(|(i, s)| (i, *s))
-                        .collect();
-
-                    // Clickable ellipsis button
-                    let ellipsis_popup_id = ui.make_persistent_id("breadcrumb_ellipsis_popup");
-                    let ellipsis_response = ui.add(
-                        egui::Label::new(
-                            egui::RichText::new("...")
-                                .size(14.0)
-                                .color(theme.colors.on_surface_variant),
-                        )
-                        .selectable(false)
-                        .sense(egui::Sense::click()),
-                    );
-
-                    if ellipsis_response.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-
-                    if ellipsis_response.clicked() {
-                        egui::Popup::toggle_id(ui.ctx(), ellipsis_popup_id);
-                    }
-
-                    // Popup with hidden segments
-                    #[allow(deprecated)]
-                    egui::popup_below_widget(
-                        ui,
-                        ellipsis_popup_id,
-                        &ellipsis_response,
-                        egui::PopupCloseBehavior::CloseOnClickOutside,
-                        |ui| {
-                            ui.set_min_width(150.0);
-                            for (idx, segment) in hidden_segments.iter() {
-                                let full_path = segments[0..=*idx].join("/");
-                                if ui.button(*segment).clicked() {
-                                    navigate_to = Some(full_path);
-                                }
-                            }
-                        },
-                    );
-
-                    ui.label(
-                        egui::RichText::new("/")
-                            .size(14.0)
-                            .color(theme.colors.on_surface_variant),
-                    );
-                }
-
-                for (i, &idx) in kept_indices.iter().enumerate() {
-                    if i > 0 {
-                        ui.label(
-                            egui::RichText::new("/")
-                                .size(14.0)
-                                .color(theme.colors.on_surface_variant),
-                        );
-                    }
-                    render_breadcrumb_segment(
-                        ui,
-                        theme,
-                        segments[idx],
-                        idx == segments.len() - 1,
-                        idx,
-                        &segments,
-                        &mut navigate_to,
-                    );
-                }
-            }
-        }
-    });
-
-    navigate_to
-}
-
-fn render_breadcrumb_segment(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    segment: &str,
-    is_last: bool,
-    idx: usize,
-    all_segments: &[&str],
-    navigate_to: &mut Option<String>,
-) {
-    let text_color = if is_last {
-        theme.colors.on_surface
-    } else {
-        theme.colors.on_surface_variant
-    };
-
-    let response = ui.add(
-        egui::Label::new(egui::RichText::new(segment).size(14.0).color(text_color))
-            .selectable(false)
-            .sense(egui::Sense::click()),
-    );
-
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        let rect = response.rect;
-        ui.painter().line_segment(
-            [
-                egui::pos2(rect.min.x, rect.max.y),
-                egui::pos2(rect.max.x, rect.max.y),
-            ],
-            egui::Stroke::new(1.0, text_color),
-        );
-    }
-
-    if response.clicked() {
-        let target = all_segments[..=idx].join("/");
-        *navigate_to = Some(target);
-    }
-}
-
-// ================= Grid View =================
-
-pub fn render_grid_view(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    entries: &mut [FileEntry],
-) -> Option<FileListAction> {
-    let mut action: Option<FileListAction> = None;
-    let available_width = ui.available_width();
-    let item_width = 280.0;
-    let columns = (available_width / item_width).floor().max(1.0) as usize;
-
-    ui.spacing_mut().item_spacing = egui::vec2(1.0, 1.0);
-
-    egui::Grid::new("file_grid")
-        .num_columns(columns)
-        .spacing([1.0, 1.0])
-        .show(ui, |ui| {
-            for idx in 0..entries.len() {
-                if idx > 0 && idx % columns == 0 {
-                    ui.end_row();
-                }
-
-                let (response, row_action) = render_grid_item(ui, theme, &mut entries[idx]);
-
-                if response.clicked() {
-                    entries[idx].selected = !entries[idx].selected;
-                }
-
-                if response.double_clicked() {
-                    if entries[idx].is_folder {
-                        action = Some(FileListAction::Navigate(entries[idx].name.clone()));
-                    } else {
-                        action = Some(FileListAction::Open(entries[idx].name.clone()));
-                    }
-                }
-
-                if action.is_none() {
-                    if let Some(a) = row_action {
-                        action = Some(a);
-                    }
-                }
-            }
-        });
-
-    action
-}
-
-fn render_grid_item(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    entry: &mut FileEntry,
-) -> (egui::Response, Option<FileListAction>) {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(280.0, 80.0), egui::Sense::click());
-    let mut action: Option<FileListAction> = None;
-
-    if ui.is_rect_visible(rect) {
-        // Background
-        let bg_color = if entry.selected {
-            theme.colors.selection
-        } else if response.hovered() {
-            theme.colors.surface_variant
-        } else {
-            theme.colors.surface
-        };
-        ui.painter().rect_filled(rect, 0.0, bg_color);
-
-        // Content
-        let content_rect = rect.shrink2(egui::vec2(12.0, 8.0));
-
-        // Icon
-        let icon_size = 32.0;
-        let icon_rect =
-            egui::Rect::from_min_size(content_rect.min, egui::vec2(icon_size, icon_size));
-        ui.painter()
-            .rect_filled(icon_rect, 4.0, theme.colors.surface_variant);
-
-        let ext = entry
-            .name
-            .split('.')
-            .next_back()
-            .unwrap_or("")
-            .to_uppercase();
-        let ext_text: &str = if entry.is_folder { "📁" } else { &ext };
-
-        ui.painter().text(
-            pixel_align(icon_rect.center()),
-            egui::Align2::CENTER_CENTER,
-            ext_text,
-            egui::FontId::proportional(12.0),
-            theme.colors.on_surface_variant,
-        );
-
-        // File info
-        let text_x = content_rect.min.x + icon_size + 12.0;
-        let name_pos = pixel_align(egui::pos2(text_x, content_rect.min.y + 4.0));
-        let meta_pos = pixel_align(egui::pos2(text_x, content_rect.min.y + 24.0));
-
-        // Use selection text color when selected
-        let text_color = if entry.selected {
-            theme.colors.on_surface
-        } else {
-            theme.colors.on_surface
-        };
-        let meta_color = if entry.selected {
-            theme.colors.on_surface
-        } else {
-            theme.colors.on_surface_variant
-        };
-
-        ui.painter().text(
-            name_pos,
-            egui::Align2::LEFT_TOP,
-            &entry.name,
-            egui::FontId::proportional(14.0),
-            text_color,
-        );
-        ui.painter().text(
-            meta_pos,
-            egui::Align2::LEFT_TOP,
-            format!("{} • {}", entry.size, entry.modified),
-            egui::FontId::proportional(12.0),
-            meta_color,
-        );
-
-        // Inline actions (Edit/Delete) aligned to the right
-        let actions_w = 60.0;
-        let actions_h = 24.0;
-        let actions_rect = egui::Rect::from_min_size(
-            egui::pos2(content_rect.max.x - actions_w, content_rect.min.y),
-            egui::vec2(actions_w, actions_h),
-        );
-
-        ui.scope_builder(egui::UiBuilder::new().max_rect(actions_rect), |ui| {
-            // Apply custom button style
-
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-
-                // Edit: only for files
-                let can_edit = !entry.is_folder;
-                let edit_clicked = ui
-                    .add_enabled(
-                        can_edit,
-                        egui::Button::new("✏").min_size(egui::vec2(26.0, 22.0)),
-                    )
-                    .on_hover_text(if can_edit {
-                        "Edit file"
-                    } else {
-                        "Cannot edit folders"
-                    })
-                    .clicked();
-                if edit_clicked {
-                    action = Some(FileListAction::Edit(entry.name.clone()));
-                }
-
-                let del_clicked = ui
-                    .add_sized(egui::vec2(26.0, 22.0), egui::Button::new("🗑"))
-                    .on_hover_text("Delete")
-                    .clicked();
-                if del_clicked {
-                    action = Some(FileListAction::Delete(entry.name.clone()));
-                }
-            });
-        });
-    }
-
-    (response, action)
-}
 
 // ================= List View (sortable + select-all) =================
 
@@ -584,7 +111,7 @@ pub fn render_list_view(
     // Header-driven actions to apply before drawing body
     let mut apply_select_all: Option<bool> = None;
 
-    // Clip rectangle for row decorations (compute before building table to avoid borrow conflicts)
+    // Clip rectangle for row decorations
     let list_clip_rect = ui.clip_rect();
 
     egui::Frame::NONE
@@ -604,12 +131,11 @@ pub fn render_list_view(
 
             TableBuilder::new(ui)
                 .id_salt(table_id)
-                // Disable striped rows to avoid tiny gaps between items.
                 .striped(false)
                 .resizable(!columns_locked)
                 .sense(egui::Sense::click())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::exact(34.0)) // Checkbox (+ select all in header)
+                .column(Column::exact(34.0)) // Checkbox
                 .column(Column::remainder().at_least(220.0)) // Name
                 .column(Column::exact(80.0)) // Type
                 .column(Column::exact(110.0)) // Size
@@ -618,7 +144,7 @@ pub fn render_list_view(
                 .column(Column::exact(140.0)) // Modified
                 .column(Column::exact(120.0)) // CRC-32
                 .column(Column::exact(80.0)) // Encrypted
-                .column(Column::exact(84.0)) // Actions (Edit/Delete)
+                .column(Column::exact(84.0)) // Actions
                 .header(28.0, |mut header| {
                     // Select all checkbox
                     header.col(|ui| {
@@ -628,10 +154,8 @@ pub fn render_list_view(
                         let mut header_check = all_selected;
                         let resp = ui.checkbox(&mut header_check, "");
                         if resp.clicked() {
-                            // Toggle to the state of header_check (clicked flips it)
                             apply_select_all = Some(header_check);
                         } else if some_selected && !all_selected && resp.hovered() {
-                            // Show hint for partial selection
                             resp.on_hover_text("Some rows selected — click to toggle select all");
                         }
                     });
@@ -795,7 +319,7 @@ pub fn render_list_view(
                     // Sort entries based on current sort state
                     sort_entries(entries, sort);
 
-                    // Capture selection flags after sorting (for contiguous selection painting)
+                    // Capture selection flags after sorting
                     let selection_flags: Vec<bool> = entries.iter().map(|e| e.selected).collect();
 
                     for (row_index, entry) in entries.iter_mut().enumerate() {
@@ -913,15 +437,12 @@ pub fn render_list_view(
                                 }
                             });
 
-                            // Actions column (Edit/Delete)
+                            // Actions column
                             let mut pending_row_action: Option<FileListAction> = None;
                             row.col(|ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 6.0;
 
-                                    // Apply custom button style
-
-                                    // Edit button enabled for all files (not folders)
                                     let can_edit = !is_folder;
                                     let hover_text = if is_folder {
                                         "Cannot edit folders"
@@ -956,18 +477,14 @@ pub fn render_list_view(
 
                             let row_response = row.response();
 
-                            // Paint selection highlight across the full row, clipped to the table area.
+                            // Paint selection highlight
                             if entry.selected {
-                                // Create a painter with the list's clip rect so row decorations cannot
-                                // draw over the properties panel.
                                 let painter = egui::Painter::new(
                                     row_response.ctx.clone(),
                                     row_response.layer_id,
                                     list_clip_rect,
                                 );
 
-                                // Slight horizontal inset to avoid touching table edges; expand a hair on Y
-                                // to cover any default row separators that may cause tiny gaps.
                                 let mut fill_rect = row_response.rect.shrink2(egui::vec2(2.0, 0.0));
                                 fill_rect.min.y -= 0.5;
                                 fill_rect.max.y += 0.5;
@@ -975,8 +492,6 @@ pub fn render_list_view(
                                 let fill_color = theme.colors.selection.linear_multiply(0.14);
                                 painter.rect_filled(fill_rect, 0.0, fill_color);
 
-                                // Merge borders when adjacent rows are also selected: draw only the outer
-                                // top/bottom separators where neighbours are NOT selected.
                                 let prev_selected = row_index > 0 && selection_flags[row_index - 1];
                                 let next_selected = row_index + 1 < selection_flags.len()
                                     && selection_flags[row_index + 1];
