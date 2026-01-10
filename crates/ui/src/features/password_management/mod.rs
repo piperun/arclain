@@ -1,13 +1,14 @@
 // Password management feature
 
 pub mod actions;
-pub mod dialogs;
 pub mod operations;
-pub mod rules_page;
-
 pub mod ui;
+pub mod views;
+
+// Re-export moved modules
+pub use views::dialogs;
+pub use views::rules_page;
 
 // Re-export commonly used types
-// pub use dialogs::PasswordRulesDialog;
 pub use operations::{PasswordFeature, PasswordFeatureAction};
 pub use ui::handle_password_dialogs;
