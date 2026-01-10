@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_core"
-version = "0.6.5"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "arclain-http",
@@ -432,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_data"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "arclain-http",
@@ -450,7 +450,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_db"
-version = "0.4.2"
+version = "0.4.3"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -474,7 +474,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_plugins"
-version = "0.6.4"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "arclain-http",
@@ -519,7 +519,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_ui"
-version = "0.11.9"
+version = "0.11.10"
 dependencies = [
  "anyhow",
  "arclain-http",
