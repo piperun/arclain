@@ -1,3 +1,4 @@
+use crate::core::signals::AppSignals;
 use crate::core::AppState;
 use crate::features::plugins::PluginDialogState;
 use crate::platform::detect_dark_mode;
@@ -17,6 +18,8 @@ pub struct SharedState {
     pub plugin_dialog_state: Arc<Mutex<PluginDialogState>>,
     /// Panel refresh requests from plugins (extension point names to refresh)
     pub refresh_requests: Arc<Mutex<Vec<String>>>,
+    /// Direct access to signals without locking AppState
+    pub signals: AppSignals,
 }
 
 impl SharedState {
@@ -28,6 +31,10 @@ impl SharedState {
         load_cjk_fonts(&cc.egui_ctx);
 
         let (app_state_inner, services) = AppState::new().expect("Failed to initialize app state");
+
+        // Clone signals before wrapping in Arc<Mutex>
+        let signals = app_state_inner.signals.clone();
+
         let app_state = Arc::new(Mutex::new(app_state_inner));
         let services = Arc::new(services);
 
@@ -38,6 +45,14 @@ impl SharedState {
             toaster: Arc::new(Mutex::new(Toaster::new())),
             plugin_dialog_state: Arc::new(Mutex::new(PluginDialogState::new())),
             refresh_requests: Arc::new(Mutex::new(Vec::new())),
+            signals,
         }
+    }
+
+    /// Get signals without locking AppState
+    /// Use this for read-only signal access instead of `app_state.lock().signals`
+    #[inline]
+    pub fn signals(&self) -> &AppSignals {
+        &self.signals
     }
 }

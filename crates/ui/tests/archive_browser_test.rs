@@ -41,6 +41,8 @@ fn create_test_shared_state() -> SharedState {
         signals: arclain_ui::core::signals::AppSignals::new(),
     };
 
+    let signals = app_state.signals.clone();
+
     SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,
@@ -48,6 +50,7 @@ fn create_test_shared_state() -> SharedState {
         toaster: Arc::new(Mutex::new(Toaster::new())),
         plugin_dialog_state: Arc::new(Mutex::new(PluginDialogState::new())),
         refresh_requests: Arc::new(Mutex::new(Vec::new())),
+        signals,
     }
 }
 

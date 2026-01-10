@@ -7,6 +7,7 @@ use crate::core::operations::archive::ArchiveInfo;
 use crate::core::state::UiPreferences;
 use arclain_core::archive::NavigationState;
 use arclain_core::features::organization::GameMetadata;
+use arclain_core::utilities::PassRule;
 use arclain_core::ArchiveEntry;
 use arclain_core::UiItem;
 use arclain_signals::{Signal, SignalContext};
@@ -112,6 +113,9 @@ pub struct AppSignals {
 
     /// Current password for the open archive
     pub current_password: Signal<Option<String>>,
+
+    /// Password rules for auto-unlock (from secrets DB)
+    pub pass_rules: Signal<Vec<PassRule>>,
 }
 
 impl AppSignals {
@@ -136,6 +140,7 @@ impl AppSignals {
             user_config: Signal::new(arclain_core::UserConfig::default()),
             navigation: Signal::new(NavigationState::new()),
             current_password: Signal::new(None),
+            pass_rules: Signal::new(Vec::new()),
         }
     }
 
@@ -157,6 +162,7 @@ impl AppSignals {
         signal_ctx.bind(&self.ui_preferences);
         signal_ctx.bind(&self.navigation);
         signal_ctx.bind(&self.current_password);
+        signal_ctx.bind(&self.pass_rules);
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
@@ -181,6 +187,7 @@ impl AppSignals {
         self.ui_preferences.set(UiPreferences::default());
         self.navigation.set(NavigationState::new());
         self.current_password.set(None);
+        self.pass_rules.set(Vec::new());
     }
 }
 

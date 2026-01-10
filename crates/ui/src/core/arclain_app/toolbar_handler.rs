@@ -24,7 +24,14 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 let can_go_forward = nav.can_go_forward();
                 let can_go_up = nav.can_go_up();
                 let archive_loaded = state.signals.archive_path.get().is_some();
-                let has_selection = false; // TODO: Implement selection tracking
+                drop(state);
+                let has_selection = app
+                    .archive_browser
+                    .state_mut()
+                    .entries
+                    .iter()
+                    .any(|e| e.selected);
+                let state = app.shared_state.app_state.lock();
                 let has_metadata = state.signals.metadata.get().is_some();
                 let toolbar_config =
                     components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
