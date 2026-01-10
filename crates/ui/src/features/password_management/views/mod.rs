@@ -1,1 +1,4 @@
-// Password management feature views
+//! Password management views
+
+pub mod dialogs;
+pub mod rules_page;

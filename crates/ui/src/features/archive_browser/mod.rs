@@ -1,29 +1,20 @@
+// Archive browser feature module
+
 pub mod actions;
+pub mod feature;
 pub mod navigation;
+
+pub use feature::ArchiveBrowser;
 pub mod state;
-pub mod ui;
+pub mod types;
+pub mod views;
 
-pub use actions::{ActionContext, ArchiveBrowserAction};
+// Re-exports
+pub use views::browser;
+
+pub use actions::ActionContext;
+pub use actions::ArchiveBrowserAction;
 pub use state::ArchiveBrowserState;
+// pub use ui::render_archive_browser; // Changed to browser::render_archive_browser.
 
-use crate::shared::SharedState;
-
-pub struct ArchiveBrowser {
-    state: ArchiveBrowserState,
-}
-
-impl ArchiveBrowser {
-    pub fn new(_shared: &SharedState) -> Self {
-        Self {
-            state: ArchiveBrowserState::default(),
-        }
-    }
-
-    pub fn render(&mut self, ctx: &egui::Context, shared: &SharedState) -> ArchiveBrowserAction {
-        ui::render_archive_browser(ctx, &mut self.state, shared)
-    }
-
-    pub fn state_mut(&mut self) -> &mut ArchiveBrowserState {
-        &mut self.state
-    }
-}
+pub use browser::render_archive_browser;

@@ -1,6 +1,6 @@
 use crate::shared::components::{file_list, tree_panel};
 
-use super::{ArchiveBrowserAction, ArchiveBrowserState};
+use crate::features::archive_browser::{ArchiveBrowserAction, ArchiveBrowserState};
 use crate::shared::SharedState;
 use arclain_core::ActionType;
 use arclain_plugins::types::PluginExtensionPoint;

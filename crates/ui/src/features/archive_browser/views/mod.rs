@@ -1,1 +1,3 @@
-// Archive browser feature views
+//! Archive browser views
+
+pub mod browser;
