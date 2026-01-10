@@ -172,6 +172,8 @@ impl AppState {
                                         enabled: r.enabled,
                                     })
                                     .collect();
+                                // Sync to signal for lock-free access
+                                me.signals.pass_rules.set(me.pass_rules.clone());
                             }
                         }
 

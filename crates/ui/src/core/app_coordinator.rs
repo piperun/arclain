@@ -114,8 +114,14 @@ impl eframe::App for AppCoordinator {
                 self.plugins.render(ctx, &self.shared);
             }
             AppPage::Settings(settings_page) => {
-                // TODO: Implement breadcrumb for AppCoordinator
-                let breadcrumb = vec![];
+                // Build breadcrumb from navigation context
+                let breadcrumb = vec![
+                    ("Home".to_string(), crate::core::AppPage::Main),
+                    (
+                        "Settings".to_string(),
+                        crate::core::AppPage::Settings(SettingsPage::Overview),
+                    ),
+                ];
                 let settings_page = settings_page.clone(); // Clone to avoid borrow conflict
                 egui::CentralPanel::default().show(ctx, |ui| {
                     if let Some(target) = self.settings.render(
