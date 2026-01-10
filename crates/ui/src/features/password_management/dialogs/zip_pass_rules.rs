@@ -1,4 +1,6 @@
 // Zip password rules feature root module: thin re-export shim
+mod rule_editor;
+mod rule_list;
 mod state;
 pub mod tester;
 mod types;

@@ -6,6 +6,8 @@ mod integrity;
 mod network_tab;
 mod preview_tab;
 mod variables_tab;
+mod header;
+mod rule_selector;
 
 pub use arclain_core::features::organization::metrics::IntegrityReport;
 use integrity::export_issues_report;
@@ -165,7 +167,7 @@ impl OrganizePanel {
 
     /* Organization progress is now handled by ArchiveOperations (global signal) */
 
-    fn truncate_path(path: &str, max_len: usize) -> String {
+    pub fn truncate_path(path: &str, max_len: usize) -> String {
         // Use character count, not byte count, for proper Unicode handling
         let char_count = path.chars().count();
         if char_count <= max_len {
@@ -222,189 +224,21 @@ impl OrganizePanel {
         {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
 
-            // Header
-            egui::Frame::NONE
-                .fill(ui.style().visuals.extreme_bg_color)
-                .inner_margin(12.0)
-                .corner_radius(8.0)
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(egui_phosphor::regular::FOLDER_NOTCH_OPEN)
-                                .size(28.0)
-                                .color(egui::Color32::from_rgb(99, 179, 237)),
-                        );
-                        ui.add_space(8.0);
-                        ui.vertical(|ui| {
-                            arclain_widgets::Text::new("Organize Archive")
-                                .size(18.0)
-                                .strong()
-                                .show(ui);
-                            arclain_widgets::Text::new(&self.session.archive_name)
-                                .size(12.0)
-                                .muted()
-                                .show(ui);
-                        });
-
-                        // Metadata badge - smaller with explicit label
-                        if let Some(meta) = &self.session.metadata {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    // Apply button (enabled/disabled based on metadata)
-                                    let apply_btn = egui::Button::new(
-                                        egui::RichText::new(format!(
-                                            "{}  Apply",
-                                            egui_phosphor::regular::CHECK
-                                        ))
-                                        .strong()
-                                        .size(12.0),
-                                    )
-                                    .fill(if can_apply {
-                                        egui::Color32::from_rgb(34, 139, 34)
-                                    } else {
-                                        egui::Color32::from_rgb(60, 60, 60)
-                                    });
-                                    
-                                    if ui.add_enabled(can_apply, apply_btn).clicked() {
-                                        action = Some(OrganizePanelAction::Apply);
-                                    }
-                                    
-                                    ui.add_space(8.0);
-                                    
-                                    // Metadata badge
-                                    egui::Frame::NONE
-                                        .fill(egui::Color32::from_rgb(35, 65, 45))
-                                        .inner_margin(egui::Margin::symmetric(6, 3))
-                                        .corner_radius(3.0)
-                                        .show(ui, |ui| {
-                                            // Use right-to-left layout to ensure tight packing (no stretching)
-                                            // Add items in REVERSE order: Text then Icon -> appears as [Icon] [Text]
-                                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                                ui.spacing_mut().item_spacing.x = 4.0;
-                                                
-                                                // Text (appears on right)
-                                                ui.label(
-                                                    egui::RichText::new(format!(
-                                                        "Fetched: {}",
-                                                        Self::truncate_path(&meta.title, 30)
-                                                    ))
-                                                    .color(egui::Color32::from_rgb(120, 200, 150))
-                                                    .size(10.0),
-                                                );
-
-                                                // Icon (appears on left of text)
-                                                ui.label(
-                                                    egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
-                                                        .color(egui::Color32::from_rgb(120, 200, 150))
-                                                        .size(12.0),
-                                                );
-                                            });
-                                        });
-                                },
-                            );
-                        } else {
-                            // No metadata - show Apply button (possibly disabled)
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    let apply_btn = egui::Button::new(
-                                        egui::RichText::new(format!(
-                                            "{}  Apply",
-                                            egui_phosphor::regular::CHECK
-                                        ))
-                                        .strong()
-                                        .size(12.0),
-                                    )
-                                    .fill(if can_apply {
-                                        egui::Color32::from_rgb(34, 139, 34)
-                                    } else {
-                                        egui::Color32::from_rgb(60, 60, 60)
-                                    });
-                                    
-                                    if ui.add_enabled(can_apply, apply_btn).clicked() {
-                                        action = Some(OrganizePanelAction::Apply);
-                                    }
-                                },
-                            );
-                        }
-                    });
-                });
+            // Header extracted to header.rs
+            if let Some(act) = header::render_header(ui, &self.session, can_apply) {
+                action = Some(act);
+            }
 
             ui.add_space(4.0);
 
-            // Rule selector
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(egui_phosphor::regular::FUNNEL).size(14.0));
-                arclain_widgets::Text::new("Rule:")
-                    .strong()
-                    .show(ui);
-
-                let current_rule = self
-                    .session.rules
-                    .get(self.ui_state.selected_rule_index)
-                    .map(|r| r.name.clone())
-                    .unwrap_or_else(|| "None".to_string());
-
-                let has_dlsite_code = arclain_core::utilities::has_dlsite_code(&self.session.archive_name);
-
-                egui::ComboBox::from_id_salt("rule_selector")
-                    .selected_text(&current_rule)
-                    .width(200.0)
-                    .show_ui(ui, |ui| {
-                        let mut categories: std::collections::BTreeMap<String, Vec<usize>> = std::collections::BTreeMap::new();
-                        for (i, rule) in self.session.rules.iter().enumerate() {
-                            let cat = rule.trigger.metadata_source.clone().unwrap_or_else(|| "General".to_string());
-                            categories.entry(cat).or_default().push(i);
-                        }
-
-                        for (category, indices) in categories {
-                            ui.label(
-                                egui::RichText::new(category)
-                                    .size(10.0)
-                                    .strong()
-                                    .color(ui.visuals().text_color().gamma_multiply(0.6)),
-                            );
-                            
-                            for i in indices {
-                                let rule = &self.session.rules[i];
-                                let is_dlsite_rule = rule.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false);
-                                let is_disabled = is_dlsite_rule && !has_dlsite_code;
-
-                                if is_disabled {
-                                    let label = format!("{} (no DLsite code)", rule.name);
-                                    ui.add_enabled(
-                                        false,
-                                        egui::Button::new(egui::RichText::new(label).weak())
-                                            .selected(self.ui_state.selected_rule_index == i),
-                                    );
-                                } else if ui
-                                    .selectable_value(&mut self.ui_state.selected_rule_index, i, &rule.name)
-                                    .changed()
-                                {
-                                    self.update_preview();
-                                }
-                            }
-                            ui.add_space(4.0);
-                        }
-                    });
-
-
-                // if let Some(rule) = self.session.rules.get(self.ui_state.selected_rule_index) {
-                //     if let Some(desc) = &rule.description {
-                //         ui.label(egui::RichText::new(desc).weak().italics().size(11.0));
-                //     }
-                // }
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .link(egui::RichText::new("Manage Rules...").size(11.0))
-                        .clicked()
-                    {
-                        action = Some(OrganizePanelAction::ManageRules);
-                    }
-                });
-            });
+            // Rule selector extracted to rule_selector.rs
+            let (sel_action, changed) = rule_selector::render_rule_selector(ui, &self.session, &mut self.ui_state.selected_rule_index);
+            if let Some(act) = sel_action {
+                action = Some(act);
+            }
+            if changed {
+                self.update_preview();
+            }
 
             ui.separator();
 
