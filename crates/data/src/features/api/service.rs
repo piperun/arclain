@@ -22,6 +22,8 @@ pub struct DataService {
     default_chain: SourceChain,
     /// State for pending requests (for async compatibility)
     state: Arc<DataApiState>,
+    /// Service ID for logging context
+    id: String,
 }
 
 /// Internal state for pending requests
@@ -62,12 +64,22 @@ impl DataService {
             resolvers: Arc::new(RwLock::new(HashMap::new())),
             default_chain,
             state: Arc::new(DataApiState::new()),
+            id: "global".to_string(),
         }
+    }
+
+    /// Set the service ID (builder pattern)
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = id.into();
+        self
     }
 
     /// Register a resolver for a data source
     pub fn register_resolver(&self, source: DataSource, resolver: Arc<dyn DataSourceResolver>) {
-        info!("[DataService] Registered resolver for {:?}", source);
+        info!(
+            "[DataService:{}] Registered resolver for {:?}",
+            self.id, source
+        );
         self.resolvers.write().insert(source, resolver);
     }
 

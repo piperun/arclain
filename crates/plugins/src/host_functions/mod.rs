@@ -61,7 +61,7 @@ impl HostFunctions {
         let ctx = WasiCtxBuilder::new().inherit_stdio().inherit_args().build();
 
         Self {
-            plugin_id,
+            plugin_id: plugin_id.clone(),
             async_http_client: None,
             capabilities,
             archive_backend: None,
@@ -76,7 +76,7 @@ impl HostFunctions {
 
             resource_manager: None,
 
-            data_service: DataService::new(),
+            data_service: DataService::new().with_id(&plugin_id),
             table: ResourceTable::new(),
             ctx,
             metadata_signal: None,
