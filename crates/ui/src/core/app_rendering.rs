@@ -285,3 +285,57 @@ pub fn render_status_bar_panel(
             );
         });
 }
+
+/// Actions returned from path bar rendering
+pub enum PathBarAction {
+    None,
+    NavigateToPath(String),
+}
+
+/// Render the path bar panel (Archive context only)
+/// Shows breadcrumb navigation between toolbar and content area
+pub fn render_path_bar_panel(ctx: &egui::Context, shared_state: &SharedState) -> PathBarAction {
+    // Only show when Archive tab is active and archive is loaded
+    let archive_loaded = shared_state.signals().archive_path.get().is_some();
+    let is_archive_context = matches!(
+        shared_state.signals().active_toolbar.get(),
+        crate::core::signals::ToolbarContext::Archive
+    );
+
+    if !archive_loaded || !is_archive_context {
+        return PathBarAction::None;
+    }
+
+    let mut result = PathBarAction::None;
+
+    egui::TopBottomPanel::top("path_bar_panel")
+        .exact_height(36.0)
+        .frame(
+            egui::Frame::NONE
+                .fill(shared_state.theme.colors.surface_variant)
+                .inner_margin(egui::Margin::symmetric(16, 8))
+                .stroke(egui::Stroke::new(1.0, shared_state.theme.colors.outline)),
+        )
+        .show(ctx, |ui| {
+            let archive_name = shared_state
+                .signals()
+                .archive_path
+                .get()
+                .as_ref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let current_path = shared_state.signals().navigation.get().current_path.clone();
+
+            if let Some(path) = components::file_list::render_breadcrumb(
+                ui,
+                &shared_state.theme,
+                &current_path,
+                &archive_name,
+            ) {
+                result = PathBarAction::NavigateToPath(path);
+            }
+        });
+
+    result
+}

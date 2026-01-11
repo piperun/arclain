@@ -266,9 +266,6 @@ fn render_file_list(
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
         .show(ctx, |ui| {
             ui.vertical(|ui| {
-                // Render breadcrumb
-                render_breadcrumb(ui, state, shared, action);
-
                 // Get search text from signal
                 let search_text = shared.signals().search_text.get();
                 let search_lower = search_text.to_lowercase();
@@ -342,35 +339,6 @@ fn render_file_list(
                         }
                     });
             });
-        });
-}
-
-fn render_breadcrumb(
-    ui: &mut egui::Ui,
-    _state: &mut ArchiveBrowserState,
-    shared: &SharedState,
-    action: &mut ArchiveBrowserAction,
-) {
-    egui::Frame::NONE
-        .fill(shared.theme.colors.surface_variant)
-        .inner_margin(egui::Margin::symmetric(16, 10))
-        .stroke(egui::Stroke::new(1.0, shared.theme.colors.outline))
-        .show(ui, |ui| {
-            let archive_name = shared
-                .signals()
-                .archive_path
-                .get()
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let current_path = shared.signals().navigation.get().current_path.clone();
-
-            if let Some(path) =
-                file_list::render_breadcrumb(ui, &shared.theme, &current_path, &archive_name)
-            {
-                *action = ArchiveBrowserAction::NavigateToPath(path);
-            }
         });
 }
 
