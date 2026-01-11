@@ -332,6 +332,7 @@ interface ui {
         update-element(element-update),
         // Navigation actions
         open-page(string),
+        close-dialog,
     }
 }
 
