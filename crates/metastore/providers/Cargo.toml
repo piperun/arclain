@@ -13,11 +13,13 @@ steam = []
 [dependencies]
 metastore-types = { path = "../types" }
 metastore-abstract = { path = "../abstract" }
+gameta_lib = { path = "../../gameta_lib" }
 regex = "1"
 scraper = "0.21"
 serde_json = "1.0"
 tracing = "0.1"
 bitflags = "2.4"
 urlencoding = "2"
+
 
 

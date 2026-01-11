@@ -1895,7 +1895,7 @@ fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Op
     use archust_plugin_sdk::arclain::plugin::host::get_data;
     use archust_plugin_sdk::{fetch_blocking, ResourceType};
     use metastore_providers::dlsite::api::html_url;
-    use metastore_providers::dlsite::parse_html_response;
+    use metastore_providers::dlsite::parse_html;
     
     let html_key = metastore_providers::dlsite::cache_keys::html_key(product_id);
     
@@ -1930,7 +1930,7 @@ fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Op
         }
     };
     
-    let scraped = parse_html_response(&html_str)?;
+    let scraped = parse_html(&html_str)?;
     
     // If cached content is geo-blocked, dump the full HTML for debugging
     if scraped.geo_blocked {
@@ -1977,7 +1977,7 @@ fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Op
 /// Uses metastore orchestrator for logic.
 fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
-    use metastore_providers::dlsite::{DlsiteFetchOptions, plan_fetch, FetchStep, parse_api_response, parse_html_response};
+    use metastore_providers::dlsite::{DlsiteFetchOptions, plan_fetch, FetchStep, parse_html, parse_api_json};
     
     // Use the orchestrator to plan our fetch
     // We request ALL sources (API + HTML)
@@ -1998,7 +1998,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
                     Ok(body) => {
                         info(&format!("[DEBUG] JSON fetched: {} bytes", body.len()));
                         log_network_activity(&format!("JSON response ({} bytes): {}...", body.len(), body.chars().take(100).collect::<String>()));
-                        if let Ok(_meta) = parse_api_response(product_id, &body) {
+                        if let Ok(_meta) = parse_api_json(product_id, &body) {
                             info("[DEBUG] JSON parsed successfully");
                             // Store the RAW JSON value for the plugin's (legacy) usage
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
@@ -2034,7 +2034,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
                 if let Ok(body) = fetch_string_blocking(&cache_key, &url) {
                     info(&format!("[DEBUG] HTML fetched: {} bytes", body.len()));
                     log_network_activity(&format!("HTML response ({} bytes)", body.len()));
-                    scraped_data = parse_html_response(&body);
+                    scraped_data = parse_html(&body);
                     if let Some(data) = &scraped_data {
                         info(&format!("[DEBUG] HTML parsed: title={:?}, geo_blocked={}", data.title, data.geo_blocked));
                         log_network_activity(&format!("HTML parsed: title={:?}, circle={:?}, geo_blocked={}", 
@@ -2123,136 +2123,28 @@ fn generate_metadata_json(
     product_id: &str,
     data: Option<&(serde_json::Value, Option<ScrapedData>)>,
 ) -> String {
-    let (json_data, scraped_data) = if let Some((j, s)) = data {
+    // Delegate to metastore-providers for JSON generation
+    // This moves the data transformation logic out of the plugin
+    let (api_json, scraped) = if let Some((j, s)) = data {
         (Some(j), s.as_ref())
     } else {
         (None, None)
     };
 
-    // Extract from JSON first (fallback)
-    let (mut title, mut circle, short_desc, price, mut release_date, mut tags) = if let Some(data) = json_data {
-        // Strip time from date (e.g. "2026-03-06 00:00:00" -> "2026-03-06")
-        let date_raw = data["regist_date"].as_str().unwrap_or("");
-        
-        // DEBUG: Trace date cleaning
-        archust_plugin_sdk::info(&format!("[DateDebug] Raw: '{}', Len: {}", date_raw, date_raw.len()));
-
-        let date_clean = if date_raw.is_empty() {
-             None 
-        } else {
-             let clean = date_raw.split_whitespace().next().unwrap_or(date_raw).to_string();
-             archust_plugin_sdk::info(&format!("[DateDebug] Clean: '{}'", clean));
-             Some(clean)
-        };
-
-        (
-            data["work_name"].as_str().map(|s| s.to_string()),
-            data["maker_name"].as_str().map(|s| s.to_string()),
-            data["intro_s"].as_str().unwrap_or(""),
-            data["price"].as_u64().unwrap_or(0),
-            date_clean,
-            data["genres"]
-                .as_array()
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v["name"].as_str().map(|s| s.to_string()))
-                        .collect::<Vec<String>>()
-                })
-                .unwrap_or_default(),
-        )
-    } else {
-        (
-            None,
-            None,
-            "",
-            0,
-            None,
-            Vec::new(),
-        )
-    };
-
-    // Override with scraped data if available
-    if let Some(scraped) = scraped_data {
-        if let Some(t) = &scraped.title {
-            title = Some(t.clone());
-        }
-        if let Some(c) = &scraped.circle {
-            circle = Some(c.clone());
-        }
-        if let Some(d) = &scraped.release_date {
-            // Also strip time from scraped date
-            release_date = Some(d.split_whitespace().next().unwrap_or(d).to_string());
-        }
-        if !scraped.tags.is_empty() {
-            tags = scraped.tags.clone();
-        }
-    }
-
-    let description = if let Some(scraped) = scraped_data {
-        scraped.description.clone().unwrap_or(short_desc.to_string())
-    } else {
-        short_desc.to_string()
-    };
-
-    let screenshots = if let Some(scraped) = scraped_data {
-        scraped.screenshots.iter().map(|url| {
-            // Convert to ScreenshotData::FilePath variant (using URL as path for now)
-            // The core engine will handle downloading these
-            serde_json::json!({ "FilePath": url })
-        }).collect::<Vec<_>>()
-    } else {
-        Vec::new()
-    };
-
-    // Debug: log what we're generating
-    if let Some(scraped) = scraped_data {
+    // Debug logging
+    if let Some(s) = scraped {
         info(&format!(
-            "[DLSite Plugin] Scraped: screenshots={}, voice_actors={}, genres={}, cover={}",
-            scraped.screenshots.len(),
-            scraped.voice_actors.len(),
-            scraped.genres.len(),
-            scraped.cover_image.is_some()
+            "[DLSite Plugin] Generating JSON: screenshots={}, voice_actors={}, genres={}, cover={}",
+            s.screenshots.len(),
+            s.voice_actors.len(),
+            s.genres.len(),
+            s.cover_image.is_some()
         ));
     } else {
         info("[DLSite Plugin] No scraped data available");
     }
 
-    let metadata = serde_json::json!({
-        "product_id": product_id,
-        "source": "dlsite",
-        "title": title,
-        "circle": circle,
-        "creator": circle, // Alias for core engine
-        "description": description,
-        "release_date": release_date,
-        "tags": tags,
-        "screenshots": screenshots,
-        "voice_actors": scraped_data.map(|s| s.voice_actors.clone()).unwrap_or_default(),
-        "authors": scraped_data.map(|s| s.authors.clone()).unwrap_or_default(),
-        "illustrators": scraped_data.map(|s| s.illustrators.clone()).unwrap_or_default(),
-        "scenarios": scraped_data.map(|s| s.scenarios.clone()).unwrap_or_default(),
-        "musicians": scraped_data.map(|s| s.musicians.clone()).unwrap_or_default(),
-        "writers": scraped_data.map(|s| s.writers.clone()).unwrap_or_default(),
-        "brand": scraped_data.and_then(|s| s.brand.clone()),
-        "publisher": scraped_data.and_then(|s| s.publisher.clone()),
-        "series": scraped_data.and_then(|s| s.series.clone()),
-        "page_count": scraped_data.and_then(|s| s.page_count),
-        "file_size": scraped_data.and_then(|s| s.file_size.clone()),
-        "update_date": scraped_data.and_then(|s| s.update_date.clone()),
-        "genres": scraped_data.map(|s| s.genres.clone()).unwrap_or_default(),
-        "geo_blocked": scraped_data.map(|s| s.geo_blocked).unwrap_or(false),
-        "dlsite": {
-            "id": product_id,
-            "code": product_id, // Required by RuleEngine for $code
-            "price": price.to_string(),
-            "url": format!("https://www.dlsite.com/pro/work/=/product_id/{}.html", product_id)
-        },
-        "common": {
-            "dlsite_id": product_id
-        }
-    });
-
-    metadata.to_string()
+    metastore_providers::dlsite::build_plugin_json_string(product_id, api_json, scraped)
 }
 
 /// Search DLSite for a query and return list of (code, title, maker)

@@ -19,6 +19,9 @@ members = [
     "crates/metastore/providers",
     "crates/metastore/database",
     "crates/metastore/ui",
+    # Gameta - pure parser library + server/client
+    "crates/gameta_lib",
+    "crates/gameta",
     "crates/freya-spike",
     "crates/dlsite-fetch",
 ]

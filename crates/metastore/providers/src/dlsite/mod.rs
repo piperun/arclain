@@ -15,7 +15,20 @@ pub use api::{ajax_url, get_site_id, html_url, is_geo_blocked, ConnectivityResul
 pub use detect::detect_dlsite_code;
 pub use options::DlsiteFetchOptions;
 pub use orchestrator::{plan_fetch, FetchStep};
-pub use parse::{parse_api_response, parse_html_response, parse_search_response, ScrapedData};
+// Re-export local parse functions (these use metastore types)
+pub use parse::{parse_api_response, parse_html_response, parse_search_response};
+
+// Re-export pure parsing functions from gameta_lib for external use
+// These don't require HTTP types and work with raw strings
+pub use gameta_lib::parsers::dlsite::{
+    build_plugin_json,
+    build_plugin_json_string,
+    parse_api_json,
+    parse_dlsite,
+    parse_html,
+    parse_search_html,
+    ScrapedData, // Use gameta_lib's ScrapedData for consistency with build_plugin_json
+};
 
 mod options;
 mod orchestrator;
@@ -96,27 +109,44 @@ impl MetadataProvider for DLSiteProvider {
         if let Some(resp) = html_response {
             if let Ok(body) = resp.body_str() {
                 if let Some(scraped) = parse_html_response(body) {
-                    // Check for geoblocking
-                    if scraped.geo_blocked {
-                        return Err(ParseError::Geoblocked(format!(
-                            "DLSite content geo-blocked for ID: {}",
-                            external_id
-                        )));
-                    }
+                    // Mark geo-blocked status
+                    meta.geo_blocked = scraped.geo_blocked;
 
-                    // Merge scraped data
+                    // Merge core fields (only if not already set from API)
                     if meta.title.is_none() {
                         meta.title = scraped.title;
                     }
                     if meta.creator.is_none() {
-                        meta.creator = scraped.circle;
+                        meta.creator = scraped.circle.clone();
                     }
                     if meta.description.is_none() {
-                        meta.description = scraped.description;
+                        meta.description = scraped.description.clone();
                     }
                     if meta.tags.is_empty() {
-                        meta.tags = scraped.tags;
+                        meta.tags = scraped.tags.clone();
                     }
+                    if meta.file_size.is_none() {
+                        meta.file_size = scraped.file_size.clone();
+                    }
+
+                    // Store DLSite-specific extras for plugin consumption
+                    meta.extras = serde_json::json!({
+                        "voice_actors": scraped.voice_actors,
+                        "authors": scraped.authors,
+                        "illustrators": scraped.illustrators,
+                        "scenarios": scraped.scenarios,
+                        "musicians": scraped.musicians,
+                        "writers": scraped.writers,
+                        "brand": scraped.brand,
+                        "publisher": scraped.publisher,
+                        "series": scraped.series,
+                        "page_count": scraped.page_count,
+                        "update_date": scraped.update_date,
+                        "cover_image": scraped.cover_image,
+                        "sample_images": scraped.screenshots,
+                        "screenshots": scraped.screenshots // Alias
+                    });
+
                     // Store raw HTML
                     meta.raw_html = Some(body.to_string());
                 }

@@ -308,6 +308,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gameta_lib"
+version = "0.1.0"
+dependencies = [
+ "regex",
+ "scraper 0.22.0",
+ "serde",
+ "serde_json",
+ "tracing",
+ "urlencoding",
+]
+
+[[package]]
 name = "getopts"
 version = "0.2.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -602,6 +614,7 @@ name = "metastore-providers"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "gameta_lib",
  "metastore-abstract",
  "metastore-types",
  "regex",
@@ -615,6 +628,7 @@ dependencies = [
 name = "metastore-types"
 version = "0.1.0"
 dependencies = [
+ "gameta_lib",
  "serde",
  "serde_json",
 ]
@@ -856,6 +870,21 @@ dependencies = [
  "ahash",
  "cssparser 0.34.0",
  "ego-tree 0.9.0",
+ "getopts",
+ "html5ever 0.29.1",
+ "precomputed-hash",
+ "selectors 0.26.0",
+ "tendril",
+]
+
+[[package]]
+name = "scraper"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc3d051b884f40e309de6c149734eab57aa8cc1347992710dc80bcc1c2194c15"
+dependencies = [
+ "cssparser 0.34.0",
+ "ego-tree 0.10.0",
  "getopts",
  "html5ever 0.29.1",
  "precomputed-hash",
