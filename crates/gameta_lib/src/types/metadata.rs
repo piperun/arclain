@@ -2,6 +2,29 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Parse error types
+#[derive(Debug, Clone)]
+pub enum ParseError {
+    /// Invalid response format
+    InvalidFormat(String),
+    /// Content is geo-blocked
+    Geoblocked(String),
+    /// Missing required data
+    MissingData(String),
+}
+
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidFormat(msg) => write!(f, "Invalid format: {}", msg),
+            Self::Geoblocked(msg) => write!(f, "Geo-blocked: {}", msg),
+            Self::MissingData(msg) => write!(f, "Missing data: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 /// Source of metadata
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetadataSource {
@@ -67,7 +90,7 @@ pub struct ProductMetadata {
     pub file_format: Option<String>,
     pub age_rating: Option<String>,
 
-    // Categorization (JSON arrays stored as strings)
+    // Categorization
     pub genres: Vec<String>,
     pub tags: Vec<String>,
     pub languages: Vec<String>,
@@ -75,18 +98,9 @@ pub struct ProductMetadata {
     // Platform-specific extras
     pub extras: serde_json::Value,
 
-    // Raw responses for re-parsing
-    pub raw_api_response: Option<String>,
-    pub raw_html: Option<String>,
-
     // Availability
-    /// Whether this product is geo-blocked in user's region
     #[serde(default)]
     pub geo_blocked: bool,
-
-    // Timestamps
-    pub cached_at: i64,
-    pub updated_at: Option<i64>,
 }
 
 impl ProductMetadata {
@@ -113,31 +127,18 @@ impl ProductMetadata {
             tags: Vec::new(),
             languages: Vec::new(),
             extras: serde_json::Value::Null,
-            raw_api_response: None,
-            raw_html: None,
             geo_blocked: false,
-            cached_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs() as i64,
-            updated_at: None,
         }
     }
 
     /// Convert metadata to the JSON format expected by plugins.
-    ///
-    /// This produces a normalized structure that includes:
-    /// - Core fields (title, creator, description, etc.)
-    /// - Source-specific extras merged at top level
-    /// - Source-specific nested object (e.g., "dlsite": { "id": "...", "url": "..." })
-    /// - Common aliases for cross-source compatibility
     pub fn to_plugin_json(&self) -> serde_json::Value {
         let mut json = serde_json::json!({
             "product_id": &self.external_id,
             "source": self.source.as_str(),
             "title": &self.title,
             "creator": &self.creator,
-            "circle": &self.creator, // Alias for DLSite compatibility
+            "circle": &self.creator,
             "description": &self.description,
             "release_date": &self.release_date,
             "tags": &self.tags,
@@ -145,11 +146,11 @@ impl ProductMetadata {
             "geo_blocked": self.geo_blocked,
             "file_size": &self.file_size,
             "common": {
-                "dlsite_id": &self.external_id // Legacy compatibility
+                "dlsite_id": &self.external_id
             }
         });
 
-        // Merge extras into top level (voice_actors, screenshots, etc.)
+        // Merge extras into top level
         if let Some(obj) = self.extras.as_object() {
             for (key, value) in obj {
                 json[key] = value.clone();
@@ -172,27 +173,13 @@ impl ProductMetadata {
                     "url": format!("https://store.steampowered.com/app/{}", &self.external_id)
                 });
             }
-            MetadataSource::Itchio => {
-                json["itchio"] = serde_json::json!({
-                    "id": &self.external_id
-                });
-            }
-            MetadataSource::GOG => {
-                json["gog"] = serde_json::json!({
-                    "id": &self.external_id
-                });
-            }
-            MetadataSource::Custom => {
-                json["custom"] = serde_json::json!({
-                    "id": &self.external_id
-                });
-            }
+            _ => {}
         }
 
         json
     }
 
-    /// Convert to plugin JSON and serialize to string
+    /// Convert to plugin JSON string
     pub fn to_plugin_json_string(&self) -> String {
         self.to_plugin_json().to_string()
     }
