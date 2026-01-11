@@ -116,6 +116,9 @@ pub struct AppSignals {
 
     /// Password rules for auto-unlock (from secrets DB)
     pub pass_rules: Signal<Vec<PassRule>>,
+
+    /// Number of selected entries in file list (for toolbar button state)
+    pub selection_count: Signal<usize>,
 }
 
 impl AppSignals {
@@ -141,6 +144,7 @@ impl AppSignals {
             navigation: Signal::new(NavigationState::new()),
             current_password: Signal::new(None),
             pass_rules: Signal::new(Vec::new()),
+            selection_count: Signal::new(0),
         }
     }
 
@@ -163,6 +167,7 @@ impl AppSignals {
         signal_ctx.bind(&self.navigation);
         signal_ctx.bind(&self.current_password);
         signal_ctx.bind(&self.pass_rules);
+        signal_ctx.bind(&self.selection_count);
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
@@ -188,6 +193,7 @@ impl AppSignals {
         self.navigation.set(NavigationState::new());
         self.current_password.set(None);
         self.pass_rules.set(Vec::new());
+        self.selection_count.set(0);
     }
 }
 

@@ -1,4 +1,5 @@
 use super::OrganizePanelAction;
+use crate::shared::theme::AppTheme;
 use arclain_core::features::organization::session::OrganizationSession;
 use eframe::egui;
 
@@ -6,6 +7,7 @@ pub fn render_header(
     ui: &mut egui::Ui,
     session: &OrganizationSession,
     can_apply: bool,
+    theme: &AppTheme,
 ) -> Option<OrganizePanelAction> {
     let mut action = None;
     egui::Frame::NONE
@@ -17,7 +19,7 @@ pub fn render_header(
                 ui.label(
                     egui::RichText::new(egui_phosphor::regular::FOLDER_NOTCH_OPEN)
                         .size(28.0)
-                        .color(egui::Color32::from_rgb(99, 179, 237)),
+                        .color(theme.colors.info),
                 );
                 ui.add_space(8.0);
                 ui.vertical(|ui| {
@@ -44,9 +46,9 @@ pub fn render_header(
                             .size(12.0),
                         )
                         .fill(if can_apply {
-                            egui::Color32::from_rgb(34, 139, 34)
+                            theme.colors.success
                         } else {
-                            egui::Color32::from_rgb(60, 60, 60)
+                            theme.colors.outline
                         });
 
                         if ui.add_enabled(can_apply, apply_btn).clicked() {
@@ -55,9 +57,8 @@ pub fn render_header(
 
                         ui.add_space(8.0);
 
-                        // Metadata badge
                         egui::Frame::NONE
-                            .fill(egui::Color32::from_rgb(35, 65, 45))
+                            .fill(theme.colors.success.linear_multiply(0.2))
                             .inner_margin(egui::Margin::symmetric(6, 3))
                             .corner_radius(3.0)
                             .show(ui, |ui| {
@@ -77,7 +78,7 @@ pub fn render_header(
                                                     30
                                                 )
                                             ))
-                                            .color(egui::Color32::from_rgb(120, 200, 150))
+                                            .color(theme.colors.success)
                                             .size(10.0),
                                         );
 
@@ -86,7 +87,7 @@ pub fn render_header(
                                             egui::RichText::new(
                                                 egui_phosphor::regular::CHECK_CIRCLE,
                                             )
-                                            .color(egui::Color32::from_rgb(120, 200, 150))
+                                            .color(theme.colors.success)
                                             .size(12.0),
                                         );
                                     },
@@ -105,9 +106,9 @@ pub fn render_header(
                             .size(12.0),
                         )
                         .fill(if can_apply {
-                            egui::Color32::from_rgb(34, 139, 34)
+                            theme.colors.success
                         } else {
-                            egui::Color32::from_rgb(60, 60, 60)
+                            theme.colors.outline
                         });
 
                         if ui.add_enabled(can_apply, apply_btn).clicked() {

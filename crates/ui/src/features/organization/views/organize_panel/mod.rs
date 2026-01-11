@@ -21,6 +21,7 @@ use crate::shared::components::preview_tree::{
 use arclain_core::features::organization::{engine::RuleEngine, OrganizationRule};
 use arclain_core::features::organization::session::OrganizationSession;
 use arclain_core::ArchiveEntry;
+use crate::shared::theme::AppTheme;
 use eframe::egui;
 // std::sync::mpsc::Receiver removed
 // std::time::Instant removed
@@ -200,7 +201,7 @@ impl OrganizePanel {
         }
     }
 
-    pub fn render(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) -> Option<OrganizePanelAction> {
+    pub fn render(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, theme: &AppTheme) -> Option<OrganizePanelAction> {
         
         self.ui_state.export_dialog.show(
             ctx,
@@ -225,7 +226,7 @@ impl OrganizePanel {
             ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
 
             // Header extracted to header.rs
-            if let Some(act) = header::render_header(ui, &self.session, can_apply) {
+            if let Some(act) = header::render_header(ui, &self.session, can_apply, theme) {
                 action = Some(act);
             }
 
@@ -243,7 +244,7 @@ impl OrganizePanel {
             ui.separator();
 
             if missing_metadata {
-                self.render_empty_state(ui);
+                self.render_empty_state(ui, theme);
             } else {
                     ui.horizontal(|ui| {
                         // Tab Selector
@@ -296,8 +297,8 @@ impl OrganizePanel {
                     ui.add_space(4.0);
 
                     match self.ui_state.active_tab {
-                        OrganizeTab::Preview => self.render_preview_tab(ui),
-                        OrganizeTab::Variables => self.render_variables_tab(ui),
+                        OrganizeTab::Preview => self.render_preview_tab(ui, theme),
+                        OrganizeTab::Variables => self.render_variables_tab(ui, theme),
                         OrganizeTab::NetworkActivity => self.render_network_tab(ui),
                     }
                 }
@@ -317,32 +318,32 @@ impl OrganizePanel {
         action
     }
 
-    fn render_empty_state(&mut self, ui: &mut egui::Ui) {
+    fn render_empty_state(&mut self, ui: &mut egui::Ui, theme: &AppTheme) {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
             ui.label(
                 egui::RichText::new(egui_phosphor::regular::X)
                     .size(120.0)
-                    .color(egui::Color32::from_rgb(100, 100, 100)),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(20.0);
             
             arclain_widgets::Text::new("No metadata found")
                 .size(32.0)
                 .strong()
-                .color(egui::Color32::from_rgb(150, 150, 150))
+                .color(theme.colors.on_surface_variant)
                 .show(ui);
             ui.add_space(30.0);
             
             ui.label(
                 egui::RichText::new("please try and fetch the metadata before trying to organize with dlsite-metadata.")
                     .size(16.0)
-                    .color(egui::Color32::from_rgb(120, 120, 120)),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.label(
                 egui::RichText::new("If this message still shows up and you have fetched metadata, please check the log.")
                     .size(16.0)
-                    .color(egui::Color32::from_rgb(120, 120, 120)),
+                    .color(theme.colors.on_surface_variant),
             );
             ui.add_space(40.0);
         });

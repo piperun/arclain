@@ -13,7 +13,7 @@ pub fn render_archive_browser(
     let mut action = ArchiveBrowserAction::None;
 
     // Check if archive is loaded
-    let archive_loaded = shared.app_state.lock().signals.archive_path.get().is_some();
+    let archive_loaded = shared.signals().archive_path.get().is_some();
 
     if !archive_loaded {
         render_empty_state(ctx, shared);
@@ -35,13 +35,15 @@ pub fn render_archive_browser(
     // Render central file list
     render_file_list(ctx, state, shared, &mut action);
 
+    // Update selection_count signal for toolbar button state
+    let selection_count = state.entries.iter().filter(|e| e.selected).count();
+    shared.signals().selection_count.set(selection_count);
+
     // After UI has rendered, dispatch any pending plugin events.
     // This ensures plugins only receive archive_opened after the UI is ready.
-    {
+    if !shared.signals().ui_ready.get() {
         let mut app_state = shared.app_state.lock();
-        if !app_state.signals.ui_ready.get() {
-            app_state.dispatch_pending_plugin_event();
-        }
+        app_state.dispatch_pending_plugin_event();
     }
 
     action
@@ -81,9 +83,8 @@ fn render_tree_panel(
         .exact_width(240.0)
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface_variant))
         .show(ctx, |ui| {
-            let app_state = shared.app_state.lock();
-            let archive_name = app_state
-                .signals
+            let archive_name = shared
+                .signals()
                 .archive_path
                 .get()
                 .as_ref()
@@ -91,10 +92,9 @@ fn render_tree_panel(
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "archive".to_string());
 
-            let entries = app_state.signals.entries.get();
-            let folders = app_state.signals.navigation.get().get_all_folders(&entries);
-            let current_path = app_state.signals.navigation.get().current_path.clone();
-            drop(app_state);
+            let entries = shared.signals().entries.get();
+            let folders = shared.signals().navigation.get().get_all_folders(&entries);
+            let current_path = shared.signals().navigation.get().current_path.clone();
 
             if let Some(path) = tree_panel::render(
                 ui,
@@ -128,9 +128,10 @@ fn render_properties_panel(
         )
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let mut app_state = shared.app_state.lock();
-                let archive_info = app_state.signals.archive_info.get();
-                let items = app_state.signals.info_panel_items.get();
+                // Read signals lock-free first
+                let archive_info = shared.signals().archive_info.get();
+                let items = shared.signals().info_panel_items.get();
+                let plugin_metadata = shared.signals().metadata.get();
 
                 let mut sections: Vec<properties_panel::PanelSection> = Vec::new();
 
@@ -186,10 +187,8 @@ fn render_properties_panel(
                         }
                         "info.plugin_metadata" => {
                             // Check signal first for reactive updates
-                            let metadata = app_state
-                                .signals
-                                .metadata
-                                .get()
+                            let metadata = plugin_metadata
+                                .clone()
                                 .or_else(|| archive_info.plugin_metadata.clone());
 
                             if let Some(metadata) = metadata {
@@ -204,7 +203,6 @@ fn render_properties_panel(
                             // Check for plugin custom UI
                             if item.action_type == ActionType::Plugin {
                                 if let Some(plugin_id) = &item.action_data {
-                                    drop(app_state);
                                     if let Some(manager_arc) = &shared.services.plugin_manager {
                                         let manager = manager_arc.lock();
 
@@ -226,8 +224,6 @@ fn render_properties_panel(
                                             });
                                         }
                                     }
-                                    // Re-lock app_state if we need to continue
-                                    app_state = shared.app_state.lock();
                                 }
                             }
                         }
@@ -274,7 +270,7 @@ fn render_file_list(
                 render_breadcrumb(ui, state, shared, action);
 
                 // Get search text from signal
-                let search_text = shared.app_state.lock().signals.search_text.get();
+                let search_text = shared.signals().search_text.get();
                 let search_lower = search_text.to_lowercase();
                 let is_searching = !search_text.trim().is_empty();
 
@@ -360,17 +356,15 @@ fn render_breadcrumb(
         .inner_margin(egui::Margin::symmetric(16, 10))
         .stroke(egui::Stroke::new(1.0, shared.theme.colors.outline))
         .show(ui, |ui| {
-            let app_state = shared.app_state.lock();
-            let archive_name = app_state
-                .signals
+            let archive_name = shared
+                .signals()
                 .archive_path
                 .get()
                 .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let current_path = app_state.signals.navigation.get().current_path.clone();
-            drop(app_state);
+            let current_path = shared.signals().navigation.get().current_path.clone();
 
             if let Some(path) =
                 file_list::render_breadcrumb(ui, &shared.theme, &current_path, &archive_name)

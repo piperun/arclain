@@ -19,7 +19,7 @@ impl OrganizerPage {
         let mut action = None;
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::Frame::NONE.inner_margin(16.0).show(ui, |ui| {
-                action = self.panel.render(ui, ctx);
+                action = self.panel.render(ui, ctx, _theme);
             });
         });
         action

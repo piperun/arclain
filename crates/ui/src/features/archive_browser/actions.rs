@@ -78,13 +78,12 @@ impl<'a> ActionContext<'a> {
                 true
             }
             Action::CopyPath(file) => {
-                let state = self.shared.app_state.lock();
-                let full_path = if state.signals.navigation.get().current_path.is_empty() {
+                let nav = self.shared.signals().navigation.get();
+                let full_path = if nav.current_path.is_empty() {
                     file.clone()
                 } else {
-                    format!("{}/{}", state.signals.navigation.get().current_path, file)
+                    format!("{}/{}", nav.current_path, file)
                 };
-                drop(state);
                 self.egui_ctx.copy_text(full_path);
                 true
             }
@@ -102,8 +101,7 @@ impl<'a> ActionContext<'a> {
                 ) {
                     Ok(metadata) => {
                         tracing::info!("Received metadata from plugin: {:?}", metadata.title);
-                        let state = self.shared.app_state.lock();
-                        state.signals.game_metadata.set(Some(metadata));
+                        self.shared.signals().game_metadata.set(Some(metadata));
                     }
                     Err(e) => {
                         tracing::warn!("Failed to parse metadata JSON: {}", e);
@@ -111,9 +109,53 @@ impl<'a> ActionContext<'a> {
                 }
                 true
             }
-            Action::DeleteFile(_file) => {
-                // TODO: Implement file deletion
-                tracing::warn!("DeleteFile not yet implemented");
+            Action::DeleteFile(file) => {
+                // Get archive path from signals
+                let archive_path = self.shared.signals().archive_path.get();
+                if let Some(archive) = archive_path {
+                    let state = self.shared.app_state.lock();
+                    // Select backend for this archive
+                    match state.backend_selector.select(&archive) {
+                        Ok(backend) => {
+                            drop(state); // Release lock before operation
+                                         // Attempt to delete the file
+                            match backend.delete_files(&archive, &[file.clone()]) {
+                                Ok(()) => {
+                                    tracing::info!("Deleted file from archive: {}", file);
+                                    self.status_info.message = format!("Deleted: {}", file);
+                                    // Refresh entries after deletion
+                                    if let Ok(info) = backend.list(&archive, None) {
+                                        self.shared
+                                            .signals()
+                                            .entries
+                                            .set(std::sync::Arc::new(info.entries));
+                                        // Update browser state entries
+                                        self.browser_state.entries = self
+                                            .shared
+                                            .signals()
+                                            .entries
+                                            .get()
+                                            .iter()
+                                            .map(crate::core::utils::convert_to_file_entry)
+                                            .collect();
+                                    }
+                                }
+                                Err(e) => {
+                                    let msg = format!("Failed to delete file: {}", e);
+                                    tracing::error!("{}", msg);
+                                    self.status_info.message = msg;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            let msg = format!("No backend for archive: {}", e);
+                            tracing::error!("{}", msg);
+                            self.status_info.message = msg;
+                        }
+                    }
+                } else {
+                    self.status_info.message = "No archive loaded".to_string();
+                }
                 true
             }
             _ => false, // Not a simple action
@@ -181,8 +223,8 @@ impl<'a> ActionContext<'a> {
                 self.edit_dialog.full_path_in_archive = file.clone();
                 self.edit_dialog.name_input = file.clone();
 
-                let state = self.shared.app_state.lock();
-                if let Some(archive) = state.signals.archive_path.get() {
+                if let Some(archive) = self.shared.signals().archive_path.get() {
+                    let state = self.shared.app_state.lock();
                     match state.read_text_file(&archive, file) {
                         Ok(content) => {
                             self.edit_dialog.content = content.clone();
@@ -199,14 +241,12 @@ impl<'a> ActionContext<'a> {
             }
             Action::Organize => {
                 // Trigger organization flow
-                let state = self.shared.app_state.lock();
-                if let Some(archive) = state.signals.archive_path.get() {
+                if let Some(archive) = self.shared.signals().archive_path.get() {
                     let archive_name = archive
                         .file_name()
                         .unwrap_or_default()
                         .to_string_lossy()
                         .to_string();
-                    drop(state);
 
                     // Load rules directly from DB and filter by enabled plugins
                     let mut rules = Vec::new(); // Default empty
@@ -247,10 +287,8 @@ impl<'a> ActionContext<'a> {
                         }
                     }
 
-                    let state = self.shared.app_state.lock();
-                    let entries = state.signals.entries.get().as_ref().clone();
-                    let metadata = state.signals.game_metadata.get();
-                    drop(state);
+                    let entries = self.shared.signals().entries.get().as_ref().clone();
+                    let metadata = self.shared.signals().game_metadata.get();
 
                     self.organization_feature.organizer_page =
                         Some(crate::features::organization::OrganizerPage::new(

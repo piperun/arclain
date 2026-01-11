@@ -1,8 +1,9 @@
 use super::OrganizePanel;
+use crate::shared::theme::AppTheme;
 use eframe::egui::{self, RichText};
 
 impl OrganizePanel {
-    pub(super) fn render_variables_tab(&self, ui: &mut egui::Ui) {
+    pub(super) fn render_variables_tab(&self, ui: &mut egui::Ui, theme: &AppTheme) {
         if let Some(plan) = &self.session.preview_plan {
             ui.vertical(|ui| {
                 ui.add_space(8.0);
@@ -19,7 +20,7 @@ impl OrganizePanel {
                                 RichText::new(&plan.root_folder_template)
                                     .monospace()
                                     .size(12.0)
-                                    .color(egui::Color32::from_rgb(250, 204, 21)),
+                                    .color(theme.colors.warning),
                             );
                         });
 
@@ -31,7 +32,7 @@ impl OrganizePanel {
                                 RichText::new(&plan.root_folder)
                                     .monospace()
                                     .size(12.0)
-                                    .color(egui::Color32::from_rgb(134, 239, 172)),
+                                    .color(theme.colors.success),
                             );
                         });
                     });
@@ -79,9 +80,7 @@ impl OrganizePanel {
                                                     RichText::new(value)
                                                         .monospace()
                                                         .size(12.0)
-                                                        .color(egui::Color32::from_rgb(
-                                                            147, 197, 253,
-                                                        )),
+                                                        .color(theme.colors.info),
                                                 );
                                                 ui.end_row();
                                             }

@@ -98,14 +98,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     match tab_action {
         app_rendering::TabBarAction::SelectArchiveTab => {
             // Set toolbar context to Archive
-            {
-                let state = app.shared_state.app_state.lock();
-                state
-                    .signals
-                    .active_toolbar
-                    .set(crate::core::signals::ToolbarContext::Archive);
-                state.signals.status_message.set(None);
-            }
+            app.shared_state
+                .signals()
+                .active_toolbar
+                .set(crate::core::signals::ToolbarContext::Archive);
+            app.shared_state.signals().status_message.set(None);
             // Close any open plugin pages
             {
                 let mut dialog_state = app.shared_state.plugin_dialog_state.lock();
@@ -115,15 +112,9 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         }
         app_rendering::TabBarAction::SelectPluginTab { plugin_id, tab_id } => {
             // Set toolbar context to Plugin
-            {
-                let state = app.shared_state.app_state.lock();
-                state
-                    .signals
-                    .active_toolbar
-                    .set(crate::core::signals::ToolbarContext::Plugin(
-                        plugin_id.clone(),
-                    ));
-            }
+            app.shared_state.signals().active_toolbar.set(
+                crate::core::signals::ToolbarContext::Plugin(plugin_id.clone()),
+            );
             // Open plugin page
             let mut dialog_state = app.shared_state.plugin_dialog_state.lock();
             dialog_state.page_stack.clear();

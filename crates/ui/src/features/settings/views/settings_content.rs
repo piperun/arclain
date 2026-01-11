@@ -95,14 +95,18 @@ pub fn render_settings_content(
         SettingsPage::General => render_general_settings(ui, theme, general_state),
         SettingsPage::Network => pages::network::render(ui, theme, network_state),
         SettingsPage::Interface => {
-            let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
-            crate::features::settings::pages::render_interface_settings(
-                ui,
-                theme,
-                app_state,
-                interface_state,
-                ui_service,
-            )
+            if let Some(shared_state) = shared {
+                let ui_service = shared_state.services.ui_service.as_deref();
+                crate::features::settings::pages::render_interface_settings(
+                    ui,
+                    theme,
+                    shared_state,
+                    interface_state,
+                    ui_service,
+                )
+            } else {
+                None
+            }
         }
         SettingsPage::Archives => render_archives_settings(ui, theme, archives_state),
         SettingsPage::Security => render_security_settings(ui, theme, security_state),

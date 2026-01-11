@@ -27,7 +27,7 @@ pub struct SettingsFeature {
 impl SettingsFeature {
     pub fn new(shared: &SharedState) -> Self {
         // Load saved settings from config signal
-        let user_config = shared.app_state.lock().signals.user_config.get();
+        let user_config = shared.signals().user_config.get();
         let open_nested_in_new_tab = user_config.open_nested_in_new_tab;
 
         let rules = {
