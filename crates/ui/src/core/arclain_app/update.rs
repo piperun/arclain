@@ -126,6 +126,16 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // Render Toolbar (only on Main page AND when Archive context is active)
     crate::core::arclain_app::toolbar_handler::render_toolbar(app, ctx);
 
+    // === Render Path Bar (Archive context only) ===
+    let path_bar_action = app_rendering::render_path_bar_panel(ctx, &app.shared_state);
+    if let app_rendering::PathBarAction::NavigateToPath(path) = path_bar_action {
+        crate::features::archive_browser::navigation::navigate_to_path(
+            app.archive_browser.state_mut(),
+            &app.shared_state,
+            &path,
+        );
+    }
+
     // === Render Status Bar ===
     app_rendering::render_status_bar_panel(ctx, &app.shared_state, &mut app.status_info);
 
