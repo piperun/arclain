@@ -4,63 +4,53 @@ use crate::shared::SharedState;
 use std::path::PathBuf;
 
 pub fn navigate_to_folder(state: &mut ArchiveBrowserState, shared: &SharedState, folder: &str) {
-    let app_state = shared.app_state.lock();
-    let signals = app_state.signals.clone();
-    drop(app_state);
+    let signals = shared.signals();
 
-    crate::core::operations::navigation_signals::navigate_to(&signals, folder);
+    crate::core::operations::navigation_signals::navigate_to(signals, folder);
 
     // Update local state from signals
-    update_local_state(state, &signals);
+    update_local_state(state, signals);
 }
 
 pub fn navigate_to_path(state: &mut ArchiveBrowserState, shared: &SharedState, path: &str) {
-    let app_state = shared.app_state.lock();
-    let signals = app_state.signals.clone();
-    drop(app_state);
+    let signals = shared.signals();
 
-    crate::core::operations::navigation_signals::navigate_to_absolute(&signals, path);
+    crate::core::operations::navigation_signals::navigate_to_absolute(signals, path);
 
     // Update local state from signals
-    update_local_state(state, &signals);
+    update_local_state(state, signals);
 }
 
 pub fn navigate_back(state: &mut ArchiveBrowserState, shared: &SharedState) {
-    let app_state = shared.app_state.lock();
-    let signals = app_state.signals.clone();
-    drop(app_state);
+    let signals = shared.signals();
 
-    if crate::core::operations::navigation_signals::navigate_back(&signals) {
-        update_local_state(state, &signals);
+    if crate::core::operations::navigation_signals::navigate_back(signals) {
+        update_local_state(state, signals);
     }
 }
 
 pub fn navigate_forward(state: &mut ArchiveBrowserState, shared: &SharedState) {
-    let app_state = shared.app_state.lock();
-    let signals = app_state.signals.clone();
-    drop(app_state);
+    let signals = shared.signals();
 
-    if crate::core::operations::navigation_signals::navigate_forward(&signals) {
-        update_local_state(state, &signals);
+    if crate::core::operations::navigation_signals::navigate_forward(signals) {
+        update_local_state(state, signals);
     }
 }
 
 pub fn navigate_up(state: &mut ArchiveBrowserState, shared: &SharedState) {
-    let app_state = shared.app_state.lock();
-    let signals = app_state.signals.clone();
-    drop(app_state);
+    let signals = shared.signals();
 
-    if crate::core::operations::navigation_signals::navigate_up(&signals) {
-        update_local_state(state, &signals);
+    if crate::core::operations::navigation_signals::navigate_up(signals) {
+        update_local_state(state, signals);
     }
 }
 
-// Helper to update local state from signals (lock-free after signal clone)
+// Helper to update local state from signals (lock-free)
 fn update_local_state(state: &mut ArchiveBrowserState, signals: &crate::core::signals::AppSignals) {
     // Re-filter entries based on new navigation path
     let all_entries = signals.entries.get();
     let current_path = signals.navigation.get().current_path;
-    let current_archive = signals.archive_path.get(); // Use signal instead of field
+    let current_archive = signals.archive_path.get();
 
     // Filter logic duplicated from AppState::get_current_entries for now
     let current_entries: Vec<_> = all_entries

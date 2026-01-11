@@ -65,14 +65,11 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         match result {
             dialogs::progress::ExtractionDialogResult::Cancelled => {
                 // Set signal-based cancellation for native backends
-                {
-                    let state = app.shared_state.app_state.lock();
-                    state
-                        .signals
-                        .extraction_cancel
-                        .store(true, std::sync::atomic::Ordering::SeqCst);
-                    state.signals.extraction_progress.set(None);
-                }
+                app.shared_state
+                    .signals()
+                    .extraction_cancel
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                app.shared_state.signals().extraction_progress.set(None);
                 // Also cancel CLI extraction if any
                 app.archive_operations.cancel_extraction();
                 app.archive_operations.state_mut().extraction_dialog.show = false;
@@ -102,8 +99,8 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 new_name,
                 content,
             } => {
-                let state = app.shared_state.app_state.lock();
-                if let Some(archive) = state.signals.archive_path.get() {
+                if let Some(archive) = app.shared_state.signals().archive_path.get() {
+                    let state = app.shared_state.app_state.lock();
                     match state.add_or_update_file_from_str(&archive, &new_name, &content) {
                         Ok(_) => {
                             app.status_info.message = "File saved".to_string();

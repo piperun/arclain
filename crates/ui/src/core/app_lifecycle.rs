@@ -47,10 +47,9 @@ pub fn process_metadata_signal(
     organization_feature: &mut organization::OrganizationFeature,
 ) {
     let new_metadata = {
-        let state = shared_state.app_state.lock();
-        let val = state.signals.metadata.get();
+        let val = shared_state.signals().metadata.get();
         if val.is_some() {
-            state.signals.metadata.set(None); // Consume
+            shared_state.signals().metadata.set(None); // Consume
             val
         } else {
             None
@@ -68,11 +67,8 @@ pub fn process_metadata_signal(
                 );
 
                 // Update global state via signals
-                {
-                    let state = shared_state.app_state.lock();
-                    state.signals.game_metadata.set(Some(meta.clone()));
-                    state.signals.metadata.set(None);
-                }
+                shared_state.signals().game_metadata.set(Some(meta.clone()));
+                shared_state.signals().metadata.set(None);
 
                 // Update active organizer panel
                 if let Some(page) = &mut organization_feature.organizer_page {
@@ -95,18 +91,12 @@ pub fn process_extraction_progress(
     status_message: &mut String,
     ctx: &egui::Context,
 ) {
-    let progress_opt = {
-        let state = shared_state.app_state.lock();
-        state.signals.extraction_progress.get()
-    };
+    let progress_opt = shared_state.signals().extraction_progress.get();
 
     if let Some(progress) = progress_opt {
         if progress.complete {
             // Extraction finished - clear the signal
-            {
-                let state = shared_state.app_state.lock();
-                state.signals.extraction_progress.set(None);
-            }
+            shared_state.signals().extraction_progress.set(None);
 
             // Handle file opening
             if let Some(file_path) = progress.file_to_open {
@@ -208,8 +198,7 @@ pub fn update_window_title(
     ctx: &egui::Context,
 ) {
     let title = {
-        let state = shared_state.app_state.lock();
-        if let Some(path) = state.signals.archive_path.get() {
+        if let Some(path) = shared_state.signals().archive_path.get() {
             path.file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "Arclain".to_string())

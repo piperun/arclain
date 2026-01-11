@@ -39,15 +39,15 @@ pub fn render_header_panel(
             let can_go_back = page_navigator.can_go_back();
             let is_on_settings = page_navigator.is_on_settings();
 
-            // Sync UI preferences from AppState
-            {
-                let state = shared_state.app_state.lock();
-                header_state.show_button_labels =
-                    state.signals.ui_preferences.get().show_button_labels;
-            }
+            // Sync UI preferences from AppState (read-only, use signals() helper)
+            header_state.show_button_labels = shared_state
+                .signals()
+                .ui_preferences
+                .get()
+                .show_button_labels;
 
             // Sync search_text from signal to HeaderState before render
-            let search_before = shared_state.app_state.lock().signals.search_text.get();
+            let search_before = shared_state.signals().search_text.get();
             header_state.search_text = search_before;
 
             let actions = components::header::render(
@@ -61,15 +61,13 @@ pub fn render_header_panel(
             );
 
             // Sync search_text back to signal if changed
-            let state = shared_state.app_state.lock();
-            let current = state.signals.search_text.get();
+            let current = shared_state.signals().search_text.get();
             if current != header_state.search_text {
-                state
-                    .signals
+                shared_state
+                    .signals()
                     .search_text
                     .set(header_state.search_text.clone());
             }
-            drop(state);
 
             result.navigate_home = actions.navigate_home;
             result.navigate_back = actions.navigate_back;
@@ -179,9 +177,8 @@ pub fn render_toolbar_panel(
 ) -> Option<ToolbarActions> {
     // Check if we should show the archive toolbar
     let should_show = if page_navigator.is_on_main() {
-        let state = shared_state.app_state.lock();
         matches!(
-            state.signals.active_toolbar.get(),
+            shared_state.signals().active_toolbar.get(),
             crate::core::signals::ToolbarContext::Archive
         )
     } else {
@@ -197,19 +194,17 @@ pub fn render_toolbar_panel(
     egui::TopBottomPanel::top("toolbar_panel")
         .frame(egui::Frame::NONE.fill(shared_state.theme.colors.surface_variant))
         .show(ctx, |ui| {
-            let state = shared_state.app_state.lock();
-            let nav = state.signals.navigation.get();
+            let nav = shared_state.signals().navigation.get();
             let can_go_back = nav.can_go_back();
             let can_go_forward = nav.can_go_forward();
             let can_go_up = nav.can_go_up();
-            let archive_loaded = state.signals.archive_path.get().is_some();
+            let archive_loaded = shared_state.signals().archive_path.get().is_some();
             // Selection tracking requires access to browser state entries - for now use signal
             // TODO: Add selection count signal for proper decoupling
             let has_selection = false; // Requires browser_state access - see toolbar_handler.rs for working implementation
-            let has_metadata = state.signals.metadata.get().is_some();
+            let has_metadata = shared_state.signals().metadata.get().is_some();
             let toolbar_config =
-                components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
-            drop(state);
+                components::toolbar::ToolbarConfig::new(shared_state.signals().toolbar_items.get());
             let plugin_manager = shared_state.services.plugin_manager.clone();
 
             let actions = components::toolbar::render(
@@ -256,20 +251,18 @@ pub fn render_status_bar_panel(
                 .inner_margin(egui::Margin::symmetric(0, 6)),
         )
         .show(ctx, |ui| {
-            let state = shared_state.app_state.lock();
-            let archive_loaded = state.signals.archive_path.get().is_some();
+            let archive_loaded = shared_state.signals().archive_path.get().is_some();
 
             // Update status info from state
             if archive_loaded {
-                let archive_info = state.signals.archive_info.get();
+                let archive_info = shared_state.signals().archive_info.get();
                 status_info.file_count = archive_info.file_count;
                 status_info.total_size = crate::core::utils::format_size(archive_info.total_size);
                 status_info.compressed_size =
                     crate::core::utils::format_size(archive_info.compressed_size);
                 status_info.archive_format = archive_info.archive_format;
             }
-            let has_metadata = state.signals.metadata.get().is_some();
-            drop(state);
+            let has_metadata = shared_state.signals().metadata.get().is_some();
 
             let plugin_info = if let Some(manager) = &shared_state.services.plugin_manager {
                 let mgr = manager.lock();

@@ -30,11 +30,7 @@ impl<'a> ActionContext<'a> {
                         // We need to clone shared state for the async operation
                         let shared_state = self.shared.clone();
 
-                        let archive_path = if let Some(state) = self.shared.app_state.try_lock() {
-                            state.signals.archive_path.get()
-                        } else {
-                            None
-                        };
+                        let archive_path = self.shared.signals().archive_path.get();
 
                         if let Some(path) = archive_path {
                             // Build destination path by changing extension to .7z

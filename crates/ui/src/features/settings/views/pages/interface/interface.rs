@@ -1,5 +1,6 @@
 use crate::features::settings::types::SettingsAction;
 use crate::shared::theme::AppTheme;
+use crate::shared::SharedState;
 use arclain_core::UiService;
 use arclain_core::{UiItem, UiRegion};
 use eframe::egui;
@@ -96,7 +97,7 @@ impl InterfaceSettingsState {
 pub fn render_interface_settings(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
+    shared: &SharedState,
     interface_state: &mut InterfaceSettingsState,
     ui_service: Option<&UiService>,
 ) -> Option<SettingsAction> {
@@ -180,20 +181,17 @@ pub fn render_interface_settings(
             );
             ui.add_space(8.0);
 
-            let mut show_labels = {
-                let state = app_state.lock();
-                state.signals.ui_preferences.get().show_button_labels
-            };
+            let show_labels = shared.signals().ui_preferences.get().show_button_labels;
+            let mut show_labels_mut = show_labels;
 
             if ui
-                .checkbox(&mut show_labels, "Show button labels in header")
+                .checkbox(&mut show_labels_mut, "Show button labels in header")
                 .on_hover_text("Display text labels next to icons in header buttons")
                 .changed()
             {
-                let state = app_state.lock();
-                let mut prefs = state.signals.ui_preferences.get();
-                prefs.show_button_labels = show_labels;
-                state.signals.ui_preferences.set(prefs);
+                let mut prefs = shared.signals().ui_preferences.get();
+                prefs.show_button_labels = show_labels_mut;
+                shared.signals().ui_preferences.set(prefs);
             }
         });
 
@@ -206,12 +204,12 @@ pub fn render_interface_settings(
 
                 // Reload toolbar items in AppSignals
                 if let Ok(items) = service.list_toolbar_items() {
-                    app_state.lock().signals.toolbar_items.set(items);
+                    shared.signals().toolbar_items.set(items);
                 }
 
                 // Reload info panel items in AppSignals
                 if let Ok(items) = service.list_info_panel_items() {
-                    app_state.lock().signals.info_panel_items.set(items);
+                    shared.signals().info_panel_items.set(items);
                 }
             }
         }

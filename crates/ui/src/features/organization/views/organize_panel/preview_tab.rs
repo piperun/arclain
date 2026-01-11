@@ -1,27 +1,27 @@
 use super::OrganizePanel;
 use crate::shared::components::preview_tree::{self, PreviewFilter};
+use crate::shared::theme::AppTheme;
 use eframe::egui::{self, RichText};
 use egui_extras::{Size, StripBuilder};
 
 impl OrganizePanel {
-    pub(super) fn render_preview_tab(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn render_preview_tab(&mut self, ui: &mut egui::Ui, theme: &AppTheme) {
         if let Some(plan) = &self.session.preview_plan.clone() {
-            // HEADER: Output folder with copy button
             egui::Frame::NONE
-                .fill(egui::Color32::from_rgb(35, 45, 55))
+                .fill(theme.colors.surface_variant)
                 .inner_margin(10.0)
                 .corner_radius(4.0)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
                             RichText::new(egui_phosphor::regular::FOLDER)
-                                .color(egui::Color32::from_rgb(250, 204, 21)),
+                                .color(theme.colors.warning),
                         );
                         ui.label(RichText::new("Output:").strong());
                         ui.label(
                             RichText::new(&plan.root_folder)
                                 .monospace()
-                                .color(egui::Color32::from_rgb(147, 197, 253)),
+                                .color(theme.colors.info),
                         );
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -107,9 +107,9 @@ impl OrganizePanel {
                     };
                     ui.label(RichText::new(discrepancy_text).size(11.0).color(
                         if report.file_discrepancy > 0 {
-                            egui::Color32::from_rgb(251, 191, 36) // Warning yellow
+                            theme.colors.warning
                         } else {
-                            egui::Color32::from_rgb(74, 222, 128) // Success green
+                            theme.colors.success
                         },
                     ));
                 }
@@ -125,7 +125,7 @@ impl OrganizePanel {
                             report.expected_screenshots
                         ))
                         .size(11.0)
-                        .color(egui::Color32::from_rgb(251, 191, 36)),
+                        .color(theme.colors.warning),
                     )
                     .on_hover_text("Some screenshots may not be available or failed to load");
                 }
@@ -138,7 +138,7 @@ impl OrganizePanel {
                     ui.label(
                         RichText::new(format!("{} Verified", egui_phosphor::regular::CHECK_CIRCLE))
                             .size(11.0)
-                            .color(egui::Color32::from_rgb(74, 222, 128)), // Green
+                            .color(theme.colors.success),
                     )
                     .on_hover_text(format!(
                         "Source content verified (invariant under move)\nOriginal Hash: {:016x}\nResult Hash:   {:016x}",
@@ -148,7 +148,7 @@ impl OrganizePanel {
                     ui.label(
                         RichText::new(format!("{} Mismatch", egui_phosphor::regular::X_CIRCLE))
                             .size(11.0)
-                            .color(egui::Color32::from_rgb(248, 113, 113)), // Red
+                            .color(theme.colors.error),
                     )
                     .on_hover_text(format!(
                         "Hash mismatch! Files missing or added.\nOriginal Hash: {:016x}\nResult Hash:   {:016x}\nMissing: {} file(s)",
@@ -249,7 +249,7 @@ impl OrganizePanel {
                     // LEFT PANE: Original structure
                     strip.cell(|ui| {
                         egui::Frame::NONE
-                            .fill(egui::Color32::from_rgb(30, 30, 35))
+                            .fill(theme.colors.surface_variant)
                             .inner_margin(8.0)
                             .corner_radius(4.0)
                             .show(ui, |ui| {
@@ -292,7 +292,7 @@ impl OrganizePanel {
                             ui.label(
                                 RichText::new(egui_phosphor::regular::ARROW_RIGHT)
                                     .size(20.0)
-                                    .color(egui::Color32::from_rgb(74, 222, 128)),
+                                    .color(theme.colors.success),
                             );
                         });
                     });
@@ -300,7 +300,7 @@ impl OrganizePanel {
                     // RIGHT PANE: Organized structure
                     strip.cell(|ui| {
                         egui::Frame::NONE
-                            .fill(egui::Color32::from_rgb(30, 35, 35))
+                            .fill(theme.colors.surface_variant)
                             .inner_margin(8.0)
                             .corner_radius(4.0)
                             .show(ui, |ui| {
@@ -341,7 +341,7 @@ impl OrganizePanel {
                 ui.label(
                     RichText::new(egui_phosphor::regular::WARNING)
                         .size(40.0)
-                        .color(egui::Color32::from_rgb(251, 191, 36)),
+                        .color(theme.colors.warning),
                 );
                 ui.add_space(8.0);
                 ui.label(RichText::new("No preview available").size(14.0).weak());

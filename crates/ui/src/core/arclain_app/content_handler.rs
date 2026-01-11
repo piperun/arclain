@@ -44,10 +44,7 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
             AppPage::Settings(page) => {
                 let breadcrumb = PageNavigator::get_breadcrumb(&AppPage::Settings(page.clone()));
                 // Get search_text from signal
-                let search_text = {
-                    let state = app.shared_state.app_state.lock();
-                    state.signals.search_text.get()
-                };
+                let search_text = app.shared_state.signals().search_text.get();
                 egui::CentralPanel::default().show(ctx, |ui| {
                     if let Some(target) = app.settings_feature.render(
                         ui,

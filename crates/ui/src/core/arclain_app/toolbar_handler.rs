@@ -8,8 +8,10 @@ use eframe::egui;
 pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render Toolbar (only on Main page AND when Archive context is active)
     let should_show_archive_toolbar = if app.page_navigator.is_on_main() {
-        let state = app.shared_state.app_state.lock();
-        matches!(state.signals.active_toolbar.get(), ToolbarContext::Archive)
+        matches!(
+            app.shared_state.signals().active_toolbar.get(),
+            ToolbarContext::Archive
+        )
     } else {
         false
     };
@@ -18,24 +20,17 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
         egui::TopBottomPanel::top("toolbar_panel")
             .frame(egui::Frame::NONE.fill(app.shared_state.theme.colors.surface_variant))
             .show(ctx, |ui| {
-                let state = app.shared_state.app_state.lock();
-                let nav = state.signals.navigation.get();
+                let nav = app.shared_state.signals().navigation.get();
                 let can_go_back = nav.can_go_back();
                 let can_go_forward = nav.can_go_forward();
                 let can_go_up = nav.can_go_up();
-                let archive_loaded = state.signals.archive_path.get().is_some();
-                drop(state);
-                let has_selection = app
-                    .archive_browser
-                    .state_mut()
-                    .entries
-                    .iter()
-                    .any(|e| e.selected);
-                let state = app.shared_state.app_state.lock();
-                let has_metadata = state.signals.metadata.get().is_some();
-                let toolbar_config =
-                    components::toolbar::ToolbarConfig::new(state.signals.toolbar_items.get());
-                drop(state);
+                let archive_loaded = app.shared_state.signals().archive_path.get().is_some();
+                // Use selection_count signal for decoupled toolbar state
+                let has_selection = app.shared_state.signals().selection_count.get() > 0;
+                let has_metadata = app.shared_state.signals().metadata.get().is_some();
+                let toolbar_config = components::toolbar::ToolbarConfig::new(
+                    app.shared_state.signals().toolbar_items.get(),
+                );
                 let plugin_manager = app.shared_state.services.plugin_manager.clone();
 
                 let actions = components::toolbar::render(
@@ -140,14 +135,12 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     );
                 }
                 if actions.organize_archive {
-                    let state = app.shared_state.app_state.lock();
-                    if let Some(archive) = state.signals.archive_path.get() {
+                    if let Some(archive) = app.shared_state.signals().archive_path.get() {
                         let archive_name = archive
                             .file_name()
                             .unwrap_or_default()
                             .to_string_lossy()
                             .to_string();
-                        drop(state);
 
                         // Load rules directly from DB and filter by enabled plugins
                         let mut rules = Vec::new(); // Default empty
@@ -190,10 +183,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         }
 
                         // Initialize panel
-                        let state = app.shared_state.app_state.lock();
-                        let entries = state.signals.entries.get().as_ref().clone();
-                        let metadata = state.signals.game_metadata.get();
-                        drop(state);
+                        let entries = app.shared_state.signals().entries.get().as_ref().clone();
+                        let metadata = app.shared_state.signals().game_metadata.get();
 
                         app.organization_feature.organizer_page =
                             Some(crate::features::organization::OrganizerPage::new(

@@ -20,8 +20,8 @@ pub fn execute_organization_plan(
         .as_ref()
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let password = state.signals.current_password.get();
     drop(state);
+    let password = shared.signals().current_password.get();
 
     info!(
         "Executing organization plan for archive: {}",
@@ -72,14 +72,16 @@ pub fn try_with_auto_password(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     let archive_name = source.to_str();
-    let entries_arc = state.signals.entries.get();
+    let pass_rules = state.pass_rules.clone();
+    drop(state);
+
+    let entries_arc = shared.signals().entries.get();
     let entries = entries_arc
         .iter()
         .map(|e| e.path.clone())
         .collect::<Vec<_>>();
     let detected_pw =
-        arclain_core::utilities::auto_password_for(&state.pass_rules, archive_name, &entries);
-    drop(state);
+        arclain_core::utilities::auto_password_for(&pass_rules, archive_name, &entries);
 
     if let Some(ref password) = detected_pw {
         info!(
@@ -99,8 +101,10 @@ pub fn try_with_auto_password(
         ) {
             Ok(_) => {
                 // Success! Save the password for future use
-                let state = shared.app_state.lock();
-                state.signals.current_password.set(Some(password.clone()));
+                shared
+                    .signals()
+                    .current_password
+                    .set(Some(password.clone()));
                 Ok(())
             }
             Err(e) => {
