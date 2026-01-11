@@ -20,7 +20,8 @@ fn main() -> Result<()> {
             .with_title("Arclain - Archive Viewer")
             .with_visible(true)
             .with_resizable(true)
-            .with_decorations(true),
+            .with_decorations(true)
+            .with_drag_and_drop(true),
         ..Default::default()
     };
 
