@@ -98,6 +98,12 @@ fn process_action(
             );
             _dialog_state.open_page(plugin_id, &page);
         }
+
+        PluginAction::CloseDialog => {
+            // Close the current dialog
+            tracing::debug!("Plugin {} requested dialog close", plugin_id);
+            _dialog_state.close_dialog();
+        }
     }
 }
 

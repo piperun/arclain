@@ -1461,18 +1461,7 @@ impl archust_plugin_sdk::Guest for Component {
                 info("[DLSite Plugin] Clearing ALL cache...");
                 archust_plugin_sdk::invalidate_cache("dlsite:*");
                 archust_plugin_sdk::show_message("Cache Cleared", "All DLSite cache entries have been removed.");
-                // PluginAction doesn't have CloseDialog, but typically a dialog button action handles closing.
-                // If we need to forcefully close it from code, we might lack the capability here?
-                // ButtonAction::CloseDialog works for clicks.
-                // Let's just return empty list, user will have to close manually or we rely on the button action if it was tied to this.
-                // Wait, custom action buttons don't close automatically?
-                // Let's try sending a refresh which might reset state or just return empty.
-                // Actually, `PluginAction::CloseDialog` WAS what I assumed existed.
-                // Since it doesn't, maybe we just return empty list.
-                // The dialog stays open... that's annoying.
-                // Let's check if there's any other way or if I should add it to Host?
-                // User is annoyed about UI logic in plugin, so adding more Host logic is risky if I can't modify WIT easily for them (I can, but they said "avoid breaking changes").
-                // Let's just return empty vec for now.
+                // Dialog closing is handled by the button's ButtonAction::CloseDialog
                 return vec![]; 
             }
             "prune_cache" => {

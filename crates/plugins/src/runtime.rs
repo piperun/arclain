@@ -563,5 +563,6 @@ fn convert_plugin_action(
             value: update.value,
         },
         WitAction::OpenPage(page) => InternalAction::OpenPage { page },
+        WitAction::CloseDialog => InternalAction::CloseDialog,
     }
 }

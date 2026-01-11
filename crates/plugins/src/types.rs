@@ -382,6 +382,8 @@ pub enum PluginAction {
     UpdateElement { id: String, value: String },
     /// Navigate to a plugin page
     OpenPage { page: String },
+    /// Close the current dialog
+    CloseDialog,
 }
 
 fn default_space_size() -> f32 {
