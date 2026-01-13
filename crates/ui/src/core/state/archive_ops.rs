@@ -3,7 +3,9 @@
 use super::AppState;
 use anyhow::Result;
 use arclain_core::utilities::auto_password_for;
+use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 impl AppState {
@@ -128,6 +130,19 @@ impl AppState {
                 self.signals.entries.get().len()
             );
         }
+
+        // Create Archive handle and store in signal for session operations
+        // Re-select backend since the one from earlier was consumed
+        let backend = self.backend_selector.select(path)?;
+        let archive = if let Some(pw) = self.signals.current_password.get() {
+            arclain_core::Archive::with_password(backend, path.to_path_buf(), pw)
+        } else {
+            arclain_core::Archive::new(backend, path.to_path_buf())
+        };
+        self.signals
+            .opened_archive
+            .set(Some(Arc::new(RwLock::new(archive))));
+
         Ok(self.signals.entries.get().as_ref().clone())
     }
 
@@ -168,6 +183,13 @@ impl AppState {
             self.pending_plugin_event = Some(event);
             self.signals.ui_ready.set(false);
         }
+
+        // Create Archive handle with password and store in signal for session operations
+        let archive =
+            arclain_core::Archive::with_password(backend, path.to_path_buf(), password.to_string());
+        self.signals
+            .opened_archive
+            .set(Some(Arc::new(RwLock::new(archive))));
 
         Ok(self.signals.entries.get().as_ref().clone())
     }

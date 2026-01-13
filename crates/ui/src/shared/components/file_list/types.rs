@@ -3,7 +3,8 @@
 /// Represents a single file or folder entry in the file list
 #[derive(Clone)]
 pub struct FileEntry {
-    pub name: String,
+    pub name: String, // Display name (basename only)
+    pub path: String, // Full path within archive (for operations)
     pub size: String,
     pub compressed: String,
     pub ratio: String,
@@ -25,6 +26,7 @@ pub enum FileListAction {
     ExtractTo(String), // Extract to custom location
     CopyPath(String),  // Copy path to clipboard
     ShowProperties(String), // Show properties panel
+    DragStarted(Vec<String>), // File(s) dragged - extract to temp and start OS drag
 }
 
 /// Column identifiers for sorting

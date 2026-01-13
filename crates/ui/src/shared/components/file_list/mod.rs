@@ -133,7 +133,7 @@ pub fn render_list_view(
                 .id_salt(table_id)
                 .striped(false)
                 .resizable(!columns_locked)
-                .sense(egui::Sense::click())
+                .sense(egui::Sense::click_and_drag())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::exact(34.0)) // Checkbox
                 .column(Column::remainder().at_least(220.0)) // Name
@@ -322,8 +322,16 @@ pub fn render_list_view(
                     // Capture selection flags after sorting
                     let selection_flags: Vec<bool> = entries.iter().map(|e| e.selected).collect();
 
+                    // Pre-collect selected file paths for drag-out (needed because we can't borrow entries during iter_mut)
+                    let selected_files: Vec<String> = entries
+                        .iter()
+                        .filter(|e| e.selected && !e.is_folder)
+                        .map(|e| e.path.clone())
+                        .collect();
+
                     for (row_index, entry) in entries.iter_mut().enumerate() {
                         let entry_name = entry.name.clone();
+                        let entry_path = entry.path.clone();
                         let is_folder = entry.is_folder;
 
                         body.row(32.0, |mut row| {
@@ -338,11 +346,16 @@ pub fn render_list_view(
                             });
 
                             row.col(|ui| {
-                                let icon = if is_folder { "📁" } else { "📄" };
-                                let label = format!("{icon} {entry_name}");
+                                let icon = if is_folder {
+                                    egui_phosphor::regular::FOLDER
+                                } else {
+                                    egui_phosphor::regular::FILE
+                                };
                                 ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(label).size(14.0).color(text_color),
+                                        egui::RichText::new(format!("{icon} {entry_name}"))
+                                            .size(14.0)
+                                            .color(text_color),
                                     )
                                     .selectable(false),
                                 );
@@ -460,7 +473,7 @@ pub fn render_list_view(
                                     if edit_clicked {
                                         action_clicked = true;
                                         pending_row_action =
-                                            Some(FileListAction::Edit(entry_name.clone()));
+                                            Some(FileListAction::Edit(entry_path.clone()));
                                     }
 
                                     let del_clicked = ui
@@ -470,7 +483,7 @@ pub fn render_list_view(
                                     if del_clicked {
                                         action_clicked = true;
                                         pending_row_action =
-                                            Some(FileListAction::Delete(entry_name.clone()));
+                                            Some(FileListAction::Delete(entry_path.clone()));
                                     }
                                 });
                             });
@@ -529,30 +542,30 @@ pub fn render_list_view(
                             row_response.context_menu(|ui| {
                                 if ui.button("📂  Open").clicked() {
                                     if is_folder {
-                                        action = Some(FileListAction::Navigate(entry_name.clone()));
+                                        action = Some(FileListAction::Navigate(entry_path.clone()));
                                     } else {
-                                        action = Some(FileListAction::Open(entry_name.clone()));
+                                        action = Some(FileListAction::Open(entry_path.clone()));
                                     }
                                     ui.close();
                                 }
                                 ui.separator();
                                 if ui.button("📦  Extract").clicked() {
-                                    action = Some(FileListAction::Extract(entry_name.clone()));
+                                    action = Some(FileListAction::Extract(entry_path.clone()));
                                     ui.close();
                                 }
                                 if ui.button("📁  Extract To...").clicked() {
-                                    action = Some(FileListAction::ExtractTo(entry_name.clone()));
+                                    action = Some(FileListAction::ExtractTo(entry_path.clone()));
                                     ui.close();
                                 }
                                 ui.separator();
                                 if ui.button("📋  Copy Path").clicked() {
-                                    action = Some(FileListAction::CopyPath(entry_name.clone()));
+                                    action = Some(FileListAction::CopyPath(entry_path.clone()));
                                     ui.close();
                                 }
                                 ui.separator();
                                 if ui.button("ℹ️  Properties").clicked() {
                                     action =
-                                        Some(FileListAction::ShowProperties(entry_name.clone()));
+                                        Some(FileListAction::ShowProperties(entry_path.clone()));
                                     ui.close();
                                 }
                                 ui.separator();
@@ -560,20 +573,32 @@ pub fn render_list_view(
                                     .add_enabled(!is_folder, egui::Button::new("✏️  Edit"))
                                     .clicked()
                                 {
-                                    action = Some(FileListAction::Edit(entry_name.clone()));
+                                    action = Some(FileListAction::Edit(entry_path.clone()));
                                     ui.close();
                                 }
                                 if ui.button("🗑️  Delete").clicked() {
-                                    action = Some(FileListAction::Delete(entry_name.clone()));
+                                    action = Some(FileListAction::Delete(entry_path.clone()));
                                     ui.close();
                                 }
                             });
 
-                            if row_response.double_clicked() {
-                                if is_folder {
-                                    action = Some(FileListAction::Navigate(entry_name.clone()));
+                            // Drag started - collect selected files/folders for drag-out
+                            if row_response.drag_started() {
+                                // If the dragged row isn't selected, just drag that one
+                                // Otherwise drag all selected entries (uses pre-collected list)
+                                let files_to_drag: Vec<String> = if entry.selected {
+                                    selected_files.clone()
                                 } else {
-                                    action = Some(FileListAction::Open(entry_name.clone()));
+                                    vec![entry_path.clone()]
+                                };
+                                if !files_to_drag.is_empty() {
+                                    action = Some(FileListAction::DragStarted(files_to_drag));
+                                }
+                            } else if row_response.double_clicked() {
+                                if is_folder {
+                                    action = Some(FileListAction::Navigate(entry_path.clone()));
+                                } else {
+                                    action = Some(FileListAction::Open(entry_path.clone()));
                                 }
                             } else if !checkbox_clicked && !action_clicked && row_response.clicked()
                             {
