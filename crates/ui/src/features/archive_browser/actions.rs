@@ -40,6 +40,8 @@ pub enum Action {
     CopyPath(String),
     /// Show file properties panel
     ShowProperties(String),
+    /// Start drag-out operation (extract to temp, then OS drag)
+    DragExtract(Vec<String>),
     /// No action
     None,
 }
@@ -174,6 +176,7 @@ impl<'a> ActionContext<'a> {
                 // Create a temporary selection for just this file
                 let entries = vec![FileEntry {
                     name: file.clone(),
+                    path: file.clone(),
                     selected: true,
                     size: String::new(),
                     compressed: String::new(),
@@ -308,6 +311,53 @@ impl<'a> ActionContext<'a> {
             Action::ExtractTo(file) => {
                 self.status_info.message =
                     format!("Extract to... for '{}' - not yet implemented", file);
+                true
+            }
+            Action::DragExtract(files) => {
+                // Get archive handle for callback
+                let archive_guard = self.shared.signals().opened_archive.read();
+                let archive_arc = archive_guard.as_ref().cloned();
+                drop(archive_guard); // Release lock immediately
+
+                if let Some(archive_arc) = archive_arc {
+                    let files_to_extract = files.clone();
+
+                    // Create callback that extracts files when drop occurs
+                    let callback = Box::new(move || {
+                        tracing::info!("Deferred extraction callback triggered");
+                        let archive = archive_arc.read();
+
+                        let temp_dir = std::env::temp_dir().join("arclain_drag");
+                        let _ = std::fs::create_dir_all(&temp_dir);
+
+                        // Extract files
+                        archive
+                            .extract_files(&temp_dir, &files_to_extract)
+                            .map_err(|e| e.to_string())?;
+
+                        // Return full paths
+                        let mut extracted_paths = Vec::new();
+                        for file in &files_to_extract {
+                            extracted_paths.push(temp_dir.join(file));
+                        }
+
+                        Ok(extracted_paths)
+                    });
+
+                    // Start the drag operation (blocks until drop)
+                    match crate::platform::drag_source::start_deferred_drag(callback) {
+                        Ok(_) => {
+                            self.status_info.message = "Files dropped successfully".to_string();
+                        }
+                        Err(e) => {
+                            tracing::warn!("Drag failed: {:?}", e);
+                            self.status_info.message = format!("Drag failed: {}", e);
+                        }
+                    }
+                } else {
+                    tracing::warn!("DragExtract: No archive session open");
+                    self.status_info.message = "No archive open".to_string();
+                }
                 true
             }
             _ => false, // Not a complex action handled here

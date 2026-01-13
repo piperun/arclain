@@ -1,5 +1,7 @@
 // Platform-specific utilities
 
+pub mod drag_source;
+
 #[cfg(target_os = "windows")]
 pub fn detect_dark_mode() -> bool {
     use winreg::enums::*;

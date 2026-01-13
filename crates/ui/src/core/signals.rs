@@ -11,6 +11,7 @@ use arclain_core::utilities::PassRule;
 use arclain_core::ArchiveEntry;
 use arclain_core::UiItem;
 use arclain_signals::{Signal, SignalContext};
+use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -119,6 +120,9 @@ pub struct AppSignals {
 
     /// Number of selected entries in file list (for toolbar button state)
     pub selection_count: Signal<usize>,
+
+    /// Opened archive session - holds Archive handle with password for session lifetime
+    pub opened_archive: Signal<Option<Arc<RwLock<arclain_core::Archive>>>>,
 }
 
 impl AppSignals {
@@ -145,6 +149,7 @@ impl AppSignals {
             current_password: Signal::new(None),
             pass_rules: Signal::new(Vec::new()),
             selection_count: Signal::new(0),
+            opened_archive: Signal::new(None),
         }
     }
 
@@ -194,6 +199,7 @@ impl AppSignals {
         self.current_password.set(None);
         self.pass_rules.set(Vec::new());
         self.selection_count.set(0);
+        self.opened_archive.set(None);
     }
 }
 

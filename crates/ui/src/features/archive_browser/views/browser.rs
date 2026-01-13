@@ -374,5 +374,6 @@ fn map_file_list_action(file_action: file_list::FileListAction) -> ArchiveBrowse
         file_list::FileListAction::ShowProperties(file) => {
             ArchiveBrowserAction::ShowProperties(file)
         }
+        file_list::FileListAction::DragStarted(files) => ArchiveBrowserAction::DragExtract(files),
     }
 }
