@@ -1005,6 +1005,78 @@ impl ArchiveBackend for SevenZipCli {
         ];
         self.run_status_with_stdin(args, content.as_bytes())
     }
+
+    fn extract_entry_to_writer(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        info!(
+            "Streaming entry via CLI: {} -> {}",
+            archive.display(),
+            path_in_archive
+        );
+
+        let mut args = vec![
+            OsString::from("e"),
+            OsString::from("-so"),  // Stream to stdout
+            OsString::from("-y"),
+            OsString::from("-bd"),
+            OsString::from("-spf2"), // Disable wildcard matching - treat path as literal
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
+        }
+        args.push(archive.as_os_str().to_os_string());
+        // Use -- to mark end of switches and treat the path literally
+        args.push(OsString::from("--"));
+        args.push(OsString::from(path_in_archive));
+
+        let mut child = Command::new(&self.exe)
+            .args(&args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawning 7z for streaming")?;
+
+        let mut bytes_written = 0usize;
+        if let Some(mut stdout) = child.stdout.take() {
+            use std::io::Read;
+            let mut buf = [0u8; 65536];
+            loop {
+                let n = stdout.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                writer.write_all(&buf[..n])?;
+                bytes_written += n;
+            }
+        }
+
+        // Use wait() instead of wait_with_output() since we already consumed stdout
+        let status = child.wait().context("waiting for 7z")?;
+        if !status.success() {
+            // Try to read stderr if still available
+            error!(
+                "7-Zip streaming failed with code {:?}",
+                status.code()
+            );
+            return Err(anyhow!(
+                "7z streaming failed (code {:?})",
+                status.code()
+            ));
+        }
+
+        debug!("CLI streaming complete: {} bytes written", bytes_written);
+
+        Ok(())
+    }
 }
 
 impl SevenZipCli {

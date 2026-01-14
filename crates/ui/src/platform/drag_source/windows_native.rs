@@ -1,27 +1,33 @@
-//! Native Windows drag-out with deferred file extraction
+//! Native Windows drag-out with batch pre-extraction
 //!
 //! Uses IDataObject and IDropSource COM interfaces to implement
-//! lazy file extraction - files are only extracted when the user drops.
+//! extraction to memory (HGLOBAL) - like 7-Zip File Manager does.
+//!
+//! OPTIMIZATION: When a drag starts, we pre-extract ALL requested files
+//! to a temp directory in a single batch operation (using extract_files_with_progress).
+//! Then when Explorer requests each file via GetData, we simply read from disk.
+//! This is MUCH faster than extracting files one-by-one per GetData call.
+//!
+//! Progress callback support allows the UI to show an extraction modal during drag.
 
-// mod stream; // declared in mod.rs now
-
-use super::stream::ArchiveStream;
-// use crate::core::state::ExtractCallback; // Removed (unused)
-use arclain_core::{ArchiveBackend, ArchiveEntry};
+use super::DragProgressCallback;
+use arclain_core::{ArchiveBackend, ArchiveEntry, ExtractionProgress};
 use parking_lot::RwLock;
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use tracing::{debug, info, warn};
+use std::time::Instant;
 use windows::core::{implement, Result, HRESULT};
 
 use windows::Win32::Foundation::{
     BOOL, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC,
-    DV_E_LINDEX, E_NOTIMPL, E_UNEXPECTED, S_FALSE, S_OK,
+    DV_E_LINDEX, E_NOTIMPL, E_OUTOFMEMORY, E_UNEXPECTED, S_FALSE, S_OK,
 };
 use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows::Win32::System::Com::{
     IAdviseSink, IDataObject, IEnumSTATDATA, DATADIR_GET, DVASPECT_CONTENT, FORMATETC, STGMEDIUM,
-    TYMED_HGLOBAL, TYMED_ISTREAM,
+    TYMED_HGLOBAL,
 };
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
@@ -73,13 +79,13 @@ impl FormatEnumerator {
                 lindex: -1,
                 tymed: TYMED_HGLOBAL.0 as u32,
             },
-            // Content (IStream)
+            // Content (HGLOBAL) - like 7-Zip, extract to memory
             FORMATETC {
                 cfFormat: fc_format,
                 ptd: std::ptr::null_mut(),
                 dwAspect: DVASPECT_CONTENT.0,
                 lindex: -1,
-                tymed: TYMED_ISTREAM.0 as u32,
+                tymed: TYMED_HGLOBAL.0 as u32,
             },
         ]
     }
@@ -139,12 +145,24 @@ impl windows::Win32::System::Com::IEnumFORMATETC_Impl for FormatEnumerator {
     }
 }
 
+/// State for batch extraction - extracted files are cached in a temp directory
+struct ExtractionCache {
+    /// Temp directory where files are extracted (auto-cleaned on drop via tempfile)
+    temp_dir: tempfile::TempDir,
+    /// Set to true once batch extraction is complete
+    extracted: bool,
+}
+
 #[implement(windows::Win32::System::Com::IDataObject)]
 pub struct LazyArchiveDataObject {
     backend: Arc<dyn ArchiveBackend>,
     archive_path: PathBuf,
     entries: Vec<ArchiveEntry>,
     password: Option<String>,
+    /// Cache for batch-extracted files (lazily initialized on first GetData for FileContents)
+    cache: RwLock<Option<ExtractionCache>>,
+    /// Optional progress callback for extraction updates
+    progress_callback: Option<DragProgressCallback>,
 }
 
 impl LazyArchiveDataObject {
@@ -154,15 +172,146 @@ impl LazyArchiveDataObject {
         entries: Vec<ArchiveEntry>,
         password: Option<String>,
     ) -> Self {
+        Self::with_progress(backend, archive_path, entries, password, None)
+    }
+
+    pub fn with_progress(
+        backend: Arc<dyn ArchiveBackend>,
+        archive_path: PathBuf,
+        entries: Vec<ArchiveEntry>,
+        password: Option<String>,
+        progress_callback: Option<DragProgressCallback>,
+    ) -> Self {
         Self {
             backend,
             archive_path,
             entries,
             password,
+            cache: RwLock::new(None),
+            progress_callback,
         }
     }
 
+    /// Ensure all files are extracted to the temp directory.
+    /// This is called once on the first FileContents request.
+    fn ensure_extracted(&self) -> std::result::Result<(), String> {
+        // Check if already extracted
+        {
+            let cache = self.cache.read();
+            if cache.as_ref().map(|c| c.extracted).unwrap_or(false) {
+                return Ok(());
+            }
+        }
+
+        // Need to extract - take write lock
+        let mut cache = self.cache.write();
+        
+        // Double-check after acquiring write lock
+        if cache.as_ref().map(|c| c.extracted).unwrap_or(false) {
+            return Ok(());
+        }
+
+        let start = Instant::now();
+        
+        // Create temp directory
+        let temp_dir = tempfile::tempdir()
+            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        
+        // Collect file paths to extract (skip directories)
+        let file_paths: Vec<String> = self.entries
+            .iter()
+            .filter(|e| !e.is_dir)
+            .map(|e| e.path.clone())
+            .collect();
+        
+        let file_count = file_paths.len();
+        info!(
+            "[drag] Batch extracting {} files to temp dir...",
+            file_count
+        );
+
+        // Send initial progress update if callback is set
+        if let Some(ref callback) = self.progress_callback {
+            callback(ExtractionProgress {
+                current: 0,
+                total: file_count,
+                current_file: "Starting extraction...".to_string(),
+                percent: 0,
+            });
+        }
+
+        // Use extract_files_with_progress if we have a callback, otherwise use simple extract_files
+        if let Some(callback) = self.progress_callback.clone() {
+            // Create a progress callback wrapper that bridges to our DragProgressCallback
+            // Clone the Arc so the closure owns it and has 'static lifetime
+            let progress_cb = move |progress: ExtractionProgress| {
+                callback(progress);
+            };
+            
+            self.backend
+                .extract_files_with_progress(
+                    &self.archive_path,
+                    temp_dir.path(),
+                    &file_paths,
+                    self.password.as_deref(),
+                    Some(&progress_cb),
+                    None, // No cancellation support for now
+                )
+                .map_err(|e| format!("Batch extraction failed: {}", e))?;
+        } else {
+            // No progress callback - use simple extraction
+            self.backend
+                .extract_files(
+                    &self.archive_path,
+                    temp_dir.path(),
+                    &file_paths,
+                    self.password.as_deref(),
+                )
+                .map_err(|e| format!("Batch extraction failed: {}", e))?;
+        }
+
+        let elapsed = start.elapsed();
+        info!(
+            "[drag] Batch extraction complete: {} files in {:.2}s ({:.1} files/sec)",
+            file_count,
+            elapsed.as_secs_f64(),
+            file_count as f64 / elapsed.as_secs_f64()
+        );
+
+        // Send completion progress update if callback is set
+        if let Some(ref callback) = self.progress_callback {
+            callback(ExtractionProgress {
+                current: file_count,
+                total: file_count,
+                current_file: "Extraction complete".to_string(),
+                percent: 100,
+            });
+        }
+
+        *cache = Some(ExtractionCache {
+            temp_dir,
+            extracted: true,
+        });
+
+        Ok(())
+    }
+
+    /// Get the path to an extracted file in the temp directory
+    fn get_extracted_path(&self, entry_path: &str) -> Option<PathBuf> {
+        let cache = self.cache.read();
+        cache.as_ref().map(|c| c.temp_dir.path().join(entry_path))
+    }
+
     fn get_file_descriptor(&self) -> windows::core::Result<STGMEDIUM> {
+        // Log all entries being advertised
+        info!("[drag] get_file_descriptor: {} entries", self.entries.len());
+        for (i, entry) in self.entries.iter().enumerate() {
+            debug!(
+                "[drag]   [{:3}] path='{}' is_dir={} size={}",
+                i, entry.path, entry.is_dir, entry.size
+            );
+        }
+
         // Create FILEGROUPDESCRIPTORW
         let count = self.entries.len();
         let header_size = std::mem::size_of::<u32>();
@@ -189,12 +338,33 @@ impl LazyArchiveDataObject {
                 let copy_len = std::cmp::min(name_wide.len(), 259);
                 name_arr[..copy_len].copy_from_slice(&name_wide[..copy_len]);
 
+                let mut dw_flags = FD_ATTRIBUTES.0 as u32;
+                let mut attributes = FILE_ATTRIBUTE_NORMAL.0;
+                let mut size_low = 0u32;
+                let mut size_high = 0u32;
+
+                if entry.is_dir {
+                    attributes = windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0;
+                    debug!(
+                        "[drag] descriptor (dir): name='{}' flags=ATTRIBUTES attr=DIR",
+                        name
+                    );
+                } else {
+                    dw_flags |= FD_FILESIZE.0 as u32;
+                    size_low = entry.size as u32;
+                    size_high = (entry.size >> 32) as u32;
+                    debug!(
+                        "[drag] descriptor (file): name='{}' size={} flags=ATTR|SIZE",
+                        name, entry.size
+                    );
+                }
+
                 // Construct descriptor locally
                 let descriptor = FILEDESCRIPTORW {
-                    dwFlags: (FD_ATTRIBUTES.0 | FD_FILESIZE.0) as u32,
-                    dwFileAttributes: FILE_ATTRIBUTE_NORMAL.0,
-                    nFileSizeLow: entry.size as u32,
-                    nFileSizeHigh: (entry.size >> 32) as u32,
+                    dwFlags: dw_flags,
+                    dwFileAttributes: attributes,
+                    nFileSizeLow: size_low,
+                    nFileSizeHigh: size_high,
                     cFileName: name_arr,
                     ..Default::default()
                 };
@@ -220,22 +390,69 @@ impl LazyArchiveDataObject {
         }
 
         let entry = &self.entries[lindex as usize];
-
-        // Create stream
-        let stream = ArchiveStream::new(
-            self.backend.clone(),
-            self.archive_path.clone(),
-            entry.path.clone(),
-            self.password.clone(),
-            entry.size,
+        debug!(
+            "[drag] request FileContents lindex={} name='{}' dir={} size={}",
+            lindex,
+            entry.path,
+            entry.is_dir,
+            entry.size
         );
-        let stream_interface: windows::Win32::System::Com::IStream = stream.into();
+
+        // Directories have no content; Explorer should not request content when FD_FILESIZE
+        // is absent, but if it does, signal unsupported format for this item.
+        if entry.is_dir {
+            debug!("[drag] Skipping directory entry");
+            return Err(windows::core::Error::from(DV_E_FORMATETC));
+        }
+
+        // Ensure batch extraction is done (this is a no-op after the first call)
+        if let Err(e) = self.ensure_extracted() {
+            warn!("[drag] Batch extraction failed: {}", e);
+            return Err(windows::core::Error::from(E_UNEXPECTED));
+        }
+
+        // Read file from temp directory (fast disk read)
+        let extracted_path = self.get_extracted_path(&entry.path)
+            .ok_or_else(|| windows::core::Error::from(E_UNEXPECTED))?;
+        
+        let buffer = match std::fs::read(&extracted_path) {
+            Ok(data) => data,
+            Err(e) => {
+                warn!(
+                    "[drag] Failed to read extracted file '{}': {}",
+                    extracted_path.display(), e
+                );
+                return Err(windows::core::Error::from(E_UNEXPECTED));
+            }
+        };
+
+        debug!(
+            "[drag] Read {} bytes from temp file for '{}'",
+            buffer.len(),
+            entry.path
+        );
+
+        // Allocate HGLOBAL and copy data
+        let size = buffer.len();
+        let hglobal = unsafe {
+            GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, size)
+                .map_err(|_| windows::core::Error::from(E_OUTOFMEMORY))?
+        };
+        
+        let ptr = unsafe { GlobalLock(hglobal) };
+        if ptr.is_null() {
+            warn!("[drag] GlobalLock failed for {} bytes", size);
+            return Err(windows::core::Error::from(E_OUTOFMEMORY));
+        }
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(buffer.as_ptr(), ptr as *mut u8, size);
+            let _ = GlobalUnlock(hglobal);
+        }
 
         Ok(STGMEDIUM {
-            tymed: TYMED_ISTREAM.0 as u32,
-            u: windows::Win32::System::Com::STGMEDIUM_0 {
-                pstm: std::mem::ManuallyDrop::new(Some(stream_interface)),
-            },
+            tymed: TYMED_HGLOBAL.0 as u32,
+            u: windows::Win32::System::Com::STGMEDIUM_0 { hGlobal: hglobal },
             pUnkForRelease: std::mem::ManuallyDrop::new(None),
         })
     }
@@ -249,11 +466,19 @@ impl windows::Win32::System::Com::IDataObject_Impl for LazyArchiveDataObject {
         let fd_format = get_clipboard_format("FileGroupDescriptorW");
         let fc_format = get_clipboard_format("FileContents");
 
+        debug!(
+            "[drag] GetData: cfFormat={} tymed={} lindex={}",
+            format.cfFormat, format.tymed, format.lindex
+        );
+
         if format.cfFormat == fd_format && (format.tymed & TYMED_HGLOBAL.0 as u32) != 0 {
+            debug!("[drag] Returning FileGroupDescriptorW");
             self.get_file_descriptor()
-        } else if format.cfFormat == fc_format && (format.tymed & TYMED_ISTREAM.0 as u32) != 0 {
+        } else if format.cfFormat == fc_format && (format.tymed & TYMED_HGLOBAL.0 as u32) != 0 {
+            debug!("[drag] Returning FileContents as HGLOBAL for lindex={}", format.lindex);
             self.get_file_contents(format.lindex)
         } else {
+            debug!("[drag] Unsupported format: cfFormat={} tymed={}", format.cfFormat, format.tymed);
             Err(windows::core::Error::from(DV_E_FORMATETC))
         }
     }
@@ -353,12 +578,28 @@ impl windows::Win32::System::Ole::IDropSource_Impl for SimpleDropSource {
     }
 }
 
-/// Start a deferred drag operation using IStream
+/// Start a deferred drag operation using IStream (without progress callback)
 pub fn start_deferred_drag(
     backend: Arc<dyn ArchiveBackend>,
     archive_path: PathBuf,
     entries: Vec<ArchiveEntry>,
     password: Option<String>,
+) -> std::result::Result<DROPEFFECT, String> {
+    start_deferred_drag_with_progress(backend, archive_path, entries, password, None)
+}
+
+/// Start a deferred drag operation using IStream with optional progress callback
+///
+/// The progress callback is invoked during batch extraction to report progress.
+/// Note: Due to DoDragDrop blocking the UI thread, progress updates may not render
+/// in the egui modal during extraction. The callback is still useful for logging
+/// or future async implementations.
+pub fn start_deferred_drag_with_progress(
+    backend: Arc<dyn ArchiveBackend>,
+    archive_path: PathBuf,
+    entries: Vec<ArchiveEntry>,
+    password: Option<String>,
+    progress: Option<DragProgressCallback>,
 ) -> std::result::Result<DROPEFFECT, String> {
     unsafe {
         let _ = OleInitialize(None);
@@ -373,7 +614,7 @@ pub fn start_deferred_drag(
     let _ole_guard = OleGuard;
 
     let data_object: IDataObject =
-        LazyArchiveDataObject::new(backend, archive_path, entries, password).into();
+        LazyArchiveDataObject::with_progress(backend, archive_path, entries, password, progress).into();
     let drop_source: IDropSource = SimpleDropSource.into();
 
     let mut effect = DROPEFFECT_NONE;

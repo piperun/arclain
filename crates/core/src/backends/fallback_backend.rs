@@ -244,6 +244,42 @@ impl ArchiveBackend for FallbackBackend {
         }
     }
 
+    fn extract_entry_to_writer(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        // OPTIMIZATION: Skip the native 7z backend for single-entry streaming.
+        //
+        // The sevenz-rust2 library has a bug with solid archives where early termination
+        // of the for_each_entries() iterator (returning Ok(false) to stop after finding
+        // the target file) causes ChecksumVerificationFailed errors. This happens because
+        // solid archives compress multiple files together in blocks, and the library
+        // validates the entire block even when we only want one file.
+        //
+        // Diagnosis confirmed via logs:
+        // - Native backend ALWAYS fails after ~1.9s with ChecksumVerificationFailed
+        // - CLI fallback succeeds in ~0.45s
+        // - Total time per file was ~2.3s (wasted 1.9s + 0.45s)
+        //
+        // By going directly to CLI, we reduce per-file extraction from ~2.3s to ~0.45s.
+        // The CLI backend uses `7z e -so` which streams entries efficiently.
+        //
+        // For bulk extraction (extract_all, extract_files), the native backend works fine
+        // because it processes all entries without early termination.
+        info!(
+            "Streaming entry '{}' via {} (skipping {} due to solid archive streaming issues)",
+            path_in_archive,
+            self.fallback_name,
+            self.primary_name
+        );
+        
+        self.fallback
+            .extract_entry_to_writer(archive, path_in_archive, password, writer)
+    }
+
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()> {
         match self.primary.recompress_7z(source, dest_7z) {
             Ok(()) => Ok(()),
