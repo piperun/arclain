@@ -4,9 +4,13 @@
 //! Uses native Windows COM APIs for deferred extraction, or `drag` crate fallback.
 
 #[cfg(target_os = "windows")]
+pub mod stream;
+#[cfg(target_os = "windows")]
 pub mod windows_native;
 
+use arclain_core::{ArchiveBackend, ArchiveEntry};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Result of a drag operation
 #[derive(Debug, Clone, PartialEq)]
@@ -78,22 +82,29 @@ pub fn start_drag<W: raw_window_handle::HasWindowHandle>(
     .map_err(|e| DragError::PlatformError(e.to_string()))
 }
 
-/// Callback for extracting files on drop
-pub type ExtractCallback = Box<dyn Fn() -> std::result::Result<Vec<PathBuf>, String> + Send + Sync>;
-
 #[cfg(target_os = "windows")]
-pub fn start_deferred_drag(callback: ExtractCallback) -> Result<DragResult, DragError> {
+pub fn start_deferred_drag(
+    backend: Arc<dyn ArchiveBackend>,
+    archive_path: PathBuf,
+    entries: Vec<ArchiveEntry>,
+    password: Option<String>,
+) -> Result<DragResult, DragError> {
     use windows_native::start_deferred_drag as native_start;
 
     // DROPEFFECT constants might be internal to the module, but we can check result
-    match native_start(callback) {
+    match native_start(backend, archive_path, entries, password) {
         Ok(_effect) => Ok(DragResult::Dropped), // Simplify for now
         Err(e) => Err(DragError::PlatformError(e)),
     }
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn start_deferred_drag(_callback: ExtractCallback) -> Result<DragResult, DragError> {
+pub fn start_deferred_drag(
+    _backend: Arc<dyn ArchiveBackend>,
+    _archive_path: PathBuf,
+    _entries: Vec<ArchiveEntry>,
+    _password: Option<String>,
+) -> Result<DragResult, DragError> {
     Err(DragError::PlatformError(
         "Deferred drag not supported on this platform. Please extract first.".into(),
     ))

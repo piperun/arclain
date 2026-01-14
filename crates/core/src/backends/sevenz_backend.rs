@@ -638,4 +638,33 @@ impl ArchiveBackend for SevenZBackend {
         }
         Err(anyhow!("Entry not found"))
     }
+
+    fn extract_entry_to_writer(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        info!("Streaming entry '{}' from 7z archive", path_in_archive);
+        let pwd = password.map(Password::from).unwrap_or_else(Password::empty);
+        // Note: Opening archive reader might be slow if large headers
+        let mut reader = ArchiveReader::open(archive, pwd)?;
+        let mut found = false;
+
+        reader.for_each_entries(|entry, reader| {
+            if entry.name == path_in_archive {
+                std::io::copy(reader, writer)?;
+                found = true;
+                Ok(false) // Stop iteration
+            } else {
+                Ok(true)
+            }
+        })?;
+
+        if !found {
+            return Err(anyhow!("File not found in archive: {}", path_in_archive));
+        }
+        Ok(())
+    }
 }

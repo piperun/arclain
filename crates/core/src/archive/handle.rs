@@ -6,29 +6,29 @@ use zeroize::Zeroizing;
 use super::{ArchiveBackend, ArchiveInfo};
 
 /// Archive handle with dependency injection pattern.
-/// 
+///
 /// This is the canonical way to pass archives around in the codebase.
 /// Like a database connector, it encapsulates the backend, file path, and credentials,
 /// providing a unified interface for all archive operations.
-/// 
+///
 /// # Design Philosophy
-/// 
+///
 /// - **Dependency Injection**: Functions accept `&Archive` instead of raw paths/backends
 /// - **Secure by Default**: Passwords are zeroized, never leaked in debug output
 /// - **Flexible**: Works with or without passwords, auto-detects encryption
 /// - **Ergonomic**: Single type for all archive operations
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust,ignore
 /// // Create archive handle with backend
 /// let archive = Archive::new(backend, "game.rar");
-/// 
+///
 /// // Or with password from database
 /// let archive = Archive::with_resolver(backend, "game.rar", || {
 ///     password_db.lookup("game.rar")
 /// });
-/// 
+///
 /// // Pass to any function needing archive access
 /// organize_game(&archive, output_path, metadata)?;
 /// ```
@@ -91,6 +91,11 @@ impl Archive {
     /// Get the backend used by this archive
     pub fn backend(&self) -> &dyn ArchiveBackend {
         self.backend.as_ref()
+    }
+
+    /// Get the backend Arc
+    pub fn backend_arc(&self) -> Arc<dyn ArchiveBackend> {
+        self.backend.clone()
     }
 
     /// Get the password as an Option<&str> for passing to backend methods

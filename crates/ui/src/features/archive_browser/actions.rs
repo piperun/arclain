@@ -314,40 +314,47 @@ impl<'a> ActionContext<'a> {
                 true
             }
             Action::DragExtract(files) => {
-                // Get archive handle for callback
+                // Get archive handle
                 let archive_guard = self.shared.signals().opened_archive.read();
-                let archive_arc = archive_guard.as_ref().cloned();
-                drop(archive_guard); // Release lock immediately
+                let archive_arc_opt = archive_guard.as_ref().cloned();
+                drop(archive_guard);
 
-                if let Some(archive_arc) = archive_arc {
-                    let files_to_extract = files.clone();
+                if let Some(archive_arc) = archive_arc_opt {
+                    let archive = archive_arc.read();
 
-                    // Create callback that extracts files when drop occurs
-                    let callback = Box::new(move || {
-                        tracing::info!("Deferred extraction callback triggered");
-                        let archive = archive_arc.read();
+                    // Collect entries matching the dragged files (or directory contents)
+                    // Collect entries matching the dragged files (or directory contents)
+                    let all_entries = self.shared.signals().entries.get();
+                    let entries: Vec<arclain_core::ArchiveEntry> = all_entries
+                        .iter()
+                        .filter(|e| {
+                            files
+                                .iter()
+                                .any(|f| e.path == *f || e.path.starts_with(&format!("{}/", f)))
+                        })
+                        .cloned()
+                        .collect();
 
-                        let temp_dir = std::env::temp_dir().join("arclain_drag");
-                        let _ = std::fs::create_dir_all(&temp_dir);
+                    let backend = archive.backend_arc();
+                    let archive_path = archive.path().to_path_buf();
+                    let password = archive.password_ref().map(|p| p.to_string());
 
-                        // Extract files
-                        archive
-                            .extract_files(&temp_dir, &files_to_extract)
-                            .map_err(|e| e.to_string())?;
+                    drop(archive); // Release lock before drag loop blocks
 
-                        // Return full paths
-                        let mut extracted_paths = Vec::new();
-                        for file in &files_to_extract {
-                            extracted_paths.push(temp_dir.join(file));
-                        }
+                    if entries.is_empty() {
+                        tracing::warn!("DragExtract: No matching entries found");
+                        return true;
+                    }
 
-                        Ok(extracted_paths)
-                    });
-
-                    // Start the drag operation (blocks until drop)
-                    match crate::platform::drag_source::start_deferred_drag(callback) {
+                    // Start the drag operation (stream based)
+                    match crate::platform::drag_source::start_deferred_drag(
+                        backend,
+                        archive_path,
+                        entries,
+                        password,
+                    ) {
                         Ok(_) => {
-                            self.status_info.message = "Files dropped successfully".to_string();
+                            self.status_info.message = "Drag operation completed".to_string();
                         }
                         Err(e) => {
                             tracing::warn!("Drag failed: {:?}", e);
