@@ -8,9 +8,12 @@ pub mod stream;
 #[cfg(target_os = "windows")]
 pub mod windows_native;
 
-use arclain_core::{ArchiveBackend, ArchiveEntry};
+use arclain_core::{ArchiveBackend, ArchiveEntry, ExtractionProgress};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Callback for progress updates during drag extraction
+pub type DragProgressCallback = Arc<dyn Fn(ExtractionProgress) + Send + Sync>;
 
 /// Result of a drag operation
 #[derive(Debug, Clone, PartialEq)]
@@ -89,11 +92,25 @@ pub fn start_deferred_drag(
     entries: Vec<ArchiveEntry>,
     password: Option<String>,
 ) -> Result<DragResult, DragError> {
-    use windows_native::start_deferred_drag as native_start;
+    start_deferred_drag_with_progress(backend, archive_path, entries, password, None)
+}
 
-    // DROPEFFECT constants might be internal to the module, but we can check result
-    match native_start(backend, archive_path, entries, password) {
-        Ok(_effect) => Ok(DragResult::Dropped), // Simplify for now
+/// Start a deferred drag operation with optional progress callback.
+///
+/// The progress callback is invoked during batch extraction to report progress.
+/// This allows the UI to show an extraction progress modal.
+#[cfg(target_os = "windows")]
+pub fn start_deferred_drag_with_progress(
+    backend: Arc<dyn ArchiveBackend>,
+    archive_path: PathBuf,
+    entries: Vec<ArchiveEntry>,
+    password: Option<String>,
+    progress: Option<DragProgressCallback>,
+) -> Result<DragResult, DragError> {
+    use windows_native::start_deferred_drag_with_progress as native_start;
+
+    match native_start(backend, archive_path, entries, password, progress) {
+        Ok(_effect) => Ok(DragResult::Dropped),
         Err(e) => Err(DragError::PlatformError(e)),
     }
 }
@@ -104,6 +121,19 @@ pub fn start_deferred_drag(
     _archive_path: PathBuf,
     _entries: Vec<ArchiveEntry>,
     _password: Option<String>,
+) -> Result<DragResult, DragError> {
+    Err(DragError::PlatformError(
+        "Deferred drag not supported on this platform. Please extract first.".into(),
+    ))
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn start_deferred_drag_with_progress(
+    _backend: Arc<dyn ArchiveBackend>,
+    _archive_path: PathBuf,
+    _entries: Vec<ArchiveEntry>,
+    _password: Option<String>,
+    _progress: Option<DragProgressCallback>,
 ) -> Result<DragResult, DragError> {
     Err(DragError::PlatformError(
         "Deferred drag not supported on this platform. Please extract first.".into(),

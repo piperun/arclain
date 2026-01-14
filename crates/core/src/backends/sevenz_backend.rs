@@ -646,9 +646,17 @@ impl ArchiveBackend for SevenZBackend {
         password: Option<&str>,
         writer: &mut dyn std::io::Write,
     ) -> Result<()> {
+        // NOTE: This method has a known issue with solid 7z archives.
+        // When we return Ok(false) to stop iteration early after finding our target file,
+        // the sevenz-rust2 library may throw ChecksumVerificationFailed errors because
+        // solid blocks require full decompression for checksum validation.
+        //
+        // The FallbackBackend works around this by routing extract_entry_to_writer
+        // directly to the CLI backend, which handles streaming correctly.
+        // This method is kept for non-FallbackBackend usage scenarios.
+        
         info!("Streaming entry '{}' from 7z archive", path_in_archive);
         let pwd = password.map(Password::from).unwrap_or_else(Password::empty);
-        // Note: Opening archive reader might be slow if large headers
         let mut reader = ArchiveReader::open(archive, pwd)?;
         let mut found = false;
 

@@ -323,7 +323,6 @@ impl<'a> ActionContext<'a> {
                     let archive = archive_arc.read();
 
                     // Collect entries matching the dragged files (or directory contents)
-                    // Collect entries matching the dragged files (or directory contents)
                     let all_entries = self.shared.signals().entries.get();
                     let entries: Vec<arclain_core::ArchiveEntry> = all_entries
                         .iter()
@@ -346,17 +345,41 @@ impl<'a> ActionContext<'a> {
                         return true;
                     }
 
-                    // Start the drag operation (stream based)
-                    match crate::platform::drag_source::start_deferred_drag(
+                    // Create a progress callback that updates the extraction_progress signal
+                    let extraction_signal = self.shared.signals().extraction_progress.clone();
+                    let progress_callback: crate::platform::drag_source::DragProgressCallback =
+                        std::sync::Arc::new(move |progress: arclain_core::ExtractionProgress| {
+                            use crate::core::signals::ExtractionProgressState;
+                            
+                            let state = ExtractionProgressState {
+                                current_file: progress.current_file.clone(),
+                                percent: progress.percent,
+                                current: progress.current,
+                                total: progress.total,
+                                complete: progress.current >= progress.total && progress.percent >= 100,
+                                error: None,
+                                file_to_open: None,
+                                cancelled: false,
+                            };
+                            extraction_signal.set(Some(state));
+                        });
+
+                    // Start the drag operation with progress callback
+                    match crate::platform::drag_source::start_deferred_drag_with_progress(
                         backend,
                         archive_path,
                         entries,
                         password,
+                        Some(progress_callback),
                     ) {
                         Ok(_) => {
+                            // Clear extraction progress signal when drag completes
+                            self.shared.signals().extraction_progress.set(None);
                             self.status_info.message = "Drag operation completed".to_string();
                         }
                         Err(e) => {
+                            // Clear extraction progress signal on error
+                            self.shared.signals().extraction_progress.set(None);
                             tracing::warn!("Drag failed: {:?}", e);
                             self.status_info.message = format!("Drag failed: {}", e);
                         }
