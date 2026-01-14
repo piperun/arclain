@@ -130,6 +130,21 @@ pub trait ArchiveBackend: Send + Sync {
         path_in_archive: &str,
         password: Option<&str>,
     ) -> Result<String>;
+
+    /// Extract a single entry to a writer (for streaming)
+    fn extract_entry_to_writer(
+        &self,
+        archive: &Path,
+        path_in_archive: &str,
+        password: Option<&str>,
+        writer: &mut dyn std::io::Write,
+    ) -> Result<()> {
+        // Default implementation returns error
+        let _ = (archive, path_in_archive, password, writer);
+        Err(anyhow::anyhow!(
+            "Streaming extraction not supported by this backend"
+        ))
+    }
 }
 
 /// Progress update for extraction operations
