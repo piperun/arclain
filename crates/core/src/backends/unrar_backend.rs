@@ -205,8 +205,23 @@ impl ArchiveBackend for UnrarBackend {
         files: &[String],
         password: Option<&str>,
     ) -> Result<()> {
+        // Delegate to the progress version with no callback
+        self.extract_files_with_progress(path, dest, files, password, None, None)
+    }
+
+    fn extract_files_with_progress(
+        &self,
+        path: &Path,
+        dest: &Path,
+        files: &[String],
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        cancel: Option<&crate::CancellationToken>,
+    ) -> Result<()> {
+        use std::sync::atomic::Ordering;
+        
         info!(
-            "Using {} backend to extract {} files from RAR",
+            "Using {} backend to extract {} files from RAR with progress",
             self.name(),
             files.len()
         );
@@ -222,18 +237,55 @@ impl ArchiveBackend for UnrarBackend {
 
         let mut open_archive = archive.open_for_processing()?;
 
+        let total = files.len();
+        let mut processed = 0;
+
         // Extract only specified files
         while let Some(header) = open_archive.read_header()? {
+            // Check for cancellation
+            if let Some(token) = cancel {
+                if token.load(Ordering::Relaxed) {
+                    info!("RAR extraction cancelled by user");
+                    return Err(anyhow!("Extraction cancelled by user"));
+                }
+            }
+
             let entry_path = header.entry().filename.to_string_lossy().to_string();
 
             if files
                 .iter()
                 .any(|f| entry_path == *f || entry_path.contains(f))
             {
+                // Report progress before extraction
+                processed += 1;
+                if let Some(cb) = progress {
+                    let percent = if total > 0 {
+                        ((processed * 100) / total) as u8
+                    } else {
+                        0
+                    };
+                    cb(crate::ExtractionProgress {
+                        current: processed,
+                        total,
+                        current_file: entry_path.clone(),
+                        percent,
+                    });
+                }
+
                 open_archive = header.extract_to(dest.to_path_buf())?;
             } else {
                 open_archive = header.skip()?;
             }
+        }
+
+        // Report completion
+        if let Some(cb) = progress {
+            cb(crate::ExtractionProgress {
+                current: total,
+                total,
+                current_file: "Complete".to_string(),
+                percent: 100,
+            });
         }
 
         Ok(())
@@ -263,17 +315,27 @@ impl ArchiveBackend for UnrarBackend {
 
         let mut open_archive = archive.open_for_processing()?;
 
-        let dir_prefix = format!("{}/", dir_path.trim_end_matches('/'));
+        // Normalize to forward slashes for comparison - RAR entries may use either separator
+        let dir_path_normalized = dir_path.trim_end_matches('/').trim_end_matches('\\').replace('\\', "/");
+        let dir_prefix = format!("{}/", dir_path_normalized);
+        
+        info!("RAR extract_directory: looking for entries starting with '{}' or exactly '{}'", dir_prefix, dir_path_normalized);
 
+        let mut extracted_count = 0;
         while let Some(header) = open_archive.read_header()? {
             let entry_path = header.entry().filename.to_string_lossy().to_string();
+            // Normalize entry path separators for comparison
+            let entry_path_normalized = entry_path.replace('\\', "/");
 
-            if entry_path.starts_with(&dir_prefix) || entry_path == dir_path {
+            if entry_path_normalized.starts_with(&dir_prefix) || entry_path_normalized == dir_path_normalized {
+                extracted_count += 1;
                 open_archive = header.extract_to(dest.to_path_buf())?;
             } else {
                 open_archive = header.skip()?;
             }
         }
+        
+        info!("RAR extract_directory: extracted {} entries", extracted_count);
 
         Ok(())
     }

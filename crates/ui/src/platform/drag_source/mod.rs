@@ -8,6 +8,8 @@
 pub mod stream;
 #[cfg(target_os = "windows")]
 pub mod windows_native;
+#[cfg(target_os = "windows")]
+pub mod native_progress;
 
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use std::path::PathBuf;
@@ -85,9 +87,11 @@ pub fn start_drag<W: raw_window_handle::HasWindowHandle>(
 
 /// Start a deferred drag operation using native Windows APIs.
 ///
-/// Files are extracted in a single batch operation to a temp directory,
-/// with a native Windows IProgressDialog shown during extraction.
-/// This is MUCH faster than extracting files one-by-one.
+/// Architecture (like 7-Zip):
+/// 1. Show progress dialog while extracting in background
+/// 2. After extraction completes, call DoDragDrop with temp files
+///
+/// This is simpler than trying to show progress during DoDragDrop.
 #[cfg(target_os = "windows")]
 pub fn start_deferred_drag(
     backend: Arc<dyn ArchiveBackend>,

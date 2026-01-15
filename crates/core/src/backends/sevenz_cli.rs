@@ -588,7 +588,7 @@ impl ArchiveBackend for SevenZipCli {
             path.display(),
             dest.display()
         );
-        debug!("Files to extract: {:?}", files);
+        debug!("Files to extract (first 10): {:?}", files.iter().take(10).collect::<Vec<_>>());
 
         let mut args = vec![
             OsString::from("x"), // Use 'x' to preserve directory structure (matches UI path expectations)
@@ -613,12 +613,58 @@ impl ArchiveBackend for SevenZipCli {
         args.push(path.as_os_str().to_os_string());
 
         // Add specific files to extract
+        // Note: For many files, this can hit command line length limits
+        // Windows has ~32KB limit, but practical limit is ~8KB for CreateProcess
+        let mut total_arg_len: usize = args.iter().map(|a| a.len() + 1).sum();
+        let mut truncated = false;
+        
         for file in files {
-            args.push(OsString::from(file));
+            let file_os = OsString::from(file);
+            let new_len = total_arg_len + file_os.len() + 1;
+            
+            // If adding this file would exceed ~8000 chars, stop and log warning
+            if new_len > 8000 && !args.iter().any(|a| a == &file_os) {
+                if !truncated {
+                    error!("Command line too long! Truncating file list at {} files. This may cause incomplete extraction.",
+                           args.len() - 8); // Subtract initial args
+                    truncated = true;
+                }
+                break;
+            }
+            
+            args.push(file_os);
+            total_arg_len = new_len;
         }
 
         self.run_status(args)?;
-        info!("Files extracted successfully");
+        
+        // Verify extraction worked by checking if at least some files exist
+        let sample_files: Vec<_> = files.iter().take(3).collect();
+        let mut found_count = 0;
+        for file in &sample_files {
+            let full_path = dest.join(file);
+            if full_path.exists() {
+                found_count += 1;
+            } else {
+                debug!("Sample file not found after extraction: {:?}", full_path);
+            }
+        }
+        
+        if found_count == 0 && !sample_files.is_empty() {
+            error!("CRITICAL: 7z extraction returned success but 0/{} sample files found in {:?}",
+                   sample_files.len(), dest);
+            // List what IS in dest to help debug
+            if let Ok(entries) = std::fs::read_dir(dest) {
+                for entry in entries.take(5) {
+                    if let Ok(e) = entry {
+                        error!("  Found in dest: {:?}", e.path());
+                    }
+                }
+            }
+        } else {
+            info!("Files extracted successfully ({}/{} sample files verified)", found_count, sample_files.len());
+        }
+        
         Ok(())
     }
 
