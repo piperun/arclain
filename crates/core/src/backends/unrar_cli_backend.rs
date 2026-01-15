@@ -30,24 +30,50 @@ impl UnrarCli {
             }
         }
 
-        // On Windows, also check common WinRAR installation paths
+        // On Windows, also check common installation paths
         #[cfg(windows)]
         {
-            let winrar_paths = [
-                r"C:\Program Files\WinRAR\UnRAR.exe",
-                r"C:\Program Files (x86)\WinRAR\UnRAR.exe",
+            let mut paths_to_check = vec![
+                // WinRAR installations
+                PathBuf::from(r"C:\Program Files\WinRAR\UnRAR.exe"),
+                PathBuf::from(r"C:\Program Files (x86)\WinRAR\UnRAR.exe"),
             ];
+            
+            // Check scoop installation
+            if let Some(home) = std::env::var_os("USERPROFILE") {
+                let scoop_path = PathBuf::from(home).join(r"scoop\apps\unrar\current\UnRAR.exe");
+                paths_to_check.push(scoop_path);
+                
+                // Also check scoop shims
+                let scoop_shim = PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default())
+                    .join(r"scoop\shims\unrar.exe");
+                paths_to_check.push(scoop_shim);
+            }
+            
+            // Check chocolatey installation
+            if let Some(choco) = std::env::var_os("ChocolateyInstall") {
+                let choco_path = PathBuf::from(choco).join(r"bin\unrar.exe");
+                paths_to_check.push(choco_path);
+            } else {
+                // Default chocolatey location
+                paths_to_check.push(PathBuf::from(r"C:\ProgramData\chocolatey\bin\unrar.exe"));
+            }
+            
+            // Check portable/common locations
+            paths_to_check.push(PathBuf::from(r"C:\Tools\unrar.exe"));
+            paths_to_check.push(PathBuf::from(r"C:\unrar\unrar.exe"));
 
-            for path in winrar_paths {
-                let path = PathBuf::from(path);
+            for path in paths_to_check {
                 if path.exists() {
-                    info!("Found UnRAR via WinRAR installation: {}", path.display());
+                    info!("Found UnRAR at: {}", path.display());
                     return Some(Self { exe: path });
+                } else {
+                    debug!("UnRAR not found at: {}", path.display());
                 }
             }
         }
 
-        debug!("UnRAR CLI not found");
+        debug!("UnRAR CLI not found in any known location");
         None
     }
 
@@ -89,14 +115,25 @@ impl UnrarCli {
     }
 
     fn run_status(&self, args: &[OsString]) -> Result<()> {
-        debug!("Running UnRAR (status mode): {:?} {:?}", self.exe, args);
+        // Calculate approximate command line length
+        let cmd_len: usize = self.exe.as_os_str().len() + args.iter().map(|a| a.len() + 1).sum::<usize>();
+        debug!("Running UnRAR (status mode): {:?} with {} args, ~{} bytes", self.exe, args.len(), cmd_len);
+        
+        if cmd_len > 8000 {
+            error!("Command line too long for UnRAR: {} bytes (limit ~8000). {} args passed.", cmd_len, args.len());
+            return Err(anyhow!(
+                "Command line too long ({} bytes). Too many files ({} args) for UnRAR CLI - use extract_all instead",
+                cmd_len,
+                args.len()
+            ));
+        }
 
         let output = Command::new(&self.exe)
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .context("spawning unrar")?;
+            .with_context(|| format!("spawning unrar at {:?} with {} args", self.exe, args.len()))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
