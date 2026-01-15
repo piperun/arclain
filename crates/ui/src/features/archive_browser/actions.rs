@@ -314,6 +314,8 @@ impl<'a> ActionContext<'a> {
                 true
             }
             Action::DragExtract(files) => {
+                tracing::info!("[DragExtract] Starting with files: {:?}", files);
+                
                 // Get archive handle
                 let archive_guard = self.shared.signals().opened_archive.read();
                 let archive_arc_opt = archive_guard.as_ref().cloned();
@@ -324,15 +326,48 @@ impl<'a> ActionContext<'a> {
 
                     // Collect entries matching the dragged files (or directory contents)
                     let all_entries = self.shared.signals().entries.get();
+                    tracing::info!("[DragExtract] Total entries in archive: {}", all_entries.len());
+                    
+                    // Debug: log all entries to see their paths
+                    for (i, e) in all_entries.iter().enumerate() {
+                        tracing::debug!("[DragExtract] Archive entry [{:3}]: path='{}' is_dir={} size={}",
+                            i, e.path, e.is_dir, e.size);
+                    }
+                    
+                    // Match entries: exact match OR starts with "folder/" OR starts with "folder\"
+                    // Windows archives sometimes use backslashes
                     let entries: Vec<arclain_core::ArchiveEntry> = all_entries
                         .iter()
                         .filter(|e| {
-                            files
-                                .iter()
-                                .any(|f| e.path == *f || e.path.starts_with(&format!("{}/", f)))
+                            let matched = files.iter().any(|f| {
+                                // Exact match
+                                if e.path == *f {
+                                    return true;
+                                }
+                                // Child path with forward slash
+                                if e.path.starts_with(&format!("{}/", f)) {
+                                    return true;
+                                }
+                                // Child path with backslash (Windows-style)
+                                if e.path.starts_with(&format!("{}\\", f)) {
+                                    return true;
+                                }
+                                false
+                            });
+                            if matched {
+                                tracing::debug!("[DragExtract] Matched entry: path='{}' is_dir={} size={}",
+                                    e.path, e.is_dir, e.size);
+                            }
+                            matched
                         })
                         .cloned()
                         .collect();
+
+                    tracing::info!("[DragExtract] Matched {} entries for drag", entries.len());
+                    for (i, e) in entries.iter().enumerate() {
+                        tracing::info!("[DragExtract]   [{:3}] path='{}' is_dir={} size={}",
+                            i, e.path, e.is_dir, e.size);
+                    }
 
                     let backend = archive.backend_arc();
                     let archive_path = archive.path().to_path_buf();
@@ -341,51 +376,30 @@ impl<'a> ActionContext<'a> {
                     drop(archive); // Release lock before drag loop blocks
 
                     if entries.is_empty() {
-                        tracing::warn!("DragExtract: No matching entries found");
+                        tracing::warn!("[DragExtract] No matching entries found");
                         return true;
                     }
 
-                    // Create a progress callback that updates the extraction_progress signal
-                    let extraction_signal = self.shared.signals().extraction_progress.clone();
-                    let progress_callback: crate::platform::drag_source::DragProgressCallback =
-                        std::sync::Arc::new(move |progress: arclain_core::ExtractionProgress| {
-                            use crate::core::signals::ExtractionProgressState;
-                            
-                            let state = ExtractionProgressState {
-                                current_file: progress.current_file.clone(),
-                                percent: progress.percent,
-                                current: progress.current,
-                                total: progress.total,
-                                complete: progress.current >= progress.total && progress.percent >= 100,
-                                error: None,
-                                file_to_open: None,
-                                cancelled: false,
-                            };
-                            extraction_signal.set(Some(state));
-                        });
-
-                    // Start the drag operation with progress callback
-                    match crate::platform::drag_source::start_deferred_drag_with_progress(
+                    // Start the drag operation
+                    // Progress is shown via native Windows IProgressDialog during batch extraction
+                    tracing::info!("[DragExtract] Calling start_deferred_drag with {} entries", entries.len());
+                    match crate::platform::drag_source::start_deferred_drag(
                         backend,
                         archive_path,
                         entries,
                         password,
-                        Some(progress_callback),
                     ) {
                         Ok(_) => {
-                            // Clear extraction progress signal when drag completes
-                            self.shared.signals().extraction_progress.set(None);
+                            tracing::info!("[DragExtract] Drag operation completed successfully");
                             self.status_info.message = "Drag operation completed".to_string();
                         }
                         Err(e) => {
-                            // Clear extraction progress signal on error
-                            self.shared.signals().extraction_progress.set(None);
-                            tracing::warn!("Drag failed: {:?}", e);
+                            tracing::warn!("[DragExtract] Drag failed: {:?}", e);
                             self.status_info.message = format!("Drag failed: {}", e);
                         }
                     }
                 } else {
-                    tracing::warn!("DragExtract: No archive session open");
+                    tracing::warn!("[DragExtract] No archive session open");
                     self.status_info.message = "No archive open".to_string();
                 }
                 true
