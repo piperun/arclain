@@ -1,19 +1,17 @@
 //! Platform-specific drag source abstraction
 //!
 //! Enables dragging files from Arclain to external applications (Explorer, etc.)
-//! Uses native Windows COM APIs for deferred extraction, or `drag` crate fallback.
+//! Uses native Windows COM APIs for deferred extraction with IProgressDialog,
+//! or `drag` crate fallback for non-Windows platforms.
 
 #[cfg(target_os = "windows")]
 pub mod stream;
 #[cfg(target_os = "windows")]
 pub mod windows_native;
 
-use arclain_core::{ArchiveBackend, ArchiveEntry, ExtractionProgress};
+use arclain_core::{ArchiveBackend, ArchiveEntry};
 use std::path::PathBuf;
 use std::sync::Arc;
-
-/// Callback for progress updates during drag extraction
-pub type DragProgressCallback = Arc<dyn Fn(ExtractionProgress) + Send + Sync>;
 
 /// Result of a drag operation
 #[derive(Debug, Clone, PartialEq)]
@@ -85,6 +83,11 @@ pub fn start_drag<W: raw_window_handle::HasWindowHandle>(
     .map_err(|e| DragError::PlatformError(e.to_string()))
 }
 
+/// Start a deferred drag operation using native Windows APIs.
+///
+/// Files are extracted in a single batch operation to a temp directory,
+/// with a native Windows IProgressDialog shown during extraction.
+/// This is MUCH faster than extracting files one-by-one.
 #[cfg(target_os = "windows")]
 pub fn start_deferred_drag(
     backend: Arc<dyn ArchiveBackend>,
@@ -92,24 +95,9 @@ pub fn start_deferred_drag(
     entries: Vec<ArchiveEntry>,
     password: Option<String>,
 ) -> Result<DragResult, DragError> {
-    start_deferred_drag_with_progress(backend, archive_path, entries, password, None)
-}
+    use windows_native::start_deferred_drag as native_start;
 
-/// Start a deferred drag operation with optional progress callback.
-///
-/// The progress callback is invoked during batch extraction to report progress.
-/// This allows the UI to show an extraction progress modal.
-#[cfg(target_os = "windows")]
-pub fn start_deferred_drag_with_progress(
-    backend: Arc<dyn ArchiveBackend>,
-    archive_path: PathBuf,
-    entries: Vec<ArchiveEntry>,
-    password: Option<String>,
-    progress: Option<DragProgressCallback>,
-) -> Result<DragResult, DragError> {
-    use windows_native::start_deferred_drag_with_progress as native_start;
-
-    match native_start(backend, archive_path, entries, password, progress) {
+    match native_start(backend, archive_path, entries, password) {
         Ok(_effect) => Ok(DragResult::Dropped),
         Err(e) => Err(DragError::PlatformError(e)),
     }
@@ -127,18 +115,6 @@ pub fn start_deferred_drag(
     ))
 }
 
-#[cfg(not(target_os = "windows"))]
-pub fn start_deferred_drag_with_progress(
-    _backend: Arc<dyn ArchiveBackend>,
-    _archive_path: PathBuf,
-    _entries: Vec<ArchiveEntry>,
-    _password: Option<String>,
-    _progress: Option<DragProgressCallback>,
-) -> Result<DragResult, DragError> {
-    Err(DragError::PlatformError(
-        "Deferred drag not supported on this platform. Please extract first.".into(),
-    ))
-}
 
 /// Linux stub - drag-out not supported with winit on Linux yet
 #[cfg(target_os = "linux")]

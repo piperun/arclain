@@ -4,30 +4,33 @@
 //! extraction to memory (HGLOBAL) - like 7-Zip File Manager does.
 //!
 //! OPTIMIZATION: When a drag starts, we pre-extract ALL requested files
-//! to a temp directory in a single batch operation (using extract_files_with_progress).
+//! to a temp directory in a single batch operation (using extract_files).
 //! Then when Explorer requests each file via GetData, we simply read from disk.
 //! This is MUCH faster than extracting files one-by-one per GetData call.
 //!
-//! Progress callback support allows the UI to show an extraction modal during drag.
+//! PROGRESS DIALOG: Uses Windows Shell IProgressDialog to show extraction progress
+//! during the drag operation. This works because IProgressDialog has its own
+//! message pump, similar to how 7-Zip File Manager does it.
 
-use super::DragProgressCallback;
-use arclain_core::{ArchiveBackend, ArchiveEntry, ExtractionProgress};
+use arclain_core::{ArchiveBackend, ArchiveEntry};
 use parking_lot::RwLock;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 use std::time::Instant;
-use windows::core::{implement, Result, HRESULT};
+use windows::core::{implement, Result, HRESULT, PCWSTR};
 
 use windows::Win32::Foundation::{
     BOOL, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC,
-    DV_E_LINDEX, E_NOTIMPL, E_OUTOFMEMORY, E_UNEXPECTED, S_FALSE, S_OK,
+    DV_E_LINDEX, E_NOTIMPL, E_OUTOFMEMORY, E_UNEXPECTED, HWND, S_FALSE, S_OK,
 };
 use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows::Win32::System::Com::{
-    IAdviseSink, IDataObject, IEnumSTATDATA, DATADIR_GET, DVASPECT_CONTENT, FORMATETC, STGMEDIUM,
-    TYMED_HGLOBAL,
+    CoCreateInstance, CoInitializeEx, CoUninitialize, IAdviseSink, IDataObject, IEnumSTATDATA,
+    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, DATADIR_GET, DVASPECT_CONTENT, FORMATETC,
+    STGMEDIUM, TYMED_HGLOBAL,
 };
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
@@ -36,7 +39,18 @@ use windows::Win32::System::Ole::{
     DoDragDrop, IDropSource, OleInitialize, OleUninitialize, DROPEFFECT_COPY, DROPEFFECT_MOVE,
     DROPEFFECT_NONE,
 };
-use windows::Win32::UI::Shell::{FD_ATTRIBUTES, FD_FILESIZE, FILEDESCRIPTORW};
+use windows::Win32::UI::Shell::{
+    FD_ATTRIBUTES, FD_FILESIZE, FILEDESCRIPTORW, IProgressDialog,
+    PROGDLG_AUTOTIME, PROGDLG_NOCANCEL, PROGDLG_NOMINIMIZE,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, GetForegroundWindow, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+};
+use windows::core::GUID;
+
+// CLSID for ProgressDialog
+// {F8383852-FCD3-11d1-A6B9-006097DF5BD4}
+const CLSID_PROGRESS_DIALOG: GUID = GUID::from_u128(0xF8383852_FCD3_11d1_A6B9_006097DF5BD4);
 
 // Make DROPEFFECT public so mod.rs can use it in return type signature
 pub use windows::Win32::System::Ole::DROPEFFECT;
@@ -153,16 +167,211 @@ struct ExtractionCache {
     extracted: bool,
 }
 
+/// Helper to convert a Rust string to a null-terminated wide string
+fn to_wide_string(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// Shared state for the progress dialog running on a separate thread.
+/// This allows the extraction thread to communicate progress to the dialog thread.
+struct DialogState {
+    /// Current file being extracted
+    current_file: parking_lot::Mutex<String>,
+    /// Number of files extracted so far
+    current: AtomicUsize,
+    /// Total number of files to extract
+    total: AtomicUsize,
+    /// Whether extraction is complete
+    done: AtomicBool,
+    /// Whether the dialog should close
+    should_close: AtomicBool,
+}
+
+/// Extract files with a Windows Shell progress dialog.
+///
+/// This runs the progress dialog on a **separate thread** with its own COM apartment
+/// and message pump. This is critical because:
+/// 1. DoDragDrop blocks the main thread with a modal loop
+/// 2. IProgressDialog needs a message pump to render and update
+/// 3. By running on a separate thread, the dialog can update independently
+///
+/// This approach is similar to how 7-Zip handles progress dialogs during drag operations.
+fn extract_with_progress_dialog(
+    backend: Arc<dyn ArchiveBackend>,
+    archive_path: &std::path::Path,
+    dest_dir: &std::path::Path,
+    file_paths: &[String],
+    password: Option<&str>,
+) -> std::result::Result<(), String> {
+    let file_count = file_paths.len();
+    
+    // For small file counts, just extract directly without dialog
+    if file_count <= 5 {
+        info!("[drag] Small file count ({}), extracting without progress dialog", file_count);
+        return backend
+            .extract_files(archive_path, dest_dir, file_paths, password)
+            .map_err(|e| format!("Extraction failed: {}", e));
+    }
+    
+    info!("[drag] Starting extraction with IProgressDialog on separate thread for {} files", file_count);
+    
+    // Create shared state for communication between threads
+    let dialog_state = Arc::new(DialogState {
+        current_file: parking_lot::Mutex::new("Preparing...".to_string()),
+        current: AtomicUsize::new(0),
+        total: AtomicUsize::new(file_count),
+        done: AtomicBool::new(false),
+        should_close: AtomicBool::new(false),
+    });
+    
+    // Clone for the dialog thread
+    let dialog_state_clone = Arc::clone(&dialog_state);
+    
+    // Spawn a separate thread for the progress dialog with its own COM apartment
+    let dialog_handle = std::thread::spawn(move || {
+        // Initialize COM for this thread (STA required for shell dialogs)
+        let com_init = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
+        if com_init.is_err() {
+            warn!("[drag] Failed to initialize COM on dialog thread: {:?}", com_init);
+            return;
+        }
+        
+        // Create the progress dialog on this thread
+        let progress_dialog: IProgressDialog = match unsafe {
+            CoCreateInstance(&CLSID_PROGRESS_DIALOG, None, CLSCTX_INPROC_SERVER)
+        } {
+            Ok(dialog) => dialog,
+            Err(e) => {
+                warn!("[drag] Failed to create progress dialog: {}", e);
+                unsafe { CoUninitialize() };
+                return;
+            }
+        };
+        
+        // Configure the dialog
+        let title = to_wide_string("Extracting files for drag && drop");
+        let cancel_msg = to_wide_string("Please wait...");
+        
+        unsafe {
+            let _ = progress_dialog.SetTitle(PCWSTR(title.as_ptr()));
+            let _ = progress_dialog.SetCancelMsg(PCWSTR(cancel_msg.as_ptr()), None);
+            
+            // Start the dialog WITHOUT modal flag (we have no parent window)
+            // PROGDLG_NOCANCEL because batch extraction can't be cancelled mid-way
+            // PROGDLG_NOMINIMIZE to keep it visible
+            let flags = PROGDLG_AUTOTIME | PROGDLG_NOCANCEL | PROGDLG_NOMINIMIZE;
+            
+            // Use foreground window as parent to help with visibility
+            let foreground = GetForegroundWindow();
+            let parent = if foreground.0 != 0 { foreground } else { HWND::default() };
+            
+            if let Err(e) = progress_dialog.StartProgressDialog(parent, None, flags, None) {
+                warn!("[drag] Failed to start progress dialog: {:?}", e);
+                CoUninitialize();
+                return;
+            }
+            
+            // Try to bring dialog to foreground
+            // The dialog window is created by the shell, we need to find it
+            // Give it a moment to create
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        
+        let line1 = to_wide_string("Extracting files...");
+        let start_time = Instant::now();
+        
+        // Message pump loop
+        loop {
+            // Check if we should close
+            if dialog_state_clone.should_close.load(Ordering::SeqCst) {
+                break;
+            }
+            
+            // Pump Windows messages
+            unsafe {
+                let mut msg = MSG::default();
+                while PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+            }
+            
+            // Update progress
+            let current = dialog_state_clone.current.load(Ordering::SeqCst);
+            let total = dialog_state_clone.total.load(Ordering::SeqCst);
+            let current_file = dialog_state_clone.current_file.lock().clone();
+            let line2 = to_wide_string(&current_file);
+            
+            unsafe {
+                let _ = progress_dialog.SetLine(1, PCWSTR(line1.as_ptr()), false, None);
+                let _ = progress_dialog.SetLine(2, PCWSTR(line2.as_ptr()), false, None);
+                let _ = progress_dialog.SetProgress(current as u32, total as u32);
+            }
+            
+            // Brief sleep
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            
+            // Safety timeout
+            if start_time.elapsed().as_secs() > 300 {
+                warn!("[drag] Dialog thread timeout");
+                break;
+            }
+        }
+        
+        // Stop the dialog
+        unsafe {
+            let _ = progress_dialog.StopProgressDialog();
+            CoUninitialize();
+        }
+        
+        debug!("[drag] Progress dialog thread finished");
+    });
+    
+    // Give the dialog thread time to start and show the dialog
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    
+    // Do the extraction on the current thread
+    *dialog_state.current_file.lock() = "Extracting...".to_string();
+    
+    let result = backend
+        .extract_files(archive_path, dest_dir, file_paths, password)
+        .map_err(|e| format!("Extraction failed: {}", e));
+    
+    // Signal the dialog to close
+    dialog_state.current.store(file_count, Ordering::SeqCst);
+    *dialog_state.current_file.lock() = "Complete".to_string();
+    dialog_state.done.store(true, Ordering::SeqCst);
+    dialog_state.should_close.store(true, Ordering::SeqCst);
+    
+    // Wait for dialog thread to finish
+    let _ = dialog_handle.join();
+    
+    info!("[drag] Extraction with progress dialog completed");
+    result
+}
+
+/// Entry for drag operation with both archive path and display path
+#[derive(Debug, Clone)]
+struct DragEntry {
+    /// Full path in the archive (for extraction)
+    archive_path: String,
+    /// Display path for the file descriptor (relative to what user dragged)
+    display_path: String,
+    /// File size
+    size: u64,
+}
+
 #[implement(windows::Win32::System::Com::IDataObject)]
 pub struct LazyArchiveDataObject {
     backend: Arc<dyn ArchiveBackend>,
     archive_path: PathBuf,
+    /// Original entries (for extraction)
     entries: Vec<ArchiveEntry>,
+    /// Entries with display paths (for file descriptors) - excludes directories
+    drag_entries: Vec<DragEntry>,
     password: Option<String>,
     /// Cache for batch-extracted files (lazily initialized on first GetData for FileContents)
     cache: RwLock<Option<ExtractionCache>>,
-    /// Optional progress callback for extraction updates
-    progress_callback: Option<DragProgressCallback>,
 }
 
 impl LazyArchiveDataObject {
@@ -172,33 +381,110 @@ impl LazyArchiveDataObject {
         entries: Vec<ArchiveEntry>,
         password: Option<String>,
     ) -> Self {
-        Self::with_progress(backend, archive_path, entries, password, None)
-    }
-
-    pub fn with_progress(
-        backend: Arc<dyn ArchiveBackend>,
-        archive_path: PathBuf,
-        entries: Vec<ArchiveEntry>,
-        password: Option<String>,
-        progress_callback: Option<DragProgressCallback>,
-    ) -> Self {
+        // Compute the common prefix to strip from display paths
+        // This makes dragging "folder/file.txt" display as "file.txt" if user is inside "folder"
+        // Or if dragging a folder, show its contents relative to that folder
+        let common_prefix = Self::compute_common_prefix(&entries);
+        info!("[drag] Computed common prefix: {:?}", common_prefix);
+        
+        // Create drag entries, filtering out directories and stripping prefix
+        let drag_entries: Vec<DragEntry> = entries
+            .iter()
+            .filter(|e| !e.is_dir)  // Skip directories - they cause merge prompts
+            .map(|e| {
+                let display_path = if let Some(ref prefix) = common_prefix {
+                    // Strip the prefix and any leading slashes
+                    let stripped = e.path.strip_prefix(prefix).unwrap_or(&e.path);
+                    let stripped = stripped.trim_start_matches('/').trim_start_matches('\\');
+                    stripped.to_string()
+                } else {
+                    e.path.clone()
+                };
+                
+                debug!("[drag] Entry: archive='{}' -> display='{}'", e.path, display_path);
+                
+                DragEntry {
+                    archive_path: e.path.clone(),
+                    display_path,
+                    size: e.size,
+                }
+            })
+            .collect();
+        
+        info!("[drag] Created {} drag entries (filtered from {} archive entries)",
+            drag_entries.len(), entries.len());
+        
         Self {
             backend,
             archive_path,
             entries,
+            drag_entries,
             password,
             cache: RwLock::new(None),
-            progress_callback,
         }
+    }
+    
+    /// Compute the common prefix to strip from display paths.
+    ///
+    /// Rules:
+    /// - If dragging a single file: strip its parent directory (so "folder/file.txt" becomes "file.txt")
+    /// - If dragging a folder (multiple files): keep the folder name as root (so files stay inside the folder)
+    /// - If dragging multiple separate files: no prefix stripping
+    fn compute_common_prefix(entries: &[ArchiveEntry]) -> Option<String> {
+        if entries.is_empty() {
+            return None;
+        }
+        
+        // Find all file entries (not directories)
+        let file_entries: Vec<_> = entries.iter().filter(|e| !e.is_dir).collect();
+        if file_entries.is_empty() {
+            return None;
+        }
+        
+        // Check if we have a single file or multiple files
+        if file_entries.len() == 1 {
+            // Single file: strip the entire parent path
+            let first = &file_entries[0].path;
+            let sep_pos = first.rfind(|c| c == '/' || c == '\\');
+            return match sep_pos {
+                Some(pos) => Some(first[..=pos].to_string()),  // Include the separator
+                None => None,  // No directory part to strip
+            };
+        }
+        
+        // Multiple files: Check if they're all in the same folder
+        // Find the deepest common directory
+        let first = &file_entries[0].path;
+        
+        // Get the first directory component (e.g., "folder/" from "folder/subfolder/file.txt")
+        let first_sep = first.find(|c| c == '/' || c == '\\');
+        let first_dir = match first_sep {
+            Some(pos) => &first[..=pos],  // Include the separator
+            None => return None,  // No directory part
+        };
+        
+        // Check if all files share this first directory
+        for entry in file_entries.iter().skip(1) {
+            if !entry.path.starts_with(first_dir) {
+                // Files are in different root directories, no common prefix
+                return None;
+            }
+        }
+        
+        // All files share the same root folder - DON'T strip it
+        // This keeps the folder structure when dragging a folder
+        None
     }
 
     /// Ensure all files are extracted to the temp directory.
     /// This is called once on the first FileContents request.
+    /// Uses IProgressDialog to show a native Windows progress dialog during extraction.
     fn ensure_extracted(&self) -> std::result::Result<(), String> {
         // Check if already extracted
         {
             let cache = self.cache.read();
             if cache.as_ref().map(|c| c.extracted).unwrap_or(false) {
+                debug!("[drag] Already extracted, skipping");
                 return Ok(());
             }
         }
@@ -208,6 +494,7 @@ impl LazyArchiveDataObject {
         
         // Double-check after acquiring write lock
         if cache.as_ref().map(|c| c.extracted).unwrap_or(false) {
+            debug!("[drag] Already extracted (after lock), skipping");
             return Ok(());
         }
 
@@ -216,6 +503,8 @@ impl LazyArchiveDataObject {
         // Create temp directory
         let temp_dir = tempfile::tempdir()
             .map_err(|e| format!("Failed to create temp dir: {}", e))?;
+        
+        info!("[drag] Temp dir created at: {:?}", temp_dir.path());
         
         // Collect file paths to extract (skip directories)
         let file_paths: Vec<String> = self.entries
@@ -226,49 +515,19 @@ impl LazyArchiveDataObject {
         
         let file_count = file_paths.len();
         info!(
-            "[drag] Batch extracting {} files to temp dir...",
-            file_count
+            "[drag] Batch extracting {} files to temp dir: {:?}",
+            file_count, file_paths
         );
 
-        // Send initial progress update if callback is set
-        if let Some(ref callback) = self.progress_callback {
-            callback(ExtractionProgress {
-                current: 0,
-                total: file_count,
-                current_file: "Starting extraction...".to_string(),
-                percent: 0,
-            });
-        }
-
-        // Use extract_files_with_progress if we have a callback, otherwise use simple extract_files
-        if let Some(callback) = self.progress_callback.clone() {
-            // Create a progress callback wrapper that bridges to our DragProgressCallback
-            // Clone the Arc so the closure owns it and has 'static lifetime
-            let progress_cb = move |progress: ExtractionProgress| {
-                callback(progress);
-            };
-            
-            self.backend
-                .extract_files_with_progress(
-                    &self.archive_path,
-                    temp_dir.path(),
-                    &file_paths,
-                    self.password.as_deref(),
-                    Some(&progress_cb),
-                    None, // No cancellation support for now
-                )
-                .map_err(|e| format!("Batch extraction failed: {}", e))?;
-        } else {
-            // No progress callback - use simple extraction
-            self.backend
-                .extract_files(
-                    &self.archive_path,
-                    temp_dir.path(),
-                    &file_paths,
-                    self.password.as_deref(),
-                )
-                .map_err(|e| format!("Batch extraction failed: {}", e))?;
-        }
+        // Use IProgressDialog for extraction with progress
+        // This shows a native Windows progress dialog that works even during DoDragDrop
+        extract_with_progress_dialog(
+            Arc::clone(&self.backend),
+            &self.archive_path,
+            temp_dir.path(),
+            &file_paths,
+            self.password.as_deref(),
+        )?;
 
         let elapsed = start.elapsed();
         info!(
@@ -277,15 +536,17 @@ impl LazyArchiveDataObject {
             elapsed.as_secs_f64(),
             file_count as f64 / elapsed.as_secs_f64()
         );
-
-        // Send completion progress update if callback is set
-        if let Some(ref callback) = self.progress_callback {
-            callback(ExtractionProgress {
-                current: file_count,
-                total: file_count,
-                current_file: "Extraction complete".to_string(),
-                percent: 100,
-            });
+        
+        // Verify files were extracted
+        for path in &file_paths {
+            let full_path = temp_dir.path().join(path);
+            if full_path.exists() {
+                if let Ok(meta) = std::fs::metadata(&full_path) {
+                    debug!("[drag] Extracted file verified: {:?} ({} bytes)", full_path, meta.len());
+                }
+            } else {
+                warn!("[drag] Extracted file NOT FOUND: {:?}", full_path);
+            }
         }
 
         *cache = Some(ExtractionCache {
@@ -303,17 +564,17 @@ impl LazyArchiveDataObject {
     }
 
     fn get_file_descriptor(&self) -> windows::core::Result<STGMEDIUM> {
-        // Log all entries being advertised
-        info!("[drag] get_file_descriptor: {} entries", self.entries.len());
-        for (i, entry) in self.entries.iter().enumerate() {
+        // Use drag_entries which have display paths and exclude directories
+        info!("[drag] get_file_descriptor: {} drag entries", self.drag_entries.len());
+        for (i, entry) in self.drag_entries.iter().enumerate() {
             debug!(
-                "[drag]   [{:3}] path='{}' is_dir={} size={}",
-                i, entry.path, entry.is_dir, entry.size
+                "[drag]   [{:3}] display='{}' archive='{}' size={}",
+                i, entry.display_path, entry.archive_path, entry.size
             );
         }
 
         // Create FILEGROUPDESCRIPTORW
-        let count = self.entries.len();
+        let count = self.drag_entries.len();
         let header_size = std::mem::size_of::<u32>();
         let item_size = std::mem::size_of::<FILEDESCRIPTORW>();
         let total_size = header_size + (count * item_size);
@@ -330,34 +591,24 @@ impl LazyArchiveDataObject {
 
             let descriptors_ptr = ptr.add(header_size) as *mut FILEDESCRIPTORW;
 
-            for (i, entry) in self.entries.iter().enumerate() {
-                // Filename buffer
-                let name = &entry.path;
+            for (i, entry) in self.drag_entries.iter().enumerate() {
+                // Use display_path for the file name (stripped of common prefix)
+                let name = &entry.display_path;
                 let name_wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
                 let mut name_arr = [0u16; 260];
                 let copy_len = std::cmp::min(name_wide.len(), 259);
                 name_arr[..copy_len].copy_from_slice(&name_wide[..copy_len]);
 
-                let mut dw_flags = FD_ATTRIBUTES.0 as u32;
-                let mut attributes = FILE_ATTRIBUTE_NORMAL.0;
-                let mut size_low = 0u32;
-                let mut size_high = 0u32;
-
-                if entry.is_dir {
-                    attributes = windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_DIRECTORY.0;
-                    debug!(
-                        "[drag] descriptor (dir): name='{}' flags=ATTRIBUTES attr=DIR",
-                        name
-                    );
-                } else {
-                    dw_flags |= FD_FILESIZE.0 as u32;
-                    size_low = entry.size as u32;
-                    size_high = (entry.size >> 32) as u32;
-                    debug!(
-                        "[drag] descriptor (file): name='{}' size={} flags=ATTR|SIZE",
-                        name, entry.size
-                    );
-                }
+                // All drag entries are files (directories are filtered out)
+                let dw_flags = FD_ATTRIBUTES.0 as u32 | FD_FILESIZE.0 as u32;
+                let attributes = FILE_ATTRIBUTE_NORMAL.0;
+                let size_low = entry.size as u32;
+                let size_high = (entry.size >> 32) as u32;
+                
+                debug!(
+                    "[drag] descriptor: display='{}' size={} flags=ATTR|SIZE",
+                    name, entry.size
+                );
 
                 // Construct descriptor locally
                 let descriptor = FILEDESCRIPTORW {
@@ -372,9 +623,7 @@ impl LazyArchiveDataObject {
                 std::ptr::write_unaligned(descriptors_ptr.add(i), descriptor);
             }
 
-            let _ = GlobalUnlock(hglobal); // Unlock for safety, though dragging might need it?
-                                           // STGMEDIUM usually takes ownership of HGLOBAL, caller handles lock/unlock?
-                                           // Actually ReleaseStgMedium frees it.
+            let _ = GlobalUnlock(hglobal);
         }
 
         Ok(STGMEDIUM {
@@ -385,38 +634,45 @@ impl LazyArchiveDataObject {
     }
 
     fn get_file_contents(&self, lindex: i32) -> windows::core::Result<STGMEDIUM> {
-        if lindex < 0 || lindex as usize >= self.entries.len() {
+        // Use drag_entries for lindex lookup (matches file descriptor indices)
+        if lindex < 0 || lindex as usize >= self.drag_entries.len() {
+            warn!("[drag] get_file_contents: invalid lindex={} (drag_entries.len={})", lindex, self.drag_entries.len());
             return Err(windows::core::Error::from(DV_E_LINDEX));
         }
 
-        let entry = &self.entries[lindex as usize];
-        debug!(
-            "[drag] request FileContents lindex={} name='{}' dir={} size={}",
+        let drag_entry = &self.drag_entries[lindex as usize];
+        info!(
+            "[drag] get_file_contents: lindex={} display='{}' archive='{}' size={}",
             lindex,
-            entry.path,
-            entry.is_dir,
-            entry.size
+            drag_entry.display_path,
+            drag_entry.archive_path,
+            drag_entry.size
         );
 
-        // Directories have no content; Explorer should not request content when FD_FILESIZE
-        // is absent, but if it does, signal unsupported format for this item.
-        if entry.is_dir {
-            debug!("[drag] Skipping directory entry");
-            return Err(windows::core::Error::from(DV_E_FORMATETC));
-        }
+        // All drag entries are files (directories are filtered out in constructor)
 
         // Ensure batch extraction is done (this is a no-op after the first call)
+        debug!("[drag] Calling ensure_extracted...");
         if let Err(e) = self.ensure_extracted() {
             warn!("[drag] Batch extraction failed: {}", e);
             return Err(windows::core::Error::from(E_UNEXPECTED));
         }
+        debug!("[drag] ensure_extracted completed successfully");
 
-        // Read file from temp directory (fast disk read)
-        let extracted_path = self.get_extracted_path(&entry.path)
-            .ok_or_else(|| windows::core::Error::from(E_UNEXPECTED))?;
+        // Read file from temp directory using archive_path (the path used during extraction)
+        let extracted_path = self.get_extracted_path(&drag_entry.archive_path)
+            .ok_or_else(|| {
+                warn!("[drag] get_extracted_path returned None for '{}'", drag_entry.archive_path);
+                windows::core::Error::from(E_UNEXPECTED)
+            })?;
+        
+        debug!("[drag] Reading extracted file from: {:?}", extracted_path);
         
         let buffer = match std::fs::read(&extracted_path) {
-            Ok(data) => data,
+            Ok(data) => {
+                info!("[drag] Read {} bytes from {:?}", data.len(), extracted_path);
+                data
+            }
             Err(e) => {
                 warn!(
                     "[drag] Failed to read extracted file '{}': {}",
@@ -426,29 +682,40 @@ impl LazyArchiveDataObject {
             }
         };
 
+        // Handle empty files - allocate at least 1 byte to avoid issues
+        let alloc_size = if buffer.is_empty() { 1 } else { buffer.len() };
+        
         debug!(
-            "[drag] Read {} bytes from temp file for '{}'",
-            buffer.len(),
-            entry.path
+            "[drag] Allocating HGLOBAL: {} bytes for '{}' (buffer.len={})",
+            alloc_size, drag_entry.display_path, buffer.len()
         );
 
         // Allocate HGLOBAL and copy data
-        let size = buffer.len();
         let hglobal = unsafe {
-            GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, size)
-                .map_err(|_| windows::core::Error::from(E_OUTOFMEMORY))?
+            GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, alloc_size)
+                .map_err(|e| {
+                    warn!("[drag] GlobalAlloc failed: {:?}", e);
+                    windows::core::Error::from(E_OUTOFMEMORY)
+                })?
         };
         
         let ptr = unsafe { GlobalLock(hglobal) };
         if ptr.is_null() {
-            warn!("[drag] GlobalLock failed for {} bytes", size);
+            warn!("[drag] GlobalLock failed for {} bytes", alloc_size);
             return Err(windows::core::Error::from(E_OUTOFMEMORY));
         }
 
+        if !buffer.is_empty() {
+            unsafe {
+                std::ptr::copy_nonoverlapping(buffer.as_ptr(), ptr as *mut u8, buffer.len());
+            }
+        }
+        
         unsafe {
-            std::ptr::copy_nonoverlapping(buffer.as_ptr(), ptr as *mut u8, size);
             let _ = GlobalUnlock(hglobal);
         }
+
+        info!("[drag] Prepared HGLOBAL for '{}' ({} bytes)", drag_entry.display_path, buffer.len());
 
         Ok(STGMEDIUM {
             tymed: TYMED_HGLOBAL.0 as u32,
@@ -578,28 +845,16 @@ impl windows::Win32::System::Ole::IDropSource_Impl for SimpleDropSource {
     }
 }
 
-/// Start a deferred drag operation using IStream (without progress callback)
+/// Start a deferred drag operation with batch pre-extraction.
+///
+/// Files are extracted to a temp directory using a single batch operation,
+/// with a native Windows IProgressDialog shown during extraction.
+/// This is MUCH faster than extracting files one-by-one.
 pub fn start_deferred_drag(
     backend: Arc<dyn ArchiveBackend>,
     archive_path: PathBuf,
     entries: Vec<ArchiveEntry>,
     password: Option<String>,
-) -> std::result::Result<DROPEFFECT, String> {
-    start_deferred_drag_with_progress(backend, archive_path, entries, password, None)
-}
-
-/// Start a deferred drag operation using IStream with optional progress callback
-///
-/// The progress callback is invoked during batch extraction to report progress.
-/// Note: Due to DoDragDrop blocking the UI thread, progress updates may not render
-/// in the egui modal during extraction. The callback is still useful for logging
-/// or future async implementations.
-pub fn start_deferred_drag_with_progress(
-    backend: Arc<dyn ArchiveBackend>,
-    archive_path: PathBuf,
-    entries: Vec<ArchiveEntry>,
-    password: Option<String>,
-    progress: Option<DragProgressCallback>,
 ) -> std::result::Result<DROPEFFECT, String> {
     unsafe {
         let _ = OleInitialize(None);
@@ -614,7 +869,7 @@ pub fn start_deferred_drag_with_progress(
     let _ole_guard = OleGuard;
 
     let data_object: IDataObject =
-        LazyArchiveDataObject::with_progress(backend, archive_path, entries, password, progress).into();
+        LazyArchiveDataObject::new(backend, archive_path, entries, password).into();
     let drop_source: IDropSource = SimpleDropSource.into();
 
     let mut effect = DROPEFFECT_NONE;
