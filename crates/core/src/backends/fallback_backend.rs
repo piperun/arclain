@@ -269,13 +269,7 @@ impl ArchiveBackend for FallbackBackend {
         //
         // For bulk extraction (extract_all, extract_files), the native backend works fine
         // because it processes all entries without early termination.
-        info!(
-            "Streaming entry '{}' via {} (skipping {} due to solid archive streaming issues)",
-            path_in_archive,
-            self.fallback_name,
-            self.primary_name
-        );
-        
+
         self.fallback
             .extract_entry_to_writer(archive, path_in_archive, password, writer)
     }

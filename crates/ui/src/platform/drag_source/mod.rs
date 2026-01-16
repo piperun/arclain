@@ -9,7 +9,8 @@ pub mod native_progress;
 #[cfg(target_os = "windows")]
 pub mod stream;
 #[cfg(target_os = "windows")]
-pub mod windows_native;
+pub mod windows;
+// pub mod windows_native; // Deprecated/Removed
 
 use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
@@ -101,9 +102,16 @@ pub fn start_deferred_drag(
     entries: Vec<ArchiveEntry>,
     password: Option<String>,
 ) -> Result<Receiver<ProgressUpdate>, DragError> {
-    use windows_native::start_deferred_drag as native_start;
+    // Use HDrop strategy (fast CF_HDROP-based transfer, like WinRAR/7-Zip)
+    use windows::{start_drag, DragStrategy};
 
-    match native_start(backend, archive_path, entries, password) {
+    match start_drag(
+        backend,
+        archive_path,
+        entries,
+        password,
+        DragStrategy::HDrop,
+    ) {
         Ok(rx) => Ok(rx),
         Err(e) => Err(DragError::PlatformError(e)),
     }
