@@ -37,6 +37,8 @@ struct StreamPipe {
     receiver: Receiver<std::result::Result<Vec<u8>, String>>,
     current_chunk: Option<Vec<u8>>,
     cursor: usize,
+    /// Total bytes read from the pipe so far (simulated position)
+    total_read: u64,
     // Keep handle to ensure thread lives until stream matches or is dropped?
     // Actually if we drop handle, thread detaches but continues running until it hits channel close?
     // We'll rename to _handle to suppress warning but keep it.
@@ -90,6 +92,7 @@ impl ArchiveStream {
                 receiver,
                 current_chunk: None,
                 cursor: 0,
+                total_read: 0,
                 _handle: Some(handle),
             }),
             file_size,
@@ -119,6 +122,7 @@ impl ISequentialStream_Impl for ArchiveStream {
                         .copy_from_slice(&chunk[pipe.cursor..pipe.cursor + to_copy]);
 
                     pipe.cursor += to_copy;
+                    pipe.total_read += to_copy as u64;
                     total_read += to_copy;
                     continue; // Loop to fill buffer if possible
                 } else {
@@ -171,10 +175,76 @@ impl ISequentialStream_Impl for ArchiveStream {
 impl IStream_Impl for ArchiveStream {
     fn Seek(
         &self,
-        _dlibmove: i64,
-        _dworigin: windows::Win32::System::Com::STREAM_SEEK,
-        _plibnewposition: *mut u64,
+        dlibmove: i64,
+        dworigin: windows::Win32::System::Com::STREAM_SEEK,
+        plibnewposition: *mut u64,
     ) -> Result<()> {
+        use windows::Win32::System::Com::{STREAM_SEEK_CUR, STREAM_SEEK_END, STREAM_SEEK_SET};
+
+        // We can only support basic seeking:
+        // SET 0 -> Reset (if supported, or just error if we can't rewind pipe easily without re-opening)
+        // CUR 0 -> Get current position
+        // END 0 -> Get size (if we know file_size)
+
+        let mut pipe = self.pipe.lock().unwrap();
+
+        let current_pos = pipe.total_read;
+
+        // Calculate new position request
+        let new_pos = match dworigin {
+            STREAM_SEEK_SET => dlibmove as u64,
+            STREAM_SEEK_CUR => (current_pos as i64 + dlibmove) as u64,
+            STREAM_SEEK_END => (self.file_size as i64 + dlibmove) as u64,
+            _ => return Err(E_INVALIDARG.into()),
+        };
+
+        if dworigin == STREAM_SEEK_CUR && dlibmove == 0 {
+            // Just asking for position
+            if !plibnewposition.is_null() {
+                unsafe { *plibnewposition = current_pos };
+            }
+            return Ok(());
+        }
+
+        if dworigin == STREAM_SEEK_END && dlibmove == 0 {
+            // Just asking for size (effectively)
+            if !plibnewposition.is_null() {
+                unsafe { *plibnewposition = self.file_size };
+            }
+            // But wait, Seek actually moves the pointer.
+            // If they seek to end, they want to read from end?
+            // If they just want size, they use Stat.
+            // But sometimes they seek to end to check size.
+            // If we claim to successfully seek to end, next Read returns EOF.
+            // We can support this logically.
+            pipe.total_read = self.file_size;
+            return Ok(());
+        }
+
+        // If they try to seek backwards or forwards significantly, we fail because it's a pipe.
+        // EXCEPT if they seek to 0 (Rewind).
+        if new_pos == 0 {
+            // To support rewind, we'd need to restart the thread?
+            // Or fail?
+            // For now, let's allow it if we are already at 0.
+            if current_pos == 0 {
+                if !plibnewposition.is_null() {
+                    unsafe { *plibnewposition = 0 };
+                }
+                return Ok(());
+            }
+            // Real rewind not implemented yet
+            return Err(E_NOTIMPL.into());
+        }
+
+        // Allow "seeking" to current position (no-op)
+        if new_pos == current_pos {
+            if !plibnewposition.is_null() {
+                unsafe { *plibnewposition = current_pos };
+            }
+            return Ok(());
+        }
+
         Err(E_NOTIMPL.into())
     }
 

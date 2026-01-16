@@ -44,4 +44,9 @@ impl ArchiveOperations {
     pub fn cancel_extraction(&mut self) {
         operations::cancel_extraction(&mut self.state);
     }
+
+    /// Handle drag progress updates
+    pub fn update_drag_progress(&mut self, ctx: &egui::Context) {
+        operations::update_drag_progress(&mut self.state, ctx);
+    }
 }

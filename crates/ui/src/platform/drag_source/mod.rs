@@ -5,14 +5,16 @@
 //! or `drag` crate fallback for non-Windows platforms.
 
 #[cfg(target_os = "windows")]
+pub mod native_progress;
+#[cfg(target_os = "windows")]
 pub mod stream;
 #[cfg(target_os = "windows")]
 pub mod windows_native;
-#[cfg(target_os = "windows")]
-pub mod native_progress;
 
+use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
 /// Result of a drag operation
@@ -98,11 +100,11 @@ pub fn start_deferred_drag(
     archive_path: PathBuf,
     entries: Vec<ArchiveEntry>,
     password: Option<String>,
-) -> Result<DragResult, DragError> {
+) -> Result<Receiver<ProgressUpdate>, DragError> {
     use windows_native::start_deferred_drag as native_start;
 
     match native_start(backend, archive_path, entries, password) {
-        Ok(_effect) => Ok(DragResult::Dropped),
+        Ok(rx) => Ok(rx),
         Err(e) => Err(DragError::PlatformError(e)),
     }
 }
@@ -113,12 +115,11 @@ pub fn start_deferred_drag(
     _archive_path: PathBuf,
     _entries: Vec<ArchiveEntry>,
     _password: Option<String>,
-) -> Result<DragResult, DragError> {
+) -> Result<Receiver<ProgressUpdate>, DragError> {
     Err(DragError::PlatformError(
         "Deferred drag not supported on this platform. Please extract first.".into(),
     ))
 }
-
 
 /// Linux stub - drag-out not supported with winit on Linux yet
 #[cfg(target_os = "linux")]

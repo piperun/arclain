@@ -130,6 +130,56 @@ pub fn update_conversion_progress(state: &mut ArchiveOperationsState, ctx: &egui
     }
 }
 
+pub fn update_drag_progress(state: &mut ArchiveOperationsState, ctx: &egui::Context) {
+    let mut finished = false;
+    if let Some(rx) = &state.drag_rx {
+        for upd in rx.try_iter() {
+            // Auto-show dialog on first progress update
+            if !state.drag_dialog.show {
+                state.drag_dialog.show = true;
+                state.drag_started = Some(std::time::Instant::now());
+            }
+
+            if upd.percent > 0 {
+                state.drag_dialog.percent = upd.percent;
+            }
+            if let Some(msg) = upd.message {
+                // Keep last ~50 lines
+                if state.drag_dialog.log_lines.len() > 50 {
+                    let overflow = state.drag_dialog.log_lines.len() - 50;
+                    state.drag_dialog.log_lines.drain(0..overflow);
+                }
+                state.drag_dialog.log_lines.push(msg);
+            }
+            if let Some(start) = state.drag_started {
+                let elapsed = start.elapsed();
+                state.drag_dialog.elapsed_text = utils::format_duration(elapsed);
+                if upd.percent > 0 && upd.percent < 100 {
+                    let total_est = elapsed.mul_f64(100.0 / upd.percent as f64);
+                    let left = total_est.saturating_sub(elapsed);
+                    state.drag_dialog.time_left_text = utils::format_duration(left);
+                    state.drag_dialog.processed_text = format!("{}%", upd.percent);
+                }
+            }
+            ctx.request_repaint();
+        }
+
+        // Check if finished (channel disconnected means thread ended)
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                finished = true;
+            }
+            _ => {}
+        }
+    }
+
+    if finished {
+        state.drag_dialog.show = false;
+        state.drag_rx = None;
+        state.drag_started = None;
+    }
+}
+
 // Unused helper functions removed:
 // - ARCHIVE_EXTENSIONS
 // - is_archive_file

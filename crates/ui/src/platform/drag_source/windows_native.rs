@@ -12,13 +12,15 @@
 //! manages its own UI thread internally. This works even during the blocking
 //! DoDragDrop modal loop - similar to how 7-Zip handles progress dialogs.
 
+use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use parking_lot::RwLock;
+use std::sync::mpsc::Sender;
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, info, warn};
 use std::time::Instant;
+use tracing::{debug, info, warn};
 use windows::core::{implement, HRESULT};
 
 use windows::Win32::Foundation::{
@@ -27,9 +29,8 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
 use windows::Win32::System::Com::{
-    IAdviseSink, IDataObject, IEnumSTATDATA,
-    DATADIR_GET, DVASPECT_CONTENT, FORMATETC,
-    STGMEDIUM, TYMED_HGLOBAL,
+    IAdviseSink, IDataObject, IEnumSTATDATA, DATADIR_GET, DVASPECT_CONTENT, FORMATETC, STGMEDIUM,
+    TYMED_HGLOBAL,
 };
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
@@ -38,10 +39,7 @@ use windows::Win32::System::Ole::{
     DoDragDrop, IDropSource, OleInitialize, OleUninitialize, DROPEFFECT_COPY, DROPEFFECT_MOVE,
     DROPEFFECT_NONE,
 };
-use windows::Win32::UI::Shell::{
-    FD_ATTRIBUTES, FD_FILESIZE, FILEDESCRIPTORW,
-};
-
+use windows::Win32::UI::Shell::{FD_ATTRIBUTES, FD_FILESIZE, FILEDESCRIPTORW};
 
 // Make DROPEFFECT public so mod.rs can use it in return type signature
 pub use windows::Win32::System::Ole::DROPEFFECT;
@@ -169,31 +167,33 @@ fn find_common_directory(file_paths: &[String]) -> Option<String> {
     if file_paths.is_empty() {
         return None;
     }
-    
+
     // Normalize paths to use forward slashes
-    let normalized: Vec<String> = file_paths.iter()
-        .map(|p| p.replace('\\', "/"))
-        .collect();
-    
+    let normalized: Vec<String> = file_paths.iter().map(|p| p.replace('\\', "/")).collect();
+
     // Get the first path's directory components
     let first = &normalized[0];
     let first_parts: Vec<&str> = first.split('/').collect();
-    
+
     // If first path has no directory part, check if all paths are in root
     if first_parts.len() <= 1 {
         // All files must be in root (no directory part)
         let all_in_root = normalized.iter().all(|p| !p.contains('/'));
-        return if all_in_root { Some(String::new()) } else { None };
+        return if all_in_root {
+            Some(String::new())
+        } else {
+            None
+        };
     }
-    
+
     // Find the longest common directory prefix
     // Start with the parent directory of the first file
     let mut common_parts = &first_parts[..first_parts.len() - 1]; // Exclude filename
-    
+
     for path in normalized.iter().skip(1) {
         let parts: Vec<&str> = path.split('/').collect();
         let dir_parts = &parts[..parts.len().saturating_sub(1)]; // Exclude filename
-        
+
         // Find how many parts match
         let mut match_count = 0;
         for (i, part) in common_parts.iter().enumerate() {
@@ -203,16 +203,16 @@ fn find_common_directory(file_paths: &[String]) -> Option<String> {
                 break;
             }
         }
-        
+
         // Shrink common_parts to the matching portion
         common_parts = &common_parts[..match_count];
-        
+
         // If no common directory at all, return None
         if common_parts.is_empty() {
             return None;
         }
     }
-    
+
     if common_parts.is_empty() {
         None
     } else {
@@ -241,25 +241,34 @@ fn extract_with_progress_dialog(
     password: Option<&str>,
 ) -> std::result::Result<(), String> {
     let file_count = file_paths.len();
-    
+
     // For very small file counts (1-2 files), just extract directly without dialog
     if file_count <= 2 {
-        debug!("[drag] Small file count ({}), extracting without progress dialog", file_count);
+        debug!(
+            "[drag] Small file count ({}), extracting without progress dialog",
+            file_count
+        );
         return backend
             .extract_files(archive_path, dest_dir, file_paths, password)
             .map_err(|e| format!("Extraction failed: {}", e));
     }
-    
+
     // For large file counts, use extract_all to avoid command line length limits
     let use_extract_all = file_count > MAX_FILES_FOR_EXTRACT_FILES;
     if use_extract_all {
-        debug!("[drag] Large file count ({}), will use extract_all to avoid command line limits", file_count);
-        
+        debug!(
+            "[drag] Large file count ({}), will use extract_all to avoid command line limits",
+            file_count
+        );
+
         // Find the common directory prefix for all files
         let common_dir = find_common_directory(file_paths);
-        
+
         if let Some(dir_path) = common_dir {
-            debug!("[drag] Using extract_directory with pattern: {}/*", dir_path);
+            debug!(
+                "[drag] Using extract_directory with pattern: {}/*",
+                dir_path
+            );
             return backend
                 .extract_directory(archive_path, dest_dir, &dir_path, password)
                 .map_err(|e| {
@@ -276,9 +285,12 @@ fn extract_with_progress_dialog(
                 });
         }
     }
-    
+
     // Use native Windows IProgressDialog for extraction with progress
-    debug!("[drag] Starting extraction with native Windows progress dialog for {} files", file_count);
+    debug!(
+        "[drag] Starting extraction with native Windows progress dialog for {} files",
+        file_count
+    );
     super::native_progress::extract_with_native_progress(
         backend,
         archive_path,
@@ -310,6 +322,8 @@ pub struct LazyArchiveDataObject {
     password: Option<String>,
     /// Cache for batch-extracted files (lazily initialized on first GetData for FileContents)
     cache: RwLock<Option<ExtractionCache>>,
+    /// Channel for sending progress updates
+    progress_tx: Option<Sender<ProgressUpdate>>,
 }
 
 impl LazyArchiveDataObject {
@@ -318,17 +332,18 @@ impl LazyArchiveDataObject {
         archive_path: PathBuf,
         entries: Vec<ArchiveEntry>,
         password: Option<String>,
+        progress_tx: Option<Sender<ProgressUpdate>>,
     ) -> Self {
         // Compute the common prefix to strip from display paths
         // This makes dragging "folder/file.txt" display as "file.txt" if user is inside "folder"
         // Or if dragging a folder, show its contents relative to that folder
         let common_prefix = Self::compute_common_prefix(&entries);
         info!("[drag] Computed common prefix: {:?}", common_prefix);
-        
+
         // Create drag entries, filtering out directories and stripping prefix
         let drag_entries: Vec<DragEntry> = entries
             .iter()
-            .filter(|e| !e.is_dir)  // Skip directories - they cause merge prompts
+            .filter(|e| !e.is_dir) // Skip directories - they cause merge prompts
             .map(|e| {
                 let display_path = if let Some(ref prefix) = common_prefix {
                     // Strip the prefix and any leading slashes
@@ -338,9 +353,12 @@ impl LazyArchiveDataObject {
                 } else {
                     e.path.clone()
                 };
-                
-                debug!("[drag] Entry: archive='{}' -> display='{}'", e.path, display_path);
-                
+
+                debug!(
+                    "[drag] Entry: archive='{}' -> display='{}'",
+                    e.path, display_path
+                );
+
                 DragEntry {
                     archive_path: e.path.clone(),
                     display_path,
@@ -348,10 +366,13 @@ impl LazyArchiveDataObject {
                 }
             })
             .collect();
-        
-        info!("[drag] Created {} drag entries (filtered from {} archive entries)",
-            drag_entries.len(), entries.len());
-        
+
+        info!(
+            "[drag] Created {} drag entries (filtered from {} archive entries)",
+            drag_entries.len(),
+            entries.len()
+        );
+
         Self {
             backend,
             archive_path,
@@ -359,9 +380,10 @@ impl LazyArchiveDataObject {
             drag_entries,
             password,
             cache: RwLock::new(None),
+            progress_tx,
         }
     }
-    
+
     /// Compute the common prefix to strip from display paths.
     ///
     /// Rules:
@@ -372,35 +394,35 @@ impl LazyArchiveDataObject {
         if entries.is_empty() {
             return None;
         }
-        
+
         // Find all file entries (not directories)
         let file_entries: Vec<_> = entries.iter().filter(|e| !e.is_dir).collect();
         if file_entries.is_empty() {
             return None;
         }
-        
+
         // Check if we have a single file or multiple files
         if file_entries.len() == 1 {
             // Single file: strip the entire parent path
             let first = &file_entries[0].path;
             let sep_pos = first.rfind(|c| c == '/' || c == '\\');
             return match sep_pos {
-                Some(pos) => Some(first[..=pos].to_string()),  // Include the separator
-                None => None,  // No directory part to strip
+                Some(pos) => Some(first[..=pos].to_string()), // Include the separator
+                None => None,                                 // No directory part to strip
             };
         }
-        
+
         // Multiple files: Check if they're all in the same folder
         // Find the deepest common directory
         let first = &file_entries[0].path;
-        
+
         // Get the first directory component (e.g., "folder/" from "folder/subfolder/file.txt")
         let first_sep = first.find(|c| c == '/' || c == '\\');
         let first_dir = match first_sep {
-            Some(pos) => &first[..=pos],  // Include the separator
-            None => return None,  // No directory part
+            Some(pos) => &first[..=pos], // Include the separator
+            None => return None,         // No directory part
         };
-        
+
         // Check if all files share this first directory
         for entry in file_entries.iter().skip(1) {
             if !entry.path.starts_with(first_dir) {
@@ -408,7 +430,7 @@ impl LazyArchiveDataObject {
                 return None;
             }
         }
-        
+
         // All files share the same root folder - DON'T strip it
         // This keeps the folder structure when dragging a folder
         None
@@ -429,7 +451,7 @@ impl LazyArchiveDataObject {
 
         // Need to extract - take write lock
         let mut cache = self.cache.write();
-        
+
         // Double-check after acquiring write lock
         if cache.as_ref().map(|c| c.extracted).unwrap_or(false) {
             debug!("[drag] Already extracted (after lock), skipping");
@@ -437,35 +459,110 @@ impl LazyArchiveDataObject {
         }
 
         let start = Instant::now();
-        
+
         // Create temp directory
-        let temp_dir = tempfile::tempdir()
-            .map_err(|e| format!("Failed to create temp dir: {}", e))?;
-        
+        let temp_dir =
+            tempfile::tempdir().map_err(|e| format!("Failed to create temp dir: {}", e))?;
+
         info!("[drag] Temp dir created at: {:?}", temp_dir.path());
-        
+
         // Collect file paths to extract (skip directories)
-        let file_paths: Vec<String> = self.entries
+        let file_paths: Vec<String> = self
+            .entries
             .iter()
             .filter(|e| !e.is_dir)
             .map(|e| e.path.clone())
             .collect();
-        
+
         let file_count = file_paths.len();
         info!(
             "[drag] Batch extracting {} files to temp dir: {:?}",
             file_count, file_paths
         );
 
-        // Use IProgressDialog for extraction with progress
-        // This shows a native Windows progress dialog that works even during DoDragDrop
-        extract_with_progress_dialog(
-            Arc::clone(&self.backend),
-            &self.archive_path,
-            temp_dir.path(),
-            &file_paths,
-            self.password.as_deref(),
-        )?;
+        // Use IProgressDialog or channel for extraction progress
+        if let Some(tx) = &self.progress_tx {
+            let _ = tx.send(ProgressUpdate {
+                percent: 0,
+                message: Some(format!("Starting extraction of {} files...", file_count)),
+            });
+
+            // Re-use logic for large file counts (extract_all / extract_directory)
+            let use_extract_all = file_count > MAX_FILES_FOR_EXTRACT_FILES;
+            if use_extract_all {
+                // Large batch: use directory extraction or extract all (no granular progress yet)
+                // Find the common directory prefix for all files
+                let common_dir = find_common_directory(&file_paths);
+
+                let _ = tx.send(ProgressUpdate {
+                    percent: 0,
+                    message: Some("Extracting batch (please wait)...".to_string()),
+                });
+
+                if let Some(dir_path) = common_dir {
+                    debug!(
+                        "[drag] Using extract_directory with pattern: {}/*",
+                        dir_path
+                    );
+                    self.backend
+                        .extract_directory(
+                            &self.archive_path,
+                            temp_dir.path(),
+                            &dir_path,
+                            self.password.as_deref(),
+                        )
+                        .map_err(|e| {
+                            warn!("[drag] extract_directory error: {}", e);
+                            format!("Extraction failed: {}", e)
+                        })?;
+                } else {
+                    debug!("[drag] No common directory found, using extract_all");
+                    self.backend
+                        .extract_all(
+                            &self.archive_path,
+                            temp_dir.path(),
+                            self.password.as_deref(),
+                        )
+                        .map_err(|e| {
+                            warn!("[drag] extract_all error: {}", e);
+                            format!("Extraction failed: {}", e)
+                        })?;
+                }
+            } else {
+                // Standard file extraction - use extract_files_with_progress to get real updates
+                let tx_clone = tx.clone();
+
+                self.backend
+                    .extract_files_with_progress(
+                        &self.archive_path,
+                        temp_dir.path(),
+                        &file_paths,
+                        self.password.as_deref(),
+                        Some(&move |p| {
+                            let _ = tx_clone.send(ProgressUpdate {
+                                percent: p.percent,
+                                message: Some(format!("Extracting: {}", p.current_file)),
+                            });
+                        }),
+                        None, // No cancellation token for now (drag cancellation is harder to wire up)
+                    )
+                    .map_err(|e| format!("Extraction failed: {}", e))?;
+            }
+
+            let _ = tx.send(ProgressUpdate {
+                percent: 100,
+                message: Some("Extraction complete".to_string()),
+            });
+        } else {
+            // Fallback to native dialog
+            extract_with_progress_dialog(
+                Arc::clone(&self.backend),
+                &self.archive_path,
+                temp_dir.path(),
+                &file_paths,
+                self.password.as_deref(),
+            )?;
+        }
 
         let elapsed = start.elapsed();
         info!(
@@ -474,11 +571,13 @@ impl LazyArchiveDataObject {
             elapsed.as_secs_f64(),
             file_count as f64 / elapsed.as_secs_f64()
         );
-        
+
         // List what was actually extracted to the temp directory
         info!("[drag] Listing temp dir contents:");
         fn list_dir_recursive(dir: &std::path::Path, prefix: &str, depth: usize) {
-            if depth > 3 { return; } // Limit depth to avoid spam
+            if depth > 3 {
+                return;
+            } // Limit depth to avoid spam
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.take(10) {
                     if let Ok(e) = entry {
@@ -497,18 +596,24 @@ impl LazyArchiveDataObject {
             }
         }
         list_dir_recursive(temp_dir.path(), "", 0);
-        
+
         // Verify files were extracted - normalize path separators
         let mut verified_count = 0;
         let mut missing_count = 0;
-        for path in file_paths.iter().take(5) {  // Only check first 5 to avoid spam
+        for path in file_paths.iter().take(5) {
+            // Only check first 5 to avoid spam
             // Normalize path separators for Windows
-            let normalized = path.replace('/', std::path::MAIN_SEPARATOR_STR)
-                                 .replace('\\', std::path::MAIN_SEPARATOR_STR);
+            let normalized = path
+                .replace('/', std::path::MAIN_SEPARATOR_STR)
+                .replace('\\', std::path::MAIN_SEPARATOR_STR);
             let full_path = temp_dir.path().join(&normalized);
             if full_path.exists() {
                 if let Ok(meta) = std::fs::metadata(&full_path) {
-                    debug!("[drag] Extracted file verified: {:?} ({} bytes)", full_path, meta.len());
+                    debug!(
+                        "[drag] Extracted file verified: {:?} ({} bytes)",
+                        full_path,
+                        meta.len()
+                    );
                     verified_count += 1;
                 }
             } else {
@@ -516,7 +621,10 @@ impl LazyArchiveDataObject {
                 missing_count += 1;
             }
         }
-        info!("[drag] Verification: {} verified, {} missing (checked first 5)", verified_count, missing_count);
+        info!(
+            "[drag] Verification: {} verified, {} missing (checked first 5)",
+            verified_count, missing_count
+        );
 
         *cache = Some(ExtractionCache {
             temp_dir,
@@ -533,15 +641,19 @@ impl LazyArchiveDataObject {
         cache.as_ref().map(|c| {
             // Normalize the path to use forward slashes first, then let PathBuf handle it
             // This handles cases where the archive uses backslashes but the file system uses forward slashes
-            let normalized = entry_path.replace('/', std::path::MAIN_SEPARATOR_STR)
-                                       .replace('\\', std::path::MAIN_SEPARATOR_STR);
+            let normalized = entry_path
+                .replace('/', std::path::MAIN_SEPARATOR_STR)
+                .replace('\\', std::path::MAIN_SEPARATOR_STR);
             c.temp_dir.path().join(&normalized)
         })
     }
 
     fn get_file_descriptor(&self) -> windows::core::Result<STGMEDIUM> {
         // Use drag_entries which have display paths and exclude directories
-        info!("[drag] get_file_descriptor: {} drag entries", self.drag_entries.len());
+        info!(
+            "[drag] get_file_descriptor: {} drag entries",
+            self.drag_entries.len()
+        );
         for (i, entry) in self.drag_entries.iter().enumerate() {
             debug!(
                 "[drag]   [{:3}] display='{}' archive='{}' size={}",
@@ -580,7 +692,7 @@ impl LazyArchiveDataObject {
                 let attributes = FILE_ATTRIBUTE_NORMAL.0;
                 let size_low = entry.size as u32;
                 let size_high = (entry.size >> 32) as u32;
-                
+
                 debug!(
                     "[drag] descriptor: display='{}' size={} flags=ATTR|SIZE",
                     name, entry.size
@@ -612,17 +724,18 @@ impl LazyArchiveDataObject {
     fn get_file_contents(&self, lindex: i32) -> windows::core::Result<STGMEDIUM> {
         // Use drag_entries for lindex lookup (matches file descriptor indices)
         if lindex < 0 || lindex as usize >= self.drag_entries.len() {
-            warn!("[drag] get_file_contents: invalid lindex={} (drag_entries.len={})", lindex, self.drag_entries.len());
+            warn!(
+                "[drag] get_file_contents: invalid lindex={} (drag_entries.len={})",
+                lindex,
+                self.drag_entries.len()
+            );
             return Err(windows::core::Error::from(DV_E_LINDEX));
         }
 
         let drag_entry = &self.drag_entries[lindex as usize];
         info!(
             "[drag] get_file_contents: lindex={} display='{}' archive='{}' size={}",
-            lindex,
-            drag_entry.display_path,
-            drag_entry.archive_path,
-            drag_entry.size
+            lindex, drag_entry.display_path, drag_entry.archive_path, drag_entry.size
         );
 
         // All drag entries are files (directories are filtered out in constructor)
@@ -636,14 +749,18 @@ impl LazyArchiveDataObject {
         debug!("[drag] ensure_extracted completed successfully");
 
         // Read file from temp directory using archive_path (the path used during extraction)
-        let extracted_path = self.get_extracted_path(&drag_entry.archive_path)
+        let extracted_path = self
+            .get_extracted_path(&drag_entry.archive_path)
             .ok_or_else(|| {
-                warn!("[drag] get_extracted_path returned None for '{}'", drag_entry.archive_path);
+                warn!(
+                    "[drag] get_extracted_path returned None for '{}'",
+                    drag_entry.archive_path
+                );
                 windows::core::Error::from(E_UNEXPECTED)
             })?;
-        
+
         debug!("[drag] Reading extracted file from: {:?}", extracted_path);
-        
+
         let buffer = match std::fs::read(&extracted_path) {
             Ok(data) => {
                 info!("[drag] Read {} bytes from {:?}", data.len(), extracted_path);
@@ -652,7 +769,8 @@ impl LazyArchiveDataObject {
             Err(e) => {
                 warn!(
                     "[drag] Failed to read extracted file '{}': {}",
-                    extracted_path.display(), e
+                    extracted_path.display(),
+                    e
                 );
                 return Err(windows::core::Error::from(E_UNEXPECTED));
             }
@@ -660,21 +778,22 @@ impl LazyArchiveDataObject {
 
         // Handle empty files - allocate at least 1 byte to avoid issues
         let alloc_size = if buffer.is_empty() { 1 } else { buffer.len() };
-        
+
         debug!(
             "[drag] Allocating HGLOBAL: {} bytes for '{}' (buffer.len={})",
-            alloc_size, drag_entry.display_path, buffer.len()
+            alloc_size,
+            drag_entry.display_path,
+            buffer.len()
         );
 
         // Allocate HGLOBAL and copy data
         let hglobal = unsafe {
-            GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, alloc_size)
-                .map_err(|e| {
-                    warn!("[drag] GlobalAlloc failed: {:?}", e);
-                    windows::core::Error::from(E_OUTOFMEMORY)
-                })?
+            GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, alloc_size).map_err(|e| {
+                warn!("[drag] GlobalAlloc failed: {:?}", e);
+                windows::core::Error::from(E_OUTOFMEMORY)
+            })?
         };
-        
+
         let ptr = unsafe { GlobalLock(hglobal) };
         if ptr.is_null() {
             warn!("[drag] GlobalLock failed for {} bytes", alloc_size);
@@ -686,12 +805,16 @@ impl LazyArchiveDataObject {
                 std::ptr::copy_nonoverlapping(buffer.as_ptr(), ptr as *mut u8, buffer.len());
             }
         }
-        
+
         unsafe {
             let _ = GlobalUnlock(hglobal);
         }
 
-        info!("[drag] Prepared HGLOBAL for '{}' ({} bytes)", drag_entry.display_path, buffer.len());
+        info!(
+            "[drag] Prepared HGLOBAL for '{}' ({} bytes)",
+            drag_entry.display_path,
+            buffer.len()
+        );
 
         Ok(STGMEDIUM {
             tymed: TYMED_HGLOBAL.0 as u32,
@@ -709,19 +832,25 @@ impl windows::Win32::System::Com::IDataObject_Impl for LazyArchiveDataObject {
         let fd_format = get_clipboard_format("FileGroupDescriptorW");
         let fc_format = get_clipboard_format("FileContents");
 
-        debug!(
+        info!(
             "[drag] GetData: cfFormat={} tymed={} lindex={}",
             format.cfFormat, format.tymed, format.lindex
         );
 
         if format.cfFormat == fd_format && (format.tymed & TYMED_HGLOBAL.0 as u32) != 0 {
-            debug!("[drag] Returning FileGroupDescriptorW");
+            info!("[drag] Returning FileGroupDescriptorW");
             self.get_file_descriptor()
         } else if format.cfFormat == fc_format && (format.tymed & TYMED_HGLOBAL.0 as u32) != 0 {
-            debug!("[drag] Returning FileContents as HGLOBAL for lindex={}", format.lindex);
+            info!(
+                "[drag] Returning FileContents as HGLOBAL for lindex={}",
+                format.lindex
+            );
             self.get_file_contents(format.lindex)
         } else {
-            debug!("[drag] Unsupported format: cfFormat={} tymed={}", format.cfFormat, format.tymed);
+            info!(
+                "[drag] Unsupported format: cfFormat={} tymed={}",
+                format.cfFormat, format.tymed
+            );
             Err(windows::core::Error::from(DV_E_FORMATETC))
         }
     }
@@ -740,13 +869,23 @@ impl windows::Win32::System::Com::IDataObject_Impl for LazyArchiveDataObject {
         let fd_format = get_clipboard_format("FileGroupDescriptorW");
         let fc_format = get_clipboard_format("FileContents");
 
-        if format.cfFormat == fd_format || format.cfFormat == fc_format {
+        // Check if format is supported AND if we support the requested medium (HGLOBAL)
+        if (format.cfFormat == fd_format || format.cfFormat == fc_format)
+            && (format.tymed & TYMED_HGLOBAL.0 as u32) != 0
+        {
+            // Log success at DEBUG to avoid spamming excessively on mouse move,
+            // but maybe INFO is needed if we suspect failures
+            // Let's use INFO for now to debug
+            info!(
+                "[drag] QueryGetData: Supported format cf={} tymed={}",
+                format.cfFormat, format.tymed
+            );
             S_OK
         } else {
-            // S_FALSE? Or DV_E_FORMATETC?
-            // QueryGetData returns S_OK on success, or error code.
-            // S_FALSE is sometimes used for "format not supported"?
-            // Docs: "S_OK if the request is supported... DV_E_FORMATETC if not"
+            info!(
+                "[drag] QueryGetData: Unsupported format cf={} tymed={}",
+                format.cfFormat, format.tymed
+            );
             windows::core::Error::from(DV_E_FORMATETC).into()
         }
     }
@@ -807,9 +946,14 @@ impl windows::Win32::System::Ole::IDropSource_Impl for SimpleDropSource {
         fescapepressed: BOOL,
         grfkeystate: windows::Win32::System::SystemServices::MODIFIERKEYS_FLAGS,
     ) -> HRESULT {
+        // internal throttling to prove it's alive without spamming
+        // info!("[drag] QueryContinueDrag: keys={:?}", grfkeystate);
+
         if fescapepressed.as_bool() {
+            info!("[drag] QueryContinueDrag: Escape pressed, cancelling");
             DRAGDROP_S_CANCEL
         } else if (grfkeystate.0 & windows::Win32::System::SystemServices::MK_LBUTTON.0) == 0 {
+            info!("[drag] QueryContinueDrag: LButton released, dropping");
             DRAGDROP_S_DROP
         } else {
             S_OK
@@ -817,6 +961,7 @@ impl windows::Win32::System::Ole::IDropSource_Impl for SimpleDropSource {
     }
 
     fn GiveFeedback(&self, _dweffect: DROPEFFECT) -> HRESULT {
+        // info!("[drag] GiveFeedback: effect={:?}", dweffect);
         DRAGDROP_S_USEDEFAULTCURSORS
     }
 }
@@ -831,44 +976,114 @@ pub fn start_deferred_drag(
     archive_path: PathBuf,
     entries: Vec<ArchiveEntry>,
     password: Option<String>,
-) -> std::result::Result<DROPEFFECT, String> {
-    unsafe {
-        let _ = OleInitialize(None);
-    }
+) -> std::result::Result<std::sync::mpsc::Receiver<ProgressUpdate>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
 
-    struct OleGuard;
-    impl Drop for OleGuard {
-        fn drop(&mut self) {
-            unsafe { OleUninitialize() };
+    // Capture main thread ID to attach input later
+    let main_thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+
+    // Spawn background thread for drag operation (must be STA)
+    std::thread::spawn(move || {
+        info!("[drag] Background thread started");
+
+        // Force creation of message queue
+        unsafe {
+            use windows::Win32::Foundation::HWND;
+            use windows::Win32::UI::WindowsAndMessaging::{PeekMessageW, MSG, PM_NOREMOVE};
+            let mut msg = MSG::default();
+            let _ = PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_NOREMOVE);
         }
-    }
-    let _ole_guard = OleGuard;
 
-    let data_object: IDataObject =
-        LazyArchiveDataObject::new(backend, archive_path, entries, password).into();
-    let drop_source: IDropSource = SimpleDropSource.into();
+        unsafe {
+            // OleInitialize returns HRESULT, not Result
+            // It expects Option<*const c_void>. None is null.
+            let reserved: Option<*const std::ffi::c_void> = None;
+            if OleInitialize(reserved).is_err() {
+                warn!("[drag] OleInitialize failed");
+            }
+        }
 
-    let mut effect = DROPEFFECT_NONE;
+        struct OleGuard;
+        impl Drop for OleGuard {
+            fn drop(&mut self) {
+                unsafe { OleUninitialize() };
+            }
+        }
+        let _ole_guard = OleGuard;
 
-    tracing::debug!("Starting stream-based drag operation...");
+        // Attach input to main thread so DoDragDrop can receive mouse events
+        let bg_thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
+        let attached = unsafe {
+            use windows::Win32::System::Threading::AttachThreadInput;
+            AttachThreadInput(bg_thread_id, main_thread_id, true).as_bool()
+        };
 
-    let result = unsafe {
-        DoDragDrop(
-            &data_object,
-            &drop_source,
-            DROPEFFECT_COPY | DROPEFFECT_MOVE,
-            &mut effect,
-        )
-    };
+        if attached {
+            info!(
+                "[drag] Attached thread input to main thread ({} -> {})",
+                bg_thread_id, main_thread_id
+            );
+        } else {
+            // It might fail if threads are already attached? Or some other reason.
+            // But we proceed anyway.
+            warn!("[drag] Failed to attach thread input");
+        }
 
-    if result == DRAGDROP_S_DROP {
-        tracing::debug!("Drag completed with effect: {:?}", effect);
-        Ok(effect)
-    } else if result == DRAGDROP_S_CANCEL {
-        tracing::debug!("Drag cancelled");
-        Ok(effect)
-    } else {
-        tracing::warn!("Drag failed with HRESULT: {:?}", result);
-        Err(format!("HRESULT: {:?}", result))
-    }
+        // Create data object
+        let data_object: IDataObject =
+            LazyArchiveDataObject::new(backend, archive_path, entries, password, Some(tx.clone()))
+                .into();
+        let drop_source: IDropSource = SimpleDropSource.into();
+
+        let mut effect = DROPEFFECT_NONE;
+
+        info!("[drag] Calling DoDragDrop (blocking on background thread)...");
+
+        // Notify that we are ready to drag
+        // We do NOT send a message here anymore to avoid showing the modal prematurely.
+        // The modal will be triggered when ensure_extracted() is called on drop.
+
+        let result = unsafe {
+            DoDragDrop(
+                &data_object,
+                &drop_source,
+                DROPEFFECT_COPY | DROPEFFECT_MOVE,
+                &mut effect,
+            )
+        };
+
+        info!("[drag] DoDragDrop returned with result: {:?}", result);
+
+        // Detach input
+        if attached {
+            unsafe {
+                use windows::Win32::System::Threading::AttachThreadInput;
+                let _ = AttachThreadInput(bg_thread_id, main_thread_id, false);
+            }
+            info!("[drag] Detached thread input");
+        }
+
+        if result == DRAGDROP_S_DROP {
+            tracing::debug!("[drag] Drag completed with effect: {:?}", effect);
+            let _ = tx.send(ProgressUpdate {
+                percent: 100,
+                message: Some("Drop complete".to_string()),
+            });
+        } else if result == DRAGDROP_S_CANCEL {
+            tracing::debug!("[drag] Drag cancelled");
+            // If cancelled, we might want to close the dialog
+            let _ = tx.send(ProgressUpdate {
+                percent: 100,
+                message: Some("Cancelled".to_string()),
+            });
+        } else {
+            tracing::warn!("[drag] Drag failed with HRESULT: {:?}", result);
+            let _ = tx.send(ProgressUpdate {
+                percent: 100,
+                message: Some(format!("Failed: {:?}", result)),
+            });
+        }
+    });
+
+    Ok(rx)
 }

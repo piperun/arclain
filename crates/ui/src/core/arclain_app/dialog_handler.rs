@@ -88,6 +88,17 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         }
     }
 
+    // Render Drag Progress Dialog
+    if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
+        ctx,
+        &app.shared_state.theme,
+        &mut app.archive_operations.state_mut().drag_dialog,
+    ) {
+        if let dialogs::progress::ExtractionDialogResult::Cancelled = result {
+            app.archive_operations.state_mut().drag_dialog.show = false;
+        }
+    }
+
     // Render File Edit Dialog
     if let Some(result) = crate::features::file_editing::file_edit_dialog::render_file_edit_dialog(
         ctx,
