@@ -168,12 +168,14 @@ pub fn start_deferred_drag(
 }
 
 pub mod hdrop_data_object;
+pub use drop_source::{DragState, DropSourceWithState};
 pub use hdrop_data_object::HDropDataObject;
 
-/// Start a CF_HDROP-based drag operation (fast path for multi-file).
+/// Start a CF_HDROP-based drag operation with 7-Zip style deferred extraction.
 ///
-/// Pre-extracts all files to temp, then provides CF_HDROP format.
-/// Explorer performs direct filesystem copy - much faster than IStream.
+/// Uses dual-HDROP mechanism:
+/// - During hover: Returns HDROP with just temp folder (no extraction)
+/// - On drop: Extracts files, returns HDROP with real paths
 pub fn start_hdrop_drag(
     backend: Arc<dyn ArchiveBackend>,
     archive_path: PathBuf,
@@ -185,7 +187,7 @@ pub fn start_hdrop_drag(
     let main_thread_id = unsafe { windows::Win32::System::Threading::GetCurrentThreadId() };
 
     std::thread::spawn(move || {
-        info!("[hdrop] Background thread started");
+        info!("[hdrop] Background thread started (deferred extraction mode)");
 
         unsafe {
             use windows::Win32::Foundation::HWND;
@@ -224,14 +226,26 @@ pub fn start_hdrop_drag(
             warn!("[hdrop] Failed to attach thread input");
         }
 
-        // Use HDropDataObject instead of LazyArchiveDataObject
-        let data_object: IDataObject =
-            HDropDataObject::new(backend, archive_path, entries, password, Some(tx.clone())).into();
-        let drop_source: IDropSource = DropSource.into();
+        // Create shared drag state
+        let drag_state = DragState::new();
+
+        // Create HDropDataObject with drag state
+        let data_object: IDataObject = HDropDataObject::new(
+            backend,
+            archive_path,
+            entries,
+            password,
+            Some(tx.clone()),
+            Arc::clone(&drag_state),
+        )
+        .into();
+
+        // Create DropSourceWithState that shares the drag state
+        let drop_source: IDropSource = DropSourceWithState::new(Arc::clone(&drag_state)).into();
 
         let mut effect = DROPEFFECT_NONE;
 
-        info!("[HDROP] Calling DoDragDrop...");
+        info!("[HDROP] Calling DoDragDrop (deferred extraction)...");
 
         let result = unsafe {
             DoDragDrop(
