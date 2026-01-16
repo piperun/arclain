@@ -53,6 +53,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // Handle extraction/conversion progress from CLI backends
     app.archive_operations.update_extraction_progress(ctx);
     app.archive_operations.update_conversion_progress(ctx);
+    app.archive_operations.update_drag_progress(ctx);
 
     // Process pending file opens (double-click on file in archive)
     if let Some(file_path) = app.archive_operations.state_mut().pending_open_file.take() {

@@ -315,7 +315,7 @@ impl<'a> ActionContext<'a> {
             }
             Action::DragExtract(files) => {
                 tracing::info!("[DragExtract] Starting with files: {:?}", files);
-                
+
                 // Get archive handle
                 let archive_guard = self.shared.signals().opened_archive.read();
                 let archive_arc_opt = archive_guard.as_ref().cloned();
@@ -326,14 +326,22 @@ impl<'a> ActionContext<'a> {
 
                     // Collect entries matching the dragged files (or directory contents)
                     let all_entries = self.shared.signals().entries.get();
-                    tracing::info!("[DragExtract] Total entries in archive: {}", all_entries.len());
-                    
+                    tracing::info!(
+                        "[DragExtract] Total entries in archive: {}",
+                        all_entries.len()
+                    );
+
                     // Debug: log all entries to see their paths
                     for (i, e) in all_entries.iter().enumerate() {
-                        tracing::debug!("[DragExtract] Archive entry [{:3}]: path='{}' is_dir={} size={}",
-                            i, e.path, e.is_dir, e.size);
+                        tracing::debug!(
+                            "[DragExtract] Archive entry [{:3}]: path='{}' is_dir={} size={}",
+                            i,
+                            e.path,
+                            e.is_dir,
+                            e.size
+                        );
                     }
-                    
+
                     // Match entries: exact match OR starts with "folder/" OR starts with "folder\"
                     // Windows archives sometimes use backslashes
                     let entries: Vec<arclain_core::ArchiveEntry> = all_entries
@@ -355,8 +363,12 @@ impl<'a> ActionContext<'a> {
                                 false
                             });
                             if matched {
-                                tracing::debug!("[DragExtract] Matched entry: path='{}' is_dir={} size={}",
-                                    e.path, e.is_dir, e.size);
+                                tracing::debug!(
+                                    "[DragExtract] Matched entry: path='{}' is_dir={} size={}",
+                                    e.path,
+                                    e.is_dir,
+                                    e.size
+                                );
                             }
                             matched
                         })
@@ -365,8 +377,13 @@ impl<'a> ActionContext<'a> {
 
                     tracing::info!("[DragExtract] Matched {} entries for drag", entries.len());
                     for (i, e) in entries.iter().enumerate() {
-                        tracing::info!("[DragExtract]   [{:3}] path='{}' is_dir={} size={}",
-                            i, e.path, e.is_dir, e.size);
+                        tracing::info!(
+                            "[DragExtract]   [{:3}] path='{}' is_dir={} size={}",
+                            i,
+                            e.path,
+                            e.is_dir,
+                            e.size
+                        );
                     }
 
                     let backend = archive.backend_arc();
@@ -382,16 +399,26 @@ impl<'a> ActionContext<'a> {
 
                     // Start the drag operation
                     // Progress is shown via native Windows IProgressDialog during batch extraction
-                    tracing::info!("[DragExtract] Calling start_deferred_drag with {} entries", entries.len());
+                    tracing::info!(
+                        "[DragExtract] Calling start_deferred_drag with {} entries",
+                        entries.len()
+                    );
                     match crate::platform::drag_source::start_deferred_drag(
                         backend,
                         archive_path,
                         entries,
                         password,
                     ) {
-                        Ok(_) => {
-                            tracing::info!("[DragExtract] Drag operation completed successfully");
-                            self.status_info.message = "Drag operation completed".to_string();
+                        Ok(rx) => {
+                            tracing::info!("[DragExtract] Drag operation started in background");
+                            self.status_info.message = "Drag started...".to_string();
+
+                            self.archive_ops_state.drag_rx = Some(rx);
+                            self.archive_ops_state.drag_dialog.show = false;
+                            self.archive_ops_state.drag_dialog.percent = 0;
+                            self.archive_ops_state.drag_dialog.file_action =
+                                "Preparing drag...".to_string();
+                            self.archive_ops_state.drag_started = Some(std::time::Instant::now());
                         }
                         Err(e) => {
                             tracing::warn!("[DragExtract] Drag failed: {:?}", e);

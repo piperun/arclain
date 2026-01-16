@@ -12,11 +12,16 @@ pub struct ArchiveOperationsState {
     pub extraction_minimized: bool,
     pub extraction_started: Option<Instant>,
     pub pending_open_file: Option<String>,
-    
+
     // Conversion progress state
     pub conversion_dialog: ExtractionProgressDialog,
     pub conversion_rx: Option<Receiver<ProgressUpdate>>,
     pub conversion_child: Option<std::process::Child>,
     pub conversion_minimized: bool,
     pub conversion_started: Option<Instant>,
+
+    // Drag-out progress state
+    pub drag_dialog: ExtractionProgressDialog,
+    pub drag_rx: Option<Receiver<ProgressUpdate>>,
+    pub drag_started: Option<Instant>,
 }
