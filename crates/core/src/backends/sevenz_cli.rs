@@ -276,7 +276,7 @@ impl SevenZipCli {
     /// Returns true if any files are encrypted (not just headers).
     pub fn is_rar_encrypted(&self, path: &Path) -> Result<bool> {
         info!("Checking RAR encryption status: {}", path.display());
-        
+
         let args = vec![
             OsString::from("l"),
             OsString::from("-ba"),
@@ -286,31 +286,34 @@ impl SevenZipCli {
             OsString::from("-p"), // Empty password to avoid interactive prompt
             path.as_os_str().to_os_string(),
         ];
-        
+
         // Run the command - it will fail on encrypted headers but may succeed on encrypted files
         let result = self.run(args);
-        
+
         match result {
             Ok(output) => {
                 // Parse the output to check for encrypted entries
                 let has_encrypted_files = output.lines().any(|line| {
-                    line.starts_with("Encrypted = +") ||
-                    (line.starts_with("Encrypted = ") && line.contains("+"))
+                    line.starts_with("Encrypted = +")
+                        || (line.starts_with("Encrypted = ") && line.contains("+"))
                 });
-                
-                debug!("RAR encryption check result: encrypted={}", has_encrypted_files);
+
+                debug!(
+                    "RAR encryption check result: encrypted={}",
+                    has_encrypted_files
+                );
                 Ok(has_encrypted_files)
             }
             Err(e) => {
                 // If 7z fails, it might be due to encrypted headers
                 let err_msg = e.to_string().to_lowercase();
-                if err_msg.contains("wrong password") ||
-                   err_msg.contains("can not open encrypted archive") ||
-                   err_msg.contains("encrypted") {
+                if err_msg.contains("wrong password")
+                    || err_msg.contains("can not open encrypted archive")
+                    || err_msg.contains("encrypted")
+                {
                     debug!("RAR has encrypted headers or cannot open without password");
                     Ok(true)
-                }
-                else {
+                } else {
                     // Some other error occurred
                     Err(e)
                 }
@@ -588,7 +591,10 @@ impl ArchiveBackend for SevenZipCli {
             path.display(),
             dest.display()
         );
-        debug!("Files to extract (first 10): {:?}", files.iter().take(10).collect::<Vec<_>>());
+        debug!(
+            "Files to extract (first 10): {:?}",
+            files.iter().take(10).collect::<Vec<_>>()
+        );
 
         let mut args = vec![
             OsString::from("x"), // Use 'x' to preserve directory structure (matches UI path expectations)
@@ -617,11 +623,11 @@ impl ArchiveBackend for SevenZipCli {
         // Windows has ~32KB limit, but practical limit is ~8KB for CreateProcess
         let mut total_arg_len: usize = args.iter().map(|a| a.len() + 1).sum();
         let mut truncated = false;
-        
+
         for file in files {
             let file_os = OsString::from(file);
             let new_len = total_arg_len + file_os.len() + 1;
-            
+
             // If adding this file would exceed ~8000 chars, stop and log warning
             if new_len > 8000 && !args.iter().any(|a| a == &file_os) {
                 if !truncated {
@@ -631,13 +637,13 @@ impl ArchiveBackend for SevenZipCli {
                 }
                 break;
             }
-            
+
             args.push(file_os);
             total_arg_len = new_len;
         }
 
         self.run_status(args)?;
-        
+
         // Verify extraction worked by checking if at least some files exist
         let sample_files: Vec<_> = files.iter().take(3).collect();
         let mut found_count = 0;
@@ -649,10 +655,13 @@ impl ArchiveBackend for SevenZipCli {
                 debug!("Sample file not found after extraction: {:?}", full_path);
             }
         }
-        
+
         if found_count == 0 && !sample_files.is_empty() {
-            error!("CRITICAL: 7z extraction returned success but 0/{} sample files found in {:?}",
-                   sample_files.len(), dest);
+            error!(
+                "CRITICAL: 7z extraction returned success but 0/{} sample files found in {:?}",
+                sample_files.len(),
+                dest
+            );
             // List what IS in dest to help debug
             if let Ok(entries) = std::fs::read_dir(dest) {
                 for entry in entries.take(5) {
@@ -662,9 +671,13 @@ impl ArchiveBackend for SevenZipCli {
                 }
             }
         } else {
-            info!("Files extracted successfully ({}/{} sample files verified)", found_count, sample_files.len());
+            info!(
+                "Files extracted successfully ({}/{} sample files verified)",
+                found_count,
+                sample_files.len()
+            );
         }
-        
+
         Ok(())
     }
 
@@ -875,7 +888,8 @@ impl ArchiveBackend for SevenZipCli {
         };
 
         // 1. Extract source archive using its password (if any)
-        source.extract_all(&work_dir)
+        source
+            .extract_all(&work_dir)
             .context("extracting source archive")?;
 
         // 2. Compress work_dir contents to dest using 7z CLI
@@ -1059,7 +1073,7 @@ impl ArchiveBackend for SevenZipCli {
         password: Option<&str>,
         writer: &mut dyn std::io::Write,
     ) -> Result<()> {
-        info!(
+        debug!(
             "Streaming entry via CLI: {} -> {}",
             archive.display(),
             path_in_archive
@@ -1067,7 +1081,7 @@ impl ArchiveBackend for SevenZipCli {
 
         let mut args = vec![
             OsString::from("e"),
-            OsString::from("-so"),  // Stream to stdout
+            OsString::from("-so"), // Stream to stdout
             OsString::from("-y"),
             OsString::from("-bd"),
             OsString::from("-spf2"), // Disable wildcard matching - treat path as literal
@@ -1109,14 +1123,8 @@ impl ArchiveBackend for SevenZipCli {
         let status = child.wait().context("waiting for 7z")?;
         if !status.success() {
             // Try to read stderr if still available
-            error!(
-                "7-Zip streaming failed with code {:?}",
-                status.code()
-            );
-            return Err(anyhow!(
-                "7z streaming failed (code {:?})",
-                status.code()
-            ));
+            error!("7-Zip streaming failed with code {:?}", status.code());
+            return Err(anyhow!("7z streaming failed (code {:?})", status.code()));
         }
 
         debug!("CLI streaming complete: {} bytes written", bytes_written);
@@ -1222,17 +1230,21 @@ impl SevenZipCli {
         let mut args = vec![
             OsString::from("a"),
             OsString::from("-t7z"),
-            OsString::from("-mx=5"),      // Normal compression (faster than -mx=9)
+            OsString::from("-mx=5"), // Normal compression (faster than -mx=9)
             OsString::from("-m0=LZMA2"),
-            OsString::from("-mmt=on"),     // Multi-threaded
+            OsString::from("-mmt=on"), // Multi-threaded
             OsString::from("-sccUTF-8"),
             OsString::from("-scsUTF-8"),
             dest_7z.as_os_str().to_os_string(),
         ];
-        
+
         // Add all files/folders in source directory
-        args.push(OsString::from(format!("{}{}*", source_dir.display(), std::path::MAIN_SEPARATOR)));
-        
+        args.push(OsString::from(format!(
+            "{}{}*",
+            source_dir.display(),
+            std::path::MAIN_SEPARATOR
+        )));
+
         self.spawn_with_progress(args)
     }
 }

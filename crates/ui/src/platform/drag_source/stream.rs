@@ -1,4 +1,6 @@
+use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use std::io::Write;
+use std::sync::mpsc::Sender;
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -49,6 +51,7 @@ struct StreamPipe {
 pub struct ArchiveStream {
     pipe: Mutex<StreamPipe>,
     file_size: u64,
+    progress_tx: Option<Sender<ProgressUpdate>>,
 }
 
 impl ArchiveStream {
@@ -59,6 +62,7 @@ impl ArchiveStream {
         entry_name: String,
         password: Option<String>,
         file_size: u64,
+        progress_tx: Option<Sender<ProgressUpdate>>,
     ) -> Self {
         // Create a bounded channel for backpressure (e.g., 4 chunks)
         // Adjust buffer size as needed.
@@ -96,6 +100,7 @@ impl ArchiveStream {
                 _handle: Some(handle),
             }),
             file_size,
+            progress_tx,
         }
     }
 }
@@ -144,11 +149,10 @@ impl ISequentialStream_Impl for ArchiveStream {
                 }
                 Ok(Err(e)) => {
                     tracing::error!("Stream error: {}", e);
-                    // Return S_FALSE (EOF/Error) implies we stop reading
                     break;
                 }
                 Err(_) => {
-                    // Disconnected (EOF)
+                    // Disconnected
                     break;
                 }
             }
@@ -158,8 +162,22 @@ impl ISequentialStream_Impl for ArchiveStream {
             unsafe { *pcbread = total_read as u32 };
         }
 
-        // Technically if total_read < cb, return S_FALSE? Windows IStream::Read usually returns S_OK if *any* read?
-        // Check docs: "Returns S_OK if data was successfully read... S_FALSE if the number of bytes read is less than cb"
+        // Send progress update if we have a sender
+        if let Some(tx) = &self.progress_tx {
+            let percent = if self.file_size > 0 {
+                (pipe.total_read as f64 / self.file_size as f64 * 100.0) as u8
+            } else {
+                0
+            };
+            // Limit updates to avoid spam? channel is fast enough usually.
+            // But we might want to only send if percent changed.
+            // For now, simple.
+            let _ = tx.send(ProgressUpdate {
+                percent,
+                message: None, // Or "Transferring..."
+            });
+        }
+
         if total_read < cb as usize {
             return S_FALSE;
         }
