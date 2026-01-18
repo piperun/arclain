@@ -133,6 +133,16 @@ pub fn update_conversion_progress(state: &mut ArchiveOperationsState, ctx: &egui
 pub fn update_drag_progress(state: &mut ArchiveOperationsState, ctx: &egui::Context) {
     let mut finished = false;
     if let Some(rx) = &state.drag_rx {
+        // DIAGNOSTIC: Track orphaned receiver
+        static ORPHAN_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let count = ORPHAN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count % 1000 == 0 && count > 0 {
+            tracing::warn!(
+                "[DIAG] drag_rx still exists after {} frames - channel may be stuck",
+                count
+            );
+        }
+
         for upd in rx.try_iter() {
             // Auto-show dialog on first progress update
             if !state.drag_dialog.show {
