@@ -8,9 +8,6 @@
 
 use super::drop_source::DragState;
 use super::types::ExtractionCache;
-use super::utils::{
-    extract_with_progress_dialog, find_common_directory, MAX_FILES_FOR_EXTRACT_FILES,
-};
 use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use parking_lot::RwLock;
@@ -188,8 +185,11 @@ impl HDropDataObject {
         *self.hdrop_pre.write() = Some(hdrop);
 
         // Store the TempDir in cache to keep it alive
+        // Leaking the directory (guard=None) is required to fix race condition with Explorer copy
+        let path = temp_dir.into_path();
         *self.cache.write() = Some(ExtractionCache {
-            temp_dir,
+            temp_dir_path: path,
+            _guard: None,
             extracted: false,
         });
 
@@ -265,7 +265,7 @@ impl HDropDataObject {
             .cache
             .read()
             .as_ref()
-            .map(|c| c.temp_dir.path().to_path_buf())
+            .map(|c| c.temp_dir_path.clone())
             .unwrap();
         info!("[hdrop] Starting extraction to temp: {:?}", temp_dir);
 
@@ -281,53 +281,50 @@ impl HDropDataObject {
         if let Some(tx) = &self.progress_tx {
             let _ = tx.send(ProgressUpdate {
                 percent: 0,
-                message: Some(format!("Extracting {} files...", file_count)),
+                message: Some(format!("Extracting {} entries...", file_count)),
             });
         }
 
-        // Use batch extraction
-        let use_extract_all = file_count > MAX_FILES_FOR_EXTRACT_FILES;
-        if use_extract_all {
-            let common_dir = find_common_directory(&file_paths);
-            if let Some(dir_path) = common_dir {
-                self.backend
-                    .extract_directory(
-                        &self.archive_path,
-                        &temp_dir,
-                        &dir_path,
-                        self.password.as_deref(),
-                    )
-                    .map_err(|e| format!("extract_directory failed: {}", e))?;
-            } else {
-                self.backend
-                    .extract_all(&self.archive_path, &temp_dir, self.password.as_deref())
-                    .map_err(|e| format!("extract_all failed: {}", e))?;
-            }
-        } else if let Some(tx) = &self.progress_tx {
+        // Build EntryRefs from our entries
+        let entry_refs: Vec<arclain_core::EntryRef<'_>> = self
+            .entries
+            .iter()
+            .map(|e| arclain_core::EntryRef::from(e))
+            .collect();
+
+        // Use unified extract() - handles both "all" and "selected" with proper progress
+        if let Some(tx) = &self.progress_tx {
             let tx_clone = tx.clone();
             self.backend
-                .extract_files_with_progress(
+                .extract(
                     &self.archive_path,
                     &temp_dir,
-                    &file_paths,
+                    Some(&entry_refs),
                     self.password.as_deref(),
                     Some(&move |p| {
                         let _ = tx_clone.send(ProgressUpdate {
                             percent: p.percent,
-                            message: Some(format!("Extracting: {}", p.current_file)),
+                            message: Some(format!(
+                                "Extracting ({}/{}): {}",
+                                p.current, p.total, p.current_file
+                            )),
                         });
                     }),
+                    None, // No cancellation for now
+                )
+                .map_err(|e| format!("extract failed: {}", e))?;
+        } else {
+            // No progress channel - still use unified extract
+            self.backend
+                .extract(
+                    &self.archive_path,
+                    &temp_dir,
+                    Some(&entry_refs),
+                    self.password.as_deref(),
+                    None,
                     None,
                 )
-                .map_err(|e| format!("extract_files_with_progress failed: {}", e))?;
-        } else {
-            extract_with_progress_dialog(
-                Arc::clone(&self.backend),
-                &self.archive_path,
-                &temp_dir,
-                &file_paths,
-                self.password.as_deref(),
-            )?;
+                .map_err(|e| format!("extract failed: {}", e))?;
         }
 
         if let Some(tx) = &self.progress_tx {
@@ -358,7 +355,7 @@ impl HDropDataObject {
         let cache_guard = self.cache.read();
         let temp_dir = cache_guard
             .as_ref()
-            .map(|c| c.temp_dir.path())
+            .map(|c| c.temp_dir_path.as_path())
             .ok_or("No temp dir")?;
 
         // Find the common root folder for all entries

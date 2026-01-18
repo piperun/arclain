@@ -38,18 +38,18 @@ impl UnrarCli {
                 PathBuf::from(r"C:\Program Files\WinRAR\UnRAR.exe"),
                 PathBuf::from(r"C:\Program Files (x86)\WinRAR\UnRAR.exe"),
             ];
-            
+
             // Check scoop installation
             if let Some(home) = std::env::var_os("USERPROFILE") {
                 let scoop_path = PathBuf::from(home).join(r"scoop\apps\unrar\current\UnRAR.exe");
                 paths_to_check.push(scoop_path);
-                
+
                 // Also check scoop shims
                 let scoop_shim = PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default())
                     .join(r"scoop\shims\unrar.exe");
                 paths_to_check.push(scoop_shim);
             }
-            
+
             // Check chocolatey installation
             if let Some(choco) = std::env::var_os("ChocolateyInstall") {
                 let choco_path = PathBuf::from(choco).join(r"bin\unrar.exe");
@@ -58,7 +58,7 @@ impl UnrarCli {
                 // Default chocolatey location
                 paths_to_check.push(PathBuf::from(r"C:\ProgramData\chocolatey\bin\unrar.exe"));
             }
-            
+
             // Check portable/common locations
             paths_to_check.push(PathBuf::from(r"C:\Tools\unrar.exe"));
             paths_to_check.push(PathBuf::from(r"C:\unrar\unrar.exe"));
@@ -116,11 +116,21 @@ impl UnrarCli {
 
     fn run_status(&self, args: &[OsString]) -> Result<()> {
         // Calculate approximate command line length
-        let cmd_len: usize = self.exe.as_os_str().len() + args.iter().map(|a| a.len() + 1).sum::<usize>();
-        debug!("Running UnRAR (status mode): {:?} with {} args, ~{} bytes", self.exe, args.len(), cmd_len);
-        
+        let cmd_len: usize =
+            self.exe.as_os_str().len() + args.iter().map(|a| a.len() + 1).sum::<usize>();
+        debug!(
+            "Running UnRAR (status mode): {:?} with {} args, ~{} bytes",
+            self.exe,
+            args.len(),
+            cmd_len
+        );
+
         if cmd_len > 8000 {
-            error!("Command line too long for UnRAR: {} bytes (limit ~8000). {} args passed.", cmd_len, args.len());
+            error!(
+                "Command line too long for UnRAR: {} bytes (limit ~8000). {} args passed.",
+                cmd_len,
+                args.len()
+            );
             return Err(anyhow!(
                 "Command line too long ({} bytes). Too many files ({} args) for UnRAR CLI - use extract_all instead",
                 cmd_len,
@@ -133,7 +143,9 @@ impl UnrarCli {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
-            .with_context(|| format!("spawning unrar at {:?} with {} args", self.exe, args.len()))?;
+            .with_context(|| {
+                format!("spawning unrar at {:?} with {} args", self.exe, args.len())
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -450,6 +462,208 @@ impl ArchiveBackend for UnrarCli {
 
         self.run_status(&args)?;
         Ok(())
+    }
+
+    fn extract(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        entries: Option<&[crate::EntryRef<'_>]>,
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        _cancel: Option<&crate::CancellationToken>,
+    ) -> Result<()> {
+        use std::collections::HashSet;
+        use std::io::Write;
+
+        // Helper for progress
+        let report_start = |cb: Option<&crate::ProgressCallback>| {
+            if let Some(cb) = cb {
+                cb(crate::ExtractionProgress {
+                    current: 0,
+                    total: 1,
+                    current_file: "Extracting...".to_string(),
+                    percent: 0,
+                });
+            }
+        };
+        let report_done = |cb: Option<&crate::ProgressCallback>| {
+            if let Some(cb) = cb {
+                cb(crate::ExtractionProgress {
+                    current: 1,
+                    total: 1,
+                    current_file: "Complete".to_string(),
+                    percent: 100,
+                });
+            }
+        };
+
+        match entries {
+            None => {
+                info!("[UnRAR CLI] Extracting all (no entries specified)");
+                report_start(progress);
+                let result = self.extract_all(archive, dest, password);
+                report_done(progress);
+                result
+            }
+            Some(refs) if refs.is_empty() => {
+                info!("[UnRAR CLI] No entries to extract");
+                Ok(())
+            }
+            Some(refs) => {
+                // Get total entries in archive
+                let archive_info = self.list(archive, password)?;
+                let total_entries = archive_info.entries.len();
+
+                // Build set of selected paths (expanding directories)
+                let mut selected_paths: HashSet<String> = HashSet::new();
+                for entry_ref in refs {
+                    if entry_ref.is_dir {
+                        for archive_entry in &archive_info.entries {
+                            if entry_ref.matches(&archive_entry.path) {
+                                selected_paths.insert(archive_entry.path.clone());
+                            }
+                        }
+                    } else {
+                        selected_paths.insert(entry_ref.path.to_string());
+                    }
+                }
+
+                let selected_count = selected_paths.len();
+                let excluded_count = total_entries.saturating_sub(selected_count);
+
+                info!(
+                    "[UnRAR CLI] Strategy: {} selected, {} excluded, {} total",
+                    selected_count, excluded_count, total_entries
+                );
+
+                std::fs::create_dir_all(dest)?;
+
+                if excluded_count == 0 {
+                    // All entries selected → extract_all
+                    info!("[UnRAR CLI] All entries selected, using extract_all");
+                    report_start(progress);
+                    let result = self.extract_all(archive, dest, password);
+                    report_done(progress);
+                    result
+                } else if excluded_count <= 50 {
+                    // Few exclusions → use extract_all with -x@excludefile
+                    info!(
+                        "[UnRAR CLI] Using extract_all with {} exclusions",
+                        excluded_count
+                    );
+
+                    let excluded: Vec<String> = archive_info
+                        .entries
+                        .iter()
+                        .filter(|e| !selected_paths.contains(&e.path))
+                        .map(|e| e.path.clone())
+                        .collect();
+
+                    let mut excludefile = tempfile::NamedTempFile::new()
+                        .context("Creating exclude file for unrar")?;
+                    for path in &excluded {
+                        writeln!(excludefile, "{}", path)?;
+                    }
+                    excludefile.flush()?;
+
+                    let mut args = vec![
+                        OsString::from("x"),
+                        OsString::from("-o+"),
+                        OsString::from("-c-"),
+                        OsString::from("-idq"),
+                    ];
+
+                    if let Some(pwd) = password {
+                        args.push(OsString::from(format!("-p{}", pwd)));
+                    } else {
+                        args.push(OsString::from("-p-"));
+                    }
+
+                    // Exclude file
+                    args.push(OsString::from(format!(
+                        "-x@{}",
+                        excludefile.path().display()
+                    )));
+
+                    args.push(OsString::from(archive));
+
+                    // Destination
+                    let mut dest_str = dest.to_string_lossy().into_owned();
+                    if !dest_str.ends_with(std::path::MAIN_SEPARATOR) {
+                        dest_str.push(std::path::MAIN_SEPARATOR);
+                    }
+                    args.push(OsString::from(dest_str));
+
+                    report_start(progress);
+                    let result = self.run_status(&args);
+                    report_done(progress);
+                    result
+                } else if selected_count <= 50 {
+                    // Few selections → list directly on command line
+                    info!(
+                        "[UnRAR CLI] Extracting {} files directly on cmd",
+                        selected_count
+                    );
+                    let files: Vec<String> = selected_paths.into_iter().collect();
+                    self.extract_files(archive, dest, &files, password)
+                } else {
+                    // Many selections, UnRAR has no include-list support.
+                    // Must use extract_all with a LARGE exclude list to be precise.
+                    info!(
+                        "[UnRAR CLI] Large selection ({} selected, {} excluded). Using extract_all with full exclude list.",
+                        selected_count, excluded_count
+                    );
+
+                    let excluded: Vec<String> = archive_info
+                        .entries
+                        .iter()
+                        .filter(|e| !selected_paths.contains(&e.path))
+                        .map(|e| e.path.clone())
+                        .collect();
+
+                    let mut excludefile = tempfile::NamedTempFile::new()
+                        .context("Creating exclude file for unrar")?;
+                    for path in &excluded {
+                        writeln!(excludefile, "{}", path)?;
+                    }
+                    excludefile.flush()?;
+
+                    let mut args = vec![
+                        OsString::from("x"),
+                        OsString::from("-o+"),
+                        OsString::from("-c-"),
+                        OsString::from("-idq"),
+                    ];
+
+                    if let Some(pwd) = password {
+                        args.push(OsString::from(format!("-p{}", pwd)));
+                    } else {
+                        args.push(OsString::from("-p-"));
+                    }
+
+                    // Exclude file
+                    args.push(OsString::from(format!(
+                        "-x@{}",
+                        excludefile.path().display()
+                    )));
+
+                    args.push(OsString::from(archive));
+
+                    // Destination
+                    let mut dest_str = dest.to_string_lossy().into_owned();
+                    if !dest_str.ends_with(std::path::MAIN_SEPARATOR) {
+                        dest_str.push(std::path::MAIN_SEPARATOR);
+                    }
+                    args.push(OsString::from(dest_str));
+
+                    report_start(progress);
+                    let result = self.run_status(&args);
+                    report_done(progress);
+                    result
+                }
+            }
+        }
     }
 
     fn recompress_7z(&self, _source: &Path, _dest_7z: &Path) -> Result<()> {

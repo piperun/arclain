@@ -291,6 +291,106 @@ impl ArchiveBackend for SevenZBackend {
         Ok(())
     }
 
+    fn extract(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        entries: Option<&[crate::EntryRef<'_>]>,
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        cancel: Option<&crate::CancellationToken>,
+    ) -> Result<()> {
+        info!(
+            "Using {} backend unified extract (entries: {:?})",
+            self.name(),
+            entries.map(|e| e.len()).unwrap_or(0)
+        );
+
+        std::fs::create_dir_all(dest)?;
+
+        let pwd = password.map(Password::from).unwrap_or_else(Password::empty);
+        let mut reader = ArchiveReader::open(archive, pwd)?;
+
+        // First pass: count total entries to extract (for accurate progress)
+        let archive_info = self.list(archive, password)?;
+        let total_entries = match &entries {
+            None => archive_info.entries.len(),
+            Some(refs) => {
+                // Count how many archive entries match our refs
+                archive_info
+                    .entries
+                    .iter()
+                    .filter(|e| refs.iter().any(|r| r.matches(&e.path)))
+                    .count()
+            }
+        };
+
+        let mut processed = 0usize;
+
+        reader.for_each_entries(|entry, reader| {
+            // Check for cancellation
+            if let Some(token) = cancel {
+                if token.load(std::sync::atomic::Ordering::Relaxed) {
+                    info!("Extraction cancelled");
+                    return Err(sevenz_rust2::Error::Other(
+                        "Extraction cancelled by user".into(),
+                    ));
+                }
+            }
+
+            let entry_path = entry.name.clone();
+
+            // Check if this entry should be extracted
+            let should_extract = match &entries {
+                None => true, // Extract all
+                Some(refs) => refs.iter().any(|r| r.matches(&entry_path)),
+            };
+
+            if should_extract {
+                processed += 1;
+
+                // Report progress
+                if let Some(cb) = progress {
+                    let percent = if total_entries > 0 {
+                        ((processed * 100) / total_entries) as u8
+                    } else {
+                        0
+                    };
+                    cb(crate::ExtractionProgress {
+                        current: processed,
+                        total: total_entries,
+                        current_file: entry_path.clone(),
+                        percent,
+                    });
+                }
+
+                let dest_path = dest.join(&entry_path);
+                if entry.is_directory {
+                    std::fs::create_dir_all(&dest_path).ok();
+                } else {
+                    if let Some(parent) = dest_path.parent() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                    let mut out = File::create(&dest_path)?;
+                    std::io::copy(reader, &mut out)?;
+                }
+            }
+            Ok(true)
+        })?;
+
+        // Report completion
+        if let Some(cb) = progress {
+            cb(crate::ExtractionProgress {
+                current: total_entries,
+                total: total_entries,
+                current_file: "Complete".to_string(),
+                percent: 100,
+            });
+        }
+
+        Ok(())
+    }
+
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()> {
         use std::time::Instant;
 
@@ -654,7 +754,7 @@ impl ArchiveBackend for SevenZBackend {
         // The FallbackBackend works around this by routing extract_entry_to_writer
         // directly to the CLI backend, which handles streaming correctly.
         // This method is kept for non-FallbackBackend usage scenarios.
-        
+
         info!("Streaming entry '{}' from 7z archive", path_in_archive);
         let pwd = password.map(Password::from).unwrap_or_else(Password::empty);
         let mut reader = ArchiveReader::open(archive, pwd)?;

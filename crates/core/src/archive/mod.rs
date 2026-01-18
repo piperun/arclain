@@ -17,6 +17,84 @@ pub use handle::Archive;
 pub use info::{ArchiveEntry, ArchiveInfo, ArchiveKind};
 pub use navigation::NavigationState;
 
+/// Reference to an archive entry for extraction
+///
+/// Can hold just a path string, or include an index for backends that support O(1) lookup.
+#[derive(Debug, Clone)]
+pub struct EntryRef<'a> {
+    /// Path in the archive (always available)
+    pub path: &'a str,
+    /// Optional index for backends that support it (e.g., zip)
+    pub index: Option<usize>,
+    /// Whether this entry is a directory (for child matching)
+    pub is_dir: bool,
+}
+
+impl<'a> EntryRef<'a> {
+    pub fn new(path: &'a str) -> Self {
+        Self {
+            path,
+            index: None,
+            is_dir: false,
+        }
+    }
+
+    pub fn with_index(path: &'a str, index: usize) -> Self {
+        Self {
+            path,
+            index: Some(index),
+            is_dir: false,
+        }
+    }
+
+    pub fn directory(path: &'a str) -> Self {
+        Self {
+            path,
+            index: None,
+            is_dir: true,
+        }
+    }
+
+    /// Check if an archive entry path matches this reference
+    /// For directories, matches children; for files, exact match only
+    pub fn matches(&self, entry_path: &str) -> bool {
+        if self.path == entry_path {
+            return true;
+        }
+        if self.is_dir {
+            // Match children of directory
+            let prefix = self.path.trim_end_matches('/');
+            entry_path.starts_with(prefix)
+                && (entry_path.len() == prefix.len()
+                    || entry_path.as_bytes().get(prefix.len()) == Some(&b'/'))
+        } else {
+            false
+        }
+    }
+}
+
+impl<'a> From<&'a str> for EntryRef<'a> {
+    fn from(path: &'a str) -> Self {
+        Self::new(path)
+    }
+}
+
+impl<'a> From<&'a String> for EntryRef<'a> {
+    fn from(path: &'a String) -> Self {
+        Self::new(path.as_str())
+    }
+}
+
+impl<'a> From<&'a ArchiveEntry> for EntryRef<'a> {
+    fn from(entry: &'a ArchiveEntry) -> Self {
+        Self {
+            path: &entry.path,
+            index: None, // ArchiveEntry doesn't have index yet
+            is_dir: entry.is_dir,
+        }
+    }
+}
+
 /// Capabilities that an archive backend may support
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BackendCapabilities {
@@ -144,6 +222,66 @@ pub trait ArchiveBackend: Send + Sync {
         Err(anyhow::anyhow!(
             "Streaming extraction not supported by this backend"
         ))
+    }
+
+    /// Unified extraction method with progress and cancellation support
+    ///
+    /// # Arguments
+    /// * `archive` - Path to the archive file
+    /// * `dest` - Destination directory
+    /// * `entries` - Entries to extract. None = extract all, Some([...]) = extract selected
+    /// * `password` - Optional password for encrypted archives
+    /// * `progress` - Optional callback for progress updates
+    /// * `cancel` - Optional cancellation token (AtomicBool set to true cancels)
+    ///
+    /// Default implementation delegates to extract_all or extract_files based on entries
+    fn extract(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        entries: Option<&[EntryRef<'_>]>,
+        password: Option<&str>,
+        progress: Option<&ProgressCallback>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<()> {
+        // Default: delegate to existing methods
+        let _ = cancel; // Not used in default impl
+
+        match entries {
+            None => {
+                // Extract all
+                if let Some(cb) = progress {
+                    cb(ExtractionProgress {
+                        current: 0,
+                        total: 1,
+                        current_file: "Extracting all...".to_string(),
+                        percent: 0,
+                    });
+                }
+                let result = self.extract_all(archive, dest, password);
+                if let Some(cb) = progress {
+                    cb(ExtractionProgress {
+                        current: 1,
+                        total: 1,
+                        current_file: "Complete".to_string(),
+                        percent: 100,
+                    });
+                }
+                result
+            }
+            Some(refs) => {
+                // Extract selected files
+                let files: Vec<String> = refs.iter().map(|r| r.path.to_string()).collect();
+                self.extract_files_with_progress(
+                    archive,
+                    dest,
+                    &files,
+                    password,
+                    progress,
+                    cancel.cloned().as_ref(),
+                )
+            }
+        }
     }
 }
 
