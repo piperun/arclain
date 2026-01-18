@@ -36,8 +36,11 @@ pub fn render_archive_browser(
     render_file_list(ctx, state, shared, &mut action);
 
     // Update selection_count signal for toolbar button state
+    // IMPORTANT: Only set if changed to avoid triggering repaint loop!
     let selection_count = state.entries.iter().filter(|e| e.selected).count();
-    shared.signals().selection_count.set(selection_count);
+    if shared.signals().selection_count.get() != selection_count {
+        shared.signals().selection_count.set(selection_count);
+    }
 
     // After UI has rendered, dispatch any pending plugin events.
     // This ensures plugins only receive archive_opened after the UI is ready.

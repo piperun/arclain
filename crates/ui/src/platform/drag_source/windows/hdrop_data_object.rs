@@ -593,3 +593,10 @@ impl windows::Win32::System::Com::IDataObject_Impl for HDropDataObject {
         Err(windows::core::Error::from(E_NOTIMPL))
     }
 }
+
+// DIAGNOSTIC: Track when HDropDataObject is dropped
+impl Drop for HDropDataObject {
+    fn drop(&mut self) {
+        info!("[HDROP] HDropDataObject DROPPED - progress_tx will disconnect");
+    }
+}

@@ -281,6 +281,14 @@ pub fn start_hdrop_drag(
                 message: Some(format!("Failed: {:?}", result)),
             });
         }
+
+        // DIAGNOSTIC: Explicitly drop data object to release Sender
+        info!("[HDROP] Dropping data_object and drop_source...");
+        drop(data_object);
+        drop(drop_source);
+        info!("[HDROP] Data objects dropped, dropping tx...");
+        drop(tx);
+        info!("[HDROP] Thread exiting NOW");
     });
 
     Ok(rx)
