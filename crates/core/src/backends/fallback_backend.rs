@@ -244,6 +244,45 @@ impl ArchiveBackend for FallbackBackend {
         }
     }
 
+    fn extract(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        entries: Option<&[crate::EntryRef<'_>]>,
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        cancel: Option<&crate::CancellationToken>,
+    ) -> Result<()> {
+        info!(
+            "Trying {} backend unified extract (entries: {:?})",
+            self.primary_name,
+            entries.map(|e| e.len())
+        );
+
+        match self
+            .primary
+            .extract(archive, dest, entries, password, progress, cancel)
+        {
+            Ok(()) => {
+                info!("Successfully extracted with {} backend", self.primary_name);
+                Ok(())
+            }
+            Err(e) => {
+                // Don't fallback if cancelled
+                if e.to_string().contains("cancelled") {
+                    return Err(e);
+                }
+                warn!(
+                    "{} backend failed unified extract: {}. Falling back to {}",
+                    self.primary_name, e, self.fallback_name
+                );
+                self.fallback
+                    .extract(archive, dest, entries, password, progress, cancel)
+                    .with_context(|| format!("Both backends failed to extract"))
+            }
+        }
+    }
+
     fn extract_entry_to_writer(
         &self,
         archive: &Path,

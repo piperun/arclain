@@ -219,7 +219,7 @@ impl ArchiveBackend for UnrarBackend {
         cancel: Option<&crate::CancellationToken>,
     ) -> Result<()> {
         use std::sync::atomic::Ordering;
-        
+
         info!(
             "Using {} backend to extract {} files from RAR with progress",
             self.name(),
@@ -316,10 +316,16 @@ impl ArchiveBackend for UnrarBackend {
         let mut open_archive = archive.open_for_processing()?;
 
         // Normalize to forward slashes for comparison - RAR entries may use either separator
-        let dir_path_normalized = dir_path.trim_end_matches('/').trim_end_matches('\\').replace('\\', "/");
+        let dir_path_normalized = dir_path
+            .trim_end_matches('/')
+            .trim_end_matches('\\')
+            .replace('\\', "/");
         let dir_prefix = format!("{}/", dir_path_normalized);
-        
-        info!("RAR extract_directory: looking for entries starting with '{}' or exactly '{}'", dir_prefix, dir_path_normalized);
+
+        info!(
+            "RAR extract_directory: looking for entries starting with '{}' or exactly '{}'",
+            dir_prefix, dir_path_normalized
+        );
 
         let mut extracted_count = 0;
         while let Some(header) = open_archive.read_header()? {
@@ -327,15 +333,127 @@ impl ArchiveBackend for UnrarBackend {
             // Normalize entry path separators for comparison
             let entry_path_normalized = entry_path.replace('\\', "/");
 
-            if entry_path_normalized.starts_with(&dir_prefix) || entry_path_normalized == dir_path_normalized {
+            if entry_path_normalized.starts_with(&dir_prefix)
+                || entry_path_normalized == dir_path_normalized
+            {
                 extracted_count += 1;
                 open_archive = header.extract_to(dest.to_path_buf())?;
             } else {
                 open_archive = header.skip()?;
             }
         }
-        
-        info!("RAR extract_directory: extracted {} entries", extracted_count);
+
+        info!(
+            "RAR extract_directory: extracted {} entries",
+            extracted_count
+        );
+
+        Ok(())
+    }
+
+    fn extract(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        entries: Option<&[crate::EntryRef<'_>]>,
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        cancel: Option<&crate::CancellationToken>,
+    ) -> Result<()> {
+        use std::sync::atomic::Ordering;
+
+        // For None or directory entries or large counts, use extract_all
+        let should_extract_all = match entries {
+            None => true,
+            Some(refs) => {
+                let has_dir = refs.iter().any(|r| r.is_dir);
+                let too_many = refs.len() > 100; // Native can handle more than CLI
+                has_dir || too_many
+            }
+        };
+
+        if should_extract_all {
+            info!(
+                "[UnRAR Native] Using extract_all for {} entries (dir or large count)",
+                entries.map(|e| e.len()).unwrap_or(0)
+            );
+
+            if let Some(cb) = progress {
+                cb(crate::ExtractionProgress {
+                    current: 0,
+                    total: 1,
+                    current_file: "Extracting all...".to_string(),
+                    percent: 0,
+                });
+            }
+
+            let result = self.extract_all(archive, dest, password);
+
+            if let Some(cb) = progress {
+                cb(crate::ExtractionProgress {
+                    current: 1,
+                    total: 1,
+                    current_file: "Complete".to_string(),
+                    percent: 100,
+                });
+            }
+
+            return result;
+        }
+
+        // Extract selected entries using proper EntryRef::matches()
+        let refs = entries.unwrap();
+        info!("[UnRAR Native] Extracting {} specific entries", refs.len());
+
+        std::fs::create_dir_all(dest)?;
+
+        let arc = if let Some(pwd) = password {
+            unrar::Archive::with_password(archive, pwd.as_bytes())
+        } else {
+            unrar::Archive::new(archive)
+        };
+
+        let mut open_archive = arc.open_for_processing()?;
+
+        // Count matching entries for progress
+        let total = refs.len();
+        let mut processed = 0;
+
+        while let Some(header) = open_archive.read_header()? {
+            if let Some(token) = cancel {
+                if token.load(Ordering::Relaxed) {
+                    return Err(anyhow!("Extraction cancelled"));
+                }
+            }
+
+            let entry_path = header.entry().filename.to_string_lossy().to_string();
+
+            // Use proper EntryRef matching
+            if refs.iter().any(|r| r.matches(&entry_path)) {
+                processed += 1;
+                if let Some(cb) = progress {
+                    let percent = ((processed * 100) / total) as u8;
+                    cb(crate::ExtractionProgress {
+                        current: processed,
+                        total,
+                        current_file: entry_path.clone(),
+                        percent,
+                    });
+                }
+                open_archive = header.extract_to(dest.to_path_buf())?;
+            } else {
+                open_archive = header.skip()?;
+            }
+        }
+
+        if let Some(cb) = progress {
+            cb(crate::ExtractionProgress {
+                current: total,
+                total,
+                current_file: "Complete".to_string(),
+                percent: 100,
+            });
+        }
 
         Ok(())
     }

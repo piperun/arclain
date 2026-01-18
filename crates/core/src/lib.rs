@@ -18,7 +18,7 @@ pub mod utilities;
 // Re-export commonly used types for convenience
 pub use archive::{
     Archive, ArchiveBackend, ArchiveEntry, ArchiveInfo, ArchiveKind, BackendCapabilities,
-    CancellationToken, ExtractionProgress, NavigationState, ProgressCallback,
+    CancellationToken, EntryRef, ExtractionProgress, NavigationState, ProgressCallback,
 };
 pub use config::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};
 pub use config::{Config, ConfigStore, PassRule};
