@@ -6,7 +6,8 @@ use std::path::PathBuf;
 pub fn navigate_to_folder(state: &mut ArchiveBrowserState, shared: &SharedState, folder: &str) {
     let signals = shared.signals();
 
-    crate::core::operations::navigation_signals::navigate_to(signals, folder);
+    // Use absolute navigation since folder is the full path within the archive
+    crate::core::operations::navigation_signals::navigate_to_absolute(signals, folder);
 
     // Update local state from signals
     update_local_state(state, signals);
