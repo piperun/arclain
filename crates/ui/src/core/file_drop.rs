@@ -29,12 +29,6 @@ fn is_archive(path: &std::path::Path) -> bool {
 /// Returns a `DropAction` indicating what to do with the dropped file.
 /// Only processes the first dropped file if multiple are dropped.
 pub fn process_dropped_files(ctx: &egui::Context) -> DropAction {
-    // Ignore drops while we're doing an outgoing drag (our own data)
-    #[cfg(target_os = "windows")]
-    if crate::platform::drag_source::is_outgoing_drag_active() {
-        return DropAction::None;
-    }
-
     ctx.input(|i| {
         if let Some(file) = i.raw.dropped_files.first() {
             if let Some(path) = &file.path {

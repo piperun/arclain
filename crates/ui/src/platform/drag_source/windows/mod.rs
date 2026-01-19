@@ -11,7 +11,6 @@ pub use utils::*;
 use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -21,15 +20,6 @@ use windows::Win32::System::Ole::IDropSource;
 use windows::Win32::System::Ole::{
     DoDragDrop, OleInitialize, OleUninitialize, DROPEFFECT_COPY, DROPEFFECT_MOVE, DROPEFFECT_NONE,
 };
-
-/// Global flag indicating an outgoing drag operation is in progress.
-/// Used to detect and reject our own drops (P3: show "NO" cursor effect).
-pub static OUTGOING_DRAG_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Check if an outgoing drag operation is currently active.
-pub fn is_outgoing_drag_active() -> bool {
-    OUTGOING_DRAG_ACTIVE.load(Ordering::SeqCst)
-}
 
 /// Strategy for drag-and-drop data transfer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -255,17 +245,7 @@ pub fn start_hdrop_drag(
 
         let mut effect = DROPEFFECT_NONE;
 
-        // TODO: To show "NO" cursor when hovering over arclain during outgoing drag,
-        // we would need to either:
-        // 1. Implement our own IDropTarget that checks for our data format and rejects it
-        // 2. Use RevokeDragDrop (but this permanently breaks file drops from Explorer)
-        // 3. Modify eframe/winit to expose custom drop target registration
-        // For now, egui's built-in drop target accepts our CF_HDROP, showing "copy" cursor.
-
         info!("[HDROP] Calling DoDragDrop (deferred extraction)...");
-
-        // Set flag to indicate outgoing drag is active (for P3: reject own drops)
-        OUTGOING_DRAG_ACTIVE.store(true, Ordering::SeqCst);
 
         let result = unsafe {
             DoDragDrop(
@@ -275,9 +255,6 @@ pub fn start_hdrop_drag(
                 &mut effect,
             )
         };
-
-        // Clear the flag now that drag is complete
-        OUTGOING_DRAG_ACTIVE.store(false, Ordering::SeqCst);
 
         info!("[HDROP] DoDragDrop returned: {:?}", result);
 
@@ -304,11 +281,6 @@ pub fn start_hdrop_drag(
                 message: Some(format!("Failed: {:?}", result)),
             });
         }
-
-        // Explicitly drop to ensure channel disconnects
-        drop(data_object);
-        drop(drop_source);
-        drop(tx);
     });
 
     Ok(rx)

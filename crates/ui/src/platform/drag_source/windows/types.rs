@@ -3,10 +3,8 @@
 
 /// State for batch extraction - extracted files are cached in a temp directory
 pub struct ExtractionCache {
-    /// Temp directory path (always valid)
-    pub temp_dir_path: std::path::PathBuf,
-    /// Optional RAII guard - if set, directory is deleted on drop. If None, it persists.
-    pub _guard: Option<tempfile::TempDir>,
+    /// Temp directory where files are extracted (auto-cleaned on drop via tempfile)
+    pub temp_dir: tempfile::TempDir,
     /// Set to true once batch extraction is complete
     pub extracted: bool,
 }
