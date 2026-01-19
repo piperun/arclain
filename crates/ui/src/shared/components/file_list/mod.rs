@@ -323,9 +323,10 @@ pub fn render_list_view(
                     let selection_flags: Vec<bool> = entries.iter().map(|e| e.selected).collect();
 
                     // Pre-collect selected file paths for drag-out (needed because we can't borrow entries during iter_mut)
+                    // Note: Include both files AND folders for drag
                     let selected_files: Vec<String> = entries
                         .iter()
-                        .filter(|e| e.selected && !e.is_folder)
+                        .filter(|e| e.selected)
                         .map(|e| e.path.clone())
                         .collect();
 
@@ -584,6 +585,9 @@ pub fn render_list_view(
 
                             // Drag started - collect selected files/folders for drag-out
                             if row_response.drag_started() {
+                                // Show grab cursor for visual feedback
+                                row_response.ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+
                                 // If the dragged row isn't selected, just drag that one
                                 // Otherwise drag all selected entries (uses pre-collected list)
                                 let files_to_drag: Vec<String> = if entry.selected {
