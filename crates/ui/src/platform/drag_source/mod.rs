@@ -12,6 +12,10 @@ pub mod stream;
 pub mod windows;
 // pub mod windows_native; // Deprecated/Removed
 
+// Re-export function to check if outgoing drag is active
+#[cfg(target_os = "windows")]
+pub use windows::is_outgoing_drag_active;
+
 use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use std::path::PathBuf;

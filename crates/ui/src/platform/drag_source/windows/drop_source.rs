@@ -8,10 +8,45 @@ use std::sync::Arc;
 use tracing::info;
 use windows::core::{implement, HRESULT};
 use windows::Win32::Foundation::{
-    BOOL, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK,
+    BOOL, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, POINT, S_OK,
 };
 use windows::Win32::System::Ole::DROPEFFECT;
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId, WindowFromPoint,
+};
+
+/// Check if the cursor is currently over our own application window.
+/// Used to cancel drops over arclain and show "NO" cursor.
+fn is_cursor_over_own_window() -> bool {
+    unsafe {
+        // Get current cursor position
+        let mut point = POINT::default();
+        if GetCursorPos(&mut point).is_err() {
+            return false;
+        }
+
+        // Get window under cursor
+        let hwnd_under_cursor = WindowFromPoint(point);
+        if hwnd_under_cursor.0 == 0 {
+            return false;
+        }
+
+        // Get our foreground window (arclain main window)
+        let our_hwnd = GetForegroundWindow();
+        if our_hwnd.0 == 0 {
+            return false;
+        }
+
+        // Compare by process ID - same process means same app
+        let mut our_pid = 0u32;
+        let mut cursor_pid = 0u32;
+        GetWindowThreadProcessId(our_hwnd, Some(&mut our_pid));
+        GetWindowThreadProcessId(hwnd_under_cursor, Some(&mut cursor_pid));
+
+        our_pid != 0 && our_pid == cursor_pid
+    }
+}
 
 /// Shared state between DropSource and HDropDataObject.
 ///
@@ -67,7 +102,15 @@ impl windows::Win32::System::Ole::IDropSource_Impl for DropSourceWithState {
         }
 
         if (grfkeystate.0 & MK_LBUTTON.0) == 0 {
-            // Mouse button released = DROP
+            // Mouse button released = potential DROP
+
+            // Check if dropping over our own window - if so, cancel
+            // This prevents wasted extraction and shows "NO" cursor
+            if is_cursor_over_own_window() {
+                info!("[drag] QueryContinueDrag: Drop over own window, cancelling");
+                return DRAGDROP_S_CANCEL;
+            }
+
             let effect = self.state.last_effect.load(Ordering::SeqCst);
 
             if effect == 0 {
@@ -91,6 +134,19 @@ impl windows::Win32::System::Ole::IDropSource_Impl for DropSourceWithState {
     fn GiveFeedback(&self, dweffect: DROPEFFECT) -> HRESULT {
         // Store the effect so QueryContinueDrag knows if drop is allowed
         self.state.last_effect.store(dweffect.0, Ordering::SeqCst);
+
+        // Show NO cursor when hovering over our own window
+        if is_cursor_over_own_window() {
+            unsafe {
+                use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_NO};
+                let no_cursor = LoadCursorW(None, IDC_NO).unwrap_or_default();
+                SetCursor(no_cursor);
+            }
+            // Return S_OK to indicate we handled the cursor
+            return S_OK;
+        }
+
+        // Let Windows handle the default cursors
         DRAGDROP_S_USEDEFAULTCURSORS
     }
 }
