@@ -4,35 +4,8 @@ use super::ArclainApp;
 use crate::core::navigation::{AppPage, SettingsPage};
 use crate::core::{app_lifecycle, app_rendering, file_drop, operations};
 use eframe::egui;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
-
-// DIAGNOSTIC: Frame rate tracking
-static FRAME_COUNT: AtomicU64 = AtomicU64::new(0);
-static mut LAST_FPS_LOG: Option<Instant> = None;
 
 pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-    // DIAGNOSTIC: Log FPS every 5 seconds if too high
-    let count = FRAME_COUNT.fetch_add(1, Ordering::Relaxed);
-    unsafe {
-        let now = Instant::now();
-        if let Some(last) = LAST_FPS_LOG {
-            if now.duration_since(last).as_secs() >= 5 {
-                let elapsed = now.duration_since(last).as_secs_f64();
-                let frames_since = count - (count / 1000 * 1000); // rough
-                let fps = frames_since as f64 / elapsed;
-                if fps > 100.0 {
-                    tracing::warn!(
-                        "[DIAG] High frame rate: {:.0} FPS - possible busy loop!",
-                        fps
-                    );
-                }
-                LAST_FPS_LOG = Some(now);
-            }
-        } else {
-            LAST_FPS_LOG = Some(now);
-        }
-    }
     // === Handle files dropped from Explorer ===
     if let file_drop::DropAction::OpenArchive(path) = file_drop::process_dropped_files(ctx) {
         let mut archive_info = operations::archive::ArchiveInfo::default();

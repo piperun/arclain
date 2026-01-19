@@ -358,22 +358,34 @@ impl HDropDataObject {
             .map(|c| c.temp_dir_path.as_path())
             .ok_or("No temp dir")?;
 
-        // Find the common root folder for all entries
-        let all_paths: Vec<String> = self.entries.iter().map(|e| e.path.clone()).collect();
+        // Build HDROP paths from actual selected entries
+        // Each selected file/folder gets its own entry in HDROP
+        let mut hdrop_paths: Vec<PathBuf> = Vec::new();
 
-        // Determine what to include in CF_HDROP
-        let hdrop_paths: Vec<PathBuf> = if let Some(root_folder) = self.find_root_folder(&all_paths)
-        {
-            let folder_path = temp_dir.join(&root_folder);
-            if folder_path.exists() && folder_path.is_dir() {
-                info!("[hdrop] Final HDROP: root folder {:?}", folder_path);
-                vec![folder_path]
-            } else {
-                self.collect_top_level_items(temp_dir, &all_paths)
+        for entry in &self.entries {
+            // Skip directories - their contents are already included as files
+            // Unless the directory itself was explicitly selected
+            if entry.is_dir {
+                // For directories, only include if it doesn't have any child entries selected
+                // (i.e., user selected the folder, not individual files in it)
+                let has_child_selected = self
+                    .entries
+                    .iter()
+                    .any(|e| !e.is_dir && e.path.starts_with(&format!("{}/", entry.path)));
+                if has_child_selected {
+                    continue; // Skip folder, its children are already selected
+                }
             }
-        } else {
-            self.collect_top_level_items(temp_dir, &all_paths)
-        };
+
+            let file_path = temp_dir.join(&entry.path);
+            if file_path.exists() {
+                hdrop_paths.push(file_path);
+            }
+        }
+
+        // Deduplicate in case of overlapping paths
+        hdrop_paths.sort();
+        hdrop_paths.dedup();
 
         info!(
             "[hdrop] Building final HDROP with {} items",
@@ -384,65 +396,6 @@ impl HDropDataObject {
         *self.hdrop_final.write() = Some(hdrop);
 
         Ok(())
-    }
-
-    /// Find common root folder if all paths start with the same directory.
-    fn find_root_folder(&self, paths: &[String]) -> Option<String> {
-        if paths.is_empty() {
-            return None;
-        }
-
-        let mut root_candidates: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-
-        for path in paths {
-            let normalized = path.replace('\\', "/");
-            if let Some(first_component) = normalized.split('/').next() {
-                if !first_component.is_empty() {
-                    root_candidates.insert(first_component.to_string());
-                }
-            }
-        }
-
-        if root_candidates.len() == 1 {
-            let root = root_candidates.into_iter().next().unwrap();
-            let has_nested = paths.iter().any(|p| {
-                let normalized = p.replace('\\', "/");
-                normalized.starts_with(&format!("{}/", root))
-            });
-            if has_nested {
-                return Some(root);
-            }
-        }
-
-        None
-    }
-
-    /// Collect top-level items (files and folders at root of extraction).
-    fn collect_top_level_items(
-        &self,
-        temp_dir: &std::path::Path,
-        paths: &[String],
-    ) -> Vec<PathBuf> {
-        let mut top_level: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
-
-        for path in paths {
-            let normalized = path
-                .replace('/', std::path::MAIN_SEPARATOR_STR)
-                .replace('\\', std::path::MAIN_SEPARATOR_STR);
-
-            let first_component = normalized
-                .split(std::path::MAIN_SEPARATOR)
-                .next()
-                .unwrap_or(&normalized);
-
-            let full_path = temp_dir.join(first_component);
-            if full_path.exists() {
-                top_level.insert(full_path);
-            }
-        }
-
-        top_level.into_iter().collect()
     }
 
     /// Get the appropriate HDROP based on current drag state.
@@ -591,12 +544,5 @@ impl windows::Win32::System::Com::IDataObject_Impl for HDropDataObject {
 
     fn EnumDAdvise(&self) -> windows::core::Result<IEnumSTATDATA> {
         Err(windows::core::Error::from(E_NOTIMPL))
-    }
-}
-
-// DIAGNOSTIC: Track when HDropDataObject is dropped
-impl Drop for HDropDataObject {
-    fn drop(&mut self) {
-        info!("[HDROP] HDropDataObject DROPPED - progress_tx will disconnect");
     }
 }
