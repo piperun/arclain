@@ -346,10 +346,8 @@ impl LazyArchiveDataObject {
             elapsed.as_secs_f64()
         );
 
-        let temp_path = temp_dir.path().to_path_buf();
         *cache = Some(ExtractionCache {
-            temp_dir_path: temp_path,
-            _guard: Some(temp_dir),
+            temp_dir,
             extracted: true,
         });
         Ok(())
@@ -361,7 +359,7 @@ impl LazyArchiveDataObject {
             let normalized = entry_path
                 .replace('/', std::path::MAIN_SEPARATOR_STR)
                 .replace('\\', std::path::MAIN_SEPARATOR_STR);
-            c.temp_dir_path.join(&normalized)
+            c.temp_dir.path().join(&normalized)
         })
     }
 

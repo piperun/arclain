@@ -8,6 +8,9 @@
 
 use super::drop_source::DragState;
 use super::types::ExtractionCache;
+use super::utils::{
+    extract_with_progress_dialog, find_common_directory, MAX_FILES_FOR_EXTRACT_FILES,
+};
 use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use parking_lot::RwLock;
@@ -185,11 +188,8 @@ impl HDropDataObject {
         *self.hdrop_pre.write() = Some(hdrop);
 
         // Store the TempDir in cache to keep it alive
-        // Leaking the directory (guard=None) is required to fix race condition with Explorer copy
-        let path = temp_dir.into_path();
         *self.cache.write() = Some(ExtractionCache {
-            temp_dir_path: path,
-            _guard: None,
+            temp_dir,
             extracted: false,
         });
 
@@ -265,7 +265,7 @@ impl HDropDataObject {
             .cache
             .read()
             .as_ref()
-            .map(|c| c.temp_dir_path.clone())
+            .map(|c| c.temp_dir.path().to_path_buf())
             .unwrap();
         info!("[hdrop] Starting extraction to temp: {:?}", temp_dir);
 
@@ -281,50 +281,53 @@ impl HDropDataObject {
         if let Some(tx) = &self.progress_tx {
             let _ = tx.send(ProgressUpdate {
                 percent: 0,
-                message: Some(format!("Extracting {} entries...", file_count)),
+                message: Some(format!("Extracting {} files...", file_count)),
             });
         }
 
-        // Build EntryRefs from our entries
-        let entry_refs: Vec<arclain_core::EntryRef<'_>> = self
-            .entries
-            .iter()
-            .map(|e| arclain_core::EntryRef::from(e))
-            .collect();
-
-        // Use unified extract() - handles both "all" and "selected" with proper progress
-        if let Some(tx) = &self.progress_tx {
+        // Use batch extraction
+        let use_extract_all = file_count > MAX_FILES_FOR_EXTRACT_FILES;
+        if use_extract_all {
+            let common_dir = find_common_directory(&file_paths);
+            if let Some(dir_path) = common_dir {
+                self.backend
+                    .extract_directory(
+                        &self.archive_path,
+                        &temp_dir,
+                        &dir_path,
+                        self.password.as_deref(),
+                    )
+                    .map_err(|e| format!("extract_directory failed: {}", e))?;
+            } else {
+                self.backend
+                    .extract_all(&self.archive_path, &temp_dir, self.password.as_deref())
+                    .map_err(|e| format!("extract_all failed: {}", e))?;
+            }
+        } else if let Some(tx) = &self.progress_tx {
             let tx_clone = tx.clone();
             self.backend
-                .extract(
+                .extract_files_with_progress(
                     &self.archive_path,
                     &temp_dir,
-                    Some(&entry_refs),
+                    &file_paths,
                     self.password.as_deref(),
                     Some(&move |p| {
                         let _ = tx_clone.send(ProgressUpdate {
                             percent: p.percent,
-                            message: Some(format!(
-                                "Extracting ({}/{}): {}",
-                                p.current, p.total, p.current_file
-                            )),
+                            message: Some(format!("Extracting: {}", p.current_file)),
                         });
                     }),
-                    None, // No cancellation for now
+                    None,
                 )
-                .map_err(|e| format!("extract failed: {}", e))?;
+                .map_err(|e| format!("extract_files_with_progress failed: {}", e))?;
         } else {
-            // No progress channel - still use unified extract
-            self.backend
-                .extract(
-                    &self.archive_path,
-                    &temp_dir,
-                    Some(&entry_refs),
-                    self.password.as_deref(),
-                    None,
-                    None,
-                )
-                .map_err(|e| format!("extract failed: {}", e))?;
+            extract_with_progress_dialog(
+                Arc::clone(&self.backend),
+                &self.archive_path,
+                &temp_dir,
+                &file_paths,
+                self.password.as_deref(),
+            )?;
         }
 
         if let Some(tx) = &self.progress_tx {
@@ -355,37 +358,25 @@ impl HDropDataObject {
         let cache_guard = self.cache.read();
         let temp_dir = cache_guard
             .as_ref()
-            .map(|c| c.temp_dir_path.as_path())
+            .map(|c| c.temp_dir.path())
             .ok_or("No temp dir")?;
 
-        // Build HDROP paths from actual selected entries
-        // Each selected file/folder gets its own entry in HDROP
-        let mut hdrop_paths: Vec<PathBuf> = Vec::new();
+        // Find the common root folder for all entries
+        let all_paths: Vec<String> = self.entries.iter().map(|e| e.path.clone()).collect();
 
-        for entry in &self.entries {
-            // Skip directories - their contents are already included as files
-            // Unless the directory itself was explicitly selected
-            if entry.is_dir {
-                // For directories, only include if it doesn't have any child entries selected
-                // (i.e., user selected the folder, not individual files in it)
-                let has_child_selected = self
-                    .entries
-                    .iter()
-                    .any(|e| !e.is_dir && e.path.starts_with(&format!("{}/", entry.path)));
-                if has_child_selected {
-                    continue; // Skip folder, its children are already selected
-                }
+        // Determine what to include in CF_HDROP
+        let hdrop_paths: Vec<PathBuf> = if let Some(root_folder) = self.find_root_folder(&all_paths)
+        {
+            let folder_path = temp_dir.join(&root_folder);
+            if folder_path.exists() && folder_path.is_dir() {
+                info!("[hdrop] Final HDROP: root folder {:?}", folder_path);
+                vec![folder_path]
+            } else {
+                self.collect_top_level_items(temp_dir, &all_paths)
             }
-
-            let file_path = temp_dir.join(&entry.path);
-            if file_path.exists() {
-                hdrop_paths.push(file_path);
-            }
-        }
-
-        // Deduplicate in case of overlapping paths
-        hdrop_paths.sort();
-        hdrop_paths.dedup();
+        } else {
+            self.collect_top_level_items(temp_dir, &all_paths)
+        };
 
         info!(
             "[hdrop] Building final HDROP with {} items",
@@ -396,6 +387,65 @@ impl HDropDataObject {
         *self.hdrop_final.write() = Some(hdrop);
 
         Ok(())
+    }
+
+    /// Find common root folder if all paths start with the same directory.
+    fn find_root_folder(&self, paths: &[String]) -> Option<String> {
+        if paths.is_empty() {
+            return None;
+        }
+
+        let mut root_candidates: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for path in paths {
+            let normalized = path.replace('\\', "/");
+            if let Some(first_component) = normalized.split('/').next() {
+                if !first_component.is_empty() {
+                    root_candidates.insert(first_component.to_string());
+                }
+            }
+        }
+
+        if root_candidates.len() == 1 {
+            let root = root_candidates.into_iter().next().unwrap();
+            let has_nested = paths.iter().any(|p| {
+                let normalized = p.replace('\\', "/");
+                normalized.starts_with(&format!("{}/", root))
+            });
+            if has_nested {
+                return Some(root);
+            }
+        }
+
+        None
+    }
+
+    /// Collect top-level items (files and folders at root of extraction).
+    fn collect_top_level_items(
+        &self,
+        temp_dir: &std::path::Path,
+        paths: &[String],
+    ) -> Vec<PathBuf> {
+        let mut top_level: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+
+        for path in paths {
+            let normalized = path
+                .replace('/', std::path::MAIN_SEPARATOR_STR)
+                .replace('\\', std::path::MAIN_SEPARATOR_STR);
+
+            let first_component = normalized
+                .split(std::path::MAIN_SEPARATOR)
+                .next()
+                .unwrap_or(&normalized);
+
+            let full_path = temp_dir.join(first_component);
+            if full_path.exists() {
+                top_level.insert(full_path);
+            }
+        }
+
+        top_level.into_iter().collect()
     }
 
     /// Get the appropriate HDROP based on current drag state.

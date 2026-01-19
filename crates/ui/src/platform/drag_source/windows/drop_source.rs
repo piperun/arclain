@@ -8,45 +8,10 @@ use std::sync::Arc;
 use tracing::info;
 use windows::core::{implement, HRESULT};
 use windows::Win32::Foundation::{
-    BOOL, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, POINT, S_OK,
+    BOOL, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, S_OK,
 };
 use windows::Win32::System::Ole::DROPEFFECT;
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId, WindowFromPoint,
-};
-
-/// Check if the cursor is currently over our own application window.
-/// Used to cancel drops over arclain and show "NO" cursor.
-fn is_cursor_over_own_window() -> bool {
-    unsafe {
-        // Get current cursor position
-        let mut point = POINT::default();
-        if GetCursorPos(&mut point).is_err() {
-            return false;
-        }
-
-        // Get window under cursor
-        let hwnd_under_cursor = WindowFromPoint(point);
-        if hwnd_under_cursor.0 == 0 {
-            return false;
-        }
-
-        // Get our foreground window (arclain main window)
-        let our_hwnd = GetForegroundWindow();
-        if our_hwnd.0 == 0 {
-            return false;
-        }
-
-        // Compare by process ID - same process means same app
-        let mut our_pid = 0u32;
-        let mut cursor_pid = 0u32;
-        GetWindowThreadProcessId(our_hwnd, Some(&mut our_pid));
-        GetWindowThreadProcessId(hwnd_under_cursor, Some(&mut cursor_pid));
-
-        our_pid != 0 && our_pid == cursor_pid
-    }
-}
 
 /// Shared state between DropSource and HDropDataObject.
 ///
@@ -102,15 +67,7 @@ impl windows::Win32::System::Ole::IDropSource_Impl for DropSourceWithState {
         }
 
         if (grfkeystate.0 & MK_LBUTTON.0) == 0 {
-            // Mouse button released = potential DROP
-
-            // Check if dropping over our own window - if so, cancel
-            // This prevents wasted extraction and shows "NO" cursor
-            if is_cursor_over_own_window() {
-                info!("[drag] QueryContinueDrag: Drop over own window, cancelling");
-                return DRAGDROP_S_CANCEL;
-            }
-
+            // Mouse button released = DROP
             let effect = self.state.last_effect.load(Ordering::SeqCst);
 
             if effect == 0 {
@@ -136,18 +93,49 @@ impl windows::Win32::System::Ole::IDropSource_Impl for DropSourceWithState {
         self.state.last_effect.store(dweffect.0, Ordering::SeqCst);
 
         // Show NO cursor when hovering over our own window
+        // This gives visual feedback that dropping on ourselves won't work
         if is_cursor_over_own_window() {
             unsafe {
                 use windows::Win32::UI::WindowsAndMessaging::{LoadCursorW, SetCursor, IDC_NO};
-                let no_cursor = LoadCursorW(None, IDC_NO).unwrap_or_default();
-                SetCursor(no_cursor);
+                if let Ok(no_cursor) = LoadCursorW(None, IDC_NO) {
+                    SetCursor(no_cursor);
+                }
             }
-            // Return S_OK to indicate we handled the cursor
-            return S_OK;
+            return S_OK; // We handled the cursor
         }
 
-        // Let Windows handle the default cursors
         DRAGDROP_S_USEDEFAULTCURSORS
+    }
+}
+
+/// Check if the cursor is currently over our own application window.
+/// Used to show "NO" cursor when dragging over ourselves.
+fn is_cursor_over_own_window() -> bool {
+    unsafe {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::System::Threading::GetCurrentProcessId;
+        use windows::Win32::UI::WindowsAndMessaging::{GetCursorPos, WindowFromPoint};
+
+        let mut cursor_pos = POINT::default();
+        if GetCursorPos(&mut cursor_pos).is_err() {
+            return false;
+        }
+
+        let hwnd = WindowFromPoint(cursor_pos);
+        if hwnd.0 == 0 {
+            return false;
+        }
+
+        // Get process ID of window under cursor
+        let mut window_pid: u32 = 0;
+        windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(
+            hwnd,
+            Some(&mut window_pid),
+        );
+
+        // Compare with our process ID
+        let our_pid = GetCurrentProcessId();
+        window_pid == our_pid
     }
 }
 
