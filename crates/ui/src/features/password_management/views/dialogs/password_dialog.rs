@@ -3,7 +3,7 @@ use eframe::egui;
 
 // ================= Password Dialog =================
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PasswordDialog {
     pub show: bool,
     pub password: String,

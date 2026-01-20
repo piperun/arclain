@@ -1,16 +1,15 @@
-use crate::shared::components::{file_list, tree_panel};
+//! Main view for the archive browser feature.
 
-use crate::features::archive_browser::{ArchiveBrowserAction, ArchiveBrowserState};
+use crate::features::archive_browser::domain::{types::BrowserViewState, Action};
+use crate::features::archive_browser::presentation::components::file_list;
+use crate::shared::components::tree_panel;
 use crate::shared::SharedState;
 use arclain_core::ActionType;
 use arclain_plugins::types::PluginExtensionPoint;
+use eframe::egui;
 
-pub fn render_archive_browser(
-    ctx: &egui::Context,
-    state: &mut ArchiveBrowserState,
-    shared: &SharedState,
-) -> ArchiveBrowserAction {
-    let mut action = ArchiveBrowserAction::None;
+pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Action {
+    let mut action = Action::None;
 
     // Check if archive is loaded
     let archive_loaded = shared.signals().archive_path.get().is_some();
@@ -20,30 +19,38 @@ pub fn render_archive_browser(
         return action;
     }
 
+    // Get view state once for synchronization
+    let mut view_state = shared.signals().browser_view_state.get();
+
     // Render tree panel if enabled
-    if state.toolbar_state.show_tree_panel {
-        render_tree_panel(ctx, state, shared, &mut action);
+    if view_state.toolbar_state.show_tree_panel {
+        render_tree_panel(ctx, &mut view_state, shared, &mut action);
     }
 
     // Render properties panel if enabled
-    if state.toolbar_state.show_properties_panel {
-        if let Some(act) = render_properties_panel(ctx, state, shared) {
+    if view_state.toolbar_state.show_properties_panel {
+        if let Some(act) = render_properties_panel(ctx, &view_state, shared) {
             action = act;
         }
     }
 
     // Render central file list
-    render_file_list(ctx, state, shared, &mut action);
+    render_file_list(ctx, &mut view_state, shared, &mut action);
 
     // Update selection_count signal for toolbar button state
-    // IMPORTANT: Only set if changed to avoid triggering repaint loop!
-    let selection_count = state.entries.iter().filter(|e| e.selected).count();
+    let selection_count = view_state
+        .view_entries
+        .iter()
+        .filter(|e| e.selected)
+        .count();
     if shared.signals().selection_count.get() != selection_count {
         shared.signals().selection_count.set(selection_count);
     }
 
+    // Sync back updated state (like expanded folders or selection)
+    shared.signals().browser_view_state.set(view_state);
+
     // After UI has rendered, dispatch any pending plugin events.
-    // This ensures plugins only receive archive_opened after the UI is ready.
     if !shared.signals().ui_ready.get() {
         let mut app_state = shared.app_state.lock();
         app_state.dispatch_pending_plugin_event();
@@ -78,9 +85,9 @@ fn render_empty_state(ctx: &egui::Context, shared: &SharedState) {
 
 fn render_tree_panel(
     ctx: &egui::Context,
-    state: &mut ArchiveBrowserState,
+    state: &mut BrowserViewState,
     shared: &SharedState,
-    action: &mut ArchiveBrowserAction,
+    action: &mut Action,
 ) {
     egui::SidePanel::left("tree_panel")
         .exact_width(240.0)
@@ -107,16 +114,16 @@ fn render_tree_panel(
                 &folders,
                 &current_path,
             ) {
-                *action = ArchiveBrowserAction::NavigateToPath(path);
+                *action = Action::NavigateToPath(path);
             }
         });
 }
 
 fn render_properties_panel(
     ctx: &egui::Context,
-    state: &ArchiveBrowserState,
+    state: &BrowserViewState,
     shared: &SharedState,
-) -> Option<ArchiveBrowserAction> {
+) -> Option<Action> {
     use crate::core::utils::format_size;
     use crate::shared::components::{properties_panel, PropertiesPanelAction};
 
@@ -131,16 +138,14 @@ fn render_properties_panel(
         )
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                // Read signals lock-free first
                 let archive_info = shared.signals().archive_info.get();
                 let items = shared.signals().info_panel_items.get();
                 let plugin_metadata = shared.signals().metadata.get();
 
                 let mut sections: Vec<properties_panel::PanelSection> = Vec::new();
 
-                // Helper to get selected entry
                 let selected_entries: Vec<_> =
-                    state.entries.iter().filter(|e| e.selected).collect();
+                    state.view_entries.iter().filter(|e| e.selected).collect();
                 let selected_entry = if selected_entries.len() == 1 {
                     Some(selected_entries[0])
                 } else {
@@ -189,7 +194,6 @@ fn render_properties_panel(
                             }
                         }
                         "info.plugin_metadata" => {
-                            // Check signal first for reactive updates
                             let metadata = plugin_metadata
                                 .clone()
                                 .or_else(|| archive_info.plugin_metadata.clone());
@@ -203,7 +207,6 @@ fn render_properties_panel(
                             }
                         }
                         _ => {
-                            // Check for plugin custom UI
                             if item.action_type == ActionType::Plugin {
                                 if let Some(plugin_id) = &item.action_data {
                                     if let Some(manager_arc) = &shared.services.plugin_manager {
@@ -219,8 +222,6 @@ fn render_properties_panel(
 
                                         if !elements.is_empty() {
                                             let flat = elements.flatten();
-                                            // Add to sections instead of rendering directly
-                                            // This ensures plugins respect the layout order
                                             sections.push(properties_panel::PanelSection::Plugin {
                                                 plugin_id: plugin_id.clone(),
                                                 elements: flat,
@@ -233,7 +234,6 @@ fn render_properties_panel(
                     }
                 }
 
-                // Extract plugin_manager from services (no lock needed)
                 let plugin_manager = shared.services.plugin_manager.clone();
 
                 let panel_action = properties_panel::render(
@@ -246,10 +246,10 @@ fn render_properties_panel(
 
                 match panel_action {
                     PropertiesPanelAction::Organize => {
-                        action = Some(ArchiveBrowserAction::Organize);
+                        action = Some(Action::Organize);
                     }
                     PropertiesPanelAction::Metadata(json) => {
-                        action = Some(ArchiveBrowserAction::Metadata(json));
+                        action = Some(Action::Metadata(json));
                     }
                     PropertiesPanelAction::None => {}
                 }
@@ -261,27 +261,24 @@ fn render_properties_panel(
 
 fn render_file_list(
     ctx: &egui::Context,
-    state: &mut ArchiveBrowserState,
+    state: &mut BrowserViewState,
     shared: &SharedState,
-    action: &mut ArchiveBrowserAction,
+    action: &mut Action,
 ) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
         .show(ctx, |ui| {
             ui.vertical(|ui| {
-                // Get search text from signal
                 let search_text = shared.signals().search_text.get();
                 let search_lower = search_text.to_lowercase();
                 let is_searching = !search_text.trim().is_empty();
 
-                // Render file list
                 egui::ScrollArea::vertical()
                     .id_salt("file_list_scroll")
                     .show(ui, |ui| {
                         if is_searching {
-                            // Filtering mode: collect matching entries into a cloned Vec
                             let matching_indices: Vec<usize> = state
-                                .entries
+                                .view_entries
                                 .iter()
                                 .enumerate()
                                 .filter(|(_, e)| e.name.to_lowercase().contains(&search_lower))
@@ -290,7 +287,7 @@ fn render_file_list(
 
                             let mut filtered: Vec<_> = matching_indices
                                 .iter()
-                                .filter_map(|&i| state.entries.get(i).cloned())
+                                .filter_map(|&i| state.view_entries.get(i).cloned())
                                 .collect();
 
                             if state.toolbar_state.grid_view {
@@ -309,31 +306,29 @@ fn render_file_list(
                                 *action = map_file_list_action(file_action);
                             }
 
-                            // Sync selection state back to original entries
                             for (filtered_idx, &original_idx) in matching_indices.iter().enumerate()
                             {
                                 if let Some(filtered_entry) = filtered.get(filtered_idx) {
                                     if let Some(original_entry) =
-                                        state.entries.get_mut(original_idx)
+                                        state.view_entries.get_mut(original_idx)
                                     {
                                         original_entry.selected = filtered_entry.selected;
                                     }
                                 }
                             }
                         } else {
-                            // Normal mode: render all entries
                             if state.toolbar_state.grid_view {
                                 if let Some(file_action) = file_list::render_grid_view(
                                     ui,
                                     &shared.theme,
-                                    &mut state.entries,
+                                    &mut state.view_entries,
                                 ) {
                                     *action = map_file_list_action(file_action);
                                 }
                             } else if let Some(file_action) = file_list::render_list_view(
                                 ui,
                                 &shared.theme,
-                                &mut state.entries,
+                                &mut state.view_entries,
                                 state.toolbar_state.columns_locked,
                                 &mut state.sort_state,
                             ) {
@@ -345,10 +340,8 @@ fn render_file_list(
         });
 }
 
-/// Common archive file extensions
 const ARCHIVE_EXTENSIONS: &[&str] = &["zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz"];
 
-/// Check if a filename has an archive extension
 fn is_archive_file(filename: &str) -> bool {
     let lower = filename.to_lowercase();
     ARCHIVE_EXTENSIONS
@@ -356,27 +349,22 @@ fn is_archive_file(filename: &str) -> bool {
         .any(|ext| lower.ends_with(&format!(".{}", ext)))
 }
 
-fn map_file_list_action(file_action: file_list::FileListAction) -> ArchiveBrowserAction {
+fn map_file_list_action(file_action: file_list::FileListAction) -> Action {
     match file_action {
-        file_list::FileListAction::Navigate(folder) => {
-            ArchiveBrowserAction::NavigateToFolder(folder)
-        }
+        file_list::FileListAction::Navigate(folder) => Action::NavigateToFolder(folder),
         file_list::FileListAction::Open(file) => {
-            // Check if the file is a nested archive
             if is_archive_file(&file) {
-                ArchiveBrowserAction::OpenArchiveInTab(file)
+                Action::OpenArchiveInTab(file)
             } else {
-                ArchiveBrowserAction::OpenFile(file)
+                Action::OpenFile(file)
             }
         }
-        file_list::FileListAction::Edit(file) => ArchiveBrowserAction::EditFile(file),
-        file_list::FileListAction::Delete(file) => ArchiveBrowserAction::DeleteFile(file),
-        file_list::FileListAction::Extract(file) => ArchiveBrowserAction::Extract(file),
-        file_list::FileListAction::ExtractTo(file) => ArchiveBrowserAction::ExtractTo(file),
-        file_list::FileListAction::CopyPath(file) => ArchiveBrowserAction::CopyPath(file),
-        file_list::FileListAction::ShowProperties(file) => {
-            ArchiveBrowserAction::ShowProperties(file)
-        }
-        file_list::FileListAction::DragStarted(files) => ArchiveBrowserAction::DragExtract(files),
+        file_list::FileListAction::Edit(file) => Action::EditFile(file),
+        file_list::FileListAction::Delete(file) => Action::DeleteFile(file),
+        file_list::FileListAction::Extract(file) => Action::Extract(file),
+        file_list::FileListAction::ExtractTo(file) => Action::ExtractTo(file),
+        file_list::FileListAction::CopyPath(file) => Action::CopyPath(file),
+        file_list::FileListAction::ShowProperties(file) => Action::ShowProperties(file),
+        file_list::FileListAction::DragStarted(files) => Action::DragExtract(files),
     }
 }

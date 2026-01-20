@@ -1,20 +1,17 @@
-// Archive browser feature module
+//! Archive Browser feature
+//!
+//! Provides hierarchical browsing of archive contents with list and grid views,
+//! breadcrumb navigation, and integration with archive operations.
 
-pub mod actions;
-pub mod feature;
-pub mod navigation;
+pub mod application;
+pub mod domain;
+pub mod presentation;
 
+mod feature;
+
+// Re-exports for easier access
+pub use domain::types::{
+    Action, Action as ArchiveBrowserAction, BrowserViewState as ArchiveBrowserState,
+};
 pub use feature::ArchiveBrowser;
-pub mod state;
-pub mod types;
-pub mod views;
-
-// Re-exports
-pub use views::browser;
-
-pub use actions::ActionContext;
-pub use actions::ArchiveBrowserAction;
-pub use state::ArchiveBrowserState;
-// pub use ui::render_archive_browser; // Changed to browser::render_archive_browser.
-
-pub use browser::render_archive_browser;
+pub use presentation::controllers::browser_controller::BrowserController;

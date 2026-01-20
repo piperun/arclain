@@ -1,6 +1,7 @@
 use crate::core::AppState;
-use crate::shared::components::{file_list, status_bar};
+use crate::shared::components::status_bar;
 use crate::shared::dialogs;
+use crate::shared::models::file_entry::FileEntry;
 use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use parking_lot::Mutex;
 use std::sync::mpsc::Receiver;
@@ -10,7 +11,7 @@ use std::time::Instant;
 /// Extract selected files from the archive
 pub fn extract_selected(
     state: &Arc<Mutex<AppState>>,
-    entries: &[file_list::FileEntry],
+    entries: &[FileEntry],
     extraction_dialog: &mut dialogs::ExtractionProgressDialog,
     extraction_rx: &mut Option<Receiver<ProgressUpdate>>,
     extraction_child_mut: &mut Option<std::process::Child>,

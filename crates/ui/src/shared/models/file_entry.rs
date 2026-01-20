@@ -1,7 +1,7 @@
-//! File list types and data structures
+//! File entry data models used across features
 
 /// Represents a single file or folder entry in the file list
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FileEntry {
     pub name: String, // Display name (basename only)
     pub path: String, // Full path within archive (for operations)
@@ -13,20 +13,6 @@ pub struct FileEntry {
     pub encrypted: bool,
     pub is_folder: bool,
     pub selected: bool,
-}
-
-/// Actions that can be triggered from the file list
-#[derive(Debug, Clone)]
-pub enum FileListAction {
-    Navigate(String),
-    Edit(String),      // full path (relative to current path will be resolved by caller)
-    Delete(String),    // same as above
-    Open(String),      // double-click open file
-    Extract(String),   // Extract single file
-    ExtractTo(String), // Extract to custom location
-    CopyPath(String),  // Copy path to clipboard
-    ShowProperties(String), // Show properties panel
-    DragStarted(Vec<String>), // File(s) dragged - extract to temp and start OS drag
 }
 
 /// Column identifiers for sorting

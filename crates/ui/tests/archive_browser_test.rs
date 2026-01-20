@@ -1,13 +1,11 @@
 use arclain_ui::core::navigation::PageNavigator;
 use arclain_ui::core::services::Services;
 use arclain_ui::core::state::AppState;
-use arclain_ui::features::archive_browser::actions::{Action, ActionContext};
+use arclain_ui::features::archive_browser::{Action, BrowserController};
 use arclain_ui::features::archive_operations::ArchiveOperationsState;
-use arclain_ui::features::file_editing::FileEditDialog;
 use arclain_ui::features::organization::OrganizationFeature;
-use arclain_ui::features::password_management::dialogs::PasswordDialog;
 use arclain_ui::features::plugins::PluginDialogState;
-use arclain_ui::shared::components::StatusBarInfo;
+use arclain_ui::shared::models::file_entry::FileEntry;
 use arclain_ui::shared::theme::AppTheme;
 use arclain_ui::shared::SharedState;
 use arclain_widgets::Toaster;
@@ -57,11 +55,6 @@ fn create_test_shared_state() -> SharedState {
 pub struct TestContext {
     pub shared: SharedState,
     pub navigator: PageNavigator,
-    pub status: StatusBarInfo,
-    pub browser_state: arclain_ui::features::archive_browser::ArchiveBrowserState,
-    pub ops_state: ArchiveOperationsState,
-    pub pass_dialog: PasswordDialog,
-    pub edit_dialog: FileEditDialog,
     pub org_feature: OrganizationFeature,
     pub egui_ctx: egui::Context,
 }
@@ -73,27 +66,30 @@ impl TestContext {
             org_feature: OrganizationFeature::new(&shared),
             shared,
             navigator: PageNavigator::new(),
-            status: StatusBarInfo::default(),
-            browser_state: arclain_ui::features::archive_browser::ArchiveBrowserState::default(),
-            ops_state: ArchiveOperationsState::default(),
-            pass_dialog: PasswordDialog::default(),
-            edit_dialog: FileEditDialog::default(),
             egui_ctx: egui::Context::default(),
         }
     }
 
-    fn action_context(&mut self) -> ActionContext<'_> {
-        ActionContext {
-            shared: &self.shared,
-            browser_state: &mut self.browser_state,
-            archive_ops_state: &mut self.ops_state,
-            status_info: &mut self.status,
-            password_dialog: &mut self.pass_dialog,
-            edit_dialog: &mut self.edit_dialog,
-            organization_feature: &mut self.org_feature,
-            page_navigator: &mut self.navigator,
-            egui_ctx: &self.egui_ctx,
-        }
+    fn handle_action(&mut self, action: Action) {
+        let controller = BrowserController::new();
+        // Since we removed ops_state, we need to mock it or update the test to not rely on it being passed explicitly
+        // However, handle_action now takes fewer arguments.
+        // We'll create a temporary ops_state for the test context if needed by the controller (it's not, used signals now mostly)
+        // Wait, controller.handle_action takes:
+        // (action, shared, ops_state, org_feature, navigator, ctx)
+        // checking the signature from previous turn...
+        // It takes: action, shared, archive_ops_state, organization_feature, page_navigator, ctx
+
+        let mut ops_state = ArchiveOperationsState::default();
+
+        controller.handle_action(
+            action,
+            &self.shared,
+            &mut ops_state,
+            &mut self.org_feature,
+            &mut self.navigator,
+            &self.egui_ctx,
+        );
     }
 }
 
@@ -107,11 +103,8 @@ fn test_navigate_to_folder_action() {
     signals.archive_path.set(Some(PathBuf::from("test.zip")));
 
     let target = "subfolder".to_string();
-    let handled = ctx
-        .action_context()
-        .handle_navigation(&Action::NavigateToFolder(target.clone()));
+    ctx.handle_action(Action::NavigateToFolder(target.clone()));
 
-    assert!(handled);
     assert_eq!(signals.navigation.get().current_path, target);
 }
 
@@ -122,40 +115,37 @@ fn test_navigate_to_path_action() {
     signals.archive_path.set(Some(PathBuf::from("test.zip")));
 
     let target = "direct/path/folder".to_string();
-    let handled = ctx
-        .action_context()
-        .handle_navigation(&Action::NavigateToPath(target.clone()));
+    ctx.handle_action(Action::NavigateToPath(target.clone()));
 
-    assert!(handled);
     assert_eq!(signals.navigation.get().current_path, target);
 }
 
 #[test]
 fn test_show_properties_action() {
     let mut ctx = TestContext::new();
+    let signals = ctx.shared.app_state.lock().signals.clone();
 
-    ctx.browser_state
-        .entries
-        .push(arclain_ui::shared::components::file_list::FileEntry {
-            name: "test.txt".to_string(),
-            selected: false,
-            size: "100".to_string(),
-            compressed: "50".to_string(),
-            ratio: "50%".to_string(),
-            modified: "2024-01-01".to_string(),
-            crc32: "00000000".to_string(),
-            encrypted: false,
-            is_folder: false,
-        });
+    // Setup entries via signal
+    let mut view_state = signals.browser_view_state.get();
+    view_state.view_entries.push(FileEntry {
+        name: "test.txt".to_string(),
+        path: "test.txt".to_string(),
+        selected: false,
+        size: "100".to_string(),
+        compressed: "50".to_string(),
+        ratio: "50%".to_string(),
+        modified: "2024-01-01".to_string(),
+        crc32: "00000000".to_string(),
+        encrypted: false,
+        is_folder: false,
+    });
+    signals.browser_view_state.set(view_state);
 
-    let target = "test.txt".to_string();
-    let handled = ctx
-        .action_context()
-        .handle_navigation(&Action::ShowProperties(target.clone()));
+    ctx.handle_action(Action::ShowProperties("test.txt".to_string()));
 
-    assert!(handled);
-    assert!(ctx.browser_state.toolbar_state.show_properties_panel);
-    assert!(ctx.browser_state.entries[0].selected);
+    let view_state = signals.browser_view_state.get();
+    assert!(view_state.toolbar_state.show_properties_panel);
+    assert!(view_state.view_entries[0].selected);
 }
 
 #[test]
@@ -166,44 +156,34 @@ fn test_copy_path_action() {
     signals.navigation.get().set_current_path("root/folder");
 
     let filename = "file.txt".to_string();
-    let handled = ctx
-        .action_context()
-        .handle_navigation(&Action::CopyPath(filename.clone()));
-
-    assert!(handled);
+    ctx.handle_action(Action::CopyPath(filename.clone()));
 
     signals.navigation.get().set_current_path("");
-    let handled_root = ctx
-        .action_context()
-        .handle_navigation(&Action::CopyPath(filename));
-    assert!(handled_root);
+    ctx.handle_action(Action::CopyPath(filename));
 }
 
 #[test]
 fn test_open_file_action() {
     let mut ctx = TestContext::new();
+    let signals = ctx.shared.app_state.lock().signals.clone();
     let filename = "document.pdf".to_string();
 
-    let handled = ctx
-        .action_context()
-        .handle_complex(&Action::OpenFile(filename.clone()));
+    ctx.handle_action(Action::OpenFile(filename.clone()));
 
-    assert!(handled);
-    assert_eq!(ctx.ops_state.pending_open_file, Some(filename));
+    assert_eq!(signals.pending_open_file.get(), Some(filename));
 }
 
 #[test]
 fn test_edit_file_action() {
     let mut ctx = TestContext::new();
+    let signals = ctx.shared.app_state.lock().signals.clone();
     let filename = "config.json".to_string();
-    let handled = ctx
-        .action_context()
-        .handle_complex(&Action::EditFile(filename.clone()));
+    ctx.handle_action(Action::EditFile(filename.clone()));
 
-    assert!(handled);
-    assert!(ctx.edit_dialog.show);
-    assert_eq!(ctx.edit_dialog.full_path_in_archive, filename);
-    assert_eq!(ctx.edit_dialog.name_input, filename);
+    let dialog = signals.file_edit_dialog.get();
+    assert!(dialog.show);
+    assert_eq!(dialog.full_path_in_archive, filename);
+    assert_eq!(dialog.name_input, filename);
 }
 
 #[test]
@@ -220,9 +200,7 @@ fn test_metadata_action() {
     // Valid GameMetadata JSON requires fields matching struct or being optional.
 
     let json = r#"{"product_id": "RJ1", "source": "dlsite", "title": "Test Game", "tags": [], "metadata_json": "{}", "screenshots": []}"#.to_string();
-    let handled = ctx.action_context().handle_simple(&Action::Metadata(json));
-
-    assert!(handled);
+    ctx.handle_action(Action::Metadata(json));
 
     let metadata = signals.game_metadata.get();
     assert!(metadata.is_some());
@@ -238,9 +216,7 @@ fn test_organize_action() {
 
     signals.archive_path.set(Some(PathBuf::from("test.zip")));
 
-    let handled = ctx.action_context().handle_complex(&Action::Organize);
-
-    assert!(handled);
+    ctx.handle_action(Action::Organize);
 
     // Verify navigation
     if let arclain_ui::core::AppPage::OrganizeArchive(name) = &ctx.navigator.current_page {
@@ -274,20 +250,21 @@ fn test_ui_render_sanity() {
         .signals
         .archive_path
         .set(Some(PathBuf::from("test.zip")));
-    browser
-        .state_mut()
-        .entries
-        .push(arclain_ui::shared::components::file_list::FileEntry {
-            name: "test_ui_file.txt".to_string(),
-            selected: false,
-            size: "100".to_string(),
-            compressed: "50".to_string(),
-            ratio: "50%".to_string(),
-            modified: "2024-01-01".to_string(),
-            crc32: "00000000".to_string(),
-            encrypted: false,
-            is_folder: false,
-        });
+
+    let mut view_state = shared.signals().browser_view_state.get();
+    view_state.view_entries.push(FileEntry {
+        name: "test_ui_file.txt".to_string(),
+        path: "test_ui_file.txt".to_string(),
+        selected: false,
+        size: "100".to_string(),
+        compressed: "50".to_string(),
+        ratio: "50%".to_string(),
+        modified: "2024-01-01".to_string(),
+        crc32: "00000000".to_string(),
+        encrypted: false,
+        is_folder: false,
+    });
+    shared.signals().browser_view_state.set(view_state);
 
     // egui_kittest harness
     let mut harness = Harness::new(move |ctx| {

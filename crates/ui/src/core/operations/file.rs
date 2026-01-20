@@ -1,6 +1,7 @@
 use crate::core::operations::archive::ArchiveInfo;
 use crate::core::AppState;
-use crate::shared::components::{file_list, status_bar};
+use crate::shared::components::status_bar;
+use crate::shared::models::file_entry::FileEntry;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
@@ -29,9 +30,9 @@ pub fn add_files(state: &Arc<Mutex<AppState>>, status_info: &mut status_bar::Sta
 /// Delete selected files from the archive
 pub fn delete_selected(
     state: &Arc<Mutex<AppState>>,
-    entries: &[file_list::FileEntry],
+    entries: &[FileEntry],
     status_info: &mut status_bar::StatusBarInfo,
-    ui_entries: &mut Vec<file_list::FileEntry>,
+    ui_entries: &mut Vec<FileEntry>,
     archive_info: &mut ArchiveInfo,
 ) {
     // Build full paths using current navigation prefix; skip folders for delete

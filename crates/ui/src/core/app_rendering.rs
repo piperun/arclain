@@ -327,7 +327,7 @@ pub fn render_path_bar_panel(ctx: &egui::Context, shared_state: &SharedState) ->
                 .unwrap_or_default();
             let current_path = shared_state.signals().navigation.get().current_path.clone();
 
-            if let Some(path) = components::file_list::render_breadcrumb(
+            if let Some(path) = crate::features::archive_browser::presentation::components::file_list::render_breadcrumb(
                 ui,
                 &shared_state.theme,
                 &current_path,

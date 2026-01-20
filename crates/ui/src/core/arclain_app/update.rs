@@ -43,26 +43,49 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     app.archive_operations.update_drag_progress(ctx);
 
     // Process pending file opens (double-click on file in archive)
-    if let Some(file_path) = app.archive_operations.state_mut().pending_open_file.take() {
+    if let Some(file_path) = app.shared_state.signals().pending_open_file.get() {
+        app.shared_state.signals().pending_open_file.set(None);
+
+        // Use a local StatusBarInfo for the extraction call, then sync to signal
+        let mut status_info = app.shared_state.signals().status_bar.get();
+
         if let Some(nested_archive_path) =
             crate::features::archive_operations::open_file_from_archive(
                 &app.shared_state.app_state,
                 &file_path,
-                &mut app.status_info,
+                &mut status_info,
             )
         {
+            app.shared_state.signals().status_bar.set(status_info);
             // It's a nested archive - open it as the current archive
-            let browser_state = app.archive_browser.state_mut();
             let mut archive_info = operations::archive::ArchiveInfo::default();
+
+            let mut password_dialog = app.shared_state.signals().password_dialog.get();
+            let mut status_info = app.shared_state.signals().status_bar.get();
+            let mut view_state = app.shared_state.signals().browser_view_state.get();
+
             operations::archive::open_archive_by_path(
                 &app.shared_state.app_state,
                 &nested_archive_path,
-                &mut browser_state.current_path,
-                &mut app.password_feature.password_dialog,
-                &mut app.status_info,
-                &mut browser_state.entries,
+                &mut view_state.current_path,
+                &mut password_dialog,
+                &mut status_info,
+                &mut view_state.view_entries,
                 &mut archive_info,
             );
+
+            app.shared_state
+                .signals()
+                .password_dialog
+                .set(password_dialog);
+            app.shared_state.signals().status_bar.set(status_info);
+            app.shared_state
+                .signals()
+                .browser_view_state
+                .set(view_state);
+            app.shared_state.signals().archive_info.set(archive_info);
+        } else {
+            app.shared_state.signals().status_bar.set(status_info);
         }
     }
 
@@ -132,12 +155,16 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     crate::core::arclain_app::toolbar_handler::render_toolbar(app, ctx);
 
     // === Render Path Bar (Archive context only) ===
+    // === Render Path Bar (Archive context only) ===
     let path_bar_action = app_rendering::render_path_bar_panel(ctx, &app.shared_state);
     if let app_rendering::PathBarAction::NavigateToPath(path) = path_bar_action {
-        crate::features::archive_browser::navigation::navigate_to_path(
-            app.archive_browser.state_mut(),
+        app.archive_browser.controller.handle_action(
+            crate::features::archive_browser::Action::NavigateToPath(path),
             &app.shared_state,
-            &path,
+            app.archive_operations.state_mut(),
+            &mut app.organization_feature,
+            &mut app.page_navigator,
+            ctx,
         );
     }
 

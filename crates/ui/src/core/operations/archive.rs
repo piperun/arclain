@@ -1,7 +1,8 @@
 use crate::core::utils::{convert_to_file_entry, format_size};
 use crate::core::AppState;
 use crate::features::password_management::dialogs;
-use crate::shared::components::{file_list, status_bar};
+use crate::shared::components::status_bar;
+use crate::shared::models::file_entry::FileEntry;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use crc32fast::Hasher;
 use parking_lot::Mutex;
@@ -16,7 +17,7 @@ pub fn open_archive(
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
-    entries: &mut Vec<file_list::FileEntry>,
+    entries: &mut Vec<FileEntry>,
     archive_info: &mut ArchiveInfo,
 ) {
     if let Some(file) = rfd::FileDialog::new()
@@ -72,7 +73,7 @@ pub fn open_archive_by_path(
     current_path: &mut String,
     password_dialog: &mut dialogs::PasswordDialog,
     status_info: &mut status_bar::StatusBarInfo,
-    entries: &mut Vec<file_list::FileEntry>,
+    entries: &mut Vec<FileEntry>,
     archive_info: &mut ArchiveInfo,
 ) {
     info!("Opening archive from path: {}", path.display());
@@ -123,7 +124,7 @@ pub fn try_open_with_password(
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
-    entries: &mut Vec<file_list::FileEntry>,
+    entries: &mut Vec<FileEntry>,
     archive_info: &mut ArchiveInfo,
 ) -> bool {
     let mut st = state.lock();
@@ -171,7 +172,7 @@ pub fn load_archive_data(
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
-    entries: &mut Vec<file_list::FileEntry>,
+    entries: &mut Vec<FileEntry>,
     archive_info: &mut ArchiveInfo,
 ) {
     // Optionally compute missing CRC-32 for encrypted entries
