@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 mod content_handler;
 mod dialog_handler;
+mod drop_handler;
 mod toolbar_handler;
 mod update;
 

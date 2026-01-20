@@ -622,7 +622,7 @@ impl ArchiveBackend for SevenZipCli {
         // Note: For many files, this can hit command line length limits
         // Windows has ~32KB limit, but practical limit is ~8KB for CreateProcess
         let mut total_arg_len: usize = args.iter().map(|a| a.len() + 1).sum();
-        let mut truncated = false;
+        let truncated = false;
 
         for file in files {
             let file_os = OsString::from(file);
