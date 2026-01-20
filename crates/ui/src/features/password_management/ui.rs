@@ -1,39 +1,36 @@
 use crate::features::password_management::dialogs::password_dialog::{
     render_password_dialog, PasswordDialogResult,
 };
-use crate::features::password_management::operations::{PasswordFeature, PasswordFeatureAction};
+use crate::features::password_management::operations::PasswordFeatureAction;
 use crate::shared::SharedState;
 use eframe::egui;
 
-pub fn handle_password_dialogs(
-    feature: &mut PasswordFeature,
-    ctx: &egui::Context,
-    shared: &SharedState,
-) -> PasswordFeatureAction {
+pub fn handle_password_dialogs(ctx: &egui::Context, shared: &SharedState) -> PasswordFeatureAction {
     let mut action = PasswordFeatureAction::None;
+    let mut dialog = shared.signals().password_dialog.get();
 
     // Render password dialog if open
-    if feature.password_dialog.show {
-        if let Some(result) =
-            render_password_dialog(ctx, &shared.theme, &mut feature.password_dialog)
-        {
+    if dialog.show {
+        if let Some(result) = render_password_dialog(ctx, &shared.theme, &mut dialog) {
             match result {
                 PasswordDialogResult::Unlock => {
-                    let password = feature.password_dialog.password.clone();
-                    if let Some(path) = &feature.password_dialog.target_path {
+                    let password = dialog.password.clone();
+                    if let Some(path) = &dialog.target_path {
                         action = PasswordFeatureAction::PasswordUnlocked {
                             path: path.clone(),
                             password,
                         };
                     }
-                    feature.password_dialog.show = false;
+                    dialog.show = false;
                 }
                 PasswordDialogResult::Cancel => {
-                    feature.password_dialog.show = false;
+                    dialog.show = false;
                 }
             }
         }
     }
+
+    shared.signals().password_dialog.set(dialog);
 
     // Render rules dialog if open (this might be modal or not, depending on implementation)
     // Assuming it's a modal for now or handled elsewhere.

@@ -26,11 +26,10 @@ pub enum PasswordDialogResult {
 
 /// Handle password dialogs
 pub fn handle_password_dialogs(
-    password_feature: &mut password_management::PasswordFeature,
     ctx: &egui::Context,
     shared_state: &SharedState,
 ) -> PasswordDialogResult {
-    match password_management::handle_password_dialogs(password_feature, ctx, shared_state) {
+    match password_management::handle_password_dialogs(ctx, shared_state) {
         password_management::PasswordFeatureAction::PasswordUnlocked { path, password } => {
             PasswordDialogResult::PasswordUnlocked { path, password }
         }

@@ -20,13 +20,21 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
 
     // === Lifecycle: Handle extraction progress from native backends ===
     {
-        let ops_state = app.archive_operations.state_mut();
+        // Use a block to limit scope of extracted signals
+        let mut status = app.shared_state.signals().status_bar.get();
+        let mut dialog = app.shared_state.signals().extraction_dialog.get();
+        // Skip processing if minimized to avoid UI updates when invisible?
+        // Actually, process_extraction_progress updates the signal state from the channel,
+        // so it should run regardless of visibility, but maybe minimize update frequency?
+        // The original code passed `&mut ops_state.extraction_dialog`.
         app_lifecycle::process_extraction_progress(
             &app.shared_state,
-            &mut ops_state.extraction_dialog,
-            &mut app.status_info.message,
+            &mut dialog,
+            &mut status.message,
             ctx,
         );
+        app.shared_state.signals().status_bar.set(status);
+        app.shared_state.signals().extraction_dialog.set(dialog);
     }
 
     // === Lifecycle: Update window title ===
@@ -169,7 +177,9 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     }
 
     // === Render Status Bar ===
-    app_rendering::render_status_bar_panel(ctx, &app.shared_state, &mut app.status_info);
+    let mut status_info = app.shared_state.signals().status_bar.get();
+    app_rendering::render_status_bar_panel(ctx, &app.shared_state, &mut status_info);
+    app.shared_state.signals().status_bar.set(status_info);
 
     // Render Password Dialog & Rules & Extraction & Edit
     crate::core::arclain_app::dialog_handler::render_dialogs(app, ctx);

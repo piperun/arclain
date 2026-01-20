@@ -70,13 +70,15 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                 let shared_state = app.shared_state.clone();
                 let action = app.organization_feature.render(ctx, &shared_state);
 
+                let mut status_info = shared_state.signals().status_bar.get();
                 let mut action_ctx = crate::features::organization::actions::ActionContext {
                     shared: &shared_state,
                     organization_feature: &mut app.organization_feature,
                     page_navigator: &mut app.page_navigator,
-                    status_info: &mut app.status_info,
+                    status_info: &mut status_info,
                 };
                 action_ctx.handle(&action);
+                shared_state.signals().status_bar.set(status_info);
             }
         }
     });

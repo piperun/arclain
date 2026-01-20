@@ -139,6 +139,11 @@ pub struct AppSignals {
     /// [NEW] UI View State for Archive Browser
     pub browser_view_state:
         Signal<crate::features::archive_browser::domain::types::BrowserViewState>,
+
+    /// [NEW] Operation Dialogs (Phase 2)
+    pub extraction_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
+    pub conversion_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
+    pub drag_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
 }
 
 impl AppSignals {
@@ -171,6 +176,9 @@ impl AppSignals {
             file_edit_dialog: Signal::new(crate::features::file_editing::file_edit_dialog::FileEditDialog::default()),
             pending_open_file: Signal::new(None),
             browser_view_state: Signal::new(crate::features::archive_browser::domain::types::BrowserViewState::default()),
+            extraction_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
+            conversion_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
+            drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
         }
     }
 
@@ -199,6 +207,9 @@ impl AppSignals {
         signal_ctx.bind(&self.file_edit_dialog);
         signal_ctx.bind(&self.pending_open_file);
         signal_ctx.bind(&self.browser_view_state);
+        signal_ctx.bind(&self.extraction_dialog);
+        signal_ctx.bind(&self.conversion_dialog);
+        signal_ctx.bind(&self.drag_dialog);
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
@@ -234,6 +245,12 @@ impl AppSignals {
         self.pending_open_file.set(None);
         self.browser_view_state
             .set(crate::features::archive_browser::domain::types::BrowserViewState::default());
+        self.extraction_dialog
+            .set(crate::shared::dialogs::ExtractionProgressDialog::default());
+        self.conversion_dialog
+            .set(crate::shared::dialogs::ExtractionProgressDialog::default());
+        self.drag_dialog
+            .set(crate::shared::dialogs::ExtractionProgressDialog::default());
     }
 }
 
