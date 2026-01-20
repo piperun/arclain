@@ -2,6 +2,7 @@
 
 pub mod components;
 pub mod dialogs;
+pub mod models;
 pub mod state;
 pub mod theme;
 

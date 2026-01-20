@@ -16,7 +16,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     ) {
         password_management::PasswordFeatureAction::PasswordUnlocked { path, password } => {
             let mut archive_info = operations::archive::ArchiveInfo::default();
-            let browser_state = app.archive_browser.state_mut();
+            let mut view_state = app.shared_state.signals().browser_view_state.get();
             if operations::archive::try_open_with_password(
                 &app.shared_state.app_state,
                 &path,
@@ -24,9 +24,13 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 &mut app.password_feature.password_dialog,
                 &mut app._pending_archive_path,
                 &mut app.status_info,
-                &mut browser_state.entries,
+                &mut view_state.view_entries,
                 &mut archive_info,
             ) {
+                app.shared_state
+                    .signals()
+                    .browser_view_state
+                    .set(view_state);
                 app.password_feature.password_dialog.show = false;
                 app._pending_archive_path = None;
             } else {

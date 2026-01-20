@@ -20,26 +20,15 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
 
                 let action = app.archive_browser.render(ctx, &shared_state);
 
-                // Handle actions via ActionContext
-                {
-                    let mut action_ctx = crate::features::archive_browser::ActionContext {
-                        shared: &shared_state,
-                        browser_state: app.archive_browser.state_mut(),
-                        archive_ops_state: app.archive_operations.state_mut(),
-                        status_info: &mut app.status_info,
-                        password_dialog: &mut app.password_feature.password_dialog,
-                        edit_dialog: &mut app.edit_dialog,
-                        organization_feature: &mut app.organization_feature,
-                        page_navigator: &mut app.page_navigator,
-                        egui_ctx: ctx,
-                    };
-                    if action_ctx.handle_navigation(&action)
-                        || action_ctx.handle_simple(&action)
-                        || action_ctx.handle_complex(&action)
-                    {
-                        // Action handled
-                    }
-                }
+                // Handle actions via BrowserController
+                app.archive_browser.controller.handle_action(
+                    action,
+                    &shared_state,
+                    app.archive_operations.state_mut(),
+                    &mut app.organization_feature,
+                    &mut app.page_navigator,
+                    ctx,
+                );
             }
             AppPage::Settings(page) => {
                 let breadcrumb = PageNavigator::get_breadcrumb(&AppPage::Settings(page.clone()));

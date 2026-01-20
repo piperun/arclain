@@ -33,10 +33,11 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 );
                 let plugin_manager = app.shared_state.services.plugin_manager.clone();
 
+                let mut view_state = app.shared_state.signals().browser_view_state.get();
                 let actions = components::toolbar::render(
                     ui,
                     &app.shared_state.theme,
-                    &mut app.archive_browser.state_mut().toolbar_state,
+                    &mut view_state.toolbar_state,
                     can_go_back,
                     can_go_forward,
                     can_go_up,
@@ -47,57 +48,88 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     plugin_manager.as_ref(),
                     Some(&app.shared_state),
                 );
+                app.shared_state
+                    .signals()
+                    .browser_view_state
+                    .set(view_state);
 
                 // Handle toolbar actions
                 let shared_state = app.shared_state.clone();
+                use crate::features::archive_browser::Action;
 
                 if actions.go_back {
-                    crate::features::archive_browser::navigation::navigate_back(
-                        app.archive_browser.state_mut(),
+                    app.archive_browser.controller.handle_action(
+                        Action::NavigateBack,
                         &shared_state,
+                        app.archive_operations.state_mut(),
+                        &mut app.organization_feature,
+                        &mut app.page_navigator,
+                        ctx,
                     );
                 }
                 if actions.go_forward {
-                    crate::features::archive_browser::navigation::navigate_forward(
-                        app.archive_browser.state_mut(),
+                    app.archive_browser.controller.handle_action(
+                        Action::NavigateForward,
                         &shared_state,
+                        app.archive_operations.state_mut(),
+                        &mut app.organization_feature,
+                        &mut app.page_navigator,
+                        ctx,
                     );
                 }
                 if actions.go_up {
-                    crate::features::archive_browser::navigation::navigate_up(
-                        app.archive_browser.state_mut(),
+                    app.archive_browser.controller.handle_action(
+                        Action::NavigateUp,
                         &shared_state,
+                        app.archive_operations.state_mut(),
+                        &mut app.organization_feature,
+                        &mut app.page_navigator,
+                        ctx,
                     );
                 }
                 if actions.open {
                     let mut archive_info = operations::archive::ArchiveInfo::default();
-                    let browser_state = app.archive_browser.state_mut();
+                    // Sync from signals
+                    let mut view_state = shared_state.signals().browser_view_state.get();
+                    let mut password_dialog = shared_state.signals().password_dialog.get();
+                    let mut status_info = shared_state.signals().status_bar.get();
+
                     operations::archive::open_archive(
                         &app.shared_state.app_state,
-                        &mut browser_state.current_path,
-                        &mut app.password_feature.password_dialog,
+                        &mut view_state.current_path,
+                        &mut password_dialog,
                         &mut app._pending_archive_path,
-                        &mut app.status_info,
-                        &mut browser_state.entries,
+                        &mut status_info,
+                        &mut view_state.view_entries,
                         &mut archive_info,
                     );
+
+                    // Sync back to signals
+                    shared_state.signals().browser_view_state.set(view_state);
+                    shared_state.signals().password_dialog.set(password_dialog);
+                    shared_state.signals().status_bar.set(status_info);
+                    shared_state.signals().archive_info.set(archive_info);
                 }
                 if actions.extract {
-                    let browser_state = app.archive_browser.state_mut();
+                    let view_state = shared_state.signals().browser_view_state.get();
                     let ops_state = app.archive_operations.state_mut();
+                    let mut status_info = shared_state.signals().status_bar.get();
+
                     operations::extraction::extract_selected(
                         &app.shared_state.app_state,
-                        &browser_state.entries,
+                        &view_state.view_entries,
                         &mut ops_state.extraction_dialog,
                         &mut ops_state.extraction_rx,
                         &mut ops_state.extraction_child,
                         &mut ops_state.extraction_minimized,
                         &mut ops_state.extraction_started,
-                        &mut app.status_info,
+                        &mut status_info,
                     );
+                    shared_state.signals().status_bar.set(status_info);
                 }
                 if actions.extract_all {
                     let ops_state = app.archive_operations.state_mut();
+                    let mut status_info = shared_state.signals().status_bar.get();
                     operations::extraction::extract_all(
                         &app.shared_state.app_state,
                         &mut ops_state.extraction_dialog,
@@ -105,100 +137,55 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut ops_state.extraction_child,
                         &mut ops_state.extraction_minimized,
                         &mut ops_state.extraction_started,
-                        &mut app.status_info,
+                        &mut status_info,
                     );
+                    shared_state.signals().status_bar.set(status_info);
                 }
                 if actions.add {
-                    operations::file::add_files(&app.shared_state.app_state, &mut app.status_info);
+                    let mut status_info = shared_state.signals().status_bar.get();
+                    operations::file::add_files(&app.shared_state.app_state, &mut status_info);
+                    shared_state.signals().status_bar.set(status_info);
                 }
                 if actions.delete_selected {
                     let mut archive_info = operations::archive::ArchiveInfo::default();
-                    let browser_state = app.archive_browser.state_mut();
-                    let entries_clone = browser_state.entries.clone();
+                    let mut view_state = shared_state.signals().browser_view_state.get();
+                    let mut status_info = shared_state.signals().status_bar.get();
+                    let entries_clone = view_state.view_entries.clone();
+
                     operations::file::delete_selected(
                         &app.shared_state.app_state,
                         &entries_clone,
-                        &mut app.status_info,
-                        &mut browser_state.entries,
+                        &mut status_info,
+                        &mut view_state.view_entries,
                         &mut archive_info,
                     );
+
+                    shared_state.signals().browser_view_state.set(view_state);
+                    shared_state.signals().status_bar.set(status_info);
+                    shared_state.signals().archive_info.set(archive_info);
                 }
                 if actions.convert_to_7z {
                     let ops_state = app.archive_operations.state_mut();
+                    let mut status_info = shared_state.signals().status_bar.get();
                     operations::archive::convert_archive(
                         &app.shared_state.app_state,
-                        &mut app.status_info,
+                        &mut status_info,
                         &mut ops_state.conversion_dialog,
                         &mut ops_state.conversion_rx,
                         &mut ops_state.conversion_child,
                         &mut ops_state.conversion_started,
                     );
+                    shared_state.signals().status_bar.set(status_info);
                 }
                 if actions.organize_archive {
-                    if let Some(archive) = app.shared_state.signals().archive_path.get() {
-                        let archive_name = archive
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-
-                        // Load rules directly from DB and filter by enabled plugins
-                        let mut rules = Vec::new(); // Default empty
-                        {
-                            // Check enabled plugins (specifically DLsite) from services
-                            let dlsite_enabled =
-                                if let Some(manager) = &app.shared_state.services.plugin_manager {
-                                    let mgr = manager.lock();
-                                    mgr.list_plugins().iter().any(|p| {
-                                        p.id.eq_ignore_ascii_case("dlsite-metadata") && p.enabled
-                                    })
-                                } else {
-                                    false
-                                };
-
-                            let state = app.shared_state.app_state.lock();
-
-                            if let Some(dbs) = &state.dbs {
-                                let pool = &dbs.config_pool;
-                                if let Ok(loaded) =
-                                    arclain_core::config::database::list_org_rules(pool)
-                                {
-                                    rules = loaded
-                                        .into_iter()
-                                        .filter(|r| {
-                                            if r.trigger
-                                                .metadata_source
-                                                .as_deref()
-                                                .map(|s| s.eq_ignore_ascii_case("dlsite"))
-                                                .unwrap_or(false)
-                                            {
-                                                dlsite_enabled
-                                            } else {
-                                                true
-                                            }
-                                        })
-                                        .collect();
-                                }
-                            }
-                        }
-
-                        // Initialize panel
-                        let entries = app.shared_state.signals().entries.get().as_ref().clone();
-                        let metadata = app.shared_state.signals().game_metadata.get();
-
-                        app.organization_feature.organizer_page =
-                            Some(crate::features::organization::OrganizerPage::new(
-                                crate::features::organization::OrganizePanel::new(
-                                    archive_name.clone(),
-                                    entries,
-                                    rules,
-                                    metadata,
-                                ),
-                            ));
-
-                        app.page_navigator
-                            .navigate_to(crate::core::AppPage::OrganizeArchive(archive_name));
-                    }
+                    app.archive_browser.controller.handle_action(
+                        Action::Organize,
+                        &shared_state,
+                        app.archive_operations.state_mut(),
+                        &mut app.organization_feature,
+                        &mut app.page_navigator,
+                        ctx,
+                    );
                 }
             });
     }

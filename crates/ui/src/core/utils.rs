@@ -1,4 +1,4 @@
-use crate::shared::components::file_list::FileEntry;
+use crate::shared::models::file_entry::FileEntry;
 use tracing::error;
 
 pub fn format_duration(duration: std::time::Duration) -> String {

@@ -2,7 +2,6 @@
 
 pub mod breadcrumbs;
 pub mod context_menu;
-pub mod file_list;
 pub mod header;
 pub mod network_log;
 pub mod panel;

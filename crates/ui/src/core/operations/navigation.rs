@@ -1,6 +1,6 @@
 use crate::core::utils::convert_to_file_entry;
 use crate::core::AppState;
-use crate::shared::components::file_list;
+use crate::shared::models::file_entry::FileEntry;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub fn navigate_to(
     state: &Arc<Mutex<AppState>>,
     folder: &str,
-    entries: &mut Vec<file_list::FileEntry>,
+    entries: &mut Vec<FileEntry>,
     current_path: &mut String,
 ) {
     let mut st = state.lock();
@@ -30,7 +30,7 @@ pub fn navigate_to(
 /// Navigate back in the navigation history
 pub fn navigate_back(
     state: &Arc<Mutex<AppState>>,
-    entries: &mut Vec<file_list::FileEntry>,
+    entries: &mut Vec<FileEntry>,
     current_path: &mut String,
 ) {
     let mut st = state.lock();
@@ -51,7 +51,7 @@ pub fn navigate_back(
 /// Navigate forward in the navigation history
 pub fn navigate_forward(
     state: &Arc<Mutex<AppState>>,
-    entries: &mut Vec<file_list::FileEntry>,
+    entries: &mut Vec<FileEntry>,
     current_path: &mut String,
 ) {
     let mut st = state.lock();
@@ -72,7 +72,7 @@ pub fn navigate_forward(
 /// Navigate up one level in the folder hierarchy
 pub fn navigate_up(
     state: &Arc<Mutex<AppState>>,
-    entries: &mut Vec<file_list::FileEntry>,
+    entries: &mut Vec<FileEntry>,
     current_path: &mut String,
 ) {
     let mut st = state.lock();
