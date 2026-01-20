@@ -1,7 +1,7 @@
 //! File entry data models used across features
 
 /// Represents a single file or folder entry in the file list
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FileEntry {
     pub name: String, // Display name (basename only)
     pub path: String, // Full path within archive (for operations)
@@ -29,7 +29,7 @@ pub enum SortColumn {
 }
 
 /// Current sort state (column + direction)
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SortState {
     pub column: SortColumn,
     pub ascending: bool,

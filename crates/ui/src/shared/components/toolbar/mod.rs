@@ -154,7 +154,8 @@ pub fn render(
     if let Some(shared) = shared {
         let actions_list = collected_actions.lock();
         let mut toaster = shared.toaster.lock();
-        let mut dialog_state = shared.plugin_dialog_state.lock();
+        let dialog_signal = shared.signals().plugin_dialog_state.clone();
+        let mut dialog_state = dialog_signal.get();
 
         for (plugin_id, plugin_action) in actions_list.iter() {
             crate::features::plugins::actions::process_plugin_actions(
@@ -175,6 +176,8 @@ pub fn render(
                 dialog_state.open_dialog(plugin_id, dialog_id);
             }
         }
+
+        dialog_signal.set(dialog_state);
     }
 
     actions

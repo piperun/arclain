@@ -377,26 +377,31 @@ impl Panel {
                             let pid = plugin_id.clone();
 
                             // Get dialog state for navigation
-                            let dialog_state_arc = shared.map(|s| s.plugin_dialog_state.clone());
+                            let dialog_signal =
+                                shared.map(|s| s.signals().plugin_dialog_state.clone());
 
                             let mut callback: ui::UiEventCallback =
                                 Box::new(move |element_id: &str, value: Option<String>| {
                                     // Handle page navigation
                                     if element_id.starts_with("__page_open:") {
-                                        if let Some(ref ds_arc) = dialog_state_arc {
+                                        if let Some(ref signal) = dialog_signal {
                                             let page_id =
                                                 element_id.trim_start_matches("__page_open:");
-                                            ds_arc.lock().open_page(&pid, page_id);
+                                            let mut ds = signal.get();
+                                            ds.open_page(&pid, page_id);
+                                            signal.set(ds);
                                         }
                                         return;
                                     }
 
                                     // Handle dialog open
                                     if element_id.starts_with("__dialog_open:") {
-                                        if let Some(ref ds_arc) = dialog_state_arc {
+                                        if let Some(ref signal) = dialog_signal {
                                             let dialog_id =
                                                 element_id.trim_start_matches("__dialog_open:");
-                                            ds_arc.lock().open_dialog(&pid, dialog_id);
+                                            let mut ds = signal.get();
+                                            ds.open_dialog(&pid, dialog_id);
+                                            signal.set(ds);
                                         }
                                         return;
                                     }

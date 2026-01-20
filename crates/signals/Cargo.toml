@@ -11,6 +11,7 @@ egui = ["dep:egui"]
 
 [dependencies]
 parking_lot = "0.12"
+tracing = "0.1"
 
 [dependencies.egui]
 version = "0.33"

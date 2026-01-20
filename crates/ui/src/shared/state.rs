@@ -1,6 +1,5 @@
 use crate::core::signals::AppSignals;
 use crate::core::AppState;
-use crate::features::plugins::PluginDialogState;
 use crate::platform::detect_dark_mode;
 use crate::shared::theme::{load_cjk_fonts, AppTheme};
 use arclain_widgets::Toaster;
@@ -14,8 +13,6 @@ pub struct SharedState {
     pub services: Arc<crate::core::services::Services>,
     pub theme: AppTheme,
     pub toaster: Arc<Mutex<Toaster>>,
-    #[allow(dead_code)] // Future use for dialog rendering
-    pub plugin_dialog_state: Arc<Mutex<PluginDialogState>>,
     /// Panel refresh requests from plugins (extension point names to refresh)
     pub refresh_requests: Arc<Mutex<Vec<String>>>,
     /// Direct access to signals without locking AppState
@@ -43,7 +40,6 @@ impl SharedState {
             services,
             theme,
             toaster: Arc::new(Mutex::new(Toaster::new())),
-            plugin_dialog_state: Arc::new(Mutex::new(PluginDialogState::new())),
             refresh_requests: Arc::new(Mutex::new(Vec::new())),
             signals,
         }

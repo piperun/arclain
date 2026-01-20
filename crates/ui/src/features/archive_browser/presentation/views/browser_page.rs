@@ -48,7 +48,10 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
     }
 
     // Sync back updated state (like expanded folders or selection)
-    shared.signals().browser_view_state.set(view_state);
+    shared
+        .signals()
+        .browser_view_state
+        .set_if_changed(view_state);
 
     // After UI has rendered, dispatch any pending plugin events.
     if !shared.signals().ui_ready.get() {

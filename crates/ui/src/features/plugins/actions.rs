@@ -112,7 +112,8 @@ pub fn create_dialog_callback(
     shared: &crate::shared::SharedState,
     plugin_id: String,
 ) -> Box<dyn FnMut(&str, Option<String>)> {
-    let dialog_state_arc = shared.plugin_dialog_state.clone();
+    // Use signal instead of Arc<Mutex>
+    let dialog_signal = shared.signals().plugin_dialog_state.clone();
     let toaster_arc = shared.toaster.clone();
     let plugin_manager_arc = shared.services.plugin_manager.clone();
     let pid = plugin_id;
@@ -120,7 +121,9 @@ pub fn create_dialog_callback(
     Box::new(move |element_id: &str, value: Option<String>| {
         // Check for close dialog signal
         if element_id == "__dialog_close" {
-            dialog_state_arc.lock().close_dialog();
+            let mut ds = dialog_signal.get();
+            ds.close_dialog();
+            dialog_signal.set(ds);
             return;
         }
 
@@ -135,7 +138,9 @@ pub fn create_dialog_callback(
             {
                 drop(pm); // Release plugin manager lock before locking toaster
                 let mut toaster = toaster_arc.lock();
-                let mut ds = dialog_state_arc.lock();
+
+                // Get state from signal, modify, and write back
+                let mut ds = dialog_signal.get();
                 // Invalidate layout cache so next frame fetches fresh layout
                 ds.invalidate_dialog_layout();
                 for action in actions {
@@ -147,6 +152,7 @@ pub fn create_dialog_callback(
                         None, // No refresh requests for dialog callbacks
                     );
                 }
+                dialog_signal.set(ds);
             }
         }
     })
@@ -157,7 +163,7 @@ pub fn create_page_callback(
     shared: &crate::shared::SharedState,
     plugin_id: String,
 ) -> Box<dyn FnMut(&str, Option<String>)> {
-    let dialog_state_arc = shared.plugin_dialog_state.clone();
+    let dialog_signal = shared.signals().plugin_dialog_state.clone();
     let toaster_arc = shared.toaster.clone();
     let plugin_manager_arc = shared.services.plugin_manager.clone();
     let pid = plugin_id;
@@ -165,14 +171,18 @@ pub fn create_page_callback(
     Box::new(move |element_id: &str, value: Option<String>| {
         // Check for close page signal
         if element_id == "__page_close" {
-            dialog_state_arc.lock().close_page();
+            let mut ds = dialog_signal.get();
+            ds.close_page();
+            dialog_signal.set(ds);
             return;
         }
 
         // Check for open page signal (nested navigation)
         if element_id.starts_with("__page_open:") {
             let new_page_id = element_id.trim_start_matches("__page_open:").to_string();
-            dialog_state_arc.lock().open_page(&pid, &new_page_id);
+            let mut ds = dialog_signal.get();
+            ds.open_page(&pid, &new_page_id);
+            dialog_signal.set(ds);
             return;
         }
 
@@ -187,7 +197,7 @@ pub fn create_page_callback(
             {
                 drop(pm);
                 let mut toaster = toaster_arc.lock();
-                let mut ds = dialog_state_arc.lock();
+                let mut ds = dialog_signal.get();
                 // Invalidate layout cache so next frame fetches fresh layout
                 ds.invalidate_page_layout();
                 for action in actions {
@@ -199,6 +209,7 @@ pub fn create_page_callback(
                         None, // No refresh requests for page callbacks
                     );
                 }
+                dialog_signal.set(ds);
             }
         }
     })

@@ -4,7 +4,7 @@ use eframe::egui;
 use egui::Widget;
 use std::time::Duration;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StatusBarInfo {
     pub message: String,
     pub file_count: usize,

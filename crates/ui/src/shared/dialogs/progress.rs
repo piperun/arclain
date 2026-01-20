@@ -11,7 +11,7 @@ pub enum ExtractionStatus {
     Cancelled,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExtractionProgressDialog {
     pub show: bool,
     pub title: String,

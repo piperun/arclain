@@ -68,6 +68,8 @@ pub struct ArclainApp {
     // _extraction_started: Option<Instant>,
     pub(crate) _password_rules_loaded: bool,
     pub(crate) _signals_bound: bool,
+    pub(crate) _theme_applied: bool,
+    pub(crate) _last_dark_mode: bool,
     pub(crate) show_log_viewer: bool,
 }
 
@@ -106,6 +108,8 @@ impl ArclainApp {
             // _extraction_started: None,
             _password_rules_loaded: false,
             _signals_bound: false,
+            _theme_applied: false,
+            _last_dark_mode: shared_state.theme.dark_mode,
             show_log_viewer: false,
         }
     }

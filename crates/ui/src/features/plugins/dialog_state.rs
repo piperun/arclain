@@ -6,7 +6,7 @@
 use arclain_plugins::types::PluginLayout;
 
 /// State for managing plugin dialogs and pages
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct PluginDialogState {
     /// Currently open dialog: (plugin_id, dialog_id)
     pub open_dialog: Option<(String, String)>,

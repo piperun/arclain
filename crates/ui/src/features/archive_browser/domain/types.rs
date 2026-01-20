@@ -42,7 +42,7 @@ pub enum Action {
 // Re-export for backwards compatibility if needed
 pub type ArchiveBrowserAction = Action;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct BrowserViewState {
     pub view_entries: Vec<crate::shared::models::file_entry::FileEntry>,
     pub current_path: String,

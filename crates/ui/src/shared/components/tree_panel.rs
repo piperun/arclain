@@ -3,7 +3,7 @@ use arclain_widgets::pixel_align;
 use eframe::egui;
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct TreePanelState {
     pub selected_path: String,
     pub expanded_folders: HashMap<String, bool>,
