@@ -38,6 +38,19 @@ impl SignalContext {
         });
     }
 
+    /// Bind a signal with a name (for debugging). Logs which signal triggers repaint.
+    pub fn bind_named<T: Clone + Send + Sync + 'static>(
+        &self,
+        signal: &Signal<T>,
+        name: &'static str,
+    ) {
+        let ctx = self.ctx.clone();
+        signal.subscribe(move || {
+            tracing::warn!("[SIGNAL] {} triggered repaint", name);
+            ctx.request_repaint();
+        });
+    }
+
     /// Get the underlying egui context.
     pub fn egui_context(&self) -> &egui::Context {
         &self.ctx

@@ -30,7 +30,7 @@ pub fn handle_password_dialogs(ctx: &egui::Context, shared: &SharedState) -> Pas
         }
     }
 
-    shared.signals().password_dialog.set(dialog);
+    shared.signals().password_dialog.set_if_changed(dialog);
 
     // Render rules dialog if open (this might be modal or not, depending on implementation)
     // Assuming it's a modal for now or handled elsewhere.

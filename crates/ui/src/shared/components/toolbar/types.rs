@@ -62,7 +62,7 @@ impl ToolbarConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ToolbarState {
     pub show_tree_panel: bool,
     pub show_properties_panel: bool,

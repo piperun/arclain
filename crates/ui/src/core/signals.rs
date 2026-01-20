@@ -144,6 +144,9 @@ pub struct AppSignals {
     pub extraction_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
     pub conversion_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
     pub drag_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
+
+    /// [NEW] Plugin Dialog State (Phase 3)
+    pub plugin_dialog_state: Signal<crate::features::plugins::PluginDialogState>,
 }
 
 impl AppSignals {
@@ -179,37 +182,40 @@ impl AppSignals {
             extraction_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
             conversion_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
             drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
+            plugin_dialog_state: Signal::new(crate::features::plugins::PluginDialogState::default()),
         }
     }
 
     /// Bind all signals to egui context for automatic repaint.
     pub fn bind_to_context(&self, ctx: &egui::Context) {
         let signal_ctx = SignalContext::new(ctx.clone());
-        signal_ctx.bind(&self.entries);
-        signal_ctx.bind(&self.metadata);
-        signal_ctx.bind(&self.loading);
-        signal_ctx.bind(&self.archive_path);
-        signal_ctx.bind(&self.active_toolbar);
-        signal_ctx.bind(&self.status_message);
-        signal_ctx.bind(&self.extraction_progress);
-        signal_ctx.bind(&self.search_text);
-        signal_ctx.bind(&self.toolbar_items);
-        signal_ctx.bind(&self.info_panel_items);
-        signal_ctx.bind(&self.archive_info);
-        signal_ctx.bind(&self.game_metadata);
-        signal_ctx.bind(&self.ui_preferences);
-        signal_ctx.bind(&self.navigation);
-        signal_ctx.bind(&self.current_password);
-        signal_ctx.bind(&self.pass_rules);
-        signal_ctx.bind(&self.selection_count);
-        signal_ctx.bind(&self.status_bar);
-        signal_ctx.bind(&self.password_dialog);
-        signal_ctx.bind(&self.file_edit_dialog);
-        signal_ctx.bind(&self.pending_open_file);
-        signal_ctx.bind(&self.browser_view_state);
-        signal_ctx.bind(&self.extraction_dialog);
-        signal_ctx.bind(&self.conversion_dialog);
-        signal_ctx.bind(&self.drag_dialog);
+        signal_ctx.bind_named(&self.entries, "entries");
+        signal_ctx.bind_named(&self.metadata, "metadata");
+        signal_ctx.bind_named(&self.loading, "loading");
+        signal_ctx.bind_named(&self.archive_path, "archive_path");
+        signal_ctx.bind_named(&self.active_toolbar, "active_toolbar");
+        signal_ctx.bind_named(&self.status_message, "status_message");
+        signal_ctx.bind_named(&self.extraction_progress, "extraction_progress");
+        signal_ctx.bind_named(&self.search_text, "search_text");
+        signal_ctx.bind_named(&self.toolbar_items, "toolbar_items");
+        signal_ctx.bind_named(&self.info_panel_items, "info_panel_items");
+        signal_ctx.bind_named(&self.archive_info, "archive_info");
+        signal_ctx.bind_named(&self.game_metadata, "game_metadata");
+        signal_ctx.bind_named(&self.ui_preferences, "ui_preferences");
+        signal_ctx.bind_named(&self.navigation, "navigation");
+        signal_ctx.bind_named(&self.current_password, "current_password");
+        signal_ctx.bind_named(&self.pass_rules, "pass_rules");
+        signal_ctx.bind_named(&self.selection_count, "selection_count");
+        signal_ctx.bind_named(&self.status_bar, "status_bar");
+        signal_ctx.bind_named(&self.password_dialog, "password_dialog");
+        signal_ctx.bind_named(&self.file_edit_dialog, "file_edit_dialog");
+        signal_ctx.bind_named(&self.pending_open_file, "pending_open_file");
+        // Note: browser_view_state is not bound - it's mutated during render so would cause repaint loops
+        signal_ctx.bind_named(&self.extraction_dialog, "extraction_dialog");
+        signal_ctx.bind_named(&self.conversion_dialog, "conversion_dialog");
+        signal_ctx.bind_named(&self.drag_dialog, "drag_dialog");
+        // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
+        // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
     }
 
@@ -251,6 +257,8 @@ impl AppSignals {
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.drag_dialog
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
+        self.plugin_dialog_state
+            .set(crate::features::plugins::PluginDialogState::default());
     }
 }
 

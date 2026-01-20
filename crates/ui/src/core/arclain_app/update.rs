@@ -6,6 +6,24 @@ use crate::core::{app_lifecycle, app_rendering, operations};
 use eframe::egui;
 
 pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    // DEBUG: Track update frequency
+    static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let last = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
+    FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    if now != last {
+        let count = FRAME_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed);
+        if count > 10 {
+            tracing::warn!("High frame rate detected: {} fps", count);
+        }
+        LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
+    }
     // === Handle files dropped from Explorer ===
     // === Handle files dropped from Explorer ===
     crate::core::arclain_app::drop_handler::handle_drop_events(app, ctx);
@@ -13,7 +31,14 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // === Lifecycle: Refresh requests, signals, theme ===
     app_lifecycle::process_refresh_requests(&app.shared_state, ctx);
     app_lifecycle::bind_signals_once(&app.shared_state.app_state, ctx, &mut app._signals_bound);
-    app_lifecycle::apply_theme(&app.shared_state, ctx);
+
+    // Apply theme only once on init or when dark_mode changes (prevent continuous repaint loop)
+    let current_dark_mode = app.shared_state.theme.dark_mode;
+    if !app._theme_applied || app._last_dark_mode != current_dark_mode {
+        app_lifecycle::apply_theme(&app.shared_state, ctx);
+        app._theme_applied = true;
+        app._last_dark_mode = current_dark_mode;
+    }
 
     // === Lifecycle: Process metadata signal updates from plugins ===
     app_lifecycle::process_metadata_signal(&app.shared_state, &mut app.organization_feature);
@@ -33,8 +58,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             &mut status.message,
             ctx,
         );
-        app.shared_state.signals().status_bar.set(status);
-        app.shared_state.signals().extraction_dialog.set(dialog);
+        app.shared_state.signals().status_bar.set_if_changed(status);
+        app.shared_state
+            .signals()
+            .extraction_dialog
+            .set_if_changed(dialog);
     }
 
     // === Lifecycle: Update window title ===
@@ -141,8 +169,12 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             app.shared_state.signals().status_message.set(None);
             // Close any open plugin pages
             {
-                let mut dialog_state = app.shared_state.plugin_dialog_state.lock();
+                let mut dialog_state = app.shared_state.signals().plugin_dialog_state.get();
                 dialog_state.page_stack.clear();
+                app.shared_state
+                    .signals()
+                    .plugin_dialog_state
+                    .set(dialog_state);
             }
             app.page_navigator.navigate_to_main();
         }
@@ -152,9 +184,13 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 crate::core::signals::ToolbarContext::Plugin(plugin_id.clone()),
             );
             // Open plugin page
-            let mut dialog_state = app.shared_state.plugin_dialog_state.lock();
+            let mut dialog_state = app.shared_state.signals().plugin_dialog_state.get();
             dialog_state.page_stack.clear();
             dialog_state.open_page(&plugin_id, &tab_id);
+            app.shared_state
+                .signals()
+                .plugin_dialog_state
+                .set(dialog_state);
         }
         app_rendering::TabBarAction::None => {}
     }
@@ -179,7 +215,10 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // === Render Status Bar ===
     let mut status_info = app.shared_state.signals().status_bar.get();
     app_rendering::render_status_bar_panel(ctx, &app.shared_state, &mut status_info);
-    app.shared_state.signals().status_bar.set(status_info);
+    app.shared_state
+        .signals()
+        .status_bar
+        .set_if_changed(status_info);
 
     // Render Password Dialog & Rules & Extraction & Edit
     crate::core::arclain_app::dialog_handler::render_dialogs(app, ctx);

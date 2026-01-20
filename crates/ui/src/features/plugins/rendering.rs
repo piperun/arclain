@@ -10,7 +10,7 @@ use eframe::egui;
 pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
     // Check if a dialog is open and get cached layout
     let (dialog_info, cached_layout) = {
-        let dialog_state = shared.plugin_dialog_state.lock();
+        let dialog_state = shared.signals().plugin_dialog_state.get();
         let dialog_info = dialog_state.open_dialog.clone();
         let cached = dialog_state.cached_dialog_layout.clone();
         (dialog_info, cached)
@@ -38,7 +38,9 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
                 }
             };
             // Store in cache for next frame
-            shared.plugin_dialog_state.lock().cached_dialog_layout = Some(layout.clone());
+            let mut dialog_state = shared.signals().plugin_dialog_state.get();
+            dialog_state.cached_dialog_layout = Some(layout.clone());
+            shared.signals().plugin_dialog_state.set(dialog_state);
             layout
         };
 
@@ -68,7 +70,9 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
 
         // If window was closed via X button
         if !open {
-            shared.plugin_dialog_state.lock().close_dialog();
+            let mut dialog_state = shared.signals().plugin_dialog_state.get();
+            dialog_state.close_dialog();
+            shared.signals().plugin_dialog_state.set(dialog_state);
         }
     }
 }
@@ -78,7 +82,7 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
 pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
     // Check if a page is open and get cached layout
     let (page_info, cached_layout) = {
-        let dialog_state = shared.plugin_dialog_state.lock();
+        let dialog_state = shared.signals().plugin_dialog_state.get();
         let page_info = dialog_state
             .current_page()
             .map(|(p, d)| (p.to_string(), d.to_string()));
@@ -111,7 +115,9 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
             }
         };
         // Store in cache for next frame
-        shared.plugin_dialog_state.lock().cached_page_layout = Some(layout.clone());
+        let mut dialog_state = shared.signals().plugin_dialog_state.get();
+        dialog_state.cached_page_layout = Some(layout.clone());
+        shared.signals().plugin_dialog_state.set(dialog_state);
         layout
     };
 

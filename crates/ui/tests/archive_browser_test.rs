@@ -4,7 +4,6 @@ use arclain_ui::core::state::AppState;
 use arclain_ui::features::archive_browser::{Action, BrowserController};
 use arclain_ui::features::archive_operations::ArchiveOperationsState;
 use arclain_ui::features::organization::OrganizationFeature;
-use arclain_ui::features::plugins::PluginDialogState;
 use arclain_ui::shared::models::file_entry::FileEntry;
 use arclain_ui::shared::theme::AppTheme;
 use arclain_ui::shared::SharedState;
@@ -46,7 +45,6 @@ fn create_test_shared_state() -> SharedState {
         services,
         theme: AppTheme::new(false),
         toaster: Arc::new(Mutex::new(Toaster::new())),
-        plugin_dialog_state: Arc::new(Mutex::new(PluginDialogState::new())),
         refresh_requests: Arc::new(Mutex::new(Vec::new())),
         signals,
     }

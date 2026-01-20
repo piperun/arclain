@@ -36,8 +36,14 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             } else {
                 pass_dialog.error = "Invalid password".to_string();
             }
-            app.shared_state.signals().password_dialog.set(pass_dialog);
-            app.shared_state.signals().status_bar.set(status_bar);
+            app.shared_state
+                .signals()
+                .password_dialog
+                .set_if_changed(pass_dialog);
+            app.shared_state
+                .signals()
+                .status_bar
+                .set_if_changed(status_bar);
         }
         password_management::PasswordFeatureAction::None => {}
     }
@@ -94,7 +100,10 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             dialogs::progress::ExtractionDialogResult::None => {}
         }
     }
-    app.shared_state.signals().extraction_dialog.set(ext_dialog);
+    app.shared_state
+        .signals()
+        .extraction_dialog
+        .set_if_changed(ext_dialog);
 
     // Render Conversion Progress Dialog
     let mut conv_dialog = app.shared_state.signals().conversion_dialog.get();
@@ -118,7 +127,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     app.shared_state
         .signals()
         .conversion_dialog
-        .set(conv_dialog);
+        .set_if_changed(conv_dialog);
 
     // Render Drag Progress Dialog
     let mut drag_dialog = app.shared_state.signals().drag_dialog.get();
@@ -131,7 +140,10 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             drag_dialog.show = false;
         }
     }
-    app.shared_state.signals().drag_dialog.set(drag_dialog);
+    app.shared_state
+        .signals()
+        .drag_dialog
+        .set_if_changed(drag_dialog);
 
     // Render File Edit Dialog
     let mut edit_dialog = app.shared_state.signals().file_edit_dialog.get();
@@ -169,7 +181,10 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             }
         }
     }
-    app.shared_state.signals().file_edit_dialog.set(edit_dialog);
+    app.shared_state
+        .signals()
+        .file_edit_dialog
+        .set_if_changed(edit_dialog);
 }
 
 pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {

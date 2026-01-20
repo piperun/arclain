@@ -55,6 +55,17 @@ impl<T> Signal<T> {
     /// Notify all listeners that the value has changed.
     fn notify(&self) {
         let listeners = self.inner.listeners.read();
+        let count = listeners.len();
+        if count > 0 {
+            // Debug: log when signals with listeners are notified
+            // This helps identify which signals are triggering continuous repaints
+            static NOTIFY_COUNT: std::sync::atomic::AtomicU64 =
+                std::sync::atomic::AtomicU64::new(0);
+            let c = NOTIFY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if c % 100 == 0 {
+                eprintln!("[DEBUG] Signal notify #{} with {} listeners", c, count);
+            }
+        }
         for listener in listeners.iter() {
             listener();
         }
@@ -126,6 +137,23 @@ impl<T: Clone> Signal<T> {
             f(&mut *guard);
         }
         self.notify();
+    }
+}
+
+impl<T: Clone + PartialEq> Signal<T> {
+    /// Set a new value only if it differs from the current value.
+    /// Returns true if the value was changed, false otherwise.
+    /// This prevents unnecessary repaint cycles when the value hasn't changed.
+    pub fn set_if_changed(&self, value: T) -> bool {
+        let current = self.inner.value.read().clone();
+        if current != value {
+            drop(current);
+            *self.inner.value.write() = value;
+            self.notify();
+            true
+        } else {
+            false
+        }
     }
 }
 

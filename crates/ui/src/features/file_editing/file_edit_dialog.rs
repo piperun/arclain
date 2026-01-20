@@ -4,7 +4,7 @@ use eframe::egui;
 
 // ================= File Edit Dialog =================
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct FileEditDialog {
     pub show: bool,
     pub full_path_in_archive: String,
