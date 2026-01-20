@@ -93,10 +93,12 @@ impl FileOpsService {
         // For now, I'll use a local Default and write it back.
 
         let mut temp_status = shared.signals().status_bar.get();
+        let mut dialog = shared.signals().extraction_dialog.get();
+
         operations::extraction::extract_selected(
             &shared.app_state,
             &entries,
-            &mut ops_state.extraction_dialog,
+            &mut dialog,
             &mut ops_state.extraction_rx,
             &mut ops_state.extraction_child,
             &mut ops_state.extraction_minimized,
@@ -104,6 +106,7 @@ impl FileOpsService {
             &mut temp_status,
         );
         shared.signals().status_bar.set(temp_status);
+        shared.signals().extraction_dialog.set(dialog);
     }
 
     pub fn edit_file(&self, shared: &SharedState, file: &str) {

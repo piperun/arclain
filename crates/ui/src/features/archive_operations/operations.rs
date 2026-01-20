@@ -3,61 +3,76 @@ use crate::core::utils;
 use crate::platform::{resume_process, suspend_process};
 use crate::shared::dialogs;
 
-pub fn pause_extraction(state: &mut ArchiveOperationsState) {
+pub fn pause_extraction(state: &mut ArchiveOperationsState, shared: &crate::shared::SharedState) {
     if let Some(child) = &state.extraction_child {
         let pid = child.id();
         if let Err(e) = suspend_process(pid) {
             tracing::error!("Failed to suspend process {}: {}", pid, e);
         } else {
-            state.extraction_dialog.status = dialogs::ExtractionStatus::Paused;
+            let mut dialog = shared.signals().extraction_dialog.get();
+            dialog.status = dialogs::ExtractionStatus::Paused;
+            shared.signals().extraction_dialog.set(dialog);
         }
     }
 }
 
-pub fn resume_extraction(state: &mut ArchiveOperationsState) {
+pub fn resume_extraction(state: &mut ArchiveOperationsState, shared: &crate::shared::SharedState) {
     if let Some(child) = &state.extraction_child {
         let pid = child.id();
         if let Err(e) = resume_process(pid) {
             tracing::error!("Failed to resume process {}: {}", pid, e);
         } else {
-            state.extraction_dialog.status = dialogs::ExtractionStatus::Running;
+            let mut dialog = shared.signals().extraction_dialog.get();
+            dialog.status = dialogs::ExtractionStatus::Running;
+            shared.signals().extraction_dialog.set(dialog);
         }
     }
 }
 
-pub fn cancel_extraction(state: &mut ArchiveOperationsState) {
+pub fn cancel_extraction(state: &mut ArchiveOperationsState, shared: &crate::shared::SharedState) {
     if let Some(mut child) = state.extraction_child.take() {
         if let Err(e) = child.kill() {
             tracing::error!("Failed to kill process: {}", e);
         }
-        state.extraction_dialog.status = dialogs::ExtractionStatus::Cancelled;
+        let mut dialog = shared.signals().extraction_dialog.get();
+        dialog.status = dialogs::ExtractionStatus::Cancelled;
+        shared.signals().extraction_dialog.set(dialog);
+
         state.extraction_rx = None;
         state.extraction_started = None;
     }
 }
 
-pub fn update_extraction_progress(state: &mut ArchiveOperationsState, ctx: &egui::Context) {
+pub fn update_extraction_progress(
+    state: &mut ArchiveOperationsState,
+    shared: &crate::shared::SharedState,
+    ctx: &egui::Context,
+) {
+    let mut dialog = shared.signals().extraction_dialog.get();
+    let mut changed = false;
+
     if let Some(rx) = &state.extraction_rx {
         for upd in rx.try_iter() {
+            changed = true;
             if upd.percent > 0 {
-                state.extraction_dialog.percent = upd.percent;
+                dialog.percent = upd.percent;
             }
             if let Some(msg) = upd.message {
                 // Keep last ~500 lines
-                if state.extraction_dialog.log_lines.len() > 500 {
-                    let overflow = state.extraction_dialog.log_lines.len() - 500;
-                    state.extraction_dialog.log_lines.drain(0..overflow);
+                if dialog.log_lines.len() > 500 {
+                    let overflow = dialog.log_lines.len() - 500;
+                    dialog.log_lines.drain(0..overflow);
                 }
-                state.extraction_dialog.log_lines.push(msg);
+                dialog.log_lines.push(msg);
             }
             if let Some(start) = state.extraction_started {
                 let elapsed = start.elapsed();
-                state.extraction_dialog.elapsed_text = utils::format_duration(elapsed);
+                dialog.elapsed_text = utils::format_duration(elapsed);
                 if upd.percent > 0 && upd.percent < 100 {
                     let total_est = elapsed.mul_f64(100.0 / upd.percent as f64);
                     let left = total_est.saturating_sub(elapsed);
-                    state.extraction_dialog.time_left_text = utils::format_duration(left);
-                    state.extraction_dialog.processed_text = format!("{}%", upd.percent);
+                    dialog.time_left_text = utils::format_duration(left);
+                    dialog.processed_text = format!("{}%", upd.percent);
                 }
             }
             ctx.request_repaint();
@@ -67,44 +82,57 @@ pub fn update_extraction_progress(state: &mut ArchiveOperationsState, ctx: &egui
     // Check child completion
     if let Some(child) = state.extraction_child.as_mut() {
         if let Ok(Some(status)) = child.try_wait() {
-            if status.success() && state.extraction_dialog.percent >= 100 {
-                state.extraction_dialog.status = dialogs::ExtractionStatus::Completed;
+            changed = true;
+            if status.success() && dialog.percent >= 100 {
+                dialog.status = dialogs::ExtractionStatus::Completed;
             } else {
-                state.extraction_dialog.status = dialogs::ExtractionStatus::Failed;
+                dialog.status = dialogs::ExtractionStatus::Failed;
             }
             // Auto-hide when completed unless minimized
             if !state.extraction_minimized {
-                state.extraction_dialog.show = false;
+                dialog.show = false;
             }
             state.extraction_child = None;
             state.extraction_rx = None;
             state.extraction_started = None;
         }
     }
+
+    if changed {
+        shared.signals().extraction_dialog.set(dialog);
+    }
 }
 
-pub fn update_conversion_progress(state: &mut ArchiveOperationsState, ctx: &egui::Context) {
+pub fn update_conversion_progress(
+    state: &mut ArchiveOperationsState,
+    shared: &crate::shared::SharedState,
+    ctx: &egui::Context,
+) {
+    let mut dialog = shared.signals().conversion_dialog.get();
+    let mut changed = false;
+
     if let Some(rx) = &state.conversion_rx {
         for upd in rx.try_iter() {
+            changed = true;
             if upd.percent > 0 {
-                state.conversion_dialog.percent = upd.percent;
+                dialog.percent = upd.percent;
             }
             if let Some(msg) = upd.message {
                 // Keep last ~500 lines
-                if state.conversion_dialog.log_lines.len() > 500 {
-                    let overflow = state.conversion_dialog.log_lines.len() - 500;
-                    state.conversion_dialog.log_lines.drain(0..overflow);
+                if dialog.log_lines.len() > 500 {
+                    let overflow = dialog.log_lines.len() - 500;
+                    dialog.log_lines.drain(0..overflow);
                 }
-                state.conversion_dialog.log_lines.push(msg);
+                dialog.log_lines.push(msg);
             }
             if let Some(start) = state.conversion_started {
                 let elapsed = start.elapsed();
-                state.conversion_dialog.elapsed_text = utils::format_duration(elapsed);
+                dialog.elapsed_text = utils::format_duration(elapsed);
                 if upd.percent > 0 && upd.percent < 100 {
                     let total_est = elapsed.mul_f64(100.0 / upd.percent as f64);
                     let left = total_est.saturating_sub(elapsed);
-                    state.conversion_dialog.time_left_text = utils::format_duration(left);
-                    state.conversion_dialog.processed_text = format!("{}%", upd.percent);
+                    dialog.time_left_text = utils::format_duration(left);
+                    dialog.processed_text = format!("{}%", upd.percent);
                 }
             }
             ctx.request_repaint();
@@ -114,51 +142,64 @@ pub fn update_conversion_progress(state: &mut ArchiveOperationsState, ctx: &egui
     // Check conversion child completion
     if let Some(child) = state.conversion_child.as_mut() {
         if let Ok(Some(status)) = child.try_wait() {
-            if status.success() && state.conversion_dialog.percent >= 100 {
-                state.conversion_dialog.status = dialogs::ExtractionStatus::Completed;
+            changed = true;
+            if status.success() && dialog.percent >= 100 {
+                dialog.status = dialogs::ExtractionStatus::Completed;
             } else {
-                state.conversion_dialog.status = dialogs::ExtractionStatus::Failed;
+                dialog.status = dialogs::ExtractionStatus::Failed;
             }
             // Auto-hide when completed unless minimized
             if !state.conversion_minimized {
-                state.conversion_dialog.show = false;
+                dialog.show = false;
             }
             state.conversion_child = None;
             state.conversion_rx = None;
             state.conversion_started = None;
         }
     }
+
+    if changed {
+        shared.signals().conversion_dialog.set(dialog);
+    }
 }
 
-pub fn update_drag_progress(state: &mut ArchiveOperationsState, ctx: &egui::Context) {
+pub fn update_drag_progress(
+    state: &mut ArchiveOperationsState,
+    shared: &crate::shared::SharedState,
+    ctx: &egui::Context,
+) {
+    let mut dialog = shared.signals().drag_dialog.get();
+    let mut changed = false;
     let mut finished = false;
+
     if let Some(rx) = &state.drag_rx {
         for upd in rx.try_iter() {
+            changed = true;
             // Auto-show dialog on first progress update
-            if !state.drag_dialog.show {
-                state.drag_dialog.show = true;
+            if !dialog.show {
+                dialog.show = true;
                 state.drag_started = Some(std::time::Instant::now());
             }
 
             if upd.percent > 0 {
-                state.drag_dialog.percent = upd.percent;
+                dialog.percent = upd.percent;
             }
             if let Some(msg) = upd.message {
                 // Keep last ~50 lines
-                if state.drag_dialog.log_lines.len() > 50 {
-                    let overflow = state.drag_dialog.log_lines.len() - 50;
-                    state.drag_dialog.log_lines.drain(0..overflow);
+                if dialog.log_lines.len() > 50 {
+                    let overflow = dialog.log_lines.len() - 50;
+                    dialog.log_lines.drain(0..overflow);
                 }
-                state.drag_dialog.log_lines.push(msg);
+                dialog.log_lines.push(msg);
             }
             if let Some(start) = state.drag_started {
                 let elapsed = start.elapsed();
-                state.drag_dialog.elapsed_text = utils::format_duration(elapsed);
+                dialog.elapsed_text = utils::format_duration(elapsed);
                 if upd.percent > 0 && upd.percent < 100 {
                     let total_est = elapsed.mul_f64(100.0 / upd.percent as f64);
                     let left = total_est.saturating_sub(elapsed);
-                    state.drag_dialog.time_left_text = utils::format_duration(left);
-                    state.drag_dialog.processed_text = format!("{}%", upd.percent);
+                    dialog.time_left_text = utils::format_duration(left);
+                    dialog.processed_text = format!("{}%", upd.percent);
                 }
             }
             ctx.request_repaint();
@@ -174,9 +215,14 @@ pub fn update_drag_progress(state: &mut ArchiveOperationsState, ctx: &egui::Cont
     }
 
     if finished {
-        state.drag_dialog.show = false;
+        dialog.show = false;
         state.drag_rx = None;
         state.drag_started = None;
+        changed = true;
+    }
+
+    if changed {
+        shared.signals().drag_dialog.set(dialog);
     }
 }
 

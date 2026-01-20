@@ -20,7 +20,7 @@ pub struct AppCoordinator {
     // Feature modules
     settings: settings::SettingsFeature,
     plugins: plugins::PluginsFeature,
-    passwords: password_management::PasswordFeature,
+    // passwords: password_management::PasswordFeature,
     organization: organization::OrganizationFeature,
     browser: archive_browser::ArchiveBrowser,
     operations: archive_operations::ArchiveOperations,
@@ -36,7 +36,7 @@ impl AppCoordinator {
 
         let settings = settings::SettingsFeature::new(&shared);
         let plugins = plugins::PluginsFeature::new(&shared);
-        let passwords = password_management::PasswordFeature::new(&shared);
+        // let passwords = password_management::PasswordFeature::new(&shared);
         let organization = organization::OrganizationFeature::new(&shared);
         let browser = archive_browser::ArchiveBrowser::new(&shared);
         let operations = archive_operations::ArchiveOperations::new(&shared);
@@ -45,7 +45,7 @@ impl AppCoordinator {
             shared,
             settings,
             plugins,
-            passwords,
+            // passwords,
             organization,
             browser,
             operations,
@@ -78,8 +78,7 @@ impl eframe::App for AppCoordinator {
         self.shared.theme.apply_to_context(ctx);
 
         // Handle password dialogs (shown on all pages)
-        let pw_action =
-            password_management::handle_password_dialogs(&mut self.passwords, ctx, &self.shared);
+        let pw_action = password_management::handle_password_dialogs(ctx, &self.shared);
         if let password_management::PasswordFeatureAction::PasswordUnlocked { .. } = pw_action {
             // Handle password unlock success
             // This would trigger archive reload or file operation retry

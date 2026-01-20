@@ -10,5 +10,5 @@ pub use views::dialogs;
 pub use views::rules_page;
 
 // Re-export commonly used types
-pub use operations::{PasswordFeature, PasswordFeatureAction};
+pub use operations::PasswordFeatureAction;
 pub use ui::handle_password_dialogs;

@@ -10,12 +10,14 @@ use crate::shared::SharedState;
 
 pub struct ArchiveOperations {
     state: ArchiveOperationsState,
+    shared: SharedState,
 }
 
 impl ArchiveOperations {
-    pub fn new(_shared: &SharedState) -> Self {
+    pub fn new(shared: &SharedState) -> Self {
         Self {
             state: ArchiveOperationsState::default(),
+            shared: shared.clone(),
         }
     }
 
@@ -25,28 +27,28 @@ impl ArchiveOperations {
 
     /// Handle extraction progress updates
     pub fn update_extraction_progress(&mut self, ctx: &egui::Context) {
-        operations::update_extraction_progress(&mut self.state, ctx);
+        operations::update_extraction_progress(&mut self.state, &self.shared, ctx);
     }
 
     /// Handle conversion progress updates
     pub fn update_conversion_progress(&mut self, ctx: &egui::Context) {
-        operations::update_conversion_progress(&mut self.state, ctx);
+        operations::update_conversion_progress(&mut self.state, &self.shared, ctx);
     }
 
     pub fn pause_extraction(&mut self) {
-        operations::pause_extraction(&mut self.state);
+        operations::pause_extraction(&mut self.state, &self.shared);
     }
 
     pub fn resume_extraction(&mut self) {
-        operations::resume_extraction(&mut self.state);
+        operations::resume_extraction(&mut self.state, &self.shared);
     }
 
     pub fn cancel_extraction(&mut self) {
-        operations::cancel_extraction(&mut self.state);
+        operations::cancel_extraction(&mut self.state, &self.shared);
     }
 
     /// Handle drag progress updates
     pub fn update_drag_progress(&mut self, ctx: &egui::Context) {
-        operations::update_drag_progress(&mut self.state, ctx);
+        operations::update_drag_progress(&mut self.state, &self.shared, ctx);
     }
 }

@@ -76,9 +76,13 @@ impl DragDropService {
                     });
 
                     ops_state.drag_rx = Some(rx);
-                    ops_state.drag_dialog.show = false;
-                    ops_state.drag_dialog.percent = 0;
-                    ops_state.drag_dialog.file_action = "Preparing drag...".to_string();
+
+                    let mut dialog = shared.signals().drag_dialog.get();
+                    dialog.show = false;
+                    dialog.percent = 0;
+                    dialog.file_action = "Preparing drag...".to_string();
+                    shared.signals().drag_dialog.set(dialog);
+
                     ops_state.drag_started = Some(std::time::Instant::now());
                 }
                 Err(e) => {

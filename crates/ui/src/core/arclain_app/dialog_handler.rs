@@ -9,21 +9,20 @@ use eframe::egui;
 pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render Password Dialog
     let shared_state = app.shared_state.clone();
-    match password_management::handle_password_dialogs(
-        &mut app.password_feature,
-        ctx,
-        &shared_state,
-    ) {
+    match password_management::handle_password_dialogs(ctx, &shared_state) {
         password_management::PasswordFeatureAction::PasswordUnlocked { path, password } => {
             let mut archive_info = operations::archive::ArchiveInfo::default();
             let mut view_state = app.shared_state.signals().browser_view_state.get();
+            let mut pass_dialog = app.shared_state.signals().password_dialog.get();
+            let mut status_bar = app.shared_state.signals().status_bar.get();
+
             if operations::archive::try_open_with_password(
                 &app.shared_state.app_state,
                 &path,
                 &password,
-                &mut app.password_feature.password_dialog,
+                &mut pass_dialog,
                 &mut app._pending_archive_path,
-                &mut app.status_info,
+                &mut status_bar,
                 &mut view_state.view_entries,
                 &mut archive_info,
             ) {
@@ -31,11 +30,14 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     .signals()
                     .browser_view_state
                     .set(view_state);
-                app.password_feature.password_dialog.show = false;
+                pass_dialog.show = false;
+                // app.shared_state.signals().password_dialog.set(pass_dialog); // Updated below
                 app._pending_archive_path = None;
             } else {
-                app.password_feature.password_dialog.error = "Invalid password".to_string();
+                pass_dialog.error = "Invalid password".to_string();
             }
+            app.shared_state.signals().password_dialog.set(pass_dialog);
+            app.shared_state.signals().status_bar.set(status_bar);
         }
         password_management::PasswordFeatureAction::None => {}
     }
@@ -61,10 +63,11 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     }
 
     // Render Extraction Progress Dialog
+    let mut ext_dialog = app.shared_state.signals().extraction_dialog.get();
     if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
         ctx,
         &app.shared_state.theme,
-        &mut app.archive_operations.state_mut().extraction_dialog,
+        &mut ext_dialog,
     ) {
         match result {
             dialogs::progress::ExtractionDialogResult::Cancelled => {
@@ -76,11 +79,11 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 app.shared_state.signals().extraction_progress.set(None);
                 // Also cancel CLI extraction if any
                 app.archive_operations.cancel_extraction();
-                app.archive_operations.state_mut().extraction_dialog.show = false;
+                ext_dialog.show = false;
             }
             dialogs::progress::ExtractionDialogResult::Minimized => {
                 app.archive_operations.state_mut().extraction_minimized = true;
-                app.archive_operations.state_mut().extraction_dialog.show = false;
+                ext_dialog.show = false;
             }
             dialogs::progress::ExtractionDialogResult::Paused => {
                 app.archive_operations.pause_extraction();
@@ -91,23 +94,51 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             dialogs::progress::ExtractionDialogResult::None => {}
         }
     }
+    app.shared_state.signals().extraction_dialog.set(ext_dialog);
 
-    // Render Drag Progress Dialog
+    // Render Conversion Progress Dialog
+    let mut conv_dialog = app.shared_state.signals().conversion_dialog.get();
     if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
         ctx,
         &app.shared_state.theme,
-        &mut app.archive_operations.state_mut().drag_dialog,
+        &mut conv_dialog,
     ) {
-        if let dialogs::progress::ExtractionDialogResult::Cancelled = result {
-            app.archive_operations.state_mut().drag_dialog.show = false;
+        match result {
+            dialogs::progress::ExtractionDialogResult::Cancelled => {
+                app.shared_state
+                    .signals()
+                    .extraction_cancel
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                // Note: Conversion cancellation logic needs to be implemented in ArchiveOperations if different
+                // For now assuming it uses similar mechanism or child process kill
+            }
+            _ => {}
         }
     }
+    app.shared_state
+        .signals()
+        .conversion_dialog
+        .set(conv_dialog);
+
+    // Render Drag Progress Dialog
+    let mut drag_dialog = app.shared_state.signals().drag_dialog.get();
+    if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
+        ctx,
+        &app.shared_state.theme,
+        &mut drag_dialog,
+    ) {
+        if let dialogs::progress::ExtractionDialogResult::Cancelled = result {
+            drag_dialog.show = false;
+        }
+    }
+    app.shared_state.signals().drag_dialog.set(drag_dialog);
 
     // Render File Edit Dialog
+    let mut edit_dialog = app.shared_state.signals().file_edit_dialog.get();
     if let Some(result) = crate::features::file_editing::file_edit_dialog::render_file_edit_dialog(
         ctx,
         &app.shared_state.theme,
-        &mut app.edit_dialog,
+        &mut edit_dialog,
     ) {
         match result {
             crate::features::file_editing::file_edit_dialog::FileEditResult::Save {
@@ -116,25 +147,29 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             } => {
                 if let Some(archive) = app.shared_state.signals().archive_path.get() {
                     let state = app.shared_state.app_state.lock();
+                    let mut status = app.shared_state.signals().status_bar.get();
                     match state.add_or_update_file_from_str(&archive, &new_name, &content) {
                         Ok(_) => {
-                            app.status_info.message = "File saved".to_string();
+                            status.message = "File saved".to_string();
+                            app.shared_state.signals().status_bar.set(status);
                             // TODO: Refresh file list
                         }
                         Err(e) => {
                             let msg = format!("Failed to save file: {}", e);
                             crate::core::utils::log_failure("FileEdit", &msg);
-                            app.status_info.message = msg;
+                            status.message = msg;
+                            app.shared_state.signals().status_bar.set(status);
                         }
                     }
                 }
-                app.edit_dialog.show = false;
+                edit_dialog.show = false;
             }
             crate::features::file_editing::file_edit_dialog::FileEditResult::Cancel => {
-                app.edit_dialog.show = false;
+                edit_dialog.show = false;
             }
         }
     }
+    app.shared_state.signals().file_edit_dialog.set(edit_dialog);
 }
 
 pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {

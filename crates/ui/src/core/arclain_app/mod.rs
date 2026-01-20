@@ -4,7 +4,7 @@
 //! managing global state and delegating rendering to feature modules.
 
 use crate::core::navigation::PageNavigator;
-use crate::features::{organization, password_management, plugins, settings};
+use crate::features::{organization, plugins, settings};
 use crate::shared::components;
 
 use eframe::egui;
@@ -36,8 +36,8 @@ pub struct ArclainApp {
     pub(crate) archive_operations: crate::features::archive_operations::ArchiveOperations,
 
     // Dialog states
-    pub(crate) password_feature: password_management::PasswordFeature,
-    pub(crate) edit_dialog: crate::features::file_editing::FileEditDialog,
+    // pub(crate) password_feature: password_management::PasswordFeature,
+    // pub(crate) edit_dialog: crate::features::file_editing::FileEditDialog,
     // password_rules_dialog: password_management::PasswordRulesDialog, // Moved to SettingsFeature
 
     // Settings state
@@ -52,7 +52,7 @@ pub struct ArclainApp {
     pub(crate) top_tab_bar_state: components::top_tab_bar::TopTabBarState,
 
     // Data
-    pub(crate) status_info: components::StatusBarInfo,
+    // pub(crate) status_info: components::StatusBarInfo,
     pub(crate) _pending_archive_path: Option<PathBuf>,
     // _pending_open_file: Option<String>, // Moved to ArchiveOperations
 
@@ -84,8 +84,8 @@ impl ArclainApp {
             archive_operations: crate::features::archive_operations::ArchiveOperations::new(
                 &shared_state,
             ),
-            password_feature: password_management::PasswordFeature::new(&shared_state),
-            edit_dialog: crate::features::file_editing::FileEditDialog::default(),
+            // password_feature: password_management::PasswordFeature::new(&shared_state),
+            // edit_dialog: crate::features::file_editing::FileEditDialog::default(),
             // password_rules_dialog: password_management::PasswordRulesDialog::default(),
             settings_feature: settings::SettingsFeature::new(&shared_state),
             // security_settings_state: settings::SecuritySettingsState::default(),
@@ -94,7 +94,7 @@ impl ArclainApp {
             plugins_feature: plugins::PluginsFeature::new(&shared_state),
             organization_feature: organization::OrganizationFeature::new(&shared_state),
             top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
-            status_info: components::StatusBarInfo::default(),
+            // status_info: components::StatusBarInfo::default(), // Removed
             _pending_archive_path: None,
             // _pending_open_file: None,
             // archive_info: operations::archive::ArchiveInfo::default(),
