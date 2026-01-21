@@ -5,7 +5,8 @@
 use crate::core::SettingsPage;
 use crate::features::password_management::dialogs::zip_pass_rules::PasswordRulesDialog;
 use crate::features::password_management::rules_page as password_rules_page;
-use crate::features::plugins::types::PluginsListState;
+use crate::features::plugins::domain::types::PluginsListState;
+
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_plugins::PluginManager;

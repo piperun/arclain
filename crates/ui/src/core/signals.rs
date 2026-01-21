@@ -144,7 +144,7 @@ pub struct AppSignals {
     pub drag_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
 
     /// [NEW] Plugin Dialog State (Phase 3)
-    pub plugin_dialog_state: Signal<crate::features::plugins::PluginDialogState>,
+    pub plugin_dialog_state: Signal<crate::features::plugins::domain::state::PluginDialogState>,
 }
 
 impl AppSignals {
@@ -191,7 +191,9 @@ impl AppSignals {
                 crate::shared::dialogs::ExtractionProgressDialog::default(),
             ),
             drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
-            plugin_dialog_state: Signal::new(crate::features::plugins::PluginDialogState::default()),
+            plugin_dialog_state: Signal::new(
+                crate::features::plugins::domain::state::PluginDialogState::default(),
+            ),
         }
     }
 
@@ -269,7 +271,7 @@ impl AppSignals {
         self.drag_dialog
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.plugin_dialog_state
-            .set(crate::features::plugins::PluginDialogState::default());
+            .set(crate::features::plugins::domain::state::PluginDialogState::default());
     }
 }
 

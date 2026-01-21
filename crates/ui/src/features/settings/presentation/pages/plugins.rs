@@ -2,8 +2,9 @@
 //!
 //! Contains settings for managing installed plugins.
 
-use crate::features::plugins::types::PluginsListState;
-use crate::features::settings::types::SettingsAction;
+use crate::features::plugins::domain::types::PluginsListState;
+use crate::features::settings::domain::types::SettingsAction;
+
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_plugins::PluginManager;
@@ -30,7 +31,7 @@ pub fn render(
     // Render the plugin list
     // Render the unified plugin page
     // Note: plugins_page::render returns Option<SettingsAction>
-    crate::features::plugins::plugins_page::render(
+    crate::features::plugins::presentation::pages::plugins_page::render(
         ui,
         theme,
         plugin_manager,

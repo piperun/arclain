@@ -2,7 +2,10 @@
 //!
 //! Renders plugin settings, permissions, and custom UI when a plugin is selected.
 
-use crate::features::plugins::types::PluginsListState;
+use crate::features::plugins::domain::types::PluginsListState;
+
+use crate::features::plugins::presentation::rendering as ui;
+
 use crate::shared::components::SettingsForm;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
@@ -410,11 +413,10 @@ fn render_plugin_ui(
                             }
                         }
                     });
-                })
-                    as crate::features::plugins::ui::UiEventCallback;
+                }) as ui::UiEventCallback;
 
                 let flat_elements = ui_elements.flatten();
-                crate::features::plugins::ui::render_ui_elements(
+                ui::render_ui_elements(
                     ui,
                     &flat_elements,
                     &mut event_callback,

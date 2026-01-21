@@ -54,7 +54,8 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
             .open(&mut open)
             .show(ctx, |ui| {
                 let mut callback =
-                    super::actions::create_dialog_callback(shared, plugin_id.clone());
+                    crate::features::plugins::presentation::controllers::plugin_controller::create_dialog_callback(shared, plugin_id.clone());
+
 
                 let flat_elements = dialog_elements.flatten();
                 super::ui::render_ui_elements(
@@ -132,7 +133,8 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
             ui.separator();
 
             // Set up callback for page events
-            let mut callback = super::actions::create_page_callback(shared, plugin_id.clone());
+            let mut callback = crate::features::plugins::presentation::controllers::plugin_controller::create_page_callback(shared, plugin_id.clone());
+
 
             use arclain_plugins::types::PluginLayout;
             let content_cache = shared.services.content_cache.clone();
@@ -158,7 +160,8 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                         .default_width(sidebar_width.unwrap_or(250.0))
                         .show_inside(ui, |ui| {
                             egui::ScrollArea::vertical().show(ui, |ui| {
-                                super::ui::render_ui_elements(
+                                crate::features::plugins::presentation::rendering::render_ui_elements(
+
                                     ui,
                                     &sidebar,
                                     &mut callback,

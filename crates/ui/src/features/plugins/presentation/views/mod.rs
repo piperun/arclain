@@ -1,0 +1,7 @@
+pub mod detail_view;
+pub mod list_view;
+pub mod plugin_list;
+pub mod rendering;
+
+// Re-export UI components for backward compatibility/rendering engine use
+pub use crate::features::plugins::presentation::rendering as ui;

@@ -27,7 +27,7 @@ pub fn render_header(
     let header_config =
         if *page == SettingsPage::Plugins {
             // Delegate to Plugins Page
-            crate::features::plugins::plugins_page::get_header_config(
+            crate::features::plugins::presentation::pages::plugins_page::get_header_config(
                 &mut feature.plugins_state,
                 page,
                 &install_clicked,

@@ -1,7 +1,8 @@
 #![allow(unused)]
 //! Plugin list view component
 
-use super::types::{PluginInfo, PluginsListState};
+use crate::features::plugins::domain::types::{PluginInfo, PluginsListState};
+
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 

@@ -189,7 +189,7 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
     app.shared_state.toaster.lock().show(ctx);
 
     // Render plugin dialog if open
-    crate::features::plugins::render_dialog(ctx, &app.shared_state);
+    crate::features::plugins::presentation::views::rendering::render_dialog(ctx, &app.shared_state);
 
     // Render log viewer modal if open
     if app.show_log_viewer {

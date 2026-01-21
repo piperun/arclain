@@ -6,7 +6,8 @@ use eframe::egui;
 
 pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
     // Check for plugin page first - if open, render it instead of normal content
-    if crate::features::plugins::render_page(ctx, &app.shared_state) {
+    if crate::features::plugins::presentation::views::rendering::render_page(ctx, &app.shared_state)
+    {
         // Plugin page handled content, skip normal rendering
         return;
     }

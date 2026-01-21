@@ -1,16 +1,7 @@
-use crate::features::plugins::plugins_page;
-use crate::features::plugins::types::PluginsListState;
+use crate::features::plugins::domain::types::PluginsListState;
+use crate::features::plugins::presentation::pages::plugins_page;
 use crate::shared::SharedState;
 use eframe::egui;
-
-pub mod context;
-pub mod image;
-pub mod layout;
-pub mod renderer;
-pub mod widgets;
-
-pub use context::UiEventCallback;
-pub use renderer::{render_ui_element, render_ui_elements};
 
 pub struct PluginsFeature {
     pub list_state: PluginsListState,

@@ -8,7 +8,7 @@ use arclain_widgets::{Toast, ToastLevel, Toaster};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-use super::dialog_state::PluginDialogState;
+use crate::features::plugins::domain::state::PluginDialogState;
 
 /// Process a list of plugin actions
 pub fn process_plugin_actions(
