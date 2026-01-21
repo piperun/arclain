@@ -3,7 +3,8 @@
 //! Extracted from ui.rs to reduce file size and improve organization.
 
 use crate::core::navigation::SettingsPage;
-use crate::features::plugins::types::PluginsListState;
+use crate::features::plugins::domain::types::PluginsListState;
+
 use crate::features::settings::domain::types::{
     ArchivesSettingsState, SecuritySettingsState, SettingsAction,
 };

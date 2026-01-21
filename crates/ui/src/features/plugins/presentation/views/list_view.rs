@@ -2,7 +2,8 @@
 //!
 //! Renders the list of installed plugins with filtering and selection.
 
-use crate::features::plugins::types::{PluginStatus, PluginsListState};
+use crate::features::plugins::domain::types::{PluginStatus, PluginsListState};
+
 use crate::shared::components::SettingsForm;
 use crate::shared::theme::AppTheme;
 use arclain_widgets::Chips;
@@ -50,7 +51,7 @@ pub fn render(ui: &mut egui::Ui, theme: &AppTheme, state: &mut PluginsListState)
 fn render_plugin_card(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    plugin: &crate::features::plugins::types::PluginInfo,
+    plugin: &crate::features::plugins::domain::types::PluginInfo,
     show_permissions: bool,
 ) -> egui::Response {
     egui::Frame::NONE
@@ -107,7 +108,7 @@ fn render_plugin_card(
 fn render_status_icon(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    plugin: &crate::features::plugins::types::PluginInfo,
+    plugin: &crate::features::plugins::domain::types::PluginInfo,
 ) {
     let (status_rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
     if !ui.is_rect_visible(status_rect) {

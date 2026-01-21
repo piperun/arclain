@@ -3,7 +3,8 @@
 //! A reusable panel with optional header, body sections, and footer.
 //! Supports collapsible sections and theme-aware styling.
 
-use crate::features::plugins::ui;
+use crate::features::plugins::presentation::rendering as ui;
+
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_plugins::manager::PluginManager;

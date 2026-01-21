@@ -3,8 +3,9 @@
 //! Coordinator for plugin list and detail views.
 //! Dispatches rendering to the appropriate view based on state.
 
-use crate::features::plugins::types::PluginsListState;
-use crate::features::settings::types::SettingsAction;
+use crate::features::plugins::domain::types::PluginsListState;
+use crate::features::settings::domain::types::SettingsAction;
+
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_plugins::PluginManager;
@@ -27,7 +28,7 @@ pub fn render(
 
     if state.selected_plugin.is_some() {
         // Detail View
-        let needs_refresh = crate::features::plugins::views::detail_view::render(
+        let needs_refresh = crate::features::plugins::presentation::views::detail_view::render(
             ui,
             theme,
             plugin_manager,
@@ -45,7 +46,7 @@ pub fn render(
         }
     } else {
         // List View
-        crate::features::plugins::views::list_view::render(ui, theme, state);
+        crate::features::plugins::presentation::views::list_view::render(ui, theme, state);
     }
 
     action
@@ -56,8 +57,8 @@ pub fn get_header_config<'a>(
     state: &'a mut PluginsListState,
     page: &crate::core::SettingsPage,
     install_clicked_cell: &'a std::cell::Cell<bool>,
-) -> crate::features::settings::header_config::SettingsHeaderConfig<'a> {
-    use crate::features::settings::header_config::SettingsHeaderConfig;
+) -> crate::features::settings::presentation::views::header_config::SettingsHeaderConfig<'a> {
+    use crate::features::settings::presentation::views::header_config::SettingsHeaderConfig;
 
     // Check if we are in Detail View
     if let Some(plugin_id) = state.selected_plugin.clone() {

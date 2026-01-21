@@ -466,6 +466,7 @@ impl LazyArchiveDataObject {
     }
 
     /// Create an IStream from an already extracted file in temp directory
+    #[allow(dead_code)]
     fn get_temp_file_stream(&self, lindex: i32) -> windows::core::Result<STGMEDIUM> {
         if lindex < 0 || lindex as usize >= self.drag_entries.len() {
             return Err(windows::core::Error::from(DV_E_LINDEX));

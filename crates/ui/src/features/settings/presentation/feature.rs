@@ -18,7 +18,8 @@ pub struct SettingsFeature {
     pub security_state: SecuritySettingsState,
     pub archives_state: ArchivesSettingsState,
     pub password_rules_dialog: PasswordRulesDialog,
-    pub plugins_state: crate::features::plugins::types::PluginsListState,
+    pub plugins_state: crate::features::plugins::domain::types::PluginsListState,
+
     pub interface_state: InterfaceSettingsState,
     pub toolbar_layout_state: ToolbarLayoutState,
     pub info_panel_layout_state: InfoPanelLayoutState,
@@ -87,7 +88,8 @@ impl SettingsFeature {
                 rules,
                 ..Default::default()
             },
-            plugins_state: crate::features::plugins::types::PluginsListState::default(),
+            plugins_state: crate::features::plugins::domain::types::PluginsListState::default(),
+
             interface_state: InterfaceSettingsState::default(),
             toolbar_layout_state: ToolbarLayoutState::default(),
             info_panel_layout_state: InfoPanelLayoutState::default(),

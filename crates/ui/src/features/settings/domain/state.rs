@@ -1,5 +1,6 @@
 use crate::features::password_management::dialogs;
-use crate::features::plugins::types::PluginsListState;
+use crate::features::plugins::domain::types::PluginsListState;
+
 use crate::features::settings::domain::types as settings_content;
 
 #[derive(Default)]
