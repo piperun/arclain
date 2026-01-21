@@ -2,15 +2,9 @@ use crate::shared::theme::AppTheme;
 use eframe::egui;
 
 // ================= Password Dialog =================
+pub use crate::features::password_management::domain::types::PasswordDialog;
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct PasswordDialog {
-    pub show: bool,
-    pub password: String,
-    pub save_password: bool,
-    pub error: String,
-    pub target_path: Option<std::path::PathBuf>,
-}
+
 
 
 pub enum PasswordDialogResult {

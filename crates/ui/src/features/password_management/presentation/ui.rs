@@ -1,7 +1,6 @@
-use crate::features::password_management::dialogs::password_dialog::{
-    render_password_dialog, PasswordDialogResult,
-};
-use crate::features::password_management::operations::PasswordFeatureAction;
+use super::actions::PasswordFeatureAction;
+use super::views::dialogs::password_dialog::{render_password_dialog, PasswordDialogResult};
+
 use crate::shared::SharedState;
 use eframe::egui;
 
