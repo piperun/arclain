@@ -1,7 +1,30 @@
-// Dialog state for Password Rules
-use super::types::{PasswordRule, RegexTestResult};
 use std::path::PathBuf;
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PasswordDialog {
+    pub show: bool,
+    pub password: String,
+    pub save_password: bool,
+    pub error: String,
+    pub target_path: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct PasswordRule {
+    pub name: String,
+    pub pattern: String,
+    pub password: String,
+    pub priority: u32,
+    pub enabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegexTestResult {
+    pub file_path: String,
+    pub matched: bool,
+}
+
+#[derive(Clone, PartialEq)]
 pub struct PasswordRulesDialog {
     pub show: bool,
     pub rules: Vec<PasswordRule>,

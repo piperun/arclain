@@ -128,9 +128,7 @@ pub struct AppSignals {
     pub status_bar: Signal<crate::shared::components::status_bar::StatusBarInfo>,
 
     /// [NEW] Dialog States
-    pub password_dialog: Signal<
-        crate::features::password_management::views::dialogs::password_dialog::PasswordDialog,
-    >,
+    pub password_dialog: Signal<crate::features::password_management::dialogs::PasswordDialog>,
     pub file_edit_dialog: Signal<crate::features::file_editing::file_edit_dialog::FileEditDialog>,
 
     /// [NEW] Archive Operations context
@@ -174,13 +172,25 @@ impl AppSignals {
             pass_rules: Signal::new(Vec::new()),
             selection_count: Signal::new(0),
             opened_archive: Signal::new(None),
-            status_bar: Signal::new(crate::shared::components::status_bar::StatusBarInfo::default()),
-            password_dialog: Signal::new(crate::features::password_management::views::dialogs::password_dialog::PasswordDialog::default()),
-            file_edit_dialog: Signal::new(crate::features::file_editing::file_edit_dialog::FileEditDialog::default()),
+            status_bar: Signal::new(
+                crate::shared::components::status_bar::StatusBarInfo::default(),
+            ),
+            password_dialog: Signal::new(
+                crate::features::password_management::dialogs::PasswordDialog::default(),
+            ),
+            file_edit_dialog: Signal::new(
+                crate::features::file_editing::file_edit_dialog::FileEditDialog::default(),
+            ),
             pending_open_file: Signal::new(None),
-            browser_view_state: Signal::new(crate::features::archive_browser::domain::types::BrowserViewState::default()),
-            extraction_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
-            conversion_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
+            browser_view_state: Signal::new(
+                crate::features::archive_browser::domain::types::BrowserViewState::default(),
+            ),
+            extraction_dialog: Signal::new(
+                crate::shared::dialogs::ExtractionProgressDialog::default(),
+            ),
+            conversion_dialog: Signal::new(
+                crate::shared::dialogs::ExtractionProgressDialog::default(),
+            ),
             drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
             plugin_dialog_state: Signal::new(crate::features::plugins::PluginDialogState::default()),
         }
@@ -245,7 +255,8 @@ impl AppSignals {
         self.opened_archive.set(None);
         self.status_bar
             .set(crate::shared::components::status_bar::StatusBarInfo::default());
-        self.password_dialog.set(crate::features::password_management::views::dialogs::password_dialog::PasswordDialog::default());
+        self.password_dialog
+            .set(crate::features::password_management::dialogs::PasswordDialog::default());
         self.file_edit_dialog
             .set(crate::features::file_editing::file_edit_dialog::FileEditDialog::default());
         self.pending_open_file.set(None);

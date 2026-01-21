@@ -1,14 +1,8 @@
-// Password management feature
+pub mod application;
+pub mod domain;
+pub mod presentation;
 
-pub mod actions;
-pub mod operations;
-pub mod ui;
-pub mod views;
-
-// Re-export moved modules
-pub use views::dialogs;
-pub use views::rules_page;
-
-// Re-export commonly used types
-pub use operations::PasswordFeatureAction;
-pub use ui::handle_password_dialogs;
+pub use presentation::dialogs;
+pub use presentation::handle_password_dialogs;
+pub use presentation::rules_page;
+pub use presentation::PasswordFeatureAction;
