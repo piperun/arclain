@@ -4,9 +4,10 @@
 
 use crate::core::navigation::SettingsPage;
 use crate::features::plugins::types::PluginsListState;
-use crate::features::settings::settings_content::{
+use crate::features::settings::domain::types::{
     ArchivesSettingsState, SecuritySettingsState, SettingsAction,
 };
+
 use crate::shared::SharedState;
 
 /// Check if action is navigation and extract target page
@@ -23,7 +24,8 @@ pub fn handle_action(
     security_state: &mut SecuritySettingsState,
     archives_state: &mut ArchivesSettingsState,
     plugins_state: &mut PluginsListState,
-    network_state: &mut crate::features::settings::types::NetworkSettingsState,
+    network_state: &mut crate::features::settings::domain::types::NetworkSettingsState,
+
     shared: &SharedState,
 ) {
     match action {
@@ -233,7 +235,7 @@ pub fn handle_action(
             socks5_username,
             socks5_password,
         } => {
-            use crate::features::settings::types::ConnectionTestStatus;
+            use crate::features::settings::domain::types::ConnectionTestStatus;
 
             // Set testing state
             network_state

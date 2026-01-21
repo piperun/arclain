@@ -117,19 +117,14 @@ pub fn handle_file_edit_dialog(
     shared_state: &SharedState,
     dialog: &mut crate::features::file_editing::FileEditDialog,
 ) -> FileEditResult {
-    if let Some(result) = crate::features::file_editing::file_edit_dialog::render_file_edit_dialog(
-        ctx,
-        &shared_state.theme,
-        dialog,
-    ) {
+    if let Some(result) =
+        crate::features::file_editing::render_file_edit_dialog(ctx, &shared_state.theme, dialog)
+    {
         match result {
-            crate::features::file_editing::file_edit_dialog::FileEditResult::Save {
-                new_name,
-                content,
-            } => FileEditResult::Save { new_name, content },
-            crate::features::file_editing::file_edit_dialog::FileEditResult::Cancel => {
-                FileEditResult::Cancel
+            crate::features::file_editing::FileEditResult::Save { new_name, content } => {
+                FileEditResult::Save { new_name, content }
             }
+            crate::features::file_editing::FileEditResult::Cancel => FileEditResult::Cancel,
         }
     } else {
         FileEditResult::None

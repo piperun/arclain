@@ -1,7 +1,6 @@
-// File editing feature module
+pub mod application;
+pub mod domain;
+pub mod presentation;
 
-pub mod actions;
-pub mod file_edit_dialog;
-
-// Re-export dialog type
-pub use file_edit_dialog::FileEditDialog;
+pub use domain::types::{FileEditDialog, FileEditResult};
+pub use presentation::views::edit_dialog::render_file_edit_dialog;

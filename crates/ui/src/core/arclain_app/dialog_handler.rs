@@ -147,16 +147,13 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
 
     // Render File Edit Dialog
     let mut edit_dialog = app.shared_state.signals().file_edit_dialog.get();
-    if let Some(result) = crate::features::file_editing::file_edit_dialog::render_file_edit_dialog(
+    if let Some(result) = crate::features::file_editing::render_file_edit_dialog(
         ctx,
         &app.shared_state.theme,
         &mut edit_dialog,
     ) {
         match result {
-            crate::features::file_editing::file_edit_dialog::FileEditResult::Save {
-                new_name,
-                content,
-            } => {
+            crate::features::file_editing::FileEditResult::Save { new_name, content } => {
                 if let Some(archive) = app.shared_state.signals().archive_path.get() {
                     let state = app.shared_state.app_state.lock();
                     let mut status = app.shared_state.signals().status_bar.get();
@@ -176,7 +173,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 }
                 edit_dialog.show = false;
             }
-            crate::features::file_editing::file_edit_dialog::FileEditResult::Cancel => {
+            crate::features::file_editing::FileEditResult::Cancel => {
                 edit_dialog.show = false;
             }
         }

@@ -1,8 +1,10 @@
 //! Settings Page Header Rendering
 
 use crate::core::SettingsPage;
-use crate::features::settings::types::SettingsAction;
-use crate::features::settings::views::SettingsFeature;
+use crate::features::settings::domain::types::SettingsAction;
+
+use crate::features::settings::presentation::SettingsFeature;
+
 use crate::shared::SharedState;
 use eframe::egui;
 use std::cell::Cell;
@@ -22,17 +24,19 @@ pub fn render_header(
     let info_panel_save_clicked = Cell::new(false);
     let info_panel_reset_clicked = Cell::new(false);
 
-    let header_config = if *page == SettingsPage::Plugins {
-        // Delegate to Plugins Page
-        crate::features::plugins::plugins_page::get_header_config(
-            &mut feature.plugins_state,
-            page,
-            &install_clicked,
-        )
-    } else if *page == SettingsPage::ToolbarLayout {
-        // Toolbar Layout Page header
-        let has_changes = feature.toolbar_layout_state.dirty;
-        crate::features::settings::header_config::SettingsHeaderConfig::new("Toolbar Layout")
+    let header_config =
+        if *page == SettingsPage::Plugins {
+            // Delegate to Plugins Page
+            crate::features::plugins::plugins_page::get_header_config(
+                &mut feature.plugins_state,
+                page,
+                &install_clicked,
+            )
+        } else if *page == SettingsPage::ToolbarLayout {
+            // Toolbar Layout Page header
+            let has_changes = feature.toolbar_layout_state.dirty;
+            crate::features::settings::presentation::views::header_config::
+SettingsHeaderConfig::new("Toolbar Layout")
             .icon(egui_phosphor::regular::STACK.to_string())
             .description("Customize toolbar button layout")
             .has_changes(has_changes)
@@ -50,10 +54,11 @@ pub fn render_header(
                     toolbar_reset_clicked.set(true);
                 }
             })
-    } else if *page == SettingsPage::InfoPanelLayout {
-        // Info Panel Layout Page header
-        let has_changes = feature.info_panel_layout_state.dirty;
-        crate::features::settings::header_config::SettingsHeaderConfig::new("Info Panel Layout")
+        } else if *page == SettingsPage::InfoPanelLayout {
+            // Info Panel Layout Page header
+            let has_changes = feature.info_panel_layout_state.dirty;
+            crate::features::settings::presentation::views::header_config::
+SettingsHeaderConfig::new("Info Panel Layout")
             .icon(egui_phosphor::regular::SIDEBAR.to_string())
             .description("Customize info panel sections")
             .has_changes(has_changes)
@@ -71,13 +76,14 @@ pub fn render_header(
                     info_panel_reset_clicked.set(true);
                 }
             })
-    } else {
-        // Default Header for other pages
-        crate::features::settings::header_config::SettingsHeaderConfig::new(page.display_name())
+        } else {
+            // Default Header for other pages
+            crate::features::settings::presentation::views::header_config::
+SettingsHeaderConfig::new(page.display_name())
             .icon(page.icon())
             .description(page.description())
             .has_changes(feature.check_changes(shared, page))
-    };
+        };
 
     let mut header = crate::shared::components::SettingsHeader::new(header_config.title)
         .has_changes(header_config.has_changes);

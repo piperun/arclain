@@ -12,10 +12,10 @@ use arclain_plugins::PluginManager;
 use eframe::egui;
 
 // Re-export types for backwards compatibility
-pub use crate::features::settings::types::*;
+pub use crate::features::settings::domain::types::*;
 
 // Re-export page render functions
-use crate::features::settings::pages;
+use crate::features::settings::presentation::pages;
 
 /// Render the General settings page
 pub fn render_general_settings(
@@ -79,10 +79,12 @@ pub fn render_settings_content(
     password_rules_dialog: &mut PasswordRulesDialog,
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
-    rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
-    interface_state: &mut crate::features::settings::pages::interface::InterfaceSettingsState,
-    toolbar_layout_state: &mut crate::features::settings::pages::ToolbarLayoutState,
-    info_panel_layout_state: &mut crate::features::settings::pages::InfoPanelLayoutState,
+    rules_page: Option<&mut crate::features::settings::presentation::pages::RulesPage>,
+
+    interface_state: &mut crate::features::settings::presentation::pages::interface::InterfaceSettingsState,
+    toolbar_layout_state: &mut crate::features::settings::presentation::pages::ToolbarLayoutState,
+    info_panel_layout_state: &mut crate::features::settings::presentation::pages::InfoPanelLayoutState,
+
     network_state: &mut NetworkSettingsState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
@@ -97,7 +99,7 @@ pub fn render_settings_content(
         SettingsPage::Interface => {
             if let Some(shared_state) = shared {
                 let ui_service = shared_state.services.ui_service.as_deref();
-                crate::features::settings::pages::render_interface_settings(
+                crate::features::settings::presentation::pages::render_interface_settings(
                     ui,
                     theme,
                     shared_state,
@@ -134,7 +136,7 @@ pub fn render_settings_content(
         }
         SettingsPage::ToolbarLayout => {
             let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
-            crate::features::settings::pages::render_toolbar_layout(
+            crate::features::settings::presentation::pages::render_toolbar_layout(
                 ui,
                 theme,
                 ui_service,
@@ -145,7 +147,7 @@ pub fn render_settings_content(
         }
         SettingsPage::InfoPanelLayout => {
             let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
-            crate::features::settings::pages::render_info_panel_layout(
+            crate::features::settings::presentation::pages::render_info_panel_layout(
                 ui,
                 theme,
                 ui_service,
