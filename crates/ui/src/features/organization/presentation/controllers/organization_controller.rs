@@ -9,7 +9,7 @@ use crate::shared::components::StatusBarInfo;
 use crate::shared::SharedState;
 
 // Re-export action types from existing modules
-pub use super::ui::OrganizationAction;
+pub use crate::features::organization::OrganizationAction;
 
 /// Context required for handling organization feature actions
 pub struct ActionContext<'a> {

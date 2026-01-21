@@ -1,4 +1,5 @@
-use super::organize_panel::{OrganizePanel, OrganizePanelAction};
+use super::views::organize_panel::{OrganizePanel, OrganizePanelAction};
+
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
