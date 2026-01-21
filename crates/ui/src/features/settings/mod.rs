@@ -1,16 +1,17 @@
-// Settings feature module
+pub mod application;
+pub mod domain;
+pub mod presentation;
 
-pub mod actions;
-pub mod types;
+pub use presentation::SettingsFeature;
 
-// pub mod ui; // Removed in favor of views::Refactored
-pub mod views;
+// Re-exports for compatibility and internal convenience
+pub use domain::types;
+pub use presentation::pages;
+pub use presentation::views;
+pub use presentation::views::header_config;
+pub use presentation::views::settings_content;
+pub use presentation::views::settings_page;
 
-// Re-export moved modules to maintain API compatibility
-pub use views::header_config;
-pub use views::pages;
-pub use views::settings_content;
-pub use views::settings_page;
-
-// Re-export commonly used types
-pub use views::SettingsFeature;
+pub mod actions {
+    pub use crate::features::settings::presentation::controllers::settings_controller::*;
+}

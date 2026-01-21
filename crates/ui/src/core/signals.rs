@@ -129,7 +129,7 @@ pub struct AppSignals {
 
     /// [NEW] Dialog States
     pub password_dialog: Signal<crate::features::password_management::dialogs::PasswordDialog>,
-    pub file_edit_dialog: Signal<crate::features::file_editing::file_edit_dialog::FileEditDialog>,
+    pub file_edit_dialog: Signal<crate::features::file_editing::FileEditDialog>,
 
     /// [NEW] Archive Operations context
     pub pending_open_file: Signal<Option<String>>,
@@ -178,9 +178,8 @@ impl AppSignals {
             password_dialog: Signal::new(
                 crate::features::password_management::dialogs::PasswordDialog::default(),
             ),
-            file_edit_dialog: Signal::new(
-                crate::features::file_editing::file_edit_dialog::FileEditDialog::default(),
-            ),
+            file_edit_dialog: Signal::new(crate::features::file_editing::FileEditDialog::default()),
+
             pending_open_file: Signal::new(None),
             browser_view_state: Signal::new(
                 crate::features::archive_browser::domain::types::BrowserViewState::default(),
@@ -258,7 +257,8 @@ impl AppSignals {
         self.password_dialog
             .set(crate::features::password_management::dialogs::PasswordDialog::default());
         self.file_edit_dialog
-            .set(crate::features::file_editing::file_edit_dialog::FileEditDialog::default());
+            .set(crate::features::file_editing::FileEditDialog::default());
+
         self.pending_open_file.set(None);
         self.browser_view_state
             .set(crate::features::archive_browser::domain::types::BrowserViewState::default());

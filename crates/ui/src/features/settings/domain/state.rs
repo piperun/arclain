@@ -1,5 +1,6 @@
-use crate::features::{dialogs, settings_content};
+use crate::features::password_management::dialogs;
 use crate::features::plugins::types::PluginsListState;
+use crate::features::settings::domain::types as settings_content;
 
 #[derive(Default)]
 pub struct SettingsFeatureState {
@@ -7,6 +8,8 @@ pub struct SettingsFeatureState {
     pub archives_settings: settings_content::ArchivesSettingsState,
     pub plugins_state: PluginsListState,
     pub password_rules_dialog: dialogs::PasswordRulesDialog,
-    pub organization_rules_state: crate::features::organization::rules_page::OrganizationRulesState,
+    pub organization_rules_state:
+        crate::features::settings::presentation::pages::organization_rules::RulesPage,
+
     pub password_rules_loaded: bool,
 }

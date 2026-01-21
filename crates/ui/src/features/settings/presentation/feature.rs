@@ -2,10 +2,11 @@ use crate::core::SettingsPage;
 use crate::features::password_management::dialogs::PasswordRulesDialog;
 use crate::features::settings::pages::interface::InterfaceSettingsState;
 use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
-use crate::features::settings::settings_content::{
+use crate::features::settings::presentation::views::settings_content::{
     render_settings_content, ArchivesSettingsState, GeneralSettingsState, NetworkSettingsState,
     SecuritySettingsState, SettingsAction,
 };
+
 use crate::features::settings::views::{header, layout, navigation};
 use crate::shared::SharedState;
 use arclain_signals::Signal;
@@ -60,7 +61,8 @@ impl SettingsFeature {
             };
             drop(state);
 
-            use crate::features::settings::types::ConnectionTestStatus;
+            use crate::features::settings::domain::types::ConnectionTestStatus;
+
             use arclain_signals::Signal;
 
             NetworkSettingsState {
@@ -124,7 +126,7 @@ impl SettingsFeature {
                 !self.security_state.key_file_path.read().trim().is_empty()
                     || !self.security_state.secrets_db_path.read().trim().is_empty()
                     || *self.security_state.encrypted_crc_policy.read()
-                        != crate::features::settings::types::EncryptedCrcPolicy::default()
+                        != crate::features::settings::domain::types::EncryptedCrcPolicy::default()
             }
             SettingsPage::PasswordRules => {
                 if self.password_rules_dialog.rules.len() != state.pass_rules.len() {
@@ -153,7 +155,8 @@ impl SettingsFeature {
         shared: &SharedState,
         page: &SettingsPage,
         breadcrumb: Vec<(String, crate::core::AppPage)>,
-        rules_page: Option<&mut crate::features::settings::pages::RulesPage>,
+        rules_page: Option<&mut crate::features::settings::presentation::pages::RulesPage>,
+
         search_text: &str,
     ) -> Option<crate::core::AppPage> {
         // Sync rules if entering PasswordRules page
@@ -274,7 +277,8 @@ impl SettingsFeature {
 
         if let Some(action) = action {
             if let Some(target_page) =
-                crate::features::settings::actions::extract_navigation(&action)
+                crate::features::settings::presentation::controllers::settings_controller::extract_navigation(&action)
+
             {
                 navigate_to = Some(crate::core::AppPage::Settings(target_page));
             } else {
@@ -286,7 +290,7 @@ impl SettingsFeature {
     }
 
     pub fn handle_action(&mut self, action: SettingsAction, shared: &SharedState) {
-        crate::features::settings::actions::handle_action(
+        crate::features::settings::presentation::controllers::settings_controller::handle_action(
             action,
             &mut self.security_state,
             &mut self.archives_state,
