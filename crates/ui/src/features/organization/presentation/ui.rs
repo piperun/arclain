@@ -4,11 +4,8 @@ use crate::features::settings::pages::RulesPage;
 use crate::shared::SharedState;
 use eframe::egui;
 
-pub enum OrganizationAction {
-    None,
-    Apply,
-    ManageRules,
-}
+// Re-export OrganizationAction from domain
+pub use crate::features::organization::domain::types::OrganizationAction;
 
 pub struct OrganizationFeature {
     pub organizer_page: Option<OrganizerPage>,
