@@ -71,7 +71,8 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                 let action = app.organization_feature.render(ctx, &shared_state);
 
                 let mut status_info = shared_state.signals().status_bar.get();
-                let mut action_ctx = crate::features::organization::actions::ActionContext {
+                let mut action_ctx = crate::features::organization::presentation::controllers::organization_controller::ActionContext {
+
                     shared: &shared_state,
                     organization_feature: &mut app.organization_feature,
                     page_navigator: &mut app.page_navigator,
