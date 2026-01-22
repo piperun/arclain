@@ -25,7 +25,6 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
     }
     // === Handle files dropped from Explorer ===
-    // === Handle files dropped from Explorer ===
     crate::core::arclain_app::drop_handler::handle_drop_events(app, ctx);
 
     // === Lifecycle: Refresh requests, signals, theme ===

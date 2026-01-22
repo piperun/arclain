@@ -55,8 +55,8 @@ impl HotkeyManager {
                         pressed: true,
                         ..
                     } => {
-                        // DEBUG: Log all button presses to see what we're getting (INFO for visibility)
-                        tracing::info!(
+                        // DEBUG: Log all button presses to see what we're getting (DEBUG for visibility)
+                        tracing::debug!(
                             "Raw PointerButton event: {:?} (Modifiers: {:?})",
                             button,
                             modifiers
@@ -69,12 +69,12 @@ impl HotkeyManager {
                         };
 
                         if let Some(mb) = mouse_btn {
-                            tracing::info!("Mapped to MouseButton: {:?}", mb);
+                            tracing::debug!("Mapped to MouseButton: {:?}", mb);
                             if let Some(action) = self.bindings.find_action_for_input(
                                 &InputKey::Mouse(mb),
                                 &Modifiers::none(), // Mouse buttons ignore modifiers for now
                             ) {
-                                tracing::info!("Triggering action (Mouse): {:?}", action);
+                                tracing::debug!("Triggering action (Mouse): {:?}", action);
                                 triggered.push(action);
                             } else {
                                 tracing::debug!("No binding found for MouseButton: {:?}", mb);

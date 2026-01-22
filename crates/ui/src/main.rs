@@ -7,6 +7,15 @@ use arclain_ui::core::arclain_app::ArclainApp;
 use eframe::egui;
 use tracing::info;
 
+// Force High Performance GPU on Windows
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static NvOptimusEnablement: u32 = 1;
+
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub static AmdPowerXpressRequestHighPerformance: i32 = 1;
+
 fn main() -> Result<()> {
     if let Err(e) = init_logging() {
         eprintln!("Failed to initialize logging: {}", e);
@@ -22,6 +31,7 @@ fn main() -> Result<()> {
             .with_resizable(true)
             .with_decorations(true)
             .with_drag_and_drop(true),
+
         ..Default::default()
     };
 
