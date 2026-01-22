@@ -30,7 +30,7 @@ diesel = { version = "2.2", features = ["sqlite"] }
 arclain_widgets = { path = "../widgets" }
 arclain_theme = { path = "../theme" }
 rusqlite = "0.32"
-reqwest = { version = "0.12.24", features = ["blocking", "json"] }
+reqwest = { version = "0.13.1", features = ["blocking", "json"] }
 image = "0.25.9"
 arclain-http = { path = "../http" }
 arclain_signals = { path = "../signals", features = ["egui"] }
