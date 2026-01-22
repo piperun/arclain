@@ -113,17 +113,19 @@ impl BrowserController {
             let mut password_dialog = shared.signals().password_dialog.get();
             let mut status_info = shared.signals().status_bar.get();
             let mut view_state = shared.signals().browser_view_state.get();
+            // nav removed
 
             crate::core::operations::archive::open_archive_by_path(
                 &shared.app_state,
                 &extracted_path,
-                &mut view_state.current_path,
+                // current_path removed
                 &mut password_dialog,
                 &mut status_info,
                 &mut view_state.view_entries,
                 &mut archive_info,
             );
 
+            // navigation set removed
             shared.signals().password_dialog.set(password_dialog);
             shared.signals().status_bar.set(status_info);
             shared.signals().browser_view_state.set(view_state);

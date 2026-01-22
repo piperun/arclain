@@ -42,6 +42,8 @@ pub enum SettingsPage {
     InfoPanelLayout,
     /// Network and proxy settings
     Network,
+    /// Keyboard and mouse shortcuts
+    KeyboardMouse,
 }
 
 impl SettingsPage {
@@ -59,6 +61,7 @@ impl SettingsPage {
             SettingsPage::ToolbarLayout => "Toolbar Layout",
             SettingsPage::InfoPanelLayout => "Info Panel Layout",
             SettingsPage::Network => "Network",
+            SettingsPage::KeyboardMouse => "Keyboard & Mouse",
         }
     }
 
@@ -76,6 +79,7 @@ impl SettingsPage {
             SettingsPage::ToolbarLayout => egui_phosphor::regular::STACK,
             SettingsPage::InfoPanelLayout => egui_phosphor::regular::SIDEBAR,
             SettingsPage::Network => egui_phosphor::regular::GLOBE,
+            SettingsPage::KeyboardMouse => egui_phosphor::regular::KEYBOARD,
         }
     }
 
@@ -93,6 +97,7 @@ impl SettingsPage {
             SettingsPage::ToolbarLayout => "Customize toolbar button layout",
             SettingsPage::InfoPanelLayout => "Customize info panel sections",
             SettingsPage::Network => "Proxy and network configuration",
+            SettingsPage::KeyboardMouse => "Keyboard shortcuts and mouse button bindings",
         }
     }
 
@@ -107,6 +112,7 @@ impl SettingsPage {
             SettingsPage::Security,
             SettingsPage::Plugins,
             SettingsPage::Network,
+            SettingsPage::KeyboardMouse,
         ]
     }
 }
@@ -118,6 +124,8 @@ pub struct PageNavigator {
     pub current_page: AppPage,
     /// Navigation history stack (for back button)
     history: Vec<AppPage>,
+    /// Forward stack (for forward button after going back)
+    forward_stack: Vec<AppPage>,
     /// Maximum history size
     max_history: usize,
 }
@@ -127,6 +135,7 @@ impl Default for PageNavigator {
         Self {
             current_page: AppPage::Main,
             history: Vec::new(),
+            forward_stack: Vec::new(),
             max_history: 20,
         }
     }
@@ -145,6 +154,9 @@ impl PageNavigator {
             // Add current page to history
             self.history.push(self.current_page.clone());
 
+            // Clear forward stack when navigating to a new page
+            self.forward_stack.clear();
+
             // Limit history size
             if self.history.len() > self.max_history {
                 self.history.remove(0);
@@ -157,7 +169,21 @@ impl PageNavigator {
     /// Navigate back to previous page
     pub fn navigate_back(&mut self) -> bool {
         if let Some(previous) = self.history.pop() {
+            // Push current page to forward stack
+            self.forward_stack.push(self.current_page.clone());
             self.current_page = previous;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Navigate forward to next page (after going back)
+    pub fn navigate_forward(&mut self) -> bool {
+        if let Some(next) = self.forward_stack.pop() {
+            // Push current page to history
+            self.history.push(self.current_page.clone());
+            self.current_page = next;
             true
         } else {
             false
@@ -169,9 +195,15 @@ impl PageNavigator {
         !self.history.is_empty()
     }
 
+    /// Check if we can navigate forward
+    pub fn can_go_forward(&self) -> bool {
+        !self.forward_stack.is_empty()
+    }
+
     /// Navigate to main page, clearing history
     pub fn navigate_to_main(&mut self) {
         self.history.clear();
+        self.forward_stack.clear();
         self.current_page = AppPage::Main;
     }
 

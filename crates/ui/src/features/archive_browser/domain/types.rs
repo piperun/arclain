@@ -45,7 +45,7 @@ pub type ArchiveBrowserAction = Action;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BrowserViewState {
     pub view_entries: Vec<crate::shared::models::file_entry::FileEntry>,
-    pub current_path: String,
+    // NOTE: current_path has been moved to NavigationState signal for single source of truth
     pub toolbar_state: crate::shared::components::toolbar::ToolbarState,
     pub sort_state: crate::shared::models::file_entry::SortState,
     pub tree_state: crate::shared::components::tree_panel::TreePanelState,

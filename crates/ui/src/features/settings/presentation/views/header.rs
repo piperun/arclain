@@ -237,6 +237,11 @@ SettingsHeaderConfig::new(page.display_name())
                     socks5_password: password_opt,
                 });
             }
+            SettingsPage::KeyboardMouse => {
+                action = Some(SettingsAction::SaveKeyboardMouse {
+                    bindings: feature.keyboard_mouse_state.to_config(),
+                });
+            }
             _ => {}
         });
     }
