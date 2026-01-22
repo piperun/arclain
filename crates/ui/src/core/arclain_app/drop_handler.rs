@@ -11,18 +11,20 @@ pub fn handle_drop_events(app: &mut ArclainApp, ctx: &egui::Context) {
     if let file_drop::DropAction::OpenArchive(path) = file_drop::process_dropped_files(ctx) {
         let mut archive_info = operations::archive::ArchiveInfo::default();
         let mut view_state = app.shared_state.signals().browser_view_state.get();
+        // nav removed
         let mut pass_dialog = app.shared_state.signals().password_dialog.get();
         let mut status_bar = app.shared_state.signals().status_bar.get();
 
         operations::archive::open_archive_by_path(
             &app.shared_state.app_state,
             &path,
-            &mut view_state.current_path,
+            // current_path removed
             &mut pass_dialog,
             &mut status_bar,
             &mut view_state.view_entries,
             &mut archive_info,
         );
+        // navigation set removed
         app.shared_state
             .signals()
             .browser_view_state

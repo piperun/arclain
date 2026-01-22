@@ -142,9 +142,13 @@ pub struct AppSignals {
     pub extraction_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
     pub conversion_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
     pub drag_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
+    pub search_focus_requested: Signal<bool>,
 
     /// [NEW] Plugin Dialog State (Phase 3)
     pub plugin_dialog_state: Signal<crate::features::plugins::domain::state::PluginDialogState>,
+
+    /// [NEW] Signal to reload hotkeys when settings change
+    pub hotkeys_updated: Signal<bool>,
 }
 
 impl AppSignals {
@@ -191,9 +195,11 @@ impl AppSignals {
                 crate::shared::dialogs::ExtractionProgressDialog::default(),
             ),
             drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
+            search_focus_requested: Signal::new(false),
             plugin_dialog_state: Signal::new(
                 crate::features::plugins::domain::state::PluginDialogState::default(),
             ),
+            hotkeys_updated: Signal::new(false),
         }
     }
 

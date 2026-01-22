@@ -26,6 +26,7 @@ pub fn render(
     show_nav_buttons: bool,
     can_go_back: bool,
     is_on_settings: bool,
+    search_focus_requested: &mut bool,
 ) -> HeaderActions {
     let mut actions = HeaderActions::default();
     let show_labels = state.show_button_labels;
@@ -90,8 +91,9 @@ pub fn render(
                                 .size(14.0)
                                 .color(theme.colors.on_surface_variant),
                         );
-                        ui.add(
+                        let response = ui.add(
                             egui::TextEdit::singleline(&mut state.search_text)
+                                .id(egui::Id::new("header_search_input"))
                                 .hint_text(if is_on_settings {
                                     "Search settings..."
                                 } else {
@@ -100,6 +102,11 @@ pub fn render(
                                 .frame(false)
                                 .desired_width(search_width - 32.0),
                         );
+
+                        if *search_focus_requested {
+                            response.request_focus();
+                            *search_focus_requested = false;
+                        }
                     });
                 });
             },

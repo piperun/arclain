@@ -91,6 +91,10 @@ pub struct UserConfig {
     /// Plugin proxy settings (JSON map of PluginID -> bool)
     #[db(nullable)]
     pub plugin_proxy_settings: Option<String>,
+
+    /// Hotkey bindings (JSON map of ActionId -> HotkeyBinding)
+    #[db(nullable)]
+    pub hotkey_bindings: Option<String>,
 }
 
 impl UserConfig {
@@ -231,6 +235,40 @@ impl UserConfig {
         self.set_plugin_proxy_settings(&settings);
     }
 
+    // --- Hotkey Bindings ---
+
+    /// Get hotkey bindings as a map of action_id -> binding JSON
+    pub fn get_hotkey_bindings(&self) -> std::collections::HashMap<String, String> {
+        self.hotkey_bindings
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    }
+
+    /// Set hotkey bindings from a map of action_id -> binding JSON
+    pub fn set_hotkey_bindings(&mut self, bindings: &std::collections::HashMap<String, String>) {
+        self.hotkey_bindings = serde_json::to_string(bindings).ok();
+    }
+
+    /// Get binding for a specific action
+    pub fn get_hotkey_binding(&self, action_id: &str) -> Option<String> {
+        self.get_hotkey_bindings().get(action_id).cloned()
+    }
+
+    /// Set binding for a specific action
+    pub fn set_hotkey_binding(&mut self, action_id: &str, binding: &str) {
+        let mut bindings = self.get_hotkey_bindings();
+        bindings.insert(action_id.to_string(), binding.to_string());
+        self.set_hotkey_bindings(&bindings);
+    }
+
+    /// Remove binding for a specific action
+    pub fn remove_hotkey_binding(&mut self, action_id: &str) {
+        let mut bindings = self.get_hotkey_bindings();
+        bindings.remove(action_id);
+        self.set_hotkey_bindings(&bindings);
+    }
+
     /// Load config from Diesel connection (singleton row 1)
     pub fn load_diesel(conn: &mut diesel::SqliteConnection) -> Result<Self> {
         use crate::diesel_schema::user_config::dsl::*;
@@ -261,6 +299,7 @@ impl UserConfig {
                 socks5_enabled,
                 socks5_username,
                 plugin_proxy_settings,
+                hotkey_bindings,
             ))
             .first::<(
                 i32,
@@ -280,6 +319,7 @@ impl UserConfig {
                 Option<String>,
                 Option<String>,
                 bool,
+                Option<String>,
                 Option<String>,
                 Option<String>,
             )>(conn);
@@ -305,6 +345,7 @@ impl UserConfig {
                 socks5_enabled: tuple.16,
                 socks5_username: tuple.17,
                 plugin_proxy_settings: tuple.18,
+                hotkey_bindings: tuple.19,
             }),
             Err(diesel::result::Error::NotFound) => {
                 // If not found, create default and insert it manually (providing all non-nullable fields)
@@ -327,16 +368,15 @@ impl UserConfig {
 
     /// Save config to Diesel connection (uses UPSERT to handle missing row)
     pub fn save_diesel(&self, conn: &mut diesel::SqliteConnection) -> Result<()> {
-        // Use raw SQL for UPSERT since Diesel's on_conflict requires Insertable derive
         let sql = r#"
             INSERT INTO user_config (
                 id, vault_path, cache_directory, last_opened_archive, temp_dir,
                 sevenzip_path, transfer_dir, backend_mode, open_nested_in_new_tab,
                 enabled_plugins, plugin_order, plugin_visibility, plugin_settings,
                 toolbar_order, info_panel_order, socks5_address, socks5_enabled,
-                socks5_username, plugin_proxy_settings, created_at, modified_at
+                socks5_username, plugin_proxy_settings, hotkey_bindings, created_at, modified_at
             ) VALUES (
-                1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             ON CONFLICT(id) DO UPDATE SET
@@ -358,6 +398,7 @@ impl UserConfig {
                 socks5_enabled = excluded.socks5_enabled,
                 socks5_username = excluded.socks5_username,
                 plugin_proxy_settings = excluded.plugin_proxy_settings,
+                hotkey_bindings = excluded.hotkey_bindings,
                 modified_at = CURRENT_TIMESTAMP
         "#;
 
@@ -386,6 +427,7 @@ impl UserConfig {
             .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
                 &self.plugin_proxy_settings,
             )
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.hotkey_bindings)
             .execute(conn)
             .map_err(|e| {
                 tracing::error!("[UserConfig] save_diesel UPSERT failed: {}", e);

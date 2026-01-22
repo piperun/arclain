@@ -3,6 +3,7 @@ use crate::core::AppState;
 use crate::features::password_management::dialogs;
 use crate::shared::components::status_bar;
 use crate::shared::models::file_entry::FileEntry;
+use arclain_core::archive::NavigationState;
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use crc32fast::Hasher;
 use parking_lot::Mutex;
@@ -13,7 +14,7 @@ use tracing::{error, info};
 /// Handle opening an archive file via file dialog
 pub fn open_archive(
     state: &Arc<Mutex<AppState>>,
-    current_path: &mut String,
+    // current_path removed
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
@@ -24,8 +25,11 @@ pub fn open_archive(
         .add_filter("Archives", &["zip", "7z", "rar"])
         .pick_file()
     {
-        info!("File selected: {}", file.display());
-        *current_path = file.to_string_lossy().to_string();
+        {
+            info!("File selected: {}", file.display());
+            // Reset navigation state entirely for new archive
+            state.lock().signals.navigation.set(NavigationState::new());
+        }
 
         let mut st = state.lock();
         match st.list_archive(&file) {
@@ -70,14 +74,15 @@ pub fn open_archive(
 pub fn open_archive_by_path(
     state: &Arc<Mutex<AppState>>,
     path: &std::path::Path,
-    current_path: &mut String,
+    // current_path removed - handled via signal reset
     password_dialog: &mut dialogs::PasswordDialog,
     status_info: &mut status_bar::StatusBarInfo,
     entries: &mut Vec<FileEntry>,
     archive_info: &mut ArchiveInfo,
 ) {
     info!("Opening archive from path: {}", path.display());
-    *current_path = String::new(); // Reset to root
+    // Reset navigation state entirely for new archive
+    state.lock().signals.navigation.set(NavigationState::new());
 
     let mut st = state.lock();
     match st.list_archive(path) {
@@ -351,6 +356,9 @@ pub fn load_archive_data(
         ai.plugin_metadata = archive_info.plugin_metadata.clone();
         ai.archive_loaded = true;
         st.signals.archive_info.set(ai);
+
+        // Populate view entries for the initial file list display
+        crate::core::operations::navigation_view::refresh_view_entries(&st.signals);
     }
 }
 

@@ -222,6 +222,7 @@ diesel::table! {
         socks5_enabled -> Bool,
         socks5_username -> Nullable<Text>,
         plugin_proxy_settings -> Nullable<Text>,
+        hotkey_bindings -> Nullable<Text>,
         created_at -> Text,
         modified_at -> Nullable<Text>,
     }

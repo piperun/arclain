@@ -41,6 +41,17 @@ pub fn apply_theme(shared_state: &SharedState, ctx: &egui::Context) {
     arclain_widgets::set_theme(ctx, shared_state.theme.colors.clone());
 }
 
+/// Check for hotkey input and return triggered actions
+///
+/// This should be called early in the update loop before rendering.
+/// Returns a list of triggered actions to be dispatched by the caller.
+pub fn process_hotkey_input(
+    hotkey_manager: &crate::features::hotkeys::HotkeyManager,
+    ctx: &egui::Context,
+) -> Vec<crate::features::hotkeys::HotkeyAction> {
+    hotkey_manager.check_input(ctx)
+}
+
 /// Check for and process metadata updates from plugin signals
 pub fn process_metadata_signal(
     shared_state: &SharedState,

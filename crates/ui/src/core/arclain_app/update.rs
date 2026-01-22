@@ -40,6 +40,184 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         app._last_dark_mode = current_dark_mode;
     }
 
+    // === Process Hotkey Input ===
+    // Check if hotkeys need reloading
+    if app.shared_state.signals().hotkeys_updated.get() {
+        // Reset signal
+        app.shared_state.signals().hotkeys_updated.set(false);
+
+        // Reload manager from current user config
+        let config = app.shared_state.signals().user_config.get();
+        let bindings_map = if let Some(json) = &config.hotkey_bindings {
+            serde_json::from_str::<std::collections::HashMap<String, String>>(json)
+                .unwrap_or_default()
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        app.hotkey_manager = crate::features::hotkeys::HotkeyManager::from_config(&bindings_map);
+        tracing::info!("Reloaded hotkey manager from updated settings");
+    }
+
+    let triggered_actions = app_lifecycle::process_hotkey_input(&app.hotkey_manager, ctx);
+    for action in triggered_actions {
+        use crate::features::hotkeys::HotkeyAction;
+        match action {
+            HotkeyAction::NavigateBack => {
+                // Context-aware back navigation:
+                // 1. If on main page with archive loaded and folder history exists, navigate folder back
+                // 2. Otherwise, navigate UI page back
+                let is_on_main = app.page_navigator.is_on_main();
+                let archive_loaded = app.shared_state.signals().archive_path.get().is_some();
+                let nav = app.shared_state.signals().navigation.get();
+                let has_folder_history = !nav.path_stack.is_empty();
+
+                if is_on_main && archive_loaded && has_folder_history {
+                    // Navigate back within archive folder structure
+                    let mut nav = nav;
+                    if let Some(prev_path) = nav.path_stack.pop() {
+                        nav.forward_stack.push(nav.current_path.clone());
+                        nav.current_path = prev_path;
+                        app.shared_state.signals().navigation.set(nav);
+                        // Re-filter view entries to match new path
+                        operations::navigation_view::refresh_view_entries(
+                            app.shared_state.signals(),
+                        );
+                        tracing::info!("Archive folder back navigation");
+                    }
+                } else {
+                    // Navigate back in UI pages
+                    app.page_navigator.navigate_back();
+                    tracing::info!("UI page back navigation");
+                }
+            }
+            HotkeyAction::NavigateForward => {
+                // Context-aware forward navigation:
+                // 1. If on main page with archive loaded and forward history exists, navigate folder forward
+                // 2. Otherwise, navigate UI page forward
+                let is_on_main = app.page_navigator.is_on_main();
+                let archive_loaded = app.shared_state.signals().archive_path.get().is_some();
+                let nav = app.shared_state.signals().navigation.get();
+                let has_forward_history = !nav.forward_stack.is_empty();
+
+                if is_on_main && archive_loaded && has_forward_history {
+                    // Navigate forward within archive folder structure
+                    let mut nav = nav;
+                    if let Some(next_path) = nav.forward_stack.pop() {
+                        nav.path_stack.push(nav.current_path.clone());
+                        nav.current_path = next_path;
+                        app.shared_state.signals().navigation.set(nav);
+                        // Re-filter view entries to match new path
+                        operations::navigation_view::refresh_view_entries(
+                            app.shared_state.signals(),
+                        );
+                        tracing::info!("Archive folder forward navigation");
+                    }
+                } else {
+                    // Navigate forward in UI pages
+                    app.page_navigator.navigate_forward();
+                    tracing::info!("UI page forward navigation");
+                }
+            }
+            HotkeyAction::NavigateUp => {
+                // Navigate up one level in archive folder structure
+                let mut nav = app.shared_state.signals().navigation.get();
+                if !nav.current_path.is_empty() {
+                    if let Some(parent) = std::path::Path::new(&nav.current_path)
+                        .parent()
+                        .and_then(|p| p.to_str())
+                    {
+                        nav.path_stack.push(nav.current_path.clone());
+                        nav.current_path = parent.to_string();
+                        nav.forward_stack.clear();
+                        app.shared_state.signals().navigation.set(nav);
+                        // Re-filter view entries to match new path
+                        operations::navigation_view::refresh_view_entries(
+                            app.shared_state.signals(),
+                        );
+                    }
+                }
+            }
+            HotkeyAction::NavigateToRoot => {
+                // Navigate to archive root
+                let mut nav = app.shared_state.signals().navigation.get();
+                if !nav.current_path.is_empty() {
+                    nav.path_stack.push(nav.current_path.clone());
+                    nav.current_path = String::new();
+                    nav.forward_stack.clear();
+                    app.shared_state.signals().navigation.set(nav);
+                    // Re-filter view entries to match new path
+                    operations::navigation_view::refresh_view_entries(app.shared_state.signals());
+                }
+            }
+            HotkeyAction::OpenSettings => {
+                app.page_navigator
+                    .navigate_to(AppPage::Settings(SettingsPage::Overview));
+            }
+            HotkeyAction::OpenArchive => {
+                // Open file dialog to select archive
+                if let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Archives", &["zip", "7z", "rar"])
+                    .pick_file()
+                {
+                    tracing::info!("Opening archive via hotkey: {}", file.display());
+                    // Open the archive directly
+                    let mut password_dialog = app.shared_state.signals().password_dialog.get();
+                    let mut status_info = app.shared_state.signals().status_bar.get();
+                    let mut view_state = app.shared_state.signals().browser_view_state.get();
+                    // nav removed
+                    let mut archive_info = operations::archive::ArchiveInfo::default();
+
+                    operations::archive::open_archive_by_path(
+                        &app.shared_state.app_state,
+                        &file,
+                        // current_path removed
+                        &mut password_dialog,
+                        &mut status_info,
+                        &mut view_state.view_entries,
+                        &mut archive_info,
+                    );
+
+                    // navigation set removed
+                    app.shared_state
+                        .signals()
+                        .password_dialog
+                        .set(password_dialog);
+                    app.shared_state.signals().status_bar.set(status_info);
+                    app.shared_state
+                        .signals()
+                        .browser_view_state
+                        .set(view_state);
+                    app.shared_state.signals().archive_info.set(archive_info);
+                }
+            }
+            HotkeyAction::Search => {
+                tracing::info!("Search hotkey triggered - signaling focus request");
+                app.shared_state.signals().search_focus_requested.set(true);
+            }
+            HotkeyAction::SelectAll => {
+                // Select all entries in the file list
+                let mut view_state = app.shared_state.signals().browser_view_state.get();
+                for entry in &mut view_state.view_entries {
+                    entry.selected = true;
+                }
+                app.shared_state
+                    .signals()
+                    .browser_view_state
+                    .set(view_state);
+            }
+            HotkeyAction::DeleteSelected => {
+                tracing::debug!(
+                    "Delete hotkey - not yet implemented (needs archive modification support)"
+                );
+            }
+            HotkeyAction::ExtractSelected | HotkeyAction::ExtractAll => {
+                // Log - extract requires proper state wiring
+                tracing::debug!("Extract hotkey triggered: {:?}", action);
+            }
+        }
+    }
+
     // === Lifecycle: Process metadata signal updates from plugins ===
     app_lifecycle::process_metadata_signal(&app.shared_state, &mut app.organization_feature);
 
@@ -99,17 +277,19 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             let mut password_dialog = app.shared_state.signals().password_dialog.get();
             let mut status_info = app.shared_state.signals().status_bar.get();
             let mut view_state = app.shared_state.signals().browser_view_state.get();
+            // nav removed
 
             operations::archive::open_archive_by_path(
                 &app.shared_state.app_state,
                 &nested_archive_path,
-                &mut view_state.current_path,
+                // current_path removed
                 &mut password_dialog,
                 &mut status_info,
                 &mut view_state.view_entries,
                 &mut archive_info,
             );
 
+            // navigation set removed
             app.shared_state
                 .signals()
                 .password_dialog

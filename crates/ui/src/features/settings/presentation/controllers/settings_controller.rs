@@ -62,6 +62,24 @@ pub fn handle_action(
                 }
             }
         }
+        SettingsAction::SaveKeyboardMouse { bindings } => {
+            let mut state = shared.app_state.lock();
+            // Update user config - bindings is HashMap, storing as JSON string
+            state.user_config.hotkey_bindings = serde_json::to_string(&bindings).ok();
+            state.signals.user_config.set(state.user_config.clone());
+
+            // Save to DB via ConfigService
+            if let Some(ref config_svc) = shared.services.config_service {
+                if let Err(e) = config_svc.save_user_config(&state.user_config) {
+                    tracing::error!("Failed to save hotkey bindings: {}", e);
+                } else {
+                    tracing::info!("Hotkey bindings saved successfully");
+                }
+            }
+
+            // Signal app to reload hotkeys
+            state.signals.hotkeys_updated.set(true);
+        }
         SettingsAction::MoveVault { dest_path } => {
             let mut state = shared.app_state.lock();
             if let Err(e) = state.move_vault(&dest_path, shared.services.plugin_manager.as_ref()) {

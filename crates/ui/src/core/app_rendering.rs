@@ -50,6 +50,9 @@ pub fn render_header_panel(
             let search_before = shared_state.signals().search_text.get();
             header_state.search_text = search_before;
 
+            // Sync search focus request from signal
+            let mut search_focus_requested = shared_state.signals().search_focus_requested.get();
+
             let actions = components::header::render(
                 ui,
                 &shared_state.theme,
@@ -58,7 +61,16 @@ pub fn render_header_panel(
                 true, // Always show nav buttons
                 can_go_back,
                 is_on_settings,
+                &mut search_focus_requested,
             );
+
+            // Sync search focus request back to signal (if consumed)
+            if search_focus_requested != shared_state.signals().search_focus_requested.get() {
+                shared_state
+                    .signals()
+                    .search_focus_requested
+                    .set(search_focus_requested);
+            }
 
             // Sync search_text back to signal if changed
             let current = shared_state.signals().search_text.get();

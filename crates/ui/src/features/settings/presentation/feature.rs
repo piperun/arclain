@@ -1,6 +1,7 @@
 use crate::core::SettingsPage;
 use crate::features::password_management::dialogs::PasswordRulesDialog;
 use crate::features::settings::pages::interface::InterfaceSettingsState;
+use crate::features::settings::pages::keyboard_mouse::KeyboardMouseSettingsState;
 use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
 use crate::features::settings::presentation::views::settings_content::{
     render_settings_content, ArchivesSettingsState, GeneralSettingsState, NetworkSettingsState,
@@ -23,6 +24,7 @@ pub struct SettingsFeature {
     pub interface_state: InterfaceSettingsState,
     pub toolbar_layout_state: ToolbarLayoutState,
     pub info_panel_layout_state: InfoPanelLayoutState,
+    pub keyboard_mouse_state: KeyboardMouseSettingsState,
     pub last_visited_page: Option<SettingsPage>,
 }
 
@@ -93,6 +95,7 @@ impl SettingsFeature {
             interface_state: InterfaceSettingsState::default(),
             toolbar_layout_state: ToolbarLayoutState::default(),
             info_panel_layout_state: InfoPanelLayoutState::default(),
+            keyboard_mouse_state: KeyboardMouseSettingsState::new(),
             last_visited_page: None,
         }
     }
@@ -253,6 +256,7 @@ impl SettingsFeature {
                                 &mut self.interface_state,
                                 &mut self.toolbar_layout_state,
                                 &mut self.info_panel_layout_state,
+                                &mut self.keyboard_mouse_state,
                                 &mut self.network_state,
                                 &shared.app_state,
                                 Some(shared),

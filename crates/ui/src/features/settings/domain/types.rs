@@ -3,6 +3,7 @@
 //! Contains enums, state structs, and action types used across settings pages.
 
 use crate::features::password_management::dialogs::zip_pass_rules::PasswordRule;
+use std::collections::HashMap;
 
 /// Encrypted CRC policy for encrypted archives
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -75,6 +76,8 @@ pub enum SettingsAction {
         socks5_username: Option<String>,
         socks5_password: Option<String>,
     },
+    /// Save keyboard and mouse settings
+    SaveKeyboardMouse { bindings: HashMap<String, String> },
     /// Navigate to another settings page
     NavigateTo(crate::core::navigation::SettingsPage),
 }

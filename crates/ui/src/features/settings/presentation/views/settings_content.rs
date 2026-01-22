@@ -85,6 +85,7 @@ pub fn render_settings_content(
     interface_state: &mut crate::features::settings::presentation::pages::interface::InterfaceSettingsState,
     toolbar_layout_state: &mut crate::features::settings::presentation::pages::ToolbarLayoutState,
     info_panel_layout_state: &mut crate::features::settings::presentation::pages::InfoPanelLayoutState,
+    keyboard_mouse_state: &mut crate::features::settings::presentation::pages::keyboard_mouse::KeyboardMouseSettingsState,
 
     network_state: &mut NetworkSettingsState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
@@ -156,6 +157,9 @@ pub fn render_settings_content(
                 plugin_manager,
             );
             None
+        }
+        SettingsPage::KeyboardMouse => {
+            pages::keyboard_mouse::render(ui, theme, keyboard_mouse_state)
         }
     }
 }
