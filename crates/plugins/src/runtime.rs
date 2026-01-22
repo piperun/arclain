@@ -312,7 +312,7 @@ impl PluginInstance {
     }
 
     /// Set the async HTTP client for host functions
-    pub fn set_async_http_client(&mut self, client: Option<Arc<arclain_http::AsyncHttpClient>>) {
+    pub fn set_async_http_client(&mut self, client: Option<Arc<arclain_network::AsyncHttpClient>>) {
         let host = self.store.data_mut();
         match client {
             Some(c) => host.set_async_http_client(c),

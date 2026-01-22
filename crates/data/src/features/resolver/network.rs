@@ -4,7 +4,7 @@
 
 use super::{DataSourceResolver, ResolveError};
 use crate::features::api::DataRequest;
-use arclain_http::AsyncHttpClient;
+use arclain_network::AsyncHttpClient;
 use std::sync::Arc;
 
 /// Resolver for network/HTTP data

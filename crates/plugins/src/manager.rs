@@ -28,7 +28,7 @@ pub struct PluginManager {
     library_service: Option<Arc<arclain_core::LibraryService>>,
     content_cache: Option<Arc<arclain_data::ContentCache>>,
     resource_manager: Option<Arc<arclain_data::ResourceManager>>,
-    async_http_client: Option<Arc<arclain_http::AsyncHttpClient>>,
+    async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
     initial_settings: HashMap<String, HashMap<String, String>>,
     /// Channel sender for async event dispatch (non-blocking)
     event_sender: std::sync::mpsc::Sender<PluginEvent>,
@@ -166,7 +166,7 @@ impl PluginManager {
     }
 
     /// Set async http client
-    pub fn set_async_http_client(&mut self, client: Arc<arclain_http::AsyncHttpClient>) {
+    pub fn set_async_http_client(&mut self, client: Arc<arclain_network::AsyncHttpClient>) {
         self.async_http_client = Some(client.clone());
         let plugins = self.plugins.read();
         for plugin in plugins.values() {

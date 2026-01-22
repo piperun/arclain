@@ -234,7 +234,7 @@ pub fn handle_action(
             }
 
             // Update client
-            use arclain_http::features::proxy::ProxyConfig;
+            use arclain_network::features::proxy::ProxyConfig;
             let config = ProxyConfig {
                 enabled: socks5_enabled,
                 address: clean_address.unwrap_or_default(),
@@ -263,7 +263,7 @@ pub fn handle_action(
             let status_signal = network_state.connection_test_status.clone();
 
             // Create config for test
-            use arclain_http::features::proxy::ProxyConfig;
+            use arclain_network::features::proxy::ProxyConfig;
             let config = ProxyConfig {
                 enabled: socks5_enabled,
                 address: socks5_address.unwrap_or_default(),
@@ -274,51 +274,7 @@ pub fn handle_action(
             // Spawn test task
             let runtime = shared.services.tokio_runtime.handle().clone();
             runtime.spawn(async move {
-                let result = async {
-                    // Build client manually since we want to test specific config without affecting global state
-                    let mut builder = reqwest::Client::builder()
-                        .connect_timeout(std::time::Duration::from_secs(10))
-                        .timeout(std::time::Duration::from_secs(10));
-
-                    if let Some(proxy) = config.to_proxy() {
-                        builder = builder.proxy(proxy);
-                    } else if config.enabled {
-                        return Err(anyhow::anyhow!("Invalid proxy configuration"));
-                    }
-
-                    let client = builder
-                        .build()
-                        .map_err(|e| anyhow::anyhow!("Failed to build client: {}", e))?;
-
-                    // Test connection using ip-api.com for IP and Location data
-                    let response = client
-                        .get("http://ip-api.com/json")
-                        .send()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?;
-
-                    if !response.status().is_success() {
-                        return Err(anyhow::anyhow!("HTTP error: {}", response.status()));
-                    }
-
-                    let json: serde_json::Value = response
-                        .json()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {}", e))?;
-
-                    let ip = json
-                        .get("query")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown IP");
-                    let country = json
-                        .get("country")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Unknown Country");
-
-                    Ok::<_, anyhow::Error>(format!("Connected via {} ({})", ip, country))
-                }
-                .await;
-
+                let result = config.test_connection().await;
                 match result {
                     Ok(msg) => status_signal.set(ConnectionTestStatus::Success(msg)),
                     Err(e) => status_signal.set(ConnectionTestStatus::Error(e.to_string())),

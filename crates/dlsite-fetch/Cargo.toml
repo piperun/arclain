@@ -13,7 +13,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.11", features = ["blocking", "rustls-tls", "socks", "gzip", "brotli", "deflate"] }
-arclain-http = { path = "../../crates/http" }
+arclain-network = { path = "../../crates/network" }
 arclain_db = { path = "../../crates/db" }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "io-util", "net", "time"] }
 parking_lot = "0.12"

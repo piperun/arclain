@@ -15,5 +15,5 @@ ssri = "9"
 
 arclain_core = { path = "../core" }
 arclain_db = { path = "../db" }
-arclain-http = { path = "../http" }
+arclain-network = { path = "../network" }
 indexmap = { version = "2.12.1", features = ["serde"] }

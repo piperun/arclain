@@ -7,7 +7,7 @@ use std::time::Duration;
 use arclain_db::{ConfigDb, DbPaths, SecretsDb, SecretsKey, UserConfig};
 
 /// Simple DLSite HTML fetcher that preserves bytes (no UTF-8 decoding).
-/// Provides two modes: basic reqwest and arclain_http proxy-aware client.
+/// Provides two modes: basic reqwest and arclain_network proxy-aware client.
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
@@ -25,7 +25,7 @@ struct Args {
     /// Optional timeout seconds
     #[arg(long, default_value_t = 30)]
     timeout_secs: u64,
-    /// Use the project arclain_http client (honors configured proxy/headers)
+    /// Use the project arclain_network client (honors configured proxy/headers)
     #[arg(long, default_value_t = false)]
     use_arclain: bool,
 }
@@ -76,8 +76,8 @@ fn fetch_arclain(
     timeout: Duration,
     socks5: Option<String>,
 ) -> Result<(Vec<u8>, Option<String>)> {
-    use arclain_http::features::proxy::ProxyConfig;
-    use arclain_http::{AsyncHttpClient, DomainWhitelist, HttpMethod, HttpRequest};
+    use arclain_network::features::proxy::ProxyConfig;
+    use arclain_network::{AsyncHttpClient, DomainWhitelist, HttpMethod, HttpRequest};
     use parking_lot::RwLock;
     use std::sync::Arc;
     use tokio::runtime::Builder;

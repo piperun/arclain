@@ -3,7 +3,7 @@
 use super::context::{RenderContext, UiEventHandler};
 use crate::shared::SharedState;
 use arclain_core::CacheType;
-use arclain_http::{HttpRequest, RequestStatus};
+use arclain_network::{HttpRequest, RequestStatus};
 use eframe::egui;
 
 /// Render an Image element

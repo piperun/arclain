@@ -8,8 +8,6 @@ pub struct ProxyConfig {
 }
 
 impl ProxyConfig {
-    /// Convert configuration to a reqwest Proxy
-    /// Uses socks5h:// scheme to enable remote DNS resolution through the proxy
     pub fn to_proxy(&self) -> Option<reqwest::Proxy> {
         if !self.enabled || self.address.is_empty() {
             return None;
@@ -23,6 +21,51 @@ impl ProxyConfig {
         };
 
         reqwest::Proxy::all(&url).ok()
+    }
+
+    /// Test the connection with current configuration
+    /// Returns a success message with IP and Country or an error
+    pub async fn test_connection(&self) -> anyhow::Result<String> {
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(10));
+
+        if let Some(proxy) = self.to_proxy() {
+            builder = builder.proxy(proxy);
+        } else if self.enabled {
+            return Err(anyhow::anyhow!("Invalid proxy configuration"));
+        }
+
+        let client = builder
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build client: {}", e))?;
+
+        // Test connection using ip-api.com for IP and Location data
+        let response = client
+            .get("http://ip-api.com/json")
+            .send()
+            .await
+            .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?;
+
+        if !response.status().is_success() {
+            return Err(anyhow::anyhow!("HTTP error: {}", response.status()));
+        }
+
+        let json: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to parse JSON: {}", e))?;
+
+        let ip = json
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown IP");
+        let country = json
+            .get("country")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown Country");
+
+        Ok(format!("Connected via {} ({})", ip, country))
     }
 }
 
