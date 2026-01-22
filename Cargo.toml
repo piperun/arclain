@@ -7,7 +7,7 @@ members = [
     "crates/checksum",
     "crates/widgets",
     "crates/theme",
-    "crates/http",
+    "crates/network",
     "crates/data",
     "crates/signals",
     # Shared ORM
