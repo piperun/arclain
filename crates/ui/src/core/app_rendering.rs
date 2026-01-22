@@ -306,7 +306,11 @@ pub enum PathBarAction {
 
 /// Render the path bar panel (Archive context only)
 /// Shows breadcrumb navigation between toolbar and content area
-pub fn render_path_bar_panel(ctx: &egui::Context, shared_state: &SharedState) -> PathBarAction {
+pub fn render_path_bar_panel(
+    ctx: &egui::Context,
+    shared_state: &SharedState,
+    page_navigator: &PageNavigator,
+) -> PathBarAction {
     // Only show when Archive tab is active and archive is loaded
     let archive_loaded = shared_state.signals().archive_path.get().is_some();
     let is_archive_context = matches!(
@@ -314,7 +318,8 @@ pub fn render_path_bar_panel(ctx: &egui::Context, shared_state: &SharedState) ->
         crate::core::signals::ToolbarContext::Archive
     );
 
-    if !archive_loaded || !is_archive_context {
+    // Don't show path bar if on settings page
+    if !archive_loaded || !is_archive_context || page_navigator.is_on_settings() {
         return PathBarAction::None;
     }
 
