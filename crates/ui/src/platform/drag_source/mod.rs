@@ -18,17 +18,6 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 
-/// Result of a drag operation
-#[derive(Debug, Clone, PartialEq)]
-pub enum DragResult {
-    /// File was successfully dropped
-    Dropped,
-    /// User cancelled the drag
-    Cancelled,
-    /// Drop target didn't accept the file
-    Rejected,
-}
-
 /// Error during drag operation
 #[derive(Debug)]
 pub enum DragError {
@@ -51,42 +40,6 @@ impl std::fmt::Display for DragError {
 }
 
 impl std::error::Error for DragError {}
-
-/// Start a drag operation with the given files
-///
-/// This is a blocking operation that completes when the user drops.
-/// Files should already exist on disk (extract to temp before calling).
-///
-/// # Arguments
-/// * `window` - Window handle implementing `raw_window_handle::HasWindowHandle`
-/// * `files` - Paths to files to drag (must exist on disk)
-///
-/// # Linux Note
-/// On Linux with GTK, this requires the window to be a GTK window.
-/// Since eframe uses winit, Linux drag-out may not work until winit adds GTK support.
-#[cfg(not(target_os = "linux"))]
-pub fn start_drag<W: raw_window_handle::HasWindowHandle>(
-    window: &W,
-    files: Vec<PathBuf>,
-) -> Result<DragResult, DragError> {
-    if files.is_empty() {
-        return Err(DragError::NoFiles);
-    }
-
-    let item = drag::DragItem::Files(files);
-
-    drag::start_drag(
-        window,
-        item,
-        drag::Image::Raw(vec![]), // Empty image - use default cursor
-        |result, _cursor_pos| {
-            tracing::debug!("Drag completed: {:?}", result);
-        },
-        drag::Options::default(),
-    )
-    .map(|_| DragResult::Dropped)
-    .map_err(|e| DragError::PlatformError(e.to_string()))
-}
 
 /// Start a deferred drag operation using native Windows APIs.
 ///
@@ -126,13 +79,5 @@ pub fn start_deferred_drag(
 ) -> Result<Receiver<ProgressUpdate>, DragError> {
     Err(DragError::PlatformError(
         "Deferred drag not supported on this platform. Please extract first.".into(),
-    ))
-}
-
-/// Linux stub - drag-out not supported with winit on Linux yet
-#[cfg(target_os = "linux")]
-pub fn start_drag<W>(_window: &W, _files: Vec<PathBuf>) -> Result<DragResult, DragError> {
-    Err(DragError::PlatformError(
-        "Drag-out not yet supported on Linux with winit".into(),
     ))
 }
