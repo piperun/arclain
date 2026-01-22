@@ -25,7 +25,7 @@ base64 = "0.22"
 sha2 = "0.10"
 arclain_db = { path = "../db" }
 arclain_checksum = { path = "../checksum" }
-arclain-http = { path = "../http" }
+arclain-network = { path = "../network" }
 reqwest = { version = "0.12.24", features = ["blocking", "json"] }
 unrar = "0.5"
 zip = "7.0.0"

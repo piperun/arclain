@@ -1,6 +1,6 @@
-//! arclain-http: Secure async HTTP client
+//! arclain-network: Secure async network client
 //!
-//! Provides HTTP functionality with:
+//! Provides network functionality with:
 //! - Domain security analysis (homograph detection, suspicious patterns)
 //! - Plugin domain whitelisting
 //! - Request rate limiting
@@ -9,7 +9,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use arclain_http::{AsyncHttpClient, DomainWhitelist, HttpRequest};
+//! use arclain_network::{AsyncHttpClient, DomainWhitelist, HttpRequest};
 //! use tokio::runtime::Handle;
 //!
 //! let whitelist = DomainWhitelist::new();

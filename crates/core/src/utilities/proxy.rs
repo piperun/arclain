@@ -4,7 +4,7 @@
 //! and application to the AsyncHttpClient.
 
 use arclain_db::{SecretsDb, UserConfig};
-use arclain_http::{features::proxy::ProxyConfig, AsyncHttpClient};
+use arclain_network::{features::proxy::ProxyConfig, AsyncHttpClient};
 use std::collections::HashMap;
 
 /// Resolve proxy configuration from UserConfig and SecretsDb

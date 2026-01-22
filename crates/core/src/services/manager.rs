@@ -7,8 +7,8 @@ use crate::services::{
 };
 use anyhow::Result;
 use arclain_db::DbPaths;
-use arclain_http::features::whitelist::DomainWhitelist;
-use arclain_http::AsyncHttpClient;
+use arclain_network::features::whitelist::DomainWhitelist;
+use arclain_network::AsyncHttpClient;
 // PluginManager removed to avoid circular dependency
 use parking_lot::RwLock;
 use std::path::PathBuf;

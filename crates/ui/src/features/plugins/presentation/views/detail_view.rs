@@ -230,7 +230,7 @@ pub fn render(
 fn render_domain_row(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    entry: &arclain_http::features::whitelist::WhitelistEntry,
+    entry: &arclain_network::features::whitelist::WhitelistEntry,
     shared: Option<&SharedState>,
 ) -> bool {
     let mut changed = false;
@@ -258,7 +258,7 @@ fn render_domain_row(
 
             // Security Analysis
             let url_for_check = format!("https://{}", domain);
-            if let Ok(info) = arclain_http::features::security::analyze_url(&url_for_check) {
+            if let Ok(info) = arclain_network::features::security::analyze_url(&url_for_check) {
                 if !info.warnings.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         for warning in info.warnings {

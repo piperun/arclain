@@ -24,7 +24,7 @@ use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 /// State for host functions
 pub struct HostFunctions {
     pub plugin_id: String,
-    pub async_http_client: Option<Arc<arclain_http::AsyncHttpClient>>,
+    pub async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
     pub capabilities: std::collections::HashSet<PluginCapability>,
     pub archive_backend: Option<Arc<dyn ArchiveBackend>>,
     pub current_archive: Arc<Mutex<Option<String>>>,
@@ -130,7 +130,7 @@ impl HostFunctions {
         self.capabilities.contains(&cap)
     }
 
-    pub fn set_async_http_client(&mut self, client: Arc<arclain_http::AsyncHttpClient>) {
+    pub fn set_async_http_client(&mut self, client: Arc<arclain_network::AsyncHttpClient>) {
         // Register Network resolver with DataService
         let resolver = Arc::new(arclain_data::NetworkResolver::new(client.clone()));
         self.data_service
