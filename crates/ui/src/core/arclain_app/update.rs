@@ -65,27 +65,22 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         match action {
             HotkeyAction::NavigateBack => {
                 // Context-aware back navigation:
-                // 1. If on main page with archive loaded and folder history exists, navigate folder back
-                // 2. Otherwise, navigate UI page back
+                // 1. If on main page with archive loaded, try archive back navigation first
+                // 2. If that fails (e.g. at root), navigate UI page back
                 let is_on_main = app.page_navigator.is_on_main();
                 let archive_loaded = app.shared_state.signals().archive_path.get().is_some();
-                let nav = app.shared_state.signals().navigation.get();
-                let has_folder_history = !nav.path_stack.is_empty();
+                let signals = app.shared_state.signals();
 
-                if is_on_main && archive_loaded && has_folder_history {
-                    // Navigate back within archive folder structure
-                    let mut nav = nav;
-                    if let Some(prev_path) = nav.path_stack.pop() {
-                        nav.forward_stack.push(nav.current_path.clone());
-                        nav.current_path = prev_path;
-                        app.shared_state.signals().navigation.set(nav);
-                        // Re-filter view entries to match new path
-                        operations::navigation_view::refresh_view_entries(
-                            app.shared_state.signals(),
-                        );
+                let mut handled = false;
+                if is_on_main && archive_loaded {
+                    if operations::navigation_signals::navigate_back(signals) {
+                        operations::navigation_view::refresh_view_entries(signals);
                         tracing::info!("Archive folder back navigation");
+                        handled = true;
                     }
-                } else {
+                }
+
+                if !handled {
                     // Navigate back in UI pages
                     app.page_navigator.navigate_back();
                     tracing::info!("UI page back navigation");
@@ -93,27 +88,22 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             }
             HotkeyAction::NavigateForward => {
                 // Context-aware forward navigation:
-                // 1. If on main page with archive loaded and forward history exists, navigate folder forward
-                // 2. Otherwise, navigate UI page forward
+                // 1. If on main page with archive loaded, try archive forward navigation first
+                // 2. If that fails, navigate UI page forward
                 let is_on_main = app.page_navigator.is_on_main();
                 let archive_loaded = app.shared_state.signals().archive_path.get().is_some();
-                let nav = app.shared_state.signals().navigation.get();
-                let has_forward_history = !nav.forward_stack.is_empty();
+                let signals = app.shared_state.signals();
 
-                if is_on_main && archive_loaded && has_forward_history {
-                    // Navigate forward within archive folder structure
-                    let mut nav = nav;
-                    if let Some(next_path) = nav.forward_stack.pop() {
-                        nav.path_stack.push(nav.current_path.clone());
-                        nav.current_path = next_path;
-                        app.shared_state.signals().navigation.set(nav);
-                        // Re-filter view entries to match new path
-                        operations::navigation_view::refresh_view_entries(
-                            app.shared_state.signals(),
-                        );
+                let mut handled = false;
+                if is_on_main && archive_loaded {
+                    if operations::navigation_signals::navigate_forward(signals) {
+                        operations::navigation_view::refresh_view_entries(signals);
                         tracing::info!("Archive folder forward navigation");
+                        handled = true;
                     }
-                } else {
+                }
+
+                if !handled {
                     // Navigate forward in UI pages
                     app.page_navigator.navigate_forward();
                     tracing::info!("UI page forward navigation");
