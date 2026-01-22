@@ -369,7 +369,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
 
     // === Render Path Bar (Archive context only) ===
     // === Render Path Bar (Archive context only) ===
-    let path_bar_action = app_rendering::render_path_bar_panel(ctx, &app.shared_state);
+    let path_bar_action =
+        app_rendering::render_path_bar_panel(ctx, &app.shared_state, &app.page_navigator);
     if let app_rendering::PathBarAction::NavigateToPath(path) = path_bar_action {
         app.archive_browser.controller.handle_action(
             crate::features::archive_browser::Action::NavigateToPath(path),
