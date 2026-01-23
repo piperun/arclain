@@ -155,51 +155,59 @@ impl AppSignals {
     /// Create new signals with default values.
     pub fn new() -> Self {
         Self {
-            entries: Signal::new(Arc::new(Vec::new())),
-            metadata: Signal::new(None),
-            loading: Signal::new(false),
-            archive_path: Signal::new(None),
-            ui_ready: Signal::new(true), // Start as true (no archive to render)
-            active_toolbar: Signal::new(ToolbarContext::Archive),
-            status_message: Signal::new(None),
-            extraction_progress: Signal::new(None),
+            entries: Signal::new(Arc::new(Vec::new())).with_name("entries"),
+            metadata: Signal::new(None).with_name("metadata"),
+            loading: Signal::new(false).with_name("loading"),
+            archive_path: Signal::new(None).with_name("archive_path"),
+            ui_ready: Signal::new(true).with_name("ui_ready"),
+            active_toolbar: Signal::new(ToolbarContext::Archive).with_name("active_toolbar"),
+            status_message: Signal::new(None).with_name("status_message"),
+            extraction_progress: Signal::new(None).with_name("extraction_progress"),
             extraction_cancel: Arc::new(AtomicBool::new(false)),
-            search_text: Signal::new(String::new()),
-            toolbar_items: Signal::new(Vec::new()),
-            info_panel_items: Signal::new(Vec::new()),
-            archive_info: Signal::new(ArchiveInfo::default()),
-            game_metadata: Signal::new(None),
-            ui_preferences: Signal::new(UiPreferences::default()),
-            user_config: Signal::new(arclain_core::UserConfig::default()),
-            navigation: Signal::new(NavigationState::new()),
-            current_password: Signal::new(None),
-            pass_rules: Signal::new(Vec::new()),
-            selection_count: Signal::new(0),
-            opened_archive: Signal::new(None),
+            search_text: Signal::new(String::new()).with_name("search_text"),
+            toolbar_items: Signal::new(Vec::new()).with_name("toolbar_items"),
+            info_panel_items: Signal::new(Vec::new()).with_name("info_panel_items"),
+            archive_info: Signal::new(ArchiveInfo::default()).with_name("archive_info"),
+            game_metadata: Signal::new(None).with_name("game_metadata"),
+            ui_preferences: Signal::new(UiPreferences::default()).with_name("ui_preferences"),
+            user_config: Signal::new(arclain_core::UserConfig::default()).with_name("user_config"),
+            navigation: Signal::new(NavigationState::new()).with_name("navigation"),
+            current_password: Signal::new(None).with_name("current_password"),
+            pass_rules: Signal::new(Vec::new()).with_name("pass_rules"),
+            selection_count: Signal::new(0).with_name("selection_count"),
+            opened_archive: Signal::new(None).with_name("opened_archive"),
             status_bar: Signal::new(
                 crate::shared::components::status_bar::StatusBarInfo::default(),
-            ),
+            )
+            .with_name("status_bar"),
             password_dialog: Signal::new(
                 crate::features::password_management::dialogs::PasswordDialog::default(),
-            ),
-            file_edit_dialog: Signal::new(crate::features::file_editing::FileEditDialog::default()),
+            )
+            .with_name("password_dialog"),
+            file_edit_dialog: Signal::new(crate::features::file_editing::FileEditDialog::default())
+                .with_name("file_edit_dialog"),
 
-            pending_open_file: Signal::new(None),
+            pending_open_file: Signal::new(None).with_name("pending_open_file"),
             browser_view_state: Signal::new(
                 crate::features::archive_browser::domain::types::BrowserViewState::default(),
-            ),
+            )
+            .with_name("browser_view_state"),
             extraction_dialog: Signal::new(
                 crate::shared::dialogs::ExtractionProgressDialog::default(),
-            ),
+            )
+            .with_name("extraction_dialog"),
             conversion_dialog: Signal::new(
                 crate::shared::dialogs::ExtractionProgressDialog::default(),
-            ),
-            drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default()),
-            search_focus_requested: Signal::new(false),
+            )
+            .with_name("conversion_dialog"),
+            drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default())
+                .with_name("drag_dialog"),
+            search_focus_requested: Signal::new(false).with_name("search_focus_requested"),
             plugin_dialog_state: Signal::new(
                 crate::features::plugins::domain::state::PluginDialogState::default(),
-            ),
-            hotkeys_updated: Signal::new(false),
+            )
+            .with_name("plugin_dialog_state"),
+            hotkeys_updated: Signal::new(false).with_name("hotkeys_updated"),
         }
     }
 

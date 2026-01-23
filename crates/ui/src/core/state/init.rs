@@ -179,6 +179,16 @@ impl AppState {
 
                         me.dbs = Some(dbs);
                         me.db_paths = Some(current_paths.clone());
+
+                        // Ensure default organization rules
+                        if let Some(dbs) = &me.dbs {
+                            if let Err(e) = arclain_core::config::database::ensure_default_rules(
+                                &dbs.config_pool,
+                            ) {
+                                warn!("Failed to organize default rules: {}", e);
+                            }
+                        }
+
                         me.sync_configuration();
                     }
                     Err(e) => {

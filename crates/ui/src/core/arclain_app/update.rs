@@ -225,7 +225,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             &mut status.message,
             ctx,
         );
-        app.shared_state.signals().status_bar.set_if_changed(status);
+        // app.shared_state.signals().status_bar.set_if_changed(status); // REMOVED: prevents infinite loop
         app.shared_state
             .signals()
             .extraction_dialog
@@ -383,12 +383,12 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     }
 
     // === Render Status Bar ===
+    // === Render Status Bar ===
     let mut status_info = app.shared_state.signals().status_bar.get();
     app_rendering::render_status_bar_panel(ctx, &app.shared_state, &mut status_info);
-    app.shared_state
-        .signals()
-        .status_bar
-        .set_if_changed(status_info);
+    // Note: We do NOT save status_info back to the signal here using set_if_changed.
+    // render_status_bar_panel updates the struct with archive_info stats for display,
+    // but persisting it causes an infinite repaint loop if the signal notifies.
 
     // Render Password Dialog & Rules & Extraction & Edit
     crate::core::arclain_app::dialog_handler::render_dialogs(app, ctx);

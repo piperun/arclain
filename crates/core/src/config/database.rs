@@ -167,3 +167,61 @@ pub fn upsert_system_rules(pool: &DieselPool, rules: &[OrganizationRule]) -> Res
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    fn setup_org_rules_table(pool: &DieselPool) {
+        pool.with_conn(|conn| {
+            // Manually create table to avoid complex migration setup in unit test
+            use diesel::connection::SimpleConnection;
+            conn.batch_execute(
+                "CREATE TABLE organization_rules (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    category TEXT NOT NULL,
+                    trigger_json TEXT NOT NULL,
+                    actions_json TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    is_enabled BOOLEAN NOT NULL,
+                    is_system BOOLEAN NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    modified_at TEXT
+                );",
+            )
+            .expect("Failed to create table");
+            Ok::<(), anyhow::Error>(())
+        })
+        .expect("Failed to execute setup");
+    }
+
+    #[test]
+    fn test_ensure_default_rules() {
+        // Setup temp DB
+        let temp_file = NamedTempFile::new().unwrap();
+        let pool = DieselPool::new(temp_file.path()).unwrap();
+
+        // Setup schema
+        setup_org_rules_table(&pool);
+
+        // 1. Ensure empty initially
+        let rules = list_org_rules(&pool).unwrap();
+        assert!(rules.is_empty());
+
+        // 2. Run ensure_default_rules
+        ensure_default_rules(&pool).unwrap();
+
+        // 3. Verify rules exist
+        let rules = list_org_rules(&pool).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "DLsite Standard");
+
+        // 4. Run again, should not duplicate
+        ensure_default_rules(&pool).unwrap();
+        let rules = list_org_rules(&pool).unwrap();
+        assert_eq!(rules.len(), 1);
+    }
+}
