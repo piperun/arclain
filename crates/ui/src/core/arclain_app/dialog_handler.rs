@@ -160,14 +160,14 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     match state.add_or_update_file_from_str(&archive, &new_name, &content) {
                         Ok(_) => {
                             status.message = "File saved".to_string();
-                            app.shared_state.signals().status_bar.set(status);
+                            // app.shared_state.signals().status_bar.set(status);
                             // TODO: Refresh file list
                         }
                         Err(e) => {
                             let msg = format!("Failed to save file: {}", e);
                             crate::core::utils::log_failure("FileEdit", &msg);
                             status.message = msg;
-                            app.shared_state.signals().status_bar.set(status);
+                            // app.shared_state.signals().status_bar.set(status);
                         }
                     }
                 }

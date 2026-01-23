@@ -173,9 +173,11 @@ impl BrowserController {
         let mut rules = Vec::new();
         let dlsite_enabled = if let Some(manager) = &shared.services.plugin_manager {
             let mgr = manager.lock();
-            mgr.list_plugins()
-                .iter()
-                .any(|p| p.id.eq_ignore_ascii_case("dlsite") && p.enabled)
+            mgr.list_plugins().iter().any(|p| {
+                (p.id.eq_ignore_ascii_case("dlsite")
+                    || p.id.eq_ignore_ascii_case("dlsite-metadata"))
+                    && p.enabled
+            })
         } else {
             false
         };

@@ -31,17 +31,44 @@ pub struct Signal<T> {
 struct SignalInner<T> {
     value: RwLock<T>,
     listeners: RwLock<Vec<Listener>>,
+    name: Option<String>,
+    tracing: bool,
+    location: &'static std::panic::Location<'static>,
 }
 
 impl<T> Signal<T> {
     /// Create a new signal with the given initial value.
+    #[track_caller]
     pub fn new(initial: T) -> Self {
         Self {
             inner: Arc::new(SignalInner {
                 value: RwLock::new(initial),
                 listeners: RwLock::new(Vec::new()),
+                name: None,
+                tracing: false,
+                location: std::panic::Location::caller(),
             }),
         }
+    }
+
+    /// Builder: Set a debug name for this signal
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.name = Some(name.into());
+        } else {
+            panic!("Cannot set name on shared Signal. Call .with_name() before cloning.");
+        }
+        self
+    }
+
+    /// Builder: Enable debug tracing for this signal
+    pub fn with_tracing(mut self) -> Self {
+        if let Some(inner) = Arc::get_mut(&mut self.inner) {
+            inner.tracing = true;
+        } else {
+            panic!("Cannot set tracing on shared Signal. Call .with_tracing() before cloning.");
+        }
+        self
     }
 
     /// Subscribe to value changes. The callback is invoked whenever `set()` is called.
@@ -56,16 +83,18 @@ impl<T> Signal<T> {
     fn notify(&self) {
         let listeners = self.inner.listeners.read();
         let count = listeners.len();
-        if count > 0 {
-            // Debug: log when signals with listeners are notified
-            // This helps identify which signals are triggering continuous repaints
-            static NOTIFY_COUNT: std::sync::atomic::AtomicU64 =
-                std::sync::atomic::AtomicU64::new(0);
-            let c = NOTIFY_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if c % 100 == 0 {
-                eprintln!("[DEBUG] Signal notify #{} with {} listeners", c, count);
-            }
+
+        // Tracing logic: Only trace if explicitly enabled for this signal
+        if self.inner.tracing && count > 0 {
+            let name = self.inner.name.as_deref().unwrap_or("unnamed");
+
+            tracing::trace!(
+                "[SIGNAL] notify [{}] val changed. listeners: {}",
+                name,
+                count
+            );
         }
+
         for listener in listeners.iter() {
             listener();
         }

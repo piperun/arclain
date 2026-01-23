@@ -21,6 +21,7 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
 
                 let action = app.archive_browser.render(ctx, &shared_state);
 
+
                 // Handle actions via BrowserController
                 app.archive_browser.controller.handle_action(
                     action,
@@ -80,7 +81,7 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                     status_info: &mut status_info,
                 };
                 action_ctx.handle(&action);
-                shared_state.signals().status_bar.set(status_info);
+                shared_state.signals().status_bar.set_if_changed(status_info);
             }
         }
     });
