@@ -12,6 +12,9 @@ ui_archive/*
 *.html
 mockups/*
 
+# Claude Code local settings
+.claude/
+
 # Log files
 logs/
 *.log
