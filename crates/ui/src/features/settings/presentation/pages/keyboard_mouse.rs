@@ -2,9 +2,12 @@
 //!
 //! Settings page for configuring keyboard shortcuts and mouse button bindings.
 
+use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, TextButton};
 use crate::features::hotkeys::{HotkeyAction, HotkeyManager};
 use crate::features::settings::types::SettingsAction;
+use crate::shared::components::settings_form::{SettingsForm, SettingsGroup};
 use crate::shared::theme::AppTheme;
+use arclain_theme::ThemeColors;
 use eframe::egui;
 
 /// State for the Keyboard & Mouse settings page
@@ -46,9 +49,7 @@ pub fn render(
     theme: &AppTheme,
     state: &mut KeyboardMouseSettingsState,
 ) -> Option<SettingsAction> {
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
-
+    SettingsForm::new().show(ui, theme, |ui| {
         // Description
         ui.label(
             egui::RichText::new(
@@ -69,25 +70,28 @@ pub fn render(
         ];
 
         for category in categories {
-            render_category(ui, theme, state, category);
-            ui.add_space(8.0);
+            render_category(ui, &theme.colors, state, category);
         }
 
         ui.add_space(8.0);
 
-        // Reset all button
-        ui.horizontal(|ui| {
-            if ui
-                .button(format!(
-                    "{} Reset All to Defaults",
-                    egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE
-                ))
-                .clicked()
-            {
-                state.manager.reset_all_to_defaults();
-                state.dirty = true;
-            }
-        });
+        // Reset all button using TextButton with icon
+        if ui
+            .add(
+                TextButton::new(
+                    format!(
+                        "{} Reset All to Defaults",
+                        egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE
+                    ),
+                    ButtonSize::Medium,
+                )
+                .with_theme_colors(&theme.colors),
+            )
+            .clicked()
+        {
+            state.manager.reset_all_to_defaults();
+            state.dirty = true;
+        }
     });
 
     None
@@ -95,42 +99,28 @@ pub fn render(
 
 fn render_category(
     ui: &mut egui::Ui,
-    theme: &AppTheme,
+    colors: &ThemeColors,
     state: &mut KeyboardMouseSettingsState,
     category: &str,
 ) {
-    egui::Frame::NONE
-        .fill(theme.colors.surface_variant)
-        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-        .corner_radius(8.0)
-        .inner_margin(16.0)
-        .show(ui, |ui| {
-            ui.vertical(|ui| {
-                // Category header
-                ui.label(
-                    egui::RichText::new(category)
-                        .size(14.0)
-                        .strong()
-                        .color(theme.colors.on_surface),
-                );
-                ui.add_space(8.0);
+    SettingsGroup::new(category)
+        .content(|ui, colors| {
+            // Filter actions by category
+            let actions: Vec<HotkeyAction> = HotkeyAction::all()
+                .into_iter()
+                .filter(|a| a.category() == category)
+                .collect();
 
-                // Filter actions by category
-                let actions: Vec<HotkeyAction> = HotkeyAction::all()
-                    .into_iter()
-                    .filter(|a| a.category() == category)
-                    .collect();
-
-                for action in actions {
-                    render_action_row(ui, theme, state, action);
-                }
-            });
-        });
+            for action in actions {
+                render_action_row(ui, colors, state, action);
+            }
+        })
+        .show(ui, colors);
 }
 
 fn render_action_row(
     ui: &mut egui::Ui,
-    theme: &AppTheme,
+    colors: &ThemeColors,
     state: &mut KeyboardMouseSettingsState,
     action: HotkeyAction,
 ) {
@@ -139,13 +129,17 @@ fn render_action_row(
         ui.label(
             egui::RichText::new(action.display_name())
                 .size(13.0)
-                .color(theme.colors.on_surface),
+                .color(colors.on_surface),
         );
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Reset button
+            // Reset button using IconButton
             if ui
-                .add(egui::Button::new(egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE).small())
+                .add(
+                    IconButton::new(egui_phosphor::regular::ARROW_COUNTER_CLOCKWISE)
+                        .size(IconButtonSize::Small)
+                        .with_theme_colors(colors),
+                )
                 .on_hover_text("Reset to default")
                 .clicked()
             {
@@ -159,7 +153,7 @@ fn render_action_row(
             ui.label(
                 egui::RichText::new(&binding_text)
                     .size(12.0)
-                    .color(theme.colors.primary)
+                    .color(colors.primary)
                     .monospace(),
             );
         });

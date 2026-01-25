@@ -79,7 +79,7 @@ pub fn process_metadata_signal(
 
                 // Update global state via signals
                 shared_state.signals().game_metadata.set(Some(meta.clone()));
-                shared_state.signals().metadata.set(None);
+                // Note: metadata already consumed (set to None) on line 63
 
                 // Update active organizer panel
                 if let Some(page) = &mut organization_feature.organizer_page {

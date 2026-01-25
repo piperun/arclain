@@ -104,7 +104,11 @@ pub fn render(
         .description("Show folder tree on startup")
         .action(|ui| {
             if ui
-                .add(ToggleSwitch::new(&mut options.tree_panel_visible).size(44.0, 22.0))
+                .add(
+                    ToggleSwitch::new(&mut options.tree_panel_visible)
+                        .size(44.0, 22.0)
+                        .with_theme_colors(&theme.colors),
+                )
                 .changed()
             {
                 *on_change = true;
@@ -116,7 +120,11 @@ pub fn render(
         .description("Show file properties on startup")
         .action(|ui| {
             if ui
-                .add(ToggleSwitch::new(&mut options.properties_panel_visible).size(44.0, 22.0))
+                .add(
+                    ToggleSwitch::new(&mut options.properties_panel_visible)
+                        .size(44.0, 22.0)
+                        .with_theme_colors(&theme.colors),
+                )
                 .changed()
             {
                 *on_change = true;

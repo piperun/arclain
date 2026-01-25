@@ -11,6 +11,7 @@ use super::sections;
 pub struct InterfaceSettingsState {
     pub items: Vec<UiItem>,
     pub layout_options: sections::layout_section::LayoutOptions,
+    pub show_button_labels: bool,
     pub dirty: bool,
     pub loaded: bool,
     /// Show the layout type selection dialog
@@ -28,6 +29,7 @@ impl Default for InterfaceSettingsState {
                 properties_panel_visible: true,
                 properties_panel_width: 280.0,
             },
+            show_button_labels: false,
             dirty: false,
             loaded: false,
             layout_dialog_open: false,
@@ -63,12 +65,19 @@ impl InterfaceSettingsState {
             "tree_panel_width",
             "properties_panel_visible",
             "properties_panel_width",
+            "show_button_labels",
         ] {
             if let Ok(Some(val)) = service.get_display_option(key) {
                 opts_map.insert(key.to_string(), val);
             }
         }
         self.layout_options = sections::layout_section::LayoutOptions::from_map(&opts_map);
+
+        // Load show_button_labels
+        self.show_button_labels = opts_map
+            .get("show_button_labels")
+            .map(|s| s == "true")
+            .unwrap_or(false);
 
         self.loaded = true;
         self.dirty = false;
@@ -87,6 +96,12 @@ impl InterfaceSettingsState {
         for (key, value) in self.layout_options.to_map() {
             let _ = service.set_display_option(&key, &value);
         }
+
+        // Save show_button_labels
+        let _ = service.set_display_option(
+            "show_button_labels",
+            &self.show_button_labels.to_string(),
+        );
 
         self.dirty = false;
     }
@@ -172,7 +187,7 @@ pub fn render_interface_settings(
 
         ui.add_space(8.0);
 
-        // Legacy: Show button labels toggle (for header)
+        // Header section - button labels
         render_section(ui, theme, "Header", |ui| {
             ui.label(
                 egui::RichText::new("Configure header button display")
@@ -181,17 +196,12 @@ pub fn render_interface_settings(
             );
             ui.add_space(8.0);
 
-            let show_labels = shared.signals().ui_preferences.get().show_button_labels;
-            let mut show_labels_mut = show_labels;
-
             if ui
-                .checkbox(&mut show_labels_mut, "Show button labels in header")
+                .checkbox(&mut interface_state.show_button_labels, "Show button labels in header")
                 .on_hover_text("Display text labels next to icons in header buttons")
                 .changed()
             {
-                let mut prefs = shared.signals().ui_preferences.get();
-                prefs.show_button_labels = show_labels_mut;
-                shared.signals().ui_preferences.set(prefs);
+                interface_state.dirty = true;
             }
         });
 
@@ -211,6 +221,17 @@ pub fn render_interface_settings(
                 if let Ok(items) = service.list_info_panel_items() {
                     shared.signals().info_panel_items.set(items);
                 }
+
+                // Update ui_preferences signal for reactivity (header uses this)
+                let mut prefs = shared.signals().ui_preferences.get();
+                prefs.show_button_labels = interface_state.show_button_labels;
+                shared.signals().ui_preferences.set(prefs);
+
+                // Update browser view state with new panel defaults
+                shared.signals().browser_view_state.update(|state| {
+                    state.toolbar_state.show_tree_panel = interface_state.layout_options.tree_panel_visible;
+                    state.toolbar_state.show_properties_panel = interface_state.layout_options.properties_panel_visible;
+                });
             }
         }
     });
