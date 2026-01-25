@@ -291,6 +291,33 @@ impl AppState {
             if let Ok(items) = svc.list_info_panel_items() {
                 me.signals.info_panel_items.set(items);
             }
+
+            // Load UI preferences from database
+            if let Ok(Some(show_labels_str)) = svc.get_display_option("show_button_labels") {
+                let show_labels = show_labels_str == "true";
+                let mut prefs = me.signals.ui_preferences.get();
+                prefs.show_button_labels = show_labels;
+                me.signals.ui_preferences.set(prefs);
+            }
+
+            // Load panel defaults from database and set them in browser view state
+            let tree_visible = svc
+                .get_display_option("tree_panel_visible")
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(true);
+            let properties_visible = svc
+                .get_display_option("properties_panel_visible")
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(true);
+
+            let mut view_state = me.signals.browser_view_state.get();
+            view_state.toolbar_state.show_tree_panel = tree_visible;
+            view_state.toolbar_state.show_properties_panel = properties_visible;
+            me.signals.browser_view_state.set(view_state);
         }
 
         Ok((me, services))

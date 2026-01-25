@@ -2,8 +2,9 @@
 //!
 //! Contains network and proxy configuration.
 
+use arclain_widgets::{ButtonSize, TextButton, ToggleSwitch};
 use crate::features::settings::types::{NetworkSettingsState, SettingsAction};
-use crate::shared::components::settings_form::{SettingsForm, SettingsGroup};
+use crate::shared::components::settings_form::{SettingsForm, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -18,25 +19,24 @@ pub fn render(
     SettingsForm::new().show(ui, theme, |ui| {
         // SOCKS5 Proxy Group
         SettingsGroup::new("SOCKS5 Proxy")
-            .content(|ui, _colors| {
+            .content(|ui, colors| {
                 ui.label(
                     egui::RichText::new("Configure SOCKS5 proxy to bypass geo-blocking")
                         .size(12.0)
-                        .color(theme.colors.on_surface_variant),
+                        .color(colors.on_surface_variant),
                 );
                 ui.add_space(12.0);
 
-                // Enable Proxy
-                if ui
-                    .checkbox(&mut *state.socks5_enabled.write(), "Enable SOCKS5 Proxy")
-                    .changed()
-                {
-                    // Trigger save on toggle? Or wait for save button?
-                    // Settings pages usually wait for explicit save/nav or have auto-save.
-                    // The standard here seems to be "dirty checks" and explicit save in the header.
-                    // But we can also trigger update actions.
-                    // For now, adhere to state mutation, let header save handle it.
-                }
+                // Enable Proxy using SettingsRow with ToggleSwitch
+                SettingsRow::new("Enable SOCKS5 Proxy")
+                    .description("Route network requests through a SOCKS5 proxy server")
+                    .action(|ui| {
+                        ui.add(
+                            ToggleSwitch::new(&mut *state.socks5_enabled.write())
+                                .with_theme_colors(colors),
+                        );
+                    })
+                    .show(ui, colors);
 
                 ui.add_space(8.0);
 
@@ -44,7 +44,11 @@ pub fn render(
                 ui.add_enabled_ui(*state.socks5_enabled.read(), |ui| {
                     ui.vertical(|ui| {
                         // Address
-                        ui.label("Proxy Address");
+                        ui.label(
+                            egui::RichText::new("Proxy Address")
+                                .size(12.0)
+                                .color(colors.on_surface),
+                        );
                         ui.add(
                             egui::TextEdit::singleline(&mut *state.socks5_address.write())
                                 .hint_text("e.g. 127.0.0.1:1080")
@@ -53,7 +57,7 @@ pub fn render(
                         ui.label(
                             egui::RichText::new("Hostname or IP address with port")
                                 .size(11.0)
-                                .color(theme.colors.on_surface_variant),
+                                .color(colors.on_surface_variant),
                         );
 
                         ui.add_space(8.0);
@@ -63,11 +67,19 @@ pub fn render(
                             .num_columns(2)
                             .spacing([12.0, 8.0])
                             .show(ui, |ui| {
-                                ui.label("Username");
+                                ui.label(
+                                    egui::RichText::new("Username")
+                                        .size(12.0)
+                                        .color(colors.on_surface),
+                                );
                                 ui.text_edit_singleline(&mut *state.socks5_username.write());
                                 ui.end_row();
 
-                                ui.label("Password");
+                                ui.label(
+                                    egui::RichText::new("Password")
+                                        .size(12.0)
+                                        .color(colors.on_surface),
+                                );
                                 ui.add(
                                     egui::TextEdit::singleline(&mut *state.socks5_password.write())
                                         .password(true),
@@ -79,7 +91,7 @@ pub fn render(
                         ui.label(
                             egui::RichText::new("Leave blank if authentication is not required")
                                 .size(11.0)
-                                .color(theme.colors.on_surface_variant),
+                                .color(colors.on_surface_variant),
                         );
                     });
                 });
@@ -89,7 +101,13 @@ pub fn render(
                 // Test Connection
                 let status = state.connection_test_status.read().clone();
                 ui.horizontal(|ui| {
-                    if ui.button("Test Connection").clicked() {
+                    if ui
+                        .add(
+                            TextButton::new("Test Connection", ButtonSize::Medium)
+                                .with_theme_colors(colors),
+                        )
+                        .clicked()
+                    {
                         let address_opt = if state.socks5_address.read().trim().is_empty() {
                             None
                         } else {
@@ -122,17 +140,21 @@ pub fn render(
                         ConnectionTestStatus::Idle => {}
                         ConnectionTestStatus::Testing => {
                             ui.spinner();
-                            ui.label("Connecting...");
+                            ui.label(
+                                egui::RichText::new("Connecting...")
+                                    .color(colors.on_surface_variant),
+                            );
                         }
                         ConnectionTestStatus::Success(msg) => {
                             ui.label(
-                                egui::RichText::new(format!("✔ {}", msg))
-                                    .color(theme.colors.success),
+                                egui::RichText::new(format!("{} {}", egui_phosphor::regular::CHECK, msg))
+                                    .color(colors.success),
                             );
                         }
                         ConnectionTestStatus::Error(err) => {
                             ui.label(
-                                egui::RichText::new(format!("✖ {}", err)).color(theme.colors.error),
+                                egui::RichText::new(format!("{} {}", egui_phosphor::regular::X, err))
+                                    .color(colors.error),
                             );
                         }
                     }

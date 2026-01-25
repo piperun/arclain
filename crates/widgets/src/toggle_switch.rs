@@ -77,17 +77,17 @@ impl<'a> Widget for ToggleSwitch<'a> {
             let visuals = ui.style().visuals.clone();
 
             // Y2K Colors from theme:
-            // OFF: surface_variant (dark), surface (ball - dark)
-            // ON: outline (lighter), primary (ball - light)
+            // OFF: black track, grey ball, subtle ring
+            // ON: grey track, white ball, medium grey ring (visible glow)
             let (track_off, track_on, ball_off, ball_on, ring_off, ring_on) =
                 if let Some(colors) = self.theme_colors {
                     (
-                        colors.surface_variant,    // track when off
-                        colors.outline,            // track when on (slightly lighter)
-                        colors.surface,            // ball when off (matches bg)
-                        colors.primary,            // ball when on (signal color)
-                        colors.surface_variant,    // ring when off
-                        colors.on_surface_variant, // ring when on
+                        colors.surface_variant,    // track when off (black #000)
+                        colors.outline,            // track when on (grey #333)
+                        colors.outline,            // ball when off (grey #333, visible!)
+                        colors.primary,            // ball when on (white #FFF)
+                        colors.outline_variant,    // ring when off (subtle #1A1A1A)
+                        Color32::from_rgb(100, 100, 100), // ring when on (medium grey, visible)
                     )
                 } else if visuals.dark_mode {
                     // Y2K Dark mode: OFF = black ball, ON = white ball
