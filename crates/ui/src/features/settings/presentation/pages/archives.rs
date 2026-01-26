@@ -77,24 +77,6 @@ pub fn render(
             })
             .show(ui, &theme.colors);
 
-        // Section: Compression
-        SettingsGroup::new("Compression")
-            .content(|ui, colors| {
-                ui.label(
-                    egui::RichText::new("Settings for creating and modifying archives")
-                        .size(12.0)
-                        .color(colors.on_surface_variant),
-                );
-                ui.add_space(8.0);
-
-                ui.label(
-                    egui::RichText::new("Coming soon: Compression level, format preferences")
-                        .size(12.0)
-                        .color(colors.on_surface_variant),
-                );
-            })
-            .show(ui, &theme.colors);
-
         // Section: Integrity Verification
         SettingsGroup::new("Integrity Verification")
             .content(|ui, colors| {
