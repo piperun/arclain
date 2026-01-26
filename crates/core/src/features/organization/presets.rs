@@ -22,7 +22,9 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
                     },
                 ],
                 use_standard_layout: false,
+                ..Default::default()
             },
+            ..Default::default()
         },
         // DLSite rule: Only applies when RJ/BJ code is found
         OrganizationRule {
@@ -38,7 +40,9 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
                 root_folder: Some("[$code][$circle] $title".to_string()),
                 move_files: vec![], // Handled by standard layout
                 use_standard_layout: true,
+                ..Default::default()
             },
+            ..Default::default()
         },
     ]
 }

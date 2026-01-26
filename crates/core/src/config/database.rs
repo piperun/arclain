@@ -54,11 +54,10 @@ pub fn list_org_rules(pool: &DieselPool) -> Result<Vec<OrganizationRule>> {
 
         for r in db_rules {
             rules.push(OrganizationRule {
+                id: r.id.unwrap_or(0) as i64,
                 name: r.name,
                 priority: r.priority,
                 is_enabled: r.is_enabled,
-                // We ignore id, description, category, is_system as they are not in the pure business object anymore
-                // or we need to put them back if they are critical for persistence.
                 trigger: serde_json::from_str(&r.trigger_json).unwrap_or_default(),
                 actions: serde_json::from_str(&r.actions_json).unwrap_or_default(),
             });
@@ -139,7 +138,9 @@ pub fn ensure_default_rules(pool: &DieselPool) -> Result<()> {
             root_folder: Some("Game".to_string()),
             use_standard_layout: true,
             move_files: vec![],
+            ..Default::default()
         },
+        ..Default::default()
     };
 
     save_org_rule(pool, &dlsite_rule)?;

@@ -19,7 +19,7 @@ pub use interface::render_interface_settings;
 pub use layout_editor::{
     render_info_panel_layout, render_toolbar_layout, InfoPanelLayoutState, ToolbarLayoutState,
 };
-pub use organization_rules::RulesPage;
+pub use organization_rules::{RulesPage, RuleEditorAction};
 
 use crate::shared::theme::AppTheme;
 use eframe::egui;
