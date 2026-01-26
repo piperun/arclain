@@ -2,6 +2,7 @@
 //!
 //! Contains individual settings page implementations.
 
+pub mod archive_profiles;
 pub mod archives;
 pub mod general;
 pub mod interface;
@@ -13,6 +14,7 @@ pub mod plugins;
 pub mod security;
 
 // Re-export for convenience
+pub use archive_profiles::ProfilesPage;
 pub use interface::render_interface_settings;
 pub use layout_editor::{
     render_info_panel_layout, render_toolbar_layout, InfoPanelLayoutState, ToolbarLayoutState,

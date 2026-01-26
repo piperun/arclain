@@ -3,6 +3,7 @@
 
 use crate::shared::SharedState;
 use arclain_core::features::organization::engine::OrganizationPlan;
+use arclain_core::features::organization::ArchiveProfile;
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -11,6 +12,7 @@ pub fn execute_organization_plan(
     plan: &OrganizationPlan,
     source: &PathBuf,
     dest: &PathBuf,
+    profile: Option<&ArchiveProfile>,
 ) -> anyhow::Result<()> {
     let state = shared.app_state.lock();
     let backend_selector = state.backend_selector.clone();
@@ -42,14 +44,14 @@ pub fn execute_organization_plan(
     };
 
     match arclain_core::features::organization::execute_organization_plan(
-        &archive, dest, plan, &temp_dir,
+        &archive, dest, plan, &temp_dir, profile,
     ) {
         Ok(_) => Ok(()),
         Err(e) => {
             // If failed, try with auto-password if we didn't have one
             if password.is_none() {
                 info!("Organization failed, trying with auto-password: {}", e);
-                try_with_auto_password(shared, plan, source, dest)
+                try_with_auto_password(shared, plan, source, dest, profile)
             } else {
                 Err(e)
             }
@@ -62,6 +64,7 @@ pub fn try_with_auto_password(
     plan: &OrganizationPlan,
     source: &PathBuf,
     dest: &PathBuf,
+    profile: Option<&ArchiveProfile>,
 ) -> anyhow::Result<()> {
     let state = shared.app_state.lock();
     let backend_selector = state.backend_selector.clone();
@@ -98,6 +101,7 @@ pub fn try_with_auto_password(
             dest,
             plan,
             &temp_dir,
+            profile,
         ) {
             Ok(_) => {
                 // Success! Save the password for future use

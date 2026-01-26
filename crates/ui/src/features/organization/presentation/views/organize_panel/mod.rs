@@ -7,6 +7,7 @@ mod network_tab;
 mod preview_tab;
 mod variables_tab;
 mod header;
+mod profile_selector;
 mod rule_selector;
 
 pub use arclain_core::features::organization::metrics::IntegrityReport;
@@ -18,7 +19,7 @@ use crate::features::organization::export_dialog::ExportTreeDialog;
 use crate::shared::components::preview_tree::{
     self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
 };
-use arclain_core::features::organization::{engine::RuleEngine, OrganizationRule};
+use arclain_core::features::organization::{engine::RuleEngine, ArchiveProfile, OrganizationRule};
 use arclain_core::features::organization::session::OrganizationSession;
 use arclain_core::ArchiveEntry;
 use crate::shared::theme::AppTheme;
@@ -42,6 +43,8 @@ pub enum OrganizePanelAction {
 
 pub struct OrganizeUiState {
     pub selected_rule_index: usize,
+    pub selected_profile_index: usize,
+    pub profiles: Vec<ArchiveProfile>,
     pub active_tab: OrganizeTab,
     pub preview_filter: PreviewFilter,
     pub original_tree_state: PreviewTreeState,
@@ -58,6 +61,8 @@ impl Default for OrganizeUiState {
     fn default() -> Self {
         Self {
             selected_rule_index: 0,
+            selected_profile_index: 0,
+            profiles: Vec::new(),
             active_tab: OrganizeTab::Preview,
             preview_filter: PreviewFilter::All,
             original_tree_state: PreviewTreeState::default(),
@@ -82,6 +87,7 @@ impl OrganizePanel {
         archive_name: String,
         entries: Vec<ArchiveEntry>,
         rules: Vec<OrganizationRule>,
+        profiles: Vec<ArchiveProfile>,
         metadata: Option<arclain_core::features::organization::GameMetadata>,
     ) -> Self {
         let session = OrganizationSession::new(
@@ -90,10 +96,20 @@ impl OrganizePanel {
             rules,
             metadata,
         );
-        
+
+        // Find default profile index
+        let default_profile_index = profiles
+            .iter()
+            .position(|p| p.is_default)
+            .unwrap_or(0);
+
         let mut panel = Self {
             session,
-            ui_state: OrganizeUiState::default(),
+            ui_state: OrganizeUiState {
+                selected_profile_index: default_profile_index,
+                profiles,
+                ..Default::default()
+            },
         };
 
         // Auto-select rule
@@ -240,6 +256,15 @@ impl OrganizePanel {
             if changed {
                 self.update_preview();
             }
+
+            ui.add_space(4.0);
+
+            // Profile selector
+            profile_selector::render_profile_selector(
+                ui,
+                &self.ui_state.profiles,
+                &mut self.ui_state.selected_profile_index,
+            );
 
             ui.separator();
 

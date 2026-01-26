@@ -28,6 +28,8 @@ pub enum SettingsPage {
     Interface,
     /// Archive-related settings
     Archives,
+    /// Archive format profiles for organization
+    ArchiveProfiles,
     /// Password rules management
     PasswordRules,
     /// Organization rules management
@@ -54,6 +56,7 @@ impl SettingsPage {
             SettingsPage::General => "General",
             SettingsPage::Interface => "Interface",
             SettingsPage::Archives => "Archives",
+            SettingsPage::ArchiveProfiles => "Archive Profiles",
             SettingsPage::PasswordRules => "Password Rules",
             SettingsPage::OrganizationRules => "Organization Rules",
             SettingsPage::Security => "Security",
@@ -72,6 +75,7 @@ impl SettingsPage {
             SettingsPage::General => egui_phosphor::regular::WRENCH,
             SettingsPage::Interface => egui_phosphor::regular::LAYOUT,
             SettingsPage::Archives => egui_phosphor::regular::ARCHIVE,
+            SettingsPage::ArchiveProfiles => egui_phosphor::regular::SLIDERS,
             SettingsPage::PasswordRules => egui_phosphor::regular::KEY,
             SettingsPage::OrganizationRules => egui_phosphor::regular::LIST_CHECKS,
             SettingsPage::Security => egui_phosphor::regular::SHIELD,
@@ -90,6 +94,7 @@ impl SettingsPage {
             SettingsPage::General => "General application preferences",
             SettingsPage::Interface => "Button labels, themes, and display options",
             SettingsPage::Archives => "Archive handling and extraction options",
+            SettingsPage::ArchiveProfiles => "Compression profiles for archive organization",
             SettingsPage::PasswordRules => "Manage password rules and patterns",
             SettingsPage::OrganizationRules => "Manage archive organization rules",
             SettingsPage::Security => "Encryption and security settings",
@@ -107,6 +112,7 @@ impl SettingsPage {
             SettingsPage::General,
             SettingsPage::Interface,
             SettingsPage::Archives,
+            SettingsPage::ArchiveProfiles,
             SettingsPage::PasswordRules,
             SettingsPage::OrganizationRules,
             SettingsPage::Security,
@@ -308,10 +314,11 @@ mod tests {
     #[test]
     fn settings_pages_list_has_all() {
         let pages = SettingsPage::all_pages();
-        assert_eq!(pages.len(), 9);
+        assert_eq!(pages.len(), 10);
         assert!(pages.contains(&SettingsPage::General));
         assert!(pages.contains(&SettingsPage::Interface));
         assert!(pages.contains(&SettingsPage::Archives));
+        assert!(pages.contains(&SettingsPage::ArchiveProfiles));
         assert!(pages.contains(&SettingsPage::PasswordRules));
         assert!(pages.contains(&SettingsPage::OrganizationRules));
         assert!(pages.contains(&SettingsPage::Security));

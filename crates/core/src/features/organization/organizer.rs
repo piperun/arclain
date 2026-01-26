@@ -57,16 +57,22 @@ pub fn organize_archive(
 }
 
 /// Execute a generic organization plan
+///
+/// If `profile` is provided, uses its settings for compression.
+/// Otherwise falls back to default 7z maximum compression.
 pub fn execute_organization_plan(
     archive: &Archive,
     dest: &Path,
     plan: &crate::features::organization::engine::OrganizationPlan,
     temp_dir: &Path,
+    profile: Option<&super::ArchiveProfile>,
 ) -> Result<()> {
+    let format_name = profile.map(|p| p.format.display_name()).unwrap_or("7z");
     info!(
-        "Executing organization plan '{}' for archive {}",
+        "Executing organization plan '{}' for archive {} (output: {})",
         plan.rule_name,
-        archive.path().display()
+        archive.path().display(),
+        format_name
     );
 
     // Create unique temp directory with short, readable name
@@ -199,7 +205,7 @@ pub fn execute_organization_plan(
     }
 
     // 3. Compress organized directory to dest
-    debug!("Compressing organized structure to 7z");
+    debug!("Compressing organized structure to {}", format_name);
     let dest_abs = if dest.is_absolute() {
         dest.to_path_buf()
     } else {
@@ -219,10 +225,18 @@ pub fn execute_organization_plan(
     }
 
     // Use the backend from the archive handle to create the new archive
-    archive
-        .backend()
-        .create_archive(&dest_abs, &items_to_compress, "7z")
-        .context("creating organized 7z archive")?;
+    if let Some(profile) = profile {
+        archive
+            .backend()
+            .create_archive_with_profile(&dest_abs, &items_to_compress, profile)
+            .context("creating organized archive with profile")?;
+    } else {
+        // Fallback to default 7z
+        archive
+            .backend()
+            .create_archive(&dest_abs, &items_to_compress, "7z")
+            .context("creating organized 7z archive")?;
+    }
 
     info!("Plan execution completed successfully");
     Ok(())

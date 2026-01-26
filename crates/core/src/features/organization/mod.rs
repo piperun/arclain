@@ -3,6 +3,7 @@ pub mod flatten_helper;
 pub mod metrics;
 pub mod organizer;
 pub mod presets;
+pub mod profile;
 #[cfg(test)]
 pub mod pruning_tests;
 pub mod session;
@@ -15,6 +16,7 @@ pub mod tasks;
 pub use checks::*;
 pub use metadata::{GameMetadata, ScreenshotData};
 pub use organizer::*;
+pub use profile::{ArchiveFormat, ArchiveProfile};
 
 use serde::{Deserialize, Serialize};
 

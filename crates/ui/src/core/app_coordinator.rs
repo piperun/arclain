@@ -129,6 +129,7 @@ impl eframe::App for AppCoordinator {
                         &settings_page,
                         breadcrumb,
                         Some(&mut self.organization.rules_page),
+                        Some(&mut self.organization.profiles_page),
                         "", // No search context in AppCoordinator yet
                     ) {
                         // Convert crate::core::AppPage to local AppPage

@@ -1045,6 +1045,85 @@ impl ArchiveBackend for SevenZipCli {
         Ok(())
     }
 
+    fn create_archive_with_profile(
+        &self,
+        dest: &Path,
+        files: &[PathBuf],
+        profile: &crate::features::organization::ArchiveProfile,
+    ) -> Result<()> {
+        use crate::features::organization::ArchiveFormat;
+
+        info!(
+            "Creating {} archive with profile '{}': {} with {} files",
+            profile.format.display_name(),
+            profile.name,
+            dest.display(),
+            files.len()
+        );
+        debug!("Profile settings: level={}, method={:?}, solid={}",
+            profile.compression_level,
+            profile.compression_method,
+            profile.solid_archive
+        );
+
+        let mut args = vec![
+            OsString::from("a"),
+            OsString::from(format!("-t{}", profile.format.format_arg())),
+            OsString::from("-y"),
+            OsString::from("-mmt=on"),
+            OsString::from("-bd"),
+            OsString::from("-sccUTF-8"),
+            OsString::from("-scsUTF-8"),
+        ];
+
+        // Compression level (0-9)
+        args.push(OsString::from(format!("-mx={}", profile.compression_level)));
+
+        // Format-specific options
+        match profile.format {
+            ArchiveFormat::SevenZ => {
+                // Compression method
+                if let Some(ref method) = profile.compression_method {
+                    args.push(OsString::from(format!("-m0={}", method)));
+                }
+                // Solid archive
+                if profile.solid_archive {
+                    args.push(OsString::from("-ms=on"));
+                } else {
+                    args.push(OsString::from("-ms=off"));
+                }
+                // Header encryption (requires password, but set the flag)
+                if profile.encrypt_headers {
+                    args.push(OsString::from("-mhe=on"));
+                }
+            }
+            ArchiveFormat::Zip => {
+                // Zip compression method
+                if let Some(ref method) = profile.compression_method {
+                    // Map method names to 7z zip method identifiers
+                    let method_arg = match method.to_lowercase().as_str() {
+                        "deflate" => "Deflate",
+                        "deflate64" => "Deflate64",
+                        "bzip2" => "BZip2",
+                        "lzma" => "LZMA",
+                        _ => "Deflate",
+                    };
+                    args.push(OsString::from(format!("-mm={}", method_arg)));
+                }
+            }
+        }
+
+        args.push(dest.as_os_str().to_os_string());
+
+        for file in files {
+            args.push(file.as_os_str().to_os_string());
+        }
+
+        self.run_status(args)?;
+        info!("Archive created successfully with profile '{}'", profile.name);
+        Ok(())
+    }
+
     fn convert_to_7z(&self, source: &crate::Archive, dest: &Path, temp_dir: &Path) -> Result<()> {
         info!(
             "Converting {} to 7z at {} (temp: {})",

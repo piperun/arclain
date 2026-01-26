@@ -81,6 +81,7 @@ pub fn render_settings_content(
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
     rules_page: Option<&mut crate::features::settings::presentation::pages::RulesPage>,
+    profiles_page: Option<&mut crate::features::settings::presentation::pages::ProfilesPage>,
 
     interface_state: &mut crate::features::settings::presentation::pages::interface::InterfaceSettingsState,
     toolbar_layout_state: &mut crate::features::settings::presentation::pages::ToolbarLayoutState,
@@ -160,6 +161,14 @@ pub fn render_settings_content(
         }
         SettingsPage::KeyboardMouse => {
             pages::keyboard_mouse::render(ui, theme, keyboard_mouse_state)
+        }
+        SettingsPage::ArchiveProfiles => {
+            if let Some(pp) = profiles_page {
+                if let Some(shared_state) = shared {
+                    pp.render(ui, theme, shared_state);
+                }
+            }
+            None
         }
     }
 }

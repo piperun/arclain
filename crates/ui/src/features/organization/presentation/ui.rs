@@ -1,5 +1,5 @@
 use crate::features::organization::OrganizerPage;
-use crate::features::settings::pages::RulesPage;
+use crate::features::settings::pages::{ProfilesPage, RulesPage};
 
 use crate::shared::SharedState;
 use eframe::egui;
@@ -10,6 +10,7 @@ pub use crate::features::organization::domain::types::OrganizationAction;
 pub struct OrganizationFeature {
     pub organizer_page: Option<OrganizerPage>,
     pub rules_page: RulesPage,
+    pub profiles_page: ProfilesPage,
 }
 
 impl OrganizationFeature {
@@ -17,6 +18,7 @@ impl OrganizationFeature {
         Self {
             organizer_page: None,
             rules_page: RulesPage::new(),
+            profiles_page: ProfilesPage::new(),
         }
     }
 
