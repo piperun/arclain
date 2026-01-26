@@ -4,6 +4,7 @@ pub mod breadcrumbs;
 pub mod context_menu;
 pub mod header;
 pub mod item_table;
+pub mod layout;
 pub mod network_log;
 pub mod panel;
 pub mod preview_tree;
@@ -18,6 +19,7 @@ pub mod top_tab_bar;
 pub mod tree_panel;
 
 pub use breadcrumbs::Breadcrumbs;
+pub use layout::{Center, Column, CrossAxisAlignment, FormField, MainAxisAlignment, Padding, Row, Section, SizedBox, Spacer};
 pub use search_bar::SearchBar;
 pub use settings_form::Form;
 pub use settings_header::SettingsHeader;
