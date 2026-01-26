@@ -76,6 +76,18 @@ SettingsHeaderConfig::new("Info Panel Layout")
                     info_panel_reset_clicked.set(true);
                 }
             })
+        } else if matches!(page, SettingsPage::EditRule(_)) {
+            // Rule Editor has its own save/cancel buttons, so no save action in header
+            let title = if let SettingsPage::EditRule(id) = page {
+                if *id == 0 { "New Rule" } else { "Edit Rule" }
+            } else {
+                "Edit Rule"
+            };
+            crate::features::settings::presentation::views::header_config::
+SettingsHeaderConfig::new(title)
+            .icon(page.icon())
+            .description(page.description())
+            .has_changes(false) // Hide save button
         } else {
             // Default Header for other pages
             crate::features::settings::presentation::views::header_config::

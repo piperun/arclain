@@ -67,6 +67,7 @@ impl OrganizationService {
 
             for r in db_rules {
                 rules.push(OrganizationRule {
+                    id: r.id.unwrap_or(0) as i64,
                     name: r.name,
                     priority: r.priority,
                     is_enabled: r.is_enabled,
@@ -79,18 +80,39 @@ impl OrganizationService {
         })
     }
 
+    /// Get a domain rule by ID
+    pub fn get_domain_rule(&self, rule_id: i64) -> Result<Option<OrganizationRule>> {
+        self.pool.with_conn(|conn| {
+            match get_rule_diesel(conn, rule_id as i32)? {
+                Some(r) => Ok(Some(OrganizationRule {
+                    id: r.id.unwrap_or(0) as i64,
+                    name: r.name,
+                    priority: r.priority,
+                    is_enabled: r.is_enabled,
+                    trigger: serde_json::from_str(&r.trigger_json).unwrap_or_default(),
+                    actions: serde_json::from_str(&r.actions_json).unwrap_or_default(),
+                })),
+                None => Ok(None),
+            }
+        })
+    }
+
     /// Save a domain rule (with JSON serialization)
     pub fn save_domain_rule(&self, rule: &OrganizationRule) -> Result<i64> {
         self.pool.with_conn(|conn| {
-            // Find existing rule by name to get ID
-            let existing_rules = list_rules_diesel(conn)?;
-            let existing_id = existing_rules
-                .iter()
-                .find(|r| r.name == rule.name)
-                .map(|r| r.id);
+            // Use existing ID from rule if provided, otherwise look up by name
+            let rule_id: Option<i64> = if rule.id > 0 {
+                Some(rule.id)
+            } else {
+                let existing_rules = list_rules_diesel(conn)?;
+                existing_rules
+                    .iter()
+                    .find(|r| r.name == rule.name)
+                    .and_then(|r| r.id)
+            };
 
             let db_rule = DbOrganizationRule {
-                id: existing_id.flatten(),
+                id: rule_id,
                 name: rule.name.clone(),
                 description: None,
                 category: "General".to_string(),

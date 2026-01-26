@@ -3,10 +3,14 @@
 //! CRUD interface for managing organization rules. Part of the Settings feature.
 
 mod add_rule_dialog;
+mod rule_editor;
 
 use add_rule_dialog::AddRuleDialog;
+pub use rule_editor::{RuleEditorState, RuleEditorAction};
 use arclain_core::features::organization::OrganizationRule;
 use arclain_core::OrganizationService;
+use crate::core::SettingsPage;
+use crate::features::settings::domain::types::SettingsAction;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
 
@@ -14,6 +18,8 @@ pub struct RulesPage {
     rules: Option<Vec<OrganizationRule>>,
     dialog: AddRuleDialog,
     error: Option<String>,
+    /// State for the rule editor (when editing a rule via dedicated page)
+    editor_state: Option<RuleEditorState>,
 }
 
 impl Default for RulesPage {
@@ -22,6 +28,7 @@ impl Default for RulesPage {
             rules: None,
             dialog: AddRuleDialog::default(),
             error: None,
+            editor_state: None,
         }
     }
 }
@@ -43,7 +50,8 @@ impl RulesPage {
         ui: &mut egui::Ui,
         theme: &crate::shared::theme::AppTheme,
         service: &OrganizationService,
-    ) {
+    ) -> Option<SettingsAction> {
+        let mut action: Option<SettingsAction> = None;
         if self.rules.is_none() {
             self.refresh_rules(service);
         }
@@ -175,11 +183,11 @@ impl RulesPage {
                     ItemTable::new().show(ui, theme, &[], &empty_rules, |_, _, _, _| {})
                 };
 
-                // Handle deferred actions
+                // Handle deferred actions - navigate to rule editor page
                 if let Some(edit_idx) = actions.get_edit() {
                     if let Some(rules) = &self.rules {
                         if let Some(rule) = rules.get(*edit_idx) {
-                            self.dialog.edit(rule.clone());
+                            action = Some(SettingsAction::NavigateTo(SettingsPage::EditRule(rule.id)));
                         }
                     }
                 }
@@ -198,7 +206,7 @@ impl RulesPage {
                 // }
             });
 
-        // Handle Dialog
+        // Handle Dialog (for quick add - still using dialog for new rules)
         if self.dialog.is_open() {
             if let Some(new_rule) = self.dialog.show(ui.ctx(), theme) {
                 if let Err(e) = service.save_domain_rule(&new_rule) {
@@ -208,5 +216,65 @@ impl RulesPage {
                 }
             }
         }
+
+        action
+    }
+
+    /// Render the rule editor page for a specific rule
+    pub fn render_edit_rule(
+        &mut self,
+        ui: &mut egui::Ui,
+        theme: &crate::shared::theme::AppTheme,
+        service: &OrganizationService,
+        rule_id: i64,
+    ) -> Option<RuleEditorAction> {
+        // Initialize editor state if not already set or if rule_id changed
+        let needs_init = match &self.editor_state {
+            None => true,
+            Some(state) => state.original_id != rule_id,
+        };
+
+        if needs_init {
+            if rule_id == 0 {
+                // New rule
+                self.editor_state = Some(RuleEditorState::new_rule());
+            } else {
+                // Load existing rule
+                match service.get_domain_rule(rule_id) {
+                    Ok(Some(rule)) => {
+                        self.editor_state = Some(RuleEditorState::new(rule));
+                    }
+                    Ok(None) => {
+                        ui.label("Rule not found");
+                        return Some(RuleEditorAction::Cancelled);
+                    }
+                    Err(e) => {
+                        ui.label(format!("Error loading rule: {}", e));
+                        return Some(RuleEditorAction::Cancelled);
+                    }
+                }
+            }
+        }
+
+        // Render the editor
+        if let Some(state) = &mut self.editor_state {
+            let action = rule_editor::render_rule_editor(ui, theme, state, service);
+
+            match action {
+                RuleEditorAction::Saved | RuleEditorAction::Cancelled => {
+                    self.editor_state = None;
+                    self.rules = None; // Trigger refresh when returning to list
+                    return Some(action);
+                }
+                RuleEditorAction::None => {}
+            }
+        }
+
+        None
+    }
+
+    /// Clear the editor state (call when navigating away)
+    pub fn clear_editor(&mut self) {
+        self.editor_state = None;
     }
 }

@@ -122,7 +122,7 @@ pub fn render_settings_content(
             if let Some(rp) = rules_page {
                 if let Some(shared_state) = shared {
                     if let Some(org_service) = shared_state.services.organization_service.as_ref() {
-                        rp.render(ui, theme, org_service);
+                        return rp.render(ui, theme, org_service);
                     } else {
                         ui.label("Organization service not available.");
                     }
@@ -166,6 +166,25 @@ pub fn render_settings_content(
             if let Some(pp) = profiles_page {
                 if let Some(shared_state) = shared {
                     pp.render(ui, theme, shared_state);
+                }
+            }
+            None
+        }
+        SettingsPage::EditRule(rule_id) => {
+            if let Some(rp) = rules_page {
+                if let Some(shared_state) = shared {
+                    if let Some(org_service) = shared_state.services.organization_service.as_ref() {
+                        if let Some(editor_action) = rp.render_edit_rule(ui, theme, org_service, *rule_id) {
+                            use crate::features::settings::presentation::pages::RuleEditorAction;
+                            match editor_action {
+                                RuleEditorAction::Saved | RuleEditorAction::Cancelled => {
+                                    // Navigate back to organization rules list
+                                    return Some(SettingsAction::NavigateTo(SettingsPage::OrganizationRules));
+                                }
+                                RuleEditorAction::None => {}
+                            }
+                        }
+                    }
                 }
             }
             None

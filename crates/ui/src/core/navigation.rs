@@ -34,6 +34,8 @@ pub enum SettingsPage {
     PasswordRules,
     /// Organization rules management
     OrganizationRules,
+    /// Edit a specific organization rule (rule ID, or 0 for new rule)
+    EditRule(i64),
     /// Security and encryption settings
     Security,
     /// Plugin management
@@ -59,6 +61,7 @@ impl SettingsPage {
             SettingsPage::ArchiveProfiles => "Archive Profiles",
             SettingsPage::PasswordRules => "Password Rules",
             SettingsPage::OrganizationRules => "Organization Rules",
+            SettingsPage::EditRule(_) => "Edit Rule",
             SettingsPage::Security => "Security",
             SettingsPage::Plugins => "Plugins",
             SettingsPage::ToolbarLayout => "Toolbar Layout",
@@ -78,6 +81,7 @@ impl SettingsPage {
             SettingsPage::ArchiveProfiles => egui_phosphor::regular::SLIDERS,
             SettingsPage::PasswordRules => egui_phosphor::regular::KEY,
             SettingsPage::OrganizationRules => egui_phosphor::regular::LIST_CHECKS,
+            SettingsPage::EditRule(_) => egui_phosphor::regular::PENCIL,
             SettingsPage::Security => egui_phosphor::regular::SHIELD,
             SettingsPage::Plugins => egui_phosphor::regular::PUZZLE_PIECE,
             SettingsPage::ToolbarLayout => egui_phosphor::regular::STACK,
@@ -97,6 +101,7 @@ impl SettingsPage {
             SettingsPage::ArchiveProfiles => "Compression profiles for archive organization",
             SettingsPage::PasswordRules => "Manage password rules and patterns",
             SettingsPage::OrganizationRules => "Manage archive organization rules",
+            SettingsPage::EditRule(_) => "Edit organization rule",
             SettingsPage::Security => "Encryption and security settings",
             SettingsPage::Plugins => "Manage and configure plugins",
             SettingsPage::ToolbarLayout => "Customize toolbar button layout",
@@ -229,8 +234,20 @@ impl PageNavigator {
                     AppPage::Settings(SettingsPage::Overview),
                 )];
 
-                if *category != SettingsPage::Overview {
-                    breadcrumb.push((category.display_name().to_string(), page.clone()));
+                match category {
+                    SettingsPage::Overview => {}
+                    SettingsPage::EditRule(id) => {
+                        // Show parent page in breadcrumb
+                        breadcrumb.push((
+                            "Organization Rules".to_string(),
+                            AppPage::Settings(SettingsPage::OrganizationRules),
+                        ));
+                        let name = if *id == 0 { "New Rule" } else { "Edit Rule" };
+                        breadcrumb.push((name.to_string(), page.clone()));
+                    }
+                    _ => {
+                        breadcrumb.push((category.display_name().to_string(), page.clone()));
+                    }
                 }
 
                 breadcrumb

@@ -437,6 +437,7 @@ impl From<wit_rules::PluginRuleDefinition> for arclain_core::OrganizationRule {
             is_enabled: true,
             trigger: def.trigger.into(),
             actions: def.actions.into(),
+            ..Default::default()
         }
     }
 }
@@ -457,6 +458,7 @@ impl From<wit_rules::PluginRuleActions> for arclain_core::RuleActions {
             root_folder: a.root_folder,
             move_files: a.move_files.into_iter().map(|m| m.into()).collect(),
             use_standard_layout: a.use_standard_layout,
+            ..Default::default()
         }
     }
 }

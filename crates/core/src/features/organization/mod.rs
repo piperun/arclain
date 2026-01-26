@@ -22,6 +22,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OrganizationRule {
+    /// Database ID (0 for new rules)
+    #[serde(default)]
+    pub id: i64,
     pub name: String,
     pub priority: i32,
     pub is_enabled: bool,
@@ -39,6 +42,9 @@ pub struct RuleTrigger {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RuleActions {
     pub root_folder: Option<String>,
+    /// Template for output archive name (uses template variables)
+    #[serde(default)]
+    pub output_name: Option<String>,
     pub move_files: Vec<MoveAction>,
     pub use_standard_layout: bool,
 }

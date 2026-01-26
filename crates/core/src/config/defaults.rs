@@ -14,6 +14,8 @@ pub fn get_default_rules() -> Vec<OrganizationRule> {
             root_folder: Some("[$product_id][$circle] $title".to_string()),
             use_standard_layout: true,
             move_files: vec![],
+            ..Default::default()
         },
+        ..Default::default()
     }]
 }
