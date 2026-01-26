@@ -3,6 +3,7 @@
 //! Contains functions for rendering plugin dialogs and pages,
 //! extracted from arclain_app.rs to keep feature logic self-contained.
 
+use crate::shared::components::Form;
 use crate::shared::SharedState;
 use eframe::egui;
 
@@ -126,10 +127,18 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
         .show(ctx, |ui| {
-            // Page title (no back button - use tab navigation)
+            // Page title (improved styling, stays visible)
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(&page_id).strong());
+                ui.add_space(16.0);
+                ui.label(
+                    egui::RichText::new(&page_id)
+                        .strong()
+                        .size(16.0)
+                        .color(shared.theme.colors.on_surface),
+                );
             });
+            ui.add_space(4.0);
             ui.separator();
 
             // Set up callback for page events
@@ -138,46 +147,17 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
 
             use arclain_plugins::types::PluginLayout;
             let content_cache = shared.services.content_cache.clone();
+
             match page_layout {
                 PluginLayout::Single { elements } => {
-                    super::ui::render_ui_elements(
-                        ui,
-                        &elements,
-                        &mut callback,
-                        &shared.theme.colors,
-                        content_cache.as_ref(),
-                        Some(shared),
-                        Some(&plugin_id),
-                    );
-                }
-                PluginLayout::Split {
-                    sidebar,
-                    content,
-                    sidebar_width,
-                } => {
-                    egui::SidePanel::left(format!("plugin_split_sidebar_{}", page_id))
-                        .resizable(true)
-                        .default_width(sidebar_width.unwrap_or(250.0))
-                        .show_inside(ui, |ui| {
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                crate::features::plugins::presentation::rendering::render_ui_elements(
-
-                                    ui,
-                                    &sidebar,
-                                    &mut callback,
-                                    &shared.theme.colors,
-                                    content_cache.as_ref(),
-                                    Some(shared),
-                                    Some(&plugin_id),
-                                );
-                            });
-                        });
-
-                    egui::CentralPanel::default().show_inside(ui, |ui| {
-                        egui::ScrollArea::vertical().show(ui, |ui| {
+                    // Wrap in Form to provide ScrollArea (fixes cutoff bug)
+                    Form::new()
+                        .id(format!("plugin_page_single_{}", page_id))
+                        .margin(16.0)
+                        .show(ui, &shared.theme, |ui| {
                             super::ui::render_ui_elements(
                                 ui,
-                                &content,
+                                &elements,
                                 &mut callback,
                                 &shared.theme.colors,
                                 content_cache.as_ref(),
@@ -185,7 +165,51 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                                 Some(&plugin_id),
                             );
                         });
-                    });
+                }
+                PluginLayout::Split {
+                    sidebar,
+                    content,
+                    sidebar_width,
+                } => {
+                    // Wrap in Frame for consistent margin
+                    egui::Frame::NONE
+                        .inner_margin(16.0)
+                        .show(ui, |ui| {
+                            egui::SidePanel::left(format!("plugin_split_sidebar_{}", page_id))
+                                .resizable(true)
+                                .default_width(sidebar_width.unwrap_or(250.0))
+                                .show_inside(ui, |ui| {
+                                    egui::ScrollArea::vertical()
+                                        .id_salt(format!("plugin_split_sidebar_scroll_{}", page_id))
+                                        .show(ui, |ui| {
+                                            super::ui::render_ui_elements(
+                                                ui,
+                                                &sidebar,
+                                                &mut callback,
+                                                &shared.theme.colors,
+                                                content_cache.as_ref(),
+                                                Some(shared),
+                                                Some(&plugin_id),
+                                            );
+                                        });
+                                });
+
+                            egui::CentralPanel::default().show_inside(ui, |ui| {
+                                egui::ScrollArea::vertical()
+                                    .id_salt(format!("plugin_split_content_scroll_{}", page_id))
+                                    .show(ui, |ui| {
+                                        super::ui::render_ui_elements(
+                                            ui,
+                                            &content,
+                                            &mut callback,
+                                            &shared.theme.colors,
+                                            content_cache.as_ref(),
+                                            Some(shared),
+                                            Some(&plugin_id),
+                                        );
+                                    });
+                            });
+                        });
                 }
             }
         });

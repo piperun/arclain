@@ -1,4 +1,5 @@
 use crate::features::settings::types::SettingsAction;
+use crate::shared::components::Form;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_core::UiService;
@@ -125,11 +126,13 @@ pub fn render_interface_settings(
         }
     }
 
-    ui.vertical(|ui| {
-        ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
+    Form::new()
+        .id("interface_settings")
+        .show(ui, theme, |ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
-        // Toolbar section - just Edit Layout button
-        render_section(ui, theme, "Toolbar", |ui| {
+            // Toolbar section - just Edit Layout button
+            render_section(ui, theme, "Toolbar", |ui| {
             ui.label(
                 egui::RichText::new("Customize toolbar button arrangement")
                     .size(12.0)
@@ -149,8 +152,6 @@ pub fn render_interface_settings(
             }
         });
 
-        ui.add_space(8.0);
-
         // Context Menu section
         render_section(ui, theme, "Context Menu", |ui| {
             sections::context_menu_section::render(
@@ -160,8 +161,6 @@ pub fn render_interface_settings(
                 &mut interface_state.dirty,
             );
         });
-
-        ui.add_space(8.0);
 
         // Info Panel section
         render_section(ui, theme, "Info Panel", |ui| {
@@ -173,8 +172,6 @@ pub fn render_interface_settings(
             );
         });
 
-        ui.add_space(8.0);
-
         // Layout section
         render_section(ui, theme, "Layout", |ui| {
             sections::layout_section::render(
@@ -184,8 +181,6 @@ pub fn render_interface_settings(
                 &mut interface_state.dirty,
             );
         });
-
-        ui.add_space(8.0);
 
         // Header section - button labels
         render_section(ui, theme, "Header", |ui| {
@@ -234,7 +229,7 @@ pub fn render_interface_settings(
                 });
             }
         }
-    });
+        });
 
     // Layout type selection dialog
     if interface_state.layout_dialog_open {
@@ -305,7 +300,7 @@ pub fn render_interface_settings(
     action
 }
 
-/// Helper function to render a settings section with consistent styling
+/// Helper function to render a settings section with consistent Y2K styling
 fn render_section<R>(
     ui: &mut egui::Ui,
     theme: &AppTheme,
@@ -313,10 +308,9 @@ fn render_section<R>(
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
     egui::Frame::NONE
-        .fill(theme.colors.surface_variant)
-        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-        .corner_radius(8.0)
-        .inner_margin(20.0)
+        .stroke(egui::Stroke::new(1.0, theme.colors.outline))  // Keep border
+        .corner_radius(egui::CornerRadius::ZERO)                // Y2K: zero radius
+        .inner_margin(12.0)                                     // Reduce from 20.0
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.label(

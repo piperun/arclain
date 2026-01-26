@@ -1,23 +1,43 @@
 use crate::shared::theme::{AppTheme, ThemeColors};
 use eframe::egui;
 
-/// A standardized page layout for settings content
-pub struct SettingsForm;
+/// A standardized page layout for content with scrolling
+pub struct Form {
+    id: Option<String>,
+    margin: f32,
+}
 
-impl SettingsForm {
+impl Form {
     pub fn new() -> Self {
-        Self
+        Self {
+            id: None,
+            margin: 24.0,
+        }
+    }
+
+    /// Set a custom scroll area ID (for multiple forms on same page)
+    pub fn id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
+    }
+
+    /// Set custom inner margin (default: 24.0)
+    pub fn margin(mut self, margin: f32) -> Self {
+        self.margin = margin;
+        self
     }
 
     pub fn show<F>(self, ui: &mut egui::Ui, _theme: &AppTheme, add_contents: F)
     where
         F: FnOnce(&mut egui::Ui),
     {
+        let scroll_id = self.id.unwrap_or_else(|| "form_scroll".to_string());
+
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.inner_margin(24.0)) // Use inner margin for spacing
+            .frame(egui::Frame::NONE.inner_margin(self.margin))
             .show_inside(ui, |ui| {
                 egui::ScrollArea::vertical()
-                    .id_salt("settings_form_scroll")
+                    .id_salt(scroll_id)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         add_contents(ui);
@@ -160,3 +180,7 @@ impl<'a> SettingsGroup<'a> {
         ui.add_space(8.0);
     }
 }
+
+/// Deprecated: Use Form instead
+#[deprecated(since = "0.12.0", note = "Use Form instead")]
+pub type SettingsForm = Form;

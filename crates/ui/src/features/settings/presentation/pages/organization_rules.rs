@@ -7,6 +7,8 @@ mod add_rule_dialog;
 use add_rule_dialog::AddRuleDialog;
 use arclain_core::features::organization::OrganizationRule;
 use arclain_core::OrganizationService;
+use crate::shared::components::item_table::{ItemTable, TableColumn};
+use crate::shared::components::Form;
 
 pub struct RulesPage {
     rules: Option<Vec<OrganizationRule>>,
@@ -46,73 +48,155 @@ impl RulesPage {
             self.refresh_rules(service);
         }
 
-        ui.heading("Organization Rules");
-        ui.label("Manage rules for automatically organizing archives based on metadata.");
-        ui.add_space(8.0);
+        Form::new()
+            .id("organization_rules")
+            .show(ui, theme, |ui| {
+                // Page header
+                ui.label(
+                    egui::RichText::new("Organization Rules")
+                        .size(18.0)
+                        .strong()
+                        .color(theme.colors.on_surface),
+                );
+                ui.label(
+                    egui::RichText::new("Manage rules for automatically organizing archives based on metadata.")
+                        .size(12.0)
+                        .color(theme.colors.on_surface_variant),
+                );
+                ui.add_space(12.0);
 
-        if ui.button("Add New Rule").clicked() {
-            self.dialog.open();
-        }
+                // Header with count and Add button
+                ui.horizontal(|ui| {
+                    if ui.button(format!("{} Add New Rule", egui_phosphor::regular::PLUS)).clicked() {
+                        self.dialog.open();
+                    }
 
-        if let Some(err) = &self.error {
-            ui.colored_label(egui::Color32::RED, err);
-        }
-
-        ui.separator();
-
-        let rule_to_delete = None;
-        if let Some(rules) = &self.rules {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for rule in rules {
-                    ui.group(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.colored_label(egui::Color32::LIGHT_BLUE, &rule.name);
-                            // if rule.is_system {
-                            //     ui.label("(System)");
-                            // }
-                            if !rule.is_enabled {
-                                ui.colored_label(egui::Color32::GRAY, "(Disabled)");
-                            }
-
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
-                                |ui| {
-                                    // if !rule.is_system {
-                                    //     if ui.button("Delete").clicked() {
-                                    //         rule_to_delete = rule.id;
-                                    //     }
-                                    // }
-
-                                    if ui.button("Edit").clicked() {
-                                        self.dialog.edit(rule.clone());
-                                    }
-                                },
+                    if let Some(rules) = &self.rules {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} rules", rules.len()))
+                                    .size(12.0)
+                                    .color(theme.colors.on_surface_variant),
                             );
                         });
+                    }
+                });
 
-                        // Details
-                        ui.horizontal(|ui| {
-                            // ui.label(format!("Category: {}", rule.category));
-                            if let Some(pattern) = &rule.trigger.filename_pattern {
-                                ui.label(format!(" | Pattern: {}", pattern));
-                            }
-                        });
-                        // if let Some(desc) = &rule.description {
-                        //     ui.label(egui::RichText::new(desc).italics().weak());
-                        // }
-                    });
-                    ui.add_space(4.0);
+                // Error display
+                if let Some(err) = &self.error {
+                    ui.add_space(8.0);
+                    ui.colored_label(egui::Color32::RED, err);
                 }
-            });
-        }
 
-        if let Some(id) = rule_to_delete {
-            if let Err(e) = service.delete_domain_rule(id) {
-                self.error = Some(format!("Failed to delete: {}", e));
-            } else {
-                self.rules = None; // Trigger refresh
-            }
-        }
+                ui.add_space(12.0);
+
+                // Table
+                let actions = if let Some(rules) = &self.rules {
+                    let columns = vec![
+                        TableColumn::exact(60.0, "Status"),
+                        TableColumn::resizable(180.0, "Name"),
+                        TableColumn::remainder("Pattern"),
+                        TableColumn::exact(90.0, "Actions").align_right(),
+                    ];
+
+                    ItemTable::new()
+                        .empty_message("No organization rules configured yet.")
+                        .show(ui, theme, &columns, rules, |rule, idx, row, actions| {
+                            // Status column
+                            row.col(|ui| {
+                                if rule.is_enabled {
+                                    ui.label(
+                                        egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
+                                            .color(theme.colors.primary),
+                                    );
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new(egui_phosphor::regular::X_CIRCLE)
+                                            .color(theme.colors.on_surface_variant),
+                                    );
+                                }
+                            });
+
+                            // Name column
+                            row.col(|ui| {
+                                ui.label(
+                                    egui::RichText::new(&rule.name).color(
+                                        if rule.is_enabled {
+                                            theme.colors.on_surface
+                                        } else {
+                                            theme.colors.on_surface_variant
+                                        },
+                                    ),
+                                );
+                            });
+
+                            // Pattern column
+                            row.col(|ui| {
+                                if let Some(pattern) = &rule.trigger.filename_pattern {
+                                    ui.label(
+                                        egui::RichText::new(pattern)
+                                            .family(egui::FontFamily::Monospace)
+                                            .color(theme.colors.on_surface_variant),
+                                    );
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new("—")
+                                            .color(theme.colors.on_surface_variant),
+                                    );
+                                }
+                            });
+
+                            // Actions column
+                            row.col(|ui| {
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui
+                                        .button(format!("{}", egui_phosphor::regular::PENCIL))
+                                        .on_hover_text("Edit rule")
+                                        .clicked()
+                                    {
+                                        actions.edit(idx);
+                                    }
+
+                                    ui.add_space(4.0);
+
+                                    // Delete button commented out as in original
+                                    // if ui
+                                    //     .button(format!("{}", egui_phosphor::regular::TRASH))
+                                    //     .on_hover_text("Delete rule")
+                                    //     .clicked()
+                                    // {
+                                    //     actions.delete(idx);
+                                    // }
+                                });
+                            });
+                        })
+                } else {
+                    let empty_rules: Vec<OrganizationRule> = Vec::new();
+                    ItemTable::new().show(ui, theme, &[], &empty_rules, |_, _, _, _| {})
+                };
+
+                // Handle deferred actions
+                if let Some(edit_idx) = actions.get_edit() {
+                    if let Some(rules) = &self.rules {
+                        if let Some(rule) = rules.get(*edit_idx) {
+                            self.dialog.edit(rule.clone());
+                        }
+                    }
+                }
+
+                // Handle delete action (currently commented out but infrastructure is ready)
+                // if let Some(delete_idx) = actions.get_delete() {
+                //     if let Some(rules) = &self.rules {
+                //         if let Some(rule) = rules.get(*delete_idx) {
+                //             if let Err(e) = service.delete_domain_rule(rule.id) {
+                //                 self.error = Some(format!("Failed to delete: {}", e));
+                //             } else {
+                //                 self.rules = None; // Trigger refresh
+                //             }
+                //         }
+                //     }
+                // }
+            });
 
         // Handle Dialog
         if self.dialog.is_open() {
