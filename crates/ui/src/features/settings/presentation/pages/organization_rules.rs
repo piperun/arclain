@@ -2,10 +2,8 @@
 //!
 //! CRUD interface for managing organization rules. Part of the Settings feature.
 
-mod add_rule_dialog;
 mod rule_editor;
 
-use add_rule_dialog::AddRuleDialog;
 pub use rule_editor::{RuleEditorState, RuleEditorAction};
 use arclain_core::features::organization::OrganizationRule;
 use arclain_core::OrganizationService;
@@ -16,7 +14,6 @@ use crate::shared::components::Form;
 
 pub struct RulesPage {
     rules: Option<Vec<OrganizationRule>>,
-    dialog: AddRuleDialog,
     error: Option<String>,
     /// State for the rule editor (when editing a rule via dedicated page)
     editor_state: Option<RuleEditorState>,
@@ -26,7 +23,6 @@ impl Default for RulesPage {
     fn default() -> Self {
         Self {
             rules: None,
-            dialog: AddRuleDialog::default(),
             error: None,
             editor_state: None,
         }
@@ -76,7 +72,7 @@ impl RulesPage {
                 // Header with count and Add button
                 ui.horizontal(|ui| {
                     if ui.button(format!("{} Add New Rule", egui_phosphor::regular::PLUS)).clicked() {
-                        self.dialog.open();
+                        action = Some(SettingsAction::NavigateTo(SettingsPage::EditRule(0)));
                     }
 
                     if let Some(rules) = &self.rules {
@@ -205,17 +201,6 @@ impl RulesPage {
                 //     }
                 // }
             });
-
-        // Handle Dialog (for quick add - still using dialog for new rules)
-        if self.dialog.is_open() {
-            if let Some(new_rule) = self.dialog.show(ui.ctx(), theme) {
-                if let Err(e) = service.save_domain_rule(&new_rule) {
-                    self.error = Some(format!("Failed to save rule: {}", e));
-                } else {
-                    self.rules = None; // Trigger refresh
-                }
-            }
-        }
 
         action
     }
