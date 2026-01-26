@@ -4,7 +4,7 @@
 
 use arclain_widgets::{ButtonSize, TextButton, ToggleSwitch};
 use crate::features::settings::types::{NetworkSettingsState, SettingsAction};
-use crate::shared::components::settings_form::{SettingsForm, SettingsGroup, SettingsRow};
+use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -16,7 +16,7 @@ pub fn render(
 ) -> Option<SettingsAction> {
     let mut action = None;
 
-    SettingsForm::new().show(ui, theme, |ui| {
+    Form::new().show(ui, theme, |ui| {
         // SOCKS5 Proxy Group
         SettingsGroup::new("SOCKS5 Proxy")
             .content(|ui, colors| {

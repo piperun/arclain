@@ -6,7 +6,7 @@ use crate::features::plugins::domain::types::PluginsListState;
 
 use crate::features::plugins::presentation::rendering as ui;
 
-use crate::shared::components::SettingsForm;
+use crate::shared::components::Form;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_plugins::PluginManager;
@@ -62,7 +62,7 @@ pub fn render(
         None
     };
 
-    SettingsForm::new().show(ui, theme, |ui| {
+    Form::new().show(ui, theme, |ui| {
         // Global Settings
         crate::shared::components::settings_form::SectionHeader::new("Global Settings")
             .show(ui, &theme.colors);

@@ -181,6 +181,3 @@ impl<'a> SettingsGroup<'a> {
     }
 }
 
-/// Deprecated: Use Form instead
-#[deprecated(since = "0.12.0", note = "Use Form instead")]
-pub type SettingsForm = Form;

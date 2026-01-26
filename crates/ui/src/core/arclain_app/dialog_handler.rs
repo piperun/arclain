@@ -155,21 +155,34 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         match result {
             crate::features::file_editing::FileEditResult::Save { new_name, content } => {
                 if let Some(archive) = app.shared_state.signals().archive_path.get() {
-                    let state = app.shared_state.app_state.lock();
                     let mut status = app.shared_state.signals().status_bar.get();
-                    match state.add_or_update_file_from_str(&archive, &new_name, &content) {
+
+                    // Save the file to archive
+                    let save_result = {
+                        let state = app.shared_state.app_state.lock();
+                        state.add_or_update_file_from_str(&archive, &new_name, &content)
+                    };
+
+                    match save_result {
                         Ok(_) => {
                             status.message = "File saved".to_string();
-                            // app.shared_state.signals().status_bar.set(status);
-                            // TODO: Refresh file list
+
+                            // Re-list the archive to update entries signal
+                            let mut state = app.shared_state.app_state.lock();
+                            if let Ok(_) = state.list_archive(&archive) {
+                                // Refresh the browser view from updated entries
+                                crate::core::operations::navigation_view::refresh_view_entries(
+                                    &state.signals,
+                                );
+                            }
                         }
                         Err(e) => {
                             let msg = format!("Failed to save file: {}", e);
                             crate::core::utils::log_failure("FileEdit", &msg);
                             status.message = msg;
-                            // app.shared_state.signals().status_bar.set(status);
                         }
                     }
+                    app.shared_state.signals().status_bar.set_if_changed(status);
                 }
                 edit_dialog.show = false;
             }
