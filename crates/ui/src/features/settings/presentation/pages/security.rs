@@ -4,7 +4,7 @@
 
 use arclain_widgets::{ButtonSize, TextButton};
 use crate::features::settings::types::{EncryptedCrcPolicy, SecuritySettingsState, SettingsAction};
-use crate::shared::components::settings_form::{SettingsForm, SettingsGroup};
+use crate::shared::components::settings_form::{Form, SettingsGroup};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -16,7 +16,7 @@ pub fn render(
 ) -> Option<SettingsAction> {
     let mut action = None;
 
-    SettingsForm::new().show(ui, theme, |ui| {
+    Form::new().show(ui, theme, |ui| {
         SettingsGroup::new("Encryption")
             .content(|ui, colors| {
                 ui.label(

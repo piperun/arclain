@@ -4,7 +4,7 @@
 
 use arclain_widgets::ToggleSwitch;
 use crate::features::settings::types::{GeneralSettingsState, SettingsAction};
-use crate::shared::components::settings_form::{SettingsForm, SettingsGroup, SettingsRow};
+use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -14,7 +14,7 @@ pub fn render(
     theme: &AppTheme,
     state: &mut GeneralSettingsState,
 ) -> Option<SettingsAction> {
-    SettingsForm::new().show(ui, theme, |ui| {
+    Form::new().show(ui, theme, |ui| {
         // Section: Appearance
         SettingsGroup::new("Appearance")
             .content(|ui, colors| {

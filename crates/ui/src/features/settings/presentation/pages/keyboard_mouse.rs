@@ -5,7 +5,7 @@
 use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, TextButton};
 use crate::features::hotkeys::{HotkeyAction, HotkeyBinding, HotkeyManager, InputKey, KeyboardKey, Modifiers, MouseButton};
 use crate::features::settings::types::SettingsAction;
-use crate::shared::components::settings_form::{SettingsForm, SettingsGroup};
+use crate::shared::components::settings_form::{Form, SettingsGroup};
 use crate::shared::theme::AppTheme;
 use arclain_theme::ThemeColors;
 use eframe::egui;
@@ -57,7 +57,7 @@ pub fn render(
     theme: &AppTheme,
     state: &mut KeyboardMouseSettingsState,
 ) -> Option<SettingsAction> {
-    SettingsForm::new().show(ui, theme, |ui| {
+    Form::new().show(ui, theme, |ui| {
         // Description
         ui.label(
             egui::RichText::new(

@@ -4,7 +4,7 @@
 
 use crate::features::plugins::domain::types::{PluginStatus, PluginsListState};
 
-use crate::shared::components::SettingsForm;
+use crate::shared::components::Form;
 use crate::shared::theme::AppTheme;
 use arclain_widgets::Chips;
 use eframe::egui;
@@ -13,7 +13,7 @@ use eframe::egui;
 pub fn render(ui: &mut egui::Ui, theme: &AppTheme, state: &mut PluginsListState) {
     let filter_query = state.filter_text.clone();
 
-    SettingsForm::new().show(ui, theme, |ui| {
+    Form::new().show(ui, theme, |ui| {
         ui.add_space(8.0);
 
         for plugin in &state.plugins {
