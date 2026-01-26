@@ -31,7 +31,7 @@ pub use collapsible_section::CollapsibleSection;
 pub use icon_button::{IconButton, IconButtonSize};
 pub use segmented_control::SegmentedControl;
 pub use text::{get_theme, pixel_align, set_theme, Text};
-pub use text_input::{TextInput, TextInputSize};
+pub use text_input::{TextInput, TextInputSize, TextInputState, TextInputResponse, SlotContent};
 pub use themed_slider::ThemedSlider;
 pub use toast::{Toast, ToastLevel, Toaster};
 pub use toggle_button::ToggleButton;
