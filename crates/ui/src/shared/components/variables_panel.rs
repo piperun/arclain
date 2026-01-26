@@ -280,43 +280,58 @@ impl VariablePicker {
 
     /// Render a single variable row, returns true if clicked
     fn render_variable_row(ui: &mut egui::Ui, theme: &AppTheme, var: &TemplateVariable) -> bool {
-        let response = ui
-            .horizontal(|ui| {
-                ui.set_width(ui.available_width());
+        let row_height = 28.0;
+        let available_width = ui.available_width();
 
-                // Variable placeholder
-                ui.label(
-                    egui::RichText::new(var.placeholder())
-                        .family(egui::FontFamily::Monospace)
-                        .size(12.0)
-                        .color(theme.colors.primary),
-                );
+        // Allocate space and create interactive response FIRST
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(available_width, row_height),
+            egui::Sense::click(),
+        );
 
-                ui.add_space(8.0);
-
-                // Description (truncated)
-                let desc = if var.description.len() > 35 {
-                    format!("{}...", &var.description[..32])
-                } else {
-                    var.description.clone()
-                };
-                ui.label(
-                    egui::RichText::new(desc)
-                        .size(11.0)
-                        .color(theme.colors.on_surface_variant),
-                );
-            })
-            .response;
-
-        // Make entire row clickable with hover effect
-        let response = response.interact(egui::Sense::click());
+        // Draw hover/selection background
         if response.hovered() {
             ui.painter().rect_filled(
-                response.rect,
-                2.0,
-                theme.colors.surface_variant.gamma_multiply(0.5),
+                rect,
+                4.0,
+                theme.colors.surface_variant,
             );
         }
+
+        // Draw content on top
+        let text_rect = rect.shrink2(egui::vec2(8.0, 4.0));
+
+        // Variable placeholder (left side)
+        let placeholder_text = var.placeholder();
+        let placeholder_galley = ui.painter().layout_no_wrap(
+            placeholder_text.clone(),
+            egui::FontId::new(12.0, egui::FontFamily::Monospace),
+            theme.colors.primary,
+        );
+        ui.painter().galley(
+            egui::pos2(text_rect.left(), text_rect.center().y - placeholder_galley.size().y / 2.0),
+            placeholder_galley,
+            theme.colors.primary,
+        );
+
+        // Description (right side, after placeholder)
+        let desc = if var.description.len() > 40 {
+            format!("{}...", &var.description[..37])
+        } else {
+            var.description.clone()
+        };
+        let desc_galley = ui.painter().layout_no_wrap(
+            desc,
+            egui::FontId::new(11.0, egui::FontFamily::Proportional),
+            theme.colors.on_surface_variant,
+        );
+        // Position description after placeholder with some spacing
+        let desc_x = text_rect.left() + 100.0; // Fixed offset for alignment
+        ui.painter().galley(
+            egui::pos2(desc_x, text_rect.center().y - desc_galley.size().y / 2.0),
+            desc_galley,
+            theme.colors.on_surface_variant,
+        );
 
         // Tooltip with full description and example
         let tooltip = if let Some(example) = &var.example {
