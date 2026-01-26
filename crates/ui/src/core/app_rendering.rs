@@ -211,9 +211,7 @@ pub fn render_toolbar_panel(
             let can_go_forward = nav.can_go_forward();
             let can_go_up = nav.can_go_up();
             let archive_loaded = shared_state.signals().archive_path.get().is_some();
-            // Selection tracking requires access to browser state entries - for now use signal
-            // TODO: Add selection count signal for proper decoupling
-            let has_selection = false; // Requires browser_state access - see toolbar_handler.rs for working implementation
+            let has_selection = shared_state.signals().selection_count.get() > 0;
             let has_metadata = shared_state.signals().metadata.get().is_some();
             let toolbar_config =
                 components::toolbar::ToolbarConfig::new(shared_state.signals().toolbar_items.get());
