@@ -188,6 +188,19 @@ pub trait ArchiveBackend: Send + Sync {
     fn recompress_7z(&self, source: &Path, dest_7z: &Path) -> Result<()>;
     fn add_files(&self, archive: &Path, files: &[PathBuf]) -> Result<()>;
     fn create_archive(&self, dest: &Path, files: &[PathBuf], format: &str) -> Result<()>;
+
+    /// Create archive with profile-based compression settings
+    ///
+    /// Default implementation calls `create_archive` with the profile's format.
+    /// Backends that support configurable compression should override this.
+    fn create_archive_with_profile(
+        &self,
+        dest: &Path,
+        files: &[PathBuf],
+        profile: &crate::features::organization::ArchiveProfile,
+    ) -> Result<()> {
+        self.create_archive(dest, files, profile.format.format_arg())
+    }
     fn read_text_file(
         &self,
         archive: &Path,

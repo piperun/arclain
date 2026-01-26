@@ -84,6 +84,27 @@ impl ConfigDb {
             [],
         )?;
 
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS archive_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                format TEXT NOT NULL DEFAULT '7z',
+                compression_level INTEGER NOT NULL DEFAULT 9,
+                compression_method TEXT,
+                solid_archive INTEGER NOT NULL DEFAULT 1,
+                encrypt_headers INTEGER NOT NULL DEFAULT 0,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                is_system INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                modified_at TEXT
+            );",
+            [],
+        )?;
+
+        // Seed default archive profiles if table is empty
+        Self::seed_default_archive_profiles(conn)?;
+
         // Initialize UI configuration tables
         crate::ui::ensure_ui_tables(conn)?;
         crate::ui::seed_defaults_if_empty(conn)?;
@@ -134,6 +155,45 @@ impl ConfigDb {
         add_column_if_missing("socks5_enabled", "INTEGER NOT NULL DEFAULT 0")?;
         add_column_if_missing("socks5_username", "TEXT")?;
         add_column_if_missing("plugin_proxy_settings", "TEXT")?;
+
+        Ok(())
+    }
+
+    /// Seed default archive profiles if the table is empty
+    fn seed_default_archive_profiles(conn: &Connection) -> Result<()> {
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM archive_profiles",
+            [],
+            |row| row.get(0),
+        )?;
+
+        if count == 0 {
+            tracing::info!("[ConfigDb] Seeding default archive profiles");
+
+            // Maximum Compression (7z) - default
+            conn.execute(
+                "INSERT INTO archive_profiles
+                 (name, description, format, compression_level, compression_method, solid_archive, is_default, is_system)
+                 VALUES ('Maximum Compression (7z)', 'Best compression ratio, slower speed. Uses LZMA2 algorithm.', '7z', 9, 'LZMA2', 1, 1, 1)",
+                [],
+            )?;
+
+            // Fast Compression (7z)
+            conn.execute(
+                "INSERT INTO archive_profiles
+                 (name, description, format, compression_level, compression_method, solid_archive, is_system)
+                 VALUES ('Fast Compression (7z)', 'Quick compression for large archives. Lower ratio but much faster.', '7z', 1, 'LZMA2', 0, 1)",
+                [],
+            )?;
+
+            // Zip Compatible
+            conn.execute(
+                "INSERT INTO archive_profiles
+                 (name, description, format, compression_level, compression_method, solid_archive, is_system)
+                 VALUES ('Zip Compatible', 'Standard ZIP format for maximum compatibility with other tools.', 'zip', 9, 'Deflate', 0, 1)",
+                [],
+            )?;
+        }
 
         Ok(())
     }

@@ -33,9 +33,17 @@ impl<'a> ActionContext<'a> {
                         let archive_path = self.shared.signals().archive_path.get();
 
                         if let Some(path) = archive_path {
-                            // Build destination path by changing extension to .7z
-                            // TODO: make this configurable
-                            let dest_path = path.with_extension("7z");
+                            // Get selected profile from organizer page UI state
+                            let profile = page
+                                .panel
+                                .ui_state
+                                .profiles
+                                .get(page.panel.ui_state.selected_profile_index)
+                                .cloned();
+
+                            // Build destination path by changing extension based on profile
+                            let dest_ext = profile.as_ref().map(|p| p.format.extension()).unwrap_or("7z");
+                            let dest_path = path.with_extension(dest_ext);
 
                             // Run asynchronously via ArchiveOperations
                             crate::features::archive_operations::run_organization_plan(
@@ -43,6 +51,7 @@ impl<'a> ActionContext<'a> {
                                 plan.clone(),
                                 path,
                                 dest_path,
+                                profile,
                             );
                             self.status_info.message = "Organization started...".to_string();
                         }

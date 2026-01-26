@@ -161,6 +161,7 @@ impl SettingsFeature {
         page: &SettingsPage,
         breadcrumb: Vec<(String, crate::core::AppPage)>,
         rules_page: Option<&mut crate::features::settings::presentation::pages::RulesPage>,
+        profiles_page: Option<&mut crate::features::settings::presentation::pages::ProfilesPage>,
 
         search_text: &str,
     ) -> Option<crate::core::AppPage> {
@@ -253,6 +254,7 @@ impl SettingsFeature {
                                 pm_guard.as_deref(),
                                 &mut self.plugins_state,
                                 rules_page,
+                                profiles_page,
                                 &mut self.interface_state,
                                 &mut self.toolbar_layout_state,
                                 &mut self.info_panel_layout_state,

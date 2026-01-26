@@ -201,6 +201,24 @@ diesel::table! {
 }
 
 diesel::table! {
+    /// Archive format profiles for organization
+    archive_profiles (id) {
+        id -> Integer,
+        name -> Text,
+        description -> Nullable<Text>,
+        format -> Text,
+        compression_level -> Integer,
+        compression_method -> Nullable<Text>,
+        solid_archive -> Bool,
+        encrypt_headers -> Bool,
+        is_default -> Bool,
+        is_system -> Bool,
+        created_at -> Text,
+        modified_at -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
     /// User configuration (singleton table)
     user_config (id) {
         id -> Integer,
@@ -233,6 +251,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     app_config,
     title_replacements,
     organization_rules,
+    archive_profiles,
     domain_whitelist,
     ui_items,
     ui_regions,

@@ -149,6 +149,7 @@ impl BrowserController {
                 .to_string();
 
             let rules = self.load_org_rules(shared);
+            let profiles = self.load_profiles(shared);
             let entries = shared.signals().entries.get().as_ref().clone();
             let metadata = shared.signals().game_metadata.get();
 
@@ -158,6 +159,7 @@ impl BrowserController {
                         archive_name.clone(),
                         entries,
                         rules,
+                        profiles,
                         metadata,
                     ),
                 ));
@@ -204,6 +206,26 @@ impl BrowserController {
             }
         }
         rules
+    }
+
+    fn load_profiles(
+        &self,
+        shared: &SharedState,
+    ) -> Vec<arclain_core::features::organization::ArchiveProfile> {
+        let state = shared.app_state.lock();
+        if let Some(dbs) = &state.dbs {
+            let pool = &dbs.config_pool;
+            if let Ok(mut conn) = pool.get() {
+                if let Ok(db_profiles) = arclain_db::list_profiles_diesel(&mut conn) {
+                    return db_profiles
+                        .iter()
+                        .map(arclain_core::features::organization::ArchiveProfile::from_db)
+                        .collect();
+                }
+            }
+        }
+        // Return default profile if database not available
+        vec![arclain_core::features::organization::ArchiveProfile::default()]
     }
 
     fn handle_metadata(&self, shared: &SharedState, json: String) {

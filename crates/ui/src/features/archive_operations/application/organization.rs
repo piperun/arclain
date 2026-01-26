@@ -1,9 +1,15 @@
+use arclain_core::features::organization::ArchiveProfile;
+
 /// Run organization plan asynchronously
+///
+/// If `profile` is provided, uses its compression settings.
+/// Otherwise falls back to default 7z maximum compression.
 pub fn run_organization_plan(
     shared: crate::shared::SharedState,
     plan: arclain_core::features::organization::engine::OrganizationPlan,
     source: std::path::PathBuf,
     dest: std::path::PathBuf,
+    profile: Option<ArchiveProfile>,
 ) {
     let signals = shared.app_state.lock().signals.clone();
 
@@ -26,7 +32,7 @@ pub fn run_organization_plan(
         // We use the helper from features/organization/operations.rs which handles password retries
         let result =
             crate::features::organization::application::operations::execute_organization_plan(
-                &shared, &plan, &source, &dest,
+                &shared, &plan, &source, &dest, profile.as_ref(),
             );
 
         match result {

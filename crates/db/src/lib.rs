@@ -53,6 +53,14 @@ pub use organization::{
     save_rule, save_rule_diesel, DbOrganizationRule, DbOrganizationRuleRow,
 };
 
+mod archive_profiles;
+pub use archive_profiles::{
+    delete_profile, delete_profile_diesel, get_default_profile, get_default_profile_diesel,
+    get_profile, get_profile_diesel, list_profiles, list_profiles_diesel, save_profile,
+    save_profile_diesel, set_default_profile, set_default_profile_diesel, DbArchiveProfile,
+    DbArchiveProfileRow,
+};
+
 mod checksum;
 pub use checksum::{
     begin_checksum_operation, delete_checksum_operation, get_checksum_algorithm,

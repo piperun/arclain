@@ -43,6 +43,7 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                         &page,
                         breadcrumb,
                         Some(&mut app.organization_feature.rules_page),
+                        Some(&mut app.organization_feature.profiles_page),
                         &search_text,
                     ) {
                         app.page_navigator.navigate_to(target);
