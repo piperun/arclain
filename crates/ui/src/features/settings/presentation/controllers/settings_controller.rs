@@ -284,5 +284,8 @@ pub fn handle_action(
         SettingsAction::NavigateTo(_) => {
             // Navigation is handled by extract_navigation before this function is called
         }
+        SettingsAction::SaveEditedRule => {
+            // Handled specially in SettingsFeature::render where rules_page is available
+        }
     }
 }
