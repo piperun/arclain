@@ -206,25 +206,23 @@ fn render_rule_form(
     // Folder name (only shown when organization is enabled)
     if state.rule.actions.use_standard_layout {
         form_row(ui, theme, "Folder Name", |ui| {
-            ui.horizontal(|ui| {
-                let mut root = state.rule.actions.root_folder.clone().unwrap_or_else(|| "Game".to_string());
-                if ui.add(
-                    TextInput::new(&mut root)
-                        .hint("e.g. {title} or Game")
-                        .width(FIELD_WIDTH - 36.0)
-                        .with_theme_colors(&theme.colors)
-                ).changed() {
-                    state.rule.actions.root_folder = Some(root);
-                    state.is_dirty = true;
-                }
-                if ui.button(egui_phosphor::regular::BRACKETS_CURLY)
-                    .on_hover_text("Insert variable")
-                    .clicked()
-                {
-                    state.target_field = Some(RuleField::FolderName);
-                    state.variable_picker.open();
-                }
-            });
+            let mut root = state.rule.actions.root_folder.clone().unwrap_or_else(|| "Game".to_string());
+            let response = TextInput::new(&mut root)
+                .hint("e.g. {title} or Game")
+                .width(FIELD_WIDTH)
+                .suffix_icon(egui_phosphor::regular::BRACKETS_CURLY)
+                .interactive_suffix()
+                .with_theme_colors(&theme.colors)
+                .show(ui);
+
+            if response.changed() {
+                state.rule.actions.root_folder = Some(root);
+                state.is_dirty = true;
+            }
+            if response.suffix_clicked {
+                state.target_field = Some(RuleField::FolderName);
+                state.variable_picker.open();
+            }
         });
     }
 
@@ -240,25 +238,23 @@ fn render_rule_form(
 
     // Archive name
     form_row(ui, theme, "Archive Name", |ui| {
-        ui.horizontal(|ui| {
-            let mut output_name = state.rule.actions.output_name.clone().unwrap_or_default();
-            if ui.add(
-                TextInput::new(&mut output_name)
-                    .hint("Leave empty to keep original")
-                    .width(FIELD_WIDTH - 36.0)
-                    .with_theme_colors(&theme.colors)
-            ).changed() {
-                state.rule.actions.output_name = if output_name.is_empty() { None } else { Some(output_name) };
-                state.is_dirty = true;
-            }
-            if ui.button(egui_phosphor::regular::BRACKETS_CURLY)
-                .on_hover_text("Insert variable")
-                .clicked()
-            {
-                state.target_field = Some(RuleField::ArchiveName);
-                state.variable_picker.open();
-            }
-        });
+        let mut output_name = state.rule.actions.output_name.clone().unwrap_or_default();
+        let response = TextInput::new(&mut output_name)
+            .hint("Leave empty to keep original")
+            .width(FIELD_WIDTH)
+            .suffix_icon(egui_phosphor::regular::BRACKETS_CURLY)
+            .interactive_suffix()
+            .with_theme_colors(&theme.colors)
+            .show(ui);
+
+        if response.changed() {
+            state.rule.actions.output_name = if output_name.is_empty() { None } else { Some(output_name) };
+            state.is_dirty = true;
+        }
+        if response.suffix_clicked {
+            state.target_field = Some(RuleField::ArchiveName);
+            state.variable_picker.open();
+        }
     });
 
     // Copy folder name button
