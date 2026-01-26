@@ -23,6 +23,8 @@ pub fn render_header(
     let toolbar_reset_clicked = Cell::new(false);
     let info_panel_save_clicked = Cell::new(false);
     let info_panel_reset_clicked = Cell::new(false);
+    let rule_cancel_clicked = Cell::new(false);
+    let rule_save_clicked = Cell::new(false);
 
     let header_config =
         if *page == SettingsPage::Plugins {
@@ -77,17 +79,33 @@ SettingsHeaderConfig::new("Info Panel Layout")
                 }
             })
         } else if matches!(page, SettingsPage::EditRule(_)) {
-            // Rule Editor has its own save/cancel buttons, so no save action in header
+            // Rule Editor - both Cancel and Save in header
             let title = if let SettingsPage::EditRule(id) = page {
                 if *id == 0 { "New Rule" } else { "Edit Rule" }
             } else {
                 "Edit Rule"
             };
+            let is_dirty = feature.rule_editor_dirty;
             crate::features::settings::presentation::views::header_config::
 SettingsHeaderConfig::new(title)
             .icon(page.icon())
             .description(page.description())
-            .has_changes(false) // Hide save button
+            .has_changes(is_dirty)
+            .on_save(|| {
+                rule_save_clicked.set(true);
+            })
+            .custom_actions(|ui| {
+                if ui.add(
+                    arclain_widgets::TextButton::new(
+                        format!("{} Cancel", egui_phosphor::regular::X),
+                        arclain_widgets::button::ButtonSize::Medium,
+                    )
+                    .variant(arclain_theme::ButtonVariant::Secondary)
+                    .with_theme_colors(&shared.theme.colors)
+                ).clicked() {
+                    rule_cancel_clicked.set(true);
+                }
+            })
         } else {
             // Default Header for other pages
             crate::features::settings::presentation::views::header_config::
@@ -125,7 +143,7 @@ SettingsHeaderConfig::new(page.display_name())
     // Save Action Logic
     if let Some(save_action) = header_config.on_save {
         header = header.on_save(save_action);
-    } else if *page != SettingsPage::Plugins {
+    } else if *page != SettingsPage::Plugins && !matches!(page, SettingsPage::EditRule(_)) {
         header = header.on_save(|| match page {
             SettingsPage::General => {
                 action = Some(SettingsAction::SaveGeneral {
@@ -298,6 +316,14 @@ SettingsHeaderConfig::new(page.display_name())
     if info_panel_reset_clicked.get() {
         feature.info_panel_layout_state.loaded = false;
         feature.info_panel_layout_state.dirty = false;
+    }
+
+    if rule_cancel_clicked.get() {
+        action = Some(SettingsAction::NavigateTo(SettingsPage::OrganizationRules));
+    }
+
+    if rule_save_clicked.get() {
+        action = Some(SettingsAction::SaveEditedRule);
     }
 
     action

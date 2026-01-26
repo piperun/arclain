@@ -174,7 +174,13 @@ pub fn render_settings_content(
             if let Some(rp) = rules_page {
                 if let Some(shared_state) = shared {
                     if let Some(org_service) = shared_state.services.organization_service.as_ref() {
-                        if let Some(editor_action) = rp.render_edit_rule(ui, theme, org_service, *rule_id) {
+                        if let Some(editor_action) = rp.render_edit_rule(
+                            ui,
+                            theme,
+                            org_service,
+                            *rule_id,
+                            plugin_manager,
+                        ) {
                             use crate::features::settings::presentation::pages::RuleEditorAction;
                             match editor_action {
                                 RuleEditorAction::Saved | RuleEditorAction::Cancelled => {

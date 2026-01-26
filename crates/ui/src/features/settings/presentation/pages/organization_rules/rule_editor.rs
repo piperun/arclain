@@ -3,7 +3,6 @@
 //! Full-page editor for organization rules with template variable support.
 
 use arclain_core::features::organization::OrganizationRule;
-use arclain_core::OrganizationService;
 use crate::shared::components::{Form, Switch, VariablePicker, VariableGroup, TemplateVariable};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
@@ -58,37 +57,19 @@ impl RuleEditorState {
 }
 
 /// Render the rule editor page
+/// Note: Save and Cancel buttons are in the page header, not here
 pub fn render_rule_editor(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut RuleEditorState,
-    service: &OrganizationService,
 ) -> RuleEditorAction {
-    let mut action = RuleEditorAction::None;
     let field_width = 300.0;
 
-    // Action buttons at top right
-    ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button(format!("{} Save", egui_phosphor::regular::FLOPPY_DISK)).clicked() {
-                match service.save_domain_rule(&state.rule) {
-                    Ok(_) => action = RuleEditorAction::Saved,
-                    Err(e) => state.error = Some(format!("Failed to save: {}", e)),
-                }
-            }
-            ui.add_space(8.0);
-            if ui.button(format!("{} Cancel", egui_phosphor::regular::X)).clicked() {
-                action = RuleEditorAction::Cancelled;
-            }
-        });
-    });
-
+    // Error display (if any from previous save attempt)
     if let Some(err) = &state.error {
-        ui.add_space(8.0);
         ui.colored_label(egui::Color32::RED, err);
+        ui.add_space(8.0);
     }
-
-    ui.add_space(12.0);
 
     // Form content
     Form::new()
@@ -116,7 +97,7 @@ pub fn render_rule_editor(
         state.target_field = None;
     }
 
-    action
+    RuleEditorAction::None
 }
 
 fn render_rule_form(

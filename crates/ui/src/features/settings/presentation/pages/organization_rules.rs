@@ -227,6 +227,7 @@ impl RulesPage {
         theme: &crate::shared::theme::AppTheme,
         service: &OrganizationService,
         rule_id: i64,
+        plugin_manager: Option<&arclain_plugins::PluginManager>,
     ) -> Option<RuleEditorAction> {
         // Initialize editor state if not already set or if rule_id changed
         let needs_init = match &self.editor_state {
@@ -235,15 +236,13 @@ impl RulesPage {
         };
 
         if needs_init {
-            if rule_id == 0 {
+            let mut editor_state = if rule_id == 0 {
                 // New rule
-                self.editor_state = Some(RuleEditorState::new_rule());
+                RuleEditorState::new_rule()
             } else {
                 // Load existing rule
                 match service.get_domain_rule(rule_id) {
-                    Ok(Some(rule)) => {
-                        self.editor_state = Some(RuleEditorState::new(rule));
-                    }
+                    Ok(Some(rule)) => RuleEditorState::new(rule),
                     Ok(None) => {
                         ui.label("Rule not found");
                         return Some(RuleEditorAction::Cancelled);
@@ -253,12 +252,19 @@ impl RulesPage {
                         return Some(RuleEditorAction::Cancelled);
                     }
                 }
+            };
+
+            // Load plugin-provided variables
+            if let Some(pm) = plugin_manager {
+                Self::load_plugin_variables(&mut editor_state, pm);
             }
+
+            self.editor_state = Some(editor_state);
         }
 
-        // Render the editor
+        // Render the editor (Save/Cancel are handled in the header)
         if let Some(state) = &mut self.editor_state {
-            let action = rule_editor::render_rule_editor(ui, theme, state, service);
+            let action = rule_editor::render_rule_editor(ui, theme, state);
 
             match action {
                 RuleEditorAction::Saved | RuleEditorAction::Cancelled => {
@@ -276,5 +282,63 @@ impl RulesPage {
     /// Clear the editor state (call when navigating away)
     pub fn clear_editor(&mut self) {
         self.editor_state = None;
+    }
+
+    /// Check if the editor has unsaved changes
+    pub fn is_editor_dirty(&self) -> bool {
+        self.editor_state.as_ref().map(|s| s.is_dirty).unwrap_or(false)
+    }
+
+    /// Save the current rule being edited
+    pub fn save_editor_rule(&mut self, service: &OrganizationService) -> Result<(), String> {
+        let state = self.editor_state.as_mut()
+            .ok_or_else(|| "No rule being edited".to_string())?;
+
+        service.save_domain_rule(&state.rule)
+            .map_err(|e| format!("Failed to save: {}", e))?;
+
+        state.is_dirty = false;
+        Ok(())
+    }
+
+    /// Mark the rule as saved and clear editor state (called after successful save)
+    pub fn mark_saved_and_clear(&mut self) {
+        self.editor_state = None;
+        self.rules = None; // Trigger refresh when returning to list
+    }
+
+    /// Load template variables from plugins
+    fn load_plugin_variables(
+        editor_state: &mut RuleEditorState,
+        plugin_manager: &arclain_plugins::PluginManager,
+    ) {
+        use crate::shared::components::{TemplateVariable, VariableGroup};
+
+        // Query each loaded plugin for template variables
+        for plugin in plugin_manager.list_plugins() {
+            // Check if plugin provides template variables
+            // This would be via a trait or capability query
+            // For now, we'll add DLSite variables if that plugin is loaded
+            if plugin.manifest.plugin.name.to_lowercase().contains("dlsite")
+                || plugin.manifest.plugin.name.to_lowercase().contains("rj")
+            {
+                editor_state.variable_picker.add_group(
+                    VariableGroup::new("DLSite")
+                        .with_id("dlsite")
+                        .with_variables(vec![
+                            TemplateVariable::new("product_id", "DLSite product code")
+                                .with_example("RJ123456"),
+                            TemplateVariable::new("title", "Product title from DLSite")
+                                .with_example("Game Title"),
+                            TemplateVariable::new("circle", "Creator/circle name")
+                                .with_example("Circle Name"),
+                            TemplateVariable::new("release_date", "Release date")
+                                .with_example("2024-01-15"),
+                            TemplateVariable::new("tags", "Product tags")
+                                .with_example("RPG, Fantasy"),
+                        ]),
+                );
+            }
+        }
     }
 }

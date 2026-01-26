@@ -80,6 +80,8 @@ pub enum SettingsAction {
     SaveKeyboardMouse { bindings: HashMap<String, String> },
     /// Navigate to another settings page
     NavigateTo(crate::core::navigation::SettingsPage),
+    /// Save the currently edited organization rule
+    SaveEditedRule,
 }
 
 use arclain_signals::Signal;

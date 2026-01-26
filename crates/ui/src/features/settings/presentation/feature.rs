@@ -26,6 +26,9 @@ pub struct SettingsFeature {
     pub info_panel_layout_state: InfoPanelLayoutState,
     pub keyboard_mouse_state: KeyboardMouseSettingsState,
     pub last_visited_page: Option<SettingsPage>,
+
+    /// Cached dirty state for rule editor (synced from RulesPage each frame)
+    pub rule_editor_dirty: bool,
 }
 
 impl SettingsFeature {
@@ -97,6 +100,7 @@ impl SettingsFeature {
             info_panel_layout_state: InfoPanelLayoutState::default(),
             keyboard_mouse_state: KeyboardMouseSettingsState::new(),
             last_visited_page: None,
+            rule_editor_dirty: false,
         }
     }
 
@@ -165,6 +169,11 @@ impl SettingsFeature {
 
         search_text: &str,
     ) -> Option<crate::core::AppPage> {
+        // Sync rule editor dirty state for header
+        self.rule_editor_dirty = rules_page.as_ref()
+            .map(|rp| rp.is_editor_dirty())
+            .unwrap_or(false);
+
         // Sync rules if entering PasswordRules page
         if *page == SettingsPage::PasswordRules && self.last_visited_page.as_ref() != Some(page) {
             let state = shared.app_state.lock();
@@ -213,8 +222,26 @@ impl SettingsFeature {
                 ui.add_space(8.0);
 
                 // Header
-                if let Some(header_action) = header::render_header(ui, self, shared, page) {
-                    content_action = Some(header_action);
+                let header_action = header::render_header(ui, self, shared, page);
+
+                // Handle SaveEditedRule immediately (before content rendering consumes rules_page)
+                let mut rules_page = rules_page;
+                if let Some(SettingsAction::SaveEditedRule) = &header_action {
+                    if let Some(rp) = rules_page.as_mut() {
+                        if let Some(org_service) = shared.services.organization_service.as_ref() {
+                            match rp.save_editor_rule(org_service) {
+                                Ok(()) => {
+                                    rp.mark_saved_and_clear();
+                                    content_nav_target = Some(crate::core::AppPage::Settings(SettingsPage::OrganizationRules));
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to save rule: {}", e);
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(act) = header_action {
+                    content_action = Some(act);
                 }
 
                 ui.add_space(20.0);
