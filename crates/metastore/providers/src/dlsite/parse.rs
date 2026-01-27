@@ -523,13 +523,27 @@ pub fn parse_search_response(html: &str) -> Vec<SearchResult> {
     let document = Html::parse_document(html);
     let mut results = Vec::new();
 
+    // Log HTML length for debugging
+    tracing::debug!(
+        "[DLsite Search] Parsing HTML ({} bytes), first 500 chars: {}",
+        html.len(),
+        &html.chars().take(500).collect::<String>()
+    );
+
     // Select search results - try multiple selectors as DLSite layout might vary
-    let item_selector = Selector::parse("li.search_result_img_box_inner, tr.n_worklist_item")
-        .unwrap_or_else(|_| Selector::parse("div").unwrap());
-    let title_selector = Selector::parse("dt.work_name a, a.work_name")
+    // Old selectors: li.search_result_img_box_inner, tr.n_worklist_item
+    // New selectors based on recent DLSite structure
+    let item_selector = Selector::parse(
+        "li.search_result_img_box_inner, tr.n_worklist_item, div.work_1col_table, li[class*='search'], div[data-vue-component='work-unit']"
+    ).unwrap_or_else(|_| Selector::parse("div").unwrap());
+
+    let title_selector = Selector::parse("dt.work_name a, dd.work_name a, a.work_name, a[class*='work_name'], h3 a, .work_info a")
         .unwrap_or_else(|_| Selector::parse("a").unwrap());
-    let maker_selector = Selector::parse("dd.maker_name a, span.maker_name a")
+    let maker_selector = Selector::parse("dd.maker_name a, span.maker_name a, a[class*='maker'], .circle_name a")
         .unwrap_or_else(|_| Selector::parse("span").unwrap());
+
+    let item_count = document.select(&item_selector).count();
+    tracing::info!("[DLsite Search] Found {} potential items with selector", item_count);
 
     for item in document.select(&item_selector) {
         let mut title = "Unknown".to_string();

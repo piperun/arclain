@@ -20,6 +20,8 @@ struct PluginState {
     // Cache for browser detail view to prevent fetch loop
     browser_detail_cache: Option<(String, serde_json::Value, Option<ScrapedData>)>,
     current_image_index: i32,
+    // Rename archive option when selecting from search
+    rename_with_code: bool,
 }
 
 // Global state (thread-local for WASM component)
@@ -40,6 +42,7 @@ thread_local! {
         browser_loading: false,
         browser_detail_cache: None,
         current_image_index: -1, // -1 = Cover, 0+ = Sample index
+        rename_with_code: false, // Default: don't rename
     });
 }
 
@@ -47,7 +50,7 @@ struct Component;
 
 fn format_description(text: &str) -> String {
     let s = text.trim();
-    
+
     // Check if text is flattened (few newlines)
     let newlines = s.chars().filter(|c| *c == '\n').count();
     // If length is substantial but newlines are rare, it's likely flat
@@ -60,7 +63,25 @@ fn format_description(text: &str) -> String {
             .replace("★", "\n★")
             .replace("・", "\n・");
     }
-    
+
+    result
+}
+
+/// Sanitize a string for use as a filename
+fn sanitize_filename(name: &str) -> String {
+    // Remove characters that are invalid in filenames
+    let invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+    let mut result: String = name
+        .chars()
+        .map(|c| if invalid_chars.contains(&c) { '_' } else { c })
+        .collect();
+
+    // Trim whitespace and limit length
+    result = result.trim().to_string();
+    if result.len() > 200 {
+        result.truncate(200);
+    }
+
     result
 }
 
@@ -613,11 +634,11 @@ impl archust_plugin_sdk::Guest for Component {
                         label: "Search".to_string(),
                         action: None,
                     }));
-                    
+
                     // Show search results if any
                     STATE.with(|state| {
                         let state = state.borrow();
-                        
+
                         if !state.search_results.is_empty() {
                             elements.push(UiElement::Separator);
                             elements.push(UiElement::Label(LabelConfig {
@@ -625,7 +646,7 @@ impl archust_plugin_sdk::Guest for Component {
                                 bold: true,
                                 size: None,
                             }));
-                            
+
                             for (code, title, maker) in &state.search_results {
                                 elements.push(UiElement::Button(ButtonConfig {
                                     id: format!("select_result_{}", code),
@@ -635,9 +656,19 @@ impl archust_plugin_sdk::Guest for Component {
                             }
                         }
                     });
-                    
+
                     elements.push(UiElement::Separator);
-                    
+
+                    // Rename option
+                    let rename_checked = STATE.with(|s| s.borrow().rename_with_code);
+                    elements.push(UiElement::Checkbox(CheckboxConfig {
+                        id: "rename_with_code".to_string(),
+                        label: "Rename archive with code (e.g., [RJ123456] Title.7z)".to_string(),
+                        checked: rename_checked,
+                    }));
+
+                    elements.push(UiElement::Space(10.0));
+
                     elements.push(UiElement::Button(ButtonConfig {
                         id: "close_search_dialog".to_string(),
                         label: "Cancel".to_string(),
@@ -889,8 +920,35 @@ impl archust_plugin_sdk::Guest for Component {
             label: "Search".to_string(),
             action: None,
         }));
+
+        // Show current archive filename with copy button
+        if let Some(archive_info) = archust_plugin_sdk::current_archive_info() {
+            sidebar_elements.push(UiElement::Space(8.0));
+            sidebar_elements.push(UiElement::Label(LabelConfig {
+                text: "Current Archive:".to_string(),
+                bold: false,
+                size: Some(12.0),
+            }));
+            // Truncate long filenames for display
+            let filename = &archive_info.filename;
+            let display_name = if filename.len() > 40 {
+                format!("{}...", &filename[..37])
+            } else {
+                filename.clone()
+            };
+            sidebar_elements.push(UiElement::Label(LabelConfig {
+                text: display_name,
+                bold: false,
+                size: Some(11.0),
+            }));
+            sidebar_elements.push(UiElement::Button(ButtonConfig {
+                id: "copy_archive_filename".to_string(),
+                label: "Copy Filename".to_string(),
+                action: None,
+            }));
+        }
     }
-    
+
     sidebar_elements.push(UiElement::Separator);
     
     // 4. List Content
@@ -1344,26 +1402,59 @@ impl archust_plugin_sdk::Guest for Component {
         if id.starts_with("select_result_") {
             let code = id.trim_start_matches("select_result_").to_string();
             info(&format!("[DLSite Plugin] Selected result: {}", code));
-            
+
+            // Check if we should rename the archive
+            let should_rename = STATE.with(|s| s.borrow().rename_with_code);
+
             STATE.with(|state| {
                 let mut s = state.borrow_mut();
                 s.search_results.clear();
                 s.search_query.clear();
             });
-            
+
             // Re-use logic to fetch and emit (Data API caches transparently)
             if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
                 let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
                 archust_plugin_sdk::emit_metadata(&metadata_json);
-                
+
+                // Rename archive if option is checked
+                if should_rename {
+                    if let Some(archive_info) = archust_plugin_sdk::current_archive_info() {
+                        // Get title from metadata
+                        let title = json["work_name"].as_str()
+                            .or_else(|| json["title"].as_str())
+                            .map(|s| sanitize_filename(s));
+
+                        // Get current extension
+                        let current_name = &archive_info.filename;
+                        let extension = current_name.rsplit('.').next().unwrap_or("7z");
+
+                        // Build new filename: [CODE] Title.ext or [CODE] original.ext
+                        let new_name = match title {
+                            Some(t) if !t.is_empty() => format!("[{}] {}.{}", code, t, extension),
+                            _ => format!("[{}] {}", code, current_name),
+                        };
+
+                        info(&format!("[DLSite Plugin] Renaming archive to: {}", new_name));
+                        match archust_plugin_sdk::rename_archive(&new_name) {
+                            Ok(new_path) => {
+                                info(&format!("[DLSite Plugin] Archive renamed successfully to: {}", new_path));
+                            }
+                            Err(e) => {
+                                info(&format!("[DLSite Plugin] Failed to rename archive: {}", e));
+                            }
+                        }
+                    }
+                }
+
                 STATE.with(|state| {
                     let mut s = state.borrow_mut();
                     s.found_metadata = Some((code.clone(), json, scraped));
                 });
             }
-            
+
             // Dialog will be closed when user selects a result
-            return vec![];
+            return vec![archust_plugin_sdk::arclain::plugin::ui::PluginAction::CloseDialog];
         }
 
         // Image Gallery Navigation
@@ -1427,6 +1518,15 @@ impl archust_plugin_sdk::Guest for Component {
                     });
                     archust_plugin_sdk::arclain::plugin::host::set_setting("enable_cache", &val);
                     info(&format!("[DLSite Plugin] Cache setting changed to: {}", enabled));
+                }
+            }
+            "rename_with_code" => {
+                if let Some(val) = value {
+                    let enabled = val == "true";
+                    STATE.with(|state| {
+                        state.borrow_mut().rename_with_code = enabled;
+                    });
+                    info(&format!("[DLSite Plugin] Rename with code setting changed to: {}", enabled));
                 }
             }
             "dump_html_debug" => {
@@ -1663,10 +1763,27 @@ impl archust_plugin_sdk::Guest for Component {
                 let query = STATE.with(|s| s.borrow().search_query.clone());
                 if !query.is_empty() {
                     STATE.with(|s| s.borrow_mut().browser_loading = true);
-                    
+
                     // Perform search
                     let results = search_dlsite(&query);
-                    
+
+                    // Be cheeky: pre-cache search results to build local database
+                    // For each result not already cached, fetch and store it
+                    for (code, title, _maker) in &results {
+                        if get_cached_dlsite_metadata(code).is_none() {
+                            info(&format!("[DLSite Plugin] Pre-caching search result: {} - {}", code, title));
+                            // Fetch full details - this caches transparently via Data API
+                            if let Some((json, _scraped)) = fetch_dlsite_metadata(code) {
+                                // Emit to metadata store so it's saved persistently
+                                let metadata_json = generate_metadata_json(code, Some(&(json, None)));
+                                archust_plugin_sdk::emit_metadata(&metadata_json);
+                                info(&format!("[DLSite Plugin] Pre-cached: {}", code));
+                            }
+                        } else {
+                            info(&format!("[DLSite Plugin] Already cached: {} - {}", code, title));
+                        }
+                    }
+
                     STATE.with(|s| {
                         let mut state = s.borrow_mut();
                         state.search_results = results;
@@ -1674,11 +1791,49 @@ impl archust_plugin_sdk::Guest for Component {
                     });
                 }
             }
+            "copy_archive_filename" => {
+                use archust_plugin_sdk::arclain::plugin::ui::{ToastConfig, ToastLevel};
+                if let Some(archive_info) = archust_plugin_sdk::current_archive_info() {
+                    // Copy the filename without extension to clipboard
+                    let filename = &archive_info.filename;
+                    // Remove extension for easier searching
+                    let name_without_ext = filename.rsplit('.').skip(1).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(".");
+                    let copy_name = if name_without_ext.is_empty() { filename.clone() } else { name_without_ext };
+                    return vec![
+                        PluginAction::CopyToClipboard(copy_name),
+                        PluginAction::ShowToast(ToastConfig {
+                            message: "Filename copied to clipboard".to_string(),
+                            level: ToastLevel::Success,
+                        }),
+                    ];
+                }
+            }
             // List item selection (from ListContainer)
             id if id.starts_with("RJ") || id.starts_with("VJ") || id.starts_with("BJ") => {
+                info(&format!("[DLSite Plugin] Selected item: {}", id));
+
+                // Set the selected entry
                 STATE.with(|state| {
                     state.borrow_mut().selected_cache_entry = Some(id.to_string());
                 });
+
+                // Try to load from cache first, otherwise fetch from network
+                if let Some((json, scraped)) = get_cached_dlsite_metadata(id) {
+                    info(&format!("[DLSite Plugin] Loaded {} from cache", id));
+                    STATE.with(|state| {
+                        state.borrow_mut().browser_detail_cache = Some((id.to_string(), json, scraped));
+                    });
+                } else {
+                    info(&format!("[DLSite Plugin] Fetching {} from network", id));
+                    if let Some((json, scraped)) = fetch_dlsite_metadata(id) {
+                        STATE.with(|state| {
+                            state.borrow_mut().browser_detail_cache = Some((id.to_string(), json, scraped));
+                        });
+                    }
+                }
+
+                // Refresh to show details
+                return vec![PluginAction::RefreshPanel("dlsite_browser".to_string())];
             }
             id if id.starts_with("apply_metadata_") => {
                 let code = id.trim_start_matches("apply_metadata_").to_string();
@@ -2141,34 +2296,80 @@ fn search_dlsite(query: &str) -> Vec<(String, String, String)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
     use metastore_providers::dlsite::parse_search_response;
 
-    let url = format!(
-        "https://www.dlsite.com/home/fsr/=/keyword/{}",
-        urlencoding::encode(query)
-    );
-    let key = format!("dlsite:search:{}", urlencoding::encode(query));
-    
     log_network_activity(&format!("Searching DLSite: {}", query));
-    log_network_activity(&format!("GET {}", url));
 
-    let html = match fetch_string_blocking(&key, &url) {
-        Ok(h) => h,
-        Err(e) => {
-            log_network_activity(&format!("Search failed: {}", e));
-            return Vec::new();
+    // Try maniax (NSFW/adult) first, then home (SFW/all-ages) as fallback
+    // Most content on DLSite is on maniax
+    let sections = [("maniax", "adult"), ("home", "all-ages")];
+
+    for (section, section_name) in sections {
+        // Use AJAX endpoint which returns JSON with search_result HTML
+        let url = format!(
+            "https://www.dlsite.com/{}/fsr/ajax/=/language/jp/keyword/{}",
+            section,
+            urlencoding::encode(query)
+        );
+        // Cache key includes section to avoid conflicts between sections
+        let key = format!("dlsite:search:v3:{}:{}", section, urlencoding::encode(query));
+
+        log_network_activity(&format!("Trying {} section ({})", section, section_name));
+        log_network_activity(&format!("GET {}", url));
+
+        let response = match fetch_string_blocking(&key, &url) {
+            Ok(h) => h,
+            Err(e) => {
+                log_network_activity(&format!("Search on {} failed: {}", section, e));
+                continue; // Try next section
+            }
+        };
+
+        // AJAX endpoint returns JSON with search_result HTML
+        log_network_activity(&format!("Received {} bytes response from {}", response.len(), section));
+
+        // Try to parse as JSON (AJAX endpoint returns JSON with search_result HTML)
+        // Fall back to treating response as raw HTML if JSON parsing fails
+        let html = if let Ok(json) = serde_json::from_str::<serde_json::Value>(&response) {
+            // JSON response - extract search_result HTML
+            match json.get("search_result").and_then(|v| v.as_str()) {
+                Some(h) => {
+                    log_network_activity("Extracted HTML from JSON search_result");
+                    h.to_string()
+                }
+                None => {
+                    log_network_activity("No search_result field in JSON, using response as HTML");
+                    response.clone()
+                }
+            }
+        } else {
+            // Not JSON - treat as raw HTML (fallback for old endpoint or errors)
+            log_network_activity("Response is not JSON, treating as raw HTML");
+            response.clone()
+        };
+
+        // Debug: save HTML for inspection
+        if let Ok(path) = archust_plugin_sdk::create_file(&format!("dlsite_search_{}_debug.html", section), html.as_bytes()) {
+            log_network_activity(&format!("Saved search HTML to: {}", path));
         }
-    };
 
-    // Use metastore provider for parsing
-    let results = parse_search_response(&html);
-    
-    log_network_activity(&format!("Found {} results", results.len()));
-    
-    // Convert SearchResult to (code, title, maker) tuple
-    results
-        .into_iter()
-        .take(10)
-        .map(|r| (r.external_id, r.title, r.creator.unwrap_or_else(|| "Unknown".to_string())))
-        .collect()
+        // Use metastore provider for parsing
+        let results = parse_search_response(&html);
+
+        log_network_activity(&format!("Found {} results on {}", results.len(), section));
+
+        // If we found results, return them; otherwise try next section
+        if !results.is_empty() {
+            return results
+                .into_iter()
+                .take(10)
+                .map(|r| (r.external_id, r.title, r.creator.unwrap_or_else(|| "Unknown".to_string())))
+                .collect();
+        }
+
+        log_network_activity(&format!("No results on {}, trying next section...", section));
+    }
+
+    log_network_activity("No results found on any DLSite section");
+    Vec::new()
 }
 
 

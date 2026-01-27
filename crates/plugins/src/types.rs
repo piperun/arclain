@@ -384,6 +384,8 @@ pub enum PluginAction {
     OpenPage { page: String },
     /// Close the current dialog
     CloseDialog,
+    /// Copy text to system clipboard
+    CopyToClipboard { text: String },
 }
 
 fn default_space_size() -> f32 {

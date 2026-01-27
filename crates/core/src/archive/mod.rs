@@ -2,12 +2,14 @@
 //!
 //! This module provides the core archive abstraction layer, including:
 //! - Archive handle with dependency injection
-//! - ArchiveBackend trait for format implementations  
+//! - ArchiveBackend trait for format implementations
 //! - Archive metadata types
 //! - Navigation state for UI
+//! - Multi-part archive detection
 
 pub mod handle;
 pub mod info;
+pub mod multipart;
 pub mod navigation;
 
 use anyhow::Result;
@@ -15,6 +17,7 @@ use std::path::{Path, PathBuf};
 
 pub use handle::Archive;
 pub use info::{ArchiveEntry, ArchiveInfo, ArchiveKind};
+pub use multipart::{is_multipart_archive, detect_multipart, MultiPartArchive, MultiPartFormat};
 pub use navigation::NavigationState;
 
 /// Reference to an archive entry for extraction

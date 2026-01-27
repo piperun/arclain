@@ -37,6 +37,11 @@ impl SevenZipCli {
         ))
     }
 
+    /// Get the path to the 7-Zip executable
+    pub fn exe_path(&self) -> &Path {
+        &self.exe
+    }
+
     /// Spawn 7-Zip with the given args and stream percentage progress via a channel.
     /// Returns the running child process and a receiver for `ProgressUpdate` events.
     fn spawn_with_progress<I, S>(&self, args: I) -> Result<ChildWithProgress>

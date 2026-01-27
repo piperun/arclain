@@ -104,6 +104,23 @@ fn process_action(
             tracing::debug!("Plugin {} requested dialog close", plugin_id);
             _dialog_state.close_dialog();
         }
+
+        PluginAction::CopyToClipboard { text } => {
+            // Copy text to system clipboard
+            tracing::debug!("Plugin {} requested clipboard copy: {}", plugin_id, text);
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    if let Err(e) = clipboard.set_text(&text) {
+                        tracing::error!("Failed to copy to clipboard: {}", e);
+                        toaster.error(format!("Failed to copy: {}", e));
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to access clipboard: {}", e);
+                    toaster.error(format!("Clipboard unavailable: {}", e));
+                }
+            }
+        }
     }
 }
 

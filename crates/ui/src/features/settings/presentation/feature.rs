@@ -12,6 +12,7 @@ use crate::features::settings::views::{header, layout, navigation};
 use crate::shared::SharedState;
 use arclain_signals::Signal;
 use eframe::egui;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct SettingsFeature {
     pub general_state: GeneralSettingsState,
@@ -29,6 +30,8 @@ pub struct SettingsFeature {
 
     /// Cached dirty state for rule editor (synced from RulesPage each frame)
     pub rule_editor_dirty: bool,
+    /// Whether connection_test_status signal has been bound to egui context
+    signals_bound: AtomicBool,
 }
 
 impl SettingsFeature {
@@ -101,7 +104,19 @@ impl SettingsFeature {
             keyboard_mouse_state: KeyboardMouseSettingsState::new(),
             last_visited_page: None,
             rule_editor_dirty: false,
+            signals_bound: AtomicBool::new(false),
         }
+    }
+
+    /// Bind signals to egui context for automatic repaints (called once)
+    fn bind_signals(&self, ctx: &egui::Context) {
+        if self.signals_bound.swap(true, Ordering::SeqCst) {
+            return; // Already bound
+        }
+        let ctx = ctx.clone();
+        self.network_state.connection_test_status.subscribe(move || {
+            ctx.request_repaint();
+        });
     }
 
     pub fn check_changes(&self, shared: &SharedState, page: &SettingsPage) -> bool {
@@ -169,6 +184,9 @@ impl SettingsFeature {
 
         search_text: &str,
     ) -> Option<crate::core::AppPage> {
+        // Bind signals to egui context (once)
+        self.bind_signals(ui.ctx());
+
         // Sync rule editor dirty state for header
         self.rule_editor_dirty = rules_page.as_ref()
             .map(|rp| rp.is_editor_dirty())

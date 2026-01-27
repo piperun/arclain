@@ -25,7 +25,7 @@ members = [
     "crates/freya-spike",
     "crates/dlsite-fetch",
 ]
-default-members = ["crates/ui", "crates/dlsite-fetch"]
+default-members = ["crates/ui"]
 exclude = [
     "plugins/dlsite-metadata",
     "plugins/gstreamer-preview",
