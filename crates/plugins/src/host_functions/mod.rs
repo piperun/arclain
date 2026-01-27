@@ -48,6 +48,9 @@ pub struct HostFunctions {
 
     // Pending status message from plugin (to be displayed in status bar)
     pub pending_status_message: Arc<Mutex<Option<String>>>,
+
+    // Pending clipboard text from plugin (to be copied by UI)
+    pub pending_clipboard: Arc<Mutex<Option<String>>>,
 }
 
 impl HostFunctions {
@@ -81,6 +84,7 @@ impl HostFunctions {
             ctx,
             metadata_signal: None,
             pending_status_message: Arc::new(Mutex::new(None)),
+            pending_clipboard: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -206,6 +210,10 @@ impl Host for HostFunctions {
         self.impl_list_archive_files()
     }
 
+    fn rename_archive(&mut self, new_name: String) -> std::result::Result<String, String> {
+        self.impl_rename_archive(new_name)
+    }
+
     fn emit_metadata(&mut self, metadata_json: String) {
         self.impl_emit_metadata(metadata_json)
     }
@@ -217,6 +225,10 @@ impl Host for HostFunctions {
     fn set_status_message(&mut self, message: String) {
         // Store the status bar message for the UI to pick up
         *self.pending_status_message.lock() = Some(message);
+    }
+
+    fn copy_to_clipboard(&mut self, text: String) -> bool {
+        self.impl_copy_to_clipboard(text)
     }
 
     fn list_cached_entries(&mut self) -> Vec<String> {
@@ -254,6 +266,13 @@ impl Host for HostFunctions {
         let mut req = DataRequest::new(&request.key)
             .with_type(resource_type)
             .with_plugin_id(&self.plugin_id);
+
+        tracing::info!(
+            "[HostFunctions::request_data] key='{}' plugin_id='{}' url={:?}",
+            request.key,
+            self.plugin_id,
+            request.url
+        );
 
         // Set URL if provided
         if let Some(url) = request.url {

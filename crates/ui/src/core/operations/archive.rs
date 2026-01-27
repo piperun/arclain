@@ -2,8 +2,9 @@ use crate::core::utils::{convert_to_file_entry, format_size};
 use crate::core::AppState;
 use crate::features::password_management::dialogs;
 use crate::shared::components::status_bar;
+use crate::shared::dialogs::MergeDialogState;
 use crate::shared::models::file_entry::FileEntry;
-use arclain_core::archive::NavigationState;
+use arclain_core::archive::{MultiPartArchive, NavigationState};
 use arclain_core::{ArchiveBackend, ArchiveEntry};
 use crc32fast::Hasher;
 use parking_lot::Mutex;
@@ -20,16 +21,26 @@ pub fn open_archive(
     status_info: &mut status_bar::StatusBarInfo,
     entries: &mut Vec<FileEntry>,
     archive_info: &mut ArchiveInfo,
+    merge_dialog: Option<&mut MergeDialogState>,
 ) {
     if let Some(file) = rfd::FileDialog::new()
         .add_filter("Archives", &["zip", "7z", "rar"])
         .pick_file()
     {
-        {
-            info!("File selected: {}", file.display());
-            // Reset navigation state entirely for new archive
-            state.lock().signals.navigation.set(NavigationState::new());
+        info!("File selected: {}", file.display());
+
+        // Check if this is a multi-part archive
+        if let Some(multipart) = MultiPartArchive::detect(&file) {
+            if let Some(md) = merge_dialog {
+                md.open(multipart);
+                status_info.message =
+                    "Multi-part archive detected. Use the dialog to merge.".to_string();
+                return;
+            }
         }
+
+        // Reset navigation state entirely for new archive
+        state.lock().signals.navigation.set(NavigationState::new());
 
         let mut st = state.lock();
         match st.list_archive(&file) {

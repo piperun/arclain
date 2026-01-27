@@ -93,6 +93,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     let mut view_state = shared_state.signals().browser_view_state.get();
                     let mut password_dialog = shared_state.signals().password_dialog.get();
                     let mut status_info = shared_state.signals().status_bar.get();
+                    let mut merge_dialog = shared_state.signals().merge_dialog.get();
                     // nav removed
 
                     operations::archive::open_archive(
@@ -103,6 +104,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut status_info,
                         &mut view_state.view_entries,
                         &mut archive_info,
+                        Some(&mut merge_dialog),
                     );
 
                     // Sync back to signals
@@ -111,6 +113,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     shared_state.signals().password_dialog.set(password_dialog);
                     shared_state.signals().status_bar.set(status_info);
                     shared_state.signals().archive_info.set(archive_info);
+                    shared_state.signals().merge_dialog.set(merge_dialog);
                 }
                 if actions.extract {
                     let view_state = shared_state.signals().browser_view_state.get();

@@ -150,12 +150,14 @@ mod tests {
     #[test]
     fn test_domain_to_db_round_trip() {
         let original = OrganizationRule {
+            id: 0,
             name: "Test Rule".to_string(),
             priority: 100,
             is_enabled: true,
             trigger: RuleTrigger::default(),
             actions: RuleActions {
                 root_folder: Some("games/{circle}".to_string()),
+                output_name: None,
                 move_files: vec![MoveAction {
                     pattern: "*.exe".to_string(),
                     target: "bin/".to_string(),
@@ -173,6 +175,7 @@ mod tests {
         let restored_actions: RuleActions = serde_json::from_str(&actions_json).unwrap();
 
         let restored = OrganizationRule {
+            id: original.id,
             name: original.name.clone(),
             priority: original.priority,
             is_enabled: original.is_enabled,

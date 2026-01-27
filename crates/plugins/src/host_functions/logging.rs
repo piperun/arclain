@@ -29,4 +29,10 @@ impl HostFunctions {
         );
         self.pending_messages.lock().push((title, message));
     }
+
+    pub(super) fn impl_copy_to_clipboard(&mut self, text: String) -> bool {
+        info!("[Plugin] Copying to clipboard: {}", text);
+        *self.pending_clipboard.lock() = Some(text);
+        true
+    }
 }

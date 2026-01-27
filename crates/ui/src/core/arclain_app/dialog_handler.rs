@@ -195,6 +195,108 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         .signals()
         .file_edit_dialog
         .set_if_changed(edit_dialog);
+
+    // Render Merge Dialog
+    let mut merge_dialog = app.shared_state.signals().merge_dialog.get();
+    match dialogs::render_merge_dialog(ctx, &app.shared_state.theme, &mut merge_dialog) {
+        dialogs::MergeDialogResult::StartMerge => {
+            // Clone needed data before triggering merge
+            if let Some(ref multipart) = merge_dialog.multipart {
+                let multipart_clone = multipart.clone();
+                let output_format = merge_dialog.output_format;
+                let compression_level = merge_dialog.compression_level;
+                let delete_originals = merge_dialog.delete_originals;
+                let password = if merge_dialog.password.is_empty() {
+                    None
+                } else {
+                    Some(merge_dialog.password.clone())
+                };
+
+                // Get output path (same directory as first part)
+                let output_path = multipart_clone.first_part.parent().map(|p| {
+                    p.join(format!(
+                        "{}.{}",
+                        multipart_clone.base_name,
+                        output_format.extension()
+                    ))
+                });
+
+                // Trigger merge operation in background
+                let backend_selector = {
+                    let state = app.shared_state.app_state.lock();
+                    state.backend_selector.clone()
+                };
+
+                let signals = app.shared_state.signals().clone();
+                let mut status = app.shared_state.signals().status_bar.get();
+
+                // Use tokio runtime from services
+                let runtime = app.shared_state.services.tokio_runtime.clone();
+
+                runtime.spawn(async move {
+                    use arclain_core::services::{MergeOptions, MergeService};
+
+                    let merge_service = MergeService::new(backend_selector);
+                    let mut mp = multipart_clone;
+
+                    let options = MergeOptions {
+                        output_format,
+                        output_path,
+                        compression_level,
+                        delete_originals,
+                        password,
+                    };
+
+                    // Update status to show merge in progress
+                    let mut extraction_dialog = signals.extraction_dialog.get();
+                    extraction_dialog.show = true;
+                    extraction_dialog.title = "Merging Archive".to_string();
+                    extraction_dialog.file_action = format!("Merging {} parts...", mp.all_parts.len());
+                    extraction_dialog.percent = 0;
+                    extraction_dialog.can_pause = false;
+                    extraction_dialog.can_minimize = false;
+                    extraction_dialog.can_cancel = false;
+                    signals.extraction_dialog.set(extraction_dialog);
+
+                    match merge_service.merge(&mut mp, options, None, None) {
+                        Ok(result_path) => {
+                            let mut extraction_dialog = signals.extraction_dialog.get();
+                            extraction_dialog.show = false;
+                            signals.extraction_dialog.set(extraction_dialog);
+
+                            let mut sb = signals.status_bar.get();
+                            sb.message = format!(
+                                "Merge complete: {}",
+                                result_path.file_name().unwrap_or_default().to_string_lossy()
+                            );
+                            signals.status_bar.set(sb);
+                        }
+                        Err(e) => {
+                            let mut extraction_dialog = signals.extraction_dialog.get();
+                            extraction_dialog.show = false;
+                            signals.extraction_dialog.set(extraction_dialog);
+
+                            let mut sb = signals.status_bar.get();
+                            sb.message = format!("Merge failed: {}", e);
+                            signals.status_bar.set(sb);
+                        }
+                    }
+                });
+
+                status.message = "Starting merge...".to_string();
+                app.shared_state.signals().status_bar.set(status);
+            }
+            merge_dialog.close();
+        }
+        dialogs::MergeDialogResult::Cancel => {
+            // Dialog already closed in render function
+        }
+        dialogs::MergeDialogResult::None => {}
+    }
+    app.shared_state
+        .signals()
+        .merge_dialog
+        .set_if_changed(merge_dialog);
 }
 
 pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {

@@ -44,9 +44,21 @@ pub fn list_archive_files() -> Result<Vec<String>, String> {
     arclain::plugin::host::list_archive_files()
 }
 
+/// Rename the currently open archive file
+/// Takes a new filename (not full path) and returns the new full path on success
+/// Requires ArchiveModify capability in the plugin manifest
+pub fn rename_archive(new_name: &str) -> Result<String, String> {
+    arclain::plugin::host::rename_archive(new_name)
+}
+
 // UI helpers
 pub fn show_message(title: &str, message: &str) {
     arclain::plugin::host::show_message(title, message);
+}
+
+/// Copy text to the system clipboard
+pub fn copy_to_clipboard(text: &str) -> bool {
+    arclain::plugin::host::copy_to_clipboard(text)
 }
 
 pub fn log_network_activity(msg: &str) {

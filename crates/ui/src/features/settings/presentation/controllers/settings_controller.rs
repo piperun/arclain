@@ -254,7 +254,9 @@ pub fn handle_action(
             socks5_username,
             socks5_password,
         } => {
-            use crate::features::settings::domain::types::ConnectionTestStatus;
+            use crate::features::settings::domain::types::{
+                ConnectionTestResult, ConnectionTestStatus, TestStepResult,
+            };
 
             // Set testing state
             network_state
@@ -274,11 +276,32 @@ pub fn handle_action(
             // Spawn test task
             let runtime = shared.services.tokio_runtime.handle().clone();
             runtime.spawn(async move {
-                let result = config.test_connection().await;
-                match result {
-                    Ok(msg) => status_signal.set(ConnectionTestStatus::Success(msg)),
-                    Err(e) => status_signal.set(ConnectionTestStatus::Error(e.to_string())),
-                }
+                let network_result = config.test_connection().await;
+
+                // Convert network types to UI types
+                let ui_result = ConnectionTestResult {
+                    steps: network_result
+                        .steps
+                        .into_iter()
+                        .map(|s| TestStepResult {
+                            name: s.name,
+                            passed: s.passed,
+                            message: s.message,
+                        })
+                        .collect(),
+                    success: network_result.success,
+                    result_message: if network_result.success {
+                        Some(format!(
+                            "{} ({})",
+                            network_result.ip.unwrap_or_default(),
+                            network_result.country.unwrap_or_default()
+                        ))
+                    } else {
+                        None
+                    },
+                };
+
+                status_signal.set(ConnectionTestStatus::Complete(ui_result));
             });
         }
         SettingsAction::NavigateTo(_) => {

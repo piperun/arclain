@@ -149,6 +149,9 @@ pub struct AppSignals {
 
     /// [NEW] Signal to reload hotkeys when settings change
     pub hotkeys_updated: Signal<bool>,
+
+    /// [NEW] Merge dialog state for merging split archives
+    pub merge_dialog: Signal<crate::shared::dialogs::MergeDialogState>,
 }
 
 impl AppSignals {
@@ -208,6 +211,8 @@ impl AppSignals {
             )
             .with_name("plugin_dialog_state"),
             hotkeys_updated: Signal::new(false).with_name("hotkeys_updated"),
+            merge_dialog: Signal::new(crate::shared::dialogs::MergeDialogState::default())
+                .with_name("merge_dialog"),
         }
     }
 
@@ -242,6 +247,7 @@ impl AppSignals {
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
+        signal_ctx.bind_named(&self.merge_dialog, "merge_dialog");
     }
 
     /// Reset all signals to default state.
@@ -286,6 +292,8 @@ impl AppSignals {
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.plugin_dialog_state
             .set(crate::features::plugins::domain::state::PluginDialogState::default());
+        self.merge_dialog
+            .set(crate::shared::dialogs::MergeDialogState::default());
     }
 }
 

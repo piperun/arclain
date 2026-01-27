@@ -25,13 +25,21 @@ impl DataSourceResolver for NetworkResolver {
         // Determine if proxy should be used based on plugin_id
         let use_proxy = if let Some(plugin_id) = &request.plugin_id {
             // Check the client's plugin proxy map
-            self.client.should_use_proxy_for_plugin(plugin_id)
+            let result = self.client.should_use_proxy_for_plugin(plugin_id);
+            tracing::info!(
+                "[NetworkResolver] plugin_id='{}' -> use_proxy={}",
+                plugin_id,
+                result
+            );
+            result
         } else {
+            tracing::info!("[NetworkResolver] No plugin_id provided -> use_proxy=false");
             false
         };
 
         tracing::info!(
-            "[NetworkResolver] Fetching from {} (proxy: {})",
+            "[NetworkResolver] Fetching key='{}' url='{}' (proxy: {})",
+            _key,
             url,
             use_proxy
         );

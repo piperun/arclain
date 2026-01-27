@@ -108,13 +108,29 @@ impl Default for NetworkSettingsState {
     }
 }
 
+/// Result of a single test step
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct TestStepResult {
+    pub name: String,
+    pub passed: bool,
+    pub message: Option<String>,
+}
+
+/// Complete connection test result with all steps
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct ConnectionTestResult {
+    pub steps: Vec<TestStepResult>,
+    pub success: bool,
+    /// Final result message (IP/country on success)
+    pub result_message: Option<String>,
+}
+
 #[derive(Clone, PartialEq, Eq, Default)]
 pub enum ConnectionTestStatus {
     #[default]
     Idle,
     Testing,
-    Success(String),
-    Error(String),
+    Complete(ConnectionTestResult),
 }
 
 /// State for the general settings page

@@ -273,6 +273,12 @@ impl PluginInstance {
         pending
     }
 
+    /// Get pending clipboard text from the plugin
+    pub fn get_pending_clipboard(&self) -> Option<String> {
+        let data = self.store.data();
+        data.pending_clipboard.lock().take()
+    }
+
     /// Get emitted metadata from the plugin
     pub fn get_emitted_metadata(&self) -> Option<String> {
         let data = self.store.data();
@@ -564,5 +570,6 @@ fn convert_plugin_action(
         },
         WitAction::OpenPage(page) => InternalAction::OpenPage { page },
         WitAction::CloseDialog => InternalAction::CloseDialog,
+        WitAction::CopyToClipboard(text) => InternalAction::CopyToClipboard { text },
     }
 }

@@ -249,10 +249,11 @@ mod tests {
     #[test]
     fn all_settings_pages_present() {
         let pages = SettingsPage::all_pages();
-        assert_eq!(pages.len(), 9);
+        assert_eq!(pages.len(), 10);
         assert!(pages.contains(&SettingsPage::General));
         assert!(pages.contains(&SettingsPage::Interface));
         assert!(pages.contains(&SettingsPage::Archives));
+        assert!(pages.contains(&SettingsPage::ArchiveProfiles));
         assert!(pages.contains(&SettingsPage::PasswordRules));
         assert!(pages.contains(&SettingsPage::OrganizationRules));
         assert!(pages.contains(&SettingsPage::Security));
