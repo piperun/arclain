@@ -8,9 +8,17 @@ use anyhow::Result;
 /// Type of cached content
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheType {
+    /// Image screenshots/samples
     Screenshot,
+    /// Thumbnail images
     Thumbnail,
+    /// Structured metadata (JSON)
     Metadata,
+    /// Raw HTML pages
+    Html,
+    /// Cover/main images
+    Cover,
+    /// Other/unknown content
     Other,
 }
 
@@ -20,6 +28,8 @@ impl CacheType {
             CacheType::Screenshot => "screenshot",
             CacheType::Thumbnail => "thumbnail",
             CacheType::Metadata => "metadata",
+            CacheType::Html => "html",
+            CacheType::Cover => "cover",
             CacheType::Other => "other",
         }
     }
@@ -29,8 +39,53 @@ impl CacheType {
             "screenshot" => CacheType::Screenshot,
             "thumbnail" => CacheType::Thumbnail,
             "metadata" => CacheType::Metadata,
+            "html" => CacheType::Html,
+            "cover" => CacheType::Cover,
             _ => CacheType::Other,
         }
+    }
+
+    /// Infer cache type from a cache key
+    pub fn from_key(key: &str) -> Self {
+        if key.contains(":html:") || key.ends_with(":html") {
+            CacheType::Html
+        } else if key.contains(":json:") || key.ends_with(":json") {
+            CacheType::Metadata
+        } else if key.contains(":cover") {
+            CacheType::Cover
+        } else if key.contains(":screenshot") || key.contains(":sample") {
+            CacheType::Screenshot
+        } else if key.contains(":thumbnail") || key.contains(":thumb") {
+            CacheType::Thumbnail
+        } else {
+            CacheType::Other
+        }
+    }
+
+    /// Extract product_id from a cache key if possible
+    /// Expected format: "provider:product_id:asset_type" or "provider:type:product_id"
+    pub fn extract_product_id(key: &str) -> Option<String> {
+        let parts: Vec<&str> = key.split(':').collect();
+        if parts.len() >= 2 {
+            // Handle "dlsite:RJ123456:cover" format
+            let candidate = parts[1];
+            // Check if it looks like a product ID (starts with RJ/VJ/BJ or is alphanumeric)
+            if candidate.starts_with("RJ")
+                || candidate.starts_with("VJ")
+                || candidate.starts_with("BJ")
+                || (candidate.chars().all(|c| c.is_alphanumeric()) && candidate.len() > 4)
+            {
+                // Skip if it's a type indicator
+                if candidate != "html" && candidate != "json" && candidate != "search" {
+                    return Some(format!("{}:{}", parts[0], candidate));
+                }
+            }
+            // Handle "dlsite:html:RJ123456" format
+            if parts.len() >= 3 && (parts[1] == "html" || parts[1] == "json") {
+                return Some(format!("{}:{}", parts[0], parts[2]));
+            }
+        }
+        None
     }
 }
 
@@ -262,4 +317,185 @@ pub fn clear_all_entries(conn: &mut diesel::SqliteConnection) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Diesel clear failed: {}", e))?;
 
     Ok(())
+}
+
+// ============================================================================
+// Garbage Collection & Statistics
+// ============================================================================
+
+/// Statistics about the cache
+#[derive(Debug, Clone, Default)]
+pub struct CacheStats {
+    pub total_entries: i64,
+    pub total_size_bytes: i64,
+    pub entries_by_type: Vec<(String, i64)>,
+    pub entries_without_product_id: i64,
+    pub orphaned_entries: i64, // Entries with product_id not in product_metadata
+    pub search_cache_entries: i64,
+    pub oldest_entry_date: Option<String>,
+}
+
+/// Get cache statistics
+pub fn get_cache_stats(conn: &mut diesel::SqliteConnection) -> Result<CacheStats> {
+    use crate::diesel_schema::cache_index::dsl::*;
+    use diesel::dsl::count;
+
+    let total_entries: i64 = cache_index
+        .select(count(id))
+        .first(conn)
+        .map_err(|e| anyhow::anyhow!("Failed to count entries: {}", e))?;
+
+    // Use raw SQL for sum to avoid type issues
+    let total_size: i64 = diesel::sql_query(
+        "SELECT COALESCE(SUM(size_bytes), 0) as cnt FROM cache_index"
+    )
+    .load::<CountResult>(conn)
+    .map(|rows| rows.first().map(|r| r.cnt).unwrap_or(0))
+    .unwrap_or(0);
+
+    // Count entries without product_id
+    let entries_without_product_id: i64 = cache_index
+        .filter(product_id.is_null())
+        .select(count(id))
+        .first(conn)
+        .map_err(|e| anyhow::anyhow!("Failed to count null product_id: {}", e))?;
+
+    // Count search cache entries
+    let search_cache_entries: i64 = cache_index
+        .filter(key.like("%:search:%"))
+        .select(count(id))
+        .first(conn)
+        .map_err(|e| anyhow::anyhow!("Failed to count search entries: {}", e))?;
+
+    // Count entries by type
+    let entries_by_type: Vec<(String, i64)> = diesel::sql_query(
+        "SELECT cache_type, COUNT(*) as cnt FROM cache_index GROUP BY cache_type ORDER BY cnt DESC"
+    )
+    .load::<CacheTypeCount>(conn)
+    .map(|rows| rows.into_iter().map(|r| (r.cache_type, r.cnt)).collect())
+    .unwrap_or_default();
+
+    // Get oldest entry
+    let oldest_entry_date: Option<String> = cache_index
+        .select(created_at)
+        .order(created_at.asc())
+        .first(conn)
+        .optional()
+        .map_err(|e| anyhow::anyhow!("Failed to get oldest entry: {}", e))?;
+
+    // Count orphaned entries (product_id set but not in product_metadata)
+    let orphaned_entries: i64 = diesel::sql_query(
+        "SELECT COUNT(*) as cnt FROM cache_index
+         WHERE product_id IS NOT NULL
+         AND product_id NOT IN (SELECT id FROM product_metadata)"
+    )
+    .load::<CountResult>(conn)
+    .map(|rows| rows.first().map(|r| r.cnt).unwrap_or(0))
+    .unwrap_or(0);
+
+    Ok(CacheStats {
+        total_entries,
+        total_size_bytes: total_size,
+        entries_by_type,
+        entries_without_product_id,
+        orphaned_entries,
+        search_cache_entries,
+        oldest_entry_date,
+    })
+}
+
+#[derive(diesel::QueryableByName)]
+struct CacheTypeCount {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    cache_type: String,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    cnt: i64,
+}
+
+#[derive(diesel::QueryableByName)]
+struct CountResult {
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    cnt: i64,
+}
+
+/// Delete orphaned cache entries (product_id not in product_metadata)
+pub fn delete_orphaned_entries(conn: &mut diesel::SqliteConnection) -> Result<usize> {
+    let affected = diesel::sql_query(
+        "DELETE FROM cache_index
+         WHERE product_id IS NOT NULL
+         AND product_id NOT IN (SELECT id FROM product_metadata)"
+    )
+    .execute(conn)
+    .map_err(|e| anyhow::anyhow!("Failed to delete orphaned entries: {}", e))?;
+
+    Ok(affected)
+}
+
+/// Delete search cache entries older than specified days
+pub fn delete_old_search_cache(conn: &mut diesel::SqliteConnection, days: i64) -> Result<usize> {
+    let affected = diesel::sql_query(format!(
+        "DELETE FROM cache_index
+         WHERE key LIKE '%:search:%'
+         AND created_at < datetime('now', '-{} days')",
+        days
+    ))
+    .execute(conn)
+    .map_err(|e| anyhow::anyhow!("Failed to delete old search cache: {}", e))?;
+
+    Ok(affected)
+}
+
+/// Get all content hashes currently in the index
+pub fn get_all_content_hashes(conn: &mut diesel::SqliteConnection) -> Result<Vec<String>> {
+    use crate::diesel_schema::cache_index::dsl::*;
+
+    let hashes = cache_index
+        .select(content_hash)
+        .distinct()
+        .load::<String>(conn)
+        .map_err(|e| anyhow::anyhow!("Failed to get content hashes: {}", e))?;
+
+    Ok(hashes)
+}
+
+/// Fix cache entries: update cache_type and product_id based on key patterns
+pub fn migrate_fix_entries(conn: &mut diesel::SqliteConnection) -> Result<(usize, usize)> {
+    // Fix cache_type based on key patterns
+    let type_fixed = diesel::sql_query(
+        "UPDATE cache_index SET cache_type =
+         CASE
+             WHEN key LIKE '%:html:%' OR key LIKE '%:html' THEN 'html'
+             WHEN key LIKE '%:json:%' OR key LIKE '%:json' THEN 'metadata'
+             WHEN key LIKE '%:cover' THEN 'cover'
+             WHEN key LIKE '%:screenshot%' OR key LIKE '%:sample%' THEN 'screenshot'
+             WHEN key LIKE '%:thumbnail%' OR key LIKE '%:thumb%' THEN 'thumbnail'
+             ELSE cache_type
+         END
+         WHERE cache_type = 'screenshot'
+         AND (key LIKE '%:html%' OR key LIKE '%:json%' OR key LIKE '%:cover')"
+    )
+    .execute(conn)
+    .unwrap_or(0);
+
+    // Fix product_id for dlsite entries
+    // Pattern: dlsite:RJ123456:asset or dlsite:type:RJ123456
+    let product_fixed = diesel::sql_query(
+        "UPDATE cache_index SET product_id =
+         CASE
+             -- dlsite:RJ123456:asset pattern
+             WHEN key LIKE 'dlsite:RJ%:%' OR key LIKE 'dlsite:VJ%:%' OR key LIKE 'dlsite:BJ%:%'
+             THEN 'dlsite:' || substr(key, 8, instr(substr(key, 8), ':') - 1)
+             -- dlsite:html:RJ123456 or dlsite:json:RJ123456 pattern
+             WHEN key LIKE 'dlsite:html:%' THEN 'dlsite:' || substr(key, 13)
+             WHEN key LIKE 'dlsite:json:%' THEN 'dlsite:' || substr(key, 13)
+             ELSE product_id
+         END
+         WHERE product_id IS NULL
+         AND key LIKE 'dlsite:%'
+         AND key NOT LIKE 'dlsite:search:%'"
+    )
+    .execute(conn)
+    .unwrap_or(0);
+
+    Ok((type_fixed, product_fixed))
 }

@@ -167,6 +167,49 @@ pub fn handle_action(
                 }
             });
         }
+        SettingsAction::GarbageCollectCache => {
+            let mut state = shared.app_state.lock();
+            if let Some(dbs) = &mut state.dbs {
+                match dbs.metadata.delete_orphaned_cache_entries() {
+                    Ok(count) => {
+                        tracing::info!("Garbage collected {} orphaned cache entries", count);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to garbage collect cache: {}", e);
+                    }
+                }
+            }
+        }
+        SettingsAction::CleanOldSearchCache => {
+            let mut state = shared.app_state.lock();
+            if let Some(dbs) = &mut state.dbs {
+                match dbs.metadata.delete_old_search_cache(7) {
+                    Ok(count) => {
+                        tracing::info!("Cleaned {} old search cache entries", count);
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to clean search cache: {}", e);
+                    }
+                }
+            }
+        }
+        SettingsAction::MigrateCacheEntries => {
+            let mut state = shared.app_state.lock();
+            if let Some(dbs) = &mut state.dbs {
+                match dbs.metadata.migrate_fix_cache_entries() {
+                    Ok((type_fixed, product_fixed)) => {
+                        tracing::info!(
+                            "Fixed cache entries: {} cache_type, {} product_id",
+                            type_fixed,
+                            product_fixed
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to migrate cache entries: {}", e);
+                    }
+                }
+            }
+        }
         SettingsAction::SaveGeneral {
             open_nested_in_new_tab,
         } => {
