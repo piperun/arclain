@@ -12,7 +12,44 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// Minimum valid image size (bytes) - images smaller than this are likely corrupted/placeholders
+const MIN_IMAGE_SIZE: usize = 100;
+
+/// Result of image validation
+#[derive(Debug)]
+pub enum ImageValidation {
+    Valid,
+    TooSmall(usize),
+    InvalidFormat,
+    NotAnImage,
+}
+
+/// Validate that data is a valid image by checking magic bytes and size
+pub fn validate_image(data: &[u8]) -> ImageValidation {
+    if data.len() < MIN_IMAGE_SIZE {
+        return ImageValidation::TooSmall(data.len());
+    }
+
+    // Check magic bytes for common image formats
+    let is_jpeg = data.len() >= 3 && data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF;
+    let is_png = data.len() >= 8 && &data[0..8] == b"\x89PNG\r\n\x1a\n";
+    let is_webp = data.len() > 12 && &data[0..4] == b"RIFF" && &data[8..12] == b"WEBP";
+    let is_gif = data.len() >= 6 && (&data[0..6] == b"GIF87a" || &data[0..6] == b"GIF89a");
+    let is_bmp = data.len() >= 2 && &data[0..2] == b"BM";
+
+    if is_jpeg || is_png || is_webp || is_gif || is_bmp {
+        ImageValidation::Valid
+    } else {
+        // Check if it looks like HTML (common error response)
+        if data.len() > 15 && (data.starts_with(b"<!DOCTYPE") || data.starts_with(b"<html") || data.starts_with(b"<HTML")) {
+            ImageValidation::NotAnImage
+        } else {
+            ImageValidation::InvalidFormat
+        }
+    }
+}
 
 /// Manages resource fetching, caching, and retrieval
 pub struct ResourceManager {
@@ -123,6 +160,34 @@ impl ResourceManager {
                     data.len(),
                     max
                 ));
+            }
+        }
+
+        // Validate images before storing
+        if request.resource_type == ResourceType::Image {
+            match validate_image(data) {
+                ImageValidation::Valid => {}
+                ImageValidation::TooSmall(size) => {
+                    warn!(
+                        "[ResourceManager] Rejecting image '{}': too small ({} bytes, min: {})",
+                        key, size, MIN_IMAGE_SIZE
+                    );
+                    return Err(format!("Image too small: {} bytes", size));
+                }
+                ImageValidation::InvalidFormat => {
+                    warn!(
+                        "[ResourceManager] Rejecting image '{}': invalid format (unknown magic bytes)",
+                        key
+                    );
+                    return Err("Invalid image format".to_string());
+                }
+                ImageValidation::NotAnImage => {
+                    warn!(
+                        "[ResourceManager] Rejecting image '{}': not an image (looks like HTML/text)",
+                        key
+                    );
+                    return Err("Data is not an image (received HTML/text instead)".to_string());
+                }
             }
         }
 

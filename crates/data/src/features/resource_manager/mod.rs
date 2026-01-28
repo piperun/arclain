@@ -6,4 +6,4 @@
 
 mod manager;
 
-pub use manager::ResourceManager;
+pub use manager::{validate_image, ImageValidation, ResourceManager};
