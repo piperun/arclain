@@ -248,6 +248,16 @@ interface ui {
         buttons: list<toolbar-button-config>,
     }
 
+    // Carousel gallery with thumbnail strip
+    record carousel-config {
+        id: string,
+        images: list<tuple<string, option<string>>>,  // (cache_key, optional_url)
+        current-index: u32,
+        max-height: option<f32>,
+        thumbnail-height: option<f32>,
+        enable-lightbox: bool,
+    }
+
     // UI Element variant (Leaf nodes and simple containers)
     variant ui-element {
         label(label-config),
@@ -266,6 +276,7 @@ interface ui {
         warning(warning-config),
         tag-chips(tag-chips-config),
         toolbar(toolbar-config),
+        carousel(carousel-config),
     }
 
     // Top-level layout structure
@@ -327,6 +338,13 @@ interface ui {
         value: string,
     }
 
+    // Open lightbox with images
+    record open-lightbox-config {
+        images: list<tuple<string, option<string>>>,  // (cache_key, optional_url)
+        start-index: u32,
+        title: option<string>,
+    }
+
     variant plugin-action {
         none,
         // Data actions
@@ -343,6 +361,8 @@ interface ui {
         close-dialog,
         // Clipboard actions
         copy-to-clipboard(string),
+        // Lightbox actions
+        open-lightbox(open-lightbox-config),
     }
 }
 

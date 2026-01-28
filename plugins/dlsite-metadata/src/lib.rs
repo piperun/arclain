@@ -85,6 +85,29 @@ fn sanitize_filename(name: &str) -> String {
     result
 }
 
+/// Get total image count (cover + screenshots) from current browser detail cache
+fn get_total_image_count(state: &PluginState) -> usize {
+    if let Some((product_id, _json, scraped)) = &state.browser_detail_cache {
+        let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
+        let has_cover = cover_url.is_some()
+            || archust_plugin_sdk::arclain::plugin::host::has_data(
+                &metastore_providers::dlsite::cache_keys::cover_key(product_id)
+            );
+        // Count non-empty, non-duplicate screenshot URLs
+        let sample_count = scraped.as_ref()
+            .map(|s| {
+                s.screenshots.iter()
+                    .filter(|url| !url.is_empty())
+                    .filter(|url| cover_url.as_ref() != Some(*url)) // Skip if same as cover
+                    .count()
+            })
+            .unwrap_or(0);
+        (if has_cover { 1 } else { 0 }) + sample_count
+    } else {
+        0
+    }
+}
+
 impl archust_plugin_sdk::Guest for Component {
     fn init() {
         info("DLSite Metadata plugin initialized");
@@ -140,7 +163,8 @@ impl archust_plugin_sdk::Guest for Component {
         use archust_plugin_sdk::arclain::plugin::ui::{
             PluginLayout, SplitConfig, UiElement, LabelConfig, TabsConfig, TextInputConfig,
             ButtonConfig, ButtonAction, ListContainerConfig, ListItemConfig, ImageConfig, LoadingConfig,
-            CheckboxConfig, WarningConfig, WarningIcon, TagChipsConfig, ToolbarConfig, ToolbarButtonConfig
+            CheckboxConfig, WarningConfig, WarningIcon, TagChipsConfig, ToolbarConfig, ToolbarButtonConfig,
+            CarouselConfig
         };
 
         match extension_point.as_str() {
@@ -1132,77 +1156,77 @@ impl archust_plugin_sdk::Guest for Component {
              
              content_elements.push(UiElement::Space(8.0));
              
-             // ===== HERO IMAGE WITH NAVIGATION =====
-             // Get current image index and sample count
-             let (current_idx, samples) = STATE.with(|s| {
+             // ===== CAROUSEL GALLERY =====
+             // Build list of images for carousel: cover first, then screenshots
+             let (current_idx, is_cached_tab) = STATE.with(|s| {
                  let state = s.borrow();
-                 let samples = json["sample_images"].as_array().cloned().unwrap_or_default();
-                 (state.current_image_index, samples)
+                 (state.current_image_index, state.browser_tab == "cached")
              });
-             
-             let samples_count = samples.len();
-             
-             // Navigation Toolbar (only if we have samples)
-             if samples_count > 0 {
-                 let status_label = if current_idx == -1 {
-                     "Cover".to_string()
-                 } else {
-                     format!("Sample {}/{}", current_idx + 1, samples_count)
-                 };
-                 
-                 content_elements.push(UiElement::Toolbar(ToolbarConfig {
-                     buttons: vec![
-                         ToolbarButtonConfig {
-                             id: format!("prev_image_{}", selected_id),
-                             label: "< Prev".to_string(),
-                             icon: None,
-                             primary: false,
-                          },
-                         ToolbarButtonConfig {
-                             id: format!("reset_image_{}", selected_id), // Clicking label resets to cover
-                             label: status_label,
-                             icon: None,
-                             primary: true, // Highlight current status
-                          },
-                         ToolbarButtonConfig {
-                             id: format!("next_image_{}", selected_id),
-                             label: "Next >".to_string(),
-                             icon: None,
-                             primary: false,
-                          },
-                     ],
-                 }));
-             }
-             
-             // Determine which image to show
-             let (start_key, display_url) = if current_idx == -1 || samples_count == 0 {
-                 // Show Cover
-                 let url = scraped.as_ref().and_then(|s| s.cover_image.clone())
-                     .or_else(|| {
-                         // Fallback to first sample if no cover explicitly found? 
-                         // Logic below handled this before, let's keep it consistent
-                         samples.first().and_then(|v| v.as_str()).map(|s| s.to_string())
-                     });
-                 (Some(metastore_providers::dlsite::cache_keys::cover_key(selected_id)), url)
+
+             let mut carousel_images: Vec<(String, Option<String>)> = Vec::new();
+             let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+             // Add cover image first (only if cached when on cached tab)
+             let cover_key = metastore_providers::dlsite::cache_keys::cover_key(selected_id);
+             let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
+             let cover_is_cached = archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key);
+
+             // On cached tab: only show if actually cached
+             // On search tab: show if we have URL or cached
+             let show_cover = if is_cached_tab {
+                 cover_is_cached
              } else {
-                 // Show Sample
-                 let idx = current_idx as usize;
-                 let url = samples.get(idx).and_then(|v| v.as_str()).map(|s| s.to_string());
-                 (Some(metastore_providers::dlsite::cache_keys::screenshot_key(selected_id, idx)), url)
+                 cover_url.is_some() || cover_is_cached
              };
-             
-             if let Some(url) = display_url {
-                 content_elements.push(UiElement::Image(ImageConfig {
-                     cache_key: start_key,
-                     url: Some(url),
-                     max_height: Some(400.0), // Larger hero image
-                 }));
-             } else {
-                 // Show placeholder
+
+             if show_cover {
+                 if let Some(ref url) = cover_url {
+                     seen_urls.insert(url.clone());
+                 }
+                 carousel_images.push((cover_key, cover_url));
+             }
+
+             // Add screenshots from scraped data
+             // On cached tab: only show images that are actually cached
+             // On search tab: show all images from metadata
+             if let Some(scraped_data) = &scraped {
+                 for (i, url) in scraped_data.screenshots.iter().enumerate() {
+                     if !url.is_empty() && !seen_urls.contains(url) {
+                         let key = metastore_providers::dlsite::cache_keys::screenshot_key(selected_id, i);
+                         let is_cached = archust_plugin_sdk::arclain::plugin::host::has_data(&key);
+
+                         // On cached tab: only include if actually cached
+                         // On search tab: include all with URLs
+                         let should_include = if is_cached_tab { is_cached } else { true };
+
+                         if should_include {
+                             seen_urls.insert(url.clone());
+                             carousel_images.push((key, Some(url.clone())));
+                         }
+                     }
+                 }
+             }
+
+             if carousel_images.is_empty() {
+                 // Show placeholder if no images
                  content_elements.push(UiElement::Label(LabelConfig {
-                     text: "📷 [Image not available]".to_string(),
+                     text: "[No images available]".to_string(),
                      bold: false,
                      size: Some(12.0),
+                 }));
+             } else {
+                 // Convert current_image_index to carousel index
+                 // -1 (cover) = 0 in carousel, 0 (first sample) = 1 if cover exists
+                 let carousel_index = if current_idx < 0 { 0u32 } else { (current_idx + 1) as u32 };
+                 let carousel_index = carousel_index.min((carousel_images.len() - 1) as u32);
+
+                 content_elements.push(UiElement::Carousel(CarouselConfig {
+                     id: format!("gallery_{}", selected_id),
+                     images: carousel_images,
+                     current_index: carousel_index,
+                     max_height: Some(400.0),
+                     thumbnail_height: Some(60.0),
+                     enable_lightbox: true,
                  }));
              }
              
@@ -1369,7 +1393,7 @@ impl archust_plugin_sdk::Guest for Component {
 
 
     fn on_ui_event(id: String, value: Option<String>) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
-        use archust_plugin_sdk::arclain::plugin::ui::PluginAction;
+        use archust_plugin_sdk::arclain::plugin::ui::{PluginAction, OpenLightboxConfig};
         // Handle system events dispatched as UI events
         if id == "event:archive_opened" {
             let path = value.unwrap_or_default();
@@ -1457,46 +1481,116 @@ impl archust_plugin_sdk::Guest for Component {
             return vec![archust_plugin_sdk::arclain::plugin::ui::PluginAction::CloseDialog];
         }
 
-        // Image Gallery Navigation
-        if id.starts_with("prev_image_") {
-            STATE.with(|s| {
-                let mut state = s.borrow_mut();
-                 let count = if let Some((_, json, _)) = &state.browser_detail_cache {
-                     json["sample_images"].as_array().map(|a| a.len() as i32).unwrap_or(0)
-                 } else { 0 };
+        // Carousel Gallery Navigation
+        if id.starts_with("gallery_") {
+            // Extract the product_id from the event ID (format: gallery_{product_id}_{action})
+            let parts: Vec<&str> = id.splitn(3, '_').collect();
+            if parts.len() >= 3 {
+                let action_part = parts[2];
 
-                if count > 0 {
-                    let mut new_idx = state.current_image_index - 1;
-                    if new_idx < -1 { new_idx = count - 1; }
-                    state.current_image_index = new_idx;
-                    // Force refresh
+                if action_part == "prev" {
+                    // Navigate to previous image (wraps around)
+                    STATE.with(|s| {
+                        let mut state = s.borrow_mut();
+                        let total_images = get_total_image_count(&state);
+                        if total_images > 1 {
+                            // current_image_index: -1 = cover (carousel 0), 0+ = sample (carousel 1+)
+                            // Going prev from cover (-1) wraps to last sample
+                            let mut new_idx = state.current_image_index - 1;
+                            if new_idx < -1 {
+                                new_idx = (total_images - 2) as i32; // -2 because: total includes cover, and samples are 0-indexed
+                            }
+                            state.current_image_index = new_idx;
+                        }
+                    });
+                    return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
                 }
-            });
-            return vec![archust_plugin_sdk::arclain::plugin::ui::PluginAction::RefreshPanel("dlsite_browser".to_string())];
-        }
 
-        if id.starts_with("next_image_") {
-            STATE.with(|s| {
-                let mut state = s.borrow_mut();
-                 let count = if let Some((_, json, _)) = &state.browser_detail_cache {
-                     json["sample_images"].as_array().map(|a| a.len() as i32).unwrap_or(0)
-                 } else { 0 };
-
-                if count > 0 {
-                    let mut new_idx = state.current_image_index + 1;
-                    if new_idx >= count { new_idx = -1; }
-                    state.current_image_index = new_idx;
+                if action_part == "next" {
+                    // Navigate to next image (wraps around)
+                    STATE.with(|s| {
+                        let mut state = s.borrow_mut();
+                        let total_images = get_total_image_count(&state);
+                        if total_images > 1 {
+                            let mut new_idx = state.current_image_index + 1;
+                            // If we go past the last sample, wrap to cover (-1)
+                            if new_idx >= (total_images - 1) as i32 {
+                                new_idx = -1;
+                            }
+                            state.current_image_index = new_idx;
+                        }
+                    });
+                    return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
                 }
-            });
-            return vec![archust_plugin_sdk::arclain::plugin::ui::PluginAction::RefreshPanel("dlsite_browser".to_string())];
-        }
 
-        if id.starts_with("reset_image_") {
-            STATE.with(|s| {
-                let mut state = s.borrow_mut();
-                state.current_image_index = -1;
-            });
-            return vec![archust_plugin_sdk::arclain::plugin::ui::PluginAction::RefreshPanel("dlsite_browser".to_string())];
+                if action_part.starts_with("select_") {
+                    // Direct select by carousel index
+                    if let Ok(carousel_idx) = action_part.trim_start_matches("select_").parse::<usize>() {
+                        STATE.with(|s| {
+                            let mut state = s.borrow_mut();
+                            // Carousel index 0 = cover (-1), 1+ = sample (carousel_idx - 1)
+                            state.current_image_index = if carousel_idx == 0 { -1 } else { (carousel_idx - 1) as i32 };
+                        });
+                        return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+                    }
+                }
+
+                if action_part == "open_lightbox" {
+                    // Open lightbox with all images (respecting cached tab filter)
+                    return STATE.with(|s| {
+                        let state = s.borrow();
+                        let is_cached_tab = state.browser_tab == "cached";
+
+                        if let Some((product_id, _json, scraped)) = &state.browser_detail_cache {
+                            let mut images: Vec<(String, Option<String>)> = Vec::new();
+                            let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+                            // Add cover (only if cached when on cached tab)
+                            let cover_key = metastore_providers::dlsite::cache_keys::cover_key(product_id);
+                            let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
+                            let cover_is_cached = archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key);
+
+                            let show_cover = if is_cached_tab { cover_is_cached } else { cover_url.is_some() || cover_is_cached };
+
+                            if show_cover {
+                                if let Some(ref url) = cover_url {
+                                    seen_urls.insert(url.clone());
+                                }
+                                images.push((cover_key, cover_url));
+                            }
+
+                            // Add screenshots (only cached ones when on cached tab)
+                            if let Some(scraped_data) = scraped {
+                                for (i, url) in scraped_data.screenshots.iter().enumerate() {
+                                    if !url.is_empty() && !seen_urls.contains(url) {
+                                        let key = metastore_providers::dlsite::cache_keys::screenshot_key(product_id, i);
+                                        let is_cached = archust_plugin_sdk::arclain::plugin::host::has_data(&key);
+
+                                        let should_include = if is_cached_tab { is_cached } else { true };
+
+                                        if should_include {
+                                            seen_urls.insert(url.clone());
+                                            images.push((key, Some(url.clone())));
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Convert current_image_index to carousel start index
+                            let start_idx = if state.current_image_index < 0 { 0u32 } else { (state.current_image_index + 1) as u32 };
+                            let start_idx = start_idx.min((images.len().saturating_sub(1)) as u32);
+
+                            vec![PluginAction::OpenLightbox(OpenLightboxConfig {
+                                images,
+                                start_index: start_idx,
+                                title: scraped.as_ref().and_then(|s| s.title.clone()),
+                            })]
+                        } else {
+                            vec![]
+                        }
+                    });
+                }
+            }
         }
 
         match id.as_str() {
@@ -1675,20 +1769,21 @@ impl archust_plugin_sdk::Guest for Component {
             }
             id if id.starts_with("view_cache_entry_") => {
                  let entry_id = id.trim_start_matches("view_cache_entry_").to_string();
-                 
+
                  // Read from local cache only - no network fetch for cached entries!
-                 if let Some((json, scraped)) = get_cached_dlsite_metadata(&entry_id) {
-                     STATE.with(|state| {
-                         state.borrow_mut().browser_detail_cache = Some((entry_id.clone(), json, scraped));
-                     });
-                 }
-                 
+                 let cached_data = get_cached_dlsite_metadata(&entry_id);
+
                  STATE.with(|state| {
-                    state.borrow_mut().selected_cache_entry = Some(entry_id);
+                    let mut s = state.borrow_mut();
+                    if let Some((json, scraped)) = cached_data {
+                        s.browser_detail_cache = Some((entry_id.clone(), json, scraped));
+                    }
+                    s.selected_cache_entry = Some(entry_id);
+                    s.current_image_index = -1; // Reset to cover when switching entries
                 });
-                
+
                 // Refresh panel to show the new selection and its details
-                return vec![PluginAction::RefreshPanel("Dialog:dlsite_cache".to_string())];
+                return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
             }
             id if id.starts_with("load_details_") => {
                 // One-time fetch of details for the selected entry
@@ -1812,9 +1907,11 @@ impl archust_plugin_sdk::Guest for Component {
             id if id.starts_with("RJ") || id.starts_with("VJ") || id.starts_with("BJ") => {
                 info(&format!("[DLSite Plugin] Selected item: {}", id));
 
-                // Set the selected entry
+                // Set the selected entry and reset carousel index
                 STATE.with(|state| {
-                    state.borrow_mut().selected_cache_entry = Some(id.to_string());
+                    let mut s = state.borrow_mut();
+                    s.selected_cache_entry = Some(id.to_string());
+                    s.current_image_index = -1; // Reset to cover when switching entries
                 });
 
                 // Try to load from cache first, otherwise fetch from network
@@ -1833,7 +1930,7 @@ impl archust_plugin_sdk::Guest for Component {
                 }
 
                 // Refresh to show details
-                return vec![PluginAction::RefreshPanel("dlsite_browser".to_string())];
+                return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
             }
             id if id.starts_with("apply_metadata_") => {
                 let code = id.trim_start_matches("apply_metadata_").to_string();
@@ -1897,6 +1994,10 @@ impl archust_plugin_sdk::Guest for Component {
                 // Fetch from network (updates cache)
                 match fetch_dlsite_metadata(&entry_id) {
                     Some((json, scraped)) => {
+                        // Emit metadata to persist the entry back to the metadata database
+                        let metadata_json = generate_metadata_json(&entry_id, Some(&(json.clone(), scraped.clone())));
+                        archust_plugin_sdk::emit_metadata(&metadata_json);
+
                         STATE.with(|state| {
                             state.borrow_mut().browser_detail_cache = Some((entry_id.clone(), json, scraped));
                         });
@@ -2242,8 +2343,8 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
                 }
             }
 
-            // Fetch screenshots (limit to first 5)
-            for (idx, screenshot_url) in data.screenshots.iter().take(5).enumerate() {
+            // Fetch all screenshots
+            for (idx, screenshot_url) in data.screenshots.iter().enumerate() {
                 let screenshot_key = metastore_providers::dlsite::cache_keys::screenshot_key(product_id, idx);
                 log_network_activity(&format!("Fetching screenshot {}: {}", idx, screenshot_url));
                 

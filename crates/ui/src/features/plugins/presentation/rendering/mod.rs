@@ -1,3 +1,4 @@
+pub mod carousel;
 pub mod context;
 pub mod image;
 pub mod layout;

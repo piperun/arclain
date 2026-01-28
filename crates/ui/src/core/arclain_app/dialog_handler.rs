@@ -320,4 +320,28 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
             &mut app.show_log_viewer,
         );
     }
+
+    // Render lightbox if open
+    let mut lightbox_state = app.shared_state.signals().lightbox_state.get();
+    if lightbox_state.show {
+        let result = dialogs::render_lightbox(
+            ctx,
+            &app.shared_state.theme,
+            &mut lightbox_state,
+            app.shared_state.services.content_cache.as_ref(),
+        );
+        match result {
+            dialogs::LightboxResult::Closed => {
+                // State already closed in render function
+            }
+            dialogs::LightboxResult::ImageChanged(_index) => {
+                // Could notify plugin if needed
+            }
+            dialogs::LightboxResult::None => {}
+        }
+        app.shared_state
+            .signals()
+            .lightbox_state
+            .set_if_changed(lightbox_state);
+    }
 }

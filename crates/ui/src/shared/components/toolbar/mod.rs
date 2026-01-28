@@ -159,12 +159,12 @@ pub fn render(
 
         for (plugin_id, plugin_action) in actions_list.iter() {
             crate::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
-
                 vec![plugin_action.clone()],
                 plugin_id,
                 &mut dialog_state,
                 &mut toaster,
                 Some(&shared.refresh_requests),
+                Some(&shared.signals().lightbox_state),
             );
         }
 
