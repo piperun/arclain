@@ -465,16 +465,24 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
                 potential_screenshots.len()
             );
 
-            // Filter out cover image if it matches one of the screenshots
-            // This prevents duplicate cover but ensures we don't skip valid screenshots
+            // Deduplicate URLs and filter out cover image
+            // DLSite HTML sometimes contains duplicate entries in the slider
+            let mut seen_urls = std::collections::HashSet::new();
             data.screenshots = potential_screenshots
                 .into_iter()
                 .filter(|url| {
-                    if let Some(cover) = &data.cover_image {
-                        url != cover
-                    } else {
-                        true
+                    // Skip duplicates
+                    if !seen_urls.insert(url.clone()) {
+                        tracing::debug!("[DLsite HTML] Skipping duplicate screenshot URL: {}", url);
+                        return false;
                     }
+                    // Skip if matches cover
+                    if let Some(cover) = &data.cover_image {
+                        if url == cover {
+                            return false;
+                        }
+                    }
+                    true
                 })
                 .collect();
 
