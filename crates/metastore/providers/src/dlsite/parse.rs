@@ -459,6 +459,12 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
                 })
                 .collect();
 
+            tracing::info!(
+                "[DLsite HTML] Selector '{}' found {} potential screenshots",
+                selector_str,
+                potential_screenshots.len()
+            );
+
             // Filter out cover image if it matches one of the screenshots
             // This prevents duplicate cover but ensures we don't skip valid screenshots
             data.screenshots = potential_screenshots
@@ -467,18 +473,15 @@ pub fn parse_html_response(html: &str) -> Option<ScrapedData> {
                     if let Some(cover) = &data.cover_image {
                         url != cover
                     } else {
-                        // If we don't have a cover yet, we technically shouldn't treat the first as cover
-                        // unless we want to promote it. But usually cover is found by previous selectors.
-                        // If not found, maybe we should use the first screenshot as cover?
-                        // For now, just keep them all.
                         true
                     }
                 })
                 .collect();
 
             if !data.screenshots.is_empty() {
-                tracing::debug!(
-                    "[DLsite HTML] Screenshots found with selector: {}",
+                tracing::info!(
+                    "[DLsite HTML] Screenshots after cover filter: {} (selector: {})",
+                    data.screenshots.len(),
                     selector_str
                 );
             }

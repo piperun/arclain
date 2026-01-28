@@ -224,6 +224,57 @@ pub fn render(
                 );
             })
             .show(ui, &theme.colors);
+
+        // Section: Cache Maintenance
+        SettingsGroup::new("Cache Maintenance")
+            .content(|ui, colors| {
+                ui.label(
+                    egui::RichText::new("Clean up orphaned data and fix cache entries")
+                        .size(12.0)
+                        .color(colors.on_surface_variant),
+                );
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            TextButton::new("Garbage Collect", ButtonSize::Medium)
+                                .with_theme_colors(colors),
+                        )
+                        .on_hover_text("Remove cache entries for deleted products")
+                        .clicked()
+                    {
+                        action = Some(SettingsAction::GarbageCollectCache);
+                    }
+
+                    ui.add_space(8.0);
+
+                    if ui
+                        .add(
+                            TextButton::new("Clean Search Cache", ButtonSize::Medium)
+                                .with_theme_colors(colors),
+                        )
+                        .on_hover_text("Remove search results older than 7 days")
+                        .clicked()
+                    {
+                        action = Some(SettingsAction::CleanOldSearchCache);
+                    }
+
+                    ui.add_space(8.0);
+
+                    if ui
+                        .add(
+                            TextButton::new("Fix Cache Entries", ButtonSize::Medium)
+                                .with_theme_colors(colors),
+                        )
+                        .on_hover_text("Update cache_type and product_id based on key patterns")
+                        .clicked()
+                    {
+                        action = Some(SettingsAction::MigrateCacheEntries);
+                    }
+                });
+            })
+            .show(ui, &theme.colors);
     });
 
     action

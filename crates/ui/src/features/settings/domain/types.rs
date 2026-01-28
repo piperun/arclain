@@ -60,6 +60,12 @@ pub enum SettingsAction {
     ClearCacheIndex,
     /// Clear the cache content (files on disk)
     ClearCacheContent,
+    /// Garbage collect orphaned cache entries
+    GarbageCollectCache,
+    /// Clean up old search cache (older than 7 days)
+    CleanOldSearchCache,
+    /// Fix/migrate cache entries (update cache_type and product_id)
+    MigrateCacheEntries,
     /// Save general settings
     SaveGeneral { open_nested_in_new_tab: bool },
     /// Save network settings

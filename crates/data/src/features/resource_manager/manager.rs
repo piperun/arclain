@@ -129,17 +129,32 @@ impl ResourceManager {
         match strategy {
             StorageStrategy::Cache => {
                 if let Some(cache) = &self.cache {
-                    let cache_type = match request.resource_type {
-                        ResourceType::Image => CacheType::Screenshot,
-                        ResourceType::Metadata => CacheType::Metadata,
-                        _ => CacheType::Screenshot,
+                    // Infer cache type from key for more accurate categorization
+                    // Fall back to resource_type hint if key doesn't match patterns
+                    let cache_type = CacheType::from_key(key);
+                    let cache_type = if cache_type == CacheType::Other {
+                        // Key didn't match known patterns, use resource_type hint
+                        match request.resource_type {
+                            ResourceType::Image => CacheType::Screenshot,
+                            ResourceType::Metadata => CacheType::Metadata,
+                            _ => CacheType::Other,
+                        }
+                    } else {
+                        cache_type
                     };
+
+                    // Extract product_id from key if not provided
+                    let product_id = request
+                        .product_id
+                        .clone()
+                        .or_else(|| CacheType::extract_product_id(key));
+
                     cache
                         .put(
                             key,
                             data,
                             cache_type,
-                            request.product_id.as_deref(),
+                            product_id.as_deref(),
                             request.url.as_deref(), // source_url
                         )
                         .map_err(|e| e.to_string())?;

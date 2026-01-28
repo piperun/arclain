@@ -379,10 +379,19 @@ CREATE INDEX IF NOT EXISTS idx_product_external ON product_metadata(external_id)
 use diesel::prelude::*;
 use diesel::result::OptionalExtension;
 
-/// Delete product metadata by ID
+/// Delete product metadata by ID (cascades to cache_index)
 pub fn delete(conn: &mut diesel::SqliteConnection, product_id: &str) -> Result<()> {
     use crate::diesel_schema::product_metadata::dsl::*;
 
+    // Delete associated cache entries first (cascade)
+    {
+        use crate::diesel_schema::cache_index::dsl as cache_dsl;
+        diesel::delete(cache_dsl::cache_index.filter(cache_dsl::product_id.eq(product_id)))
+            .execute(conn)
+            .map_err(|e| anyhow::anyhow!("Diesel cascade delete cache_index failed: {}", e))?;
+    }
+
+    // Delete the product metadata
     diesel::delete(product_metadata.filter(id.eq(product_id)))
         .execute(conn)
         .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;

@@ -113,8 +113,11 @@ pub fn list_by_source(conn: &Connection, source: MetadataSource) -> Result<Vec<P
     Ok(results)
 }
 
-/// Delete product metadata by ID
+/// Delete product metadata by ID (cascades to cache_index)
 pub fn delete(conn: &Connection, id: &str) -> Result<()> {
+    // Delete associated cache entries first (cascade)
+    conn.execute("DELETE FROM cache_index WHERE product_id = ?1", [id])?;
+    // Delete the product metadata
     conn.execute("DELETE FROM product_metadata WHERE id = ?1", [id])?;
     Ok(())
 }

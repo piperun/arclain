@@ -83,4 +83,29 @@ impl MetadataStore {
     pub fn clear_cache_index(&self) -> Result<()> {
         self.pool.with_conn(|conn| cache::clear_all_entries(conn))
     }
+
+    /// Get cache statistics
+    pub fn get_cache_stats(&self) -> Result<cache::CacheStats> {
+        self.pool.with_conn(|conn| cache::get_cache_stats(conn))
+    }
+
+    /// Delete orphaned cache entries (entries with product_id not in product_metadata)
+    pub fn delete_orphaned_cache_entries(&self) -> Result<usize> {
+        self.pool.with_conn(|conn| cache::delete_orphaned_entries(conn))
+    }
+
+    /// Delete search cache entries older than specified days
+    pub fn delete_old_search_cache(&self, days: i64) -> Result<usize> {
+        self.pool.with_conn(|conn| cache::delete_old_search_cache(conn, days))
+    }
+
+    /// Fix cache entries: update cache_type and product_id based on key patterns
+    pub fn migrate_fix_cache_entries(&self) -> Result<(usize, usize)> {
+        self.pool.with_conn(|conn| cache::migrate_fix_entries(conn))
+    }
+
+    /// Get all content hashes in the cache index
+    pub fn get_all_content_hashes(&self) -> Result<Vec<String>> {
+        self.pool.with_conn(|conn| cache::get_all_content_hashes(conn))
+    }
 }

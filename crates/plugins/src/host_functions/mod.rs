@@ -378,31 +378,12 @@ impl Host for HostFunctions {
 
         let mut invalidated = false;
 
-        // Remove from content cache (key format: dlsite:json:ID or dlsite:html:ID)
+        // Remove from content cache only (key format: dlsite:json:ID or dlsite:html:ID)
+        // NOTE: This does NOT delete metadata entries - only cached content blobs.
+        // Metadata entries should only be deleted via explicit delete actions.
         if let Some(cache) = &self.content_cache {
             if let Ok(true) = cache.remove(&key) {
                 tracing::info!("[HostFunctions] Invalidated content cache key: {}", key);
-                invalidated = true;
-            }
-        }
-
-        // Also try LibraryService with converted key format
-        // ContentCache: dlsite:json:RJ999003 -> LibraryService: dlsite:RJ999003
-        if let Some(lib_svc) = &self.library_service {
-            // Extract the metadata ID (remove :json or :html suffix)
-            let metadata_key = if key.contains(":json:") {
-                key.replace(":json:", ":")
-            } else if key.contains(":html:") {
-                key.replace(":html:", ":")
-            } else {
-                key.clone()
-            };
-
-            if lib_svc.delete_metadata(&metadata_key).is_ok() {
-                tracing::info!(
-                    "[HostFunctions] Invalidated metadata via LibraryService: {}",
-                    metadata_key
-                );
                 invalidated = true;
             }
         }
