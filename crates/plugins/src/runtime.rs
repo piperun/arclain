@@ -516,6 +516,14 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
                 })
                 .collect(),
         },
+        UiElement::Carousel(config) => InternalElement::Carousel {
+            id: config.id,
+            images: config.images,
+            current_index: config.current_index as usize,
+            max_height: config.max_height,
+            thumbnail_height: config.thumbnail_height,
+            enable_lightbox: config.enable_lightbox,
+        },
     }
 }
 
@@ -571,5 +579,10 @@ fn convert_plugin_action(
         WitAction::OpenPage(page) => InternalAction::OpenPage { page },
         WitAction::CloseDialog => InternalAction::CloseDialog,
         WitAction::CopyToClipboard(text) => InternalAction::CopyToClipboard { text },
+        WitAction::OpenLightbox(config) => InternalAction::OpenLightbox {
+            images: config.images,
+            start_index: config.start_index as usize,
+            title: config.title,
+        },
     }
 }

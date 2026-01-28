@@ -152,6 +152,9 @@ pub struct AppSignals {
 
     /// [NEW] Merge dialog state for merging split archives
     pub merge_dialog: Signal<crate::shared::dialogs::MergeDialogState>,
+
+    /// [NEW] Lightbox state for full-screen image viewing
+    pub lightbox_state: Signal<crate::shared::dialogs::LightboxState>,
 }
 
 impl AppSignals {
@@ -213,6 +216,8 @@ impl AppSignals {
             hotkeys_updated: Signal::new(false).with_name("hotkeys_updated"),
             merge_dialog: Signal::new(crate::shared::dialogs::MergeDialogState::default())
                 .with_name("merge_dialog"),
+            lightbox_state: Signal::new(crate::shared::dialogs::LightboxState::default())
+                .with_name("lightbox_state"),
         }
     }
 
@@ -248,6 +253,7 @@ impl AppSignals {
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
         signal_ctx.bind_named(&self.merge_dialog, "merge_dialog");
+        signal_ctx.bind_named(&self.lightbox_state, "lightbox_state");
     }
 
     /// Reset all signals to default state.
@@ -294,6 +300,8 @@ impl AppSignals {
             .set(crate::features::plugins::domain::state::PluginDialogState::default());
         self.merge_dialog
             .set(crate::shared::dialogs::MergeDialogState::default());
+        self.lightbox_state
+            .set(crate::shared::dialogs::LightboxState::default());
     }
 }
 

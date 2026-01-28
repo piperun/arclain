@@ -333,6 +333,23 @@ pub enum PluginUiElement {
     },
     /// Toolbar with buttons
     Toolbar { buttons: Vec<ToolbarButton> },
+    /// Carousel gallery with thumbnail strip
+    Carousel {
+        id: String,
+        /// List of images: (cache_key, optional_url)
+        images: Vec<(String, Option<String>)>,
+        /// Currently selected image index
+        current_index: usize,
+        /// Max height for main image (default 300)
+        #[serde(default)]
+        max_height: Option<f32>,
+        /// Thumbnail height (default 60)
+        #[serde(default)]
+        thumbnail_height: Option<f32>,
+        /// Enable click-to-open lightbox (default true)
+        #[serde(default = "default_true")]
+        enable_lightbox: bool,
+    },
 }
 
 /// Toolbar button configuration
@@ -386,10 +403,23 @@ pub enum PluginAction {
     CloseDialog,
     /// Copy text to system clipboard
     CopyToClipboard { text: String },
+    /// Open the lightbox with images
+    OpenLightbox {
+        /// List of images: (cache_key, optional_url)
+        images: Vec<(String, Option<String>)>,
+        /// Starting image index
+        start_index: usize,
+        /// Optional title for the lightbox
+        title: Option<String>,
+    },
 }
 
 fn default_space_size() -> f32 {
     8.0
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Error types for plugin system

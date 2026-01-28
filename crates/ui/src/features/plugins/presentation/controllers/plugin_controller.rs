@@ -4,11 +4,13 @@
 //! and dispatches them to the appropriate subsystems.
 
 use arclain_plugins::types::{PluginAction, ToastLevel as PluginToastLevel};
+use arclain_signals::Signal;
 use arclain_widgets::{Toast, ToastLevel, Toaster};
 use parking_lot::Mutex;
 use std::sync::Arc;
 
 use crate::features::plugins::domain::state::PluginDialogState;
+use crate::shared::dialogs::LightboxState;
 
 /// Process a list of plugin actions
 pub fn process_plugin_actions(
@@ -17,9 +19,10 @@ pub fn process_plugin_actions(
     dialog_state: &mut PluginDialogState,
     toaster: &mut Toaster,
     refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
+    lightbox_signal: Option<&Signal<LightboxState>>,
 ) {
     for action in actions {
-        process_action(action, plugin_id, dialog_state, toaster, refresh_requests);
+        process_action(action, plugin_id, dialog_state, toaster, refresh_requests, lightbox_signal);
     }
 }
 
@@ -30,6 +33,7 @@ fn process_action(
     _dialog_state: &mut PluginDialogState,
     toaster: &mut Toaster,
     refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
+    lightbox_signal: Option<&Signal<LightboxState>>,
 ) {
     match action {
         PluginAction::None => {}
@@ -121,6 +125,26 @@ fn process_action(
                 }
             }
         }
+
+        PluginAction::OpenLightbox {
+            images,
+            start_index,
+            title,
+        } => {
+            // Open the lightbox with the provided images
+            tracing::debug!(
+                "Plugin {} requested lightbox with {} images starting at index {}",
+                plugin_id,
+                images.len(),
+                start_index
+            );
+            if let Some(signal) = lightbox_signal {
+                let state = LightboxState::open(images, start_index, title);
+                signal.set(state);
+            } else {
+                tracing::warn!("Lightbox requested but signal not available");
+            }
+        }
     }
 }
 
@@ -131,6 +155,7 @@ pub fn create_dialog_callback(
 ) -> Box<dyn FnMut(&str, Option<String>)> {
     // Use signal instead of Arc<Mutex>
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
+    let lightbox_signal = shared.signals().lightbox_state.clone();
     let toaster_arc = shared.toaster.clone();
     let plugin_manager_arc = shared.services.plugin_manager.clone();
     let pid = plugin_id;
@@ -167,6 +192,7 @@ pub fn create_dialog_callback(
                         &mut ds,
                         &mut toaster,
                         None, // No refresh requests for dialog callbacks
+                        Some(&lightbox_signal),
                     );
                 }
                 dialog_signal.set(ds);
@@ -181,6 +207,7 @@ pub fn create_page_callback(
     plugin_id: String,
 ) -> Box<dyn FnMut(&str, Option<String>)> {
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
+    let lightbox_signal = shared.signals().lightbox_state.clone();
     let toaster_arc = shared.toaster.clone();
     let plugin_manager_arc = shared.services.plugin_manager.clone();
     let pid = plugin_id;
@@ -224,6 +251,7 @@ pub fn create_page_callback(
                         &mut ds,
                         &mut toaster,
                         None, // No refresh requests for page callbacks
+                        Some(&lightbox_signal),
                     );
                 }
                 dialog_signal.set(ds);

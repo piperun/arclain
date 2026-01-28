@@ -1,7 +1,7 @@
 //! Main renderer for plugin UI elements
 
 use super::context::{RenderContext, UiEventHandler};
-use super::{image, layout, widgets};
+use super::{carousel, image, layout, widgets};
 use crate::shared::{theme::ThemeColors, SharedState};
 use arclain_data::ContentCache;
 use arclain_plugins::types::PluginUiElement;
@@ -153,6 +153,25 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
                 image_key,
                 *selected,
                 warning_icon,
+            );
+        }
+        PluginUiElement::Carousel {
+            id,
+            images,
+            current_index,
+            max_height,
+            thumbnail_height,
+            enable_lightbox,
+        } => {
+            carousel::render_carousel(
+                ui,
+                ctx,
+                id,
+                images,
+                *current_index,
+                *max_height,
+                *thumbnail_height,
+                *enable_lightbox,
             );
         }
     }
