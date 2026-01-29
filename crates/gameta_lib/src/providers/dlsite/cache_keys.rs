@@ -1,9 +1,8 @@
 //! DLsite-specific cache key generation
 //!
 //! Provides standardized key generation for caching DLsite assets.
-//! Other providers (Steam, itch.io) should implement their own key schemes.
 
-/// Generate cache key for a screenshot (highest quality sample images)
+/// Generate cache key for a screenshot
 pub fn screenshot_key(product_id: &str, index: usize) -> String {
     format!("dlsite:{}:screenshot_{}", product_id, index)
 }

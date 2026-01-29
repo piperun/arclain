@@ -11,8 +11,7 @@ itchio = []
 steam = []
 
 [dependencies]
-metastore-types = { path = "../types" }
-metastore-abstract = { path = "../abstract" }
+gameta_core = { path = "../../gameta_core" }
 gameta_lib = { path = "../../gameta_lib" }
 regex = "1"
 scraper = "0.22"

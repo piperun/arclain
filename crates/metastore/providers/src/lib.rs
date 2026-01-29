@@ -1,14 +1,28 @@
 //! Metadata providers for various platforms
+//!
+//! This crate re-exports providers from gameta_lib for backward compatibility.
+//! New code should depend on gameta_lib directly.
 
-mod provider_trait;
+// Re-export provider trait and types from gameta_core
+pub use gameta_core::{
+    HttpRequest, HttpResponse, MetadataProvider, MetadataSource, ParseError, ProductMetadata,
+    SearchResult,
+};
+
+// Re-export DLSite provider from gameta_lib
+#[cfg(feature = "dlsite")]
+pub use gameta_lib::providers::dlsite;
 
 #[cfg(feature = "dlsite")]
-pub mod dlsite;
+pub use gameta_lib::providers::dlsite::DLSiteProvider;
 
+// Stubs for future providers
 #[cfg(feature = "itchio")]
-pub mod itchio;
+pub mod itchio {
+    //! itch.io metadata provider (skeleton)
+}
 
 #[cfg(feature = "steam")]
-pub mod steam;
-
-pub use provider_trait::*;
+pub mod steam {
+    //! Steam metadata provider (skeleton)
+}

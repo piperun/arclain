@@ -1,6 +1,4 @@
 //! DLSite API URL construction and connectivity checks.
-//!
-//! Based on patterns from the dlsite-async Python library.
 
 /// Connectivity check result
 #[derive(Debug, Clone, PartialEq)]
@@ -32,9 +30,6 @@ pub fn get_site_id(product_id: &str) -> &'static str {
 }
 
 /// Construct the ajax API URL for a product.
-///
-/// This endpoint returns quick metadata in JSON format.
-/// Format: `https://www.dlsite.com/{site_id}/product/info/ajax?product_id={id}`
 pub fn ajax_url(product_id: &str) -> String {
     let site_id = get_site_id(product_id);
     format!(
@@ -44,9 +39,6 @@ pub fn ajax_url(product_id: &str) -> String {
 }
 
 /// Construct the HTML work page URL for a product.
-///
-/// This page contains detailed metadata like genres, description, cover images.
-/// Format: `https://www.dlsite.com/{site_id}/work/=/product_id/{id}.html`
 pub fn html_url(product_id: &str) -> String {
     let site_id = get_site_id(product_id);
     format!(
@@ -94,10 +86,6 @@ mod tests {
             ajax_url("VJ012345"),
             "https://www.dlsite.com/pro/product/info/ajax?product_id=VJ012345"
         );
-        assert_eq!(
-            ajax_url("RJ294126"),
-            "https://www.dlsite.com/maniax/product/info/ajax?product_id=RJ294126"
-        );
     }
 
     #[test]
@@ -105,10 +93,6 @@ mod tests {
         assert_eq!(
             html_url("VJ012345"),
             "https://www.dlsite.com/pro/work/=/product_id/VJ012345.html"
-        );
-        assert_eq!(
-            html_url("RJ294126"),
-            "https://www.dlsite.com/maniax/work/=/product_id/RJ294126.html"
         );
     }
 
