@@ -1,7 +1,8 @@
 //! Main renderer for plugin UI elements
 
 use super::context::{RenderContext, UiEventHandler};
-use super::{carousel, image, layout, widgets};
+use super::{image, layout, widgets};
+use crate::shared::components::carousel::{Carousel, CarouselEvent};
 use crate::shared::{theme::ThemeColors, SharedState};
 use arclain_data::ContentCache;
 use arclain_plugins::types::PluginUiElement;
@@ -163,16 +164,30 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
             thumbnail_height,
             enable_lightbox,
         } => {
-            carousel::render_carousel(
-                ui,
-                ctx,
-                id,
-                images,
-                *current_index,
-                *max_height,
-                *thumbnail_height,
-                *enable_lightbox,
-            );
+            let mut carousel = Carousel::new(id, images, *current_index)
+                .main_height(max_height.unwrap_or(300.0))
+                .thumbnail_height(thumbnail_height.unwrap_or(60.0))
+                .enable_lightbox(*enable_lightbox)
+                .colors(ctx.colors);
+
+            if let Some(cache) = ctx.content_cache {
+                carousel = carousel.content_cache(cache);
+            }
+
+            if let Some(event) = carousel.show(ui) {
+                match event {
+                    CarouselEvent::Previous => {
+                        (ctx.event_callback)(&format!("{}_prev", id), None)
+                    }
+                    CarouselEvent::Next => (ctx.event_callback)(&format!("{}_next", id), None),
+                    CarouselEvent::Select(idx) => {
+                        (ctx.event_callback)(&format!("{}_select_{}", id, idx), None)
+                    }
+                    CarouselEvent::OpenLightbox => {
+                        (ctx.event_callback)(&format!("{}_open_lightbox", id), None)
+                    }
+                }
+            }
         }
     }
 }

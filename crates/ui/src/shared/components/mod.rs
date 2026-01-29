@@ -1,6 +1,7 @@
 // Shared reusable UI components module
 
 pub mod breadcrumbs;
+pub mod carousel;
 pub mod context_menu;
 pub mod header;
 pub mod item_table;
