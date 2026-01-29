@@ -300,6 +300,239 @@ impl HostFunctions {
         }
     }
 
+    /// Get full product metadata with fallback chain:
+    /// 1. metadata.sqlite (instant)
+    /// 2. JSON cache (parse + save to DB)
+    /// 3. HTML cache (parse on host + save to DB)
+    pub(super) fn impl_get_product_metadata(
+        &mut self,
+        product_id: String,
+        source: String,
+    ) -> Option<String> {
+        use arclain_core::MetadataSource;
+
+        let _source_enum = match source.to_lowercase().as_str() {
+            "dlsite" => MetadataSource::DLSite,
+            "steam" => MetadataSource::Steam,
+            "itch" | "itchio" => MetadataSource::Itch,
+            _ => MetadataSource::Custom,
+        };
+
+        let full_id = format!("{}:{}", source.to_lowercase(), product_id);
+        info!(
+            "[get_product_metadata] Looking up {} (full_id: {})",
+            product_id, full_id
+        );
+
+        // 1. Check metadata.sqlite first (fastest)
+        if let Some(lib_svc) = &self.library_service {
+            match lib_svc.get_metadata(&full_id) {
+                Ok(Some(meta)) => {
+                    info!(
+                        "[get_product_metadata] Found in metadata.sqlite: {}",
+                        product_id
+                    );
+                    // Return the full ProductMetadata as JSON
+                    return serde_json::to_string(&meta).ok();
+                }
+                Ok(None) => {
+                    debug!(
+                        "[get_product_metadata] Not in metadata.sqlite, checking caches..."
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "[get_product_metadata] Error reading metadata.sqlite: {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        // 2. Check JSON cache (dlsite:json:ID)
+        let json_key = format!("{}:json:{}", source.to_lowercase(), product_id);
+        if let Some(json_bytes) = self.data_service.get_data(&json_key) {
+            if let Ok(json_str) = String::from_utf8(json_bytes) {
+                info!(
+                    "[get_product_metadata] Found JSON cache, parsing: {}",
+                    product_id
+                );
+
+                // Parse the raw API JSON into ProductMetadata
+                if let Ok(meta) =
+                    self.parse_dlsite_json_to_metadata(&product_id, &source, &json_str)
+                {
+                    // Save to metadata.sqlite for next time
+                    if let Some(lib_svc) = &self.library_service {
+                        if let Err(e) = lib_svc.save_metadata(&meta) {
+                            warn!("[get_product_metadata] Failed to save to DB: {}", e);
+                        } else {
+                            info!(
+                                "[get_product_metadata] Saved parsed JSON to metadata.sqlite"
+                            );
+                        }
+                    }
+                    return serde_json::to_string(&meta).ok();
+                }
+            }
+        }
+
+        // 3. Check HTML cache (dlsite:html:ID) - parse on host side
+        let html_key = format!("{}:html:{}", source.to_lowercase(), product_id);
+        if let Some(html_bytes) = self.data_service.get_data(&html_key) {
+            let html_str = String::from_utf8_lossy(&html_bytes);
+            info!(
+                "[get_product_metadata] Found HTML cache, parsing on host: {}",
+                product_id
+            );
+
+            // Parse HTML on host side using gameta_lib
+            if let Ok(meta) =
+                self.parse_dlsite_html_to_metadata(&product_id, &source, &html_str)
+            {
+                // Save to metadata.sqlite for next time
+                if let Some(lib_svc) = &self.library_service {
+                    if let Err(e) = lib_svc.save_metadata(&meta) {
+                        warn!("[get_product_metadata] Failed to save to DB: {}", e);
+                    } else {
+                        info!(
+                            "[get_product_metadata] Saved parsed HTML to metadata.sqlite"
+                        );
+                    }
+                }
+                return serde_json::to_string(&meta).ok();
+            }
+        }
+
+        info!(
+            "[get_product_metadata] Not found in any cache: {}",
+            product_id
+        );
+        None
+    }
+
+    /// Parse DLSite JSON response into ProductMetadata
+    fn parse_dlsite_json_to_metadata(
+        &self,
+        product_id: &str,
+        source: &str,
+        json_str: &str,
+    ) -> Result<arclain_core::ProductMetadata, String> {
+        use arclain_core::ProductMetadata;
+
+        // Parse the JSON
+        let json: serde_json::Value =
+            serde_json::from_str(json_str).map_err(|e| format!("Invalid JSON: {}", e))?;
+
+        // API returns array, get first item
+        let data = if let Some(arr) = json.as_array() {
+            arr.first().cloned().unwrap_or(json.clone())
+        } else {
+            json
+        };
+
+        let now = chrono::Utc::now().to_rfc3339();
+
+        Ok(ProductMetadata {
+            id: format!("{}:{}", source.to_lowercase(), product_id),
+            source: source.to_string(),
+            external_id: product_id.to_string(),
+            title: data["work_name"].as_str().map(|s| s.to_string()),
+            creator: data["maker_name"].as_str().map(|s| s.to_string()),
+            description: data["intro_s"].as_str().map(|s| s.to_string()),
+            release_date: data["regist_date"]
+                .as_str()
+                .map(|s| s.split_whitespace().next().unwrap_or(s).to_string()),
+            price: data["price"]
+                .as_i64()
+                .or_else(|| data["price"].as_str().and_then(|s| s.parse().ok())),
+            currency: Some("JPY".to_string()),
+            rating: data["rate_average_2dp"].as_f64(),
+            rating_count: data["rate_count"].as_i64(),
+            purchase_count: data["dl_count"].as_i64(),
+            favorite_count: data["wishlist_count"].as_i64(),
+            review_count: data["review_count"].as_i64(),
+            file_size: data["file_size"].as_str().map(|s| s.to_string()),
+            file_format: data["file_type"].as_str().map(|s| s.to_string()),
+            age_rating: data["age_category_string"].as_str().map(|s| s.to_string()),
+            genres_json: data["genre"].as_array().map(|arr| {
+                serde_json::to_string(
+                    &arr.iter()
+                        .filter_map(|g| g["name"].as_str())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap_or_default()
+            }),
+            raw_api_response: Some(json_str.to_string()),
+            cached_at: now,
+            geo_blocked: None,
+            ..Default::default()
+        })
+    }
+
+    /// Parse DLSite HTML into ProductMetadata (heavy lifting on host)
+    fn parse_dlsite_html_to_metadata(
+        &self,
+        product_id: &str,
+        source: &str,
+        html_str: &str,
+    ) -> Result<arclain_core::ProductMetadata, String> {
+        use arclain_core::ProductMetadata;
+
+        // Use gameta_lib's HTML parser (runs on host, not WASM)
+        let scraped = gameta_lib::parsers::dlsite::parse_html(html_str)
+            .ok_or_else(|| "Failed to parse HTML".to_string())?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+
+        Ok(ProductMetadata {
+            id: format!("{}:{}", source.to_lowercase(), product_id),
+            source: source.to_string(),
+            external_id: product_id.to_string(),
+            title: scraped.title,
+            creator: scraped.circle,
+            description: scraped.description,
+            release_date: scraped.release_date,
+            file_size: scraped.file_size,
+            tags_json: if scraped.tags.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&scraped.tags).unwrap_or_default())
+            },
+            genres_json: if scraped.genres.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&scraped.genres).unwrap_or_default())
+            },
+            voice_actors_json: if scraped.voice_actors.is_empty() {
+                None
+            } else {
+                Some(serde_json::to_string(&scraped.voice_actors).unwrap_or_default())
+            },
+            series_name: scraped.series,
+            geo_blocked: Some(scraped.geo_blocked),
+            cached_at: now,
+            // Store extra fields in extras_json
+            extras_json: Some(
+                serde_json::json!({
+                    "cover_image": scraped.cover_image,
+                    "screenshots": scraped.screenshots,
+                    "authors": scraped.authors,
+                    "illustrators": scraped.illustrators,
+                    "scenarios": scraped.scenarios,
+                    "musicians": scraped.musicians,
+                    "writers": scraped.writers,
+                    "brand": scraped.brand,
+                    "publisher": scraped.publisher,
+                    "page_count": scraped.page_count,
+                    "update_date": scraped.update_date,
+                })
+                .to_string(),
+            ),
+            ..Default::default()
+        })
+    }
+
     pub(super) fn impl_export_cache(&mut self) -> Result<String, String> {
         if let Some(lib_svc) = &self.library_service {
             use arclain_core::MetadataSource;

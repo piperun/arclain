@@ -2133,88 +2133,94 @@ fn detect_dlsite_code(text: &str) -> Option<String> {
     metastore_providers::dlsite::detect_dlsite_code(text)
 }
 
-/// Read metadata from local cache ONLY - no network fetch!
-/// Use this for viewing already-cached entries.
-/// The host handles cache lookup transparently via get_data.
+/// Read metadata from local cache - uses host's get_product_metadata which handles:
+/// 1. metadata.sqlite (instant - already parsed)
+/// 2. JSON cache (host parses + saves to DB)
+/// 3. HTML cache (host parses + saves to DB)
+/// No WASM-side parsing - all heavy lifting done by host.
 fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
-    use archust_plugin_sdk::arclain::plugin::host::get_data;
-    use archust_plugin_sdk::{fetch_blocking, ResourceType};
-    use metastore_providers::dlsite::api::html_url;
-    use metastore_providers::dlsite::parse_html;
-    
-    let html_key = metastore_providers::dlsite::cache_keys::html_key(product_id);
-    
-    // Read HTML from cache and scrape; if cache contains non-UTF8, invalidate and refetch once
-    let mut html_bytes = get_data(&html_key)?;
-    let html_str = match String::from_utf8(html_bytes.clone()) {
-        Ok(s) => s,
-        Err(e) => {
-            archust_plugin_sdk::info(&format!(
-                "[DLSite Plugin] Cached HTML not valid UTF-8 for {}: {} (len={}) -> invalidating and refetching",
-                product_id,
-                e,
-                html_bytes.len()
-            ));
-            // Invalidate bad cache and refetch from network
-            archust_plugin_sdk::invalidate_cache(&html_key);
-            let url = html_url(product_id);
-            match fetch_blocking(&html_key, &url, ResourceType::Binary) {
-                Ok(bytes) => {
-                    html_bytes = bytes;
-                    String::from_utf8(html_bytes.clone()).unwrap_or_else(|_| String::from_utf8_lossy(&html_bytes).into_owned())
-                }
-                Err(fetch_err) => {
-                    archust_plugin_sdk::info(&format!(
-                        "[DLSite Plugin] Refetch after cache invalidation failed for {}: {}",
-                        product_id,
-                        fetch_err
-                    ));
-                    String::from_utf8_lossy(&html_bytes).into_owned()
-                }
-            }
-        }
+    use archust_plugin_sdk::get_product_metadata;
+
+    // Get ProductMetadata from host (handles all parsing on host side)
+    let meta_json_str = get_product_metadata(product_id, "dlsite")?;
+
+    // Parse the ProductMetadata JSON
+    let meta: serde_json::Value = serde_json::from_str(&meta_json_str).ok()?;
+
+    archust_plugin_sdk::info(&format!(
+        "[DLSite Plugin] Got metadata from host for {}: title={:?}",
+        product_id,
+        meta["title"].as_str()
+    ));
+
+    // Extract extras_json which contains screenshots, cover_image, etc.
+    let extras: serde_json::Value = meta["extras_json"]
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::json!({}));
+
+    // Reconstruct ScrapedData from ProductMetadata
+    let scraped = ScrapedData {
+        title: meta["title"].as_str().map(|s| s.to_string()),
+        circle: meta["creator"].as_str().map(|s| s.to_string()),
+        release_date: meta["release_date"].as_str().map(|s| s.to_string()),
+        update_date: extras["update_date"].as_str().map(|s| s.to_string()),
+        tags: meta["tags_json"]
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default(),
+        description: meta["description"].as_str().map(|s| s.to_string()),
+        cover_image: extras["cover_image"].as_str().map(|s| s.to_string()),
+        screenshots: extras["screenshots"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        voice_actors: meta["voice_actors_json"]
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default(),
+        authors: extras["authors"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        illustrators: extras["illustrators"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        scenarios: extras["scenarios"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        musicians: extras["musicians"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        writers: extras["writers"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        brand: extras["brand"].as_str().map(|s| s.to_string()),
+        publisher: extras["publisher"].as_str().map(|s| s.to_string()),
+        series: meta["series_name"].as_str().map(|s| s.to_string()),
+        page_count: extras["page_count"].as_i64(),
+        file_size: meta["file_size"].as_str().map(|s| s.to_string()),
+        genres: meta["genres_json"]
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default(),
+        geo_blocked: meta["geo_blocked"].as_bool().unwrap_or(false),
     };
-    
-    let scraped = parse_html(&html_str)?;
-    
-    // If cached content is geo-blocked, dump the full HTML for debugging
-    if scraped.geo_blocked {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        let filename = format!("dlsite_cached_blocked_{}_{}.html", product_id, timestamp);
-        match archust_plugin_sdk::create_file(&filename, html_str.as_bytes()) {
-            Ok(path) => {
-                archust_plugin_sdk::warn(&format!(
-                    "[DLSite Plugin] Cached BLOCKED content - Dumped to: {}",
-                    path
-                ));
-            }
-            Err(e) => {
-                archust_plugin_sdk::error(&format!(
-                    "[DLSite Plugin] Failed to dump cached blocked content: {}",
-                    e
-                ));
-            }
-        }
-    }
-    
-    // Build JSON from scraped data (for backward compat)
-    // Note: We use serde_json::json! to recreate the structure the host expects if API data is missing
-    // But ideally we should try to load the JSON cache key too if available?
-    // Current implementation only read HTML cache.
-    // Let's try reading JSON cache too for completeness?
-    // The original code constructed synthetic JSON from scraped data. We'll stick to that to be safe.
+
+    // Build backward-compatible JSON for the plugin's legacy code paths
     let json_data = serde_json::json!({
         "work_name": scraped.title,
         "maker_name": scraped.circle,
         "regist_date": scraped.release_date,
         "update_date": scraped.update_date,
         "intro_s": scraped.description,
-        "source": "html_scrape"
+        "source": "metadata_db"
     });
-    
+
     Some((json_data, Some(scraped)))
 }
 

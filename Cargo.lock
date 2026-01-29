@@ -486,6 +486,7 @@ dependencies = [
  "arclain_signals",
  "chrono",
  "dirs 6.0.0",
+ "gameta_lib",
  "mockito",
  "parking_lot",
  "reqwest",
