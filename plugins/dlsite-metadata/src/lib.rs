@@ -1857,27 +1857,54 @@ impl archust_plugin_sdk::Guest for Component {
             "do_dlsite_search" => {
                 let query = STATE.with(|s| s.borrow().search_query.clone());
                 if !query.is_empty() {
+                    // Check if query is a direct product code (RJ/VJ/BJ followed by digits)
+                    let trimmed = query.trim().to_uppercase();
+                    let is_product_code = (trimmed.starts_with("RJ") || trimmed.starts_with("VJ") || trimmed.starts_with("BJ"))
+                        && trimmed.len() >= 4
+                        && trimmed[2..].chars().all(|c| c.is_ascii_digit());
+
+                    if is_product_code {
+                        // Direct lookup - skip search and go straight to details
+                        info(&format!("[DLSite Plugin] Direct lookup for product code: {}", trimmed));
+
+                        STATE.with(|state| {
+                            let mut s = state.borrow_mut();
+                            s.selected_cache_entry = Some(trimmed.clone());
+                            s.current_image_index = -1;
+                            s.browser_loading = true;
+                        });
+
+                        // Try cache first, then network
+                        let (json, scraped) = if let Some(cached) = get_cached_dlsite_metadata(&trimmed) {
+                            info(&format!("[DLSite Plugin] Found {} in cache", trimmed));
+                            cached
+                        } else {
+                            info(&format!("[DLSite Plugin] Fetching {} from network", trimmed));
+                            match fetch_dlsite_metadata(&trimmed) {
+                                Some(data) => data,
+                                None => {
+                                    STATE.with(|s| s.borrow_mut().browser_loading = false);
+                                    archust_plugin_sdk::show_message("Not Found", &format!("Could not find product: {}", trimmed));
+                                    return vec![];
+                                }
+                            }
+                        };
+
+                        STATE.with(|state| {
+                            let mut s = state.borrow_mut();
+                            s.browser_detail_cache = Some((trimmed.clone(), json, scraped));
+                            s.browser_loading = false;
+                        });
+
+                        return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+                    }
+
+                    // Regular search
                     STATE.with(|s| s.borrow_mut().browser_loading = true);
 
-                    // Perform search
+                    // Perform search - just display results, don't auto-cache
+                    // User must explicitly click on an entry to fetch and cache it
                     let results = search_dlsite(&query);
-
-                    // Be cheeky: pre-cache search results to build local database
-                    // For each result not already cached, fetch and store it
-                    for (code, title, _maker) in &results {
-                        if get_cached_dlsite_metadata(code).is_none() {
-                            info(&format!("[DLSite Plugin] Pre-caching search result: {} - {}", code, title));
-                            // Fetch full details - this caches transparently via Data API
-                            if let Some((json, _scraped)) = fetch_dlsite_metadata(code) {
-                                // Emit to metadata store so it's saved persistently
-                                let metadata_json = generate_metadata_json(code, Some(&(json, None)));
-                                archust_plugin_sdk::emit_metadata(&metadata_json);
-                                info(&format!("[DLSite Plugin] Pre-cached: {}", code));
-                            }
-                        } else {
-                            info(&format!("[DLSite Plugin] Already cached: {} - {}", code, title));
-                        }
-                    }
 
                     STATE.with(|s| {
                         let mut state = s.borrow_mut();
@@ -2146,12 +2173,6 @@ fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Op
 
     // Parse the ProductMetadata JSON
     let meta: serde_json::Value = serde_json::from_str(&meta_json_str).ok()?;
-
-    archust_plugin_sdk::info(&format!(
-        "[DLSite Plugin] Got metadata from host for {}: title={:?}",
-        product_id,
-        meta["title"].as_str()
-    ));
 
     // Extract extras_json which contains screenshots, cover_image, etc.
     let extras: serde_json::Value = meta["extras_json"]
