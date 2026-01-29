@@ -2070,7 +2070,9 @@ impl archust_plugin_sdk::Guest for Component {
                         archust_plugin_sdk::emit_metadata(&metadata_json);
 
                         STATE.with(|state| {
-                            state.borrow_mut().browser_detail_cache = Some((entry_id.clone(), json, scraped));
+                            let mut s = state.borrow_mut();
+                            s.browser_detail_cache = Some((entry_id.clone(), json, scraped));
+                            s.cached_summaries = None; // Clear summaries cache so list shows updated title
                         });
                         info(&format!("[DLSite Plugin] Refetched and cached: {}", entry_id));
                         archust_plugin_sdk::show_message("Success", &format!("Refetched {}", entry_id));
