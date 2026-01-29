@@ -43,11 +43,44 @@ impl MetadataStore {
             tracing::warn!("Failed to drop legacy dlsite_metadata_cache table: {}", e);
         }
 
-        Self {
+        let store = Self {
             db,
             pool,
             root_path,
+        };
+
+        // Run one-time migrations
+        match store.migrate_repair_extras_json() {
+            Ok((total, repaired)) => {
+                if repaired > 0 {
+                    tracing::info!(
+                        "[MetadataStore] Migration complete: repaired {}/{} entries",
+                        repaired,
+                        total
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[MetadataStore] Migration failed: {}", e);
+            }
         }
+
+        // Clean up old search cache entries (search results shouldn't be cached)
+        match store.delete_all_search_cache() {
+            Ok(deleted) => {
+                if deleted > 0 {
+                    tracing::info!(
+                        "[MetadataStore] Cleaned up {} search cache entries",
+                        deleted
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[MetadataStore] Failed to clean search cache: {}", e);
+            }
+        }
+
+        store
     }
 
     /// Get metadata by ID (e.g. "dlsite:RJ123456")
@@ -107,5 +140,18 @@ impl MetadataStore {
     /// Get all content hashes in the cache index
     pub fn get_all_content_hashes(&self) -> Result<Vec<String>> {
         self.pool.with_conn(|conn| cache::get_all_content_hashes(conn))
+    }
+
+    /// Migrate old entries: repair extras_json from raw_api_response
+    /// Returns (checked_count, repaired_count)
+    pub fn migrate_repair_extras_json(&self) -> Result<(usize, usize)> {
+        self.pool
+            .with_conn(|conn| library::migrate_repair_extras_json(conn))
+    }
+
+    /// Delete all search cache entries (search results are ephemeral)
+    pub fn delete_all_search_cache(&self) -> Result<usize> {
+        self.pool
+            .with_conn(|conn| cache::delete_all_search_cache(conn))
     }
 }

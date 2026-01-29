@@ -566,3 +566,81 @@ pub fn list_by_source(
 
     Ok(results)
 }
+
+/// Migrate old entries that are missing extras_json.
+/// Rebuilds extras_json from raw_api_response for DLSite entries.
+/// Returns (checked_count, repaired_count).
+pub fn migrate_repair_extras_json(conn: &mut diesel::SqliteConnection) -> Result<(usize, usize)> {
+    use crate::diesel_schema::product_metadata::dsl::*;
+
+    // Find DLSite entries where extras_json is NULL or doesn't contain screenshots
+    let entries: Vec<ProductMetadata> = product_metadata
+        .filter(source.eq("dlsite"))
+        .select(ProductMetadata::as_select())
+        .load(conn)
+        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+
+    let total = entries.len();
+    let mut repaired = 0;
+
+    for mut entry in entries {
+        // Check if extras_json needs repair
+        let needs_repair = entry
+            .extras_json
+            .as_ref()
+            .map(|s| !s.contains("\"screenshots\":[\""))
+            .unwrap_or(true);
+
+        if !needs_repair {
+            continue;
+        }
+
+        // Try to repair from raw_api_response
+        if let Some(ref raw_json) = entry.raw_api_response {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_json) {
+                let cover_image = parsed["cover_image"].as_str();
+                let screenshots: Vec<String> = parsed["sample_images"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                if cover_image.is_some() || !screenshots.is_empty() {
+                    let extras = serde_json::json!({
+                        "cover_image": cover_image,
+                        "screenshots": screenshots,
+                        "update_date": parsed["update_date"].as_str(),
+                        "authors": parsed["authors"].as_array(),
+                        "illustrators": parsed["illustrators"].as_array(),
+                        "scenarios": parsed["scenarios"].as_array(),
+                        "musicians": parsed["musicians"].as_array(),
+                        "writers": parsed["writers"].as_array(),
+                        "brand": parsed["brand"].as_str(),
+                        "publisher": parsed["publisher"].as_str(),
+                        "page_count": parsed["page_count"].as_i64(),
+                    });
+                    entry.extras_json = Some(extras.to_string());
+
+                    // Direct update to avoid completeness score check blocking the repair
+                    diesel::update(product_metadata.find(&entry.id))
+                        .set(extras_json.eq(&entry.extras_json))
+                        .execute(conn)
+                        .map_err(|e| anyhow::anyhow!("Failed to update extras_json: {}", e))?;
+
+                    repaired += 1;
+                }
+            }
+        }
+    }
+
+    tracing::info!(
+        "[Migration] Repaired extras_json: {}/{} entries updated",
+        repaired,
+        total
+    );
+
+    Ok((total, repaired))
+}
