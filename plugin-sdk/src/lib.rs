@@ -161,6 +161,16 @@ pub fn get_metadata_summaries(ids: Vec<String>) -> Vec<MetadataSummary> {
     arclain::plugin::host::get_metadata_summaries(&ids)
 }
 
+/// Get full product metadata from database with fallback chain:
+/// 1. metadata.sqlite (instant - already parsed)
+/// 2. JSON cache (host parses + saves to DB)
+/// 3. HTML cache (host parses + saves to DB)
+/// Returns ProductMetadata as JSON string, ready to deserialize.
+/// This is the preferred way to get metadata - no WASM-side parsing needed.
+pub fn get_product_metadata(product_id: &str, source: &str) -> Option<String> {
+    arclain::plugin::host::get_product_metadata(product_id, source)
+}
+
 /// Create a file in the host's temp directory
 /// Returns the full path to the created file
 pub fn create_file(filename: &str, content: &[u8]) -> Result<String, String> {

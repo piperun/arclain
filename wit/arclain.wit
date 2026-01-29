@@ -111,6 +111,11 @@ interface host {
         geo-blocked: bool,
     }
     get-metadata-summaries: func(ids: list<string>) -> list<metadata-summary>;
+
+    // Get full product metadata from database
+    // Priority: metadata.sqlite -> JSON cache -> HTML cache (host parses)
+    // Returns ProductMetadata as JSON string, or None if not found anywhere
+    get-product-metadata: func(product-id: string, source: string) -> option<string>;
     
     export-cache: func() -> result<string, string>;
     import-cache: func() -> result<string, string>;

@@ -242,6 +242,10 @@ impl Host for HostFunctions {
         self.impl_get_metadata_summaries(ids)
     }
 
+    fn get_product_metadata(&mut self, product_id: String, source: String) -> Option<String> {
+        self.impl_get_product_metadata(product_id, source)
+    }
+
     fn export_cache(&mut self) -> Result<String, String> {
         self.impl_export_cache()
     }
