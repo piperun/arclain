@@ -92,6 +92,43 @@ pub fn render_image(
     }
 }
 
+/// Check if an image texture is already cached in egui (avoids disk I/O)
+pub fn is_texture_cached(ctx: &egui::Context, cache_key: &str) -> bool {
+    let texture_id = egui::Id::new(("plugin_image", cache_key));
+    ctx.data(|d| d.get_temp::<egui::TextureHandle>(texture_id)).is_some()
+}
+
+/// Render an already-cached texture (fast path - no bytes needed)
+/// Returns None if texture not cached
+pub fn render_cached_texture(
+    ui: &mut egui::Ui,
+    cache_key: &str,
+    max_height: Option<f32>,
+) -> Option<egui::Vec2> {
+    let ctx = ui.ctx();
+    let texture_id = egui::Id::new(("plugin_image", cache_key));
+
+    let handle: egui::TextureHandle = ctx.data(|d| d.get_temp(texture_id))?;
+
+    // Calculate display size respecting max_height
+    let tex_size = handle.size_vec2();
+    let max_h = max_height.unwrap_or(200.0);
+    let scale = if tex_size.y > max_h {
+        max_h / tex_size.y
+    } else {
+        1.0
+    };
+    let display_size = egui::vec2(tex_size.x * scale, tex_size.y * scale);
+
+    // Render the image
+    ui.image(egui::load::SizedTexture {
+        id: handle.id(),
+        size: display_size,
+    });
+
+    Some(display_size)
+}
+
 /// Try to render an image from raw bytes
 /// Returns the displayed size if successful, None if decoding failed
 pub fn try_render_image(

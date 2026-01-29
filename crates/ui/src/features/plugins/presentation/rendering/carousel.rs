@@ -3,7 +3,7 @@
 //! Displays images in a carousel with thumbnail strip and navigation arrows.
 
 use super::context::{RenderContext, UiEventHandler};
-use super::image::try_render_image;
+use super::image::{is_texture_cached, render_cached_texture, try_render_image};
 use eframe::egui;
 
 /// Render a carousel gallery widget
@@ -58,15 +58,39 @@ pub fn render_carousel<H: UiEventHandler + ?Sized>(
 
             // Main image (clickable for lightbox)
             if let Some((cache_key, _url)) = images.get(current_idx) {
-                if let Some(cache) = ctx.content_cache {
+                // Fast path: check if texture already cached
+                let texture_cached = is_texture_cached(ui.ctx(), cache_key);
+
+                if texture_cached {
+                    // Render from cached texture (no disk I/O)
+                    let response = ui.allocate_ui(
+                        egui::vec2(ui.available_width() - if images.len() > 1 { 60.0 } else { 0.0 }, main_height),
+                        |ui| {
+                            if let Some(size) = render_cached_texture(ui, cache_key, Some(main_height)) {
+                                let rect = egui::Rect::from_min_size(ui.min_rect().min, size);
+                                ui.allocate_rect(rect, egui::Sense::click())
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("🖼 [Invalid image]")
+                                        .color(colors.on_surface_variant)
+                                        .italics(),
+                                );
+                                ui.response()
+                            }
+                        },
+                    );
+
+                    if enable_lightbox && response.inner.clicked() {
+                        (ctx.event_callback)(&format!("{}_open_lightbox", id), None);
+                    }
+                } else if let Some(cache) = ctx.content_cache {
+                    // Slow path: read from disk
                     match cache.get(cache_key) {
                         Ok(Some(bytes)) => {
-                            // Render the image and make it clickable
                             let response = ui.allocate_ui(
                                 egui::vec2(ui.available_width() - if images.len() > 1 { 60.0 } else { 0.0 }, main_height),
                                 |ui| {
                                     if let Some(size) = try_render_image(ui, cache_key, &bytes, Some(main_height)) {
-                                        // Return the response for click detection
                                         let rect = egui::Rect::from_min_size(ui.min_rect().min, size);
                                         ui.allocate_rect(rect, egui::Sense::click())
                                     } else {
@@ -85,7 +109,6 @@ pub fn render_carousel<H: UiEventHandler + ?Sized>(
                             }
                         }
                         Ok(None) => {
-                            // Loading state
                             ui.add_sized(
                                 egui::vec2(200.0, main_height),
                                 egui::Spinner::new().size(32.0),
@@ -155,7 +178,16 @@ pub fn render_carousel<H: UiEventHandler + ?Sized>(
                             };
 
                             let thumb_response = frame.show(ui, |ui| {
-                                if let Some(cache) = ctx.content_cache {
+                                // Fast path: check if texture already cached (avoids disk I/O)
+                                if is_texture_cached(ui.ctx(), cache_key) {
+                                    if render_cached_texture(ui, cache_key, Some(thumb_height)).is_none() {
+                                        ui.add_sized(
+                                            egui::vec2(thumb_height, thumb_height),
+                                            egui::Label::new("?"),
+                                        );
+                                    }
+                                } else if let Some(cache) = ctx.content_cache {
+                                    // Slow path: read from disk and decode
                                     if let Ok(Some(bytes)) = cache.get(cache_key) {
                                         if try_render_image(ui, cache_key, &bytes, Some(thumb_height))
                                             .is_none()
