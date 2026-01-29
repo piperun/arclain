@@ -8,8 +8,7 @@ use tracing::{debug, error, info, warn};
 impl HostFunctions {
     pub(super) fn impl_emit_metadata(&mut self, metadata_json: String) {
         // Store metadata for the host to process
-        info!("[Plugin] Emitting metadata");
-        debug!("[Plugin] Metadata JSON: {}", metadata_json);
+        debug!("[Plugin] Emitting metadata");
 
         *self.emitted_metadata.lock() = Some(metadata_json.clone());
 
@@ -69,7 +68,7 @@ impl HostFunctions {
             }
         };
 
-        info!("[Cache SAVE] Parsing metadata for {}", id);
+        debug!("[Cache SAVE] Parsing metadata for {}", id);
 
         // Logic to reconstruct ProductMetadata
         // We reuse the parsing logic from before just to be safe and consistent
@@ -243,7 +242,7 @@ impl HostFunctions {
                 {
                     error!("Failed to save metadata via DataService: {}", e);
                 } else {
-                    info!("[Cache SAVE] Saved {} via Data API", id);
+                    debug!("[Cache SAVE] Saved {} via Data API", id);
 
                     // Trigger reactive signal to notify UI of metadata update
                     if let Some(ref signal) = self.metadata_signal {
@@ -342,33 +341,19 @@ impl HostFunctions {
         };
 
         let full_id = format!("{}:{}", source.to_lowercase(), product_id);
-        info!(
-            "[get_product_metadata] Looking up {} (full_id: {})",
-            product_id, full_id
-        );
 
         // 1. Check metadata.sqlite first (fastest)
         if let Some(lib_svc) = &self.library_service {
             match lib_svc.get_metadata(&full_id) {
                 Ok(Some(mut meta)) => {
-                    info!(
-                        "[get_product_metadata] Found in metadata.sqlite: {}",
-                        product_id
-                    );
-
-                    // Check if extras_json is missing (old entry) - try to repair from raw data
-                    let needs_repair = meta.extras_json.as_ref().map(|s| {
-                        // Check if extras_json exists but has no screenshots
-                        if let Ok(extras) = serde_json::from_str::<serde_json::Value>(s) {
-                            let screenshots = extras["screenshots"].as_array();
-                            screenshots.map(|arr| arr.is_empty()).unwrap_or(true)
-                        } else {
-                            true
-                        }
-                    }).unwrap_or(true);
+                    // Fast check: extras_json needs repair if missing or has no screenshots
+                    // Use string check to avoid JSON parsing on every lookup
+                    let needs_repair = meta.extras_json.as_ref()
+                        .map(|s| !s.contains("\"screenshots\":[\""))
+                        .unwrap_or(true);
 
                     if needs_repair {
-                        info!("[get_product_metadata] extras_json missing/empty, attempting repair");
+                        debug!("[get_product_metadata] extras_json missing/empty for {}, attempting repair", product_id);
 
                         let mut repaired = false;
 
@@ -398,7 +383,7 @@ impl HostFunctions {
                                             "page_count": parsed["page_count"].as_i64(),
                                         });
                                         meta.extras_json = Some(extras.to_string());
-                                        info!("[get_product_metadata] Repaired extras from raw_api_response: cover={}, screenshots={}",
+                                        debug!("[get_product_metadata] Repaired extras from raw_api_response: cover={}, screenshots={}",
                                             cover_image.is_some(), screenshots.len());
                                         repaired = true;
                                     }
@@ -426,7 +411,7 @@ impl HostFunctions {
                                         "page_count": scraped.page_count,
                                     });
                                     meta.extras_json = Some(extras.to_string());
-                                    info!("[get_product_metadata] Repaired extras from HTML cache");
+                                    debug!("[get_product_metadata] Repaired extras from HTML cache");
                                     repaired = true;
                                 }
                             }
@@ -457,14 +442,11 @@ impl HostFunctions {
             }
         }
 
-        // 2. Check JSON cache (dlsite:json:ID)
+        // 2. Check JSON cache (dlsite:json:ID) - one-time migration
         let json_key = format!("{}:json:{}", source.to_lowercase(), product_id);
         if let Some(json_bytes) = self.data_service.get_data(&json_key) {
             if let Ok(json_str) = String::from_utf8(json_bytes) {
-                info!(
-                    "[get_product_metadata] Found JSON cache, parsing: {}",
-                    product_id
-                );
+                debug!("[get_product_metadata] Found JSON cache, migrating: {}", product_id);
 
                 // Parse the raw API JSON into ProductMetadata
                 if let Ok(meta) =
@@ -474,10 +456,6 @@ impl HostFunctions {
                     if let Some(lib_svc) = &self.library_service {
                         if let Err(e) = lib_svc.save_metadata(&meta) {
                             warn!("[get_product_metadata] Failed to save to DB: {}", e);
-                        } else {
-                            info!(
-                                "[get_product_metadata] Saved parsed JSON to metadata.sqlite"
-                            );
                         }
                     }
                     return serde_json::to_string(&meta).ok();
@@ -485,14 +463,11 @@ impl HostFunctions {
             }
         }
 
-        // 3. Check HTML cache (dlsite:html:ID) - parse on host side
+        // 3. Check HTML cache (dlsite:html:ID) - one-time migration
         let html_key = format!("{}:html:{}", source.to_lowercase(), product_id);
         if let Some(html_bytes) = self.data_service.get_data(&html_key) {
             let html_str = String::from_utf8_lossy(&html_bytes);
-            info!(
-                "[get_product_metadata] Found HTML cache, parsing on host: {}",
-                product_id
-            );
+            debug!("[get_product_metadata] Found HTML cache, migrating: {}", product_id);
 
             // Parse HTML on host side using gameta_lib
             if let Ok(meta) =
@@ -502,17 +477,13 @@ impl HostFunctions {
                 if let Some(lib_svc) = &self.library_service {
                     if let Err(e) = lib_svc.save_metadata(&meta) {
                         warn!("[get_product_metadata] Failed to save to DB: {}", e);
-                    } else {
-                        info!(
-                            "[get_product_metadata] Saved parsed HTML to metadata.sqlite"
-                        );
                     }
                 }
                 return serde_json::to_string(&meta).ok();
             }
         }
 
-        info!(
+        debug!(
             "[get_product_metadata] Not found in any cache: {}",
             product_id
         );
