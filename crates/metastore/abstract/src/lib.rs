@@ -1,11 +1,13 @@
 //! Abstraction traits for metastore
 //!
-//! These traits define the interfaces that backends must implement.
+//! This crate re-exports traits from gameta_core for backward compatibility.
+//! New code should depend on gameta_core directly.
 
-mod database;
-mod http;
-mod ui;
+// Re-export all traits and types from gameta_core
+pub use gameta_core::{
+    HttpClient, HttpError, HttpMethod, HttpRequest, HttpResponse, MetadataProvider, ParseError,
+    StorageBackend, StorageError,
+};
 
-pub use database::*;
-pub use http::*;
-pub use ui::*;
+// Re-export types for backward compatibility
+pub use gameta_core::{ContentReference, MetadataSource, ProductMetadata, SearchResult};

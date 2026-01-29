@@ -5,4 +5,4 @@ edition = "2021"
 description = "Abstraction traits for metastore"
 
 [dependencies]
-metastore-types = { path = "../types" }
+gameta_core = { path = "../../gameta_core" }

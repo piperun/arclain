@@ -5,6 +5,7 @@ edition = "2021"
 description = "Game metadata server/client - HTTP, caching, database, API"
 
 [dependencies]
+gameta_core = { path = "../gameta_core" }
 gameta_lib = { path = "../gameta_lib" }
 
 # Future dependencies (commented for now):

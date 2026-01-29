@@ -18,8 +18,18 @@
 
 pub mod detect;
 pub mod parsers;
-pub mod types;
+pub mod providers;
 pub mod urls;
 
-// Re-export commonly used types at crate root
-pub use types::{MetadataSource, ParseError, ProductMetadata, SearchResult};
+// Re-export core types from gameta_core
+pub use gameta_core::{MetadataSource, ParseError, ProductMetadata, SearchResult};
+
+// Re-export other core types for convenience
+pub use gameta_core::{ContentReference, ContentType};
+
+// Re-export traits
+pub use gameta_core::{HttpClient, HttpRequest, HttpResponse, MetadataProvider, StorageBackend};
+
+// Convenience re-exports for the DLSite provider
+#[cfg(feature = "dlsite")]
+pub use providers::dlsite::DLSiteProvider;

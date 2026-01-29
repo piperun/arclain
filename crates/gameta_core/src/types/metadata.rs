@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Source of metadata
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MetadataSource {
     DLSite,
     Itchio,
@@ -35,7 +35,16 @@ impl MetadataSource {
     }
 }
 
+impl std::fmt::Display for MetadataSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Unified product metadata structure
+///
+/// This structure holds all metadata for a product, regardless of source platform.
+/// Platform-specific data is stored in the `extras` field as JSON.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductMetadata {
     /// Unique ID: "{source}:{external_id}" e.g. "dlsite:RJ123456"
@@ -67,16 +76,18 @@ pub struct ProductMetadata {
     pub file_format: Option<String>,
     pub age_rating: Option<String>,
 
-    // Categorization (JSON arrays stored as strings)
+    // Categorization
     pub genres: Vec<String>,
     pub tags: Vec<String>,
     pub languages: Vec<String>,
 
-    // Platform-specific extras
+    // Platform-specific extras (voice_actors, authors, screenshots, etc.)
     pub extras: serde_json::Value,
 
-    // Raw responses for re-parsing
+    // Raw responses for re-parsing (storage layer only)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_api_response: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_html: Option<String>,
 
     // Availability
@@ -84,12 +95,15 @@ pub struct ProductMetadata {
     #[serde(default)]
     pub geo_blocked: bool,
 
-    // Timestamps
+    // Timestamps (storage layer)
+    #[serde(default)]
     pub cached_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<i64>,
 }
 
 impl ProductMetadata {
+    /// Create new metadata with minimal required fields
     pub fn new(source: MetadataSource, external_id: &str) -> Self {
         Self {
             id: format!("{}:{}", source.as_str(), external_id),

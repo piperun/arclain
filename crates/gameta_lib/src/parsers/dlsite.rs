@@ -3,7 +3,7 @@
 //! Pure parsing functions for DLSite API JSON and HTML responses.
 //! No HTTP dependencies - just give it the data and it will parse it.
 
-use crate::types::{MetadataSource, ParseError, ProductMetadata, SearchResult};
+use gameta_core::{MetadataSource, ParseError, ProductMetadata, SearchResult};
 use scraper::{Html, Selector};
 
 /// Scraped data from DLSite HTML page
@@ -320,7 +320,8 @@ pub fn parse_search_html(html: &str) -> Vec<SearchResult> {
 
     let item_selector = Selector::parse("li.search_result_img_box_inner, tr.n_worklist_item")
         .unwrap_or_else(|_| Selector::parse("div").unwrap());
-    let title_selector = Selector::parse("dt.work_name a, a.work_name")
+    // Note: work_name is dd not dt in current DLSite HTML
+    let title_selector = Selector::parse("dd.work_name a, dt.work_name a, a.work_name")
         .unwrap_or_else(|_| Selector::parse("a").unwrap());
     let maker_selector = Selector::parse("dd.maker_name a, span.maker_name a")
         .unwrap_or_else(|_| Selector::parse("span").unwrap());

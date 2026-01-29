@@ -4,7 +4,6 @@ use regex::Regex;
 
 /// Detect DLSite product code from text (filename, folder name, etc.)
 pub fn detect_dlsite_code(text: &str) -> Option<String> {
-    // Pattern: RJ, VJ, or BJ followed by 6-8 digits
     let re = Regex::new(r"(?i)(RJ|VJ|BJ)(\d{6,8})").ok()?;
 
     re.captures(text).map(|caps| {

@@ -5,8 +5,7 @@ edition = "2021"
 description = "Database backends for metastore"
 
 [dependencies]
-metastore-types = { path = "../types" }
-metastore-abstract = { path = "../abstract" }
+gameta_core = { path = "../../gameta_core" }
 mini-orm = { path = "../../mini-orm" }
 anyhow = "1.0"
 rusqlite = { version = "0.32", features = ["bundled"] }

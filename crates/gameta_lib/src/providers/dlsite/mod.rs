@@ -1,37 +1,33 @@
 //! DLSite metadata provider
+//!
+//! Provides full metadata fetching and parsing for DLSite products (RJ/VJ/BJ codes).
 
 pub mod api;
 pub mod cache_keys;
 mod detect;
+mod options;
+mod orchestrator;
 mod parse;
 #[cfg(test)]
 mod tests;
 
-use crate::{MetadataProvider, ParseError};
-use metastore_abstract::{HttpRequest, HttpResponse};
-use metastore_types::{MetadataSource, ProductMetadata, SearchResult};
+use gameta_core::{
+    HttpRequest, HttpResponse, MetadataProvider, MetadataSource, ParseError, ProductMetadata,
+    SearchResult,
+};
 
+// Public exports
 pub use api::{ajax_url, get_site_id, html_url, is_geo_blocked, ConnectivityResult};
 pub use detect::detect_dlsite_code;
 pub use options::DlsiteFetchOptions;
 pub use orchestrator::{plan_fetch, FetchStep};
-// Re-export local parse functions (these use metastore types)
-pub use parse::{parse_api_response, parse_html_response, parse_search_response};
+pub use parse::{parse_api_response, parse_html_response, parse_search_response, ScrapedData};
 
-// Re-export pure parsing functions from gameta_lib for external use
-// These don't require HTTP types and work with raw strings
-pub use gameta_lib::parsers::dlsite::{
-    build_plugin_json,
-    build_plugin_json_string,
-    parse_api_json,
-    parse_dlsite,
-    parse_html,
+// Re-export pure parsing functions from parsers module for backward compatibility
+pub use crate::parsers::dlsite::{
+    build_plugin_json, build_plugin_json_string, parse_api_json, parse_dlsite, parse_html,
     parse_search_html,
-    ScrapedData, // Use gameta_lib's ScrapedData for consistency with build_plugin_json
 };
-
-mod options;
-mod orchestrator;
 
 /// DLSite metadata provider
 pub struct DLSiteProvider;
@@ -58,7 +54,6 @@ impl MetadataProvider for DLSiteProvider {
     }
 
     fn request_metadata(&self, external_id: &str) -> Vec<HttpRequest> {
-        // Use the api module for URL construction
         let mut ajax_req = HttpRequest::get(
             &api::ajax_url(external_id),
             &format!("dlsite:ajax:{}", external_id),
@@ -66,7 +61,10 @@ impl MetadataProvider for DLSiteProvider {
         ajax_req
             .headers
             .insert("Cookie".to_string(), "adultchecked=1".to_string());
-        ajax_req.headers.insert("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string());
+        ajax_req.headers.insert(
+            "User-Agent".to_string(),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string(),
+        );
 
         let mut html_req = HttpRequest::get(
             &api::html_url(external_id),
@@ -75,7 +73,10 @@ impl MetadataProvider for DLSiteProvider {
         html_req
             .headers
             .insert("Cookie".to_string(), "adultchecked=1".to_string());
-        html_req.headers.insert("User-Agent".to_string(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string());
+        html_req.headers.insert(
+            "User-Agent".to_string(),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36".to_string(),
+        );
 
         vec![ajax_req, html_req]
     }
@@ -85,7 +86,6 @@ impl MetadataProvider for DLSiteProvider {
         external_id: &str,
         responses: &[(&str, HttpResponse)],
     ) -> Result<ProductMetadata, ParseError> {
-        // Find AJAX and HTML responses
         let ajax_response = responses
             .iter()
             .find(|(key, _)| key.contains(":ajax:"))
@@ -95,7 +95,6 @@ impl MetadataProvider for DLSiteProvider {
             .find(|(key, _)| key.contains(":html:"))
             .map(|(_, r)| r);
 
-        // Parse AJAX API response
         let mut meta = if let Some(resp) = ajax_response {
             let body = resp
                 .body_str()
@@ -105,14 +104,11 @@ impl MetadataProvider for DLSiteProvider {
             ProductMetadata::new(MetadataSource::DLSite, external_id)
         };
 
-        // Augment with HTML scraping
         if let Some(resp) = html_response {
             if let Ok(body) = resp.body_str() {
                 if let Some(scraped) = parse_html_response(body) {
-                    // Mark geo-blocked status
                     meta.geo_blocked = scraped.geo_blocked;
 
-                    // Merge core fields (only if not already set from API)
                     if meta.title.is_none() {
                         meta.title = scraped.title;
                     }
@@ -129,7 +125,6 @@ impl MetadataProvider for DLSiteProvider {
                         meta.file_size = scraped.file_size.clone();
                     }
 
-                    // Store DLSite-specific extras for plugin consumption
                     meta.extras = serde_json::json!({
                         "voice_actors": scraped.voice_actors,
                         "authors": scraped.authors,
@@ -144,10 +139,9 @@ impl MetadataProvider for DLSiteProvider {
                         "update_date": scraped.update_date,
                         "cover_image": scraped.cover_image,
                         "sample_images": scraped.screenshots,
-                        "screenshots": scraped.screenshots // Alias
+                        "screenshots": scraped.screenshots
                     });
 
-                    // Store raw HTML
                     meta.raw_html = Some(body.to_string());
                 }
             }

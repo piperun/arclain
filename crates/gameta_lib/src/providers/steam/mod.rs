@@ -1,3 +1,3 @@
 //! Steam metadata provider (skeleton)
-
-// TODO: Implement when needed
+//!
+//! TODO: Implement when needed

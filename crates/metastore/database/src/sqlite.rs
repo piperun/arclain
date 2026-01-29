@@ -1,8 +1,9 @@
 //! SQLite implementation of StorageBackend
 
 use anyhow::Result;
-use metastore_abstract::{StorageBackend, StorageError};
-use metastore_types::{ContentReference, MetadataSource, ProductMetadata};
+use gameta_core::{
+    ContentReference, ContentType, MetadataSource, ProductMetadata, StorageBackend, StorageError,
+};
 use mini_orm::SqliteDb;
 use std::sync::Arc;
 
@@ -230,14 +231,8 @@ impl StorageBackend for SqliteBackend {
                     .query_map([product_id], |row| {
                         Ok(ContentReference {
                             product_id: row.get(0)?,
-                            content_type: match row.get::<_, String>(1)?.as_str() {
-                                "cover" => metastore_types::ContentType::Cover,
-                                "screenshot" => metastore_types::ContentType::Screenshot,
-                                "thumbnail" => metastore_types::ContentType::Thumbnail,
-                                "banner" => metastore_types::ContentType::Banner,
-                                "video" => metastore_types::ContentType::Video,
-                                _ => metastore_types::ContentType::Other,
-                            },
+                            content_type: ContentType::from_str(&row.get::<_, String>(1)?)
+                                .unwrap_or(ContentType::Other),
                             index: row.get(2)?,
                             cache_key: row.get(3)?,
                             source_url: row.get(4)?,
@@ -249,6 +244,15 @@ impl StorageBackend for SqliteBackend {
                     .collect();
 
                 Ok(content)
+            })
+            .map_err(|e| StorageError::QueryFailed(e.to_string()))
+    }
+
+    fn delete_content(&self, product_id: &str) -> Result<(), StorageError> {
+        self.db
+            .with_connection(|conn| {
+                conn.execute("DELETE FROM product_content WHERE product_id = ?1", [product_id])?;
+                Ok(())
             })
             .map_err(|e| StorageError::QueryFailed(e.to_string()))
     }
