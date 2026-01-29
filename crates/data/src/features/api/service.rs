@@ -165,6 +165,12 @@ impl DataService {
         request: &DataRequest,
         sources: &SourceChain,
     ) {
+        // Don't cache search results - they're ephemeral and change over time
+        if key.contains(":search:") {
+            debug!("[DataService] Skipping cache for search key: {}", key);
+            return;
+        }
+
         let resolvers = self.resolvers.read();
 
         for source in sources {

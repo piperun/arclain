@@ -342,90 +342,10 @@ impl HostFunctions {
 
         let full_id = format!("{}:{}", source.to_lowercase(), product_id);
 
-        // 1. Check metadata.sqlite first (fastest)
+        // 1. Check metadata.sqlite first (fastest) - trust the data
         if let Some(lib_svc) = &self.library_service {
             match lib_svc.get_metadata(&full_id) {
-                Ok(Some(mut meta)) => {
-                    // Fast check: extras_json needs repair if missing or has no screenshots
-                    // Use string check to avoid JSON parsing on every lookup
-                    let needs_repair = meta.extras_json.as_ref()
-                        .map(|s| !s.contains("\"screenshots\":[\""))
-                        .unwrap_or(true);
-
-                    if needs_repair {
-                        debug!("[get_product_metadata] extras_json missing/empty for {}, attempting repair", product_id);
-
-                        let mut repaired = false;
-
-                        // Try to repair from raw_api_response (plugin JSON with sample_images/cover_image)
-                        if !repaired {
-                            if let Some(ref raw_json) = meta.raw_api_response {
-                                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(raw_json) {
-                                    // Extract image URLs from plugin JSON format
-                                    let cover_image = parsed["cover_image"].as_str();
-                                    let screenshots: Vec<String> = parsed["sample_images"]
-                                        .as_array()
-                                        .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-                                        .unwrap_or_default();
-
-                                    if cover_image.is_some() || !screenshots.is_empty() {
-                                        let extras = serde_json::json!({
-                                            "cover_image": cover_image,
-                                            "screenshots": screenshots,
-                                            "update_date": parsed["update_date"].as_str(),
-                                            "authors": parsed["authors"].as_array(),
-                                            "illustrators": parsed["illustrators"].as_array(),
-                                            "scenarios": parsed["scenarios"].as_array(),
-                                            "musicians": parsed["musicians"].as_array(),
-                                            "writers": parsed["writers"].as_array(),
-                                            "brand": parsed["brand"].as_str(),
-                                            "publisher": parsed["publisher"].as_str(),
-                                            "page_count": parsed["page_count"].as_i64(),
-                                        });
-                                        meta.extras_json = Some(extras.to_string());
-                                        debug!("[get_product_metadata] Repaired extras from raw_api_response: cover={}, screenshots={}",
-                                            cover_image.is_some(), screenshots.len());
-                                        repaired = true;
-                                    }
-                                }
-                            }
-                        }
-
-                        // Fallback: try HTML cache
-                        if !repaired {
-                            let html_key = format!("{}:html:{}", source.to_lowercase(), product_id);
-                            if let Some(html_bytes) = self.data_service.get_data(&html_key) {
-                                let html_str = String::from_utf8_lossy(&html_bytes);
-                                if let Some(scraped) = gameta_lib::parsers::dlsite::parse_html(&html_str) {
-                                    let extras = serde_json::json!({
-                                        "cover_image": scraped.cover_image,
-                                        "screenshots": scraped.screenshots,
-                                        "update_date": scraped.update_date,
-                                        "authors": scraped.authors,
-                                        "illustrators": scraped.illustrators,
-                                        "scenarios": scraped.scenarios,
-                                        "musicians": scraped.musicians,
-                                        "writers": scraped.writers,
-                                        "brand": scraped.brand,
-                                        "publisher": scraped.publisher,
-                                        "page_count": scraped.page_count,
-                                    });
-                                    meta.extras_json = Some(extras.to_string());
-                                    debug!("[get_product_metadata] Repaired extras from HTML cache");
-                                    repaired = true;
-                                }
-                            }
-                        }
-
-                        // Save the repaired metadata back
-                        if repaired {
-                            if let Err(e) = lib_svc.save_metadata(&meta) {
-                                warn!("[get_product_metadata] Failed to save repaired metadata: {}", e);
-                            }
-                        }
-                    }
-
-                    // Return the full ProductMetadata as JSON
+                Ok(Some(meta)) => {
                     return serde_json::to_string(&meta).ok();
                 }
                 Ok(None) => {

@@ -445,6 +445,17 @@ pub fn delete_old_search_cache(conn: &mut diesel::SqliteConnection, days: i64) -
     Ok(affected)
 }
 
+/// Delete ALL search cache entries (search results are ephemeral, shouldn't be cached)
+pub fn delete_all_search_cache(conn: &mut diesel::SqliteConnection) -> Result<usize> {
+    let affected = diesel::sql_query(
+        "DELETE FROM cache_index WHERE key LIKE '%:search:%'",
+    )
+    .execute(conn)
+    .map_err(|e| anyhow::anyhow!("Failed to delete search cache: {}", e))?;
+
+    Ok(affected)
+}
+
 /// Get all content hashes currently in the index
 pub fn get_all_content_hashes(conn: &mut diesel::SqliteConnection) -> Result<Vec<String>> {
     use crate::diesel_schema::cache_index::dsl::*;

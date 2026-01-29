@@ -1,3 +1,4 @@
+pub mod async_image;
 pub mod carousel;
 pub mod context;
 pub mod image;

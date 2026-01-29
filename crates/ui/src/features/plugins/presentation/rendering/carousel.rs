@@ -2,8 +2,9 @@
 //!
 //! Displays images in a carousel with thumbnail strip and navigation arrows.
 
+use super::async_image;
 use super::context::{RenderContext, UiEventHandler};
-use super::image::{is_texture_cached, render_cached_texture, try_render_image};
+use super::image::{is_texture_cached, render_cached_texture};
 use eframe::egui;
 
 /// Render a carousel gallery widget
@@ -58,76 +59,65 @@ pub fn render_carousel<H: UiEventHandler + ?Sized>(
 
             // Main image (clickable for lightbox)
             if let Some((cache_key, _url)) = images.get(current_idx) {
-                // Fast path: check if texture already cached
-                let texture_cached = is_texture_cached(ui.ctx(), cache_key);
+                let main_width = ui.available_width() - if images.len() > 1 { 60.0 } else { 0.0 };
 
-                if texture_cached {
-                    // Render from cached texture (no disk I/O)
-                    let response = ui.allocate_ui(
-                        egui::vec2(ui.available_width() - if images.len() > 1 { 60.0 } else { 0.0 }, main_height),
-                        |ui| {
-                            if let Some(size) = render_cached_texture(ui, cache_key, Some(main_height)) {
-                                let rect = egui::Rect::from_min_size(ui.min_rect().min, size);
-                                ui.allocate_rect(rect, egui::Sense::click())
-                            } else {
-                                ui.label(
-                                    egui::RichText::new("🖼 [Invalid image]")
-                                        .color(colors.on_surface_variant)
-                                        .italics(),
-                                );
-                                ui.response()
-                            }
-                        },
-                    );
+                // Helper to render main image with click handling
+                let render_main = |ui: &mut egui::Ui, size: egui::Vec2| -> egui::Response {
+                    let rect = egui::Rect::from_min_size(ui.min_rect().min, size);
+                    ui.allocate_rect(rect, egui::Sense::click())
+                };
 
+                // 1. Fast path: texture already in GPU memory
+                if is_texture_cached(ui.ctx(), cache_key) {
+                    let response = ui.allocate_ui(egui::vec2(main_width, main_height), |ui| {
+                        if let Some(size) = render_cached_texture(ui, cache_key, Some(main_height)) {
+                            render_main(ui, size)
+                        } else {
+                            ui.label(egui::RichText::new("🖼 [Invalid]").color(colors.on_surface_variant).italics());
+                            ui.response()
+                        }
+                    });
                     if enable_lightbox && response.inner.clicked() {
                         (ctx.event_callback)(&format!("{}_open_lightbox", id), None);
                     }
-                } else if let Some(cache) = ctx.content_cache {
-                    // Slow path: read from disk
+                }
+                // 2. Async decode complete: upload and render
+                else if let Some(decoded) = async_image::get_decoded(ui.ctx(), cache_key) {
+                    let response = ui.allocate_ui(egui::vec2(main_width, main_height), |ui| {
+                        if let Some(size) = async_image::upload_and_render(ui, cache_key, &decoded, Some(main_height)) {
+                            render_main(ui, size)
+                        } else {
+                            ui.label(egui::RichText::new("🖼 [Invalid]").color(colors.on_surface_variant).italics());
+                            ui.response()
+                        }
+                    });
+                    if enable_lightbox && response.inner.clicked() {
+                        (ctx.event_callback)(&format!("{}_open_lightbox", id), None);
+                    }
+                }
+                // 3. Decode in progress or failed
+                else if async_image::is_decoding(ui.ctx(), cache_key) {
+                    ui.add_sized(egui::vec2(main_width.min(200.0), main_height), egui::Spinner::new().size(32.0));
+                }
+                else if async_image::decode_failed(ui.ctx(), cache_key) {
+                    ui.label(egui::RichText::new("🖼 [Decode failed]").color(colors.error).italics());
+                }
+                // 4. Start async decode
+                else if let Some(cache) = ctx.content_cache {
                     match cache.get(cache_key) {
                         Ok(Some(bytes)) => {
-                            let response = ui.allocate_ui(
-                                egui::vec2(ui.available_width() - if images.len() > 1 { 60.0 } else { 0.0 }, main_height),
-                                |ui| {
-                                    if let Some(size) = try_render_image(ui, cache_key, &bytes, Some(main_height)) {
-                                        let rect = egui::Rect::from_min_size(ui.min_rect().min, size);
-                                        ui.allocate_rect(rect, egui::Sense::click())
-                                    } else {
-                                        ui.label(
-                                            egui::RichText::new("🖼 [Invalid image]")
-                                                .color(colors.on_surface_variant)
-                                                .italics(),
-                                        );
-                                        ui.response()
-                                    }
-                                },
-                            );
-
-                            if enable_lightbox && response.inner.clicked() {
-                                (ctx.event_callback)(&format!("{}_open_lightbox", id), None);
-                            }
+                            async_image::request_decode(ui.ctx(), cache_key, bytes);
+                            ui.add_sized(egui::vec2(main_width.min(200.0), main_height), egui::Spinner::new().size(32.0));
                         }
                         Ok(None) => {
-                            ui.add_sized(
-                                egui::vec2(200.0, main_height),
-                                egui::Spinner::new().size(32.0),
-                            );
+                            ui.add_sized(egui::vec2(main_width.min(200.0), main_height), egui::Spinner::new().size(32.0));
                         }
                         Err(e) => {
-                            ui.label(
-                                egui::RichText::new(format!("🖼 [Error: {}]", e))
-                                    .color(colors.error)
-                                    .italics(),
-                            );
+                            ui.label(egui::RichText::new(format!("🖼 [Error: {}]", e)).color(colors.error).italics());
                         }
                     }
                 } else {
-                    ui.label(
-                        egui::RichText::new("🖼 [No cache]")
-                            .color(colors.on_surface_variant)
-                            .italics(),
-                    );
+                    ui.label(egui::RichText::new("🖼 [No cache]").color(colors.on_surface_variant).italics());
                 }
             }
 
@@ -178,7 +168,7 @@ pub fn render_carousel<H: UiEventHandler + ?Sized>(
                             };
 
                             let thumb_response = frame.show(ui, |ui| {
-                                // Fast path: check if texture already cached (avoids disk I/O)
+                                // 1. Fast path: texture already in GPU memory
                                 if is_texture_cached(ui.ctx(), cache_key) {
                                     if render_cached_texture(ui, cache_key, Some(thumb_height)).is_none() {
                                         ui.add_sized(
@@ -186,20 +176,36 @@ pub fn render_carousel<H: UiEventHandler + ?Sized>(
                                             egui::Label::new("?"),
                                         );
                                     }
-                                } else if let Some(cache) = ctx.content_cache {
-                                    // Slow path: read from disk and decode
+                                }
+                                // 2. Async decode complete: upload texture (fast) and render
+                                else if let Some(decoded) = async_image::get_decoded(ui.ctx(), cache_key) {
+                                    async_image::upload_and_render(ui, cache_key, &decoded, Some(thumb_height));
+                                }
+                                // 3. Decode in progress: show spinner
+                                else if async_image::is_decoding(ui.ctx(), cache_key) {
+                                    ui.add_sized(
+                                        egui::vec2(thumb_height, thumb_height),
+                                        egui::Spinner::new().size(16.0),
+                                    );
+                                }
+                                // 4. Decode failed: show error
+                                else if async_image::decode_failed(ui.ctx(), cache_key) {
+                                    ui.add_sized(
+                                        egui::vec2(thumb_height, thumb_height),
+                                        egui::Label::new("?"),
+                                    );
+                                }
+                                // 5. Not started: read bytes and start async decode
+                                else if let Some(cache) = ctx.content_cache {
                                     if let Ok(Some(bytes)) = cache.get(cache_key) {
-                                        if try_render_image(ui, cache_key, &bytes, Some(thumb_height))
-                                            .is_none()
-                                        {
-                                            // Failed to decode
-                                            ui.add_sized(
-                                                egui::vec2(thumb_height, thumb_height),
-                                                egui::Label::new("?"),
-                                            );
-                                        }
+                                        // Start background decode (non-blocking)
+                                        async_image::request_decode(ui.ctx(), cache_key, bytes);
+                                        ui.add_sized(
+                                            egui::vec2(thumb_height, thumb_height),
+                                            egui::Spinner::new().size(16.0),
+                                        );
                                     } else {
-                                        // Not loaded yet
+                                        // Not in disk cache
                                         ui.add_sized(
                                             egui::vec2(thumb_height, thumb_height),
                                             egui::Spinner::new().size(16.0),

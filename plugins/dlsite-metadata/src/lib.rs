@@ -22,6 +22,12 @@ struct PluginState {
     current_image_index: i32,
     // Rename archive option when selecting from search
     rename_with_code: bool,
+    // Cached carousel images to avoid has_data() calls every frame
+    // HashMap<product_id, images> - persists across entry switches
+    cached_carousel_images: std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+    // Cached metadata summaries to avoid DB queries every frame
+    // (filtered_ids, summaries) - rebuilt when filter changes
+    cached_summaries: Option<(Vec<String>, Vec<(String, Option<String>, bool)>)>,
 }
 
 // Global state (thread-local for WASM component)
@@ -43,6 +49,8 @@ thread_local! {
         browser_detail_cache: None,
         current_image_index: -1, // -1 = Cover, 0+ = Sample index
         rename_with_code: false, // Default: don't rename
+        cached_carousel_images: std::collections::HashMap::new(),
+        cached_summaries: None,
     });
 }
 
@@ -1009,30 +1017,49 @@ impl archust_plugin_sdk::Guest for Component {
                  empty_message: Some("Search DLSite to see results".to_string()),
              }));
         } else {
-             // Cached Entries - always fetch fresh from host to see latest data
-             let entries = list_cached_entries().unwrap_or_else(|e| {
-                 info(&format!("Failed to list cache: {}", e));
-                 vec![]
+             // Use cached entries to avoid DB queries on every frame
+             let entries = STATE.with(|s| {
+                 let mut state = s.borrow_mut();
+                 if state.cached_entries.is_none() {
+                     // Only fetch when cache is empty
+                     state.cached_entries = Some(list_cached_entries().unwrap_or_else(|e| {
+                         info(&format!("Failed to list cache: {}", e));
+                         vec![]
+                     }));
+                 }
+                 state.cached_entries.clone().unwrap_or_default()
              });
-             
+
              // Filter and limit entries first
              let filtered_ids: Vec<String> = entries.iter()
                  .filter(|id| {
-                     search_query.is_empty() || 
+                     search_query.is_empty() ||
                      id.to_lowercase().contains(&search_query.to_lowercase())
                  })
                  .take(100)
                  .cloned()
                  .collect();
-             
-             // Batch query for all summaries at once (single DB query!)
-             let summaries = archust_plugin_sdk::get_metadata_summaries(filtered_ids.clone());
-             
-             // Convert to our format
-             let entries_with_summaries: Vec<(String, Option<String>, bool)> = summaries
-                 .into_iter()
-                 .map(|s| (s.id, s.title, s.geo_blocked))
-                 .collect();
+
+             // Use cached summaries to avoid DB queries on every frame
+             let entries_with_summaries: Vec<(String, Option<String>, bool)> = STATE.with(|s| {
+                 let mut state = s.borrow_mut();
+                 // Check if we need to refresh summaries (entries changed or not cached)
+                 let need_refresh = state.cached_summaries.as_ref()
+                     .map(|(ids, _)| ids != &filtered_ids)
+                     .unwrap_or(true);
+
+                 if need_refresh {
+                     let summaries = archust_plugin_sdk::get_metadata_summaries(filtered_ids.clone());
+                     let data: Vec<(String, Option<String>, bool)> = summaries
+                         .into_iter()
+                         .map(|s| (s.id, s.title, s.geo_blocked))
+                         .collect();
+                     state.cached_summaries = Some((filtered_ids, data.clone()));
+                     data
+                 } else {
+                     state.cached_summaries.as_ref().map(|(_, d)| d.clone()).unwrap_or_default()
+                 }
+             });
              
              let items: Vec<ListItemConfig> = entries_with_summaries.into_iter()
                  .map(|(id, title, geo_blocked)| {
@@ -1157,55 +1184,67 @@ impl archust_plugin_sdk::Guest for Component {
              content_elements.push(UiElement::Space(8.0));
              
              // ===== CAROUSEL GALLERY =====
-             // Build list of images for carousel: cover first, then screenshots
-             let (current_idx, is_cached_tab) = STATE.with(|s| {
+             // Use cached image list to avoid has_data() calls on every frame
+             // HashMap persists across entry switches for instant back-navigation
+             let (current_idx, is_cached_tab, cached_images) = STATE.with(|s| {
                  let state = s.borrow();
-                 (state.current_image_index, state.browser_tab == "cached")
+                 let cached = state.cached_carousel_images.get(selected_id).cloned();
+                 (state.current_image_index, state.browser_tab == "cached", cached)
              });
 
-             let mut carousel_images: Vec<(String, Option<String>)> = Vec::new();
-             let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-             // Add cover image first (only if cached when on cached tab)
-             let cover_key = metastore_providers::dlsite::cache_keys::cover_key(selected_id);
-             let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
-             let cover_is_cached = archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key);
-
-             // On cached tab: only show if actually cached
-             // On search tab: show if we have URL or cached
-             let show_cover = if is_cached_tab {
-                 cover_is_cached
+             // Use cached images or build new list
+             let carousel_images: Vec<(String, Option<String>)> = if let Some(images) = cached_images {
+                 images
              } else {
-                 cover_url.is_some() || cover_is_cached
-             };
+                 // Build image list (only runs once per entry selection)
+                 let mut images: Vec<(String, Option<String>)> = Vec::new();
+                 let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-             if show_cover {
-                 if let Some(ref url) = cover_url {
-                     seen_urls.insert(url.clone());
+                 // Add cover image first
+                 let cover_key = metastore_providers::dlsite::cache_keys::cover_key(selected_id);
+                 let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
+
+                 // On cached tab: check if actually cached; on search tab: show if URL exists
+                 let show_cover = if is_cached_tab {
+                     archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key)
+                 } else {
+                     cover_url.is_some()
+                 };
+
+                 if show_cover {
+                     if let Some(ref url) = cover_url {
+                         seen_urls.insert(url.clone());
+                     }
+                     images.push((cover_key, cover_url));
                  }
-                 carousel_images.push((cover_key, cover_url));
-             }
 
-             // Add screenshots from scraped data
-             // On cached tab: only show images that are actually cached
-             // On search tab: show all images from metadata
-             if let Some(scraped_data) = &scraped {
-                 for (i, url) in scraped_data.screenshots.iter().enumerate() {
-                     if !url.is_empty() && !seen_urls.contains(url) {
-                         let key = metastore_providers::dlsite::cache_keys::screenshot_key(selected_id, i);
-                         let is_cached = archust_plugin_sdk::arclain::plugin::host::has_data(&key);
+                 // Add screenshots from scraped data
+                 if let Some(scraped_data) = &scraped {
+                     for (i, url) in scraped_data.screenshots.iter().enumerate() {
+                         if !url.is_empty() && !seen_urls.contains(url) {
+                             let key = metastore_providers::dlsite::cache_keys::screenshot_key(selected_id, i);
 
-                         // On cached tab: only include if actually cached
-                         // On search tab: include all with URLs
-                         let should_include = if is_cached_tab { is_cached } else { true };
+                             let should_include = if is_cached_tab {
+                                 archust_plugin_sdk::arclain::plugin::host::has_data(&key)
+                             } else {
+                                 true
+                             };
 
-                         if should_include {
-                             seen_urls.insert(url.clone());
-                             carousel_images.push((key, Some(url.clone())));
+                             if should_include {
+                                 seen_urls.insert(url.clone());
+                                 images.push((key, Some(url.clone())));
+                             }
                          }
                      }
                  }
-             }
+
+                 // Cache the built list in HashMap for instant navigation
+                 STATE.with(|s| {
+                     s.borrow_mut().cached_carousel_images.insert(selected_id.to_string(), images.clone());
+                 });
+
+                 images
+             };
 
              if carousel_images.is_empty() {
                  // Show placeholder if no images
@@ -1759,7 +1798,9 @@ impl archust_plugin_sdk::Guest for Component {
             }
             "refresh_cache" => {
                 STATE.with(|state| {
-                    state.borrow_mut().cached_entries = None; // clear to force refetch
+                    let mut s = state.borrow_mut();
+                    s.cached_entries = None; // clear to force refetch
+                    s.cached_summaries = None;
                 });
             }
             "back_to_cache_list" => {
@@ -1780,6 +1821,7 @@ impl archust_plugin_sdk::Guest for Component {
                     }
                     s.selected_cache_entry = Some(entry_id);
                     s.current_image_index = -1; // Reset to cover when switching entries
+                    // Note: Keep cached_carousel_images HashMap intact for instant back-navigation
                 });
 
                 // Refresh panel to show the new selection and its details
@@ -1844,6 +1886,7 @@ impl archust_plugin_sdk::Guest for Component {
                         s.browser_tab = if tab.contains("Search") { "search".to_string() } else { "cached".to_string() };
                         s.selected_cache_entry = None; // Clear selection on tab switch
                         s.search_results.clear(); // Clear search results on tab switch
+                        s.cached_carousel_images.clear(); // Clear all cached images - filter logic differs per tab
                     });
                 }
             }
@@ -1872,6 +1915,7 @@ impl archust_plugin_sdk::Guest for Component {
                             s.selected_cache_entry = Some(trimmed.clone());
                             s.current_image_index = -1;
                             s.browser_loading = true;
+                            // Note: Keep cached_carousel_images HashMap intact for instant back-navigation
                         });
 
                         // Try cache first, then network

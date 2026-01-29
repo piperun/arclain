@@ -2,8 +2,8 @@ pub mod content;
 pub mod metadata;
 
 pub use metadata::{
-    delete, get_by_external_id, list_by_source, list_ids_by_source, load, save, MetadataSource,
-    ProductMetadata,
+    delete, get_by_external_id, list_by_source, list_ids_by_source, load,
+    migrate_repair_extras_json, save, MetadataSource, ProductMetadata,
 };
 
 pub use content::{

@@ -37,10 +37,10 @@ pub use config::{
 pub mod cache;
 
 pub use cache::{
-    clear_all_entries, delete_by_pattern, delete_cache_entry, delete_old_search_cache,
-    delete_orphaned_entries, get_all_content_hashes, get_cache_entry, get_cache_stats,
-    get_entries_by_product, has_cache_entry, migrate_fix_entries, touch_cache_entry,
-    upsert_cache_entry, CacheDb, CacheEntry, CacheStats, CacheType,
+    clear_all_entries, delete_all_search_cache, delete_by_pattern, delete_cache_entry,
+    delete_old_search_cache, delete_orphaned_entries, get_all_content_hashes, get_cache_entry,
+    get_cache_stats, get_entries_by_product, has_cache_entry, migrate_fix_entries,
+    touch_cache_entry, upsert_cache_entry, CacheDb, CacheEntry, CacheStats, CacheType,
 };
 
 mod secrets;
