@@ -216,12 +216,20 @@ impl AsyncHttpClient {
                 .lock()
                 .insert(request_id.clone(), RequestStatus::InProgress);
 
+            // Fix DLSite CDN URLs with padded folder names (from old WASM plugin)
+            // e.g., /RJ00361000/ -> /RJ361000/
+            let url = if request.url.contains("img.dlsite.jp") {
+                fix_dlsite_cdn_folder(&request.url)
+            } else {
+                request.url.clone()
+            };
+
             // Build request
             let mut req_builder = match request.method {
-                HttpMethod::Get => client.get(&request.url),
-                HttpMethod::Post => client.post(&request.url),
-                HttpMethod::Put => client.put(&request.url),
-                HttpMethod::Delete => client.delete(&request.url),
+                HttpMethod::Get => client.get(&url),
+                HttpMethod::Post => client.post(&url),
+                HttpMethod::Put => client.put(&url),
+                HttpMethod::Delete => client.delete(&url),
             };
 
             // Global/Domain specific headers injection - mimic Firefox exactly
@@ -413,4 +421,65 @@ impl AsyncHttpClient {
                 .map_err(|e| format!("Failed to read body: {}", e))
         })
     }
+}
+
+/// Fix DLSite CDN URLs with incorrectly-padded folder names.
+/// Folder digit count should match the product ID digit count.
+/// e.g., /RJ00361000/RJ360420_ -> /RJ361000/RJ360420_ (6 digits like product)
+///       /VJ01006000/VJ01005126_ -> unchanged (8 digits matches product)
+fn fix_dlsite_cdn_folder(url: &str) -> String {
+    let prefixes = ["RJ", "VJ", "BJ", "RE"];
+
+    for prefix in prefixes {
+        // Find the folder pattern (first occurrence of /PREFIX followed by digits and /)
+        let folder_pattern = format!("/{}", prefix);
+        if let Some(folder_start) = url.find(&folder_pattern) {
+            let after_folder_prefix = folder_start + 1 + prefix.len();
+
+            // Find where folder ends (next /)
+            if let Some(folder_end_rel) = url[after_folder_prefix..].find('/') {
+                let folder_end = after_folder_prefix + folder_end_rel;
+                let folder_digits = &url[after_folder_prefix..folder_end];
+
+                // Now find the product ID (second occurrence of PREFIX after folder)
+                let after_folder = folder_end + 1;
+                if let Some(product_start_rel) = url[after_folder..].find(prefix) {
+                    let product_start = after_folder + product_start_rel + prefix.len();
+
+                    // Find where product ID digits end (at _ or .)
+                    let product_end = url[product_start..]
+                        .find(|c: char| !c.is_ascii_digit())
+                        .map(|i| product_start + i)
+                        .unwrap_or(url.len());
+
+                    let product_digits = &url[product_start..product_end];
+
+                    // If folder has more digits than product, reformat
+                    if folder_digits.len() > product_digits.len()
+                        && folder_digits.chars().all(|c| c.is_ascii_digit())
+                        && product_digits.chars().all(|c| c.is_ascii_digit())
+                    {
+                        if let Ok(folder_num) = folder_digits.parse::<u64>() {
+                            let target_width = product_digits.len();
+                            let fixed_folder_digits =
+                                format!("{:0width$}", folder_num, width = target_width);
+                            let old_folder = format!("{}{}", prefix, folder_digits);
+                            let new_folder = format!("{}{}", prefix, fixed_folder_digits);
+
+                            if old_folder != new_folder {
+                                let fixed_url = url.replacen(&old_folder, &new_folder, 1);
+                                debug!(
+                                    "Fixed DLSite CDN folder: {} -> {}",
+                                    old_folder, new_folder
+                                );
+                                return fixed_url;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    url.to_string()
 }
