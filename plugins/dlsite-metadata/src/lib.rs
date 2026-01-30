@@ -99,7 +99,7 @@ fn get_total_image_count(state: &PluginState) -> usize {
         let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
         let has_cover = cover_url.is_some()
             || archust_plugin_sdk::arclain::plugin::host::has_data(
-                &metastore_providers::dlsite::cache_keys::cover_key(product_id)
+                &gameta_lib::providers::dlsite::cache_keys::cover_key(product_id)
             );
         // Count non-empty, non-duplicate screenshot URLs
         let sample_count = scraped.as_ref()
@@ -364,7 +364,7 @@ impl archust_plugin_sdk::Guest for Component {
                         }
 
                         // Cover image at top - try to display from cache or scraped URL
-                        let cover_cache_key = metastore_providers::dlsite::cache_keys::cover_key(id);
+                        let cover_cache_key = gameta_lib::providers::dlsite::cache_keys::cover_key(id);
                         let cover_url = scraped.as_ref()
                             .and_then(|s| s.cover_image.clone());
                         
@@ -791,7 +791,7 @@ impl archust_plugin_sdk::Guest for Component {
                              if let Some(scraped_data) = scraped {
                                 if let Some(cover_url) = &scraped_data.cover_image {
                                     elements.push(UiElement::Image(ImageConfig {
-                                        cache_key: Some(metastore_providers::dlsite::cache_keys::cover_key(&entry_id)),
+                                        cache_key: Some(gameta_lib::providers::dlsite::cache_keys::cover_key(&entry_id)),
                                         url: Some(cover_url.clone()),
                                         max_height: Some(200.0),
                                     }));
@@ -992,7 +992,7 @@ impl archust_plugin_sdk::Guest for Component {
                  })
                  .map(|(code, title, maker, thumb_url)| {
                      // Use thumbnail (small ~100x100) instead of full cover for fast loading
-                     let thumb_key = metastore_providers::dlsite::cache_keys::thumbnail_key(code);
+                     let thumb_key = gameta_lib::providers::dlsite::cache_keys::thumbnail_key(code);
                      ListItemConfig {
                          id: code.clone(),
                          title: title.clone(),
@@ -1063,9 +1063,9 @@ impl archust_plugin_sdk::Guest for Component {
                      let display_title = title.unwrap_or_else(|| id.clone());
                      let selected = selected_entry.as_ref() == Some(&id);
                      // Use thumbnail for fast list rendering (small 240x240 from CDN)
-                     let thumb_key = metastore_providers::dlsite::cache_keys::thumbnail_key(&id);
+                     let thumb_key = gameta_lib::providers::dlsite::cache_keys::thumbnail_key(&id);
                      // Construct CDN thumbnail URL so it can be fetched if not cached
-                     let thumb_url = metastore_providers::urls::dlsite::thumbnail_url(&id);
+                     let thumb_url = gameta_lib::urls::dlsite::thumbnail_url(&id);
                      ListItemConfig {
                          id: format!("view_cache_entry_{}", id),
                          title: display_title,
@@ -1207,7 +1207,7 @@ impl archust_plugin_sdk::Guest for Component {
                  let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
                  // Add cover image first
-                 let cover_key = metastore_providers::dlsite::cache_keys::cover_key(selected_id);
+                 let cover_key = gameta_lib::providers::dlsite::cache_keys::cover_key(selected_id);
                  let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
 
                  // On cached tab: check if actually cached; on search tab: show if URL exists
@@ -1228,7 +1228,7 @@ impl archust_plugin_sdk::Guest for Component {
                  if let Some(scraped_data) = &scraped {
                      for (i, url) in scraped_data.screenshots.iter().enumerate() {
                          if !url.is_empty() && !seen_urls.contains(url) {
-                             let key = metastore_providers::dlsite::cache_keys::screenshot_key(selected_id, i);
+                             let key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(selected_id, i);
 
                              let should_include = if is_cached_tab {
                                  archust_plugin_sdk::arclain::plugin::host::has_data(&key)
@@ -1370,7 +1370,7 @@ impl archust_plugin_sdk::Guest for Component {
                      for (i, sample) in samples.iter().take(3).enumerate() {
                          if let Some(url) = sample.as_str() {
                              content_elements.push(UiElement::Image(ImageConfig {
-                                 cache_key: Some(metastore_providers::dlsite::cache_keys::screenshot_key(selected_id, i)),
+                                 cache_key: Some(gameta_lib::providers::dlsite::cache_keys::screenshot_key(selected_id, i)),
                                  url: Some(url.to_string()),
                                  max_height: Some(200.0),
                              }));
@@ -1594,7 +1594,7 @@ impl archust_plugin_sdk::Guest for Component {
                             let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
 
                             // Add cover (only if cached when on cached tab)
-                            let cover_key = metastore_providers::dlsite::cache_keys::cover_key(product_id);
+                            let cover_key = gameta_lib::providers::dlsite::cache_keys::cover_key(product_id);
                             let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
                             let cover_is_cached = archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key);
 
@@ -1611,7 +1611,7 @@ impl archust_plugin_sdk::Guest for Component {
                             if let Some(scraped_data) = scraped {
                                 for (i, url) in scraped_data.screenshots.iter().enumerate() {
                                     if !url.is_empty() && !seen_urls.contains(url) {
-                                        let key = metastore_providers::dlsite::cache_keys::screenshot_key(product_id, i);
+                                        let key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(product_id, i);
                                         let is_cached = archust_plugin_sdk::arclain::plugin::host::has_data(&key);
 
                                         let should_include = if is_cached_tab { is_cached } else { true };
@@ -1725,9 +1725,9 @@ impl archust_plugin_sdk::Guest for Component {
 
                          // Check based on key type
                          let is_valid = if key.contains(":json:") {
-                             metastore_providers::dlsite::parse_api_response("", &data_str).is_ok()
+                             gameta_lib::providers::dlsite::parse_api_response("", &data_str).is_ok()
                          } else if key.contains(":html:") {
-                             metastore_providers::dlsite::parse_html_response(&data_str).is_some()
+                             gameta_lib::providers::dlsite::parse_html_response(&data_str).is_some()
                          } else {
                              true // Skip other types (images etc)
                          };
@@ -2059,8 +2059,8 @@ impl archust_plugin_sdk::Guest for Component {
                 });
                 
                 // Get cache keys for invalidation
-                let json_key = metastore_providers::dlsite::cache_keys::json_key(&entry_id);
-                let html_key = metastore_providers::dlsite::cache_keys::html_key(&entry_id);
+                let json_key = gameta_lib::providers::dlsite::cache_keys::json_key(&entry_id);
+                let html_key = gameta_lib::providers::dlsite::cache_keys::html_key(&entry_id);
                 
                 // Backup current cached data before invalidating
                 // This way if refetch fails, we don't lose the existing entry
@@ -2210,9 +2210,9 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
     Ok(None)
 }
 
-/// Detect DLSite code using metastore provider
+/// Detect DLSite code using gameta_lib provider
 fn detect_dlsite_code(text: &str) -> Option<String> {
-    metastore_providers::dlsite::detect_dlsite_code(text)
+    gameta_lib::providers::dlsite::detect_dlsite_code(text)
 }
 
 /// Read metadata from local cache - uses host's get_product_metadata which handles:
@@ -2301,10 +2301,10 @@ fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Op
 }
 
 /// Fetch metadata from DLSite network (for new entries or search results)
-/// Uses metastore orchestrator for logic.
+/// Uses gameta_lib orchestrator for logic.
 fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
-    use metastore_providers::dlsite::{DlsiteFetchOptions, plan_fetch, FetchStep, parse_html, parse_api_json};
+    use gameta_lib::providers::dlsite::{DlsiteFetchOptions, plan_fetch, FetchStep, parse_html, parse_api_json};
     
     // Use the orchestrator to plan our fetch
     // We request ALL sources (API + HTML)
@@ -2318,7 +2318,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
     for step in plan {
         match step {
             FetchStep::FetchJson(url) => {
-                let cache_key = metastore_providers::dlsite::cache_keys::json_key(product_id);
+                let cache_key = gameta_lib::providers::dlsite::cache_keys::json_key(product_id);
                 log_network_activity(&format!("Fetching API: {}", url));
                 
                 match fetch_string_blocking(&cache_key, &url) {
@@ -2355,7 +2355,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
                 }
             }
             FetchStep::FetchHtml(url) => {
-                let cache_key = metastore_providers::dlsite::cache_keys::html_key(product_id);
+                let cache_key = gameta_lib::providers::dlsite::cache_keys::html_key(product_id);
                 log_network_activity(&format!("Fetching HTML: {}", url));
                 
                 if let Ok(body) = fetch_string_blocking(&cache_key, &url) {
@@ -2417,7 +2417,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
 
             // Fetch cover image
             if let Some(cover_url) = &data.cover_image {
-                let cover_key = metastore_providers::dlsite::cache_keys::cover_key(product_id);
+                let cover_key = gameta_lib::providers::dlsite::cache_keys::cover_key(product_id);
                 log_network_activity(&format!("Fetching cover image: {}", cover_url));
                 
                 if let Err(e) = archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
@@ -2427,7 +2427,7 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
 
             // Fetch all screenshots
             for (idx, screenshot_url) in data.screenshots.iter().enumerate() {
-                let screenshot_key = metastore_providers::dlsite::cache_keys::screenshot_key(product_id, idx);
+                let screenshot_key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(product_id, idx);
                 log_network_activity(&format!("Fetching screenshot {}: {}", idx, screenshot_url));
                 
                 if let Err(e) = archust_plugin_sdk::fetch_blocking(&screenshot_key, screenshot_url, ResourceType::Image) {
@@ -2442,15 +2442,15 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
     Some((json_data, scraped_data))
 }
 
-// Re-export ScrapedData from metastore-providers for convenience
-use metastore_providers::dlsite::ScrapedData;
+// Re-export ScrapedData from gameta_lib for convenience
+use gameta_lib::providers::dlsite::ScrapedData;
 
 
 fn generate_metadata_json(
     product_id: &str,
     data: Option<&(serde_json::Value, Option<ScrapedData>)>,
 ) -> String {
-    // Delegate to metastore-providers for JSON generation
+    // Delegate to gameta_lib for JSON generation
     // This moves the data transformation logic out of the plugin
     let (api_json, scraped) = if let Some((j, s)) = data {
         (Some(j), s.as_ref())
@@ -2471,13 +2471,13 @@ fn generate_metadata_json(
         info("[DLSite Plugin] No scraped data available");
     }
 
-    metastore_providers::dlsite::build_plugin_json_string(product_id, api_json, scraped)
+    gameta_lib::providers::dlsite::build_plugin_json_string(product_id, api_json, scraped)
 }
 
 /// Search DLSite for a query and return list of (code, title, maker, thumbnail_url)
 fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<String>)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
-    use metastore_providers::dlsite::parse_search_response;
+    use gameta_lib::providers::dlsite::parse_search_response;
 
     log_network_activity(&format!("Searching DLSite: {}", query));
 
@@ -2534,7 +2534,7 @@ fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<String>)> {
             log_network_activity(&format!("Saved search HTML to: {}", path));
         }
 
-        // Use metastore provider for parsing
+        // Use gameta_lib provider for parsing
         let results = parse_search_response(&html);
 
         log_network_activity(&format!("Found {} results on {}", results.len(), section));

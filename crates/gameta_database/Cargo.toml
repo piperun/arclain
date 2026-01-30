@@ -1,0 +1,23 @@
+[package]
+name = "gameta_database"
+version = "0.1.0"
+edition = "2021"
+description = "Database backends for gameta metadata storage"
+
+[features]
+default = ["sync"]
+sync = ["rusqlite", "mini-orm"]
+async = ["libsql", "tokio"]
+
+[dependencies]
+gameta_core = { path = "../gameta_core" }
+anyhow = "1.0"
+serde_json = "1.0"
+
+# Sync backend (rusqlite/mini-orm)
+mini-orm = { path = "../mini-orm", optional = true }
+rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+
+# Async backend (libsql)
+libsql = { version = "0.6", optional = true }
+tokio = { version = "1", features = ["sync"], optional = true }

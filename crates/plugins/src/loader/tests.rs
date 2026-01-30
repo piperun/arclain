@@ -23,6 +23,7 @@ fn test_manifest_validation() {
         },
         capabilities: crate::types::CapabilitiesConfig {
             network: false,
+            network_domains: vec![],
             archive_metadata_read: true,
             archive_metadata_write: false,
             archive_modify: false,
