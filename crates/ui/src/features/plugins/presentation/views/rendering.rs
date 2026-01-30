@@ -96,6 +96,43 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
         return false;
     };
 
+    // Send __page_init event if this page was just opened (for SetPageDisplayName etc)
+    {
+        let needs_init = shared.signals().plugin_dialog_state.get().page_needs_init;
+        if needs_init {
+            // Send init event to plugin
+            if let Some(pm_arc) = &shared.services.plugin_manager {
+                let pm = pm_arc.lock();
+                if let Some(actions) = pm
+                    .with_plugin_instance(&plugin_id, |instance| {
+                        instance.send_ui_event("__page_init", Some(page_id.clone())).ok()
+                    })
+                    .flatten()
+                {
+                    drop(pm); // Release lock before processing actions
+                    let mut toaster = shared.toaster.lock();
+                    let mut ds = shared.signals().plugin_dialog_state.get();
+                    ds.page_needs_init = false; // Clear flag
+                    let ctx = crate::features::plugins::presentation::controllers::plugin_controller::ActionContext {
+                        lightbox_signal: Some(&shared.signals().lightbox_state),
+                        page_display_name_signal: Some(&shared.signals().page_display_name),
+                    };
+                    for action in actions {
+                        crate::features::plugins::presentation::controllers::plugin_controller::process_action(
+                            action,
+                            &plugin_id,
+                            &mut ds,
+                            &mut toaster,
+                            None,
+                            &ctx,
+                        );
+                    }
+                    shared.signals().plugin_dialog_state.set(ds);
+                }
+            }
+        }
+    }
+
     // Use cached layout if available, otherwise fetch from plugin
     let page_layout = if let Some(layout) = cached_layout {
         layout
@@ -123,6 +160,13 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
         layout
     };
 
+    // Get display name from signal, fallback to page_id
+    let display_name = shared
+        .signals()
+        .page_display_name
+        .get()
+        .unwrap_or_else(|| page_id.clone());
+
     // Render as full page content
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
@@ -132,7 +176,7 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
             ui.horizontal(|ui| {
                 ui.add_space(16.0);
                 ui.label(
-                    egui::RichText::new(&page_id)
+                    egui::RichText::new(&display_name)
                         .strong()
                         .size(16.0)
                         .color(shared.theme.colors.on_surface),

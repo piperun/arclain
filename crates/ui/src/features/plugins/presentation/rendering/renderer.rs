@@ -69,11 +69,23 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
         PluginUiElement::Label { text, bold, size } => {
             widgets::render_label(ui, ctx, text, *bold, *size);
         }
+        PluginUiElement::SectionHeader {
+            title,
+            level,
+            description,
+        } => {
+            widgets::render_section_header(ui, ctx, title, *level, description);
+        }
         PluginUiElement::Button { id, label, action } => {
             widgets::render_button(ui, ctx, id, label, action);
         }
-        PluginUiElement::TextInput { id, label, value } => {
-            widgets::render_text_input(ui, ctx, id, label, value);
+        PluginUiElement::TextInput {
+            id,
+            label,
+            value,
+            placeholder,
+        } => {
+            widgets::render_text_input(ui, ctx, id, label, value, placeholder);
         }
         PluginUiElement::Checkbox { id, label, checked } => {
             widgets::render_checkbox(ui, ctx, id, label, *checked);
@@ -188,6 +200,12 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
                     }
                 }
             }
+        }
+        PluginUiElement::KeyValueList { items, columns } => {
+            widgets::render_key_value_list(ui, ctx, items, *columns);
+        }
+        PluginUiElement::MetadataGrid { items, columns } => {
+            widgets::render_metadata_grid(ui, ctx, items, *columns);
         }
     }
 }

@@ -230,6 +230,14 @@ pub enum PluginUiElement {
         #[serde(default)]
         size: Option<f32>,
     },
+    /// Section header for semantic title hierarchy (h1-h4 style)
+    SectionHeader {
+        title: String,
+        /// 1=largest (h1), 4=smallest (h4)
+        level: u32,
+        #[serde(default)]
+        description: Option<String>,
+    },
     /// Button with optional navigation action
     Button {
         id: String,
@@ -242,6 +250,9 @@ pub enum PluginUiElement {
         id: String,
         label: String,
         value: String,
+        /// If set, renders as simple input with placeholder (no label title)
+        #[serde(default)]
+        placeholder: Option<String>,
     },
     /// Checkbox
     Checkbox {
@@ -350,6 +361,27 @@ pub enum PluginUiElement {
         #[serde(default = "default_true")]
         enable_lightbox: bool,
     },
+    /// Key-value list for displaying metadata in a two-column grid (label: value)
+    KeyValueList {
+        items: Vec<KeyValuePair>,
+        /// Number of key-value pairs per row (default: 1)
+        #[serde(default)]
+        columns: Option<u32>,
+    },
+    /// Metadata grid for displaying key-value metadata in card format (label above value)
+    MetadataGrid {
+        items: Vec<KeyValuePair>,
+        /// Number of columns (default: auto-fit based on width)
+        #[serde(default)]
+        columns: Option<u32>,
+    },
+}
+
+/// Key-value pair for metadata display
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyValuePair {
+    pub key: String,
+    pub value: String,
 }
 
 /// Toolbar button configuration
@@ -361,6 +393,9 @@ pub struct ToolbarButton {
     pub icon: Option<String>,
     #[serde(default)]
     pub primary: bool,
+    /// Add flexible space before this button (pushes it to the right)
+    #[serde(default)]
+    pub spacer_before: bool,
 }
 
 /// Warning icon type
@@ -412,6 +447,8 @@ pub enum PluginAction {
         /// Optional title for the lightbox
         title: Option<String>,
     },
+    /// Set the display name for the current plugin page (shown in breadcrumbs/title)
+    SetPageDisplayName { name: String },
 }
 
 fn default_space_size() -> f32 {

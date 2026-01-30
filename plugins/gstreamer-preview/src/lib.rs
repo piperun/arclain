@@ -28,6 +28,7 @@ impl archust_plugin_sdk::Guest for Component {
                     id: "preview_quality".to_string(),
                     label: "Preview Quality (1-10)".to_string(),
                     value: "8".to_string(),
+                    placeholder: None,
                 }),
             ]),
             "Sidebar" => PluginLayout::Single(vec![

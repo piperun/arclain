@@ -47,27 +47,67 @@ impl Form {
     }
 }
 
-/// A standardized section header for settings
+/// A standardized section header for settings with optional level hierarchy (h1-h4)
 pub struct SectionHeader {
     title: String,
+    level: u32,
+    description: Option<String>,
 }
 
 impl SectionHeader {
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             title: title.into(),
+            level: 3, // Default matches previous behavior (14px bold)
+            description: None,
         }
     }
 
+    /// Set the heading level (1=largest h1, 2=h2, 3=h3, 4+=smallest)
+    pub fn level(mut self, level: u32) -> Self {
+        self.level = level;
+        self
+    }
+
+    /// Add a description/subtitle below the title
+    pub fn description(mut self, desc: impl Into<String>) -> Self {
+        self.description = Some(desc.into());
+        self
+    }
+
     pub fn show(self, ui: &mut egui::Ui, colors: &ThemeColors) {
+        let (font_size, is_bold) = match self.level {
+            1 => (20.0, true),
+            2 => (16.0, true),
+            3 => (14.0, true),
+            _ => (13.0, false),
+        };
+
         ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(self.title)
-                .strong()
-                .size(14.0)
-                .color(colors.on_surface),
-        );
-        ui.add_space(4.0);
+
+        let mut title_text = egui::RichText::new(&self.title)
+            .size(font_size)
+            .color(colors.on_surface);
+        if is_bold {
+            title_text = title_text.strong();
+        }
+        ui.label(title_text);
+
+        if let Some(desc) = &self.description {
+            ui.label(
+                egui::RichText::new(desc)
+                    .size(12.0)
+                    .color(colors.on_surface_variant),
+            );
+        }
+
+        // Add separator for h1/h2 levels
+        if self.level <= 2 {
+            ui.add_space(4.0);
+            ui.separator();
+        } else {
+            ui.add_space(4.0);
+        }
     }
 }
 
