@@ -1000,6 +1000,7 @@ impl archust_plugin_sdk::Guest for Component {
                          badge: Some(code.clone()),
                          // Use thumbnail URL if available, host will cache it automatically
                          image_key: thumb_url.as_ref().map(|_| thumb_key),
+                         image_url: thumb_url.clone(),
                          selected: selected_entry.as_ref() == Some(code),
                          warning_icon: None,
                      }
@@ -1061,15 +1062,17 @@ impl archust_plugin_sdk::Guest for Component {
                  .map(|(id, title, geo_blocked)| {
                      let display_title = title.unwrap_or_else(|| id.clone());
                      let selected = selected_entry.as_ref() == Some(&id);
-                     // Use thumbnail for fast list rendering (small ~100x100)
-                     // No image shows if thumbnail not cached (acceptable trade-off for speed)
+                     // Use thumbnail for fast list rendering (small 240x240 from CDN)
                      let thumb_key = metastore_providers::dlsite::cache_keys::thumbnail_key(&id);
+                     // Construct CDN thumbnail URL so it can be fetched if not cached
+                     let thumb_url = metastore_providers::urls::dlsite::thumbnail_url(&id);
                      ListItemConfig {
                          id: format!("view_cache_entry_{}", id),
                          title: display_title,
                          subtitle: Some("Cached".to_string()),
                          badge: Some(id.clone()),
                          image_key: Some(thumb_key),
+                         image_url: thumb_url,
                          selected,
                          warning_icon: if geo_blocked {
                              Some(WarningIcon::GlobeX)

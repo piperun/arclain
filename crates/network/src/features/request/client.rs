@@ -93,6 +93,12 @@ impl AsyncHttpClient {
         *self.whitelist.write() = whitelist;
     }
 
+    /// Approve a domain for a plugin
+    pub fn approve_domain(&self, plugin_id: &str, domain: &str) {
+        self.whitelist.write().approve(plugin_id, domain);
+        info!("Auto-approved domain '{}' for plugin '{}'", domain, plugin_id);
+    }
+
     /// Analyze a URL for security issues (without making a request)
     pub fn analyze_url(&self, url: &str) -> Result<DomainInfo, String> {
         analyze_url(url)
@@ -219,22 +225,21 @@ impl AsyncHttpClient {
             };
 
             // Global/Domain specific headers injection - mimic Firefox exactly
-            if request.url.contains("dlsite.com") {
+            if request.url.contains("dlsite.com") || request.url.contains("dlsite.jp") {
                 info!("Injecting DLSite headers for {}", request.url);
                 req_builder = req_builder.header("Cookie", "adultchecked=1; locale=ja-JP");
                 req_builder = req_builder.header(
                     "Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 );
                 req_builder =
                     req_builder.header("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7");
                 req_builder = req_builder.header("Accept-Encoding", "gzip, deflate, br");
                 req_builder = req_builder.header("Connection", "keep-alive");
-                req_builder = req_builder.header("Upgrade-Insecure-Requests", "1");
-                req_builder = req_builder.header("Sec-Fetch-Dest", "document");
-                req_builder = req_builder.header("Sec-Fetch-Mode", "navigate");
-                req_builder = req_builder.header("Sec-Fetch-Site", "none");
-                req_builder = req_builder.header("Sec-Fetch-User", "?1");
+                req_builder = req_builder.header("Referer", "https://www.dlsite.com/");
+                req_builder = req_builder.header("Sec-Fetch-Dest", "image");
+                req_builder = req_builder.header("Sec-Fetch-Mode", "no-cors");
+                req_builder = req_builder.header("Sec-Fetch-Site", "cross-site");
                 req_builder = req_builder.header("Cache-Control", "no-cache");
                 req_builder = req_builder.header("Pragma", "no-cache");
             }
@@ -355,21 +360,20 @@ impl AsyncHttpClient {
             let mut req = client.get(&url);
 
             // Domain specific headers - mimic Firefox exactly
-            if url.contains("dlsite.com") {
+            if url.contains("dlsite.com") || url.contains("dlsite.jp") {
                 info!("Injecting DLSite headers (blocking) for {}", url);
                 req = req.header("Cookie", "adultchecked=1; locale=ja-JP");
                 req = req.header(
                     "Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                 );
                 req = req.header("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7");
                 req = req.header("Accept-Encoding", "gzip, deflate, br");
                 req = req.header("Connection", "keep-alive");
-                req = req.header("Upgrade-Insecure-Requests", "1");
-                req = req.header("Sec-Fetch-Dest", "document");
-                req = req.header("Sec-Fetch-Mode", "navigate");
-                req = req.header("Sec-Fetch-Site", "none");
-                req = req.header("Sec-Fetch-User", "?1");
+                req = req.header("Referer", "https://www.dlsite.com/");
+                req = req.header("Sec-Fetch-Dest", "image");
+                req = req.header("Sec-Fetch-Mode", "no-cors");
+                req = req.header("Sec-Fetch-Site", "cross-site");
                 req = req.header("Cache-Control", "no-cache");
                 req = req.header("Pragma", "no-cache");
             }

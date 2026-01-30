@@ -456,6 +456,7 @@ pub fn render_list_item(
     subtitle: &Option<String>,
     badge: &Option<String>,
     image_key: &Option<String>,
+    image_url: &Option<String>,
     selected: bool,
     warning_icon: &Option<WarningIcon>,
 ) {
@@ -477,26 +478,55 @@ pub fn render_list_item(
                     if let Some(cache) = ctx.content_cache {
                         if let Ok(Some(bytes)) = cache.get(key) {
                             // Small thumbnail (48x48)
-                            if let Some(_size) = try_render_image(ui, key, &bytes, Some(48.0)) {
-                                // rendered
+                            if try_render_image(ui, key, &bytes, Some(48.0)).is_none() {
+                                // Image decode failed - delete bad cache entry and show spinner
+                                tracing::debug!("Deleting corrupt cache entry: {}", key);
+                                let _ = cache.remove(key);
+                                ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
+
+                                // Trigger re-fetch
+                                if let Some(url) = image_url {
+                                    if let Some(shared) = ctx.shared_state {
+                                        trigger_image_fetch(
+                                            shared,
+                                            ctx.plugin_id.map(|s| s.to_string()),
+                                            url.clone(),
+                                            key.clone(),
+                                            ui.ctx().clone(),
+                                        );
+                                    }
+                                }
                             }
                         } else {
                             // Placeholder & Fetch - use primary color for visibility
                             ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
 
-                            if let Some(shared) = ctx.shared_state {
-                                let fetch_id = egui::Id::new(("fetch", key.as_str()));
-                                let fetching: bool =
-                                    ui.data(|d| d.get_temp(fetch_id)).unwrap_or(false);
-                                if !fetching {
-                                    ui.data_mut(|d| d.insert_temp(fetch_id, true));
-                                    trigger_image_fetch(
-                                        shared,
-                                        ctx.plugin_id.map(|s| s.to_string()),
-                                        key.clone(),
-                                        key.clone(),
-                                        ui.ctx().clone(),
-                                    );
+                            // Only fetch if we have a URL to fetch from
+                            if let Some(url) = image_url {
+                                if let Some(shared) = ctx.shared_state {
+                                    // Use timestamp to allow retry after 30 seconds if fetch failed
+                                    let fetch_id = egui::Id::new(("fetch", key.as_str()));
+                                    let now = std::time::Instant::now();
+                                    let fetch_started: Option<std::time::Instant> =
+                                        ui.data(|d| d.get_temp(fetch_id));
+
+                                    let should_fetch = match fetch_started {
+                                        None => true,
+                                        Some(started) => {
+                                            now.duration_since(started).as_secs() > 30
+                                        }
+                                    };
+
+                                    if should_fetch {
+                                        ui.data_mut(|d| d.insert_temp(fetch_id, now));
+                                        trigger_image_fetch(
+                                            shared,
+                                            ctx.plugin_id.map(|s| s.to_string()),
+                                            url.clone(),
+                                            key.clone(),
+                                            ui.ctx().clone(),
+                                        );
+                                    }
                                 }
                             }
                         }

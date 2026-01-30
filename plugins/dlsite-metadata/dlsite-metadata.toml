@@ -7,6 +7,7 @@ description = "Extracts DLSite product codes (RJ/VJ/BJ) from archive names and e
 
 [capabilities]
 network = true
+network_domains = ["dlsite.com", "dlsite.jp"]
 archive_metadata_read = true
 archive_metadata_write = true
 archive_modify = true

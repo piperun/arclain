@@ -153,6 +153,7 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
             subtitle,
             badge,
             image_key,
+            image_url,
             selected,
             warning_icon,
         } => {
@@ -164,6 +165,7 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
                 subtitle,
                 badge,
                 image_key,
+                image_url,
                 *selected,
                 warning_icon,
             );

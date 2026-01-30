@@ -94,6 +94,9 @@ pub struct PluginInfoConfig {
 pub struct CapabilitiesConfig {
     #[serde(default)]
     pub network: bool,
+    /// List of domains the plugin is allowed to access (auto-approved on load)
+    #[serde(default)]
+    pub network_domains: Vec<String>,
     #[serde(default)]
     pub archive_metadata_read: bool,
     #[serde(default)]
@@ -315,6 +318,8 @@ pub enum PluginUiElement {
         badge: Option<String>,
         #[serde(default)]
         image_key: Option<String>,
+        #[serde(default)]
+        image_url: Option<String>,
         #[serde(default)]
         selected: bool,
         #[serde(default)]

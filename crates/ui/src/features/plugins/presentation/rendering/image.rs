@@ -26,9 +26,25 @@ pub fn render_image(
                         // Successfully rendered
                         let _ = size;
                     } else {
-                        // Failed to decode
+                        // Failed to decode - delete bad cache entry and trigger re-fetch
+                        tracing::debug!("Deleting corrupt cache entry: {}", key);
+                        let _ = cache.remove(key);
+
+                        // Trigger re-fetch if we have URL
+                        if let Some(shared) = ctx.shared_state {
+                            if let Some(url_str) = url {
+                                trigger_image_fetch(
+                                    shared,
+                                    ctx.plugin_id.map(|s| s.to_string()),
+                                    url_str.clone(),
+                                    key.clone(),
+                                    ui.ctx().clone(),
+                                );
+                            }
+                        }
+
                         ui.label(
-                            egui::RichText::new("🖼 [Invalid image data]")
+                            egui::RichText::new("🖼 [Reloading...]")
                                 .color(colors.on_surface_variant)
                                 .italics(),
                         );
@@ -39,11 +55,19 @@ pub fn render_image(
                     if let Some(shared) = ctx.shared_state {
                         if let Some(url_str) = url {
                             // Check if we already triggered a fetch for this key
+                            // Use a timestamp to allow retry after 30 seconds if fetch failed
                             let fetch_id = egui::Id::new(("fetch", key.as_str()));
-                            let fetching: bool = ui.data(|d| d.get_temp(fetch_id)).unwrap_or(false);
+                            let now = std::time::Instant::now();
+                            let fetch_started: Option<std::time::Instant> =
+                                ui.data(|d| d.get_temp(fetch_id));
 
-                            if !fetching {
-                                ui.data_mut(|d| d.insert_temp(fetch_id, true));
+                            let should_fetch = match fetch_started {
+                                None => true,
+                                Some(started) => now.duration_since(started).as_secs() > 30,
+                            };
+
+                            if should_fetch {
+                                ui.data_mut(|d| d.insert_temp(fetch_id, now));
                                 trigger_image_fetch(
                                     shared,
                                     ctx.plugin_id.map(|s| s.to_string()),
@@ -222,12 +246,31 @@ pub fn trigger_image_fetch(
 
                 if let Some(status) = client.take_response(&id) {
                     if let RequestStatus::Ready(resp) = status {
-                        if let Err(e) =
-                            cache.put(&key, &resp.body, CacheType::Screenshot, None, Some(&url))
-                        {
-                            tracing::warn!("Failed to cache image {}: {}", key, e);
+                        // Validate response before caching
+                        let is_valid = resp.status_code == 200
+                            && resp.body.len() > 1000  // Real images are >1KB
+                            && resp
+                                .content_type
+                                .as_ref()
+                                .is_some_and(|ct| ct.starts_with("image/"));
+
+                        if is_valid {
+                            // Use blocking put with retry - we're in async task so blocking is fine
+                            if let Err(e) =
+                                cache.put(&key, &resp.body, CacheType::Screenshot, None, Some(&url))
+                            {
+                                tracing::warn!("Failed to cache image {}: {}", key, e);
+                            }
+                            ctx.request_repaint();
+                        } else {
+                            tracing::warn!(
+                                "Invalid image response for {}: status={}, size={}, content_type={:?}",
+                                url,
+                                resp.status_code,
+                                resp.body.len(),
+                                resp.content_type
+                            );
                         }
-                        ctx.request_repaint();
                     } else if let RequestStatus::Failed(e) = status {
                         tracing::warn!("Image fetch failed for {}: {}", url, e);
                     }
