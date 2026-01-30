@@ -48,8 +48,43 @@ pub mod dlsite {
         )
     }
 
+    /// Convert a DLSite cover image URL to a thumbnail URL (240x240).
+    /// This is more reliable than constructing URLs from scratch since
+    /// the folder path comes directly from DLSite.
+    ///
+    /// Examples:
+    /// - `modpub/.../RJ360420_img_main.jpg` -> `resize/.../RJ360420_img_main_240x240.jpg`
+    /// - `resize/.../RJ360420_img_main.jpg` -> `resize/.../RJ360420_img_main_240x240.jpg`
+    pub fn cover_to_thumbnail(cover_url: &str) -> Option<String> {
+        // Must be a DLSite image URL
+        if !cover_url.contains("img.dlsite.jp") {
+            return None;
+        }
+
+        let mut url = cover_url.to_string();
+
+        // Convert modpub to resize if needed
+        if url.contains("/modpub/") {
+            url = url.replace("/modpub/", "/resize/");
+        }
+
+        // Add _240x240 before the file extension if not already present
+        if !url.contains("_240x240") {
+            // Find the last occurrence of _img_main or _img_sam before .jpg/.png
+            if let Some(ext_pos) = url.rfind(".jpg").or_else(|| url.rfind(".png")) {
+                // Insert _240x240 before the extension
+                url.insert_str(ext_pos, "_240x240");
+            }
+        }
+
+        Some(url)
+    }
+
     /// Construct a CDN thumbnail URL (240x240) for a product.
     /// Returns None if the product ID format is unrecognized.
+    ///
+    /// Prefer `cover_to_thumbnail()` when you have the cover URL from scraping,
+    /// as it's more reliable (uses DLSite's actual folder structure).
     pub fn thumbnail_url(product_id: &str) -> Option<String> {
         // Extract prefix (RJ, VJ, BJ, RE) and numeric part
         if product_id.len() < 3 {
@@ -68,13 +103,16 @@ pub mod dlsite {
         };
 
         // Calculate folder: ceiling of (numeric / 1000) * 1000
-        // e.g., 1532102 -> 1533000
+        // e.g., 360420 -> 361000, 1005126 -> 1006000
         let folder_num = ((numeric / 1000) + 1) * 1000;
-        let folder = format!("{}{:08}", prefix, folder_num);
+        // Folder digit count matches product ID digit count
+        // RJ360420 -> RJ361000 (6 digits), VJ01005126 -> VJ01006000 (8 digits)
+        let digit_count = numeric_str.len();
+        let folder = format!("{}{:0width$}", prefix, folder_num, width = digit_count);
 
-        // Use modpub path which is more accessible than resize
+        // Use resize path with 240x240 thumbnails
         Some(format!(
-            "https://img.dlsite.jp/modpub/images2/work/{}/{}/{}_img_sam.jpg",
+            "https://img.dlsite.jp/resize/images2/work/{}/{}/{}_img_main_240x240.jpg",
             category, folder, product_id
         ))
     }
@@ -104,6 +142,30 @@ pub mod dlsite {
                 html_url("VJ012345"),
                 "https://www.dlsite.com/pro/work/=/product_id/VJ012345.html"
             );
+        }
+
+        #[test]
+        fn test_cover_to_thumbnail() {
+            // modpub -> resize with _240x240
+            assert_eq!(
+                cover_to_thumbnail("https://img.dlsite.jp/modpub/images2/work/doujin/RJ361000/RJ360420_img_main.jpg"),
+                Some("https://img.dlsite.jp/resize/images2/work/doujin/RJ361000/RJ360420_img_main_240x240.jpg".to_string())
+            );
+
+            // Already resize, just add _240x240
+            assert_eq!(
+                cover_to_thumbnail("https://img.dlsite.jp/resize/images2/work/professional/VJ01006000/VJ01005126_img_main.jpg"),
+                Some("https://img.dlsite.jp/resize/images2/work/professional/VJ01006000/VJ01005126_img_main_240x240.jpg".to_string())
+            );
+
+            // Already has _240x240 - unchanged
+            assert_eq!(
+                cover_to_thumbnail("https://img.dlsite.jp/resize/images2/work/doujin/RJ361000/RJ360420_img_main_240x240.jpg"),
+                Some("https://img.dlsite.jp/resize/images2/work/doujin/RJ361000/RJ360420_img_main_240x240.jpg".to_string())
+            );
+
+            // Non-DLSite URL returns None
+            assert_eq!(cover_to_thumbnail("https://example.com/image.jpg"), None);
         }
     }
 }
