@@ -125,12 +125,11 @@ dependencies = [
 
 [[package]]
 name = "dlsite-metadata"
-version = "0.6.4"
+version = "0.8.5"
 dependencies = [
  "archust-plugin-sdk",
- "metastore-abstract",
- "metastore-providers",
- "metastore-types",
+ "gameta_core",
+ "gameta_lib",
  "regex",
  "scraper 0.24.0",
  "serde",
@@ -580,36 +579,6 @@ name = "memchr"
 version = "2.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f52b00d39961fc5b2736ea853c9cc86238e165017a493d1d5c8eac6bdc4cc273"
-
-[[package]]
-name = "metastore-abstract"
-version = "0.1.0"
-dependencies = [
- "gameta_core",
-]
-
-[[package]]
-name = "metastore-providers"
-version = "0.1.0"
-dependencies = [
- "bitflags",
- "gameta_core",
- "gameta_lib",
- "regex",
- "scraper 0.22.0",
- "serde_json",
- "tracing",
- "urlencoding",
-]
-
-[[package]]
-name = "metastore-types"
-version = "0.1.0"
-dependencies = [
- "gameta_core",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "new_debug_unreachable"

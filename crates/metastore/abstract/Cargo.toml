@@ -1,8 +1,0 @@
-[package]
-name = "metastore-abstract"
-version = "0.1.0"
-edition = "2021"
-description = "Abstraction traits for metastore"
-
-[dependencies]
-gameta_core = { path = "../../gameta_core" }

@@ -7,7 +7,7 @@ use gameta_core::{
 use mini_orm::SqliteDb;
 use std::sync::Arc;
 
-/// SQLite-backed storage for metastore
+/// SQLite-backed storage for gameta metadata
 pub struct SqliteBackend {
     db: Arc<SqliteDb>,
 }
@@ -46,6 +46,7 @@ impl SqliteBackend {
                     extras TEXT,
                     raw_api_response TEXT,
                     raw_html TEXT,
+                    geo_blocked INTEGER DEFAULT 0,
                     cached_at INTEGER NOT NULL,
                     updated_at INTEGER
                 )",
@@ -53,7 +54,7 @@ impl SqliteBackend {
             )?;
 
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_product_metadata_external 
+                "CREATE INDEX IF NOT EXISTS idx_product_metadata_external
                  ON product_metadata(source, external_id)",
                 [],
             )?;
@@ -83,13 +84,13 @@ impl StorageBackend for SqliteBackend {
         self.db
             .with_connection(|conn| {
                 conn.execute(
-                    "INSERT OR REPLACE INTO product_metadata 
+                    "INSERT OR REPLACE INTO product_metadata
                      (id, source, external_id, title, creator, description, release_date,
                       price, currency, rating, rating_count, purchase_count, favorite_count,
                       review_count, file_size, file_format, age_rating, genres, tags, languages,
-                      extras, raw_api_response, raw_html, cached_at, updated_at)
+                      extras, raw_api_response, raw_html, geo_blocked, cached_at, updated_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,
-                             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)",
+                             ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
                     rusqlite::params![
                         meta.id,
                         meta.source.as_str(),
@@ -114,6 +115,7 @@ impl StorageBackend for SqliteBackend {
                         meta.extras.to_string(),
                         meta.raw_api_response,
                         meta.raw_html,
+                        meta.geo_blocked,
                         meta.cached_at,
                         meta.updated_at,
                     ],
@@ -130,13 +132,11 @@ impl StorageBackend for SqliteBackend {
                     "SELECT id, source, external_id, title, creator, description, release_date,
                             price, currency, rating, rating_count, purchase_count, favorite_count,
                             review_count, file_size, file_format, age_rating, genres, tags, languages,
-                            extras, raw_api_response, raw_html, cached_at, updated_at
+                            extras, raw_api_response, raw_html, geo_blocked, cached_at, updated_at
                      FROM product_metadata WHERE id = ?1",
                 )?;
 
-                let result = stmt.query_row([id], |row| {
-                    Ok(row_to_metadata(row))
-                });
+                let result = stmt.query_row([id], |row| Ok(row_to_metadata(row)));
 
                 match result {
                     Ok(meta) => Ok(Some(meta)),
@@ -158,7 +158,7 @@ impl StorageBackend for SqliteBackend {
                     "SELECT id, source, external_id, title, creator, description, release_date,
                             price, currency, rating, rating_count, purchase_count, favorite_count,
                             review_count, file_size, file_format, age_rating, genres, tags, languages,
-                            extras, raw_api_response, raw_html, cached_at, updated_at
+                            extras, raw_api_response, raw_html, geo_blocked, cached_at, updated_at
                      FROM product_metadata WHERE source = ?1 AND external_id = ?2",
                 )?;
 
@@ -201,7 +201,7 @@ impl StorageBackend for SqliteBackend {
         self.db
             .with_connection(|conn| {
                 conn.execute(
-                    "INSERT INTO product_content 
+                    "INSERT INTO product_content
                      (product_id, content_type, content_index, cache_key, source_url, width, height)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                     rusqlite::params![
@@ -251,7 +251,10 @@ impl StorageBackend for SqliteBackend {
     fn delete_content(&self, product_id: &str) -> Result<(), StorageError> {
         self.db
             .with_connection(|conn| {
-                conn.execute("DELETE FROM product_content WHERE product_id = ?1", [product_id])?;
+                conn.execute(
+                    "DELETE FROM product_content WHERE product_id = ?1",
+                    [product_id],
+                )?;
                 Ok(())
             })
             .map_err(|e| StorageError::QueryFailed(e.to_string()))
@@ -305,8 +308,8 @@ fn row_to_metadata(row: &rusqlite::Row) -> ProductMetadata {
             .unwrap_or(serde_json::Value::Null),
         raw_api_response: row.get(21).ok(),
         raw_html: row.get(22).ok(),
-        geo_blocked: false, // TODO: Add column and read from DB
-        cached_at: row.get(23).unwrap_or(0),
-        updated_at: row.get(24).ok(),
+        geo_blocked: row.get::<_, i32>(23).unwrap_or(0) != 0,
+        cached_at: row.get(24).unwrap_or(0),
+        updated_at: row.get(25).ok(),
     }
 }
