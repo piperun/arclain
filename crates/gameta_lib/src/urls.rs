@@ -48,6 +48,37 @@ pub mod dlsite {
         )
     }
 
+    /// Construct a CDN thumbnail URL (240x240) for a product.
+    /// Returns None if the product ID format is unrecognized.
+    pub fn thumbnail_url(product_id: &str) -> Option<String> {
+        // Extract prefix (RJ, VJ, BJ, RE) and numeric part
+        if product_id.len() < 3 {
+            return None;
+        }
+        let prefix = &product_id[..2];
+        let numeric_str = &product_id[2..];
+        let numeric: u64 = numeric_str.parse().ok()?;
+
+        // Determine category for CDN path
+        let category = match prefix {
+            "VJ" => "professional",
+            "RJ" | "RE" => "doujin",
+            "BJ" => "books",
+            _ => return None,
+        };
+
+        // Calculate folder: ceiling of (numeric / 1000) * 1000
+        // e.g., 1532102 -> 1533000
+        let folder_num = ((numeric / 1000) + 1) * 1000;
+        let folder = format!("{}{:08}", prefix, folder_num);
+
+        // Use modpub path which is more accessible than resize
+        Some(format!(
+            "https://img.dlsite.jp/modpub/images2/work/{}/{}/{}_img_sam.jpg",
+            category, folder, product_id
+        ))
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;

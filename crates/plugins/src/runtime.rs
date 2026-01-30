@@ -478,6 +478,7 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
                     subtitle: item.subtitle,
                     badge: item.badge,
                     image_key: item.image_key,
+                    image_url: item.image_url,
                     selected: item.selected,
                     warning_icon: item.warning_icon.map(|i| match i {
                         crate::arclain::plugin::ui::WarningIcon::Warning => {

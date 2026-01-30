@@ -2,20 +2,120 @@ use anyhow::Result;
 use arclain_core::CacheService;
 use arclain_db::cache::cache_index::CacheType;
 use std::path::PathBuf;
+use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
-use tracing::debug;
+use std::thread;
+use tracing::{debug, warn};
+
+/// Request to write to cache (sent via channel for serialization)
+struct CacheWriteRequest {
+    key: String,
+    data: Vec<u8>,
+    cache_type: CacheType,
+    product_id: Option<String>,
+    source_url: Option<String>,
+}
 
 #[derive(Clone)]
 pub struct ContentCache {
     base_dir: PathBuf,
     service: Arc<CacheService>,
+    write_sender: Sender<CacheWriteRequest>,
 }
 
 impl ContentCache {
     pub fn new(base_dir: PathBuf, service: Arc<CacheService>) -> Result<Self> {
-        Ok(Self { base_dir, service })
+        // Create channel for write queue
+        let (tx, rx) = mpsc::channel::<CacheWriteRequest>();
+
+        // Clone for background thread
+        let bg_base_dir = base_dir.clone();
+        let bg_service = service.clone();
+
+        // Spawn background writer thread
+        thread::Builder::new()
+            .name("cache-writer".into())
+            .spawn(move || {
+                while let Ok(req) = rx.recv() {
+                    // Write to cacache first (content-addressed, so safe)
+                    match cacache::write_hash_sync(&bg_base_dir, &req.data) {
+                        Ok(sri) => {
+                            // Retry upsert up to 3 times on database lock
+                            let mut attempts = 0;
+                            loop {
+                                attempts += 1;
+                                match bg_service.upsert(
+                                    &req.key,
+                                    req.product_id.as_deref(),
+                                    &sri.to_string(),
+                                    req.source_url.as_deref(),
+                                    req.cache_type.clone(),
+                                    Some(req.data.len() as i64),
+                                ) {
+                                    Ok(_) => {
+                                        debug!(
+                                            "Cached {} bytes for key {}",
+                                            req.data.len(),
+                                            req.key
+                                        );
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        if attempts < 3 {
+                                            // Brief pause before retry
+                                            thread::sleep(std::time::Duration::from_millis(
+                                                50 * attempts as u64,
+                                            ));
+                                        } else {
+                                            warn!(
+                                                "Failed to cache {} after {} attempts: {}",
+                                                req.key, attempts, e
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to write content to cacache for {}: {}", req.key, e);
+                        }
+                    }
+                }
+                debug!("Cache writer thread exiting");
+            })?;
+
+        Ok(Self {
+            base_dir,
+            service,
+            write_sender: tx,
+        })
     }
 
+    /// Queue a write operation (non-blocking, for async contexts)
+    /// The write happens in a background thread to avoid SQLite lock contention
+    pub fn queue_put(
+        &self,
+        key: &str,
+        data: Vec<u8>,
+        cache_type: CacheType,
+        product_id: Option<&str>,
+        source_url: Option<&str>,
+    ) {
+        let req = CacheWriteRequest {
+            key: key.to_string(),
+            data,
+            cache_type,
+            product_id: product_id.map(|s| s.to_string()),
+            source_url: source_url.map(|s| s.to_string()),
+        };
+
+        if let Err(e) = self.write_sender.send(req) {
+            warn!("Failed to queue cache write for {}: {}", key, e);
+        }
+    }
+
+    /// Synchronous put with retry logic (for cases where blocking is acceptable)
     pub fn put(
         &self,
         key: &str,
@@ -26,24 +126,38 @@ impl ContentCache {
     ) -> Result<String> {
         let sri = cacache::write_hash_sync(&self.base_dir, data)?;
 
-        self.service.upsert(
-            key,
-            product_id,
-            &sri.to_string(),
-            source_url,
-            cache_type,
-            Some(data.len() as i64),
-        )?;
+        // Retry upsert up to 3 times on database lock
+        let mut last_error = None;
+        for attempt in 1..=3 {
+            match self.service.upsert(
+                key,
+                product_id,
+                &sri.to_string(),
+                source_url,
+                cache_type.clone(),
+                Some(data.len() as i64),
+            ) {
+                Ok(_) => {
+                    debug!("Cached {} bytes for key {}", data.len(), key);
+                    return Ok(sri.to_string());
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < 3 {
+                        thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+                    }
+                }
+            }
+        }
 
-        debug!("Cached {} bytes for key {}", data.len(), key);
-        Ok(sri.to_string())
+        Err(last_error.unwrap())
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         if let Some(entry) = self.service.get(key)? {
             // Guard against empty/invalid hash which causes ssri to panic
             if entry.content_hash.is_empty() {
-                tracing::warn!("Found empty content_hash for key: {}", key);
+                warn!("Found empty content_hash for key: {}", key);
                 return Ok(None);
             }
 
@@ -51,7 +165,7 @@ impl ContentCache {
             let sri: ssri::Integrity = match entry.content_hash.parse() {
                 Ok(s) => s,
                 Err(e) => {
-                    tracing::warn!("Failed to parse SRI hash for key {}: {}", key, e);
+                    warn!("Failed to parse SRI hash for key {}: {}", key, e);
                     return Ok(None);
                 }
             };

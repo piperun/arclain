@@ -213,7 +213,8 @@ interface ui {
         title: string,
         subtitle: option<string>,
         badge: option<string>,
-        image-key: option<string>,
+        image-key: option<string>,      // Cache key to lookup/store the image
+        image-url: option<string>,      // URL to fetch if not in cache
         selected: bool,
         warning-icon: option<warning-icon>,  // Optional warning indicator
     }

@@ -169,9 +169,14 @@ impl PluginManager {
     pub fn set_async_http_client(&mut self, client: Arc<arclain_network::AsyncHttpClient>) {
         self.async_http_client = Some(client.clone());
         let plugins = self.plugins.read();
-        for plugin in plugins.values() {
+        for (plugin_id, plugin) in plugins.iter() {
             let mut instance = plugin.instance.lock();
             instance.set_async_http_client(Some(client.clone()));
+
+            // Auto-approve network domains from manifest for already-loaded plugins
+            for domain in &plugin.manifest.capabilities.network_domains {
+                client.approve_domain(plugin_id, domain);
+            }
         }
     }
 
@@ -259,6 +264,15 @@ impl PluginManager {
         // Store plugin
         self.plugins.write().insert(plugin_id.clone(), managed);
         self.enabled_plugins.write().insert(plugin_id.clone(), true);
+
+        // Auto-approve network domains from manifest
+        if !discovered.manifest.capabilities.network_domains.is_empty() {
+            if let Some(ref client) = self.async_http_client {
+                for domain in &discovered.manifest.capabilities.network_domains {
+                    client.approve_domain(&plugin_id, domain);
+                }
+            }
+        }
 
         info!("Plugin '{}' loaded and initialized", metadata.name);
         Ok(())

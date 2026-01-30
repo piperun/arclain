@@ -16,6 +16,9 @@ pub use gameta_lib::providers::dlsite;
 #[cfg(feature = "dlsite")]
 pub use gameta_lib::providers::dlsite::DLSiteProvider;
 
+// Re-export URL utilities
+pub use gameta_lib::urls;
+
 // Stubs for future providers
 #[cfg(feature = "itchio")]
 pub mod itchio {
