@@ -74,6 +74,7 @@ pub fn render_text_input(
     id: &str,
     label: &str,
     value: &str,
+    placeholder: &Option<String>,
 ) {
     let colors = ctx.colors;
     let temp_id = ui.make_persistent_id(id);
@@ -82,33 +83,51 @@ pub fn render_text_input(
         .data(|data| data.get_temp::<String>(temp_id))
         .unwrap_or(value.to_string());
 
-    SettingsRow::new(label)
-        .action(|ui| {
-            ui.horizontal(|ui| {
-                let response = ui.add(egui::TextEdit::singleline(&mut text).desired_width(200.0));
+    // If placeholder is set, render as simple search-style input (no label title)
+    if let Some(hint) = placeholder {
+        let response = ui.add(
+            egui::TextEdit::singleline(&mut text)
+                .hint_text(hint)
+                .desired_width(ui.available_width()),
+        );
 
-                // If changed, update temp state
-                if response.changed() {
-                    ui.data_mut(|data| data.insert_temp(temp_id, text.clone()));
-                }
+        if response.changed() {
+            ui.data_mut(|data| data.insert_temp(temp_id, text.clone()));
+            // Auto-submit on change for filter inputs
+            (ctx.event_callback)(id, Some(text.clone()));
+        }
+    } else {
+        // Original behavior with SettingsRow wrapper
+        SettingsRow::new(label)
+            .action(|ui| {
+                ui.horizontal(|ui| {
+                    let response =
+                        ui.add(egui::TextEdit::singleline(&mut text).desired_width(200.0));
 
-                // Show Save button if text differs from stored value
-                let is_modified = text != *value;
-                if is_modified {
-                    if ui.button("Save").clicked()
-                        || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-                    {
-                        (ctx.event_callback)(id, Some(text.clone()));
-                        // Clear temp state to sync with new incoming value
-                        ui.data_mut(|data| data.remove::<String>(temp_id));
+                    // If changed, update temp state
+                    if response.changed() {
+                        ui.data_mut(|data| data.insert_temp(temp_id, text.clone()));
                     }
-                } else if response.lost_focus() {
-                    // If focus lost without changes (or reverted), assume sync
-                    // Optional: clear temp logic if needed
-                }
-            });
-        })
-        .show(ui, colors);
+
+                    // Show Save button if text differs from stored value
+                    let is_modified = text != *value;
+                    if is_modified {
+                        if ui.button("Save").clicked()
+                            || (response.lost_focus()
+                                && ui.input(|i| i.key_pressed(egui::Key::Enter)))
+                        {
+                            (ctx.event_callback)(id, Some(text.clone()));
+                            // Clear temp state to sync with new incoming value
+                            ui.data_mut(|data| data.remove::<String>(temp_id));
+                        }
+                    } else if response.lost_focus() {
+                        // If focus lost without changes (or reverted), assume sync
+                        // Optional: clear temp logic if needed
+                    }
+                });
+            })
+            .show(ui, colors);
+    }
 }
 
 pub fn render_checkbox(
@@ -249,20 +268,57 @@ pub fn render_tabs(
     selected: &str,
 ) {
     let colors = ctx.colors;
-    ui.horizontal(|ui| {
-        for tab in tabs {
-            let is_selected = tab == selected;
-            let style = if is_selected {
-                egui::RichText::new(tab).strong().color(colors.primary)
-            } else {
-                egui::RichText::new(tab).color(colors.on_surface_variant)
-            };
 
-            if ui.selectable_label(is_selected, style).clicked() {
-                (ctx.event_callback)(id, Some(tab.clone()));
-            }
-        }
-    });
+    // Pill-style container
+    egui::Frame::NONE
+        .fill(colors.surface_variant)
+        .corner_radius(8.0)
+        .inner_margin(egui::Margin::symmetric(4, 4))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+
+                for tab in tabs {
+                    let is_selected = tab == selected;
+
+                    // Tab button styling
+                    let (bg_color, text_color) = if is_selected {
+                        (colors.primary, colors.on_primary)
+                    } else {
+                        (egui::Color32::TRANSPARENT, colors.on_surface_variant)
+                    };
+
+                    let button = egui::Button::new(
+                        egui::RichText::new(tab).size(13.0).color(text_color),
+                    )
+                    .fill(bg_color)
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(6.0)
+                    .min_size(egui::vec2(0.0, 28.0));
+
+                    let response = ui.add(button);
+
+                    // Hover effect for non-selected tabs
+                    if !is_selected && response.hovered() {
+                        let hover_rect = response.rect;
+                        ui.painter().rect_filled(
+                            hover_rect,
+                            6.0,
+                            colors.on_surface.gamma_multiply(0.08),
+                        );
+                    }
+
+                    if response.clicked() {
+                        (ctx.event_callback)(id, Some(tab.clone()));
+                    }
+
+                    // Pointer cursor on hover
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                    }
+                }
+            });
+        });
 }
 
 pub fn render_warning(
@@ -301,7 +357,7 @@ pub fn render_loading(
 ) {
     let colors = ctx.colors;
     ui.horizontal(|ui| {
-        ui.spinner();
+        ui.add(egui::Spinner::new().color(colors.primary));
         if let Some(msg) = message {
             ui.label(egui::RichText::new(msg).color(colors.on_surface_variant));
         }
@@ -349,6 +405,32 @@ pub fn render_toolbar(
 ) {
     ui.horizontal(|ui| {
         for btn in buttons {
+            // Add flexible space before this button if requested
+            if btn.spacer_before {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // Render remaining buttons right-to-left
+                    for rbtn in buttons.iter().rev() {
+                        if !rbtn.spacer_before {
+                            continue; // Skip buttons before spacer
+                        }
+
+                        let button = arclain_widgets::TextButton::new(
+                            &rbtn.label,
+                            if rbtn.primary {
+                                arclain_widgets::ButtonSize::Medium
+                            } else {
+                                arclain_widgets::ButtonSize::Small
+                            },
+                        );
+
+                        if ui.add(button).clicked() {
+                            (ctx.event_callback)(&rbtn.id, None);
+                        }
+                    }
+                });
+                return; // Done rendering
+            }
+
             // Use different styling for primary buttons
             let button = arclain_widgets::TextButton::new(
                 &btn.label,
@@ -399,8 +481,8 @@ pub fn render_list_item(
                                 // rendered
                             }
                         } else {
-                            // Placeholder & Fetch
-                            ui.add(egui::Spinner::new().size(16.0));
+                            // Placeholder & Fetch - use primary color for visibility
+                            ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
 
                             if let Some(shared) = ctx.shared_state {
                                 let fetch_id = egui::Id::new(("fetch", key.as_str()));
@@ -421,13 +503,25 @@ pub fn render_list_item(
                     }
                 }
 
-                ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(title).strong().color(colors.on_surface));
+                // Text content with truncation (ellipsis) to prevent width overflow
+                // Set max width to allow truncation to work
+                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    ui.set_max_width(ui.available_width() - 80.0); // Leave space for badge/icon
+
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(title).strong().color(colors.on_surface),
+                        )
+                        .truncate(),
+                    );
                     if let Some(sub) = subtitle {
-                        ui.label(
-                            egui::RichText::new(sub)
-                                .small()
-                                .color(colors.on_surface_variant),
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(sub)
+                                    .small()
+                                    .color(colors.on_surface_variant),
+                            )
+                            .truncate(),
                         );
                     }
                 });
@@ -458,4 +552,101 @@ pub fn render_list_item(
     if response.interact(egui::Sense::click()).clicked() {
         (ctx.event_callback)(id, None);
     }
+}
+
+/// Render a section header with semantic title hierarchy (h1-h4 style)
+/// Uses the shared SectionHeader component for consistency
+pub fn render_section_header(
+    ui: &mut egui::Ui,
+    ctx: &mut RenderContext<'_, impl UiEventHandler + ?Sized>,
+    title: &str,
+    level: u32,
+    description: &Option<String>,
+) {
+    let mut header = SectionHeader::new(title).level(level);
+    if let Some(desc) = description {
+        header = header.description(desc);
+    }
+    header.show(ui, ctx.colors);
+}
+
+/// Render a key-value list as a two-column grid for metadata display
+pub fn render_key_value_list(
+    ui: &mut egui::Ui,
+    ctx: &mut RenderContext<'_, impl UiEventHandler + ?Sized>,
+    items: &[arclain_plugins::types::KeyValuePair],
+    columns: Option<u32>,
+) {
+    let colors = ctx.colors;
+    let cols = columns.unwrap_or(1) as usize;
+
+    // Calculate number of data columns (each key-value pair = 2 columns)
+    let grid_columns = cols * 2;
+
+    egui::Grid::new("key_value_list")
+        .num_columns(grid_columns)
+        .spacing([16.0, 6.0])
+        .show(ui, |ui| {
+            for (i, kv) in items.iter().enumerate() {
+                // Key label (muted, smaller)
+                ui.label(
+                    egui::RichText::new(&kv.key)
+                        .size(11.0)
+                        .color(colors.on_surface_variant),
+                );
+                // Value
+                ui.label(
+                    egui::RichText::new(&kv.value)
+                        .size(13.0)
+                        .color(colors.on_surface),
+                );
+
+                // End row after the specified number of columns
+                if (i + 1) % cols == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+/// Render a metadata grid with label above value (card-style layout)
+/// This matches the mockup style: uppercase labels, larger values below
+pub fn render_metadata_grid(
+    ui: &mut egui::Ui,
+    ctx: &mut RenderContext<'_, impl UiEventHandler + ?Sized>,
+    items: &[arclain_plugins::types::KeyValuePair],
+    columns: Option<u32>,
+) {
+    let colors = ctx.colors;
+    let cols = columns.unwrap_or(3) as usize;
+
+    // Use Grid for proper column alignment
+    egui::Grid::new("metadata_grid")
+        .num_columns(cols)
+        .spacing([32.0, 8.0])
+        .min_col_width(120.0)
+        .show(ui, |ui| {
+            for (i, kv) in items.iter().enumerate() {
+                // Each cell is a vertical stack: label on top, value below
+                ui.vertical(|ui| {
+                    // Label (uppercase, muted, smaller)
+                    ui.label(
+                        egui::RichText::new(kv.key.to_uppercase())
+                            .size(11.0)
+                            .color(colors.on_surface_variant),
+                    );
+                    // Value (larger, primary color)
+                    ui.label(
+                        egui::RichText::new(&kv.value)
+                            .size(14.0)
+                            .color(colors.on_surface),
+                    );
+                });
+
+                // End row after the specified number of columns
+                if (i + 1) % cols == 0 {
+                    ui.end_row();
+                }
+            }
+        });
 }

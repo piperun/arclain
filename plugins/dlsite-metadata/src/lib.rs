@@ -5,7 +5,7 @@ use std::cell::RefCell;
 struct PluginState {
     found_metadata: Option<(String, serde_json::Value, Option<ScrapedData>)>, // (product_id, json, scraped)
     search_query: String,
-    search_results: Vec<(String, String, String)>, // (code, title, maker)
+    search_results: Vec<(String, String, String, Option<String>)>, // (code, title, maker, thumbnail_url)
     auto_fetch_enabled: bool, // Master switch: auto-fetch when archive opens
     enable_cache: bool, // Sub-option: cache fetched results (only relevant if auto_fetch enabled)
     cache_images: bool, // Cache cover and screenshot images
@@ -172,7 +172,7 @@ impl archust_plugin_sdk::Guest for Component {
             PluginLayout, SplitConfig, UiElement, LabelConfig, TabsConfig, TextInputConfig,
             ButtonConfig, ButtonAction, ListContainerConfig, ListItemConfig, ImageConfig, LoadingConfig,
             CheckboxConfig, WarningConfig, WarningIcon, TagChipsConfig, ToolbarConfig, ToolbarButtonConfig,
-            CarouselConfig
+            CarouselConfig, KeyValueListConfig, KeyValuePair, MetadataGridConfig, SectionHeaderConfig
         };
 
         match extension_point.as_str() {
@@ -234,6 +234,7 @@ impl archust_plugin_sdk::Guest for Component {
                     id: "request_timeout".to_string(),
                     label: "API Request Timeout (seconds)".to_string(),
                     value: "30".to_string(),
+                    placeholder: None,
                 }));
 
                 // Cache Management
@@ -374,6 +375,7 @@ impl archust_plugin_sdk::Guest for Component {
                             max_height: Some(150.0),
                         }));
                         
+                        // Title (prominent)
                         if let Some(t) = title {
                             elements.push(UiElement::Label(LabelConfig {
                                 text: t.to_string(),
@@ -381,44 +383,37 @@ impl archust_plugin_sdk::Guest for Component {
                                 size: Some(14.0),
                             }));
                         }
-                        
-                        if let Some(m) = maker {
-                            elements.push(UiElement::Label(LabelConfig {
-                                text: format!("Circle: {}", m),
-                                bold: false,
-                                size: None,
-                            }));
-                        }
-                        elements.push(UiElement::Label(LabelConfig {
-                            text: format!("ID: {}", id),
-                            bold: false,
-                            size: None,
-                        }));
-                        
-                        // Release date if available (check both API and ProductMetadata field names)
+
+                        // Metadata fields as key-value grid
                         let release_date = data["regist_date"].as_str()
                             .or_else(|| data["release_date"].as_str());
-                        if let Some(date) = release_date {
-                            if !date.is_empty() {
-                                // Strip time component if present (e.g. "2026-03-06 00:00:00" -> "2026-03-06")
-                                let date_clean = date.split_whitespace().next().unwrap_or(date);
-                                elements.push(UiElement::Label(LabelConfig {
-                                    text: format!("Released: {}", date_clean),
-                                    bold: false,
-                                    size: None,
-                                }));
-                            }
+                        let date_clean = release_date
+                            .filter(|d| !d.is_empty())
+                            .map(|d| d.split_whitespace().next().unwrap_or(d));
+
+                        let mut kv_items = vec![
+                            KeyValuePair { key: "ID".to_string(), value: id.to_string() },
+                        ];
+                        if let Some(m) = maker {
+                            kv_items.push(KeyValuePair { key: "Circle".to_string(), value: m.to_string() });
                         }
+                        if let Some(date) = date_clean {
+                            kv_items.push(KeyValuePair { key: "Released".to_string(), value: date.to_string() });
+                        }
+
+                        elements.push(UiElement::KeyValueList(KeyValueListConfig {
+                            items: kv_items,
+                            columns: Some(1), // Single column in sidebar
+                        }));
                         
                         // Price removed from Panel - only shown in full info dialog
                         
-                        // Tags from scraped data
+                        // Tags from scraped data (use TagChips for pill-style display)
                         if let Some(scraped_data) = scraped {
                             if !scraped_data.tags.is_empty() {
-                                elements.push(UiElement::Label(LabelConfig {
-                                    text: format!("Tags: {}", scraped_data.tags.join(", ")),
-                                    bold: false,
-                                    size: None,
+                                elements.push(UiElement::TagChips(TagChipsConfig {
+                                    tags: scraped_data.tags.clone(),
+                                    max_display: Some(5), // Show up to 5 tags, rest as "+N more"
                                 }));
                             }
                         }
@@ -577,7 +572,7 @@ impl archust_plugin_sdk::Guest for Component {
                             
                             elements.push(UiElement::Separator);
                             
-                            // Tags from scraped data
+                            // Tags from scraped data (use TagChips for pill-style display)
                             if let Some(scraped_data) = scraped {
                                 if !scraped_data.tags.is_empty() {
                                     elements.push(UiElement::Label(LabelConfig {
@@ -585,10 +580,9 @@ impl archust_plugin_sdk::Guest for Component {
                                         bold: true,
                                         size: None,
                                     }));
-                                    elements.push(UiElement::Label(LabelConfig {
-                                        text: scraped_data.tags.join(", "),
-                                        bold: false,
-                                        size: None,
+                                    elements.push(UiElement::TagChips(TagChipsConfig {
+                                        tags: scraped_data.tags.clone(),
+                                        max_display: Some(10), // Show more tags in dialog
                                     }));
                                 }
                                 
@@ -658,6 +652,7 @@ impl archust_plugin_sdk::Guest for Component {
                             id: "search_query".to_string(),
                             label: "Search Query".to_string(),
                             value: state.search_query.clone(),
+                            placeholder: None,
                         }));
                     });
                     
@@ -679,7 +674,7 @@ impl archust_plugin_sdk::Guest for Component {
                                 size: None,
                             }));
 
-                            for (code, title, maker) in &state.search_results {
+                            for (code, title, maker, _thumb_url) in &state.search_results {
                                 elements.push(UiElement::Button(ButtonConfig {
                                     id: format!("select_result_{}", code),
                                     label: format!("[{}] {} ({})", code, title, maker),
@@ -827,6 +822,7 @@ impl archust_plugin_sdk::Guest for Component {
                                 id: "search_query".to_string(),
                                 label: "Filter Cache".to_string(),
                                 value: state.search_query.clone(),
+                                placeholder: None,
                             }));
                         });
 
@@ -921,29 +917,24 @@ impl archust_plugin_sdk::Guest for Component {
     // === Sidebar Generation ===
     let mut sidebar_elements = Vec::new();
 
-    // 1. Title
-    sidebar_elements.push(UiElement::Label(LabelConfig {
-        text: "DLSite Browser".to_string(),
-        bold: true,
-        size: Some(20.0),
-    }));
-    
-    sidebar_elements.push(UiElement::Separator);
-    
-    // 2. Tabs
+    // Title removed - page title bar already shows "DLSite Browser"
+
+    // 1. Tabs
     sidebar_elements.push(UiElement::Tabs(TabsConfig {
         id: "browser_tabs".to_string(),
-        tabs: vec!["Cached".to_string(), "Search DLSite".to_string()],
-        selected: if browser_tab == "search" { "Search DLSite".to_string() } else { "Cached".to_string() },
+        tabs: vec!["Cached".to_string(), "Search".to_string()],
+        selected: if browser_tab == "search" { "Search".to_string() } else { "Cached".to_string() },
     }));
     
     sidebar_elements.push(UiElement::Separator);
     
-    // 3. Search/Filter
+    // 3. Search/Filter (use placeholder for simple input without label title)
+    let filter_hint = if browser_tab == "search" { "Search..." } else { "Filter cache..." };
     sidebar_elements.push(UiElement::TextInput(TextInputConfig {
         id: "browser_query".to_string(),
-        label: if browser_tab == "search" { "Search DLSite...".to_string() } else { "Filter cache...".to_string() },
+        label: String::new(), // Not used when placeholder is set
         value: search_query.clone(),
+        placeholder: Some(filter_hint.to_string()),
     }));
     
     if browser_tab == "search" {
@@ -992,21 +983,26 @@ impl archust_plugin_sdk::Guest for Component {
         if browser_tab == "search" {
             // Search Results
              let search_results = STATE.with(|s| s.borrow().search_results.clone());
-             
+
              let items: Vec<ListItemConfig> = search_results.iter()
-                 .filter(|(code, title, _)| {
-                     search_query.is_empty() || 
+                 .filter(|(code, title, _, _)| {
+                     search_query.is_empty() ||
                      title.to_lowercase().contains(&search_query.to_lowercase()) ||
                      code.to_lowercase().contains(&search_query.to_lowercase())
                  })
-                 .map(|(code, title, maker)| ListItemConfig {
-                     id: code.clone(),
-                     title: title.clone(),
-                     subtitle: Some(maker.clone()),
-                     badge: Some(code.clone()),
-                     image_key: None,
-                     selected: selected_entry.as_ref() == Some(code),
-                     warning_icon: None,
+                 .map(|(code, title, maker, thumb_url)| {
+                     // Use thumbnail (small ~100x100) instead of full cover for fast loading
+                     let thumb_key = metastore_providers::dlsite::cache_keys::thumbnail_key(code);
+                     ListItemConfig {
+                         id: code.clone(),
+                         title: title.clone(),
+                         subtitle: Some(maker.clone()),
+                         badge: Some(code.clone()),
+                         // Use thumbnail URL if available, host will cache it automatically
+                         image_key: thumb_url.as_ref().map(|_| thumb_key),
+                         selected: selected_entry.as_ref() == Some(code),
+                         warning_icon: None,
+                     }
                  })
                  .collect();
              
@@ -1014,7 +1010,7 @@ impl archust_plugin_sdk::Guest for Component {
                  id: "browser_list".to_string(),
                  items,
                  max_height: Some(700.0), // Taller list for sidebar
-                 empty_message: Some("Search DLSite to see results".to_string()),
+                 empty_message: Some("Enter a search term".to_string()),
              }));
         } else {
              // Use cached entries to avoid DB queries on every frame
@@ -1065,12 +1061,15 @@ impl archust_plugin_sdk::Guest for Component {
                  .map(|(id, title, geo_blocked)| {
                      let display_title = title.unwrap_or_else(|| id.clone());
                      let selected = selected_entry.as_ref() == Some(&id);
+                     // Use thumbnail for fast list rendering (small ~100x100)
+                     // No image shows if thumbnail not cached (acceptable trade-off for speed)
+                     let thumb_key = metastore_providers::dlsite::cache_keys::thumbnail_key(&id);
                      ListItemConfig {
                          id: format!("view_cache_entry_{}", id),
                          title: display_title,
                          subtitle: Some("Cached".to_string()),
                          badge: Some(id.clone()),
-                         image_key: None,
+                         image_key: Some(thumb_key),
                          selected,
                          warning_icon: if geo_blocked {
                              Some(WarningIcon::GlobeX)
@@ -1157,28 +1156,32 @@ impl archust_plugin_sdk::Guest for Component {
                          label: "Refresh".to_string(),
                          icon: None,
                          primary: false,
+                         spacer_before: false,
                      },
                      ToolbarButtonConfig {
                          id: format!("refetch_entry_{}", selected_id),
                          label: "Refetch".to_string(),
                          icon: None,
                          primary: false,
+                         spacer_before: false,
                      },
                      ToolbarButtonConfig {
                          id: format!("select_entry_{}", selected_id),
                          label: "Select for Use".to_string(),
                          icon: None,
                          primary: true,
+                         spacer_before: true,  // Push to right side
                      },
                  ],
              }));
              content_elements.push(UiElement::Separator);
              
              // ===== TITLE (Hero) =====
-             content_elements.push(UiElement::Label(LabelConfig {
-                 text: title.to_string(),
-                 bold: true,
-                 size: Some(24.0),
+             // Use SectionHeader level 1 for consistent styling (20px, bold)
+             content_elements.push(UiElement::SectionHeader(SectionHeaderConfig {
+                 title: title.to_string(),
+                 level: 1,
+                 description: None,
              }));
              
              content_elements.push(UiElement::Space(8.0));
@@ -1271,26 +1274,18 @@ impl archust_plugin_sdk::Guest for Component {
              
              content_elements.push(UiElement::Space(12.0));
              
-             // ===== METADATA INFO (Compact Single Line) =====
-             // ===== METADATA INFO (Rows) =====
-             let release_str = release_date.unwrap_or("Unknown Release");
-             
-             content_elements.push(UiElement::Label(LabelConfig {
-                 text: format!("ID: {}", selected_id),
-                 bold: false,
-                 size: Some(13.0),
+             // ===== METADATA INFO (Card-style Grid) =====
+             let release_str = release_date.unwrap_or("Unknown");
+
+             content_elements.push(UiElement::MetadataGrid(MetadataGridConfig {
+                 items: vec![
+                     KeyValuePair { key: "Product ID".to_string(), value: selected_id.to_string() },
+                     KeyValuePair { key: "Released".to_string(), value: release_str.to_string() },
+                     KeyValuePair { key: "Circle".to_string(), value: maker.to_string() },
+                 ],
+                 columns: Some(3), // Show all 3 on one row
              }));
-             content_elements.push(UiElement::Label(LabelConfig {
-                 text: format!("Released: {}", release_str),
-                 bold: false,
-                 size: Some(13.0),
-             }));
-             content_elements.push(UiElement::Label(LabelConfig {
-                 text: format!("Circle: {}", maker),
-                 bold: false,
-                 size: Some(13.0),
-             }));
-             
+
              content_elements.push(UiElement::Separator);
              
              // ===== TAGS =====
@@ -1433,6 +1428,17 @@ impl archust_plugin_sdk::Guest for Component {
 
     fn on_ui_event(id: String, value: Option<String>) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
         use archust_plugin_sdk::arclain::plugin::ui::{PluginAction, OpenLightboxConfig};
+
+        // Handle page initialization - set display name for breadcrumb
+        if id == "__page_init" {
+            if let Some(page_id) = &value {
+                if page_id.starts_with("dlsite_browser") {
+                    return vec![PluginAction::SetPageDisplayName("DLSite Browser".to_string())];
+                }
+            }
+            return vec![];
+        }
+
         // Handle system events dispatched as UI events
         if id == "event:archive_opened" {
             let path = value.unwrap_or_default();
@@ -1883,7 +1889,7 @@ impl archust_plugin_sdk::Guest for Component {
                 if let Some(tab) = value {
                     STATE.with(|state| {
                         let mut s = state.borrow_mut();
-                        s.browser_tab = if tab.contains("Search") { "search".to_string() } else { "cached".to_string() };
+                        s.browser_tab = if tab == "Search" { "search".to_string() } else { "cached".to_string() };
                         s.selected_cache_entry = None; // Clear selection on tab switch
                         s.search_results.clear(); // Clear search results on tab switch
                         s.cached_carousel_images.clear(); // Clear all cached images - filter logic differs per tab
@@ -2465,8 +2471,8 @@ fn generate_metadata_json(
     metastore_providers::dlsite::build_plugin_json_string(product_id, api_json, scraped)
 }
 
-/// Search DLSite for a query and return list of (code, title, maker)
-fn search_dlsite(query: &str) -> Vec<(String, String, String)> {
+/// Search DLSite for a query and return list of (code, title, maker, thumbnail_url)
+fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<String>)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
     use metastore_providers::dlsite::parse_search_response;
 
@@ -2535,7 +2541,7 @@ fn search_dlsite(query: &str) -> Vec<(String, String, String)> {
             return results
                 .into_iter()
                 .take(10)
-                .map(|r| (r.external_id, r.title, r.creator.unwrap_or_else(|| "Unknown".to_string())))
+                .map(|r| (r.external_id, r.title, r.creator.unwrap_or_else(|| "Unknown".to_string()), r.thumbnail_url))
                 .collect();
         }
 

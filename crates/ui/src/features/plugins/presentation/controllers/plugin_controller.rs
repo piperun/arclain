@@ -12,6 +12,12 @@ use std::sync::Arc;
 use crate::features::plugins::domain::state::PluginDialogState;
 use crate::shared::dialogs::LightboxState;
 
+/// Context for processing plugin actions that need signal access
+pub struct ActionContext<'a> {
+    pub lightbox_signal: Option<&'a Signal<LightboxState>>,
+    pub page_display_name_signal: Option<&'a Signal<Option<String>>>,
+}
+
 /// Process a list of plugin actions
 pub fn process_plugin_actions(
     actions: Vec<PluginAction>,
@@ -21,19 +27,23 @@ pub fn process_plugin_actions(
     refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
     lightbox_signal: Option<&Signal<LightboxState>>,
 ) {
+    let ctx = ActionContext {
+        lightbox_signal,
+        page_display_name_signal: None,
+    };
     for action in actions {
-        process_action(action, plugin_id, dialog_state, toaster, refresh_requests, lightbox_signal);
+        process_action(action, plugin_id, dialog_state, toaster, refresh_requests, &ctx);
     }
 }
 
 /// Process a single plugin action
-fn process_action(
+pub fn process_action(
     action: PluginAction,
     plugin_id: &str,
     _dialog_state: &mut PluginDialogState,
     toaster: &mut Toaster,
     refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
-    lightbox_signal: Option<&Signal<LightboxState>>,
+    ctx: &ActionContext,
 ) {
     match action {
         PluginAction::None => {}
@@ -138,11 +148,23 @@ fn process_action(
                 images.len(),
                 start_index
             );
-            if let Some(signal) = lightbox_signal {
+            if let Some(signal) = ctx.lightbox_signal {
                 let state = LightboxState::open(images, start_index, title);
                 signal.set(state);
             } else {
                 tracing::warn!("Lightbox requested but signal not available");
+            }
+        }
+
+        PluginAction::SetPageDisplayName { name } => {
+            // Set the display name for the current plugin page
+            tracing::debug!(
+                "Plugin {} set page display name to '{}'",
+                plugin_id,
+                name
+            );
+            if let Some(signal) = ctx.page_display_name_signal {
+                signal.set(Some(name));
             }
         }
     }
@@ -156,6 +178,7 @@ pub fn create_dialog_callback(
     // Use signal instead of Arc<Mutex>
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
     let lightbox_signal = shared.signals().lightbox_state.clone();
+    let page_display_name_signal = shared.signals().page_display_name.clone();
     let toaster_arc = shared.toaster.clone();
     let plugin_manager_arc = shared.services.plugin_manager.clone();
     let pid = plugin_id;
@@ -185,6 +208,10 @@ pub fn create_dialog_callback(
                 let mut ds = dialog_signal.get();
                 // Invalidate layout cache so next frame fetches fresh layout
                 ds.invalidate_dialog_layout();
+                let ctx = ActionContext {
+                    lightbox_signal: Some(&lightbox_signal),
+                    page_display_name_signal: Some(&page_display_name_signal),
+                };
                 for action in actions {
                     process_action(
                         action,
@@ -192,7 +219,7 @@ pub fn create_dialog_callback(
                         &mut ds,
                         &mut toaster,
                         None, // No refresh requests for dialog callbacks
-                        Some(&lightbox_signal),
+                        &ctx,
                     );
                 }
                 dialog_signal.set(ds);
@@ -208,6 +235,7 @@ pub fn create_page_callback(
 ) -> Box<dyn FnMut(&str, Option<String>)> {
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
     let lightbox_signal = shared.signals().lightbox_state.clone();
+    let page_display_name_signal = shared.signals().page_display_name.clone();
     let toaster_arc = shared.toaster.clone();
     let plugin_manager_arc = shared.services.plugin_manager.clone();
     let pid = plugin_id;
@@ -217,6 +245,8 @@ pub fn create_page_callback(
         if element_id == "__page_close" {
             let mut ds = dialog_signal.get();
             ds.close_page();
+            // Clear page display name when closing
+            page_display_name_signal.set(None);
             dialog_signal.set(ds);
             return;
         }
@@ -226,6 +256,8 @@ pub fn create_page_callback(
             let new_page_id = element_id.trim_start_matches("__page_open:").to_string();
             let mut ds = dialog_signal.get();
             ds.open_page(&pid, &new_page_id);
+            // Clear display name for new page (plugin will set it)
+            page_display_name_signal.set(None);
             dialog_signal.set(ds);
             return;
         }
@@ -244,6 +276,10 @@ pub fn create_page_callback(
                 let mut ds = dialog_signal.get();
                 // Invalidate layout cache so next frame fetches fresh layout
                 ds.invalidate_page_layout();
+                let ctx = ActionContext {
+                    lightbox_signal: Some(&lightbox_signal),
+                    page_display_name_signal: Some(&page_display_name_signal),
+                };
                 for action in actions {
                     process_action(
                         action,
@@ -251,7 +287,7 @@ pub fn create_page_callback(
                         &mut ds,
                         &mut toaster,
                         None, // No refresh requests for page callbacks
-                        Some(&lightbox_signal),
+                        &ctx,
                     );
                 }
                 dialog_signal.set(ds);

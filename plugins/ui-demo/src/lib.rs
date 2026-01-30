@@ -33,6 +33,7 @@ impl archust_plugin_sdk::Guest for Component {
                     id: "demo_input".to_string(),
                     label: "Enter text".to_string(),
                     value: "".to_string(),
+                    placeholder: None,
                 }),
                 UiElement::Checkbox(CheckboxConfig {
                     id: "demo_check".to_string(),

@@ -147,6 +147,9 @@ pub struct AppSignals {
     /// [NEW] Plugin Dialog State (Phase 3)
     pub plugin_dialog_state: Signal<crate::features::plugins::domain::state::PluginDialogState>,
 
+    /// [NEW] Plugin page display name - for breadcrumb title (overrides internal page ID)
+    pub page_display_name: Signal<Option<String>>,
+
     /// [NEW] Signal to reload hotkeys when settings change
     pub hotkeys_updated: Signal<bool>,
 
@@ -213,6 +216,7 @@ impl AppSignals {
                 crate::features::plugins::domain::state::PluginDialogState::default(),
             )
             .with_name("plugin_dialog_state"),
+            page_display_name: Signal::new(None).with_name("page_display_name"),
             hotkeys_updated: Signal::new(false).with_name("hotkeys_updated"),
             merge_dialog: Signal::new(crate::shared::dialogs::MergeDialogState::default())
                 .with_name("merge_dialog"),
@@ -252,6 +256,7 @@ impl AppSignals {
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
         // Note: ui_ready is not bound to repaint - it's a control signal, not display
+        signal_ctx.bind_named(&self.page_display_name, "page_display_name");
         signal_ctx.bind_named(&self.merge_dialog, "merge_dialog");
         signal_ctx.bind_named(&self.lightbox_state, "lightbox_state");
     }
@@ -298,6 +303,7 @@ impl AppSignals {
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.plugin_dialog_state
             .set(crate::features::plugins::domain::state::PluginDialogState::default());
+        self.page_display_name.set(None);
         self.merge_dialog
             .set(crate::shared::dialogs::MergeDialogState::default());
         self.lightbox_state

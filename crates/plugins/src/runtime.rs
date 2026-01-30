@@ -411,6 +411,11 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
             bold: config.bold,
             size: config.size,
         },
+        UiElement::SectionHeader(config) => InternalElement::SectionHeader {
+            title: config.title,
+            level: config.level,
+            description: config.description,
+        },
         UiElement::Button(config) => {
             let action = config.action.map(|a| convert_button_action(a));
             InternalElement::Button {
@@ -423,6 +428,7 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
             id: config.id,
             label: config.label,
             value: config.value,
+            placeholder: config.placeholder,
         },
         UiElement::Checkbox(config) => InternalElement::Checkbox {
             id: config.id,
@@ -513,6 +519,7 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
                     label: b.label,
                     icon: b.icon,
                     primary: b.primary,
+                    spacer_before: b.spacer_before,
                 })
                 .collect(),
         },
@@ -523,6 +530,28 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
             max_height: config.max_height,
             thumbnail_height: config.thumbnail_height,
             enable_lightbox: config.enable_lightbox,
+        },
+        UiElement::KeyValueList(config) => InternalElement::KeyValueList {
+            items: config
+                .items
+                .into_iter()
+                .map(|kv| crate::types::KeyValuePair {
+                    key: kv.key,
+                    value: kv.value,
+                })
+                .collect(),
+            columns: config.columns,
+        },
+        UiElement::MetadataGrid(config) => InternalElement::MetadataGrid {
+            items: config
+                .items
+                .into_iter()
+                .map(|kv| crate::types::KeyValuePair {
+                    key: kv.key,
+                    value: kv.value,
+                })
+                .collect(),
+            columns: config.columns,
         },
     }
 }
@@ -584,5 +613,6 @@ fn convert_plugin_action(
             start_index: config.start_index as usize,
             title: config.title,
         },
+        WitAction::SetPageDisplayName(name) => InternalAction::SetPageDisplayName { name },
     }
 }

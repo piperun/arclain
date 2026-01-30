@@ -16,6 +16,8 @@ pub struct PluginDialogState {
     pub cached_dialog_layout: Option<PluginLayout>,
     /// Cached layout for the current page (invalidated on events)
     pub cached_page_layout: Option<PluginLayout>,
+    /// Flag to send __page_init event on next render (for SetPageDisplayName etc)
+    pub page_needs_init: bool,
 }
 
 impl PluginDialogState {
@@ -46,6 +48,7 @@ impl PluginDialogState {
         self.page_stack
             .push((plugin_id.to_string(), page_id.to_string()));
         self.cached_page_layout = None; // Invalidate cache on page change
+        self.page_needs_init = true; // Request init event on next render
     }
 
     /// Pop the current page from the stack
