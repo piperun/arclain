@@ -23,7 +23,8 @@ rfd = "0.16.0"
 arclain-network = { path = "../network" }
 arclain_signals = { path = "../signals" }
 chrono = "0.4"
-gameta_lib = { path = "../gameta_lib", features = ["dlsite"] }
+# External gameta dependency (https://codeberg.org/0xdev/gameta)
+gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", features = ["dlsite"] }
 
 [dev-dependencies]
 tempfile = "3"
