@@ -13,12 +13,6 @@ members = [
     # Shared ORM
     "crates/mini-orm",
     "crates/mini-orm/derive",
-    # Gameta ecosystem
-    "crates/gameta_core",
-    "crates/gameta_lib",
-    "crates/gameta",
-    "crates/gameta_server",
-    "crates/gameta_database",
     "crates/freya-spike",
     "crates/dlsite-fetch",
 ]

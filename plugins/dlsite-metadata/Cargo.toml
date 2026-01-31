@@ -8,8 +8,9 @@ crate-type = ["cdylib"]
 
 [dependencies]
 archust-plugin-sdk = { path = "../../plugin-sdk" }
-gameta_lib = { path = "../../crates/gameta_lib", default-features = false, features = ["dlsite"] }
-gameta_core = { path = "../../crates/gameta_core" }
+# External gameta dependencies (https://codeberg.org/0xdev/gameta)
+gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", default-features = false, features = ["dlsite"] }
+gameta_core = { path = "../../../../codeberg/gameta/gameta_core" }
 serde = { version = "1", features = ["derive", "alloc"], default-features = false }
 serde_json = { version = "1", features = ["alloc"], default-features = false }
 regex = "1.10"
