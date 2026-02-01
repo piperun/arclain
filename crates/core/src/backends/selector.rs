@@ -71,7 +71,7 @@ impl BackendSelector {
             }
             "rar" | "r00" | "r01" | "r02" | "r03" => {
                 // Try UnRAR Native → UnRAR CLI (if available) → 7z CLI fallback chain
-                use crate::backends::unrar_cli_backend::UnrarCli;
+                use crate::backends::unrar_cli::UnrarCli;
 
                 let unrar_native = Arc::new(UnrarBackend::new());
                 let sevenz = Arc::new(SevenZipCli::detect(None)?);
