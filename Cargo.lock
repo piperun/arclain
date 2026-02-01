@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_core"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_plugins"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "anyhow",
  "arclain-network",
