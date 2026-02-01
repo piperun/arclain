@@ -1522,15 +1522,5 @@ impl SevenZipCli {
     }
 }
 
-/// Progress event from 7-Zip streaming output.
-#[derive(Debug, Clone)]
-pub struct ProgressUpdate {
-    pub percent: u8,             // 0..=100
-    pub message: Option<String>, // reserved for future use
-}
-
-/// Handle for a running 7-Zip process with progress updates.
-pub struct ChildWithProgress {
-    pub child: std::process::Child,
-    pub rx: mpsc::Receiver<ProgressUpdate>,
-}
+// Progress types are now in the progress module
+pub use super::progress::{ChildWithProgress, ProgressUpdate};
