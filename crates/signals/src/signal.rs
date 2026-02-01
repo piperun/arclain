@@ -87,10 +87,13 @@ impl<T> Signal<T> {
         // Tracing logic: Only trace if explicitly enabled for this signal
         if self.inner.tracing && count > 0 {
             let name = self.inner.name.as_deref().unwrap_or("unnamed");
+            let loc = self.inner.location;
 
             tracing::trace!(
-                "[SIGNAL] notify [{}] val changed. listeners: {}",
+                "[SIGNAL] notify [{}] at {}:{} - listeners: {}",
                 name,
+                loc.file(),
+                loc.line(),
                 count
             );
         }
