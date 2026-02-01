@@ -885,7 +885,7 @@ impl archust_plugin_sdk::Guest for Component {
                 }
             }
             
-            // Handle Page:dlsite_browser:VJ012345 (navigation with product ID)
+            // Handle Page:dlsite_browser:RJ123456 (navigation with product ID)
             ext if ext.starts_with("Page:dlsite_browser:") => {
                 // Extract product ID from extension point
                 let product_id = ext.trim_start_matches("Page:dlsite_browser:").to_string();

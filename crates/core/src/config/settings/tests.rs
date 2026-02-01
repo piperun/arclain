@@ -23,15 +23,16 @@ fn test_archive_filename_matching() {
         enabled: true,
     });
 
-    // Test with actual TestSite archive names
+    // Test with Japanese filenames covering hiragana, katakana, and kanji
+    // Hiragana: あいうえお | Katakana: テスト | Kanji: 試験作品
     let result = store.auto_password_for(
-        Some("[TestSite] [RJ999002] 試験ゲーム.rar"),
+        Some("[TestSite] [RJ999001] 試験ゲームあいうえお.rar"), // kanji + katakana + hiragana
         &vec!["game.exe".to_string(), "data/scene1.dat".to_string()],
     );
     assert_eq!(result, Some("test_pass".to_string()));
 
     let result2 = store.auto_password_for(
-        Some("[TestSite] テスト・RPG 64bit.rar"),
+        Some("[TestSite] テスト・RPG 64bit.rar"), // katakana with middle dot
         &vec!["game.exe".to_string()],
     );
     assert_eq!(result2, Some("test_pass".to_string()));
@@ -51,7 +52,7 @@ fn test_archive_filename_not_matching() {
 
     // Should not match other publishers
     let result = store.auto_password_for(
-        Some("[OtherPublisher] Game.rar"),
+        Some("[OtherSite] ゲーム作品.rar"), // katakana + kanji, different site
         &vec!["game.exe".to_string()],
     );
     assert_eq!(result, None);
@@ -100,7 +101,7 @@ fn test_priority_ordering() {
     });
 
     // Should match the higher priority rule first
-    let result = store.auto_password_for(Some("[TestSite] Game.rar"), &vec![]);
+    let result = store.auto_password_for(Some("[TestSite] サンプル作品.rar"), &vec![]); // katakana + kanji
     assert_eq!(result, Some("high_pass".to_string()));
 }
 
@@ -150,12 +151,12 @@ fn test_archive_path_extracted_from_full_path() {
         enabled: true,
     });
 
-    // Should extract filename from full Windows path
+    // Should extract filename from full Windows path (hiragana: たなかさん)
     let result =
-        store.auto_password_for(Some(r"C:\Users\Test\Downloads\[TestSite] Game.rar"), &vec![]);
+        store.auto_password_for(Some(r"C:\Users\Test\Downloads\[TestSite] たなかさんの冒険.rar"), &vec![]);
     assert_eq!(result, Some("test_pass".to_string()));
 
-    // Should also work with Unix paths
-    let result2 = store.auto_password_for(Some("/home/user/downloads/[TestSite] Game.rar"), &vec![]);
+    // Should also work with Unix paths (kanji + katakana)
+    let result2 = store.auto_password_for(Some("/home/user/downloads/[TestSite] 冒険ゲーム.rar"), &vec![]);
     assert_eq!(result2, Some("test_pass".to_string()));
 }

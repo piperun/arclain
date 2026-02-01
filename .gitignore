@@ -25,7 +25,9 @@ plugins/*/release/
 plugins/*/wasm32-*/
 plugin-sdk/*/target/
 
+# Real test data (contains personal files)
 _real_data/
+!_real_data/test_metadata.example.json
 
 # Framework spikes
 crates/freya-spike/

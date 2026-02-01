@@ -29,7 +29,7 @@ pub struct OrganizationPlan {
     pub generated_files: Vec<(String, String)>, // (path, content)
     pub downloads: Vec<PendingDownload>,
     pub use_standard_layout: bool,
-    /// Resolved template variables for UI display (e.g., "code" -> "RJ999001")
+    /// Resolved template variables for UI display (e.g., "code" -> "RJ123456")
     pub resolved_variables: HashMap<String, String>,
 }
 

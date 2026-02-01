@@ -11,7 +11,7 @@ use arclain_db::{ConfigDb, DbPaths, SecretsDb, SecretsKey, UserConfig};
 #[derive(Parser, Debug)]
 #[command(author, version, about)]
 struct Args {
-    /// Product ID, e.g. VJ012345 or RJ999003
+    /// Product ID, e.g. VJ012345 or RJ123456
     product_id: String,
     /// Output file path
     #[arg(long, default_value = "./scripts/dlsite-fetch/out.html")]
