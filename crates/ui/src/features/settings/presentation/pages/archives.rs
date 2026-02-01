@@ -48,7 +48,7 @@ pub fn render(
                 ui.horizontal(|ui| {
                     let mut binding = state.temp_dir.write();
                     let te = egui::TextEdit::singleline(&mut *binding)
-                        .hint_text(default_temp_str.as_ref());
+                        .hint_text(&*default_temp_str);
                     ui.add_sized([ui.available_width() - 110.0, 28.0], te);
 
                     if ui
