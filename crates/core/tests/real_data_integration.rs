@@ -7,11 +7,59 @@ use arclain_core::features::organization::{organizer::organize_archive, GameMeta
 use arclain_core::utilities::logging::init_test_logging;
 use arclain_core::{Archive, ArchiveBackend, ConfigStore, PassRule};
 use arclain_db::{DbPaths, SecretsDb, SecretsKey};
+use serde::Deserialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tracing::{debug, error, info, warn};
 use walkdir::WalkDir;
+
+/// Test metadata loaded from JSON file to avoid hardcoding personal data.
+/// Create `_real_data/test_metadata.json` with your test data (gitignored).
+/// See `_real_data/test_metadata.example.json` for the expected format.
+#[derive(Debug, Deserialize)]
+struct TestMetadata {
+    product_id: String,
+    source: String,
+    /// Title with Japanese text (tests hiragana/katakana/kanji handling)
+    title: String,
+    creator: Option<String>,
+}
+
+impl Default for TestMetadata {
+    fn default() -> Self {
+        // Fallback with placeholder Japanese covering all character types:
+        // Hiragana: あいうえお | Katakana: ゲーム | Kanji: 試験作品
+        Self {
+            product_id: "RJ999001".to_string(),
+            source: "dlsite".to_string(),
+            title: "試験用ゲームあいうえお".to_string(), // kanji + katakana + hiragana
+            creator: Some("テスト作者".to_string()),    // katakana + kanji
+        }
+    }
+}
+
+fn load_test_metadata() -> TestMetadata {
+    let metadata_path = Path::new("../../_real_data/test_metadata.json");
+    if metadata_path.exists() {
+        match fs::read_to_string(metadata_path) {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(meta) => {
+                    info!("Loaded test metadata from {:?}", metadata_path);
+                    return meta;
+                }
+                Err(e) => {
+                    warn!("Failed to parse test_metadata.json: {}", e);
+                }
+            },
+            Err(e) => {
+                warn!("Failed to read test_metadata.json: {}", e);
+            }
+        }
+    }
+    info!("Using default placeholder test metadata");
+    TestMetadata::default()
+}
 
 // Helper to copy directory recursively
 fn copy_dir_all(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result<()> {
@@ -184,7 +232,11 @@ fn test_integration_data_full_workflow() {
         return;
     }
 
-    // Find the RAR file (should be the RJ999001 file)
+    // Load test metadata from JSON (avoids hardcoding personal data)
+    let test_meta = load_test_metadata();
+    info!("Test metadata: product_id={}, title={}", test_meta.product_id, test_meta.title);
+
+    // Find the archive file
     let archive_path = fs::read_dir(integration_src)
         .unwrap()
         .filter_map(|e| e.ok())
@@ -284,20 +336,20 @@ fn test_integration_data_full_workflow() {
         .expect("Failed to select backend");
     info!("Selected backend: {}", backend.name());
 
-    // === PREPARE METADATA ===
+    // === PREPARE METADATA (from loaded test data) ===
     let metadata = GameMetadata {
-        product_id: "RJ999001".to_string(),
-        source: "dlsite".to_string(),
-        title: "試験用ゲームあいうえお".to_string(),
+        product_id: test_meta.product_id.clone(),
+        source: test_meta.source.clone(),
+        title: test_meta.title.clone(),
         description: None,
         tags: vec![],
-        creator: Some("TestSite".to_string()),
+        creator: test_meta.creator.clone(),
         release_date: None,
         screenshots: vec![],
         metadata_json: "{}".to_string(),
     };
 
-    let output_7z = temp.path().join("RJ999001.7z");
+    let output_7z = temp.path().join(format!("{}.7z", test_meta.product_id));
 
     // === AUTO-DETECT PASSWORD (like UI does at lines 512 of mod.rs) ===
     let archive_name = archive_path.file_name().and_then(|n| n.to_str());
@@ -413,8 +465,8 @@ fn test_integration_data_full_workflow() {
     let extract_dir = extract_dir1;
 
     // Verify structure: Game/, screenshots/, metadata.json
-    // The archive organizer creates: RJ999001/Game/...
-    let product_dir = extract_dir.join("RJ999001");
+    // The archive organizer creates: {product_id}/Game/...
+    let product_dir = extract_dir.join(&test_meta.product_id);
     if !product_dir.exists() {
         println!("Expected product directory not found. Looking for actual structure...");
         // Fallback: find any directory in extract_dir
@@ -433,7 +485,7 @@ fn test_integration_data_full_workflow() {
 
     assert!(
         product_dir.exists(),
-        "Product folder (RJ999001) must exist in output"
+        "Product folder ({}) must exist in output", test_meta.product_id
     );
     assert!(game_dir.exists(), "Game folder must exist in output");
     assert!(
@@ -506,7 +558,7 @@ fn test_integration_data_full_workflow() {
 
     // === TEST: Compare both extractions to verify 7zip consistency ===
     println!("\n=== Testing 7zip Extraction Consistency ===");
-    let game_dir2 = extract_dir2.join("RJ999001").join("Game");
+    let game_dir2 = extract_dir2.join(&test_meta.product_id).join("Game");
     let actual_hashes2 =
         ContentHashMap::from_directory(&game_dir2).expect("Failed to hash second extraction");
 
@@ -647,7 +699,7 @@ fn test_integration_data_decompress_and_flatten() {
         return;
     }
 
-    // Find the RAR file (should be the RJ999001 file)
+    // Find the archive file in integration_data
     let archive_path = fs::read_dir(integration_src)
         .unwrap()
         .filter_map(|e| e.ok())
