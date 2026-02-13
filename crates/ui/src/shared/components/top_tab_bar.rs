@@ -177,3 +177,78 @@ fn icon_to_phosphor(icon: &str) -> &str {
         _ => icon,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // TopTabBarState
+    // =========================================================================
+
+    #[test]
+    fn tab_bar_state_new() {
+        let state = TopTabBarState::new("browser");
+        assert_eq!(state.selected_tab, "browser");
+    }
+
+    #[test]
+    fn tab_bar_state_default_is_empty() {
+        let state = TopTabBarState::default();
+        assert_eq!(state.selected_tab, "");
+    }
+
+    // =========================================================================
+    // badge_color
+    // =========================================================================
+
+    #[test]
+    fn badge_color_red() {
+        assert_eq!(badge_color("red"), Color32::from_rgb(248, 81, 73));
+    }
+
+    #[test]
+    fn badge_color_green() {
+        assert_eq!(badge_color("green"), Color32::from_rgb(63, 185, 80));
+    }
+
+    #[test]
+    fn badge_color_blue() {
+        assert_eq!(badge_color("blue"), Color32::from_rgb(88, 166, 255));
+    }
+
+    #[test]
+    fn badge_color_orange() {
+        assert_eq!(badge_color("orange"), Color32::from_rgb(210, 153, 34));
+    }
+
+    #[test]
+    fn badge_color_unknown_defaults_to_blue() {
+        assert_eq!(badge_color("purple"), badge_color("blue"));
+        assert_eq!(badge_color(""), badge_color("blue"));
+    }
+
+    // =========================================================================
+    // icon_to_phosphor
+    // =========================================================================
+
+    #[test]
+    fn icon_to_phosphor_known_names() {
+        assert_eq!(
+            icon_to_phosphor("FOLDER_OPEN"),
+            egui_phosphor::regular::FOLDER_OPEN
+        );
+        assert_eq!(icon_to_phosphor("GEAR"), egui_phosphor::regular::GEAR);
+        assert_eq!(icon_to_phosphor("HOUSE"), egui_phosphor::regular::HOUSE);
+        assert_eq!(
+            icon_to_phosphor("DATABASE"),
+            egui_phosphor::regular::DATABASE
+        );
+    }
+
+    #[test]
+    fn icon_to_phosphor_unknown_returns_as_is() {
+        assert_eq!(icon_to_phosphor("custom_icon"), "custom_icon");
+        assert_eq!(icon_to_phosphor(""), "");
+    }
+}

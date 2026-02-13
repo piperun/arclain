@@ -63,3 +63,101 @@ pub fn parse_size_to_bytes(s: &str) -> u64 {
 pub fn parse_ratio_pct(s: &str) -> u64 {
     s.trim_end_matches('%').parse::<u64>().unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // parse_size_to_bytes
+    // =========================================================================
+
+    #[test]
+    fn parse_size_bytes() {
+        assert_eq!(parse_size_to_bytes("512 B"), 512);
+    }
+
+    #[test]
+    fn parse_size_kilobytes() {
+        assert_eq!(parse_size_to_bytes("1.0 KB"), 1024);
+    }
+
+    #[test]
+    fn parse_size_megabytes() {
+        assert_eq!(parse_size_to_bytes("2.5 MB"), (2.5 * 1024.0 * 1024.0) as u64);
+    }
+
+    #[test]
+    fn parse_size_gigabytes() {
+        assert_eq!(
+            parse_size_to_bytes("1.0 GB"),
+            (1024.0 * 1024.0 * 1024.0) as u64
+        );
+    }
+
+    #[test]
+    fn parse_size_lowercase_unit() {
+        // to_ascii_uppercase handles this
+        assert_eq!(parse_size_to_bytes("10 kb"), 10 * 1024);
+    }
+
+    #[test]
+    fn parse_size_no_unit_defaults_to_bytes() {
+        assert_eq!(parse_size_to_bytes("42"), 42);
+    }
+
+    #[test]
+    fn parse_size_empty_string() {
+        assert_eq!(parse_size_to_bytes(""), 0);
+    }
+
+    #[test]
+    fn parse_size_invalid_number() {
+        assert_eq!(parse_size_to_bytes("abc KB"), 0);
+    }
+
+    // =========================================================================
+    // parse_ratio_pct
+    // =========================================================================
+
+    #[test]
+    fn parse_ratio_with_percent_sign() {
+        assert_eq!(parse_ratio_pct("45%"), 45);
+    }
+
+    #[test]
+    fn parse_ratio_without_percent_sign() {
+        assert_eq!(parse_ratio_pct("80"), 80);
+    }
+
+    #[test]
+    fn parse_ratio_zero() {
+        assert_eq!(parse_ratio_pct("0%"), 0);
+    }
+
+    #[test]
+    fn parse_ratio_hundred() {
+        assert_eq!(parse_ratio_pct("100%"), 100);
+    }
+
+    #[test]
+    fn parse_ratio_invalid() {
+        assert_eq!(parse_ratio_pct("abc"), 0);
+    }
+
+    #[test]
+    fn parse_ratio_empty() {
+        assert_eq!(parse_ratio_pct(""), 0);
+    }
+
+    // =========================================================================
+    // SortState default
+    // =========================================================================
+
+    #[test]
+    fn sort_state_default() {
+        let state = SortState::default();
+        assert_eq!(state.column, SortColumn::Name);
+        assert!(state.ascending);
+    }
+}

@@ -6,7 +6,7 @@ use crate::features::password_management::dialogs::zip_pass_rules::PasswordRule;
 use std::collections::HashMap;
 
 /// Encrypted CRC policy for encrypted archives
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum EncryptedCrcPolicy {
     OnOpen,
     PromptOnOpen,
@@ -131,7 +131,7 @@ pub struct ConnectionTestResult {
     pub result_message: Option<String>,
 }
 
-#[derive(Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ConnectionTestStatus {
     #[default]
     Idle,
@@ -202,7 +202,7 @@ impl Default for ArchivesSettingsState {
 }
 
 /// Checksum verification mode (mirrors VerifyMode)
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChecksumMode {
     #[default]
     Simple,
@@ -219,7 +219,7 @@ impl ChecksumMode {
 }
 
 /// Checksum algorithm selection
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChecksumAlgorithm {
     #[default]
     Crc32,
@@ -234,5 +234,102 @@ impl ChecksumAlgorithm {
             ChecksumAlgorithm::XxHash => "XXHash (fast, modern)",
             ChecksumAlgorithm::Sha256 => "SHA-256 (secure, slower)",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // EncryptedCrcPolicy
+    // =========================================================================
+
+    #[test]
+    fn encrypted_crc_policy_default() {
+        assert_eq!(EncryptedCrcPolicy::default(), EncryptedCrcPolicy::OnOpen);
+    }
+
+    #[test]
+    fn encrypted_crc_policy_as_str() {
+        assert_eq!(EncryptedCrcPolicy::OnOpen.as_str(), "on_open");
+        assert_eq!(EncryptedCrcPolicy::PromptOnOpen.as_str(), "prompt_on_open");
+        assert_eq!(EncryptedCrcPolicy::OnAccess.as_str(), "on_access");
+    }
+
+    #[test]
+    fn encrypted_crc_policy_display_name() {
+        assert_eq!(
+            EncryptedCrcPolicy::OnOpen.display_name(),
+            "When opening archive"
+        );
+        assert_eq!(
+            EncryptedCrcPolicy::PromptOnOpen.display_name(),
+            "Prompt when opening archive"
+        );
+        assert_eq!(
+            EncryptedCrcPolicy::OnAccess.display_name(),
+            "When opening/editing file"
+        );
+    }
+
+    // =========================================================================
+    // ChecksumMode
+    // =========================================================================
+
+    #[test]
+    fn checksum_mode_default() {
+        assert_eq!(ChecksumMode::default(), ChecksumMode::Simple);
+    }
+
+    #[test]
+    fn checksum_mode_display_name() {
+        assert_eq!(
+            ChecksumMode::Simple.display_name(),
+            "Simple (root hash only)"
+        );
+        assert_eq!(ChecksumMode::Full.display_name(), "Full (all file hashes)");
+    }
+
+    // =========================================================================
+    // ChecksumAlgorithm
+    // =========================================================================
+
+    #[test]
+    fn checksum_algorithm_default() {
+        assert_eq!(ChecksumAlgorithm::default(), ChecksumAlgorithm::Crc32);
+    }
+
+    #[test]
+    fn checksum_algorithm_display_name() {
+        assert_eq!(
+            ChecksumAlgorithm::Crc32.display_name(),
+            "CRC32 (fastest)"
+        );
+        assert_eq!(
+            ChecksumAlgorithm::XxHash.display_name(),
+            "XXHash (fast, modern)"
+        );
+        assert_eq!(
+            ChecksumAlgorithm::Sha256.display_name(),
+            "SHA-256 (secure, slower)"
+        );
+    }
+
+    // =========================================================================
+    // ConnectionTestStatus / ConnectionTestResult
+    // =========================================================================
+
+    #[test]
+    fn connection_test_status_default_is_idle() {
+        assert_eq!(ConnectionTestStatus::default(), ConnectionTestStatus::Idle);
+    }
+
+    #[test]
+    fn connection_test_result_default() {
+        let result = ConnectionTestResult::default();
+        assert!(result.steps.is_empty());
+        assert!(!result.success);
+        assert!(result.result_message.is_none());
     }
 }
