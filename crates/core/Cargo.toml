@@ -26,6 +26,11 @@ sha2 = "0.10"
 arclain_db = { path = "../db" }
 arclain_checksum = { path = "../checksum" }
 arclain-network = { path = "../network" }
+
+# External gameta dependencies (https://codeberg.org/0xdev/gameta)
+gameta_core = { path = "../../../../codeberg/gameta/gameta_core" }
+gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", features = ["dlsite"] }
+gameta_database = { path = "../../../../codeberg/gameta/gameta_database" }
 reqwest = { version = "0.12.24", features = ["blocking", "json"] }
 unrar = "0.5"
 zip = "7.0.0"

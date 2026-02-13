@@ -84,45 +84,8 @@ diesel::table! {
     }
 }
 
-diesel::table! {
-    /// Product metadata for library items
-    product_metadata (id) {
-        id -> Text,
-        source -> Text,
-        external_id -> Text,
-        title -> Nullable<Text>,
-        creator -> Nullable<Text>,
-        description -> Nullable<Text>,
-        release_date -> Nullable<Text>,
-        price -> Nullable<BigInt>,
-        currency -> Nullable<Text>,
-        rating -> Nullable<Double>,
-        rating_count -> Nullable<BigInt>,
-        purchase_count -> Nullable<BigInt>,
-        favorite_count -> Nullable<BigInt>,
-        review_count -> Nullable<BigInt>,
-        file_size -> Nullable<Text>,
-        file_format -> Nullable<Text>,
-        age_rating -> Nullable<Text>,
-        genres_json -> Nullable<Text>,
-        tags_json -> Nullable<Text>,
-        languages_json -> Nullable<Text>,
-        product_formats_json -> Nullable<Text>,
-        series_name -> Nullable<Text>,
-        illustrator -> Nullable<Text>,
-        voice_actors_json -> Nullable<Text>,
-        miscellaneous -> Nullable<Text>,
-        update_info -> Nullable<Text>,
-        rankings_json -> Nullable<Text>,
-        extras_json -> Nullable<Text>,
-        raw_api_response -> Nullable<Text>,
-        raw_html -> Nullable<Text>,
-        geo_blocked -> Nullable<Bool>,
-        cached_at -> Text,
-        updated_at -> Nullable<Text>,
-        last_accessed -> Nullable<Text>,
-    }
-}
+// product_metadata table is now managed by gameta_database.
+// See gameta_database::diesel_backend::schema for the canonical definition.
 
 diesel::table! {
     /// Product content blobs (covers, samples, etc.)
@@ -256,7 +219,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     ui_items,
     ui_regions,
     ui_display_options,
-    product_metadata,
     product_content,
     checksum_settings,
     file_checksums,

@@ -26,6 +26,10 @@ mini-orm = { path = "../mini-orm" }
 tracing = "0.1"
 chrono = "0.4"
 
+# External gameta dependencies (https://codeberg.org/0xdev/gameta)
+gameta_core = { path = "../../../../codeberg/gameta/gameta_core" }
+gameta_database = { path = "../../../../codeberg/gameta/gameta_database" }
+
 [dev-dependencies]
 tempfile = "3"
 rand = "0.8"

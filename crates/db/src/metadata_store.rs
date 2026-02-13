@@ -1,15 +1,16 @@
 use crate::cache;
-use crate::legacy;
-use crate::library::{self, MetadataSource, ProductMetadata};
+use crate::library;
 use crate::{DieselPool, SqliteDb};
 use anyhow::Result;
 use std::path::PathBuf;
 
 /// The MetadataStore manages persistent metadata storage.
 ///
-/// It wraps the SQLite database (metadata.sqlite) and provides
-/// access to the `ProductMetadata` table.
-/// Future expansion: It will also manage a file-based asset cache.
+/// It wraps the SQLite database (metadata.sqlite) and provides:
+/// - Schema migration from arclain's old format to gameta's format
+/// - Cache index operations for binary content tracking
+///
+/// Product metadata CRUD is handled by `LibraryService` via `gameta_database::DieselBackend`.
 #[derive(Clone)]
 pub struct MetadataStore {
     db: SqliteDb,
@@ -19,15 +20,32 @@ pub struct MetadataStore {
 }
 
 impl MetadataStore {
-    pub fn new(db: SqliteDb, pool: DieselPool, root_path: PathBuf) -> Self {
-        // Ensure schema exists (using legacy init because it contains valid SQL)
-        if let Err(e) =
-            db.with_connection(|conn| legacy::metadata::init_product_metadata_schema(conn))
-        {
-            tracing::error!("Failed to init ProductMetadata schema: {}", e);
+    pub fn new(db: SqliteDb, pool: DieselPool, root_path: PathBuf, db_path: Option<PathBuf>) -> Self {
+        // Run schema migration (old arclain → gameta format)
+        if let Err(e) = db.with_connection(|conn| {
+            match library::migration::migrate_to_gameta_schema(conn, db_path.as_deref())? {
+                library::migration::MigrationResult::NotNeeded => {}
+                library::migration::MigrationResult::Migrated { total, converted } => {
+                    tracing::info!(
+                        "[MetadataStore] Schema migration: {}/{} rows converted",
+                        converted,
+                        total
+                    );
+                }
+            }
+            Ok(())
+        }) {
+            tracing::error!("Failed to run schema migration: {}", e);
         }
 
-        // Initialize product_content table
+        // Ensure gameta product_metadata table exists (idempotent)
+        if let Err(e) = db.with_connection(|conn| {
+            library::migration::ensure_gameta_product_metadata_schema(conn)
+        }) {
+            tracing::error!("Failed to ensure product_metadata schema: {}", e);
+        }
+
+        // Initialize product_content table (arclain-specific, not in gameta)
         if let Err(e) = db.with_connection(|conn| {
             conn.execute_batch(library::content::CREATE_TABLE_SQL)?;
             Ok(())
@@ -49,22 +67,6 @@ impl MetadataStore {
             root_path,
         };
 
-        // Run one-time migrations
-        match store.migrate_repair_extras_json() {
-            Ok((total, repaired)) => {
-                if repaired > 0 {
-                    tracing::info!(
-                        "[MetadataStore] Migration complete: repaired {}/{} entries",
-                        repaired,
-                        total
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!("[MetadataStore] Migration failed: {}", e);
-            }
-        }
-
         // Clean up old search cache entries (search results shouldn't be cached)
         match store.delete_all_search_cache() {
             Ok(deleted) => {
@@ -81,27 +83,6 @@ impl MetadataStore {
         }
 
         store
-    }
-
-    /// Get metadata by ID (e.g. "dlsite:RJ123456")
-    pub fn get(&self, id: &str) -> Result<Option<ProductMetadata>> {
-        self.pool.with_conn(|conn| library::load(conn, id))
-    }
-
-    /// Save metadata
-    pub fn save(&self, meta: &ProductMetadata) -> Result<()> {
-        self.pool.with_conn(|conn| library::save(conn, meta))
-    }
-
-    /// List all metadata for a source
-    pub fn list_by_source(&self, source: MetadataSource) -> Result<Vec<ProductMetadata>> {
-        self.pool
-            .with_conn(|conn| library::list_by_source(conn, source))
-    }
-
-    /// Delete metadata by ID
-    pub fn delete(&self, id: &str) -> Result<()> {
-        self.pool.with_conn(|conn| library::delete(conn, id))
     }
 
     pub fn db(&self) -> &SqliteDb {
@@ -140,13 +121,6 @@ impl MetadataStore {
     /// Get all content hashes in the cache index
     pub fn get_all_content_hashes(&self) -> Result<Vec<String>> {
         self.pool.with_conn(|conn| cache::get_all_content_hashes(conn))
-    }
-
-    /// Migrate old entries: repair extras_json from raw_api_response
-    /// Returns (checked_count, repaired_count)
-    pub fn migrate_repair_extras_json(&self) -> Result<(usize, usize)> {
-        self.pool
-            .with_conn(|conn| library::migrate_repair_extras_json(conn))
     }
 
     /// Delete all search cache entries (search results are ephemeral)
