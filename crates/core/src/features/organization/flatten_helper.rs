@@ -32,3 +32,61 @@ pub fn flatten_json_value(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_flatten_simple_object() {
+        let json = serde_json::json!({
+            "title": "My Game",
+            "price": 1980,
+            "active": true,
+        });
+        let mut acc = HashMap::new();
+        flatten_json_value(&json, &mut acc, "");
+
+        assert_eq!(acc["title"], "My Game");
+        assert_eq!(acc["price"], "1980");
+        assert_eq!(acc["active"], "true");
+    }
+
+    #[test]
+    fn test_flatten_nested_object() {
+        let json = serde_json::json!({
+            "common": {
+                "title": "Nested Title",
+                "creator": "Circle",
+            }
+        });
+        let mut acc = HashMap::new();
+        flatten_json_value(&json, &mut acc, "");
+
+        assert_eq!(acc["common.title"], "Nested Title");
+        assert_eq!(acc["common.creator"], "Circle");
+    }
+
+    #[test]
+    fn test_flatten_with_prefix() {
+        let json = serde_json::json!({"key": "value"});
+        let mut acc = HashMap::new();
+        flatten_json_value(&json, &mut acc, "dlsite");
+
+        assert_eq!(acc["dlsite.key"], "value");
+    }
+
+    #[test]
+    fn test_flatten_skips_null_and_arrays() {
+        let json = serde_json::json!({
+            "present": "yes",
+            "missing": null,
+            "list": [1, 2, 3],
+        });
+        let mut acc = HashMap::new();
+        flatten_json_value(&json, &mut acc, "");
+
+        assert_eq!(acc.len(), 1);
+        assert_eq!(acc["present"], "yes");
+    }
+}
