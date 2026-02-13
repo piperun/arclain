@@ -304,3 +304,205 @@ impl Default for NavigationState {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(path: &str, is_dir: bool) -> ArchiveEntry {
+        ArchiveEntry {
+            path: path.to_string(),
+            size: if is_dir { 0 } else { 100 },
+            packed_size: if is_dir { 0 } else { 80 },
+            modified: None,
+            is_dir,
+            encrypted: false,
+            crc32: None,
+        }
+    }
+
+    // =========================================================================
+    // Basic navigation
+    // =========================================================================
+
+    #[test]
+    fn test_new_starts_at_root() {
+        let nav = NavigationState::new();
+        assert_eq!(nav.current_path, "");
+        assert!(!nav.can_go_back());
+        assert!(!nav.can_go_forward());
+        assert!(!nav.can_go_up());
+    }
+
+    #[test]
+    fn test_navigate_to() {
+        let mut nav = NavigationState::new();
+        nav.navigate_to("folder1");
+        assert_eq!(nav.current_path, "folder1");
+        assert!(nav.can_go_back());
+        assert!(nav.can_go_up());
+    }
+
+    #[test]
+    fn test_navigate_to_nested() {
+        let mut nav = NavigationState::new();
+        nav.navigate_to("folder1");
+        nav.navigate_to("subfolder");
+        assert_eq!(nav.current_path, "folder1/subfolder");
+    }
+
+    #[test]
+    fn test_navigate_to_empty_is_noop() {
+        let mut nav = NavigationState::new();
+        nav.navigate_to("");
+        assert_eq!(nav.current_path, "");
+    }
+
+    #[test]
+    fn test_navigate_back() {
+        let mut nav = NavigationState::new();
+        nav.navigate_to("folder1");
+        nav.navigate_to("subfolder");
+
+        assert!(nav.navigate_back());
+        assert_eq!(nav.current_path, "folder1");
+        assert!(nav.can_go_forward());
+
+        assert!(nav.navigate_back());
+        assert_eq!(nav.current_path, "");
+    }
+
+    #[test]
+    fn test_navigate_back_from_root_returns_false() {
+        let mut nav = NavigationState::new();
+        assert!(!nav.navigate_back());
+    }
+
+    #[test]
+    fn test_navigate_forward() {
+        let mut nav = NavigationState::new();
+        nav.navigate_to("folder1");
+        nav.navigate_back();
+        assert!(nav.can_go_forward());
+
+        assert!(nav.navigate_forward());
+        assert_eq!(nav.current_path, "folder1");
+        assert!(!nav.can_go_forward());
+    }
+
+    #[test]
+    fn test_navigate_forward_empty_returns_false() {
+        let nav = NavigationState::new();
+        assert!(!nav.can_go_forward());
+    }
+
+    #[test]
+    fn test_navigate_to_clears_forward_stack() {
+        let mut nav = NavigationState::new();
+        nav.navigate_to("a");
+        nav.navigate_back();
+        assert!(nav.can_go_forward());
+
+        nav.navigate_to("b");
+        assert!(!nav.can_go_forward());
+    }
+
+    #[test]
+    fn test_navigate_up() {
+        let mut nav = NavigationState::new();
+        nav.set_current_path("a/b/c");
+
+        assert!(nav.navigate_up());
+        assert_eq!(nav.current_path, "a/b");
+
+        assert!(nav.navigate_up());
+        assert_eq!(nav.current_path, "a");
+
+        assert!(nav.navigate_up());
+        assert_eq!(nav.current_path, "");
+
+        assert!(!nav.navigate_up());
+    }
+
+    #[test]
+    fn test_navigate_to_absolute() {
+        let mut nav = NavigationState::new();
+        nav.navigate_to("folder1");
+        nav.navigate_to_absolute("other/deep");
+        assert_eq!(nav.current_path, "other/deep");
+    }
+
+    #[test]
+    fn test_navigate_to_absolute_same_path_is_noop() {
+        let mut nav = NavigationState::new();
+        nav.navigate_to("folder1");
+        let stack_len = nav.path_stack.len();
+        nav.navigate_to_absolute("folder1");
+        assert_eq!(nav.path_stack.len(), stack_len);
+    }
+
+    // =========================================================================
+    // normalize_path
+    // =========================================================================
+
+    #[test]
+    fn test_normalize_path() {
+        assert_eq!(NavigationState::normalize_path("a/b/c"), "a/b/c");
+        assert_eq!(NavigationState::normalize_path("a\\b\\c"), "a/b/c");
+        assert_eq!(NavigationState::normalize_path("/a//b///c/"), "a/b/c");
+        assert_eq!(NavigationState::normalize_path(""), "");
+    }
+
+    // =========================================================================
+    // get_all_folders
+    // =========================================================================
+
+    #[test]
+    fn test_get_all_folders() {
+        let nav = NavigationState::new();
+        let entries = vec![
+            make_entry("game/data/file.dat", false),
+            make_entry("game/Game.exe", false),
+            make_entry("screenshots", true),
+        ];
+        let folders = nav.get_all_folders(&entries);
+        assert!(folders.contains(&"game".to_string()));
+        assert!(folders.contains(&"game/data".to_string()));
+        assert!(folders.contains(&"screenshots".to_string()));
+    }
+
+    // =========================================================================
+    // filter_entries
+    // =========================================================================
+
+    #[test]
+    fn test_filter_entries_at_root() {
+        let nav = NavigationState::new();
+        let entries = vec![
+            make_entry("readme.txt", false),
+            make_entry("game/Game.exe", false),
+            make_entry("game/data/file.dat", false),
+        ];
+        let filtered = nav.filter_entries(&entries);
+        let paths: Vec<&str> = filtered.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"readme.txt"));
+        assert!(paths.contains(&"game"));
+        assert_eq!(filtered.len(), 2);
+    }
+
+    #[test]
+    fn test_filter_entries_in_subfolder() {
+        let mut nav = NavigationState::new();
+        nav.set_current_path("game");
+        let entries = vec![
+            make_entry("readme.txt", false),
+            make_entry("game/Game.exe", false),
+            make_entry("game/data/file.dat", false),
+        ];
+        let filtered = nav.filter_entries(&entries);
+        let paths: Vec<&str> = filtered.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"Game.exe"));
+        assert!(paths.contains(&"data"));
+        assert!(!paths.contains(&"readme.txt"));
+    }
+}

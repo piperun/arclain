@@ -89,3 +89,87 @@ pub enum ScreenshotData {
     FilePath(PathBuf), // Downloaded by plugin
     Base64(String),    // Base64-encoded
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_from_json_basic() {
+        let json = r#"{
+            "product_id": "RJ123456",
+            "source": "dlsite",
+            "title": "Test Game",
+            "creator": "Test Circle",
+            "tags": ["RPG", "Fantasy"],
+            "screenshots": []
+        }"#;
+        let meta = GameMetadata::from_json(json).unwrap();
+        assert_eq!(meta.product_id, "RJ123456");
+        assert_eq!(meta.source, "dlsite");
+        assert_eq!(meta.title, "Test Game");
+        assert_eq!(meta.creator, Some("Test Circle".to_string()));
+        assert_eq!(meta.tags, vec!["RPG", "Fantasy"]);
+        assert_eq!(meta.metadata_json, json);
+    }
+
+    #[test]
+    fn test_from_json_creator_from_circle_fallback() {
+        let json = r#"{
+            "product_id": "RJ999",
+            "source": "dlsite",
+            "title": "Game",
+            "circle": "サークル名",
+            "tags": [],
+            "screenshots": []
+        }"#;
+        let meta = GameMetadata::from_json(json).unwrap();
+        // creator is not in the serde struct fields directly,
+        // so it should be None initially, then filled from "circle"
+        assert_eq!(meta.creator, Some("サークル名".to_string()));
+    }
+
+    #[test]
+    fn test_from_json_optional_fields() {
+        let json = r#"{
+            "product_id": "12345",
+            "source": "steam",
+            "title": "Minimal",
+            "tags": [],
+            "screenshots": []
+        }"#;
+        let meta = GameMetadata::from_json(json).unwrap();
+        assert!(meta.description.is_none());
+        assert!(meta.release_date.is_none());
+        assert!(meta.creator.is_none());
+    }
+
+    #[test]
+    fn test_from_json_invalid_json_returns_error() {
+        assert!(GameMetadata::from_json("not json").is_err());
+    }
+
+    #[test]
+    fn test_from_json_with_screenshots() {
+        let json = r#"{
+            "product_id": "RJ100",
+            "source": "dlsite",
+            "title": "With Screenshots",
+            "tags": [],
+            "screenshots": [
+                {"FilePath": "/tmp/img1.jpg"},
+                {"Base64": "aGVsbG8="}
+            ]
+        }"#;
+        let meta = GameMetadata::from_json(json).unwrap();
+        assert_eq!(meta.screenshots.len(), 2);
+        assert_eq!(
+            meta.screenshots[0],
+            ScreenshotData::FilePath(PathBuf::from("/tmp/img1.jpg"))
+        );
+        assert_eq!(
+            meta.screenshots[1],
+            ScreenshotData::Base64("aGVsbG8=".to_string())
+        );
+    }
+}

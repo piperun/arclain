@@ -635,3 +635,289 @@ impl TreeNode {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::organization::metadata::GameMetadata;
+
+    fn make_entry(path: &str, size: u64, is_dir: bool) -> ArchiveEntry {
+        ArchiveEntry {
+            path: path.to_string(),
+            size,
+            packed_size: size,
+            modified: None,
+            is_dir,
+            encrypted: false,
+            crc32: None,
+        }
+    }
+
+    // =========================================================================
+    // matches_trigger
+    // =========================================================================
+
+    #[test]
+    fn test_matches_trigger_empty_matches_everything() {
+        let trigger = RuleTrigger::default();
+        assert!(RuleEngine::matches_trigger(&trigger, "anything.7z", &[], None));
+    }
+
+    #[test]
+    fn test_matches_trigger_filename_pattern_match() {
+        let trigger = RuleTrigger {
+            filename_pattern: Some(r"RJ\d+".to_string()),
+            ..Default::default()
+        };
+        assert!(RuleEngine::matches_trigger(
+            &trigger,
+            "RJ123456.7z",
+            &[],
+            None
+        ));
+        assert!(!RuleEngine::matches_trigger(
+            &trigger,
+            "something.zip",
+            &[],
+            None
+        ));
+    }
+
+    #[test]
+    fn test_matches_trigger_has_file() {
+        let trigger = RuleTrigger {
+            has_file: Some("Game.exe".to_string()),
+            ..Default::default()
+        };
+        let entries = vec![
+            make_entry("folder/Game.exe", 1024, false),
+            make_entry("folder/readme.txt", 100, false),
+        ];
+        assert!(RuleEngine::matches_trigger(
+            &trigger,
+            "test.7z",
+            &entries,
+            None
+        ));
+
+        let no_match = vec![make_entry("folder/readme.txt", 100, false)];
+        assert!(!RuleEngine::matches_trigger(
+            &trigger,
+            "test.7z",
+            &no_match,
+            None
+        ));
+    }
+
+    #[test]
+    fn test_matches_trigger_metadata_source() {
+        let trigger = RuleTrigger {
+            metadata_source: Some("dlsite".to_string()),
+            ..Default::default()
+        };
+        let meta = GameMetadata {
+            product_id: "RJ123".to_string(),
+            source: "dlsite".to_string(),
+            title: "Test".to_string(),
+            description: None,
+            tags: vec![],
+            release_date: None,
+            creator: None,
+            screenshots: vec![],
+            metadata_json: String::new(),
+        };
+        assert!(RuleEngine::matches_trigger(
+            &trigger,
+            "test.7z",
+            &[],
+            Some(&meta)
+        ));
+
+        // Wrong source
+        let steam = GameMetadata {
+            source: "steam".to_string(),
+            ..meta.clone()
+        };
+        assert!(!RuleEngine::matches_trigger(
+            &trigger,
+            "test.7z",
+            &[],
+            Some(&steam)
+        ));
+
+        // No metadata at all
+        assert!(!RuleEngine::matches_trigger(
+            &trigger,
+            "test.7z",
+            &[],
+            None
+        ));
+    }
+
+    #[test]
+    fn test_matches_trigger_invalid_regex_returns_false() {
+        let trigger = RuleTrigger {
+            filename_pattern: Some("[invalid".to_string()),
+            ..Default::default()
+        };
+        assert!(!RuleEngine::matches_trigger(
+            &trigger,
+            "test.7z",
+            &[],
+            None
+        ));
+    }
+
+    // =========================================================================
+    // find_matching_rules
+    // =========================================================================
+
+    #[test]
+    fn test_find_matching_rules_sorts_by_priority() {
+        let rules = vec![
+            OrganizationRule {
+                name: "Low".to_string(),
+                priority: 1,
+                is_enabled: true,
+                trigger: RuleTrigger::default(),
+                ..Default::default()
+            },
+            OrganizationRule {
+                name: "High".to_string(),
+                priority: 100,
+                is_enabled: true,
+                trigger: RuleTrigger::default(),
+                ..Default::default()
+            },
+        ];
+        let matches = RuleEngine::find_matching_rules(&rules, "test.7z", &[], None);
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].name, "High");
+        assert_eq!(matches[1].name, "Low");
+    }
+
+    #[test]
+    fn test_find_matching_rules_skips_disabled() {
+        let rules = vec![OrganizationRule {
+            name: "Disabled".to_string(),
+            is_enabled: false,
+            trigger: RuleTrigger::default(),
+            ..Default::default()
+        }];
+        let matches = RuleEngine::find_matching_rules(&rules, "test.7z", &[], None);
+        assert!(matches.is_empty());
+    }
+
+    // =========================================================================
+    // expand_variables
+    // =========================================================================
+
+    #[test]
+    fn test_expand_variables_basic() {
+        let mut vars = HashMap::new();
+        vars.insert("code".to_string(), "RJ123456".to_string());
+        vars.insert("title".to_string(), "My Game".to_string());
+
+        assert_eq!(
+            RuleEngine::expand_variables("[$code] $title", &vars),
+            "[RJ123456] My Game"
+        );
+    }
+
+    #[test]
+    fn test_expand_variables_version_present() {
+        let mut vars = HashMap::new();
+        vars.insert("version".to_string(), "1.2.3".to_string());
+
+        assert_eq!(
+            RuleEngine::expand_variables("Game v$version", &vars),
+            "Game v1.2.3"
+        );
+    }
+
+    #[test]
+    fn test_expand_variables_version_absent_is_stripped() {
+        let vars = HashMap::new();
+        assert_eq!(
+            RuleEngine::expand_variables("Game v$version", &vars),
+            "Game"
+        );
+    }
+
+    #[test]
+    fn test_expand_variables_no_match_leaves_placeholder() {
+        let vars = HashMap::new();
+        assert_eq!(
+            RuleEngine::expand_variables("$unknown", &vars),
+            "$unknown"
+        );
+    }
+
+    // =========================================================================
+    // matches_glob
+    // =========================================================================
+
+    #[test]
+    fn test_matches_glob_wildcard_all() {
+        assert!(RuleEngine::matches_glob("**", "anything/at/all.txt"));
+    }
+
+    #[test]
+    fn test_matches_glob_extension() {
+        assert!(RuleEngine::matches_glob("*.exe", "game/Game.exe"));
+        assert!(RuleEngine::matches_glob("*.exe", "Game.EXE"));
+        assert!(!RuleEngine::matches_glob("*.exe", "readme.txt"));
+    }
+
+    #[test]
+    fn test_matches_glob_exact_match() {
+        assert!(RuleEngine::matches_glob("readme.txt", "readme.txt"));
+        assert!(!RuleEngine::matches_glob("readme.txt", "other.txt"));
+    }
+
+    #[test]
+    fn test_matches_glob_filename_match() {
+        assert!(RuleEngine::matches_glob(
+            "Game.exe",
+            "folder/subfolder/Game.exe"
+        ));
+    }
+
+    // =========================================================================
+    // prune_entries
+    // =========================================================================
+
+    #[test]
+    fn test_prune_removes_zero_byte_files() {
+        let entries = vec![
+            make_entry("game/Game.exe", 1024, false),
+            make_entry("game/empty.txt", 0, false),
+        ];
+        let pruned = RuleEngine::prune_entries(&entries);
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].path, "game/Game.exe");
+    }
+
+    #[test]
+    fn test_prune_removes_empty_directories() {
+        let entries = vec![
+            make_entry("game", 0, true),
+            make_entry("game/Game.exe", 1024, false),
+            make_entry("empty_dir", 0, true),
+        ];
+        let pruned = RuleEngine::prune_entries(&entries);
+        // Only the file should remain (directories are filtered in flatten)
+        assert_eq!(pruned.len(), 1);
+        assert_eq!(pruned[0].path, "game/Game.exe");
+    }
+
+    #[test]
+    fn test_prune_keeps_nonzero_files() {
+        let entries = vec![
+            make_entry("a.txt", 10, false),
+            make_entry("b.txt", 20, false),
+        ];
+        let pruned = RuleEngine::prune_entries(&entries);
+        assert_eq!(pruned.len(), 2);
+    }
+}

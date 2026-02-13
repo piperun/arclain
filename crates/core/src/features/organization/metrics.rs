@@ -117,3 +117,111 @@ impl IntegrityReport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(path: &str, size: u64, is_dir: bool) -> ArchiveEntry {
+        ArchiveEntry {
+            path: path.to_string(),
+            size,
+            packed_size: size,
+            modified: None,
+            is_dir,
+            encrypted: false,
+            crc32: None,
+        }
+    }
+
+    // =========================================================================
+    // fnv1a_hash
+    // =========================================================================
+
+    #[test]
+    fn test_fnv1a_hash_deterministic() {
+        let h1 = fnv1a_hash("hello world");
+        let h2 = fnv1a_hash("hello world");
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_fnv1a_hash_different_inputs() {
+        assert_ne!(fnv1a_hash("hello"), fnv1a_hash("world"));
+    }
+
+    #[test]
+    fn test_fnv1a_hash_empty() {
+        let h = fnv1a_hash("");
+        assert_ne!(h, 0);
+    }
+
+    // =========================================================================
+    // IntegrityReport::calculate
+    // =========================================================================
+
+    #[test]
+    fn test_integrity_report_no_plan() {
+        let entries = vec![
+            make_entry("game/Game.exe", 1024, false),
+            make_entry("game/data.bin", 2048, false),
+            make_entry("game", 0, true),
+        ];
+        let report = IntegrityReport::calculate(&entries, None, None);
+        assert_eq!(report.original_files, 2);
+        assert_eq!(report.original_folders, 1);
+        assert_eq!(report.moved_files, 0);
+        assert_eq!(report.generated_files, 0);
+        assert_eq!(report.expected_screenshots, 0);
+    }
+
+    #[test]
+    fn test_integrity_report_with_plan() {
+        let entries = vec![
+            make_entry("Game.exe", 1024, false),
+            make_entry("readme.txt", 100, false),
+        ];
+        let plan = OrganizationPlan {
+            rule_name: "Test".to_string(),
+            root_folder: "Output".to_string(),
+            root_folder_template: "Output".to_string(),
+            moves: vec![
+                ("Game.exe".to_string(), "Output/Game/Game.exe".to_string()),
+                ("readme.txt".to_string(), "Output/readme.txt".to_string()),
+            ],
+            generated_files: vec![("Output/metadata.json".to_string(), "{}".to_string())],
+            downloads: vec![],
+            use_standard_layout: true,
+            resolved_variables: std::collections::HashMap::new(),
+        };
+        let report = IntegrityReport::calculate(&entries, Some(&plan), None);
+        assert_eq!(report.original_files, 2);
+        assert_eq!(report.moved_files, 2);
+        assert_eq!(report.generated_files, 1);
+        assert!(report.content_match);
+        assert!(report.missing_original_files.is_empty());
+    }
+
+    #[test]
+    fn test_integrity_report_missing_files() {
+        let entries = vec![
+            make_entry("a.txt", 10, false),
+            make_entry("b.txt", 20, false),
+            make_entry("c.txt", 30, false),
+        ];
+        let plan = OrganizationPlan {
+            rule_name: "Test".to_string(),
+            root_folder: "Out".to_string(),
+            root_folder_template: "Out".to_string(),
+            moves: vec![("a.txt".to_string(), "Out/a.txt".to_string())],
+            generated_files: vec![],
+            downloads: vec![],
+            use_standard_layout: false,
+            resolved_variables: std::collections::HashMap::new(),
+        };
+        let report = IntegrityReport::calculate(&entries, Some(&plan), None);
+        assert_eq!(report.moved_files, 1);
+        assert_eq!(report.missing_original_files.len(), 2);
+        assert!(!report.content_match);
+    }
+}
