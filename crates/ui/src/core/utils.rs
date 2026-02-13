@@ -77,4 +77,139 @@ mod tests {
         log_failure("Settings", "failed to save");
         assert!(logs_contain("Settings: failed to save"));
     }
+
+    // =========================================================================
+    // format_duration
+    // =========================================================================
+
+    #[test]
+    fn format_duration_zero() {
+        assert_eq!(format_duration(std::time::Duration::from_secs(0)), "00:00");
+    }
+
+    #[test]
+    fn format_duration_seconds_only() {
+        assert_eq!(format_duration(std::time::Duration::from_secs(45)), "00:45");
+    }
+
+    #[test]
+    fn format_duration_minutes_and_seconds() {
+        assert_eq!(
+            format_duration(std::time::Duration::from_secs(125)),
+            "02:05"
+        );
+    }
+
+    #[test]
+    fn format_duration_exactly_one_hour() {
+        assert_eq!(
+            format_duration(std::time::Duration::from_secs(3600)),
+            "01:00:00"
+        );
+    }
+
+    #[test]
+    fn format_duration_hours_minutes_seconds() {
+        // 2h 30m 15s = 9015s
+        assert_eq!(
+            format_duration(std::time::Duration::from_secs(9015)),
+            "02:30:15"
+        );
+    }
+
+    // =========================================================================
+    // format_size
+    // =========================================================================
+
+    #[test]
+    fn format_size_zero_bytes() {
+        assert_eq!(format_size(0), "0 B");
+    }
+
+    #[test]
+    fn format_size_bytes() {
+        assert_eq!(format_size(512), "512 B");
+    }
+
+    #[test]
+    fn format_size_kilobytes() {
+        assert_eq!(format_size(1024), "1.0 KB");
+    }
+
+    #[test]
+    fn format_size_megabytes() {
+        assert_eq!(format_size(1024 * 1024), "1.0 MB");
+    }
+
+    #[test]
+    fn format_size_gigabytes() {
+        assert_eq!(format_size(1024 * 1024 * 1024), "1.0 GB");
+    }
+
+    #[test]
+    fn format_size_fractional_mb() {
+        // 1.5 MB = 1572864 bytes
+        assert_eq!(format_size(1_572_864), "1.5 MB");
+    }
+
+    // =========================================================================
+    // convert_to_file_entry
+    // =========================================================================
+
+    #[test]
+    fn convert_to_file_entry_file() {
+        let entry = arclain_core::ArchiveEntry {
+            path: "game/data/save.dat".to_string(),
+            size: 2048,
+            packed_size: 1024,
+            modified: Some("2024-01-15".to_string()),
+            is_dir: false,
+            encrypted: false,
+            crc32: Some("AABBCCDD".to_string()),
+        };
+        let fe = convert_to_file_entry(&entry);
+        assert_eq!(fe.name, "save.dat");
+        assert_eq!(fe.path, "game/data/save.dat");
+        assert_eq!(fe.ratio, "50%");
+        assert_eq!(fe.modified, "2024-01-15");
+        assert_eq!(fe.crc32, "AABBCCDD");
+        assert!(!fe.is_folder);
+        assert!(!fe.encrypted);
+        assert!(!fe.selected);
+    }
+
+    #[test]
+    fn convert_to_file_entry_folder() {
+        let entry = arclain_core::ArchiveEntry {
+            path: "game/data".to_string(),
+            size: 0,
+            packed_size: 0,
+            modified: None,
+            is_dir: true,
+            encrypted: false,
+            crc32: None,
+        };
+        let fe = convert_to_file_entry(&entry);
+        assert_eq!(fe.name, "data");
+        assert!(fe.is_folder);
+        assert_eq!(fe.ratio, "0%");
+        assert_eq!(fe.modified, "");
+        assert_eq!(fe.crc32, "");
+    }
+
+    #[test]
+    fn convert_to_file_entry_encrypted() {
+        let entry = arclain_core::ArchiveEntry {
+            path: "secret.txt".to_string(),
+            size: 100,
+            packed_size: 80,
+            modified: None,
+            is_dir: false,
+            encrypted: true,
+            crc32: None,
+        };
+        let fe = convert_to_file_entry(&entry);
+        assert!(fe.encrypted);
+        assert_eq!(fe.ratio, "80%");
+    }
 }

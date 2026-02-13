@@ -311,3 +311,44 @@ impl<'a> Carousel<'a> {
         event
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn carousel_config_defaults() {
+        let config = CarouselConfig::default();
+        assert_eq!(config.main_height, 300.0);
+        assert_eq!(config.thumbnail_height, 60.0);
+        assert!(config.enable_lightbox);
+        assert_eq!(config.nav_gap, 4.0);
+    }
+
+    #[test]
+    fn carousel_builder_methods() {
+        let images: Vec<(String, Option<String>)> = vec![
+            ("key1".into(), Some("thumb1".into())),
+            ("key2".into(), None),
+        ];
+        let carousel = Carousel::new("test", &images, 0)
+            .main_height(400.0)
+            .thumbnail_height(80.0)
+            .enable_lightbox(false);
+
+        assert_eq!(carousel.config.main_height, 400.0);
+        assert_eq!(carousel.config.thumbnail_height, 80.0);
+        assert!(!carousel.config.enable_lightbox);
+        assert_eq!(carousel.id, "test");
+        assert_eq!(carousel.current_index, 0);
+        assert_eq!(carousel.images.len(), 2);
+    }
+
+    #[test]
+    fn carousel_event_variants() {
+        // Ensure all variants are distinct
+        assert_ne!(CarouselEvent::Previous, CarouselEvent::Next);
+        assert_ne!(CarouselEvent::Select(0), CarouselEvent::Select(1));
+        assert_ne!(CarouselEvent::OpenLightbox, CarouselEvent::Previous);
+    }
+}
