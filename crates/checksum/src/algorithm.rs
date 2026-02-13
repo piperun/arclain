@@ -44,3 +44,52 @@ impl fmt::Display for Algorithm {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_str_crc32() {
+        assert_eq!(Algorithm::from_str("crc32"), Some(Algorithm::Crc32));
+        assert_eq!(Algorithm::from_str("CRC32"), Some(Algorithm::Crc32));
+    }
+
+    #[test]
+    fn from_str_xxhash() {
+        assert_eq!(Algorithm::from_str("xxhash"), Some(Algorithm::XxHash));
+        assert_eq!(Algorithm::from_str("xxh3"), Some(Algorithm::XxHash));
+    }
+
+    #[test]
+    fn from_str_sha256() {
+        assert_eq!(Algorithm::from_str("sha256"), Some(Algorithm::Sha256));
+        assert_eq!(Algorithm::from_str("sha-256"), Some(Algorithm::Sha256));
+    }
+
+    #[test]
+    fn from_str_invalid() {
+        assert_eq!(Algorithm::from_str("md5"), None);
+        assert_eq!(Algorithm::from_str(""), None);
+    }
+
+    #[test]
+    fn output_size_matches_algorithm() {
+        assert_eq!(Algorithm::Crc32.output_size(), 4);
+        assert_eq!(Algorithm::XxHash.output_size(), 8);
+        assert_eq!(Algorithm::Sha256.output_size(), 32);
+    }
+
+    #[test]
+    fn display_round_trip() {
+        for algo in [Algorithm::Crc32, Algorithm::XxHash, Algorithm::Sha256] {
+            let s = algo.to_string();
+            assert_eq!(Algorithm::from_str(&s), Some(algo));
+        }
+    }
+
+    #[test]
+    fn default_is_crc32() {
+        assert_eq!(Algorithm::default(), Algorithm::Crc32);
+    }
+}

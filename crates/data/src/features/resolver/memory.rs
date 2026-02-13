@@ -49,3 +49,63 @@ impl DataSourceResolver for MemoryResolver {
         self.store.read().contains_key(key)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dummy_request() -> DataRequest {
+        DataRequest::new("dummy")
+    }
+
+    #[test]
+    fn store_and_resolve() {
+        let resolver = MemoryResolver::new();
+        let req = dummy_request();
+
+        resolver.try_store("key1", b"hello", &req).unwrap();
+        let data = resolver.try_resolve("key1", &req).unwrap();
+        assert_eq!(data, b"hello");
+    }
+
+    #[test]
+    fn resolve_missing_key() {
+        let resolver = MemoryResolver::new();
+        let req = dummy_request();
+
+        let result = resolver.try_resolve("nonexistent", &req);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn has_returns_correct_state() {
+        let resolver = MemoryResolver::new();
+        let req = dummy_request();
+
+        assert!(!resolver.has("k", &req));
+        resolver.try_store("k", b"data", &req).unwrap();
+        assert!(resolver.has("k", &req));
+    }
+
+    #[test]
+    fn multiple_entries_coexist() {
+        let resolver = MemoryResolver::new();
+        let req = dummy_request();
+
+        resolver.try_store("a", b"alpha", &req).unwrap();
+        resolver.try_store("b", b"beta", &req).unwrap();
+
+        assert_eq!(resolver.try_resolve("a", &req).unwrap(), b"alpha");
+        assert_eq!(resolver.try_resolve("b", &req).unwrap(), b"beta");
+    }
+
+    #[test]
+    fn overwrite_existing_key() {
+        let resolver = MemoryResolver::new();
+        let req = dummy_request();
+
+        resolver.try_store("k", b"old", &req).unwrap();
+        resolver.try_store("k", b"new", &req).unwrap();
+        assert_eq!(resolver.try_resolve("k", &req).unwrap(), b"new");
+    }
+}

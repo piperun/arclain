@@ -180,6 +180,36 @@ mod tests {
     use std::io::Write;
     use tempfile::TempDir;
 
+    // === Hash struct tests ===
+
+    #[test]
+    fn hash_to_hex_known_bytes() {
+        let hash = Hash::from_bytes(Algorithm::Crc32, &[0xAB, 0xCD, 0xEF, 0x01]);
+        assert_eq!(hash.to_hex(), "abcdef01");
+    }
+
+    #[test]
+    fn hash_to_hex_empty() {
+        let hash = Hash::from_bytes(Algorithm::Crc32, &[]);
+        assert_eq!(hash.to_hex(), "");
+    }
+
+    #[test]
+    fn hash_from_bytes_preserves_algorithm() {
+        let hash = Hash::from_bytes(Algorithm::Sha256, &[0x00, 0xFF]);
+        assert_eq!(hash.algorithm, Algorithm::Sha256);
+        assert_eq!(hash.bytes, vec![0x00, 0xFF]);
+    }
+
+    #[test]
+    fn hash_new_equals_from_bytes() {
+        let a = Hash::new(Algorithm::XxHash, vec![1, 2, 3]);
+        let b = Hash::from_bytes(Algorithm::XxHash, &[1, 2, 3]);
+        assert_eq!(a, b);
+    }
+
+    // === File-based tests ===
+
     #[test]
     fn test_hash_file_crc32() {
         let dir = TempDir::new().unwrap();
