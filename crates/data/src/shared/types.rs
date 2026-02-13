@@ -166,3 +166,77 @@ pub enum ResourceSource {
     /// From memory
     Memory,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // StorageStrategy / ResourceConfig defaults
+    // =========================================================================
+
+    #[test]
+    fn storage_strategy_default_is_cache() {
+        assert_eq!(StorageStrategy::default(), StorageStrategy::Cache);
+    }
+
+    #[test]
+    fn resource_config_defaults() {
+        let cfg = ResourceConfig::default();
+        assert_eq!(cfg.default_strategy, StorageStrategy::Cache);
+        assert!(cfg.caching_enabled);
+        assert_eq!(cfg.max_resource_size, Some(50 * 1024 * 1024));
+        assert!(cfg.fallback_dir.is_none());
+    }
+
+    // =========================================================================
+    // ResourceRequest builders
+    // =========================================================================
+
+    #[test]
+    fn resource_request_from_url() {
+        let req = ResourceRequest::from_url("img_key", "https://cdn.test/img.jpg");
+        assert_eq!(req.key, "img_key");
+        assert_eq!(req.url.as_deref(), Some("https://cdn.test/img.jpg"));
+        assert!(req.path.is_none());
+        assert_eq!(req.resource_type, ResourceType::Binary);
+    }
+
+    #[test]
+    fn resource_request_from_path() {
+        let req = ResourceRequest::from_path("local_key", "/tmp/file.bin");
+        assert_eq!(req.key, "local_key");
+        assert!(req.url.is_none());
+        assert!(req.path.is_some());
+    }
+
+    #[test]
+    fn resource_request_builder_chain() {
+        let req = ResourceRequest::from_url("k", "https://x.com")
+            .with_type(ResourceType::Image)
+            .with_product("prod_1")
+            .with_storage(StorageStrategy::Memory);
+
+        assert_eq!(req.resource_type, ResourceType::Image);
+        assert_eq!(req.product_id.as_deref(), Some("prod_1"));
+        assert_eq!(req.storage_override, Some(StorageStrategy::Memory));
+    }
+
+    // =========================================================================
+    // ResourceStatus
+    // =========================================================================
+
+    #[test]
+    fn resource_status_is_ready() {
+        assert!(ResourceStatus::Cached.is_ready());
+        assert!(ResourceStatus::Ready.is_ready());
+        assert!(!ResourceStatus::Fetching.is_ready());
+        assert!(!ResourceStatus::Failed("err".into()).is_ready());
+    }
+
+    #[test]
+    fn resource_status_is_failed() {
+        assert!(ResourceStatus::Failed("oops".into()).is_failed());
+        assert!(!ResourceStatus::Ready.is_failed());
+    }
+}

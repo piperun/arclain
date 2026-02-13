@@ -217,3 +217,113 @@ impl DataRequest {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // DataResult
+    // =========================================================================
+
+    #[test]
+    fn data_result_ready() {
+        let r = DataResult::ready(vec![1, 2, 3]);
+        assert_eq!(r.status, DataStatus::Ready);
+        assert_eq!(r.data, Some(vec![1, 2, 3]));
+        assert!(r.error.is_none());
+    }
+
+    #[test]
+    fn data_result_cached() {
+        let r = DataResult::cached(vec![10]);
+        assert_eq!(r.status, DataStatus::Cached);
+        assert!(r.data.is_some());
+    }
+
+    #[test]
+    fn data_result_failed() {
+        let r = DataResult::failed("timeout");
+        assert_eq!(r.status, DataStatus::Failed);
+        assert!(r.data.is_none());
+        assert_eq!(r.error.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn data_result_pending() {
+        let r = DataResult::pending();
+        assert_eq!(r.status, DataStatus::Pending);
+        assert!(r.data.is_none());
+        assert!(r.error.is_none());
+    }
+
+    // =========================================================================
+    // DataRequest
+    // =========================================================================
+
+    #[test]
+    fn data_request_new_defaults() {
+        let req = DataRequest::new("test_key");
+        assert_eq!(req.key, "test_key");
+        assert!(req.url.is_none());
+        assert!(req.path.is_none());
+        assert_eq!(req.resource_type, ResourceType::Binary);
+        assert!(req.sources.is_empty());
+    }
+
+    #[test]
+    fn data_request_builder_chain() {
+        let req = DataRequest::new("k")
+            .with_url("https://example.com")
+            .with_type(ResourceType::Image)
+            .with_product("prod_123")
+            .with_plugin_id("my_plugin");
+
+        assert_eq!(req.url.as_deref(), Some("https://example.com"));
+        assert_eq!(req.resource_type, ResourceType::Image);
+        assert_eq!(req.product_id.as_deref(), Some("prod_123"));
+        assert_eq!(req.plugin_id.as_deref(), Some("my_plugin"));
+    }
+
+    #[test]
+    fn data_request_cache_only_preset() {
+        let req = DataRequest::cache_only("my_key");
+        assert_eq!(req.key, "my_key");
+        assert!(req.url.is_none());
+        assert!(req.sources.contains(&DataSource::MetadataStore));
+        assert!(req.sources.contains(&DataSource::ContentCache));
+        assert!(!req.sources.contains(&DataSource::Network));
+    }
+
+    #[test]
+    fn data_request_network_only_preset() {
+        let req = DataRequest::network_only("k", "https://api.test");
+        assert_eq!(req.url.as_deref(), Some("https://api.test"));
+        assert!(req.sources.contains(&DataSource::Network));
+        assert_eq!(req.sources.len(), 1);
+    }
+
+    #[test]
+    fn data_request_cache_first_preset() {
+        let req = DataRequest::cache_first("k", "https://cdn.test/img.jpg");
+        assert!(req.sources.contains(&DataSource::ContentCache));
+        assert!(req.sources.contains(&DataSource::Network));
+        assert_eq!(req.sources.len(), 2);
+    }
+
+    #[test]
+    fn data_request_metadata_first_preset() {
+        let req = DataRequest::metadata_first("k", "https://api.test/meta");
+        assert!(req.sources.contains(&DataSource::MetadataStore));
+        assert!(req.sources.contains(&DataSource::Network));
+        assert_eq!(req.resource_type, ResourceType::Metadata);
+    }
+
+    #[test]
+    fn data_request_with_sources() {
+        let req = DataRequest::new("k")
+            .with_sources([DataSource::Memory, DataSource::ContentCache]);
+        assert_eq!(req.sources.len(), 2);
+        assert!(req.sources.contains(&DataSource::Memory));
+    }
+}

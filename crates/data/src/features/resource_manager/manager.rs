@@ -345,3 +345,116 @@ fn sanitize_key(key: &str) -> String {
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // =========================================================================
+    // validate_image
+    // =========================================================================
+
+    fn make_valid_jpeg() -> Vec<u8> {
+        let mut data = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        data.extend(vec![0x00; 200]); // pad to pass MIN_IMAGE_SIZE
+        data
+    }
+
+    fn make_valid_png() -> Vec<u8> {
+        let mut data = b"\x89PNG\r\n\x1a\n".to_vec();
+        data.extend(vec![0x00; 200]);
+        data
+    }
+
+    fn make_valid_gif() -> Vec<u8> {
+        let mut data = b"GIF89a".to_vec();
+        data.extend(vec![0x00; 200]);
+        data
+    }
+
+    fn make_valid_webp() -> Vec<u8> {
+        let mut data = b"RIFF".to_vec();
+        data.extend(vec![0x00; 4]); // size placeholder
+        data.extend(b"WEBP");
+        data.extend(vec![0x00; 200]);
+        data
+    }
+
+    fn make_valid_bmp() -> Vec<u8> {
+        let mut data = b"BM".to_vec();
+        data.extend(vec![0x00; 200]);
+        data
+    }
+
+    #[test]
+    fn validate_image_jpeg() {
+        assert!(matches!(validate_image(&make_valid_jpeg()), ImageValidation::Valid));
+    }
+
+    #[test]
+    fn validate_image_png() {
+        assert!(matches!(validate_image(&make_valid_png()), ImageValidation::Valid));
+    }
+
+    #[test]
+    fn validate_image_gif() {
+        assert!(matches!(validate_image(&make_valid_gif()), ImageValidation::Valid));
+    }
+
+    #[test]
+    fn validate_image_webp() {
+        assert!(matches!(validate_image(&make_valid_webp()), ImageValidation::Valid));
+    }
+
+    #[test]
+    fn validate_image_bmp() {
+        assert!(matches!(validate_image(&make_valid_bmp()), ImageValidation::Valid));
+    }
+
+    #[test]
+    fn validate_image_too_small() {
+        assert!(matches!(validate_image(&[0xFF, 0xD8, 0xFF]), ImageValidation::TooSmall(3)));
+    }
+
+    #[test]
+    fn validate_image_empty() {
+        assert!(matches!(validate_image(&[]), ImageValidation::TooSmall(0)));
+    }
+
+    #[test]
+    fn validate_image_html_response() {
+        let mut data = b"<!DOCTYPE html><html>error</html>".to_vec();
+        data.extend(vec![0x00; 200]);
+        assert!(matches!(validate_image(&data), ImageValidation::NotAnImage));
+    }
+
+    #[test]
+    fn validate_image_unknown_format() {
+        let data = vec![0x00; 200];
+        assert!(matches!(validate_image(&data), ImageValidation::InvalidFormat));
+    }
+
+    // =========================================================================
+    // sanitize_key
+    // =========================================================================
+
+    #[test]
+    fn sanitize_key_normal() {
+        assert_eq!(sanitize_key("my_image_key"), "my_image_key");
+    }
+
+    #[test]
+    fn sanitize_key_slashes() {
+        assert_eq!(sanitize_key("path/to\\file"), "path_to_file");
+    }
+
+    #[test]
+    fn sanitize_key_special_chars() {
+        assert_eq!(sanitize_key("file:name*?.txt"), "file_name__.txt");
+    }
+
+    #[test]
+    fn sanitize_key_empty() {
+        assert_eq!(sanitize_key(""), "");
+    }
+}

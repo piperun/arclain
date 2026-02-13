@@ -25,6 +25,27 @@ impl std::fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_error_display_not_found() {
+        assert_eq!(ResolveError::NotFound.to_string(), "Not found");
+    }
+
+    #[test]
+    fn resolve_error_display_not_configured() {
+        assert_eq!(ResolveError::NotConfigured.to_string(), "Not configured");
+    }
+
+    #[test]
+    fn resolve_error_display_io_error() {
+        let err = ResolveError::IoError("disk full".into());
+        assert_eq!(err.to_string(), "I/O error: disk full");
+    }
+}
+
 /// Trait for data source resolvers
 ///
 /// Each data source (cache, network, file, etc.) implements this trait.
