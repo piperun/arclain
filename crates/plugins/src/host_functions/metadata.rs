@@ -30,12 +30,10 @@ impl HostFunctions {
     #[allow(dead_code)]
     pub(super) fn impl_get_cached_metadata(&mut self, id: String) -> Option<String> {
         // Using Data API to retrieve metadata
-        // Note: This returns ProductMetadata JSON, not necessarily the raw API response.
         if let Some(data) = self.data_service.get_data(&id) {
             match String::from_utf8(data) {
                 Ok(s) => {
                     self.log_network_activity(format!("Cache HIT for {}", id));
-                    // Basic stats for log
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&s) {
                         info!(
                             "[Cache] Retrieved metadata for {}: title={}",
@@ -70,9 +68,6 @@ impl HostFunctions {
 
         debug!("[Cache SAVE] Parsing metadata for {}", id);
 
-        // Logic to reconstruct ProductMetadata
-        // We reuse the parsing logic from before just to be safe and consistent
-
         let title = parsed["title"].as_str().unwrap_or("Unknown").to_string();
         let circle = parsed["circle"].as_str().map(|s| s.to_string());
         let creator = parsed["creator"].as_str().map(|s| s.to_string());
@@ -83,9 +78,6 @@ impl HostFunctions {
         let release_date = parsed["release_date"].as_str().map(|s| s.to_string());
         let description = parsed["description"].as_str().map(|s| s.to_string());
         let file_format = parsed["file_format"].as_str().map(|s| s.to_string());
-        let tags_json = parsed["tags"]
-            .as_array()
-            .map(|t| serde_json::to_string(t).unwrap_or_default());
 
         use arclain_core::{MetadataSource, ProductMetadata};
 
@@ -121,48 +113,44 @@ impl HostFunctions {
                     .map(|s| s.to_string())
             });
 
-        let genres_json = parsed["genres"]
+        let genres: Vec<String> = parsed["genres"]
             .as_array()
-            .map(|t| serde_json::to_string(t).unwrap_or_default());
-        let languages_json = parsed["languages"]
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tags: Vec<String> = parsed["tags"]
             .as_array()
-            .map(|t| serde_json::to_string(t).unwrap_or_default());
-        let product_formats_json = parsed["product_formats"]
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let languages: Vec<String> = parsed["languages"]
             .as_array()
-            .map(|t| serde_json::to_string(t).unwrap_or_default());
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        let series_name = parsed["series_name"]
-            .as_str()
-            .map(|s| s.to_string())
-            .or_else(|| {
-                parsed["dlsite"]["series"]["name"]
-                    .as_str()
-                    .map(|s| s.to_string())
-            });
-        let illustrator = parsed["illustrator"].as_str().map(|s| s.to_string());
-        let voice_actors_json = parsed["voice_actors"]
-            .as_array()
-            .map(|t| serde_json::to_string(t).unwrap_or_default());
-        let miscellaneous = parsed["miscellaneous"].as_str().map(|s| s.to_string());
-        let update_info = parsed["update_info"].as_str().map(|s| s.to_string());
-        let rankings_json = parsed["rankings"]
-            .as_object()
-            .map(|o| serde_json::to_string(o).unwrap_or_default());
-
-        let now = chrono::Utc::now().to_rfc3339();
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
 
         // Check if geo-blocked
-        let geo_blocked = parsed["geo_blocked"].as_bool();
+        let geo_blocked = parsed["geo_blocked"].as_bool().unwrap_or(false);
 
-        let is_blocked = geo_blocked.unwrap_or(false);
-
-        // Build extras_json with image URLs and other extended fields
-        // The plugin sends these fields which need to be preserved for carousel/gallery
+        // Build extras with image URLs, DLSite-specific fields, etc.
         let extras = serde_json::json!({
             "cover_image": parsed["cover_image"].as_str(),
             "screenshots": parsed["sample_images"].as_array()
                 .or_else(|| parsed["screenshots"].as_array().filter(|arr|
-                    // Only use screenshots if it's a raw URL array, not {FilePath: url} objects
                     arr.first().map(|v| v.is_string()).unwrap_or(true)
                 ))
                 .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>())
@@ -176,27 +164,30 @@ impl HostFunctions {
             "brand": parsed["brand"].as_str(),
             "publisher": parsed["publisher"].as_str(),
             "page_count": parsed["page_count"].as_i64(),
+            // DLSite-specific fields stored in extras
+            "series_name": parsed["series_name"].as_str()
+                .or_else(|| parsed["dlsite"]["series"]["name"].as_str()),
+            "illustrator": parsed["illustrator"].as_str(),
+            "voice_actors": parsed["voice_actors"].as_array(),
+            "product_formats": parsed["product_formats"].as_array(),
+            "miscellaneous": parsed["miscellaneous"].as_str(),
+            "update_info": parsed["update_info"].as_str(),
+            "rankings": parsed["rankings"].as_object(),
         });
-        let extras_json = serde_json::to_string(&extras).ok();
 
-        let product = if is_blocked {
+        let product = if geo_blocked {
             // Minimal metadata for geo-blocked items
-            ProductMetadata {
-                id: format!("dlsite:{}", id),
-                source: MetadataSource::DLSite.as_str().to_string(),
-                external_id: id.clone(),
-                title: Some(title),
-                geo_blocked,
-                cached_at: now,
-                raw_api_response: Some(json), // Keep raw data for debugging
-                // All other fields None/Default
-                ..Default::default()
-            }
+            let mut meta = ProductMetadata::new(MetadataSource::DLSite, &id);
+            meta.title = Some(title);
+            meta.geo_blocked = true;
+            meta.raw_api_response = Some(json);
+            meta.cached_at = now_unix;
+            meta
         } else {
             // Full metadata
             ProductMetadata {
                 id: format!("dlsite:{}", id),
-                source: MetadataSource::DLSite.as_str().to_string(),
+                source: MetadataSource::DLSite,
                 external_id: id.clone(),
                 title: Some(title),
                 creator: creator.or(circle),
@@ -212,23 +203,15 @@ impl HostFunctions {
                 file_size,
                 file_format,
                 age_rating,
-                genres_json,
-                tags_json,
-                languages_json,
-                product_formats_json,
-                series_name,
-                illustrator,
-                voice_actors_json,
-                miscellaneous,
-                update_info,
-                rankings_json,
-                extras_json,
+                genres,
+                tags,
+                languages,
+                extras,
                 raw_api_response: Some(json),
                 raw_html: None,
                 geo_blocked,
-                cached_at: now,
+                cached_at: now_unix,
                 updated_at: None,
-                last_accessed: None,
             }
         };
 
@@ -288,23 +271,19 @@ impl HostFunctions {
         if let Some(lib_svc) = &self.library_service {
             ids.into_iter()
                 .map(|external_id| {
-                    // Format ID as expected by LibraryService: "source:external_id"
                     let full_id = format!("dlsite:{}", external_id);
 
                     match lib_svc.get_metadata(&full_id) {
                         Ok(Some(meta)) => MetadataSummary {
                             id: external_id,
                             title: meta.title,
-                            geo_blocked: meta.geo_blocked.unwrap_or(false),
+                            geo_blocked: meta.geo_blocked,
                         },
-                        Ok(None) => {
-                            // Not found - return minimal summary
-                            MetadataSummary {
-                                id: external_id,
-                                title: None,
-                                geo_blocked: false,
-                            }
-                        }
+                        Ok(None) => MetadataSummary {
+                            id: external_id,
+                            title: None,
+                            geo_blocked: false,
+                        },
                         Err(e) => {
                             error!("Failed to get metadata for {}: {}", external_id, e);
                             MetadataSummary {
@@ -336,7 +315,7 @@ impl HostFunctions {
         let _source_enum = match source.to_lowercase().as_str() {
             "dlsite" => MetadataSource::DLSite,
             "steam" => MetadataSource::Steam,
-            "itch" | "itchio" => MetadataSource::Itch,
+            "itch" | "itchio" => MetadataSource::Itchio,
             _ => MetadataSource::Custom,
         };
 
@@ -430,11 +409,23 @@ impl HostFunctions {
             json
         };
 
-        let now = chrono::Utc::now().to_rfc3339();
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let genres: Vec<String> = data["genre"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|g| g["name"].as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
 
         Ok(ProductMetadata {
             id: format!("{}:{}", source.to_lowercase(), product_id),
-            source: source.to_string(),
+            source: arclain_core::MetadataSource::DLSite,
             external_id: product_id.to_string(),
             title: data["work_name"].as_str().map(|s| s.to_string()),
             creator: data["maker_name"].as_str().map(|s| s.to_string()),
@@ -454,18 +445,15 @@ impl HostFunctions {
             file_size: data["file_size"].as_str().map(|s| s.to_string()),
             file_format: data["file_type"].as_str().map(|s| s.to_string()),
             age_rating: data["age_category_string"].as_str().map(|s| s.to_string()),
-            genres_json: data["genre"].as_array().map(|arr| {
-                serde_json::to_string(
-                    &arr.iter()
-                        .filter_map(|g| g["name"].as_str())
-                        .collect::<Vec<_>>(),
-                )
-                .unwrap_or_default()
-            }),
+            genres,
+            tags: Vec::new(),
+            languages: Vec::new(),
+            extras: serde_json::Value::Null,
             raw_api_response: Some(json_str.to_string()),
-            cached_at: now,
-            geo_blocked: None,
-            ..Default::default()
+            raw_html: None,
+            geo_blocked: false,
+            cached_at: now_unix,
+            updated_at: None,
         })
     }
 
@@ -482,53 +470,54 @@ impl HostFunctions {
         let scraped = gameta_lib::parsers::dlsite::parse_html(html_str)
             .ok_or_else(|| "Failed to parse HTML".to_string())?;
 
-        let now = chrono::Utc::now().to_rfc3339();
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let extras = serde_json::json!({
+            "cover_image": scraped.cover_image,
+            "screenshots": scraped.screenshots,
+            "authors": scraped.authors,
+            "illustrators": scraped.illustrators,
+            "scenarios": scraped.scenarios,
+            "musicians": scraped.musicians,
+            "writers": scraped.writers,
+            "brand": scraped.brand,
+            "publisher": scraped.publisher,
+            "page_count": scraped.page_count,
+            "update_date": scraped.update_date,
+            "voice_actors": scraped.voice_actors,
+            "series_name": scraped.series,
+        });
 
         Ok(ProductMetadata {
             id: format!("{}:{}", source.to_lowercase(), product_id),
-            source: source.to_string(),
+            source: arclain_core::MetadataSource::DLSite,
             external_id: product_id.to_string(),
             title: scraped.title,
             creator: scraped.circle,
             description: scraped.description,
             release_date: scraped.release_date,
             file_size: scraped.file_size,
-            tags_json: if scraped.tags.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&scraped.tags).unwrap_or_default())
-            },
-            genres_json: if scraped.genres.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&scraped.genres).unwrap_or_default())
-            },
-            voice_actors_json: if scraped.voice_actors.is_empty() {
-                None
-            } else {
-                Some(serde_json::to_string(&scraped.voice_actors).unwrap_or_default())
-            },
-            series_name: scraped.series,
-            geo_blocked: Some(scraped.geo_blocked),
-            cached_at: now,
-            // Store extra fields in extras_json
-            extras_json: Some(
-                serde_json::json!({
-                    "cover_image": scraped.cover_image,
-                    "screenshots": scraped.screenshots,
-                    "authors": scraped.authors,
-                    "illustrators": scraped.illustrators,
-                    "scenarios": scraped.scenarios,
-                    "musicians": scraped.musicians,
-                    "writers": scraped.writers,
-                    "brand": scraped.brand,
-                    "publisher": scraped.publisher,
-                    "page_count": scraped.page_count,
-                    "update_date": scraped.update_date,
-                })
-                .to_string(),
-            ),
-            ..Default::default()
+            tags: scraped.tags,
+            genres: scraped.genres,
+            languages: Vec::new(),
+            extras,
+            geo_blocked: scraped.geo_blocked,
+            cached_at: now_unix,
+            price: None,
+            currency: None,
+            rating: None,
+            rating_count: None,
+            purchase_count: None,
+            favorite_count: None,
+            review_count: None,
+            file_format: None,
+            age_rating: None,
+            raw_api_response: None,
+            raw_html: None,
+            updated_at: None,
         })
     }
 

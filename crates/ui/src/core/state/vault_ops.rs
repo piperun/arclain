@@ -54,7 +54,7 @@ impl AppState {
 
             // Update plugin manager with new cache
             if let Some(manager_arc) = plugin_manager {
-                let lib_svc = arclain_core::LibraryService::new(dbs.cache_pool.clone());
+                let lib_svc = arclain_core::LibraryService::new(&paths.cache_db)?;
                 manager_arc.lock().set_library_service(Arc::new(lib_svc));
             }
 
@@ -98,7 +98,7 @@ impl AppState {
 
         // Update plugin manager
         if let Some(manager_arc) = plugin_manager {
-            let lib_svc = arclain_core::LibraryService::new(new_dbs.cache_pool.clone());
+            let lib_svc = arclain_core::LibraryService::new(&new_paths.cache_db)?;
             manager_arc.lock().set_library_service(Arc::new(lib_svc));
         }
 
@@ -140,7 +140,7 @@ impl AppState {
 
         // Update plugin manager
         if let Some(manager_arc) = plugin_manager {
-            let lib_svc = arclain_core::LibraryService::new(new_dbs.cache_pool.clone());
+            let lib_svc = arclain_core::LibraryService::new(&new_paths.cache_db)?;
             manager_arc.lock().set_library_service(Arc::new(lib_svc));
         }
 

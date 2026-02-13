@@ -119,28 +119,12 @@ pub use domain_whitelist::{
 
 pub mod library;
 pub use library::{
-    delete,
-    // Aliases for compatibility/clarity
-    delete as delete_product_metadata,
-    delete as delete_diesel,
     delete_product_content,
-    delete_product_content as delete_product_content_diesel,
     get_all_content,
-    get_all_content as get_all_content_diesel,
-    get_by_external_id,
     get_cover,
     get_screenshots,
-    list_by_source,
-    list_by_source as list_by_source_diesel,
-    list_ids_by_source,
-    list_ids_by_source as list_ids_by_source_diesel,
-    load,
-    load as load_product_metadata,
-    load as load_diesel,
-    save,
-    save as save_product_metadata,
-    save as save_diesel,
     save_product_content,
+    CompletenessScore,
     ContentType,
     MetadataSource,
     ProductContent,
@@ -323,6 +307,7 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
                 .parent()
                 .unwrap_or(Path::new("."))
                 .join("metadata"),
+            Some(paths.cache_db.clone()),
         ),
         config_pool,
         cache_pool,

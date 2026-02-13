@@ -120,7 +120,7 @@ impl DataSourceResolver for MetadataStoreResolver {
         tracing::info!(
             "[MetadataStoreResolver] Saving metadata id={} source={}",
             meta.id,
-            meta.source
+            meta.source.as_str()
         );
 
         lib_svc.save_metadata(&meta).map_err(|e| {

@@ -81,8 +81,8 @@ impl Services {
         // Cache Service
         let cache_svc = Arc::new(CacheService::new(dbs.cache_pool.clone()));
 
-        // Library Service
-        let library_svc = Arc::new(LibraryService::new(dbs.cache_pool.clone()));
+        // Library Service (uses gameta_database::DieselBackend for metadata CRUD)
+        let library_svc = Arc::new(LibraryService::new(&paths.cache_db)?);
 
         // Organization Service
         let org_svc = Arc::new(OrganizationService::new(dbs.config_pool.clone()));
