@@ -356,3 +356,175 @@ fn row_to_profile(r: DbArchiveProfileRow) -> DbArchiveProfile {
         is_system: r.is_system,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn setup_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS archive_profiles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                format TEXT NOT NULL DEFAULT '7z',
+                compression_level INTEGER NOT NULL DEFAULT 9,
+                compression_method TEXT,
+                solid_archive INTEGER NOT NULL DEFAULT 1,
+                encrypt_headers INTEGER NOT NULL DEFAULT 0,
+                is_default INTEGER NOT NULL DEFAULT 0,
+                is_system INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                modified_at TEXT
+            )",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn make_profile(name: &str) -> DbArchiveProfile {
+        DbArchiveProfile {
+            id: None,
+            name: name.to_string(),
+            description: Some(format!("{} description", name)),
+            format: "7z".to_string(),
+            compression_level: 9,
+            compression_method: Some("LZMA2".to_string()),
+            solid_archive: true,
+            encrypt_headers: false,
+            is_default: false,
+            is_system: false,
+        }
+    }
+
+    #[test]
+    fn test_save_and_list() {
+        let conn = setup_db();
+        let profile = make_profile("Max 7z");
+        let id = save_profile(&conn, &profile).unwrap();
+        assert!(id > 0);
+
+        let profiles = list_profiles(&conn).unwrap();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "Max 7z");
+        assert_eq!(profiles[0].id, Some(id));
+    }
+
+    #[test]
+    fn test_get_profile() {
+        let conn = setup_db();
+        let id = save_profile(&conn, &make_profile("Fast 7z")).unwrap();
+
+        let loaded = get_profile(&conn, id).unwrap().unwrap();
+        assert_eq!(loaded.name, "Fast 7z");
+        assert_eq!(loaded.compression_level, 9);
+    }
+
+    #[test]
+    fn test_get_nonexistent() {
+        let conn = setup_db();
+        assert!(get_profile(&conn, 999).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_update_profile() {
+        let conn = setup_db();
+        let id = save_profile(&conn, &make_profile("Original")).unwrap();
+
+        let mut updated = make_profile("Renamed");
+        updated.id = Some(id);
+        updated.compression_level = 5;
+        save_profile(&conn, &updated).unwrap();
+
+        let loaded = get_profile(&conn, id).unwrap().unwrap();
+        assert_eq!(loaded.name, "Renamed");
+        assert_eq!(loaded.compression_level, 5);
+    }
+
+    #[test]
+    fn test_delete_profile() {
+        let conn = setup_db();
+        let id = save_profile(&conn, &make_profile("Temp")).unwrap();
+        assert!(get_profile(&conn, id).unwrap().is_some());
+
+        delete_profile(&conn, id).unwrap();
+        assert!(get_profile(&conn, id).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_system_profile_is_noop() {
+        let conn = setup_db();
+        let mut system = make_profile("System");
+        system.is_system = true;
+        let id = save_profile(&conn, &system).unwrap();
+
+        delete_profile(&conn, id).unwrap();
+        // System profiles cannot be deleted
+        assert!(get_profile(&conn, id).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_set_default_profile() {
+        let conn = setup_db();
+        let id1 = save_profile(&conn, &make_profile("Profile A")).unwrap();
+        let id2 = save_profile(&conn, &make_profile("Profile B")).unwrap();
+
+        set_default_profile(&conn, id1).unwrap();
+        assert!(get_profile(&conn, id1).unwrap().unwrap().is_default);
+        assert!(!get_profile(&conn, id2).unwrap().unwrap().is_default);
+
+        // Change default
+        set_default_profile(&conn, id2).unwrap();
+        assert!(!get_profile(&conn, id1).unwrap().unwrap().is_default);
+        assert!(get_profile(&conn, id2).unwrap().unwrap().is_default);
+    }
+
+    #[test]
+    fn test_get_default_profile() {
+        let conn = setup_db();
+        assert!(get_default_profile(&conn).unwrap().is_none());
+
+        let mut profile = make_profile("Default");
+        profile.is_default = true;
+        save_profile(&conn, &profile).unwrap();
+
+        let default = get_default_profile(&conn).unwrap().unwrap();
+        assert_eq!(default.name, "Default");
+    }
+
+    #[test]
+    fn test_save_default_clears_other_defaults() {
+        let conn = setup_db();
+        let mut p1 = make_profile("First Default");
+        p1.is_default = true;
+        save_profile(&conn, &p1).unwrap();
+
+        let mut p2 = make_profile("Second Default");
+        p2.is_default = true;
+        save_profile(&conn, &p2).unwrap();
+
+        // Only one default should exist
+        let profiles = list_profiles(&conn).unwrap();
+        let defaults: Vec<_> = profiles.iter().filter(|p| p.is_default).collect();
+        assert_eq!(defaults.len(), 1);
+        assert_eq!(defaults[0].name, "Second Default");
+    }
+
+    #[test]
+    fn test_list_ordering() {
+        let conn = setup_db();
+        save_profile(&conn, &make_profile("Zebra")).unwrap();
+        save_profile(&conn, &make_profile("Alpha")).unwrap();
+        let mut def = make_profile("Middle");
+        def.is_default = true;
+        save_profile(&conn, &def).unwrap();
+
+        let profiles = list_profiles(&conn).unwrap();
+        // Default first, then alphabetical
+        assert_eq!(profiles[0].name, "Middle");
+        assert_eq!(profiles[1].name, "Alpha");
+        assert_eq!(profiles[2].name, "Zebra");
+    }
+}
