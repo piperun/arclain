@@ -2285,6 +2285,11 @@ fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Op
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default(),
         geo_blocked: meta["geo_blocked"].as_bool().unwrap_or(false),
+        description_images: extras["description_images"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default(),
+        description_structure: Vec::new(),
     };
 
     // Build backward-compatible JSON for the plugin's legacy code paths
@@ -2353,6 +2358,10 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
                         info(&format!("[DEBUG] fetch_string_blocking for JSON FAILED: {}", e));
                     }
                 }
+            }
+            FetchStep::FetchChobitEmbed { .. } | FetchStep::DownloadVideo { .. } => {
+                // Video-related steps — not handled by the metadata plugin
+                info("[DEBUG] Skipping video-related fetch step");
             }
             FetchStep::FetchHtml(url) => {
                 let cache_key = gameta_lib::providers::dlsite::cache_keys::html_key(product_id);

@@ -476,7 +476,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_data"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -494,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_db"
-version = "0.5.3"
+version = "0.5.4"
 dependencies = [
  "aes-gcm",
  "anyhow",
