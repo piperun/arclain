@@ -144,7 +144,6 @@ pub fn open_file_from_archive(
             complete: false,
             error: None,
             file_to_open: None,
-            cancelled: false,
         }));
 
     // Clone data for thread
@@ -183,7 +182,6 @@ pub fn open_file_from_archive(
                         complete: false,
                         error: None,
                         file_to_open: None,
-                        cancelled: false,
                     },
                 ));
             }),
@@ -211,7 +209,6 @@ pub fn open_file_from_archive(
                         complete: true,
                         error: None,
                         file_to_open: Some(actual_file),
-                        cancelled: false,
                     },
                 ));
             }
@@ -225,7 +222,6 @@ pub fn open_file_from_archive(
                         complete: true,
                         error: Some(format!("{}", e)),
                         file_to_open: None,
-                        cancelled: false,
                     },
                 ));
             }

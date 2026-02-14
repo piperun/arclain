@@ -1,9 +1,8 @@
 //! Metadata caching operations
 
 use super::HostFunctions;
-use crate::arclain::plugin::host::Host;
 use arclain_data::DataSource;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 impl HostFunctions {
     pub(super) fn impl_emit_metadata(&mut self, metadata_json: String) {
@@ -23,34 +22,6 @@ impl HostFunctions {
             }
         } else {
             error!("[Plugin] Failed to parse emitted metadata JSON");
-        }
-    }
-
-    /// Legacy - now handled by Data API
-    #[allow(dead_code)]
-    pub(super) fn impl_get_cached_metadata(&mut self, id: String) -> Option<String> {
-        // Using Data API to retrieve metadata
-        if let Some(data) = self.data_service.get_data(&id) {
-            match String::from_utf8(data) {
-                Ok(s) => {
-                    self.log_network_activity(format!("Cache HIT for {}", id));
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&s) {
-                        info!(
-                            "[Cache] Retrieved metadata for {}: title={}",
-                            id,
-                            json["title"].as_str().unwrap_or("?")
-                        );
-                    }
-                    Some(s)
-                }
-                Err(e) => {
-                    error!("[Cache] Failed to convert data to string: {}", e);
-                    None
-                }
-            }
-        } else {
-            self.log_network_activity(format!("Cache MISS for {}", id));
-            None
         }
     }
 

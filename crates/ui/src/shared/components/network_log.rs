@@ -15,23 +15,6 @@ pub struct NetworkLogEntry {
     pub message: String,
 }
 
-#[allow(dead_code)]
-impl NetworkLogEntry {
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            time: SystemTime::now(),
-            message: message.into(),
-        }
-    }
-
-    pub fn with_time(time: SystemTime, message: impl Into<String>) -> Self {
-        Self {
-            time,
-            message: message.into(),
-        }
-    }
-}
-
 /// Renders a network activity log
 pub struct NetworkLog;
 
@@ -44,19 +27,6 @@ impl NetworkLog {
             Self::render_empty_state(ui);
         } else {
             Self::render_entries(ui, entries);
-        }
-    }
-
-    /// Render entries from NetworkLogEntry structs
-    pub fn render_from_entries(ui: &mut Ui, entries: &[NetworkLogEntry]) {
-        if entries.is_empty() {
-            Self::render_empty_state(ui);
-        } else {
-            let tuples: Vec<(SystemTime, String)> = entries
-                .iter()
-                .map(|e| (e.time, e.message.clone()))
-                .collect();
-            Self::render_entries(ui, &tuples);
         }
     }
 
@@ -109,28 +79,5 @@ impl NetworkLog {
                         });
                 }
             });
-    }
-
-    /// Render as a compact inline log (for embedding in smaller areas)
-    pub fn render_compact(ui: &mut Ui, entries: &[(SystemTime, String)], max_height: f32) {
-        if entries.is_empty() {
-            ui.label(RichText::new("No activity").weak().italics().size(11.0));
-        } else {
-            egui::ScrollArea::vertical()
-                .id_salt("network_log_compact")
-                .max_height(max_height)
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    for (time, msg) in entries {
-                        let time_str = chrono::DateTime::<chrono::Local>::from(*time)
-                            .format("%H:%M:%S")
-                            .to_string();
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&time_str).weak().size(9.0).monospace());
-                            ui.label(RichText::new(msg).size(10.0));
-                        });
-                    }
-                });
-        }
     }
 }

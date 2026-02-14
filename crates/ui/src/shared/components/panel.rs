@@ -49,18 +49,6 @@ impl PanelHeader {
             actions: Vec::new(),
         }
     }
-
-    #[allow(dead_code)]
-    pub fn with_subtitle(mut self, subtitle: impl Into<String>) -> Self {
-        self.subtitle = Some(subtitle.into());
-        self
-    }
-
-    #[allow(dead_code)]
-    pub fn with_icon(mut self, icon: impl Into<String>) -> Self {
-        self.icon = Some(icon.into());
-        self
-    }
 }
 
 /// Panel content types for the body
@@ -81,49 +69,6 @@ pub enum PanelBody {
     Space(f32),
 }
 
-/// Footer button configuration
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct FooterButton {
-    pub id: String,
-    pub label: String,
-    pub primary: bool,
-    pub on_click: Arc<dyn Fn() + Send + Sync>,
-}
-
-/// Panel footer configuration
-#[derive(Clone, Default)]
-#[allow(dead_code)]
-pub struct PanelFooter {
-    pub buttons: Vec<FooterButton>,
-}
-
-impl PanelFooter {
-    #[allow(dead_code)]
-    pub fn new() -> Self {
-        Self {
-            buttons: Vec::new(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn with_button(
-        mut self,
-        id: impl Into<String>,
-        label: impl Into<String>,
-        primary: bool,
-        on_click: impl Fn() + Send + Sync + 'static,
-    ) -> Self {
-        self.buttons.push(FooterButton {
-            id: id.into(),
-            label: label.into(),
-            primary,
-            on_click: Arc::new(on_click),
-        });
-        self
-    }
-}
-
 /// Action returned from panel interactions
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PanelAction {
@@ -137,7 +82,6 @@ pub struct Panel {
     pub id: String,
     pub header: Option<PanelHeader>,
     pub body: Vec<PanelBody>,
-    pub footer: Option<PanelFooter>,
     pub collapsible: bool,
     pub initially_collapsed: bool,
 }
@@ -149,7 +93,6 @@ impl Panel {
             id: id.into(),
             header: None,
             body: Vec::new(),
-            footer: None,
             collapsible: false,
             initially_collapsed: false,
         }
@@ -164,20 +107,6 @@ impl Panel {
     /// Add a body section
     pub fn with_body(mut self, body: PanelBody) -> Self {
         self.body.push(body);
-        self
-    }
-
-    /// Add multiple body sections
-    #[allow(dead_code)]
-    pub fn with_bodies(mut self, bodies: Vec<PanelBody>) -> Self {
-        self.body.extend(bodies);
-        self
-    }
-
-    /// Set the panel footer
-    #[allow(dead_code)]
-    pub fn with_footer(mut self, footer: PanelFooter) -> Self {
-        self.footer = Some(footer);
         self
     }
 
@@ -222,9 +151,6 @@ impl Panel {
                     .default_open(!self.initially_collapsed)
                     .show(ui, |ui| {
                         self.render_body(ui, theme, plugin_manager, shared, content_cache);
-                        if let Some(footer_action) = self.render_footer(ui, theme) {
-                            action = footer_action;
-                        }
                     });
             } else {
                 // Non-collapsible panel
@@ -234,10 +160,6 @@ impl Panel {
 
                 ui.add_space(8.0);
                 self.render_body(ui, theme, plugin_manager, shared, content_cache);
-
-                if let Some(footer_action) = self.render_footer(ui, theme) {
-                    action = footer_action;
-                }
             }
         });
 
@@ -448,40 +370,5 @@ impl Panel {
                 }
             }
         }
-    }
-
-    fn render_footer(&self, ui: &mut egui::Ui, theme: &AppTheme) -> Option<PanelAction> {
-        let footer = self.footer.as_ref()?;
-        if footer.buttons.is_empty() {
-            return None;
-        }
-
-        let mut action = None;
-
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        ui.horizontal(|ui| {
-            ui.add_space(12.0);
-            for btn in &footer.buttons {
-                let button = if btn.primary {
-                    egui::Button::new(
-                        egui::RichText::new(&btn.label).color(theme.colors.on_primary),
-                    )
-                    .fill(theme.colors.primary)
-                } else {
-                    egui::Button::new(&btn.label)
-                };
-
-                if ui.add(button).clicked() {
-                    action = Some(PanelAction::FooterAction(btn.id.clone()));
-                }
-            }
-        });
-
-        ui.add_space(8.0);
-
-        action
     }
 }

@@ -29,10 +29,6 @@ pub enum PanelSection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PropertiesPanelAction {
     None,
-    #[allow(dead_code)]
-    Organize,
-    #[allow(dead_code)]
-    Metadata(String),
 }
 
 pub fn render(

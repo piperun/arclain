@@ -30,43 +30,6 @@ pub struct PreviewTreeNode {
     pub file_count: usize, // For directories: count of files inside
 }
 
-#[allow(dead_code)]
-impl PreviewTreeNode {
-    pub fn new_file(name: String, full_path: String) -> Self {
-        Self {
-            name,
-            full_path,
-            is_dir: false,
-            is_generated: false,
-            is_download: false,
-            children: Vec::new(),
-            file_count: 0,
-        }
-    }
-
-    pub fn new_folder(name: String, full_path: String) -> Self {
-        Self {
-            name,
-            full_path,
-            is_dir: true,
-            is_generated: false,
-            is_download: false,
-            children: Vec::new(),
-            file_count: 0,
-        }
-    }
-
-    pub fn generated(mut self) -> Self {
-        self.is_generated = true;
-        self
-    }
-
-    pub fn download(mut self) -> Self {
-        self.is_download = true;
-        self
-    }
-}
-
 /// State for the preview tree (expansion, etc.)
 #[derive(Default, Clone)]
 pub struct PreviewTreeState {
@@ -128,19 +91,29 @@ pub fn build_tree_from_paths(paths: &[(String, bool, bool)]) -> Vec<PreviewTreeN
 
             if is_last {
                 // This is the file - create or update it
-                let mut node = PreviewTreeNode::new_file(part.to_string(), current_path.clone());
-                if *is_generated {
-                    node.is_generated = true;
-                }
-                if *is_download {
-                    node.is_download = true;
-                }
+                let node = PreviewTreeNode {
+                    name: part.to_string(),
+                    full_path: current_path.clone(),
+                    is_dir: false,
+                    is_generated: *is_generated,
+                    is_download: *is_download,
+                    children: Vec::new(),
+                    file_count: 0,
+                };
                 nodes.insert(current_path.clone(), node);
             } else {
                 // This is a folder - create if doesn't exist
-                nodes.entry(current_path.clone()).or_insert_with(|| {
-                    PreviewTreeNode::new_folder(part.to_string(), current_path.clone())
-                });
+                nodes
+                    .entry(current_path.clone())
+                    .or_insert_with(|| PreviewTreeNode {
+                        name: part.to_string(),
+                        full_path: current_path.clone(),
+                        is_dir: true,
+                        is_generated: false,
+                        is_download: false,
+                        children: Vec::new(),
+                        file_count: 0,
+                    });
             }
         }
     }
@@ -184,63 +157,10 @@ pub fn build_tree_from_paths(paths: &[(String, bool, bool)]) -> Vec<PreviewTreeN
     result
 }
 
-/// Create a new filtered tree based on the provided filter
-#[allow(dead_code)]
-pub fn filter_tree(nodes: &[PreviewTreeNode], filter: PreviewFilter) -> Vec<PreviewTreeNode> {
-    let mut result = Vec::new();
-
-    for node in nodes {
-        let should_include_node = match filter {
-            PreviewFilter::All => true,
-            PreviewFilter::FoldersOnly => node.is_dir,
-            PreviewFilter::FilesOnly => !node.is_dir,
-            PreviewFilter::GeneratedOnly => node.is_generated || node.is_download,
-        };
-
-        // If it's a folder, we might need to include it if it has matching children, even if the filter says folders only?
-        // Logic: Recursively filter children.
-        // If folders only: include folders. Files inside? No.
-        // If files only: include files. Folders are needed to show structure? User said "folder only", "files + folders".
-        // Usually "Files Only" means flat list or still structured? "Folders Only" definitely means structure.
-        // Let's stick to the simple logic used in render:
-
-        let mut new_node = node.clone();
-        new_node.children = filter_tree(&node.children, filter);
-
-        if should_include_node {
-            result.push(new_node);
-        } else if node.is_dir && !new_node.children.is_empty() {
-            // Keep directory if it has matching children (e.g. for FilesOnly view, we need path?)
-            // Actually, render_node logic hides the node if !should_show.
-            // But if it's a directory with children that ARE shown, does render_node show it?
-            // render_node: if !should_show && !node.is_dir { return; }
-            // This implies if it IS a dir, it's shown unless explicitly excluded elsewhere?
-            // Actually "FoldersOnly" -> node.is_dir is true.
-            // "FilesOnly" -> node.is_dir is false.
-            // If Filter is FilesOnly, render_node hits !should_show (false) && !node.is_dir (false) => passes through for dirs?
-            // Let's match render_node:
-
-            // If node is a directory, we keep it if it has children after filtering, OR if the filter specifically includes directories?
-            // Render logic says: if !should_show && !node.is_dir { return } -> Files are hidden if filter doesn't match. Directories are effectively "always shown" to traverse?
-            // But wait, allow filtering for export to be simpler:
-
-            if !new_node.children.is_empty() {
-                result.push(new_node);
-            }
-        }
-    }
-    result
-}
-
 fn sort_tree(nodes: &mut [PreviewTreeNode]) {
-    nodes.sort_by(|a, b| {
-        // Folders first, then files
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        }
-    });
+    // Folders first (!is_dir: false < true), then case-insensitive name.
+    // Cached key avoids per-comparison allocation.
+    nodes.sort_by_cached_key(|n| (!n.is_dir, n.name.to_lowercase()));
 
     for node in nodes.iter_mut() {
         sort_tree(&mut node.children);

@@ -41,47 +41,6 @@ impl HostFunctions {
         Ok(info.entries.into_iter().map(|e| e.path).collect())
     }
 
-    #[allow(dead_code)]
-    pub(super) fn impl_file_read(
-        &mut self,
-        archive: String,
-        file: String,
-    ) -> std::result::Result<String, String> {
-        if !self.check_capability(PluginCapability::FileRead) {
-            return Err("FileRead capability not granted".to_string());
-        }
-        let backend = self
-            .archive_backend
-            .as_ref()
-            .ok_or("Archive backend not available")?;
-        let password = self.current_password.lock().clone();
-
-        backend
-            .read_text_file(Path::new(&archive), &file, password.as_deref())
-            .map_err(|e| e.to_string())
-    }
-
-    #[allow(dead_code)]
-    pub(super) fn impl_file_write(
-        &mut self,
-        archive: String,
-        file: String,
-        data: String,
-    ) -> std::result::Result<String, String> {
-        if !self.check_capability(PluginCapability::FileWrite) {
-            return Err("FileWrite capability not granted".to_string());
-        }
-        let backend = self
-            .archive_backend
-            .as_ref()
-            .ok_or("Archive backend not available")?;
-
-        backend
-            .add_or_update_file_from_str(Path::new(&archive), &file, &data)
-            .map_err(|e| e.to_string())?;
-        Ok("Success".to_string())
-    }
-
     /// Rename the currently open archive file
     pub(super) fn impl_rename_archive(
         &mut self,
