@@ -7,6 +7,7 @@
 //! - Search results
 
 use crate::core::navigation::SettingsPage;
+use crate::shared::components::SettingsCard;
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -97,47 +98,11 @@ pub fn render_settings_overview(ui: &mut egui::Ui, theme: &AppTheme) -> Option<S
             .spacing(egui::vec2(spacing, spacing))
             .show(ui, |ui| {
                 for (index, page) in SettingsPage::all_pages().into_iter().enumerate() {
-                    let card_response = egui::Frame::NONE
-                        .fill(theme.colors.surface_variant)
-                        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-                        .corner_radius(8.0)
-                        .inner_margin(20.0)
-                        .show(ui, |ui| {
-                            ui.set_width(card_width);
-                            ui.set_height(100.0);
-
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 8.0);
-
-                                ui.label(egui::RichText::new(page.icon()).size(24.0));
-
-                                ui.label(
-                                    egui::RichText::new(page.display_name())
-                                        .size(16.0)
-                                        .strong()
-                                        .color(theme.colors.on_surface),
-                                );
-
-                                ui.label(
-                                    egui::RichText::new(page.description())
-                                        .size(12.0)
-                                        .color(theme.colors.on_surface_variant),
-                                );
-                            });
-                        })
-                        .response;
-
-                    if card_response.interact(egui::Sense::click()).clicked() {
+                    if SettingsCard::new(page.icon(), page.display_name(), page.description(), &theme.colors)
+                        .size(card_width, 100.0)
+                        .show(ui)
+                    {
                         selected_page = Some(page);
-                    }
-
-                    // Hover effect
-                    if card_response.hovered() {
-                        ui.painter().rect_filled(
-                            card_response.rect,
-                            8.0,
-                            theme.colors.primary.linear_multiply(0.1),
-                        );
                     }
 
                     if (index + 1) % num_cols == 0 {
@@ -185,45 +150,11 @@ pub fn render_settings_search_results(
                     || page.description().to_lowercase().contains(&query)
                 {
                     found = true;
-                    let card_response = egui::Frame::NONE
-                        .fill(theme.colors.surface_variant)
-                        .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-                        .corner_radius(8.0)
-                        .inner_margin(20.0)
-                        .show(ui, |ui| {
-                            ui.set_width(280.0);
-                            ui.set_height(80.0);
-
-                            ui.vertical(|ui| {
-                                ui.spacing_mut().item_spacing = egui::vec2(0.0, 4.0);
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(page.icon()).size(20.0));
-                                    ui.label(
-                                        egui::RichText::new(page.display_name())
-                                            .size(15.0)
-                                            .strong()
-                                            .color(theme.colors.on_surface),
-                                    );
-                                });
-                                ui.label(
-                                    egui::RichText::new(page.description())
-                                        .size(12.0)
-                                        .color(theme.colors.on_surface_variant),
-                                );
-                            });
-                        })
-                        .response;
-
-                    if card_response.interact(egui::Sense::click()).clicked() {
+                    if SettingsCard::new(page.icon(), page.display_name(), page.description(), &theme.colors)
+                        .size(280.0, 80.0)
+                        .show_compact(ui)
+                    {
                         selected_page = Some(page);
-                    }
-
-                    if card_response.hovered() {
-                        ui.painter().rect_filled(
-                            card_response.rect,
-                            8.0,
-                            theme.colors.primary.linear_multiply(0.1),
-                        );
                     }
                 }
             }

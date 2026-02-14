@@ -10,6 +10,7 @@ use arclain_core::UiService;
 use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::{PluginExtensionPoint, PluginUiElement};
+use arclain_widgets::SelectableChip;
 use eframe::egui;
 
 /// State for toolbar layout editor
@@ -464,44 +465,12 @@ fn render_item_picker(
                     .map(|n| icon_name_to_char(n))
                     .unwrap_or("");
 
-                // Chip styling based on visibility and selection
-                let (bg, text_color, stroke) = if is_selected {
-                    (
-                        theme.colors.primary,
-                        theme.colors.on_primary,
-                        egui::Stroke::new(2.0, theme.colors.primary),
-                    )
-                } else if item.visible {
-                    (
-                        theme.colors.primary_container,
-                        theme.colors.on_primary_container,
-                        egui::Stroke::new(1.0, theme.colors.outline),
-                    )
-                } else {
-                    (
-                        theme.colors.surface_variant.gamma_multiply(0.7),
-                        theme.colors.on_surface_variant,
-                        egui::Stroke::new(1.0, theme.colors.outline.gamma_multiply(0.5)),
-                    )
-                };
-
-                let chip = egui::Frame::NONE
-                    .fill(bg)
-                    .stroke(stroke)
-                    .inner_margin(egui::Margin::symmetric(12, 6))
-                    .show(ui, |ui| {
-                        ui.label(
-                            egui::RichText::new(format!("{} {}", icon, item.label))
-                                .color(text_color),
-                        );
-                    });
-
-                // Make the frame interactive
-                let response = ui.interact(
-                    chip.response.rect,
-                    ui.id().with(format!("chip_{}", item_idx)),
-                    egui::Sense::click(),
-                );
+                let response = SelectableChip::new(&item.label)
+                    .icon(icon)
+                    .selected(is_selected)
+                    .active(item.visible)
+                    .with_theme_colors(&theme.colors)
+                    .show(ui);
 
                 // Click behavior: simple toggle visibility
                 // - If visible: hide it

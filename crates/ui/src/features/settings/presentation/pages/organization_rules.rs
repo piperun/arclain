@@ -11,6 +11,7 @@ use crate::core::SettingsPage;
 use crate::features::settings::domain::types::SettingsAction;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
+use arclain_widgets::{ButtonSize, TextButton};
 
 pub struct RulesPage {
     rules: Option<Vec<OrganizationRule>>,
@@ -71,7 +72,7 @@ impl RulesPage {
 
                 // Header with count and Add button
                 ui.horizontal(|ui| {
-                    if ui.button(format!("{} Add New Rule", egui_phosphor::regular::PLUS)).clicked() {
+                    if ui.add(TextButton::new(format!("{} Add New Rule", egui_phosphor::regular::PLUS), ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                         action = Some(SettingsAction::NavigateTo(SettingsPage::EditRule(0)));
                     }
 
@@ -154,7 +155,7 @@ impl RulesPage {
                             row.col(|ui| {
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui
-                                        .button(format!("{}", egui_phosphor::regular::PENCIL))
+                                        .add(TextButton::new(format!("{}", egui_phosphor::regular::PENCIL), ButtonSize::Small).with_theme_colors(&theme.colors))
                                         .on_hover_text("Edit rule")
                                         .clicked()
                                     {

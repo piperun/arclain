@@ -3,6 +3,7 @@
 
 use crate::features::plugins::domain::types::{PluginInfo, PluginsListState};
 
+use arclain_widgets::{ButtonSize, TextButton, TextInput};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -27,11 +28,11 @@ pub fn render(
                     // Search box
                     ui.label(egui::RichText::new("🔍").size(16.0));
                     ui.add_space(4.0);
-                    let search_response = ui.add(
-                        egui::TextEdit::singleline(&mut state.filter_text)
-                            .hint_text("Search plugins...")
-                            .desired_width(200.0),
-                    );
+                    let search_response = TextInput::new(&mut state.filter_text)
+                        .hint("Search plugins...")
+                        .width(200.0)
+                        .with_theme_colors(&theme.colors)
+                        .show(ui);
 
                     if search_response.changed() {
                         // Filter will be applied when rendering list
@@ -45,10 +46,7 @@ pub fn render(
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Install plugin button
                         if ui
-                            .button(
-                                egui::RichText::new("+ Install Plugin")
-                                    .color(theme.colors.on_surface),
-                            )
+                            .add(TextButton::new("+ Install Plugin", ButtonSize::Medium).with_theme_colors(&theme.colors))
                             .clicked()
                         {
                             action = Some(PluginAction::InstallPlugin);
@@ -252,7 +250,7 @@ fn render_plugin_card(
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     // Enable/Disable toggle
                     let toggle_text = if plugin.enabled { "Disable" } else { "Enable" };
-                    if ui.button(toggle_text).clicked() {
+                    if ui.add(TextButton::new(toggle_text, ButtonSize::Small).with_theme_colors(&theme.colors)).clicked() {
                         action = Some(if plugin.enabled {
                             PluginAction::DisablePlugin(plugin.id.clone())
                         } else {
@@ -261,7 +259,7 @@ fn render_plugin_card(
                     }
 
                     // Settings button
-                    if ui.button("⚙").clicked() {
+                    if ui.add(TextButton::new("⚙", ButtonSize::Small).with_theme_colors(&theme.colors)).clicked() {
                         action = Some(PluginAction::ShowPluginSettings(plugin.id.clone()));
                     }
                 });

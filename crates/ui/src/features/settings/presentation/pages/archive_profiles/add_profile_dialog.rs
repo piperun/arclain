@@ -3,6 +3,7 @@
 //! Dialog UI for creating and editing archive format profiles.
 
 use arclain_core::features::organization::{ArchiveFormat, ArchiveProfile};
+use arclain_widgets::{TextInput, ThemedDropdown};
 use crate::shared::dialogs::{DialogMode, FormDialog, FormDialogConfig, FormDialogResult};
 use eframe::egui;
 
@@ -93,7 +94,10 @@ impl AddProfileDialog {
             .spacing([8.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Name:");
-                ui.add(egui::TextEdit::singleline(&mut profile.name).desired_width(280.0));
+                TextInput::new(&mut profile.name)
+                    .width(280.0)
+                    .with_theme_colors(&theme.colors)
+                    .show(ui);
                 ui.end_row();
 
                 if let Some(err) = name_error {
@@ -104,8 +108,10 @@ impl AddProfileDialog {
 
                 ui.label("Description:");
                 let mut desc = profile.description.clone().unwrap_or_default();
-                if ui
-                    .add(egui::TextEdit::singleline(&mut desc).desired_width(280.0))
+                if TextInput::new(&mut desc)
+                    .width(280.0)
+                    .with_theme_colors(&theme.colors)
+                    .show(ui)
                     .changed()
                 {
                     profile.description = if desc.is_empty() { None } else { Some(desc) };
@@ -125,8 +131,8 @@ impl AddProfileDialog {
             .spacing([8.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Output Format:");
-                egui::ComboBox::from_id_salt("format_combo")
-                    .selected_text(profile.format.display_name())
+                ThemedDropdown::new("format_combo", profile.format.display_name())
+                    .with_theme_colors(&theme.colors)
                     .width(150.0)
                     .show_ui(ui, |ui| {
                         for format in ArchiveFormat::all() {
@@ -142,8 +148,8 @@ impl AddProfileDialog {
                 ui.end_row();
 
                 ui.label("Compression Method:");
-                egui::ComboBox::from_id_salt("method_combo")
-                    .selected_text(profile.compression_method.as_deref().unwrap_or("Default"))
+                ThemedDropdown::new("method_combo", profile.compression_method.as_deref().unwrap_or("Default"))
+                    .with_theme_colors(&theme.colors)
                     .width(150.0)
                     .show_ui(ui, |ui| {
                         for method in profile.available_compression_methods() {

@@ -1,5 +1,6 @@
 use super::OrganizePanelAction;
 use arclain_core::features::organization::session::OrganizationSession;
+use arclain_widgets::ThemedDropdown;
 use eframe::egui;
 
 pub fn render_rule_selector(
@@ -22,8 +23,7 @@ pub fn render_rule_selector(
 
         let has_dlsite_code = arclain_core::utilities::has_dlsite_code(&session.archive_name);
 
-        egui::ComboBox::from_id_salt("rule_selector")
-            .selected_text(&current_rule)
+        ThemedDropdown::new("rule_selector", &current_rule)
             .width(200.0)
             .show_ui(ui, |ui| {
                 let mut categories: std::collections::BTreeMap<String, Vec<usize>> =

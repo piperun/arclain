@@ -1,5 +1,6 @@
 // Regex tester modal for Password Rules
 use crate::shared::theme::AppTheme;
+use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 
 use super::state::PasswordRulesDialog;
@@ -129,7 +130,7 @@ pub fn render_regex_tester_modal(
                 });
 
                 ui.horizontal(|ui| {
-                    if ui.button("📁 Pick Folder").clicked() {
+                    if ui.add(TextButton::new("📁 Pick Folder", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                         if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                             dialog.regex_test_folder = Some(folder.clone());
 
@@ -169,7 +170,7 @@ pub fn render_regex_tester_modal(
                         }
                     }
 
-                    if ui.button("🔄 Refresh").clicked() {
+                    if ui.add(TextButton::new("🔄 Refresh", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                         if let Some(folder) = &dialog.regex_test_folder {
                             if let Ok(entries) = std::fs::read_dir(folder) {
                                 dialog.regex_test_results.clear();
@@ -289,10 +290,7 @@ pub fn render_regex_tester_modal(
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .add(
-                            egui::Button::new(egui::RichText::new("Close").strong())
-                                .min_size(egui::vec2(100.0, 32.0)),
-                        )
+                        .add(TextButton::new("Close", ButtonSize::Small).with_theme_colors(&theme.colors))
                         .clicked()
                     {
                         dialog.show_regex_tester = false;

@@ -1,4 +1,5 @@
 use super::OrganizePanel;
+use arclain_widgets::ThemedDropdown;
 use crate::shared::components::preview_tree::{self, PreviewFilter};
 use crate::shared::theme::AppTheme;
 use eframe::egui::{self, RichText};
@@ -208,8 +209,7 @@ impl OrganizePanel {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    egui::ComboBox::from_id_salt("depth_limit")
-                        .selected_text(match self.ui_state.depth_limit {
+                    ThemedDropdown::new("depth_limit", match self.ui_state.depth_limit {
                             None => "Depth: All".to_string(),
                             Some(0) => "Depth: Root".to_string(),
                             Some(n) => format!("Depth: {}", n),

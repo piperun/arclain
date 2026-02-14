@@ -1,5 +1,5 @@
 use arclain_theme::{AppTheme, ButtonVariant};
-
+use arclain_widgets::TextInput;
 use eframe::egui;
 use egui::Widget;
 
@@ -85,29 +85,21 @@ pub fn render(
 
                 search_frame.show(ui, |ui| {
                     ui.set_width(search_width);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(egui_phosphor::regular::MAGNIFYING_GLASS)
-                                .size(14.0)
-                                .color(theme.colors.on_surface_variant),
-                        );
-                        let response = ui.add(
-                            egui::TextEdit::singleline(&mut state.search_text)
-                                .id(egui::Id::new("header_search_input"))
-                                .hint_text(if is_on_settings {
-                                    "Search settings..."
-                                } else {
-                                    "Search files..."
-                                })
-                                .frame(false)
-                                .desired_width(search_width - 32.0),
-                        );
+                    let response = TextInput::new(&mut state.search_text)
+                        .hint(if is_on_settings {
+                            "Search settings..."
+                        } else {
+                            "Search files..."
+                        })
+                        .prefix_icon(egui_phosphor::regular::MAGNIFYING_GLASS)
+                        .width(search_width)
+                        .with_theme_colors(&theme.colors)
+                        .show(ui);
 
-                        if *search_focus_requested {
-                            response.request_focus();
-                            *search_focus_requested = false;
-                        }
-                    });
+                    if *search_focus_requested {
+                        response.response.request_focus();
+                        *search_focus_requested = false;
+                    }
                 });
             },
         );

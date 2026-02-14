@@ -1,3 +1,4 @@
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize};
 use super::state::PasswordRulesDialog;
 use super::types::PasswordRule;
 use crate::shared::theme::AppTheme;
@@ -33,10 +34,12 @@ pub fn render_rule_editor(
                     .size(12.0)
                     .color(theme.colors.on_surface_variant),
             );
-            ui.add_sized(
-                [content_width - 120.0, 28.0],
-                egui::TextEdit::singleline(&mut dialog.edit_name).hint_text("e.g., Work archives"),
-            );
+            TextInput::new(&mut dialog.edit_name)
+                .hint("e.g., Work archives")
+                .size(TextInputSize::Small)
+                .width(content_width - 120.0)
+                .with_theme_colors(&theme.colors)
+                .show(ui);
             ui.end_row();
 
             ui.label(
@@ -45,13 +48,14 @@ pub fn render_rule_editor(
                     .color(theme.colors.on_surface_variant),
             );
             ui.horizontal(|ui| {
-                ui.add_sized(
-                    [content_width - 240.0, 28.0],
-                    egui::TextEdit::singleline(&mut dialog.edit_pattern)
-                        .hint_text("e.g., work/*.7z")
-                        .font(egui::TextStyle::Monospace),
-                );
-                if ui.button("🧪 Test Regex").clicked() {
+                TextInput::new(&mut dialog.edit_pattern)
+                    .hint("e.g., work/*.7z")
+                    .monospace()
+                    .size(TextInputSize::Small)
+                    .width(content_width - 240.0)
+                    .with_theme_colors(&theme.colors)
+                    .show(ui);
+                if ui.add(TextButton::new("🧪 Test Regex", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                     dialog.show_regex_tester = true;
                     dialog.regex_test_pattern = dialog.edit_pattern.clone();
                     dialog.regex_test_results.clear();
@@ -64,12 +68,13 @@ pub fn render_rule_editor(
                     .size(12.0)
                     .color(theme.colors.on_surface_variant),
             );
-            ui.add_sized(
-                [content_width - 120.0, 28.0],
-                egui::TextEdit::singleline(&mut dialog.edit_password)
-                    .password(true)
-                    .hint_text("Archive password"),
-            );
+            TextInput::new(&mut dialog.edit_password)
+                .password(true)
+                .hint("Archive password")
+                .size(TextInputSize::Small)
+                .width(content_width - 120.0)
+                .with_theme_colors(&theme.colors)
+                .show(ui);
             ui.end_row();
 
             ui.label(
@@ -78,10 +83,12 @@ pub fn render_rule_editor(
                     .color(theme.colors.on_surface_variant),
             );
             ui.horizontal(|ui| {
-                ui.add_sized(
-                    [80.0, 28.0],
-                    egui::TextEdit::singleline(&mut dialog.edit_priority).hint_text("10"),
-                );
+                TextInput::new(&mut dialog.edit_priority)
+                    .hint("10")
+                    .size(TextInputSize::Small)
+                    .width(80.0)
+                    .with_theme_colors(&theme.colors)
+                    .show(ui);
                 ui.add_space(20.0);
                 ui.checkbox(&mut dialog.edit_enabled, "Enabled");
             });
@@ -95,15 +102,15 @@ pub fn render_rule_editor(
         if ui
             .add_enabled(
                 can_save,
-                egui::Button::new(
-                    egui::RichText::new(if dialog.editing_index.is_some() {
+                TextButton::new(
+                    if dialog.editing_index.is_some() {
                         "Update Rule"
                     } else {
                         "Add Rule"
-                    })
-                    .strong(),
+                    },
+                    ButtonSize::Large,
                 )
-                .min_size(egui::vec2(100.0, 32.0)),
+                .with_theme_colors(&theme.colors),
             )
             .clicked()
         {
@@ -134,7 +141,7 @@ pub fn render_rule_editor(
 
         if dialog.editing_index.is_some()
             && ui
-                .add(egui::Button::new("Cancel Edit").min_size(egui::vec2(100.0, 32.0)))
+                .add(TextButton::new("Cancel Edit", ButtonSize::Medium).with_theme_colors(&theme.colors))
                 .clicked()
         {
             dialog.editing_index = None;

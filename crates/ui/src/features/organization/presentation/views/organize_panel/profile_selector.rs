@@ -3,6 +3,7 @@
 //! Dropdown for selecting archive profile when organizing.
 
 use arclain_core::features::organization::ArchiveProfile;
+use arclain_widgets::ThemedDropdown;
 use eframe::egui;
 
 /// Render the profile selector dropdown.
@@ -23,8 +24,7 @@ pub fn render_profile_selector(
             .map(|p| p.name.clone())
             .unwrap_or_else(|| "None".to_string());
 
-        egui::ComboBox::from_id_salt("profile_selector")
-            .selected_text(&current_profile)
+        ThemedDropdown::new("profile_selector", &current_profile)
             .width(200.0)
             .show_ui(ui, |ui| {
                 for (i, profile) in profiles.iter().enumerate() {

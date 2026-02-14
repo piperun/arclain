@@ -4,6 +4,7 @@ use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_core::UiService;
 use arclain_core::{UiItem, UiRegion};
+use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 
 use super::sections;
@@ -142,10 +143,10 @@ pub fn render_interface_settings(
 
             // Edit Layout button - opens dialog
             if ui
-                .button(format!(
+                .add(TextButton::new(format!(
                     "{} Edit Layout",
                     egui_phosphor::regular::PENCIL_SIMPLE
-                ))
+                ), ButtonSize::Medium).with_theme_colors(&theme.colors))
                 .clicked()
             {
                 interface_state.layout_dialog_open = true;
@@ -290,7 +291,7 @@ pub fn render_interface_settings(
                     ui.add_space(12.0);
 
                     // Cancel button
-                    if ui.button("Cancel").clicked() {
+                    if ui.add(TextButton::new("Cancel", ButtonSize::Small).with_theme_colors(&theme.colors)).clicked() {
                         interface_state.layout_dialog_open = false;
                     }
                 });
