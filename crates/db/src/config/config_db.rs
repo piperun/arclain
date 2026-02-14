@@ -16,6 +16,13 @@ impl ConfigDb {
         Ok(Self { db })
     }
 
+    /// Open an in-memory configuration database (for testing)
+    pub fn open_in_memory() -> Result<Self> {
+        let db = SqliteDb::open_in_memory()?;
+        db.init_schema(Self::init_schema)?;
+        Ok(Self { db })
+    }
+
     /// Initialize the database schema
     fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute(

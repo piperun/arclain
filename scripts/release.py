@@ -178,7 +178,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     if not args.skip_tests:
         print("Step 2: Running test suite...")
         run(
-            ["cargo", "test", "--workspace", "--", "--test-threads=1"],
+            ["cargo", "test", "--workspace"],
             cwd=REPO_ROOT, env=release_env,
         )
         print("All tests passed!\n")

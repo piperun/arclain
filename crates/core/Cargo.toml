@@ -43,6 +43,9 @@ rayon = "1.11.0"
 tokio = { version = "1", features = ["rt", "sync", "fs"] }
 walkdir = "2.5.0"
 
+[features]
+integration-tests = []
+
 [dev-dependencies]
 tempfile = "3"
 rand = "0.9.2"

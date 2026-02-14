@@ -21,7 +21,7 @@ authors = []
 # Named hook profile for full release validation
 [bump_profiles.release]
 pre_bump_hooks = [
-    "cargo test --workspace -- --test-threads=1",
+    "cargo test --workspace",
     "cargo check --workspace",
 ]
 post_bump_hooks = [
