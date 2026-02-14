@@ -8,6 +8,40 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tracing::{debug, error, info};
 
+/// Windows CreateProcess practical command-line length limit (~8 KB).
+const CMD_LINE_LENGTH_LIMIT: usize = 8000;
+
+/// Threshold for choosing between inline args vs response file strategies.
+const FILE_COUNT_THRESHOLD: usize = 50;
+
+/// Buffer size for CRC-32 streaming computation.
+const CRC_STREAM_BUFFER: usize = 8192;
+
+/// Buffer size for entry-to-writer streaming extraction.
+const EXTRACT_STREAM_BUFFER: usize = 65536;
+
+/// Base args for list/identify commands: `l -ba -slt -sccUTF-8 -scsUTF-8`
+fn list_base_args() -> Vec<OsString> {
+    vec![
+        OsString::from("l"),
+        OsString::from("-ba"),
+        OsString::from("-slt"),
+        OsString::from("-sccUTF-8"),
+        OsString::from("-scsUTF-8"),
+    ]
+}
+
+/// Base args for extract commands: `x -y -mmt=on -sccUTF-8 -scsUTF-8`
+fn extract_base_args() -> Vec<OsString> {
+    vec![
+        OsString::from("x"),
+        OsString::from("-y"),
+        OsString::from("-mmt=on"),
+        OsString::from("-sccUTF-8"),
+        OsString::from("-scsUTF-8"),
+    ]
+}
+
 impl ArchiveBackend for SevenZipCli {
     fn name(&self) -> &str {
         "7z (CLI)"
@@ -20,14 +54,8 @@ impl ArchiveBackend for SevenZipCli {
 
     fn identify(&self, path: &Path) -> Result<ArchiveKind> {
         info!("Identifying archive type: {}", path.display());
-        let args = vec![
-            OsString::from("l"),
-            OsString::from("-ba"),
-            OsString::from("-slt"),
-            OsString::from("-sccUTF-8"), // Console charset for output
-            OsString::from("-scsUTF-8"), // Charset for list files
-            path.as_os_str().to_os_string(),
-        ];
+        let mut args = list_base_args();
+        args.push(path.as_os_str().to_os_string());
         let out = self.run(args)?;
         let kind = Self::parse_kind(&out);
         debug!("Archive type identified: {:?}", kind);
@@ -40,13 +68,7 @@ impl ArchiveBackend for SevenZipCli {
             debug!("Using password for archive listing");
         }
 
-        let mut args = vec![
-            OsString::from("l"),
-            OsString::from("-ba"),
-            OsString::from("-slt"),
-            OsString::from("-sccUTF-8"), // Console charset for output
-            OsString::from("-scsUTF-8"), // Charset for list files
-        ];
+        let mut args = list_base_args();
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
         } else {
@@ -81,14 +103,8 @@ impl ArchiveBackend for SevenZipCli {
             files.iter().take(10).collect::<Vec<_>>()
         );
 
-        let mut args = vec![
-            OsString::from("x"), // Use 'x' to preserve directory structure (matches UI path expectations)
-            OsString::from("-y"),
-            OsString::from("-mmt=on"),
-            OsString::from("-bd"),
-            OsString::from("-sccUTF-8"), // Console charset
-            OsString::from("-scsUTF-8"), // Charset for list files
-        ];
+        let mut args = extract_base_args();
+        args.push(OsString::from("-bd"));
 
         // Provide password flag; use empty to avoid interactive prompt when unknown
         if let Some(p) = password {
@@ -103,23 +119,15 @@ impl ArchiveBackend for SevenZipCli {
 
         args.push(path.as_os_str().to_os_string());
 
-        // Add specific files to extract
-        // Note: For many files, this can hit command line length limits
-        // Windows has ~32KB limit, but practical limit is ~8KB for CreateProcess
+        // Add specific files to extract, respecting command line length limits
         let mut total_arg_len: usize = args.iter().map(|a| a.len() + 1).sum();
-        let truncated = false;
 
         for file in files {
             let file_os = OsString::from(file);
             let new_len = total_arg_len + file_os.len() + 1;
 
-            // If adding this file would exceed ~8000 chars, stop and log warning
-            if new_len > 8000 && !args.iter().any(|a| a == &file_os) {
-                if !truncated {
-                    error!("Command line too long! Truncating file list at {} files. This may cause incomplete extraction.",
-                           args.len() - 8); // Subtract initial args
-                                            // truncated = true; // Variable is unused
-                }
+            if new_len > CMD_LINE_LENGTH_LIMIT && !args.iter().any(|a| a == &file_os) {
+                error!("Command line too long! Truncating file list. This may cause incomplete extraction.");
                 break;
             }
 
@@ -173,21 +181,14 @@ impl ArchiveBackend for SevenZipCli {
             dest.display()
         );
 
-        let mut args = vec![
-            OsString::from("x"),
-            OsString::from("-y"),
-            OsString::from("-mmt=on"),
-            OsString::from("-bd"),
-            OsString::from("-sccUTF-8"), // Console charset
-            OsString::from("-scsUTF-8"), // Charset for list files
-        ];
+        let mut args = extract_base_args();
+        args.push(OsString::from("-bd"));
         // Provide password flag; use empty to avoid interactive prompt when unknown
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
         } else {
             args.push(OsString::from("-p"));
         }
-        // Build -o<dest> as a single OsString without leaking
         let mut oarg = OsString::from("-o");
         oarg.push(dest.as_os_str());
         args.push(oarg);
@@ -212,14 +213,8 @@ impl ArchiveBackend for SevenZipCli {
             dest.display()
         );
 
-        let mut args = vec![
-            OsString::from("x"), // Use 'x' to preserve directory structure
-            OsString::from("-y"),
-            OsString::from("-mmt=on"),
-            OsString::from("-bd"),
-            OsString::from("-sccUTF-8"),
-            OsString::from("-scsUTF-8"),
-        ];
+        let mut args = extract_base_args();
+        args.push(OsString::from("-bd"));
 
         if let Some(p) = password {
             args.push(OsString::from(format!("-p{}", p)));
@@ -259,38 +254,12 @@ impl ArchiveBackend for SevenZipCli {
         progress: Option<&crate::ProgressCallback>,
         _cancel: Option<&crate::CancellationToken>,
     ) -> Result<()> {
-        use std::collections::HashSet;
-        use std::io::Write;
-
-        // Helper for progress reporting
-        let report_start = |cb: Option<&crate::ProgressCallback>| {
-            if let Some(cb) = cb {
-                cb(crate::ExtractionProgress {
-                    current: 0,
-                    total: 1,
-                    current_file: "Extracting...".to_string(),
-                    percent: 0,
-                });
-            }
-        };
-        let report_done = |cb: Option<&crate::ProgressCallback>| {
-            if let Some(cb) = cb {
-                cb(crate::ExtractionProgress {
-                    current: 1,
-                    total: 1,
-                    current_file: "Complete".to_string(),
-                    percent: 100,
-                });
-            }
-        };
-
         match entries {
             None => {
-                // Explicit extract all
                 info!("[7z CLI] Extracting all (no entries specified)");
-                report_start(progress);
+                report_progress(progress, 0);
                 let result = self.extract_all(archive, dest, password);
-                report_done(progress);
+                report_progress(progress, 100);
                 result
             }
             Some(refs) if refs.is_empty() => {
@@ -298,143 +267,7 @@ impl ArchiveBackend for SevenZipCli {
                 Ok(())
             }
             Some(refs) => {
-                // Get total entries in archive to compare
-                let archive_info = self.list(archive, password)?;
-                let total_entries = archive_info.entries.len();
-
-                // Build set of selected paths (expanding directories)
-                let mut selected_paths: HashSet<String> = HashSet::new();
-                for entry_ref in refs {
-                    if entry_ref.is_dir {
-                        // Add directory and all children
-                        for archive_entry in &archive_info.entries {
-                            if entry_ref.matches(&archive_entry.path) {
-                                selected_paths.insert(archive_entry.path.clone());
-                            }
-                        }
-                    } else {
-                        selected_paths.insert(entry_ref.path.to_string());
-                    }
-                }
-
-                let selected_count = selected_paths.len();
-                let excluded_count = total_entries.saturating_sub(selected_count);
-
-                info!(
-                    "[7z CLI] Strategy: {} selected, {} excluded, {} total",
-                    selected_count, excluded_count, total_entries
-                );
-
-                if excluded_count == 0 {
-                    // All entries selected → extract_all
-                    info!("[7z CLI] All entries selected, using extract_all");
-                    report_start(progress);
-                    let result = self.extract_all(archive, dest, password);
-                    report_done(progress);
-                    result
-                } else if excluded_count <= 50 {
-                    // Few exclusions → use extract_all with exclude list
-                    info!(
-                        "[7z CLI] Using extract_all with {} exclusions",
-                        excluded_count
-                    );
-
-                    let excluded: Vec<String> = archive_info
-                        .entries
-                        .iter()
-                        .filter(|e| !selected_paths.contains(&e.path))
-                        .map(|e| e.path.clone())
-                        .collect();
-
-                    // Create exclude list file
-                    let mut excludefile =
-                        tempfile::NamedTempFile::new().context("Creating exclude file for 7z")?;
-                    for path in &excluded {
-                        writeln!(excludefile, "{}", path)?;
-                    }
-                    excludefile.flush()?;
-
-                    let mut args = vec![
-                        OsString::from("x"),
-                        OsString::from("-y"),
-                        OsString::from("-mmt=on"),
-                        OsString::from("-sccUTF-8"),
-                        OsString::from("-scsUTF-8"),
-                    ];
-
-                    if let Some(p) = password {
-                        args.push(OsString::from(format!("-p{}", p)));
-                    } else {
-                        args.push(OsString::from("-p"));
-                    }
-
-                    let mut oarg = OsString::from("-o");
-                    oarg.push(dest.as_os_str());
-                    args.push(oarg);
-
-                    args.push(archive.as_os_str().to_os_string());
-                    args.push(OsString::from(format!(
-                        "-x@{}",
-                        excludefile.path().display()
-                    )));
-
-                    report_start(progress);
-                    let result = self.run_status(args);
-                    report_done(progress);
-                    result
-                } else if selected_count <= 50 {
-                    // Few selections → list directly on command line
-                    info!(
-                        "[7z CLI] Extracting {} files directly on cmd",
-                        selected_count
-                    );
-                    let files: Vec<String> = selected_paths.into_iter().collect();
-                    self.extract_files_with_progress(
-                        archive, dest, &files, password, progress, None,
-                    )
-                } else {
-                    // Many selections → use include list via response file
-                    info!(
-                        "[7z CLI] Using include response file for {} entries",
-                        selected_count
-                    );
-
-                    let mut includefile =
-                        tempfile::NamedTempFile::new().context("Creating include file for 7z")?;
-                    for path in &selected_paths {
-                        writeln!(includefile, "{}", path)?;
-                    }
-                    includefile.flush()?;
-
-                    let mut args = vec![
-                        OsString::from("x"),
-                        OsString::from("-y"),
-                        OsString::from("-mmt=on"),
-                        OsString::from("-sccUTF-8"),
-                        OsString::from("-scsUTF-8"),
-                    ];
-
-                    if let Some(p) = password {
-                        args.push(OsString::from(format!("-p{}", p)));
-                    } else {
-                        args.push(OsString::from("-p"));
-                    }
-
-                    let mut oarg = OsString::from("-o");
-                    oarg.push(dest.as_os_str());
-                    args.push(oarg);
-
-                    args.push(archive.as_os_str().to_os_string());
-                    args.push(OsString::from(format!(
-                        "-i@{}",
-                        includefile.path().display()
-                    )));
-
-                    report_start(progress);
-                    let result = self.run_status(args);
-                    report_done(progress);
-                    result
-                }
+                self.extract_selective(archive, dest, refs, password, progress)
             }
         }
     }
@@ -721,7 +554,7 @@ impl ArchiveBackend for SevenZipCli {
         let mut hasher = crc32fast::Hasher::new();
         if let Some(mut stdout) = child.stdout.take() {
             use std::io::Read;
-            let mut buf = [0u8; 8192];
+            let mut buf = [0u8; CRC_STREAM_BUFFER];
             loop {
                 let n = stdout.read(&mut buf)?;
                 if n == 0 {
@@ -862,7 +695,7 @@ impl ArchiveBackend for SevenZipCli {
         let mut bytes_written = 0usize;
         if let Some(mut stdout) = child.stdout.take() {
             use std::io::Read;
-            let mut buf = [0u8; 65536];
+            let mut buf = [0u8; EXTRACT_STREAM_BUFFER];
             loop {
                 let n = stdout.read(&mut buf)?;
                 if n == 0 {
@@ -884,5 +717,167 @@ impl ArchiveBackend for SevenZipCli {
         debug!("CLI streaming complete: {} bytes written", bytes_written);
 
         Ok(())
+    }
+}
+
+/// Report extraction progress (0 = starting, 100 = complete).
+fn report_progress(cb: Option<&crate::ProgressCallback>, percent: u8) {
+    if let Some(cb) = cb {
+        let (current, msg) = if percent >= 100 {
+            (1, "Complete")
+        } else {
+            (0, "Extracting...")
+        };
+        cb(crate::ExtractionProgress {
+            current,
+            total: 1,
+            current_file: msg.to_string(),
+            percent,
+        });
+    }
+}
+
+impl SevenZipCli {
+    /// Extract a specific subset of entries using the optimal strategy.
+    fn extract_selective(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        refs: &[crate::EntryRef<'_>],
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+    ) -> Result<()> {
+        use std::collections::HashSet;
+
+        let archive_info = self.list(archive, password)?;
+        let total_entries = archive_info.entries.len();
+
+        // Build set of selected paths (expanding directories)
+        let mut selected_paths: HashSet<String> = HashSet::new();
+        for entry_ref in refs {
+            if entry_ref.is_dir {
+                for archive_entry in &archive_info.entries {
+                    if entry_ref.matches(&archive_entry.path) {
+                        selected_paths.insert(archive_entry.path.clone());
+                    }
+                }
+            } else {
+                selected_paths.insert(entry_ref.path.to_string());
+            }
+        }
+
+        let selected_count = selected_paths.len();
+        let excluded_count = total_entries.saturating_sub(selected_count);
+
+        info!(
+            "[7z CLI] Strategy: {} selected, {} excluded, {} total",
+            selected_count, excluded_count, total_entries
+        );
+
+        if excluded_count == 0 {
+            info!("[7z CLI] All entries selected, using extract_all");
+            report_progress(progress, 0);
+            let result = self.extract_all(archive, dest, password);
+            report_progress(progress, 100);
+            return result;
+        }
+
+        if excluded_count <= FILE_COUNT_THRESHOLD {
+            info!("[7z CLI] Using extract_all with {} exclusions", excluded_count);
+            return self.extract_with_exclude_file(
+                archive, dest, password, progress, &archive_info, &selected_paths,
+            );
+        }
+
+        if selected_count <= FILE_COUNT_THRESHOLD {
+            info!("[7z CLI] Extracting {} files directly on cmd", selected_count);
+            let files: Vec<String> = selected_paths.into_iter().collect();
+            return self.extract_files_with_progress(
+                archive, dest, &files, password, progress, None,
+            );
+        }
+
+        info!("[7z CLI] Using include response file for {} entries", selected_count);
+        self.extract_with_include_file(archive, dest, password, progress, &selected_paths)
+    }
+
+    /// Extract using an exclude response file (for few exclusions).
+    fn extract_with_exclude_file(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        archive_info: &ArchiveInfo,
+        selected_paths: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        use std::io::Write;
+
+        let excluded: Vec<String> = archive_info
+            .entries
+            .iter()
+            .filter(|e| !selected_paths.contains(&e.path))
+            .map(|e| e.path.clone())
+            .collect();
+
+        let mut excludefile =
+            tempfile::NamedTempFile::new().context("Creating exclude file for 7z")?;
+        for path in &excluded {
+            writeln!(excludefile, "{}", path)?;
+        }
+        excludefile.flush()?;
+
+        let mut args = extract_base_args();
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
+        }
+        let mut oarg = OsString::from("-o");
+        oarg.push(dest.as_os_str());
+        args.push(oarg);
+        args.push(archive.as_os_str().to_os_string());
+        args.push(OsString::from(format!("-x@{}", excludefile.path().display())));
+
+        report_progress(progress, 0);
+        let result = self.run_status(args);
+        report_progress(progress, 100);
+        result
+    }
+
+    /// Extract using an include response file (for many selections).
+    fn extract_with_include_file(
+        &self,
+        archive: &Path,
+        dest: &Path,
+        password: Option<&str>,
+        progress: Option<&crate::ProgressCallback>,
+        selected_paths: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        use std::io::Write;
+
+        let mut includefile =
+            tempfile::NamedTempFile::new().context("Creating include file for 7z")?;
+        for path in selected_paths {
+            writeln!(includefile, "{}", path)?;
+        }
+        includefile.flush()?;
+
+        let mut args = extract_base_args();
+        if let Some(p) = password {
+            args.push(OsString::from(format!("-p{}", p)));
+        } else {
+            args.push(OsString::from("-p"));
+        }
+        let mut oarg = OsString::from("-o");
+        oarg.push(dest.as_os_str());
+        args.push(oarg);
+        args.push(archive.as_os_str().to_os_string());
+        args.push(OsString::from(format!("-i@{}", includefile.path().display())));
+
+        report_progress(progress, 0);
+        let result = self.run_status(args);
+        report_progress(progress, 100);
+        result
     }
 }
