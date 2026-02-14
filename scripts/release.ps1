@@ -44,13 +44,22 @@ $TargetDir = Join-Path $RepoRoot "target"
 $env:CARGO_TARGET_DIR = $TargetDir
 Write-Host "Using project target directory: $TargetDir" -ForegroundColor Gray
 
-# Step 1: Update versions
+# Step 1: Update versions via cocogitto
 if (-not $SkipVersionUpdate) {
-    Write-Host "Step 1: Updating crate versions..." -ForegroundColor Cyan
-    & "$ScriptDir\calculate-versions.ps1" -UpdateCargo
+    Write-Host "Step 1: Bumping crate versions (cog)..." -ForegroundColor Cyan
+    $cogOutput = cog bump --auto --skip-untracked 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Error "Version update failed"
-        exit 1
+        # cog exits non-zero when there's nothing to bump — that's fine
+        if ($cogOutput -match "No conventional commit found") {
+            Write-Host "  No version bumps needed" -ForegroundColor Gray
+        } else {
+            Write-Host $cogOutput
+            Write-Error "Version bump failed"
+            exit 1
+        }
+    } else {
+        Write-Host $cogOutput
+        Write-Host "  Version bump complete" -ForegroundColor Green
     }
 } else {
     Write-Host "Step 1: Skipping version update" -ForegroundColor Yellow
