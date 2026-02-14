@@ -84,19 +84,16 @@ impl std::fmt::Debug for DieselPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::NamedTempFile;
 
     #[test]
     fn test_pool_creation() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let pool = DieselPool::new(temp_file.path());
+        let pool = DieselPool::from_url(":memory:");
         assert!(pool.is_ok());
     }
 
     #[test]
     fn test_get_connection() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let pool = DieselPool::new(temp_file.path()).unwrap();
+        let pool = DieselPool::from_url(":memory:").unwrap();
         let conn = pool.get();
         assert!(conn.is_ok());
     }

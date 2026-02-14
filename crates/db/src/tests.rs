@@ -122,10 +122,7 @@ fn test_secrets_db_creation_and_encryption() {
 
 #[test]
 fn test_config_get_set() {
-    let temp_dir = setup_test_dir();
-    let (config_path, _, _) = test_db_paths(&temp_dir);
-
-    let db = ConfigDb::open(&config_path).unwrap();
+    let db = ConfigDb::open_in_memory().unwrap();
     let conn = db.into_sqlite_db();
 
     conn.with_connection(|c| {
@@ -372,10 +369,7 @@ fn test_database_integration() {
 fn test_concurrent_access() {
     use std::thread;
 
-    let temp_dir = setup_test_dir();
-    let (config_path, _, _) = test_db_paths(&temp_dir);
-
-    let db = ConfigDb::open(&config_path).unwrap();
+    let db = ConfigDb::open_in_memory().unwrap();
     let conn = db.into_sqlite_db();
 
     let mut handles = vec![];

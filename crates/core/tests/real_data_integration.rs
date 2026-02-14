@@ -1,3 +1,5 @@
+#![cfg(feature = "integration-tests")]
+
 mod content_verification;
 use content_verification::ContentHashMap;
 
@@ -120,6 +122,64 @@ fn assert_dirs_equal(dir1: &Path, dir2: &Path) {
             (_, Some(Err(e))) => panic!("Error reading dir2: {}", e),
         }
     }
+}
+
+/// Load password rules from the production secrets database by copying the redb
+/// file to a temp directory first. This avoids exclusive file lock contention
+/// with the running Arclain UI or other test processes.
+///
+/// Returns `None` if the production database or key file doesn't exist.
+/// Panics on unexpected errors (corrupt DB, wrong key, etc.)
+fn load_production_password_rules() -> Option<Vec<arclain_db::DbPassRule>> {
+    let db_paths =
+        DbPaths::calculate_defaults("arclain").expect("Failed to get default database paths");
+
+    info!("Production database paths:");
+    info!("  Secrets DB: {:?}", db_paths.secrets_db);
+    info!("  Key file: {:?}", db_paths.key_file);
+
+    // Load the production master key
+    let key_path = db_paths.key_file.as_ref()?;
+    if !key_path.exists() {
+        warn!(
+            "Master key file not found at: {} — skipping secrets-dependent test",
+            key_path.display()
+        );
+        return None;
+    }
+    let key = SecretsKey::load_from_file(key_path).expect("Failed to load production key file");
+
+    if !db_paths.secrets_db.exists() {
+        warn!(
+            "Secrets DB not found at: {} — skipping secrets-dependent test",
+            db_paths.secrets_db.display()
+        );
+        return None;
+    }
+
+    // Copy the redb file to a temp directory so we don't contend for the
+    // exclusive file lock held by the UI or other test processes.
+    let tmp = TempDir::new().expect("Failed to create temp dir for redb copy");
+    let tmp_redb = tmp.path().join("pass.redb");
+    fs::copy(&db_paths.secrets_db, &tmp_redb).expect("Failed to copy production redb to temp");
+
+    let secrets_db =
+        SecretsDb::open(&tmp_redb, &key.as_bytes()).expect("Failed to open temp copy of secrets DB");
+
+    let rules = secrets_db
+        .list_pass_rules()
+        .expect("Failed to read password rules from temp copy");
+
+    if rules.is_empty() {
+        warn!("No password rules in production database — skipping secrets-dependent test");
+        return None;
+    }
+
+    info!(
+        "Loaded {} password rules from production secrets DB (via temp copy)",
+        rules.len()
+    );
+    Some(rules)
 }
 
 fn get_dummy_metadata(product_id: &str) -> GameMetadata {
@@ -251,54 +311,15 @@ fn test_integration_data_full_workflow() {
     info!("=== Starting Full Workflow Integration Test ===");
     info!("Testing with archive: {:?}", archive_path);
 
-    // === USE PRODUCTION SECRETS DATABASE (EXACTLY like the UI does) ===
-
-    // Use the SAME standardized path function that the UI uses (DbPaths::defaults)
-    // Use "arclain" (production) not "arclain_test" to access the REAL password database
-    let db_paths =
-        DbPaths::calculate_defaults("arclain").expect("Failed to get default database paths");
-
-    info!("Using production database paths:");
-    info!("  Config DB: {:?}", db_paths.config_db);
-    info!("  Secrets DB: {:?}", db_paths.secrets_db);
-    info!("  Key file: {:?}", db_paths.key_file);
-
-    // Load the production master key (same as UI at state.rs:112-124)
-    let key = if let Some(ref key_path) = db_paths.key_file {
-        if !key_path.exists() {
-            warn!("Master key file not found at: {}", key_path.display());
-            warn!("Skipping test: Cannot access production password database without master key");
-            warn!("The UI would have created this key on first run.");
+    // === LOAD PASSWORD RULES FROM PRODUCTION SECRETS DB (via temp copy) ===
+    let loaded_db_rules = match load_production_password_rules() {
+        Some(rules) => rules,
+        None => {
+            warn!("Skipping test: production secrets database not available");
             return;
         }
-        SecretsKey::load_from_file(key_path).expect("Failed to load production key file")
-    } else {
-        warn!("No key file path configured");
-        warn!("Skipping test: Cannot access production password database");
-        return;
     };
 
-    // Open production secrets database using standardized path
-    let secrets_db = SecretsDb::open(&db_paths.secrets_db, &key.as_bytes())
-        .expect("Failed to open production secrets database");
-
-    info!("Checking password rules in production secrets database");
-
-    // Load rules from production database into ConfigStore (EXACTLY like UI at state.rs:208-214)
-    let loaded_db_rules = secrets_db
-        .list_pass_rules()
-        .expect("Failed to load password rules from production database");
-
-    if loaded_db_rules.is_empty() {
-        warn!("No password rules found in production database!");
-        warn!("Skipping test: Add password rules in the UI first, then run this test.");
-        return;
-    }
-
-    info!(
-        "Found {} password rules in production secrets database",
-        loaded_db_rules.len()
-    );
     for (i, rule) in loaded_db_rules.iter().enumerate() {
         debug!(
             "  Rule {}: name='{}', pattern='{}', priority={}, enabled={}",
@@ -713,76 +734,19 @@ fn test_integration_data_decompress_and_flatten() {
 
     println!("Testing with archive: {:?}", archive_path);
 
-    // === USE PRODUCTION SECRETS DATABASE (EXACTLY like the UI does) ===
-
-    let db_paths =
-        DbPaths::calculate_defaults("arclain").expect("Failed to get default database paths");
-
-    println!("Using production database paths:");
-    println!("  Config DB: {:?}", db_paths.config_db);
-    println!("  Secrets DB: {:?}", db_paths.secrets_db);
-    println!("  Key file: {:?}", db_paths.key_file);
-
-    // Load the production master key
-    let key = if let Some(ref key_path) = db_paths.key_file {
-        if !key_path.exists() {
-            println!("\n⚠ Master key file not found at: {}", key_path.display());
-            println!(
-                "Skipping test: Cannot access production password database without master key"
-            );
-            println!("The UI would have created this key on first run.\n");
+    // === LOAD PASSWORD RULES FROM PRODUCTION SECRETS DB (via temp copy) ===
+    let loaded_db_rules = match load_production_password_rules() {
+        Some(rules) => rules,
+        None => {
+            println!("Skipping test: production secrets database not available");
             return;
         }
-        SecretsKey::load_from_file(key_path).expect("Failed to load production key file")
-    } else {
-        println!("\n⚠ No key file path configured");
-        println!("Skipping test: Cannot access production password database\n");
-        return;
     };
-
-    // Open production secrets database
-    // Handle the case where database is locked (UI app or another test is using it)
-    let secrets_db = match SecretsDb::open(&db_paths.secrets_db, &key.as_bytes()) {
-        Ok(db) => db,
-        Err(e) => {
-            let err_msg = e.to_string();
-            if err_msg.contains("already open") || err_msg.contains("Cannot acquire lock") {
-                println!("\n⚠ Database is locked (likely the UI application or another process is using it)");
-                println!("Skipping test: Close the Arclain UI application or run tests sequentially with:");
-                println!("  cargo test test_integration_data_decompress_and_flatten -- --test-threads=1\n");
-                return;
-            }
-            panic!("Failed to open production secrets database: {}", e);
-        }
-    };
-
-    println!("\n=== DEBUG: Password Rules in Production Secrets DB ===");
-
-    // Load rules from production database into ConfigStore
-    let loaded_db_rules = secrets_db
-        .list_pass_rules()
-        .expect("Failed to load password rules from production database");
-
-    if loaded_db_rules.is_empty() {
-        println!("\n⚠ No password rules found in production database!");
-        println!("Skipping test: Add password rules in the UI first, then run this test.\n");
-        return;
-    }
 
     println!(
-        "Found {} rules in production secrets database:",
+        "Loaded {} rules from production secrets database",
         loaded_db_rules.len()
     );
-    for (i, rule) in loaded_db_rules.iter().enumerate() {
-        println!(
-            "  Rule {}: name='{}', pattern='{}', password='***', priority={}, enabled={}",
-            i + 1,
-            rule.name,
-            rule.pattern,
-            rule.priority,
-            rule.enabled
-        );
-    }
 
     let mut config_store = ConfigStore::load("arclain").expect("Failed to load config");
 
