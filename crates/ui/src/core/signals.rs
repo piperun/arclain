@@ -33,9 +33,6 @@ pub struct ExtractionProgressState {
     pub error: Option<String>,
     /// Path to open after extraction completes (for open_file_from_archive)
     pub file_to_open: Option<PathBuf>,
-    /// Whether extraction was cancelled
-    #[allow(dead_code)]
-    pub cancelled: bool,
 }
 
 /// Context for which toolbar should be displayed
@@ -46,9 +43,6 @@ pub enum ToolbarContext {
     Archive,
     /// Show plugin-specific toolbar (plugin provides its own buttons)
     Plugin(String),
-    /// No toolbar
-    #[allow(dead_code)]
-    None,
 }
 
 /// Application-wide reactive signals for async state.

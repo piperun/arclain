@@ -24,7 +24,6 @@ pub fn run_organization_plan(
             complete: false,
             error: None,
             file_to_open: None,
-            cancelled: false,
         }));
 
     // Spawn thread
@@ -46,7 +45,6 @@ pub fn run_organization_plan(
                         complete: true,
                         error: None,
                         file_to_open: None, // Could set to dest to open?
-                        cancelled: false,
                     },
                 ));
             }
@@ -60,7 +58,6 @@ pub fn run_organization_plan(
                         complete: true,
                         error: Some(format!("{}", e)),
                         file_to_open: None,
-                        cancelled: false,
                     },
                 ));
             }
