@@ -7,6 +7,9 @@ use std::process::{Command, Stdio};
 use tracing::{debug, error, info};
 use which::which;
 
+/// Windows CreateProcess practical command-line length limit (~8 KB).
+const CMD_LINE_LENGTH_LIMIT: usize = 8000;
+
 /// UnRAR CLI wrapper for RAR archive extraction
 #[derive(Clone)]
 pub struct UnrarCli {
@@ -119,7 +122,7 @@ impl UnrarCli {
             cmd_len
         );
 
-        if cmd_len > 8000 {
+        if cmd_len > CMD_LINE_LENGTH_LIMIT {
             error!(
                 "Command line too long for UnRAR: {} bytes (limit ~8000). {} args passed.",
                 cmd_len,
