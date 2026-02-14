@@ -59,31 +59,19 @@ impl PluginManager {
 
         std::thread::spawn(move || {
             debug!("Async dispatching event: {:?}", event);
-            let plugin_ids: Vec<String> = plugins.read().keys().cloned().collect();
 
-            for plugin_id in plugin_ids {
-                // Check if plugin is enabled
-                let is_enabled = enabled_plugins
-                    .read()
-                    .get(&plugin_id)
-                    .copied()
-                    .unwrap_or(false);
+            // Collect enabled plugin instances in a single pass (2 lock acquisitions
+            // instead of 2N).
+            let dispatch_list: Vec<(String, _)> = {
+                let enabled = enabled_plugins.read();
+                let map = plugins.read();
+                map.iter()
+                    .filter(|(id, _)| enabled.get(*id).copied().unwrap_or(false))
+                    .map(|(id, p)| (id.clone(), p.instance.clone()))
+                    .collect()
+            };
 
-                if !is_enabled {
-                    continue;
-                }
-
-                // Get instance handle
-                let instance_arc = {
-                    let map = plugins.read();
-                    if let Some(p) = map.get(&plugin_id) {
-                        p.instance.clone()
-                    } else {
-                        continue;
-                    }
-                };
-
-                // Call plugin
+            for (plugin_id, instance_arc) in dispatch_list {
                 let mut instance = instance_arc.lock();
 
                 // Map PluginEvent to UI event for compatibility
@@ -112,31 +100,18 @@ impl PluginManager {
         while let Ok(event) = receiver.recv() {
             debug!("Event worker processing: {:?}", event);
 
-            let plugin_ids: Vec<String> = plugins.read().keys().cloned().collect();
+            // Collect enabled plugin instances in a single pass (2 lock acquisitions
+            // instead of 2N).
+            let dispatch_list: Vec<(String, _)> = {
+                let enabled = enabled_plugins.read();
+                let map = plugins.read();
+                map.iter()
+                    .filter(|(id, _)| enabled.get(*id).copied().unwrap_or(false))
+                    .map(|(id, p)| (id.clone(), p.instance.clone()))
+                    .collect()
+            };
 
-            for plugin_id in plugin_ids {
-                // Check if plugin is enabled
-                let is_enabled = enabled_plugins
-                    .read()
-                    .get(&plugin_id)
-                    .copied()
-                    .unwrap_or(false);
-
-                if !is_enabled {
-                    continue;
-                }
-
-                // Get instance handle
-                let instance_arc = {
-                    let map = plugins.read();
-                    if let Some(p) = map.get(&plugin_id) {
-                        p.instance.clone()
-                    } else {
-                        continue;
-                    }
-                };
-
-                // Call plugin
+            for (plugin_id, instance_arc) in dispatch_list {
                 let mut instance = instance_arc.lock();
 
                 // Match event to set context and dispatch
@@ -182,27 +157,19 @@ impl PluginManager {
     pub fn dispatch_event(&mut self, event: &PluginEvent) -> Vec<PluginResponse> {
         debug!("Dispatching event: {:?}", event);
 
+        // Collect enabled plugin instances in a single pass (2 lock acquisitions
+        // instead of 2N).
+        let dispatch_list: Vec<(String, _)> = {
+            let enabled = self.enabled_plugins.read();
+            let map = self.plugins.read();
+            map.iter()
+                .filter(|(id, _)| enabled.get(*id).copied().unwrap_or(false))
+                .map(|(id, p)| (id.clone(), p.instance.clone()))
+                .collect()
+        };
+
         let mut responses = Vec::new();
-        // Only need read lock now since instances are internally locked
-        let plugin_ids: Vec<String> = self.plugins.read().keys().cloned().collect();
-
-        for plugin_id in plugin_ids {
-            // Check if plugin is enabled
-            if !self.is_plugin_enabled(&plugin_id) {
-                continue;
-            }
-
-            // Get read access to plugins map and clone Arc
-            let instance_arc = {
-                let plugins = self.plugins.read();
-                if let Some(plugin) = plugins.get(&plugin_id) {
-                    plugin.instance.clone()
-                } else {
-                    continue;
-                }
-            };
-
-            // Acquire instance lock
+        for (plugin_id, instance_arc) in dispatch_list {
             let mut instance = instance_arc.lock();
             match instance.on_event(event) {
                 Ok(response) => {
