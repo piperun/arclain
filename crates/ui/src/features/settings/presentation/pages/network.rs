@@ -3,7 +3,7 @@
 //! Contains network and proxy configuration.
 
 use arclain_theme::ThemeColors;
-use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, TextButton, ToggleSwitch};
+use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use crate::features::settings::types::{
     ConnectionTestResult, ConnectionTestStatus, NetworkSettingsState, SettingsAction,
 };
@@ -52,11 +52,12 @@ pub fn render(
                                 .size(12.0)
                                 .color(colors.on_surface),
                         );
-                        ui.add(
-                            egui::TextEdit::singleline(&mut *state.socks5_address.write())
-                                .hint_text("e.g. 127.0.0.1:1080")
-                                .desired_width(f32::INFINITY),
-                        );
+                        TextInput::new(&mut *state.socks5_address.write())
+                            .hint("e.g. 127.0.0.1:1080")
+                            .size(TextInputSize::Small)
+                            .width(ui.available_width())
+                            .with_theme_colors(colors)
+                            .show(ui);
                         ui.label(
                             egui::RichText::new("Hostname or IP address with port")
                                 .size(11.0)
@@ -75,7 +76,10 @@ pub fn render(
                                         .size(12.0)
                                         .color(colors.on_surface),
                                 );
-                                ui.text_edit_singleline(&mut *state.socks5_username.write());
+                                TextInput::new(&mut *state.socks5_username.write())
+                                    .size(TextInputSize::Small)
+                                    .with_theme_colors(colors)
+                                    .show(ui);
                                 ui.end_row();
 
                                 ui.label(
@@ -83,10 +87,11 @@ pub fn render(
                                         .size(12.0)
                                         .color(colors.on_surface),
                                 );
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut *state.socks5_password.write())
-                                        .password(true),
-                                );
+                                TextInput::new(&mut *state.socks5_password.write())
+                                    .password(true)
+                                    .size(TextInputSize::Small)
+                                    .with_theme_colors(colors)
+                                    .show(ui);
                                 ui.end_row();
                             });
 

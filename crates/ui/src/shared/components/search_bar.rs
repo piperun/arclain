@@ -1,3 +1,4 @@
+use arclain_widgets::TextInput;
 use eframe::egui;
 use egui::Widget;
 
@@ -34,10 +35,10 @@ impl<'a> Widget for SearchBar<'a> {
         let width = self.desired_width.unwrap_or(250.0);
 
         // Potential future enhancement: Add a search icon inside or next to it
-        ui.add(
-            egui::TextEdit::singleline(self.query)
-                .hint_text(hint)
-                .desired_width(width),
-        )
+        TextInput::new(self.query)
+            .hint(hint)
+            .width(width)
+            .show(ui)
+            .response
     }
 }

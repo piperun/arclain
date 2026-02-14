@@ -1,3 +1,4 @@
+use arclain_widgets::TextInput;
 use crate::features::file_editing::domain::types::{FileEditDialog, FileEditResult};
 use crate::shared::dialogs::helpers::{show_dimmed_modal, ModalParams};
 use crate::shared::theme::AppTheme;
@@ -51,10 +52,10 @@ pub fn render_file_edit_dialog(
                     .size(12.0)
                     .color(theme.colors.on_surface_variant),
             );
-            ui.add_sized(
-                [content_rect.width(), 32.0],
-                egui::TextEdit::singleline(&mut dialog.name_input),
-            );
+            TextInput::new(&mut dialog.name_input)
+                .width(content_rect.width())
+                .with_theme_colors(&theme.colors)
+                .show(ui);
 
             ui.label(
                 egui::RichText::new("Content")

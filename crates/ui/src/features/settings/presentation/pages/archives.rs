@@ -2,7 +2,7 @@
 //!
 //! Contains settings for extraction, compression, and integrity verification.
 
-use arclain_widgets::{ButtonSize, TextButton, ToggleSwitch};
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ThemedDropdown, ToggleSwitch};
 use crate::features::settings::types::{
     ArchivesSettingsState, ChecksumAlgorithm, ChecksumMode, SettingsAction,
 };
@@ -47,9 +47,12 @@ pub fn render(
 
                 ui.horizontal(|ui| {
                     let mut binding = state.temp_dir.write();
-                    let te = egui::TextEdit::singleline(&mut *binding)
-                        .hint_text(&*default_temp_str);
-                    ui.add_sized([ui.available_width() - 110.0, 28.0], te);
+                    TextInput::new(&mut *binding)
+                        .hint(&*default_temp_str)
+                        .size(TextInputSize::Small)
+                        .width(ui.available_width() - 110.0)
+                        .with_theme_colors(colors)
+                        .show(ui);
 
                     if ui
                         .add(
@@ -111,8 +114,8 @@ pub fn render(
                                 .size(12.0)
                                 .color(colors.on_surface),
                         );
-                        egui::ComboBox::new("checksum_mode", "")
-                            .selected_text(state.checksum_mode.read().display_name())
+                        ThemedDropdown::new("checksum_mode", state.checksum_mode.read().display_name())
+                            .with_theme_colors(colors)
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut *state.checksum_mode.write(),
@@ -135,8 +138,8 @@ pub fn render(
                                 .size(12.0)
                                 .color(colors.on_surface),
                         );
-                        egui::ComboBox::new("checksum_algorithm", "")
-                            .selected_text(state.checksum_algorithm.read().display_name())
+                        ThemedDropdown::new("checksum_algorithm", state.checksum_algorithm.read().display_name())
+                            .with_theme_colors(colors)
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut *state.checksum_algorithm.write(),

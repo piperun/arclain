@@ -6,7 +6,7 @@ use super::helpers::{show_dimmed_modal, ModalParams};
 use crate::shared::theme::AppTheme;
 use arclain_core::archive::MultiPartArchive;
 use arclain_core::services::{CompressionLevel, OutputFormat};
-use arclain_widgets::{ButtonSize, TextButton};
+use arclain_widgets::{ButtonSize, TextButton, ThemedDropdown};
 use eframe::egui;
 use std::cell::Cell;
 use std::path::PathBuf;
@@ -179,8 +179,8 @@ pub fn render_merge_dialog(
                                 egui::RichText::new("Output Format:")
                                     .color(theme.colors.on_surface_variant),
                             );
-                            egui::ComboBox::from_id_salt("output_format")
-                                .selected_text(state.output_format.display_name())
+                            ThemedDropdown::new("output_format", state.output_format.display_name())
+                                .with_theme_colors(&theme.colors)
                                 .show_ui(ui, |ui| {
                                     for format in OutputFormat::all() {
                                         ui.selectable_value(
@@ -197,8 +197,8 @@ pub fn render_merge_dialog(
                                 egui::RichText::new("Compression:")
                                     .color(theme.colors.on_surface_variant),
                             );
-                            egui::ComboBox::from_id_salt("compression_level")
-                                .selected_text(state.compression_level.display_name())
+                            ThemedDropdown::new("compression_level", state.compression_level.display_name())
+                                .with_theme_colors(&theme.colors)
                                 .show_ui(ui, |ui| {
                                     for level in CompressionLevel::all() {
                                         ui.selectable_value(

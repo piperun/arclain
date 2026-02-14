@@ -130,7 +130,7 @@ fn render_properties_panel(
     use crate::core::utils::format_size;
     use crate::shared::components::{properties_panel, PropertiesPanelAction};
 
-    let mut action = None;
+    let action = None;
 
     egui::SidePanel::right("properties_panel")
         .exact_width(280.0)
@@ -248,12 +248,6 @@ fn render_properties_panel(
                 );
 
                 match panel_action {
-                    PropertiesPanelAction::Organize => {
-                        action = Some(Action::Organize);
-                    }
-                    PropertiesPanelAction::Metadata(json) => {
-                        action = Some(Action::Metadata(json));
-                    }
                     PropertiesPanelAction::None => {}
                 }
             });

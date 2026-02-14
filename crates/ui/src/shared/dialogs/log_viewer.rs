@@ -5,6 +5,7 @@
 use crate::shared::components::network_log::NetworkLog;
 use crate::shared::dialogs::helpers::{show_dimmed_modal, ModalParams};
 use arclain_theme::AppTheme;
+use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use std::time::SystemTime;
 
@@ -48,7 +49,7 @@ pub fn render(
         },
         |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Close").clicked() {
+                if ui.add(TextButton::new("Close", ButtonSize::Small).with_theme_colors(&theme.colors)).clicked() {
                     *open = false;
                 }
             });

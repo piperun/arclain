@@ -2,7 +2,7 @@
 //!
 //! Contains settings for encryption, CRC policy, and vault management.
 
-use arclain_widgets::{ButtonSize, TextButton};
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ThemedDropdown};
 use crate::features::settings::types::{EncryptedCrcPolicy, SecuritySettingsState, SettingsAction};
 use crate::shared::components::settings_form::{Form, SettingsGroup};
 use crate::shared::theme::AppTheme;
@@ -46,8 +46,12 @@ pub fn render(
                 ui.horizontal(|ui| {
                     let hint = default_key.as_deref().unwrap_or("Select a key file...");
                     let mut binding = state.key_file_path.write();
-                    let te = egui::TextEdit::singleline(&mut *binding).hint_text(hint);
-                    ui.add_sized([ui.available_width() - 110.0, 28.0], te);
+                    TextInput::new(&mut *binding)
+                        .hint(hint)
+                        .size(TextInputSize::Small)
+                        .width(ui.available_width() - 110.0)
+                        .with_theme_colors(colors)
+                        .show(ui);
                     if ui
                         .add(
                             TextButton::new("Browse…", ButtonSize::custom(100.0, 28.0))
@@ -85,8 +89,12 @@ pub fn render(
                 ui.horizontal(|ui| {
                     let hint = default_db.as_deref().unwrap_or("Path to pass.redb...");
                     let mut binding = state.secrets_db_path.write();
-                    let te = egui::TextEdit::singleline(&mut *binding).hint_text(hint);
-                    ui.add_sized([ui.available_width() - 110.0, 28.0], te);
+                    TextInput::new(&mut *binding)
+                        .hint(hint)
+                        .size(TextInputSize::Small)
+                        .width(ui.available_width() - 110.0)
+                        .with_theme_colors(colors)
+                        .show(ui);
                     if ui
                         .add(
                             TextButton::new("Browse…", ButtonSize::custom(100.0, 28.0))
@@ -123,8 +131,8 @@ pub fn render(
                 );
                 ui.add_space(8.0);
 
-                egui::ComboBox::new("crc_policy", "Encrypted CRC computation")
-                    .selected_text(state.encrypted_crc_policy.read().display_name())
+                ThemedDropdown::new("crc_policy", state.encrypted_crc_policy.read().display_name())
+                    .with_theme_colors(colors)
                     .show_ui(ui, |ui| {
                         ui.selectable_value(
                             &mut *state.encrypted_crc_policy.write(),

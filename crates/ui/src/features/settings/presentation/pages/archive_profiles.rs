@@ -9,6 +9,7 @@ use arclain_core::features::organization::ArchiveProfile;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
 use crate::shared::SharedState;
+use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use std::cell::Cell;
 
@@ -148,7 +149,7 @@ impl ProfilesPage {
 
                 // Header with count and Add button
                 ui.horizontal(|ui| {
-                    if ui.button(format!("{} Add New Profile", egui_phosphor::regular::PLUS)).clicked() {
+                    if ui.add(TextButton::new(format!("{} Add New Profile", egui_phosphor::regular::PLUS), ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                         self.dialog.open();
                     }
 
@@ -240,7 +241,7 @@ impl ProfilesPage {
                                     // Delete button (only for non-system profiles)
                                     if !profile.is_system {
                                         if ui
-                                            .button(format!("{}", egui_phosphor::regular::TRASH))
+                                            .add(TextButton::new(format!("{}", egui_phosphor::regular::TRASH), ButtonSize::Small).with_theme_colors(&theme.colors))
                                             .on_hover_text("Delete profile")
                                             .clicked()
                                         {
@@ -251,7 +252,7 @@ impl ProfilesPage {
 
                                     // Edit button
                                     if ui
-                                        .button(format!("{}", egui_phosphor::regular::PENCIL))
+                                        .add(TextButton::new(format!("{}", egui_phosphor::regular::PENCIL), ButtonSize::Small).with_theme_colors(&theme.colors))
                                         .on_hover_text("Edit profile")
                                         .clicked()
                                     {
@@ -263,7 +264,7 @@ impl ProfilesPage {
                                     // Set default button (only if not already default)
                                     if !profile.is_default {
                                         if ui
-                                            .button(format!("{}", egui_phosphor::regular::STAR))
+                                            .add(TextButton::new(format!("{}", egui_phosphor::regular::STAR), ButtonSize::Small).with_theme_colors(&theme.colors))
                                             .on_hover_text("Set as default")
                                             .clicked()
                                         {

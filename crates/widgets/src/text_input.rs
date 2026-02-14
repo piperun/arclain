@@ -93,6 +93,8 @@ pub struct TextInput<'a> {
     error_text: Option<String>,
     /// Whether label is required (shows asterisk)
     required: bool,
+    /// Whether to mask input as a password
+    password: bool,
 }
 
 impl<'a> TextInput<'a> {
@@ -114,7 +116,14 @@ impl<'a> TextInput<'a> {
             helper_text: None,
             error_text: None,
             required: false,
+            password: false,
         }
+    }
+
+    /// Mask input as a password field
+    pub fn password(mut self, password: bool) -> Self {
+        self.password = password;
+        self
     }
 
     /// Set placeholder/hint text
@@ -409,6 +418,10 @@ impl<'a> TextInput<'a> {
 
                     if let Some(hint) = &self.hint {
                         edit = edit.hint_text(egui::RichText::new(hint).color(hint_color));
+                    }
+
+                    if self.password {
+                        edit = edit.password(true);
                     }
 
                     if self.monospace {

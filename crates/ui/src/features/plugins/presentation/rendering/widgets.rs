@@ -4,6 +4,7 @@ use super::context::{RenderContext, UiEventHandler};
 use super::image::{trigger_image_fetch, try_render_image};
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use arclain_plugins::types::{ButtonAction, WarningIcon};
+use arclain_widgets::{TextInput, ThemedDropdown};
 use eframe::egui;
 
 pub fn render_label(
@@ -85,11 +86,11 @@ pub fn render_text_input(
 
     // If placeholder is set, render as simple search-style input (no label title)
     if let Some(hint) = placeholder {
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut text)
-                .hint_text(hint)
-                .desired_width(ui.available_width()),
-        );
+        let response = TextInput::new(&mut text)
+            .hint(hint)
+            .width(ui.available_width())
+            .with_theme_colors(colors)
+            .show(ui);
 
         if response.changed() {
             ui.data_mut(|data| data.insert_temp(temp_id, text.clone()));
@@ -101,8 +102,10 @@ pub fn render_text_input(
         SettingsRow::new(label)
             .action(|ui| {
                 ui.horizontal(|ui| {
-                    let response =
-                        ui.add(egui::TextEdit::singleline(&mut text).desired_width(200.0));
+                    let response = TextInput::new(&mut text)
+                        .width(200.0)
+                        .with_theme_colors(colors)
+                        .show(ui);
 
                     // If changed, update temp state
                     if response.changed() {
@@ -112,15 +115,15 @@ pub fn render_text_input(
                     // Show Save button if text differs from stored value
                     let is_modified = text != *value;
                     if is_modified {
-                        if ui.button("Save").clicked()
-                            || (response.lost_focus()
+                        if ui.add(arclain_widgets::TextButton::new("Save", arclain_widgets::ButtonSize::Small).with_theme_colors(colors)).clicked()
+                            || (response.response.lost_focus()
                                 && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                         {
                             (ctx.event_callback)(id, Some(text.clone()));
                             // Clear temp state to sync with new incoming value
                             ui.data_mut(|data| data.remove::<String>(temp_id));
                         }
-                    } else if response.lost_focus() {
+                    } else if response.response.lost_focus() {
                         // If focus lost without changes (or reverted), assume sync
                         // Optional: clear temp logic if needed
                     }
@@ -240,8 +243,8 @@ pub fn render_dropdown(
     SettingsRow::new(label)
         .action(|ui| {
             let mut current_selected = selected.to_string();
-            egui::ComboBox::from_id_salt(id)
-                .selected_text(egui::RichText::new(&current_selected).color(colors.on_surface))
+            ThemedDropdown::new(id, &current_selected)
+                .with_theme_colors(colors)
                 .show_ui(ui, |ui| {
                     for option in options {
                         if ui

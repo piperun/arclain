@@ -1,5 +1,6 @@
 use crate::shared::components::preview_tree::PreviewTreeNode;
 use arclain_core::features::organization::GameMetadata;
+use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use serde::Serialize;
 
@@ -129,13 +130,13 @@ impl ExportTreeDialog {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if ui.button("Cancel").clicked() {
+                    if ui.add(TextButton::new("Cancel", ButtonSize::Small)).clicked() {
                         self.close();
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui
-                            .button(egui::RichText::new("Export...").strong())
+                            .add(TextButton::new("Export...", ButtonSize::Medium))
                             .clicked()
                         {
                             self.perform_export(original_tree, organized_tree, metadata);

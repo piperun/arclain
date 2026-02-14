@@ -1,3 +1,4 @@
+use arclain_widgets::{TextInput, TextInputSize};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -75,18 +76,18 @@ pub fn render_password_dialog(
                         .color(theme.colors.on_surface_variant)
                 );
 
-                let password_response = ui.add_sized(
-                    [content.width(), 40.0], 
-                    egui::TextEdit::singleline(&mut dialog.password)
-                        .password(true)
-                        .hint_text("Enter password...")
-                        .font(egui::TextStyle::Body)
-                );
-                
-                password_response.request_focus();
-                
+                let password_response = TextInput::new(&mut dialog.password)
+                    .password(true)
+                    .hint("Enter password...")
+                    .size(TextInputSize::Large)
+                    .width(content.width())
+                    .with_theme_colors(&theme.colors)
+                    .show(ui);
+
+                password_response.response.request_focus();
+
                 // Press Enter to unlock while the field is focused
-                if password_response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !dialog.password.is_empty() {
+                if password_response.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !dialog.password.is_empty() {
                     result = Some(PasswordDialogResult::Unlock);
                 }
                 
