@@ -18,6 +18,7 @@ pub use types::{
 };
 
 use crate::shared::theme::AppTheme;
+use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
@@ -50,53 +51,43 @@ fn header_sort_label(
 }
 
 fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
-    let cmp = |a: &FileEntry, b: &FileEntry| -> std::cmp::Ordering {
-        let ord = match sort.column {
-            SortColumn::Name => {
-                let an = a.name.to_lowercase();
-                let bn = b.name.to_lowercase();
-                an.cmp(&bn)
-            }
-            SortColumn::Type => {
-                let get_type = |e: &FileEntry| {
-                    if e.is_folder {
-                        "Directory".to_string()
-                    } else {
-                        e.name.split('.').last().unwrap_or("File").to_lowercase()
-                    }
-                };
-                get_type(a).cmp(&get_type(b))
-            }
-            SortColumn::Size => {
-                let asz = parse_size_to_bytes(&a.size);
-                let bsz = parse_size_to_bytes(&b.size);
-                asz.cmp(&bsz)
-            }
-            SortColumn::Compressed => {
-                let asz = parse_size_to_bytes(&a.compressed);
-                let bsz = parse_size_to_bytes(&b.compressed);
-                asz.cmp(&bsz)
-            }
-            SortColumn::Ratio => {
-                let ar = parse_ratio_pct(&a.ratio);
-                let br = parse_ratio_pct(&b.ratio);
-                ar.cmp(&br)
-            }
-            SortColumn::Modified => a.modified.cmp(&b.modified),
-            SortColumn::Crc32 => {
-                let an = a.crc32.to_uppercase();
-                let bn = b.crc32.to_uppercase();
-                an.cmp(&bn)
-            }
-            SortColumn::Encrypted => (a.encrypted as u8).cmp(&(b.encrypted as u8)),
-        };
-        if sort.ascending {
-            ord
-        } else {
-            ord.reverse()
+    // Use sort_by_cached_key where the key involves allocation (Name, Type, Crc32)
+    // to avoid repeated allocations per comparison. Other columns use cheap keys.
+    match sort.column {
+        SortColumn::Name => {
+            entries.sort_by_cached_key(|e| e.name.to_lowercase());
         }
-    };
-    entries.sort_by(cmp);
+        SortColumn::Type => {
+            entries.sort_by_cached_key(|e| {
+                if e.is_folder {
+                    "directory".to_string()
+                } else {
+                    e.name.split('.').last().unwrap_or("file").to_lowercase()
+                }
+            });
+        }
+        SortColumn::Size => {
+            entries.sort_by_cached_key(|e| parse_size_to_bytes(&e.size));
+        }
+        SortColumn::Compressed => {
+            entries.sort_by_cached_key(|e| parse_size_to_bytes(&e.compressed));
+        }
+        SortColumn::Ratio => {
+            entries.sort_by_cached_key(|e| parse_ratio_pct(&e.ratio));
+        }
+        SortColumn::Modified => {
+            entries.sort_by_cached_key(|e| e.modified.clone());
+        }
+        SortColumn::Crc32 => {
+            entries.sort_by_cached_key(|e| e.crc32.to_uppercase());
+        }
+        SortColumn::Encrypted => {
+            entries.sort_by_cached_key(|e| e.encrypted as u8);
+        }
+    }
+    if !sort.ascending {
+        entries.reverse();
+    }
 }
 
 pub fn render_list_view(
@@ -541,7 +532,7 @@ pub fn render_list_view(
 
                             // Right-click context menu
                             row_response.context_menu(|ui| {
-                                if ui.button("📂  Open").clicked() {
+                                if ui.add(TextButton::new("📂  Open", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                                     if is_folder {
                                         action = Some(FileListAction::Navigate(entry_path.clone()));
                                     } else {
@@ -550,34 +541,34 @@ pub fn render_list_view(
                                     ui.close();
                                 }
                                 ui.separator();
-                                if ui.button("📦  Extract").clicked() {
+                                if ui.add(TextButton::new("📦  Extract", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                                     action = Some(FileListAction::Extract(entry_path.clone()));
                                     ui.close();
                                 }
-                                if ui.button("📁  Extract To...").clicked() {
+                                if ui.add(TextButton::new("📁  Extract To...", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                                     action = Some(FileListAction::ExtractTo(entry_path.clone()));
                                     ui.close();
                                 }
                                 ui.separator();
-                                if ui.button("📋  Copy Path").clicked() {
+                                if ui.add(TextButton::new("📋  Copy Path", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                                     action = Some(FileListAction::CopyPath(entry_path.clone()));
                                     ui.close();
                                 }
                                 ui.separator();
-                                if ui.button("ℹ️  Properties").clicked() {
+                                if ui.add(TextButton::new("ℹ️  Properties", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                                     action =
                                         Some(FileListAction::ShowProperties(entry_path.clone()));
                                     ui.close();
                                 }
                                 ui.separator();
                                 if ui
-                                    .add_enabled(!is_folder, egui::Button::new("✏️  Edit"))
+                                    .add_enabled(!is_folder, TextButton::new("✏️  Edit", ButtonSize::Medium).with_theme_colors(&theme.colors))
                                     .clicked()
                                 {
                                     action = Some(FileListAction::Edit(entry_path.clone()));
                                     ui.close();
                                 }
-                                if ui.button("🗑️  Delete").clicked() {
+                                if ui.add(TextButton::new("🗑️  Delete", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                                     action = Some(FileListAction::Delete(entry_path.clone()));
                                     ui.close();
                                 }

@@ -127,8 +127,8 @@ impl PluginsListState {
             unsorted_plugins.push(info);
         }
 
-        // Sort plugins alphabetically
-        unsorted_plugins.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        // Sort plugins alphabetically (cached key avoids per-comparison allocation)
+        unsorted_plugins.sort_by_cached_key(|p| p.name.to_lowercase());
 
         self.plugins = unsorted_plugins;
     }
