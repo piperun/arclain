@@ -92,7 +92,8 @@ pub fn render(
                 });
             });
 
-            ui.add_space(4.0);
+            // Visual separator between groups
+            ui.separator();
         }
 
         // Legacy plugin rendering removed (now handled via standard items)

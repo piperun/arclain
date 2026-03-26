@@ -1,6 +1,6 @@
 use super::types::{ButtonContext, ToolbarActions, ToolbarState};
 use arclain_core::{ActionType, UiItem};
-use arclain_plugins::types::{ButtonAction, PluginUiElement};
+use arclain_plugins::types::PluginUiElement;
 use arclain_theme::ButtonVariant;
 use eframe::egui;
 use egui::Widget;
@@ -22,38 +22,26 @@ pub fn render_button(
                     if let Some(PluginUiElement::Button {
                         id: _,
                         label,
-                        action: btn_action,
+                        action: _,
                     }) = elements
                         .iter()
                         .find(|e| matches!(e, PluginUiElement::Button { id, .. } if id == btn_id))
                     {
-                        // Render button
+                        // Plugin buttons keep text (they're unique/unfamiliar)
                         if arclain_widgets::TextButton::new(
                             label,
-                            arclain_widgets::ButtonSize::Custom {
-                                width: 90.0,
-                                height: 32.0,
-                            },
+                            arclain_widgets::ButtonSize::Small,
                         )
                         .with_theme_colors(&ctx.theme.colors)
                         .variant(ButtonVariant::Ghost)
                         .ui(ui)
                         .clicked()
                         {
-                            // Handle action
-                            let event_id = match btn_action.as_ref().unwrap_or(&ButtonAction::None)
-                            {
-                                ButtonAction::ShowDialog { id } => format!("__dialog_open:{}", id),
-                                ButtonAction::CloseDialog => "__dialog_close".to_string(),
-                                ButtonAction::OpenPage { id } => format!("__page_open:{}", id),
-                                ButtonAction::ClosePage => "__page_close".to_string(),
-                                ButtonAction::Custom(custom_id) => custom_id.clone(),
-                                ButtonAction::None => btn_id.to_string(),
-                            };
-
-                            actions
-                                .plugin_events
-                                .push((plugin_id.to_string(), event_id, None));
+                            actions.plugin_events.push((
+                                plugin_id.to_string(),
+                                btn_id.to_string(),
+                                None,
+                            ));
                         }
                     }
                 }
@@ -89,48 +77,23 @@ pub fn render_button(
     }
 
     match item.id.as_str() {
-        // Navigation buttons (icon only)
+        // ── Navigation (icon only) ──────────────────────────────
         "toolbar.back" => {
-            if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_LEFT)
-                .with_theme_colors(&ctx.theme.colors)
-                .variant(ButtonVariant::Ghost)
-                .enabled(ctx.can_go_back)
-                .ui(ui)
-                .clicked()
-            {
-                actions.go_back = true;
-            }
+            icon_button(ui, ctx, egui_phosphor::regular::ARROW_LEFT, "Back", ctx.can_go_back, || actions.go_back = true);
         }
         "toolbar.forward" => {
-            if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_RIGHT)
-                .with_theme_colors(&ctx.theme.colors)
-                .variant(ButtonVariant::Ghost)
-                .enabled(ctx.can_go_forward)
-                .ui(ui)
-                .clicked()
-            {
-                actions.go_forward = true;
-            }
+            icon_button(ui, ctx, egui_phosphor::regular::ARROW_RIGHT, "Forward", ctx.can_go_forward, || actions.go_forward = true);
         }
         "toolbar.up" => {
-            if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_UP)
-                .with_theme_colors(&ctx.theme.colors)
-                .variant(ButtonVariant::Ghost)
-                .enabled(ctx.can_go_up)
-                .ui(ui)
-                .clicked()
-            {
-                actions.go_up = true;
-            }
+            icon_button(ui, ctx, egui_phosphor::regular::ARROW_UP, "Up one level", ctx.can_go_up, || actions.go_up = true);
         }
-        // File action buttons (text + icon)
+
+        // ── File operations (icon + tooltip) ────────────────────
         "toolbar.open" => {
+            // Open keeps text — it's the primary action
             if arclain_widgets::TextButton::new(
-                format!("{} Open", egui_phosphor::regular::FOLDER_OPEN),
-                arclain_widgets::ButtonSize::Custom {
-                    width: 90.0,
-                    height: 32.0,
-                },
+                format!("{}  Open", egui_phosphor::regular::FOLDER_OPEN),
+                arclain_widgets::ButtonSize::Small,
             )
             .with_theme_colors(&ctx.theme.colors)
             .variant(ButtonVariant::Ghost)
@@ -141,144 +104,49 @@ pub fn render_button(
             }
         }
         "toolbar.extract" => {
-            if ui
-                .add_enabled(
-                    ctx.archive_loaded && ctx.has_selection,
-                    arclain_widgets::TextButton::new(
-                        format!("{} Extract", egui_phosphor::regular::EXPORT),
-                        arclain_widgets::ButtonSize::Custom {
-                            width: 90.0,
-                            height: 32.0,
-                        },
-                    )
-                    .with_theme_colors(&ctx.theme.colors)
-                    .variant(ButtonVariant::Ghost),
-                )
-                .clicked()
-            {
-                actions.extract = true;
-            }
+            icon_button_enabled(ui, ctx, egui_phosphor::regular::EXPORT, "Extract selected", ctx.archive_loaded && ctx.has_selection, || actions.extract = true);
         }
         "toolbar.extract_all" => {
-            if ui
-                .add_enabled(
-                    ctx.archive_loaded,
-                    arclain_widgets::TextButton::new(
-                        format!("{} Extract all", egui_phosphor::regular::EXPORT),
-                        arclain_widgets::ButtonSize::Custom {
-                            width: 90.0,
-                            height: 32.0,
-                        },
-                    )
-                    .with_theme_colors(&ctx.theme.colors)
-                    .variant(ButtonVariant::Ghost),
-                )
-                .clicked()
-            {
-                actions.extract_all = true;
-            }
+            icon_button_enabled(ui, ctx, egui_phosphor::regular::TRAY_ARROW_DOWN, "Extract all", ctx.archive_loaded, || actions.extract_all = true);
         }
         "toolbar.add" => {
-            if ui
-                .add_enabled(
-                    ctx.archive_loaded,
-                    arclain_widgets::TextButton::new(
-                        format!("{} Add", egui_phosphor::regular::PLUS),
-                        arclain_widgets::ButtonSize::Custom {
-                            width: 90.0,
-                            height: 32.0,
-                        },
-                    )
-                    .with_theme_colors(&ctx.theme.colors)
-                    .variant(ButtonVariant::Ghost),
-                )
-                .clicked()
-            {
-                actions.add = true;
-            }
+            icon_button_enabled(ui, ctx, egui_phosphor::regular::PLUS, "Add files", ctx.archive_loaded, || actions.add = true);
         }
         "toolbar.delete" => {
-            if ui
-                .add_enabled(
-                    ctx.archive_loaded && ctx.has_selection,
-                    arclain_widgets::TextButton::new(
-                        format!("{} Delete", egui_phosphor::regular::TRASH),
-                        arclain_widgets::ButtonSize::Custom {
-                            width: 90.0,
-                            height: 32.0,
-                        },
-                    )
-                    .with_theme_colors(&ctx.theme.colors)
-                    .variant(ButtonVariant::Ghost),
-                )
-                .clicked()
-            {
-                actions.delete_selected = true;
-            }
+            icon_button_enabled(ui, ctx, egui_phosphor::regular::TRASH, "Delete selected", ctx.archive_loaded && ctx.has_selection, || actions.delete_selected = true);
         }
+
+        // ── Conversion / Organization ───────────────────────────
         "toolbar.convert" => {
-            if ui
-                .add_enabled(
-                    ctx.archive_loaded,
-                    arclain_widgets::TextButton::new(
-                        format!("{} Convert to 7z", egui_phosphor::regular::PACKAGE),
-                        arclain_widgets::ButtonSize::Custom {
-                            width: 90.0,
-                            height: 32.0,
-                        },
-                    )
-                    .with_theme_colors(&ctx.theme.colors)
-                    .variant(ButtonVariant::Ghost),
-                )
-                .clicked()
-            {
-                actions.convert_to_7z = true;
-            }
+            icon_button_enabled(ui, ctx, egui_phosphor::regular::PACKAGE, "Convert to 7z", ctx.archive_loaded, || actions.convert_to_7z = true);
         }
         "toolbar.organize" => {
-            if ui
-                .add_enabled(
-                    ctx.archive_loaded,
-                    arclain_widgets::TextButton::new(
-                        format!("{} Organize", egui_phosphor::regular::FOLDERS),
-                        arclain_widgets::ButtonSize::Custom {
-                            width: 90.0,
-                            height: 32.0,
-                        },
-                    )
-                    .with_theme_colors(&ctx.theme.colors)
-                    .variant(ButtonVariant::Ghost),
-                )
-                .clicked()
-            {
-                actions.organize_archive = true;
-            }
+            icon_button_enabled(ui, ctx, egui_phosphor::regular::FOLDERS, "Organize archive", ctx.archive_loaded, || actions.organize_archive = true);
         }
-        // View mode buttons (toggle)
+
+        // ── View mode toggles ───────────────────────────────────
         "toolbar.list_view" => {
-            let list_selected = !state.grid_view;
-            if arclain_widgets::ToggleButton::new(egui_phosphor::regular::LIST, list_selected)
+            let selected = !state.grid_view;
+            if arclain_widgets::ToggleButton::new(egui_phosphor::regular::LIST, selected)
                 .with_theme_colors(&ctx.theme.colors)
                 .ui(ui)
+                .on_hover_text("List view")
                 .clicked()
             {
                 state.grid_view = false;
             }
         }
         "toolbar.grid_view" => {
-            if arclain_widgets::ToggleButton::new(
-                egui_phosphor::regular::GRID_FOUR,
-                state.grid_view,
-            )
-            .with_theme_colors(&ctx.theme.colors)
-            .ui(ui)
-            .clicked()
+            if arclain_widgets::ToggleButton::new(egui_phosphor::regular::GRID_FOUR, state.grid_view)
+                .with_theme_colors(&ctx.theme.colors)
+                .ui(ui)
+                .on_hover_text("Grid view")
+                .clicked()
             {
                 state.grid_view = true;
             }
         }
         "toolbar.column_lock" => {
-            // Only show in list view
             if !state.grid_view {
                 let icon = if state.columns_locked {
                     egui_phosphor::regular::LOCK
@@ -288,40 +156,74 @@ pub fn render_button(
                 if arclain_widgets::ToggleButton::new(icon, state.columns_locked)
                     .with_theme_colors(&ctx.theme.colors)
                     .ui(ui)
+                    .on_hover_text(if state.columns_locked { "Unlock columns" } else { "Lock columns" })
                     .clicked()
                 {
                     state.columns_locked = !state.columns_locked;
                 }
             }
         }
-        // Panel toggles
+
+        // ── Panel toggles ───────────────────────────────────────
         "toolbar.tree_panel" => {
-            if arclain_widgets::ToggleButton::new(
-                egui_phosphor::regular::TREE_STRUCTURE,
-                state.show_tree_panel,
-            )
-            .with_theme_colors(&ctx.theme.colors)
-            .ui(ui)
-            .clicked()
+            if arclain_widgets::ToggleButton::new(egui_phosphor::regular::TREE_STRUCTURE, state.show_tree_panel)
+                .with_theme_colors(&ctx.theme.colors)
+                .ui(ui)
+                .on_hover_text("Tree panel")
+                .clicked()
             {
                 state.show_tree_panel = !state.show_tree_panel;
             }
         }
         "toolbar.properties_panel" => {
-            if arclain_widgets::ToggleButton::new(
-                egui_phosphor::regular::INFO,
-                state.show_properties_panel,
-            )
-            .with_theme_colors(&ctx.theme.colors)
-            .ui(ui)
-            .clicked()
+            if arclain_widgets::ToggleButton::new(egui_phosphor::regular::INFO, state.show_properties_panel)
+                .with_theme_colors(&ctx.theme.colors)
+                .ui(ui)
+                .on_hover_text("Properties panel")
+                .clicked()
             {
                 state.show_properties_panel = !state.show_properties_panel;
             }
         }
         _ => {
-            // Unknown button - skip or log
             tracing::debug!("Unknown toolbar item: {}", item.id);
         }
     }
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────
+
+/// Icon-only button with tooltip (always enabled)
+fn icon_button(
+    ui: &mut egui::Ui,
+    ctx: &ButtonContext,
+    icon: &str,
+    tooltip: &str,
+    enabled: bool,
+    mut on_click: impl FnMut(),
+) {
+    if ui
+        .add_enabled(
+            enabled,
+            arclain_widgets::IconButton::new(icon)
+                .with_theme_colors(&ctx.theme.colors)
+                .variant(ButtonVariant::Ghost),
+        )
+        .on_hover_text(tooltip)
+        .clicked()
+    {
+        on_click();
+    }
+}
+
+/// Icon-only button with tooltip and enabled state
+fn icon_button_enabled(
+    ui: &mut egui::Ui,
+    ctx: &ButtonContext,
+    icon: &str,
+    tooltip: &str,
+    enabled: bool,
+    on_click: impl FnMut(),
+) {
+    icon_button(ui, ctx, icon, tooltip, enabled, on_click);
 }
