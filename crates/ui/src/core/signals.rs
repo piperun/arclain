@@ -16,6 +16,22 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+/// Connection status for the gameta server.
+///
+/// Used by the global `server_status` signal to drive the header indicator.
+/// Distinct from `ServerConnectionStatus` in settings types, which also tracks
+/// transient states (`Idle`, `Testing`) used during interactive connection tests.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum ServerConnectionStatus {
+    /// Server integration is disabled or was never contacted.
+    #[default]
+    Offline,
+    /// Successfully connected; holds the server version string.
+    Connected(String),
+    /// Server is configured but unreachable or returned an error.
+    Error(String),
+}
+
 /// State for extraction progress dialog
 #[derive(Clone, Debug, Default)]
 pub struct ExtractionProgressState {
@@ -152,6 +168,9 @@ pub struct AppSignals {
 
     /// [NEW] Lightbox state for full-screen image viewing
     pub lightbox_state: Signal<crate::shared::dialogs::LightboxState>,
+
+    /// Gameta server connection status — drives the header indicator.
+    pub server_status: Signal<ServerConnectionStatus>,
 }
 
 impl AppSignals {
@@ -216,6 +235,8 @@ impl AppSignals {
                 .with_name("merge_dialog"),
             lightbox_state: Signal::new(crate::shared::dialogs::LightboxState::default())
                 .with_name("lightbox_state"),
+            server_status: Signal::new(ServerConnectionStatus::default())
+                .with_name("server_status"),
         }
     }
 
@@ -253,6 +274,7 @@ impl AppSignals {
         signal_ctx.bind_named(&self.page_display_name, "page_display_name");
         signal_ctx.bind_named(&self.merge_dialog, "merge_dialog");
         signal_ctx.bind_named(&self.lightbox_state, "lightbox_state");
+        signal_ctx.bind_named(&self.server_status, "server_status");
     }
 
     /// Reset all signals to default state.
@@ -302,6 +324,7 @@ impl AppSignals {
             .set(crate::shared::dialogs::MergeDialogState::default());
         self.lightbox_state
             .set(crate::shared::dialogs::LightboxState::default());
+        self.server_status.set(ServerConnectionStatus::default());
     }
 }
 

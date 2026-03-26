@@ -286,6 +286,28 @@ impl AppState {
             resource_manager,
         };
 
+        // Set initial server connection status signal based on startup health check.
+        // GametaClient caches the version from the health check performed in
+        // init_db_services, so no second network call is needed here.
+        if let Some(ref gc) = services.core.gameta_client {
+            let version = gc
+                .last_known_version()
+                .unwrap_or_else(|| "unknown".to_string());
+            me.signals
+                .server_status
+                .set(crate::core::signals::ServerConnectionStatus::Connected(
+                    version,
+                ));
+        } else if me.user_config.gameta_server_enabled {
+            // Enabled in config but client wasn't created (health check failed or no URL)
+            me.signals
+                .server_status
+                .set(crate::core::signals::ServerConnectionStatus::Error(
+                    "Connection failed at startup".to_string(),
+                ));
+        }
+        // If gameta_server_enabled is false, server_status stays Offline (default)
+
         // Load UI items via UiService now that services are ready
         if let Some(ref svc) = services.ui_service {
             if let Ok(items) = svc.list_toolbar_items() {

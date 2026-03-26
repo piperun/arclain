@@ -53,6 +53,8 @@ pub fn render_header_panel(
             // Sync search focus request from signal
             let mut search_focus_requested = shared_state.signals().search_focus_requested.get();
 
+            let server_status = shared_state.signals().server_status.get();
+
             let actions = components::header::render(
                 ui,
                 &shared_state.theme,
@@ -62,6 +64,7 @@ pub fn render_header_panel(
                 can_go_back,
                 is_on_settings,
                 &mut search_focus_requested,
+                &server_status,
             );
 
             // Sync search focus request back to signal (if consumed)
