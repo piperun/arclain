@@ -108,4 +108,6 @@ pub struct ButtonContext<'a> {
     pub has_selection: bool,
     /// Cached plugin UI elements by plugin_id
     pub plugin_elements: HashMap<String, Vec<PluginUiElement>>,
+    /// Show text labels next to icons
+    pub show_labels: bool,
 }
