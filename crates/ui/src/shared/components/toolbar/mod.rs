@@ -52,6 +52,10 @@ pub fn render(
         }
     }
 
+    let show_labels = shared
+        .map(|s| s.signals().ui_preferences.get().show_button_labels)
+        .unwrap_or(false);
+
     let ctx = ButtonContext {
         theme,
         shared,
@@ -61,6 +65,7 @@ pub fn render(
         archive_loaded,
         has_selection,
         plugin_elements,
+        show_labels,
     };
 
     // If no config, render nothing (or could have a fallback)

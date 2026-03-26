@@ -77,51 +77,40 @@ pub fn render_button(
     }
 
     match item.id.as_str() {
-        // ── Navigation (icon only) ──────────────────────────────
+        // ── Navigation (always icon-only) ──────────────────────
         "toolbar.back" => {
-            icon_button(ui, ctx, egui_phosphor::regular::ARROW_LEFT, "Back", ctx.can_go_back, || actions.go_back = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::ARROW_LEFT, "Back", ctx.can_go_back, || actions.go_back = true);
         }
         "toolbar.forward" => {
-            icon_button(ui, ctx, egui_phosphor::regular::ARROW_RIGHT, "Forward", ctx.can_go_forward, || actions.go_forward = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::ARROW_RIGHT, "Forward", ctx.can_go_forward, || actions.go_forward = true);
         }
         "toolbar.up" => {
-            icon_button(ui, ctx, egui_phosphor::regular::ARROW_UP, "Up one level", ctx.can_go_up, || actions.go_up = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::ARROW_UP, "Up one level", ctx.can_go_up, || actions.go_up = true);
         }
 
-        // ── File operations (icon + tooltip) ────────────────────
+        // ── File operations ─────────────────────────────────────
         "toolbar.open" => {
-            // Open keeps text — it's the primary action
-            if arclain_widgets::TextButton::new(
-                format!("{}  Open", egui_phosphor::regular::FOLDER_OPEN),
-                arclain_widgets::ButtonSize::Small,
-            )
-            .with_theme_colors(&ctx.theme.colors)
-            .variant(ButtonVariant::Ghost)
-            .ui(ui)
-            .clicked()
-            {
-                actions.open = true;
-            }
+            toolbar_button(ui, ctx, egui_phosphor::regular::FOLDER_OPEN, "Open", true, || actions.open = true);
         }
         "toolbar.extract" => {
-            icon_button_enabled(ui, ctx, egui_phosphor::regular::EXPORT, "Extract selected", ctx.archive_loaded && ctx.has_selection, || actions.extract = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::EXPORT, "Extract", ctx.archive_loaded && ctx.has_selection, || actions.extract = true);
         }
         "toolbar.extract_all" => {
-            icon_button_enabled(ui, ctx, egui_phosphor::regular::TRAY_ARROW_DOWN, "Extract all", ctx.archive_loaded, || actions.extract_all = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::TRAY_ARROW_DOWN, "Extract all", ctx.archive_loaded, || actions.extract_all = true);
         }
         "toolbar.add" => {
-            icon_button_enabled(ui, ctx, egui_phosphor::regular::PLUS, "Add files", ctx.archive_loaded, || actions.add = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::PLUS, "Add", ctx.archive_loaded, || actions.add = true);
         }
         "toolbar.delete" => {
-            icon_button_enabled(ui, ctx, egui_phosphor::regular::TRASH, "Delete selected", ctx.archive_loaded && ctx.has_selection, || actions.delete_selected = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::TRASH, "Delete", ctx.archive_loaded && ctx.has_selection, || actions.delete_selected = true);
         }
 
         // ── Conversion / Organization ───────────────────────────
         "toolbar.convert" => {
-            icon_button_enabled(ui, ctx, egui_phosphor::regular::PACKAGE, "Convert to 7z", ctx.archive_loaded, || actions.convert_to_7z = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::PACKAGE, "Convert to 7z", ctx.archive_loaded, || actions.convert_to_7z = true);
         }
         "toolbar.organize" => {
-            icon_button_enabled(ui, ctx, egui_phosphor::regular::FOLDERS, "Organize archive", ctx.archive_loaded, || actions.organize_archive = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::FOLDERS, "Organize", ctx.archive_loaded, || actions.organize_archive = true);
         }
 
         // ── View mode toggles ───────────────────────────────────
@@ -193,37 +182,34 @@ pub fn render_button(
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
-/// Icon-only button with tooltip (always enabled)
-fn icon_button(
+/// Toolbar button: icon-only when labels are off, icon+text when on.
+fn toolbar_button(
     ui: &mut egui::Ui,
     ctx: &ButtonContext,
     icon: &str,
-    tooltip: &str,
+    label: &str,
     enabled: bool,
     mut on_click: impl FnMut(),
 ) {
-    if ui
-        .add_enabled(
+    let response = if ctx.show_labels {
+        ui.add_enabled(
+            enabled,
+            arclain_widgets::TextButton::new(
+                format!("{}  {}", icon, label),
+                arclain_widgets::ButtonSize::Small,
+            )
+            .with_theme_colors(&ctx.theme.colors)
+            .variant(ButtonVariant::Ghost),
+        )
+    } else {
+        ui.add_enabled(
             enabled,
             arclain_widgets::IconButton::new(icon)
                 .with_theme_colors(&ctx.theme.colors)
                 .variant(ButtonVariant::Ghost),
         )
-        .on_hover_text(tooltip)
-        .clicked()
-    {
+    };
+    if response.on_hover_text(label).clicked() {
         on_click();
     }
-}
-
-/// Icon-only button with tooltip and enabled state
-fn icon_button_enabled(
-    ui: &mut egui::Ui,
-    ctx: &ButtonContext,
-    icon: &str,
-    tooltip: &str,
-    enabled: bool,
-    on_click: impl FnMut(),
-) {
-    icon_button(ui, ctx, icon, tooltip, enabled, on_click);
 }
