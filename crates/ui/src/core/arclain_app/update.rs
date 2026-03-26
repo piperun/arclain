@@ -6,7 +6,7 @@ use crate::core::{app_lifecycle, app_rendering, operations};
 use eframe::egui;
 
 pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-    // DEBUG: Track update frequency
+    // FPS tracking — trace level only (use RUST_LOG=trace to see)
     static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -20,7 +20,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     if now != last {
         let count = FRAME_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed);
         if count > 10 {
-            tracing::warn!("High frame rate detected: {} fps", count);
+            tracing::trace!("Frame rate: {} fps", count);
         }
         LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
     }

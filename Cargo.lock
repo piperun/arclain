@@ -413,6 +413,7 @@ dependencies = [
  "unicode-normalization",
  "unicode-script",
  "url",
+ "urlencoding",
  "wiremock",
 ]
 
@@ -433,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_core"
-version = "0.8.8"
+version = "0.8.9"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -493,7 +494,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_db"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -519,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_plugins"
-version = "0.9.6"
+version = "0.9.7"
 dependencies = [
  "anyhow",
  "arclain-network",
