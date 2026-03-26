@@ -9,7 +9,8 @@ description = "Secure async network client with domain security and rate limitin
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
 
 # HTTP client
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "gzip", "deflate", "brotli", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "socks", "gzip", "deflate", "brotli", "json", "blocking"] }
+urlencoding = "2"
 
 # URL parsing
 url = "2"

@@ -1,5 +1,6 @@
 //! Features for the HTTP crate
 
+pub mod gameta_client;
 pub mod proxy;
 pub mod rate_limiting;
 pub mod request;
