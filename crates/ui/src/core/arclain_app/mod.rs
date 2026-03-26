@@ -46,7 +46,6 @@ pub struct ArclainApp {
     pub(crate) _signals_bound: bool,
     pub(crate) _theme_applied: bool,
     pub(crate) _last_dark_mode: bool,
-    pub(crate) show_log_viewer: bool,
 }
 
 impl ArclainApp {
@@ -72,7 +71,6 @@ impl ArclainApp {
             _signals_bound: false,
             _theme_applied: false,
             _last_dark_mode: shared_state.theme.dark_mode,
-            show_log_viewer: false,
         }
     }
 }

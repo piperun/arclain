@@ -320,7 +320,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             .navigate_to(AppPage::Settings(SettingsPage::Overview));
     }
     if header_actions.show_logs {
-        app.show_log_viewer = true;
+        app.page_navigator.navigate_to(AppPage::Logs);
     }
 
     // === Render Tab Bar Panel ===

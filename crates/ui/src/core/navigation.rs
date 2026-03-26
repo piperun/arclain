@@ -15,6 +15,8 @@ pub enum AppPage {
     Organize,
     /// Organize specific archive
     OrganizeArchive(String),
+    /// Network activity logs
+    Logs,
 }
 
 /// Represents different settings categories
@@ -223,6 +225,7 @@ impl PageNavigator {
         match page {
             AppPage::Main => vec![],
             AppPage::Plugins => vec![("Plugins".to_string(), AppPage::Plugins)],
+            AppPage::Logs => vec![("Network Logs".to_string(), AppPage::Logs)],
             AppPage::Organize => vec![("Organize".to_string(), AppPage::Organize)],
             AppPage::OrganizeArchive(name) => vec![
                 ("Organize".to_string(), AppPage::Organize),

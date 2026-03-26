@@ -3,7 +3,6 @@
 pub mod form_dialog;
 pub mod helpers;
 pub mod lightbox;
-pub mod log_viewer;
 pub mod merge_dialog;
 pub mod progress;
 
