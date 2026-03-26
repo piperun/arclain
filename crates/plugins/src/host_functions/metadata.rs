@@ -25,8 +25,6 @@ impl HostFunctions {
         }
     }
 
-    /// Legacy - now handled by Data API
-    #[allow(dead_code)]
     pub(super) fn impl_save_cached_metadata(&mut self, id: String, json: String) {
         // Parse the JSON to extract fields and convert to ProductMetadata
         let parsed: serde_json::Value = match serde_json::from_str(&json) {
@@ -136,7 +134,7 @@ impl HostFunctions {
             "publisher": parsed["publisher"].as_str(),
             "page_count": parsed["page_count"].as_i64(),
             // DLSite-specific fields stored in extras
-            "series_name": parsed["series_name"].as_str()
+            "series": parsed["series_name"].as_str()
                 .or_else(|| parsed["dlsite"]["series"]["name"].as_str()),
             "illustrator": parsed["illustrator"].as_str(),
             "voice_actors": parsed["voice_actors"].as_array(),
@@ -282,15 +280,6 @@ impl HostFunctions {
         product_id: String,
         source: String,
     ) -> Option<String> {
-        use arclain_core::MetadataSource;
-
-        let _source_enum = match source.to_lowercase().as_str() {
-            "dlsite" => MetadataSource::DLSite,
-            "steam" => MetadataSource::Steam,
-            "itch" | "itchio" => MetadataSource::Itchio,
-            _ => MetadataSource::Custom,
-        };
-
         let full_id = format!("{}:{}", source.to_lowercase(), product_id);
 
         // 0. Try gameta server first (if configured and available)
@@ -368,7 +357,9 @@ impl HostFunctions {
                                     meta.tags = repaired.tags;
                                 }
                                 // Persist the repair
-                                let _ = lib_svc.save_metadata(&meta);
+                                if let Err(e) = lib_svc.save_metadata(&meta) {
+                                    debug!("[get_product_metadata] Failed to persist repaired extras: {}", e);
+                                }
                                 debug!("[get_product_metadata] Repaired extras for {}", full_id);
                             }
                         }
@@ -537,7 +528,7 @@ impl HostFunctions {
             "page_count": scraped.page_count,
             "update_date": scraped.update_date,
             "voice_actors": scraped.voice_actors,
-            "series_name": scraped.series,
+            "series": scraped.series,
         });
 
         Ok(ProductMetadata {
