@@ -627,5 +627,6 @@ fn convert_plugin_action(
             title: config.title,
         },
         WitAction::SetPageDisplayName(name) => InternalAction::SetPageDisplayName { name },
+        WitAction::RequestFetch(key) => InternalAction::RequestFetch { key },
     }
 }

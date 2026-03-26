@@ -401,6 +401,9 @@ interface ui {
         open-lightbox(open-lightbox-config),
         // Page display name (for breadcrumbs/title)
         set-page-display-name(string),
+        // Request async background fetch (host handles on tokio runtime)
+        // Format: "source:id" e.g. "dlsite:RJ123456"
+        request-fetch(string),
     }
 }
 
