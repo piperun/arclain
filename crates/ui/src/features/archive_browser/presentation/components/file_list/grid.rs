@@ -104,13 +104,13 @@ fn render_card(
         ));
         // Circle background
         ui.painter().circle_filled(check_center, 8.0, theme.colors.primary);
-        // Checkmark
+        // Checkmark — use on_primary for guaranteed contrast
         ui.painter().text(
             check_center,
             egui::Align2::CENTER_CENTER,
             egui_phosphor::regular::CHECK,
             egui::FontId::proportional(10.0),
-            egui::Color32::WHITE,
+            theme.colors.on_primary,
         );
     }
 
