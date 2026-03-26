@@ -17,6 +17,8 @@ pub enum DataSource {
     Memory,
     /// HTTP network fetch
     Network,
+    /// Gameta server metadata API
+    GametaServer,
 }
 
 /// Ordered set of data sources to try - no duplicates, preserves order

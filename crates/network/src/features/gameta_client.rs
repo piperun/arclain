@@ -20,7 +20,7 @@ pub struct HealthResponse {
 }
 
 /// Full metadata record returned by the server.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MetadataResponse {
     pub id: String,
     pub source: String,
