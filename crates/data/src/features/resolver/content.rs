@@ -21,10 +21,10 @@ impl ContentCacheResolver {
 
 impl DataSourceResolver for ContentCacheResolver {
     fn try_resolve(&self, key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
-        tracing::info!("[ContentCacheResolver] Looking for key: {}", key);
+        tracing::debug!("[ContentCacheResolver] Looking for key: {}", key);
         match self.manager.get(key) {
             Some(data) => {
-                tracing::info!(
+                tracing::debug!(
                     "[ContentCacheResolver] FOUND {} in cache ({} bytes)",
                     key,
                     data.data.len()
@@ -32,7 +32,7 @@ impl DataSourceResolver for ContentCacheResolver {
                 Ok(data.data)
             }
             None => {
-                tracing::info!("[ContentCacheResolver] NOT FOUND: {}", key);
+                tracing::debug!("[ContentCacheResolver] NOT FOUND: {}", key);
                 Err(ResolveError::NotFound)
             }
         }

@@ -9,7 +9,7 @@ use indexmap::IndexSet;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::debug;
 
 /// The main Data Service
 ///
@@ -76,7 +76,7 @@ impl DataService {
 
     /// Register a resolver for a data source
     pub fn register_resolver(&self, source: DataSource, resolver: Arc<dyn DataSourceResolver>) {
-        info!(
+        debug!(
             "[DataService:{}] Registered resolver for {:?}",
             self.id, source
         );
@@ -124,7 +124,7 @@ impl DataService {
             if let Some(resolver) = resolvers.get(source) {
                 match resolver.try_resolve(&request.key, request) {
                     Ok(data) => {
-                        info!(
+                        debug!(
                             "[DataService] Resolved '{}' from {:?} ({} bytes)",
                             request.key,
                             source,

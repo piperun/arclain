@@ -26,18 +26,18 @@ impl DataSourceResolver for NetworkResolver {
         let use_proxy = if let Some(plugin_id) = &request.plugin_id {
             // Check the client's plugin proxy map
             let result = self.client.should_use_proxy_for_plugin(plugin_id);
-            tracing::info!(
+            tracing::debug!(
                 "[NetworkResolver] plugin_id='{}' -> use_proxy={}",
                 plugin_id,
                 result
             );
             result
         } else {
-            tracing::info!("[NetworkResolver] No plugin_id provided -> use_proxy=false");
+            tracing::debug!("[NetworkResolver] No plugin_id provided -> use_proxy=false");
             false
         };
 
-        tracing::info!(
+        tracing::debug!(
             "[NetworkResolver] Fetching key='{}' url='{}' (proxy: {})",
             _key,
             url,
@@ -50,7 +50,7 @@ impl DataSourceResolver for NetworkResolver {
                 // DEBUG: Log small responses to diagnose API issues
                 if data.len() < 500 {
                     if let Ok(text) = String::from_utf8(data.clone()) {
-                        tracing::info!(
+                        tracing::debug!(
                             "[NetworkResolver] SHORT RESPONSE ({} bytes): {}",
                             data.len(),
                             text
