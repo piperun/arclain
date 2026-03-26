@@ -71,7 +71,7 @@ impl CompletenessScore for ProductMetadata {
 
         // Extras object fields (DLSite-specific data moved here)
         if let Some(obj) = self.extras.as_object() {
-            if obj.contains_key("series_name") {
+            if obj.contains_key("series") {
                 score += 2;
             }
             if obj.contains_key("illustrator") {
@@ -161,7 +161,7 @@ mod tests {
         let mut m = ProductMetadata::new(MetadataSource::DLSite, "RJ400");
 
         m.extras = serde_json::json!({
-            "series_name": "Test Series",
+            "series": "Test Series",
             "illustrator": "Artist",
             "miscellaneous": "misc",
             "update_info": "v1.1",
@@ -170,7 +170,7 @@ mod tests {
             "rankings": {"daily": 1, "weekly": 5},
         });
 
-        // series_name=2, illustrator=2, miscellaneous=1, update_info=1,
+        // series=2, illustrator=2, miscellaneous=1, update_info=1,
         // voice_actors=3, product_formats=2, rankings=2 keys
         assert_eq!(m.completeness_score(), 13);
     }
@@ -209,7 +209,7 @@ mod tests {
             genres: vec!["G1".into()],         // 2
             tags: vec!["T1".into()],           // 1
             languages: vec!["JP".into()],      // 1
-            extras: serde_json::json!({"series_name": "S"}), // 2
+            extras: serde_json::json!({"series": "S"}), // 2
             raw_api_response: Some("{}".into()), // 5
             raw_html: Some("<h/>".into()),       // 3
             geo_blocked: false,
