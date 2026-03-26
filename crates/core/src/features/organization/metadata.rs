@@ -28,15 +28,18 @@ pub struct GameMetadata {
     pub product_id: String,
 
     /// Source platform (e.g., "dlsite", "itch", "steam")
+    #[serde(default, deserialize_with = "string_or_default")]
     pub source: String,
 
     /// Title - extracted for convenience and folder naming
+    #[serde(default, deserialize_with = "string_or_default")]
     pub title: String,
 
     /// Description - extracted for convenience
     pub description: Option<String>,
 
     /// Tags - extracted for convenience
+    #[serde(default, deserialize_with = "vec_or_default")]
     pub tags: Vec<String>,
 
     /// Release date - extracted for convenience
@@ -46,6 +49,7 @@ pub struct GameMetadata {
     pub creator: Option<String>,
 
     /// Screenshots to embed
+    #[serde(default, deserialize_with = "vec_or_default")]
     pub screenshots: Vec<ScreenshotData>,
 
     /// Full layered JSON with both common and platform-specific data
@@ -53,6 +57,21 @@ pub struct GameMetadata {
     #[serde(skip)]
     pub metadata_json: String,
 }
+
+/// Deserialize a String that might be null in the JSON (falls back to empty string)
+fn string_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let opt = <Option<String> as serde::Deserialize>::deserialize(d)?;
+    Ok(opt.unwrap_or_default())
+}
+
+/// Deserialize a Vec that might be null in the JSON (falls back to empty vec)
+fn vec_or_default<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
+    d: D,
+) -> Result<Vec<T>, D::Error> {
+    let opt = <Option<Vec<T>> as serde::Deserialize>::deserialize(d)?;
+    Ok(opt.unwrap_or_default())
+}
+
 
 impl GameMetadata {
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
