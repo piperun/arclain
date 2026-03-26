@@ -50,6 +50,8 @@ pub enum SettingsPage {
     Network,
     /// Keyboard and mouse shortcuts
     KeyboardMouse,
+    /// Gameta server connection settings
+    Server,
 }
 
 impl SettingsPage {
@@ -70,6 +72,7 @@ impl SettingsPage {
             SettingsPage::InfoPanelLayout => "Info Panel Layout",
             SettingsPage::Network => "Network",
             SettingsPage::KeyboardMouse => "Keyboard & Mouse",
+            SettingsPage::Server => "Server",
         }
     }
 
@@ -90,6 +93,7 @@ impl SettingsPage {
             SettingsPage::InfoPanelLayout => egui_phosphor::regular::SIDEBAR,
             SettingsPage::Network => egui_phosphor::regular::GLOBE,
             SettingsPage::KeyboardMouse => egui_phosphor::regular::KEYBOARD,
+            SettingsPage::Server => egui_phosphor::regular::CLOUD,
         }
     }
 
@@ -110,6 +114,7 @@ impl SettingsPage {
             SettingsPage::InfoPanelLayout => "Customize info panel sections",
             SettingsPage::Network => "Proxy and network configuration",
             SettingsPage::KeyboardMouse => "Keyboard shortcuts and mouse button bindings",
+            SettingsPage::Server => "Configure gameta server connection",
         }
     }
 
@@ -126,6 +131,7 @@ impl SettingsPage {
             SettingsPage::Plugins,
             SettingsPage::Network,
             SettingsPage::KeyboardMouse,
+            SettingsPage::Server,
         ]
     }
 }
@@ -334,7 +340,7 @@ mod tests {
     #[test]
     fn settings_pages_list_has_all() {
         let pages = SettingsPage::all_pages();
-        assert_eq!(pages.len(), 10);
+        assert_eq!(pages.len(), 11);
         assert!(pages.contains(&SettingsPage::General));
         assert!(pages.contains(&SettingsPage::Interface));
         assert!(pages.contains(&SettingsPage::Archives));
@@ -345,5 +351,6 @@ mod tests {
         assert!(pages.contains(&SettingsPage::Plugins));
         assert!(pages.contains(&SettingsPage::Network));
         assert!(pages.contains(&SettingsPage::KeyboardMouse));
+        assert!(pages.contains(&SettingsPage::Server));
     }
 }

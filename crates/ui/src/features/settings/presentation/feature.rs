@@ -5,7 +5,7 @@ use crate::features::settings::pages::keyboard_mouse::KeyboardMouseSettingsState
 use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
 use crate::features::settings::presentation::views::settings_content::{
     render_settings_content, ArchivesSettingsState, GeneralSettingsState, NetworkSettingsState,
-    SecuritySettingsState, SettingsAction,
+    SecuritySettingsState, ServerSettingsState, SettingsAction,
 };
 
 use crate::features::settings::views::{header, layout, navigation};
@@ -17,6 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub struct SettingsFeature {
     pub general_state: GeneralSettingsState,
     pub network_state: NetworkSettingsState,
+    pub server_state: ServerSettingsState,
     pub security_state: SecuritySettingsState,
     pub archives_state: ArchivesSettingsState,
     pub password_rules_dialog: PasswordRulesDialog,
@@ -85,11 +86,38 @@ impl SettingsFeature {
             }
         };
 
+        let server_state = {
+            use crate::features::settings::domain::types::ServerConnectionStatus;
+            use arclain_signals::Signal;
+
+            let state = shared.app_state.lock();
+            let api_key = if let Some(dbs) = &state.dbs {
+                dbs.secrets
+                    .get_secret("gameta:api_key")
+                    .unwrap_or(None)
+                    .map(|s| s.to_string())
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            drop(state);
+
+            ServerSettingsState {
+                enabled: Signal::new(user_config.gameta_server_enabled),
+                url: Signal::new(
+                    user_config.gameta_server_url.clone().unwrap_or_default(),
+                ),
+                api_key: Signal::new(api_key),
+                connection_status: Signal::new(ServerConnectionStatus::Idle),
+            }
+        };
+
         Self {
             general_state: GeneralSettingsState {
                 open_nested_in_new_tab: Signal::new(open_nested_in_new_tab),
             },
             network_state,
+            server_state,
             security_state: SecuritySettingsState::default(),
             archives_state: ArchivesSettingsState::default(),
             password_rules_dialog: PasswordRulesDialog {
@@ -113,9 +141,13 @@ impl SettingsFeature {
         if self.signals_bound.swap(true, Ordering::SeqCst) {
             return; // Already bound
         }
-        let ctx = ctx.clone();
+        let ctx_network = ctx.clone();
         self.network_state.connection_test_status.subscribe(move || {
-            ctx.request_repaint();
+            ctx_network.request_repaint();
+        });
+        let ctx_server = ctx.clone();
+        self.server_state.connection_status.subscribe(move || {
+            ctx_server.request_repaint();
         });
     }
 
@@ -143,6 +175,15 @@ impl SettingsFeature {
                         != state
                             .user_config
                             .socks5_username
+                            .clone()
+                            .unwrap_or_default()
+            }
+            SettingsPage::Server => {
+                *self.server_state.enabled.read() != state.user_config.gameta_server_enabled
+                    || *self.server_state.url.read()
+                        != state
+                            .user_config
+                            .gameta_server_url
                             .clone()
                             .unwrap_or_default()
             }
@@ -305,6 +346,7 @@ impl SettingsFeature {
                                 &mut self.info_panel_layout_state,
                                 &mut self.keyboard_mouse_state,
                                 &mut self.network_state,
+                                &mut self.server_state,
                                 &shared.app_state,
                                 Some(shared),
                             );
@@ -349,6 +391,7 @@ impl SettingsFeature {
             &mut self.archives_state,
             &mut self.plugins_state,
             &mut self.network_state,
+            &mut self.server_state,
             shared,
         );
     }

@@ -6,7 +6,7 @@ use crate::core::navigation::SettingsPage;
 use crate::features::plugins::domain::types::PluginsListState;
 
 use crate::features::settings::domain::types::{
-    ArchivesSettingsState, SecuritySettingsState, SettingsAction,
+    ArchivesSettingsState, SecuritySettingsState, ServerSettingsState, SettingsAction,
 };
 
 use crate::shared::SharedState;
@@ -26,6 +26,7 @@ pub fn handle_action(
     archives_state: &mut ArchivesSettingsState,
     plugins_state: &mut PluginsListState,
     network_state: &mut crate::features::settings::domain::types::NetworkSettingsState,
+    server_state: &mut ServerSettingsState,
 
     shared: &SharedState,
 ) {
@@ -345,6 +346,72 @@ pub fn handle_action(
                 };
 
                 status_signal.set(ConnectionTestStatus::Complete(ui_result));
+            });
+        }
+        SettingsAction::SaveServer {
+            enabled,
+            url,
+            api_key,
+        } => {
+            let mut state = shared.app_state.lock();
+            state.user_config.gameta_server_enabled = enabled;
+            state.user_config.gameta_server_url = url.clone();
+            state.signals.user_config.set(state.user_config.clone());
+
+            if let Some(ref config_svc) = shared.services.config_service {
+                match config_svc.save_user_config(&state.user_config) {
+                    Ok(_) => {
+                        tracing::info!(
+                            "[SaveServer] Server settings saved: enabled={}, url={:?}",
+                            enabled,
+                            url
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("[SaveServer] Failed to save server settings: {}", e);
+                    }
+                }
+            }
+
+            // Persist API key in secrets DB
+            if let Some(ref dbs) = state.dbs {
+                if let Some(key) = &api_key {
+                    if let Err(e) = dbs.secrets.set_secret("gameta:api_key", key) {
+                        tracing::error!("[SaveServer] Failed to save API key: {}", e);
+                    }
+                }
+            }
+        }
+        SettingsAction::TestServer { url, api_key } => {
+            use crate::features::settings::domain::types::ServerConnectionStatus;
+
+            server_state
+                .connection_status
+                .set(ServerConnectionStatus::Testing);
+            let status_signal = server_state.connection_status.clone();
+
+            // GametaClient is blocking — run on a dedicated thread to avoid
+            // blocking the egui render loop.
+            std::thread::spawn(move || {
+                use arclain_network::features::gameta_client::{GametaClient, ServerConfig};
+
+                let client = GametaClient::new(ServerConfig {
+                    url: url.clone(),
+                    api_key: api_key.clone(),
+                });
+
+                match client.health() {
+                    Ok(resp) => {
+                        let msg = format!(
+                            "gameta server v{} is reachable",
+                            resp.version
+                        );
+                        status_signal.set(ServerConnectionStatus::Connected(msg));
+                    }
+                    Err(e) => {
+                        status_signal.set(ServerConnectionStatus::Failed(e));
+                    }
+                }
             });
         }
         SettingsAction::NavigateTo(_) => {

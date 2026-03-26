@@ -272,6 +272,23 @@ SettingsHeaderConfig::new(page.display_name())
                     bindings: feature.keyboard_mouse_state.to_config(),
                 });
             }
+            SettingsPage::Server => {
+                let url_opt = if feature.server_state.url.read().trim().is_empty() {
+                    None
+                } else {
+                    Some(feature.server_state.url.read().trim().to_string())
+                };
+                let api_key_opt = if feature.server_state.api_key.read().trim().is_empty() {
+                    None
+                } else {
+                    Some(feature.server_state.api_key.read().clone())
+                };
+                action = Some(SettingsAction::SaveServer {
+                    enabled: *feature.server_state.enabled.read(),
+                    url: url_opt,
+                    api_key: api_key_opt,
+                });
+            }
             _ => {}
         });
     }

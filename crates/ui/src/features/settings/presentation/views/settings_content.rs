@@ -89,6 +89,7 @@ pub fn render_settings_content(
     keyboard_mouse_state: &mut crate::features::settings::presentation::pages::keyboard_mouse::KeyboardMouseSettingsState,
 
     network_state: &mut NetworkSettingsState,
+    server_state: &mut ServerSettingsState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
@@ -99,6 +100,7 @@ pub fn render_settings_content(
         }
         SettingsPage::General => render_general_settings(ui, theme, general_state),
         SettingsPage::Network => pages::network::render(ui, theme, network_state),
+        SettingsPage::Server => pages::server::render(ui, theme, server_state),
         SettingsPage::Interface => {
             if let Some(shared_state) = shared {
                 let ui_service = shared_state.services.ui_service.as_deref();
