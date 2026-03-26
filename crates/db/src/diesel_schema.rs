@@ -204,6 +204,8 @@ diesel::table! {
         socks5_username -> Nullable<Text>,
         plugin_proxy_settings -> Nullable<Text>,
         hotkey_bindings -> Nullable<Text>,
+        gameta_server_enabled -> Bool,
+        gameta_server_url -> Nullable<Text>,
         created_at -> Text,
         modified_at -> Nullable<Text>,
     }

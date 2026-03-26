@@ -95,6 +95,14 @@ pub struct UserConfig {
     /// Hotkey bindings (JSON map of ActionId -> HotkeyBinding)
     #[db(nullable)]
     pub hotkey_bindings: Option<String>,
+
+    /// Whether gameta server integration is enabled
+    #[db(default = "0")]
+    pub gameta_server_enabled: bool,
+
+    /// Gameta server URL (e.g., "https://gameta.example.com")
+    #[db(nullable)]
+    pub gameta_server_url: Option<String>,
 }
 
 impl UserConfig {
@@ -300,6 +308,8 @@ impl UserConfig {
                 socks5_username,
                 plugin_proxy_settings,
                 hotkey_bindings,
+                gameta_server_enabled,
+                gameta_server_url,
             ))
             .first::<(
                 i32,
@@ -321,6 +331,8 @@ impl UserConfig {
                 bool,
                 Option<String>,
                 Option<String>,
+                Option<String>,
+                bool,
                 Option<String>,
             )>(conn);
 
@@ -346,6 +358,8 @@ impl UserConfig {
                 socks5_username: tuple.17,
                 plugin_proxy_settings: tuple.18,
                 hotkey_bindings: tuple.19,
+                gameta_server_enabled: tuple.20,
+                gameta_server_url: tuple.21,
             }),
             Err(diesel::result::Error::NotFound) => {
                 // If not found, create default and insert it manually (providing all non-nullable fields)
@@ -355,6 +369,7 @@ impl UserConfig {
                         backend_mode.eq("native"),
                         open_nested_in_new_tab.eq(false),
                         socks5_enabled.eq(false),
+                        gameta_server_enabled.eq(false),
                         created_at.eq(diesel::dsl::sql::<diesel::sql_types::Text>(
                             "CURRENT_TIMESTAMP",
                         )),
@@ -374,10 +389,11 @@ impl UserConfig {
                 sevenzip_path, transfer_dir, backend_mode, open_nested_in_new_tab,
                 enabled_plugins, plugin_order, plugin_visibility, plugin_settings,
                 toolbar_order, info_panel_order, socks5_address, socks5_enabled,
-                socks5_username, plugin_proxy_settings, hotkey_bindings, created_at, modified_at
+                socks5_username, plugin_proxy_settings, hotkey_bindings,
+                gameta_server_enabled, gameta_server_url, created_at, modified_at
             ) VALUES (
                 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                ?20, ?21, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             ON CONFLICT(id) DO UPDATE SET
                 vault_path = excluded.vault_path,
@@ -399,6 +415,8 @@ impl UserConfig {
                 socks5_username = excluded.socks5_username,
                 plugin_proxy_settings = excluded.plugin_proxy_settings,
                 hotkey_bindings = excluded.hotkey_bindings,
+                gameta_server_enabled = excluded.gameta_server_enabled,
+                gameta_server_url = excluded.gameta_server_url,
                 modified_at = CURRENT_TIMESTAMP
         "#;
 
@@ -428,6 +446,10 @@ impl UserConfig {
                 &self.plugin_proxy_settings,
             )
             .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.hotkey_bindings)
+            .bind::<diesel::sql_types::Bool, _>(self.gameta_server_enabled)
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
+                &self.gameta_server_url,
+            )
             .execute(conn)
             .map_err(|e| {
                 tracing::error!("[UserConfig] save_diesel UPSERT failed: {}", e);

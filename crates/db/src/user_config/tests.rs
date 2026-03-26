@@ -31,6 +31,8 @@ fn setup_diesel_conn() -> diesel::SqliteConnection {
             socks5_username TEXT,
             plugin_proxy_settings TEXT,
             hotkey_bindings TEXT,
+            gameta_server_enabled INTEGER NOT NULL DEFAULT 0,
+            gameta_server_url TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             modified_at TEXT
         )
@@ -160,4 +162,11 @@ fn test_hotkey_bindings_persistence() {
     let binding = reloaded.get_hotkey_binding("open_archive");
     assert!(binding.is_some());
     assert!(binding.unwrap().contains("ctrl"));
+}
+
+#[test]
+fn test_gameta_server_fields_default() {
+    let config = UserConfig::default();
+    assert!(!config.gameta_server_enabled);
+    assert!(config.gameta_server_url.is_none());
 }
