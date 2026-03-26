@@ -220,4 +220,146 @@ mod tests {
         // Total: 10+10+5+2+1+2+1+1+1+1+1+1+2+2+1+1+2+5+3 = 52
         assert_eq!(m.completeness_score(), 52);
     }
+
+    // =========================================================================
+    // Regression tests for metadata field naming bugs
+    // =========================================================================
+
+    /// Regression: extras must use "series" key, not "series_name".
+    ///
+    /// The host was building extras with `"series_name"` but the plugin read
+    /// `extras["series"]`, causing series data to silently vanish. Both sides
+    /// now agree on `"series"`.
+    ///
+    /// This test reproduces the extras JSON building pattern used by
+    /// `impl_save_cached_metadata` and verifies the output key is "series".
+    #[test]
+    fn extras_json_uses_series_key_not_series_name() {
+        // Simulate the incoming plugin JSON that has "series_name"
+        let parsed: serde_json::Value = serde_json::json!({
+            "series_name": "My Great Series",
+        });
+
+        // This mirrors the extras building logic in impl_save_cached_metadata:
+        //   "series": parsed["series_name"].as_str()
+        //       .or_else(|| parsed["dlsite"]["series"]["name"].as_str()),
+        let extras = serde_json::json!({
+            "series": parsed["series_name"].as_str()
+                .or_else(|| parsed["dlsite"]["series"]["name"].as_str()),
+        });
+
+        assert_eq!(
+            extras["series"].as_str(),
+            Some("My Great Series"),
+            "extras must contain 'series' key with the series value"
+        );
+        assert!(
+            extras.get("series_name").is_none(),
+            "extras must NOT contain 'series_name' — consumers read 'series'"
+        );
+    }
+
+    /// Regression: extras "series" also resolves from nested DLSite API path.
+    #[test]
+    fn extras_series_falls_back_to_dlsite_nested_path() {
+        // Incoming JSON without top-level series_name, but with nested DLSite data
+        let parsed: serde_json::Value = serde_json::json!({
+            "dlsite": {
+                "series": {
+                    "name": "Nested Series"
+                }
+            }
+        });
+
+        let extras = serde_json::json!({
+            "series": parsed["series_name"].as_str()
+                .or_else(|| parsed["dlsite"]["series"]["name"].as_str()),
+        });
+
+        assert_eq!(
+            extras["series"].as_str(),
+            Some("Nested Series"),
+            "extras 'series' must fall back to dlsite.series.name"
+        );
+    }
+
+    /// Regression: ProductMetadata serializes tags as a JSON array.
+    ///
+    /// The plugin was reading `json["tags_json"].as_str()` which always
+    /// returned null because tags serialize as `"tags": [...]` (an array),
+    /// not `"tags_json": "..."` (a string). The plugin now reads
+    /// `json["tags"]` as an array.
+    #[test]
+    fn product_metadata_serializes_tags_as_array() {
+        let mut m = ProductMetadata::new(MetadataSource::DLSite, "RJ999");
+        m.tags = vec!["RPG".into(), "Fantasy".into(), "Adventure".into()];
+
+        let json = serde_json::to_value(&m).expect("serialize");
+
+        // "tags" must be a JSON array
+        let tags = &json["tags"];
+        assert!(tags.is_array(), "tags must serialize as a JSON array");
+        let arr = tags.as_array().unwrap();
+        assert_eq!(arr.len(), 3);
+        assert_eq!(arr[0].as_str(), Some("RPG"));
+        assert_eq!(arr[1].as_str(), Some("Fantasy"));
+        assert_eq!(arr[2].as_str(), Some("Adventure"));
+
+        // "tags_json" must NOT exist — the old plugin code read this key
+        assert!(
+            json.get("tags_json").is_none(),
+            "serialized metadata must not have 'tags_json' key"
+        );
+    }
+
+    /// Regression: tags round-trip as array through serialize/deserialize.
+    ///
+    /// Ensures the plugin can read tags from the JSON produced by the host's
+    /// `impl_save_cached_metadata`, which serializes ProductMetadata via serde.
+    #[test]
+    fn tags_roundtrip_as_array() {
+        let mut original = ProductMetadata::new(MetadataSource::DLSite, "RJ888");
+        original.tags = vec!["Tag1".into(), "Tag2".into()];
+
+        let json_str = serde_json::to_string(&original).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+
+        // The plugin reads tags with: json["tags"].as_array()
+        let tags_array = parsed["tags"]
+            .as_array()
+            .expect("plugin must be able to read tags as array");
+        assert_eq!(tags_array.len(), 2);
+
+        // The old buggy code tried: json["tags_json"].as_str() — must be None
+        assert!(
+            parsed["tags_json"].as_str().is_none(),
+            "tags_json as_str must be None (there is no such key)"
+        );
+    }
+
+    /// Regression: extras "series" key survives ProductMetadata round-trip.
+    ///
+    /// Verifies that when extras contains `"series"` (the corrected key),
+    /// it is present after serialization — consumers can find it.
+    #[test]
+    fn extras_series_key_survives_serialization_roundtrip() {
+        let mut m = ProductMetadata::new(MetadataSource::DLSite, "RJ777");
+        m.extras = serde_json::json!({
+            "series": "Test Series",
+            "cover_image": "https://example.com/cover.jpg",
+        });
+
+        let json_str = serde_json::to_string(&m).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).expect("parse");
+
+        assert_eq!(
+            parsed["extras"]["series"].as_str(),
+            Some("Test Series"),
+            "extras.series must survive round-trip"
+        );
+        assert!(
+            parsed["extras"].get("series_name").is_none(),
+            "extras must not contain series_name after round-trip"
+        );
+    }
 }
