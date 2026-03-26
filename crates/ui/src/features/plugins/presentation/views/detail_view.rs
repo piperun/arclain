@@ -102,7 +102,7 @@ pub fn render(
                                 let res: anyhow::Result<()> =
                                     cfg_svc.save_user_config(&app.user_config);
                                 if let Err(e) = res {
-                                    eprintln!("Failed to save user config: {}", e);
+                                    tracing::error!("Failed to save user config: {}", e);
                                 }
                             }
                             needs_refresh = true;
@@ -137,7 +137,7 @@ pub fn render(
                     if let Some(ref cfg_svc) = config_service {
                         let res: anyhow::Result<()> = cfg_svc.save_user_config(&app.user_config);
                         if let Err(e) = res {
-                            eprintln!("Failed to save user config: {}", e);
+                            tracing::error!("Failed to save user config: {}", e);
                         }
                     }
 
@@ -408,7 +408,7 @@ fn render_plugin_ui(
                                 let res: anyhow::Result<()> =
                                     cfg_svc.save_user_config(&state.user_config);
                                 if let Err(e) = res {
-                                    eprintln!("Failed to save plugin settings: {}", e);
+                                    tracing::error!("Failed to save plugin settings: {}", e);
                                 }
                             }
                         }

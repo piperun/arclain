@@ -426,7 +426,6 @@ dependencies = [
  "rayon",
  "sha2",
  "tempfile",
- "thiserror 2.0.18",
  "tracing",
  "walkdir",
  "xxhash-rust",
@@ -561,7 +560,6 @@ version = "0.1.0"
 dependencies = [
  "egui",
  "egui-phosphor",
- "serde",
  "tracing",
 ]
 

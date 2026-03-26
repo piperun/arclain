@@ -1,105 +1,133 @@
-from_latest_tag = true
-ignore_merge_commits = true
-branch_whitelist = ["master", "main"]
-generate_mono_repository_global_tag = false
-generate_mono_repository_package_tags = true
-
-pre_bump_hooks = [
-    "cargo check --workspace",
-]
-post_bump_hooks = [
-    "cargo check --workspace",
-]
-
-[commit_types]
-feature = { changelog_title = "Features" }
-
 [changelog]
 path = "CHANGELOG.md"
 authors = []
 
-# Named hook profile for full release validation
-[bump_profiles.release]
-pre_bump_hooks = [
-    "cargo test --workspace",
-    "cargo check --workspace",
-]
-post_bump_hooks = [
-    "cargo check --workspace",
-]
-
-# =========================================================================
-# Monorepo packages
-# =========================================================================
+# ─── VERSIONING RULES ────────────────────────────────────────────────────────
+# Use: cog bump --auto
+#
+# This bumps all packages that have relevant commits since their last tag.
+# Scoped commits route to the right package:
+#   feat(ui): ...   fix(core): ...   refactor(db): ...
+#
+# The UI package is the main deliverable (public_api = true).
+# All other workspace crates are internal.
+#
+# Plugins (dlsite-metadata, etc.) are versioned independently since they
+# build as WASM and ship separately.
+# ─────────────────────────────────────────────────────────────────────────────
 
 [packages.arclain_ui]
 path = "crates/ui"
 public_api = true
 changelog_path = "crates/ui/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain_core]
 path = "crates/core"
 public_api = false
 changelog_path = "crates/core/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain_db]
 path = "crates/db"
 public_api = false
 changelog_path = "crates/db/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain_data]
 path = "crates/data"
 public_api = false
 changelog_path = "crates/data/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain_plugins]
 path = "crates/plugins"
 public_api = false
 changelog_path = "crates/plugins/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain_checksum]
 path = "crates/checksum"
 public_api = false
 changelog_path = "crates/checksum/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain_widgets]
 path = "crates/widgets"
 public_api = false
 changelog_path = "crates/widgets/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain_theme]
 path = "crates/theme"
 public_api = false
 changelog_path = "crates/theme/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain-network]
 path = "crates/network"
 public_api = false
 changelog_path = "crates/network/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.arclain_signals]
 path = "crates/signals"
 public_api = false
 changelog_path = "crates/signals/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.mini-orm]
 path = "crates/mini-orm"
 public_api = false
 changelog_path = "crates/mini-orm/CHANGELOG.md"
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.mini-orm-derive]
 path = "crates/mini-orm/derive"
 public_api = false
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
 
 [packages.dlsite-metadata]
 path = "plugins/dlsite-metadata"
 public_api = false
 changelog_path = "plugins/dlsite-metadata/CHANGELOG.md"
-
-[packages.gstreamer-preview]
-path = "plugins/gstreamer-preview"
-public_api = false
-
-[packages.ui-demo]
-path = "plugins/ui-demo"
-public_api = false
+pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
+]
+post_bump_hooks = []
