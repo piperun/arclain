@@ -178,7 +178,7 @@ impl HostFunctions {
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
         let path_str = path.to_string_lossy().to_string();
-        tracing::info!("[HostFunctions] Created file: {}", path_str);
+        tracing::debug!("[HostFunctions] Created file: {}", path_str);
         Ok(path_str)
     }
 }
@@ -280,7 +280,7 @@ impl Host for HostFunctions {
             .with_type(resource_type)
             .with_plugin_id(&self.plugin_id);
 
-        tracing::info!(
+        tracing::debug!(
             "[HostFunctions::request_data] key='{}' plugin_id='{}' url={:?}",
             request.key,
             self.plugin_id,
@@ -364,21 +364,21 @@ impl Host for HostFunctions {
     }
 
     fn invalidate_cache(&mut self, key: String) -> bool {
-        tracing::info!(
+        tracing::debug!(
             "[HostFunctions] Cache invalidation requested for key: {}",
             key
         );
 
         // Check for wildcard pattern
         if key.ends_with('*') {
-            tracing::info!("[HostFunctions] Wildcard pattern detected: {}", key);
+            tracing::debug!("[HostFunctions] Wildcard pattern detected: {}", key);
 
             // Delete from content cache using pattern
             let mut count = 0;
             if let Some(cache) = &self.content_cache {
                 if let Ok(c) = cache.remove_by_pattern(&key) {
                     count = c;
-                    tracing::info!(
+                    tracing::debug!(
                         "[HostFunctions] Removed {} entries matching wildcard pattern",
                         count
                     );
@@ -396,7 +396,7 @@ impl Host for HostFunctions {
         // Metadata entries should only be deleted via explicit delete actions.
         if let Some(cache) = &self.content_cache {
             if let Ok(true) = cache.remove(&key) {
-                tracing::info!("[HostFunctions] Invalidated content cache key: {}", key);
+                tracing::debug!("[HostFunctions] Invalidated content cache key: {}", key);
                 invalidated = true;
             }
         }

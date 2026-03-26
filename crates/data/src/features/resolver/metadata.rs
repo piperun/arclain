@@ -92,7 +92,7 @@ impl DataSourceResolver for MetadataStoreResolver {
         data: &[u8],
         _request: &DataRequest,
     ) -> Result<(), ResolveError> {
-        tracing::info!("[MetadataStoreResolver] try_store called for key: {}", key);
+        tracing::debug!("[MetadataStoreResolver] try_store called for key: {}", key);
 
         // Skip raw API responses - these are not ProductMetadata structs
         // They come from network fetches and have prefixes like dlsite:json: or dlsite:html:
@@ -117,7 +117,7 @@ impl DataSourceResolver for MetadataStoreResolver {
             ResolveError::IoError(format!("Invalid metadata JSON: {}", e))
         })?;
 
-        tracing::info!(
+        tracing::debug!(
             "[MetadataStoreResolver] Saving metadata id={} source={}",
             meta.id,
             meta.source.as_str()
@@ -128,7 +128,7 @@ impl DataSourceResolver for MetadataStoreResolver {
             ResolveError::IoError(e.to_string())
         })?;
 
-        tracing::info!("[MetadataStoreResolver] Saved successfully: {}", meta.id);
+        tracing::debug!("[MetadataStoreResolver] Saved successfully: {}", meta.id);
         Ok(())
     }
 

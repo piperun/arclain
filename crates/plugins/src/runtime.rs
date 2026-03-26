@@ -233,7 +233,7 @@ impl PluginInstance {
         element_id: &str,
         value: Option<String>,
     ) -> Result<Vec<crate::types::PluginAction>> {
-        info!(
+        debug!(
             "PluginInstance::send_ui_event: Calling plugin handler for {}",
             element_id
         );
@@ -249,7 +249,7 @@ impl PluginInstance {
                 PluginError::ExecutionError(e.to_string())
             })?;
 
-        info!(
+        debug!(
             "PluginInstance::send_ui_event: Plugin returned {} actions",
             actions.len()
         );

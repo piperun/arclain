@@ -81,7 +81,7 @@ impl DataSourceResolver for ServerResolver {
         let guard = self.client.lock();
         let client = guard.as_ref().ok_or(ResolveError::NotConfigured)?;
 
-        tracing::info!(
+        tracing::debug!(
             "[ServerResolver] Fetching metadata source='{}' id='{}'",
             source,
             id
