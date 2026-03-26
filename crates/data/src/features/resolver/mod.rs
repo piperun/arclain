@@ -7,10 +7,12 @@ mod content;
 mod memory;
 mod metadata;
 mod network;
+pub mod server;
 mod trait_def;
 
 pub use content::ContentCacheResolver;
 pub use memory::MemoryResolver;
 pub use metadata::MetadataStoreResolver;
 pub use network::NetworkResolver;
+pub use server::ServerResolver;
 pub use trait_def::{DataSourceResolver, ResolveError};

@@ -16,7 +16,7 @@ pub use features::api::{
 pub use features::content_cache::ContentCache;
 pub use features::resolver::{
     ContentCacheResolver, DataSourceResolver, MemoryResolver, MetadataStoreResolver,
-    NetworkResolver, ResolveError,
+    NetworkResolver, ResolveError, ServerResolver,
 };
 pub use features::resource_manager::ResourceManager;
 pub use shared::{
