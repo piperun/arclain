@@ -32,6 +32,8 @@ pub struct PluginManager {
     pub(crate) content_cache: Option<Arc<arclain_data::ContentCache>>,
     pub(crate) resource_manager: Option<Arc<arclain_data::ResourceManager>>,
     pub(crate) async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
+    pub(crate) gameta_client:
+        Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
     pub(crate) initial_settings: HashMap<String, HashMap<String, String>>,
     /// Channel sender for async event dispatch (non-blocking)
     pub(crate) event_sender: std::sync::mpsc::Sender<PluginEvent>,
@@ -70,6 +72,7 @@ impl PluginManager {
             content_cache: None,
             resource_manager: None,
             async_http_client: None,
+            gameta_client: None,
             initial_settings,
             event_sender,
             _event_worker_handle: Some(worker_handle),
@@ -106,6 +109,7 @@ impl PluginManager {
             content_cache: None,
             resource_manager: None,
             async_http_client: None,
+            gameta_client: None,
             initial_settings,
             event_sender,
             _event_worker_handle: Some(worker_handle),
@@ -168,6 +172,19 @@ impl PluginManager {
             for domain in &plugin.manifest.capabilities.network_domains {
                 client.approve_domain(plugin_id, domain);
             }
+        }
+    }
+
+    /// Set the gameta server client for all plugins
+    pub fn set_gameta_client(
+        &mut self,
+        client: Arc<arclain_network::features::gameta_client::GametaClient>,
+    ) {
+        self.gameta_client = Some(client.clone());
+        let plugins = self.plugins.read();
+        for plugin in plugins.values() {
+            let mut instance = plugin.instance.lock();
+            instance.set_gameta_client(Some(client.clone()));
         }
     }
 

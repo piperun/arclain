@@ -71,6 +71,11 @@ impl PluginManager {
             )?
         };
 
+        // Inject optional services
+        if let Some(ref client) = self.gameta_client {
+            instance.set_gameta_client(Some(client.clone()));
+        }
+
         // Initialize the plugin
         instance.init()?;
 
