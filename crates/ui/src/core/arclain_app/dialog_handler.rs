@@ -306,21 +306,6 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render plugin dialog if open
     crate::features::plugins::presentation::views::rendering::render_dialog(ctx, &app.shared_state);
 
-    // Render log viewer modal if open
-    if app.show_log_viewer {
-        let logs = if let Some(manager) = &app.shared_state.services.plugin_manager {
-            manager.lock().get_network_log()
-        } else {
-            Vec::new()
-        };
-        dialogs::log_viewer::render(
-            ctx,
-            &app.shared_state.theme,
-            &logs,
-            &mut app.show_log_viewer,
-        );
-    }
-
     // Render lightbox if open
     let mut lightbox_state = app.shared_state.signals().lightbox_state.get();
     if lightbox_state.show {

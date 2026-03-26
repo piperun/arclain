@@ -69,6 +69,27 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                     }
                 });
             }
+            AppPage::Logs => {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let logs = if let Some(manager) = &app.shared_state.services.plugin_manager {
+                        manager.lock().get_network_log()
+                    } else {
+                        Vec::new()
+                    };
+
+                    ui.heading("Network Activity Logs");
+                    ui.add_space(8.0);
+
+                    if logs.is_empty() {
+                        ui.label(
+                            egui::RichText::new("No network activity logged yet.")
+                                .color(app.shared_state.theme.colors.on_surface_variant),
+                        );
+                    } else {
+                        crate::shared::components::network_log::NetworkLog::render(ui, &logs);
+                    }
+                });
+            }
             AppPage::OrganizeArchive(_name) => {
                 let shared_state = app.shared_state.clone();
                 let action = app.organization_feature.render(ctx, &shared_state);
