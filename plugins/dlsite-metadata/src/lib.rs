@@ -2226,69 +2226,43 @@ fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Op
     // Get ProductMetadata from host (handles all parsing on host side)
     let meta_json_str = get_product_metadata(product_id, "dlsite")?;
 
-    // Parse the ProductMetadata JSON
+    // Parse the ProductMetadata JSON (gameta format)
     let meta: serde_json::Value = serde_json::from_str(&meta_json_str).ok()?;
 
-    // Extract extras_json which contains screenshots, cover_image, etc.
-    let extras: serde_json::Value = meta["extras_json"]
-        .as_str()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or(serde_json::json!({}));
+    // Gameta stores platform-specific data in "extras" as a JSON object (not a string)
+    let extras = &meta["extras"];
 
-    // Reconstruct ScrapedData from ProductMetadata
+    // Helper to extract a string array from a JSON value
+    fn str_array(val: &serde_json::Value) -> Vec<String> {
+        val.as_array()
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .unwrap_or_default()
+    }
+
+    // Reconstruct ScrapedData from gameta ProductMetadata
     let scraped = ScrapedData {
         title: meta["title"].as_str().map(|s| s.to_string()),
         circle: meta["creator"].as_str().map(|s| s.to_string()),
         release_date: meta["release_date"].as_str().map(|s| s.to_string()),
         update_date: extras["update_date"].as_str().map(|s| s.to_string()),
-        tags: meta["tags_json"]
-            .as_str()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default(),
+        tags: str_array(&meta["tags"]),
         description: meta["description"].as_str().map(|s| s.to_string()),
         cover_image: extras["cover_image"].as_str().map(|s| s.to_string()),
-        screenshots: extras["screenshots"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default(),
-        voice_actors: meta["voice_actors_json"]
-            .as_str()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default(),
-        authors: extras["authors"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default(),
-        illustrators: extras["illustrators"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default(),
-        scenarios: extras["scenarios"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default(),
-        musicians: extras["musicians"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default(),
-        writers: extras["writers"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default(),
+        screenshots: str_array(&extras["screenshots"]),
+        voice_actors: str_array(&extras["voice_actors"]),
+        authors: str_array(&extras["authors"]),
+        illustrators: str_array(&extras["illustrators"]),
+        scenarios: str_array(&extras["scenarios"]),
+        musicians: str_array(&extras["musicians"]),
+        writers: str_array(&extras["writers"]),
         brand: extras["brand"].as_str().map(|s| s.to_string()),
         publisher: extras["publisher"].as_str().map(|s| s.to_string()),
-        series: meta["series_name"].as_str().map(|s| s.to_string()),
+        series: extras["series"].as_str().map(|s| s.to_string()),
         page_count: extras["page_count"].as_i64(),
         file_size: meta["file_size"].as_str().map(|s| s.to_string()),
-        genres: meta["genres_json"]
-            .as_str()
-            .and_then(|s| serde_json::from_str(s).ok())
-            .unwrap_or_default(),
+        genres: str_array(&meta["genres"]),
         geo_blocked: meta["geo_blocked"].as_bool().unwrap_or(false),
-        description_images: extras["description_images"]
-            .as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
-            .unwrap_or_default(),
+        description_images: str_array(&extras["description_images"]),
         description_structure: Vec::new(),
     };
 

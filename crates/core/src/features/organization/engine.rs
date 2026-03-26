@@ -328,8 +328,7 @@ impl RuleEngine {
         // Add screenshots to downloads
         let mut downloads = Vec::new();
         if let Some(gm) = game_metadata {
-            // Get DLsite code from metadata if available
-            let dlsite_code = metadata.get("code").cloned();
+            let is_dlsite = gm.source.eq_ignore_ascii_case("dlsite");
 
             for (i, screenshot) in gm.screenshots.iter().enumerate() {
                 if let crate::features::organization::metadata::ScreenshotData::FilePath(path) =
@@ -351,15 +350,19 @@ impl RuleEngine {
                     };
                     let dest_path = format!("{}/{}/{}", root_folder, screenshots_folder, filename);
 
-                    // Generate cache key
-                    let cache_key = if let Some(ref code) = dlsite_code {
-                        format!("dlsite:{}:screenshot_{}", code, i)
+                    // Cache key must match gameta's cache_keys format
+                    let cache_key = if is_dlsite {
+                        format!("dlsite:{}:screenshot_{}", gm.product_id, i)
                     } else {
                         format!("screenshot:{}:{}", gm.product_id, i)
                     };
 
                     downloads.push(PendingDownload {
-                        product_id: dlsite_code.clone(),
+                        product_id: if is_dlsite {
+                            Some(gm.product_id.clone())
+                        } else {
+                            None
+                        },
                         url,
                         dest_path,
                         cache_key,
