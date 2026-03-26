@@ -2186,28 +2186,12 @@ impl archust_plugin_sdk::Guest for Component {
     }
 }
 
-/// Detect a DLSite code from the current archive filename/contents.
-/// Returns the code string (e.g., "RJ123456") or None.
+/// Detect a DLSite code from the current archive filename.
+/// Only checks the filename — never re-lists archive contents (which spawns
+/// a 7z subprocess and takes 5+ seconds).
 fn detect_code_from_archive() -> Option<String> {
-    use archust_plugin_sdk::{current_archive_info, list_archive_files};
-
-    let info_data = current_archive_info()?;
-
-    // 1. Check filename
-    if let Some(code) = detect_dlsite_code(&info_data.filename) {
-        return Some(code);
-    }
-
-    // 2. Check archive contents
-    if let Ok(files) = list_archive_files() {
-        for file in files {
-            if let Some(code) = detect_dlsite_code(&file) {
-                return Some(code);
-            }
-        }
-    }
-
-    None
+    let info_data = archust_plugin_sdk::current_archive_info()?;
+    detect_dlsite_code(&info_data.filename)
 }
 
 /// Fast scan: detect DLSite code + check cache only. Never hits the network.
