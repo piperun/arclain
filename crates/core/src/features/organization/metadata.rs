@@ -168,6 +168,42 @@ mod tests {
         assert!(GameMetadata::from_json("not json").is_err());
     }
 
+    /// Regression: signal JSON had null title/source/tags/screenshots which
+    /// crashed serde deserialization before the `string_or_default` /
+    /// `vec_or_default` custom deserializers were added.
+    #[test]
+    fn test_from_json_null_fields_dont_panic() {
+        let json = r#"{
+            "product_id": "RJ123",
+            "source": null,
+            "title": null,
+            "tags": null,
+            "screenshots": null
+        }"#;
+        let meta = GameMetadata::from_json(json).unwrap();
+        assert_eq!(meta.product_id, "RJ123");
+        assert_eq!(meta.source, "");
+        assert_eq!(meta.title, "");
+        assert!(meta.tags.is_empty());
+        assert!(meta.screenshots.is_empty());
+    }
+
+    /// Verify that completely absent optional fields (not even present in
+    /// the JSON) also deserialize cleanly via `#[serde(default)]`.
+    #[test]
+    fn test_from_json_missing_fields_use_defaults() {
+        let json = r#"{ "product_id": "RJ456" }"#;
+        let meta = GameMetadata::from_json(json).unwrap();
+        assert_eq!(meta.product_id, "RJ456");
+        assert_eq!(meta.source, "");
+        assert_eq!(meta.title, "");
+        assert!(meta.tags.is_empty());
+        assert!(meta.screenshots.is_empty());
+        assert!(meta.description.is_none());
+        assert!(meta.release_date.is_none());
+        assert!(meta.creator.is_none());
+    }
+
     #[test]
     fn test_from_json_with_screenshots() {
         let json = r#"{

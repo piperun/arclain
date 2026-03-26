@@ -152,10 +152,29 @@ mod tests {
     }
 
     #[test]
+    fn parse_key_bare_bj_id() {
+        let result = ServerResolver::parse_key("BJ001234");
+        assert_eq!(result, Some(("dlsite".to_string(), "BJ001234".to_string())));
+    }
+
+    #[test]
     fn parse_key_unknown_format_returns_none() {
         assert!(ServerResolver::parse_key("some:unknown:key").is_none());
         assert!(ServerResolver::parse_key("dlsite:html:RJ123456").is_none());
         assert!(ServerResolver::parse_key("image/jpeg").is_none());
+    }
+
+    #[test]
+    fn parse_key_steam_key_returns_none() {
+        // Non-DLSite sources should not be routed through this resolver
+        assert!(ServerResolver::parse_key("steam:12345").is_none());
+    }
+
+    #[test]
+    fn parse_key_short_string_returns_none() {
+        // Single character or empty strings must not panic
+        assert!(ServerResolver::parse_key("R").is_none());
+        assert!(ServerResolver::parse_key("").is_none());
     }
 
     // --- is_available ---
