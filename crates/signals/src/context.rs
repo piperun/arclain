@@ -46,7 +46,7 @@ impl SignalContext {
     ) {
         let ctx = self.ctx.clone();
         signal.subscribe(move || {
-            tracing::warn!("[SIGNAL] {} triggered repaint", name);
+            tracing::trace!("[SIGNAL] {} triggered repaint", name);
             ctx.request_repaint();
         });
     }
