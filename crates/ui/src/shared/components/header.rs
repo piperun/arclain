@@ -1,3 +1,4 @@
+use crate::core::signals::ServerConnectionStatus;
 use arclain_theme::{AppTheme, ButtonVariant};
 use arclain_widgets::TextInput;
 use eframe::egui;
@@ -27,13 +28,16 @@ pub fn render(
     can_go_back: bool,
     is_on_settings: bool,
     search_focus_requested: &mut bool,
+    server_status: &ServerConnectionStatus,
 ) -> HeaderActions {
     let mut actions = HeaderActions::default();
     let show_labels = state.show_button_labels;
 
     let full_rect = ui.available_rect_before_wrap();
     let left_width = if show_nav_buttons { 80.0 } else { 0.0 };
-    let right_width = 120.0;
+    // Extra 20px when server status dot is visible (Connected or Error).
+    let has_server_indicator = !matches!(server_status, ServerConnectionStatus::Offline);
+    let right_width = if has_server_indicator { 140.0 } else { 120.0 };
     let center_width = full_rect.width() - left_width - right_width - 24.0;
 
     // === LEFT SECTION: Navigation ===
@@ -192,6 +196,31 @@ pub fn render(
 
             if logs_btn.ui(ui).on_hover_text("View Logs").clicked() {
                 actions.show_logs = true;
+            }
+
+            // Server connection status indicator (only when server is configured)
+            if has_server_indicator {
+                let dot_radius = 5.0;
+                let (dot_rect, dot_response) =
+                    ui.allocate_exact_size(egui::vec2(16.0, 16.0), egui::Sense::hover());
+
+                let (dot_color, hover_text) = match server_status {
+                    ServerConnectionStatus::Connected(version) => (
+                        egui::Color32::from_rgb(34, 197, 94), // green-500
+                        format!("Gameta server connected ({})", version),
+                    ),
+                    ServerConnectionStatus::Error(msg) => (
+                        egui::Color32::from_rgb(239, 68, 68), // red-500
+                        format!("Gameta server unavailable: {}", msg),
+                    ),
+                    ServerConnectionStatus::Offline => unreachable!(),
+                };
+
+                if ui.is_rect_visible(dot_rect) {
+                    ui.painter()
+                        .circle_filled(dot_rect.center(), dot_radius, dot_color);
+                }
+                dot_response.on_hover_text(hover_text);
             }
         });
     });
