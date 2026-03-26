@@ -7,6 +7,7 @@ use crate::services::{
 };
 use anyhow::Result;
 use arclain_db::DbPaths;
+use arclain_network::features::gameta_client::{GametaClient, ServerConfig};
 use arclain_network::features::whitelist::DomainWhitelist;
 use arclain_network::AsyncHttpClient;
 // PluginManager removed to avoid circular dependency
@@ -38,6 +39,9 @@ pub struct Services {
     // plugin_manager removed to avoid cycle
     // pub plugin_event_sender: Option<std::sync::mpsc::Sender<arclain_plugins::PluginEvent>>,
     pub checksum_service: Option<Arc<crate::utilities::ChecksumService>>,
+
+    // Gameta server client
+    pub gameta_client: Option<Arc<GametaClient>>,
 }
 
 impl Services {
@@ -65,6 +69,7 @@ impl Services {
             // plugin_manager: None,
             // plugin_event_sender: None,
             checksum_service: None,
+            gameta_client: None,
         }
     }
 
@@ -104,6 +109,53 @@ impl Services {
                     proxy_config,
                     &user_config,
                 );
+
+                // --- Gameta Server Client ---
+                if user_config.gameta_server_enabled {
+                    if let Some(url) = user_config.gameta_server_url.clone() {
+                        let api_key = match dbs.secrets.get_secret("gameta:api_key") {
+                            Ok(Some(key)) => {
+                                let key_str: &str = key.as_ref();
+                                Some(key_str.to_string())
+                            }
+                            Ok(None) => None,
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[GametaClient] Failed to load API key from secrets: {}",
+                                    e
+                                );
+                                None
+                            }
+                        };
+
+                        let config = ServerConfig { url, api_key };
+                        let client = GametaClient::new(config);
+
+                        match client.health() {
+                            Ok(resp) => {
+                                tracing::info!(
+                                    "[GametaClient] Connected to gameta server \
+                                     (status: {}, version: {})",
+                                    resp.status,
+                                    resp.version
+                                );
+                                self.gameta_client = Some(Arc::new(client));
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "[GametaClient] Health check failed, \
+                                     gameta integration disabled: {}",
+                                    e
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::warn!(
+                            "[GametaClient] gameta_server_enabled is true \
+                             but no URL is configured"
+                        );
+                    }
+                }
             }
         }
 
