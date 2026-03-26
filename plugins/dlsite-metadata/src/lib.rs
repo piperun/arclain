@@ -1496,6 +1496,11 @@ impl archust_plugin_sdk::Guest for Component {
                 let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
                 archust_plugin_sdk::emit_metadata(&metadata_json);
 
+                // Download images with progress
+                if let Some(ref s) = scraped {
+                    fetch_images_with_progress(&code, s);
+                }
+
                 // Rename archive if option is checked
                 if should_rename {
                     if let Some(archive_info) = archust_plugin_sdk::current_archive_info() {
@@ -2084,14 +2089,20 @@ impl archust_plugin_sdk::Guest for Component {
                 // Fetch from network (updates cache)
                 match fetch_dlsite_metadata(&entry_id) {
                     Some((json, scraped)) => {
-                        // Emit metadata to persist the entry back to the metadata database
+                        // Emit metadata immediately
                         let metadata_json = generate_metadata_json(&entry_id, Some(&(json.clone(), scraped.clone())));
                         archust_plugin_sdk::emit_metadata(&metadata_json);
+
+                        // Download images with progress
+                        if let Some(ref s) = scraped {
+                            fetch_images_with_progress(&entry_id, s);
+                        }
 
                         STATE.with(|state| {
                             let mut s = state.borrow_mut();
                             s.browser_detail_cache = Some((entry_id.clone(), json, scraped));
-                            s.cached_summaries = None; // Clear summaries cache so list shows updated title
+                            s.cached_summaries = None;
+                            s.cached_carousel_images.remove(&entry_id);
                         });
                         info(&format!("[DLSite Plugin] Refetched and cached: {}", entry_id));
                         archust_plugin_sdk::show_message("Success", &format!("Refetched {}", entry_id));
@@ -2234,10 +2245,15 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
         // Not in cache, fetch from network (Data API handles caching transparently)
         info(&format!("[DLSite Plugin] Cache miss, fetching {} from network", code));
         if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
-            // Generate final JSON and emit
+            // Emit metadata immediately so the UI gets it
             let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
             archust_plugin_sdk::emit_metadata(&metadata_json);
-            
+
+            // Then download images with progress (non-blocking for metadata signal)
+            if let Some(ref s) = scraped {
+                fetch_images_with_progress(&code, s);
+            }
+
             return Ok(Some((code, json, scraped)));
         }
         Ok(None)
@@ -2448,42 +2464,67 @@ fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<
         return None;
     }
 
-    // Check if image caching is enabled
-    let cache_images = STATE.with(|state| state.borrow().cache_images);
+    // Return metadata immediately — image fetching happens separately via
+    // fetch_images_with_progress() so the caller can emit metadata first,
+    // then download images without blocking the metadata signal.
+    Some((json_data, scraped_data))
+}
 
-    // Check if content is geo-blocked (don't cache images for incomplete/geo-blocked content)
-    let is_geo_blocked = scraped_data.as_ref().map(|d| d.geo_blocked).unwrap_or(false);
-    
-    // If image caching is enabled, we have scraped data, AND content is NOT geo-blocked, fetch images
-    if cache_images && !is_geo_blocked {
-        if let Some(data) = &scraped_data {
-            use archust_plugin_sdk::ResourceType;
+/// Download cover + screenshot images with status bar progress.
+/// Call this AFTER emitting metadata so the UI isn't blocked waiting for images.
+fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData) {
+    use archust_plugin_sdk::{log_network_activity, ResourceType};
 
-            // Fetch cover image
-            if let Some(cover_url) = &data.cover_image {
-                let cover_key = gameta_lib::providers::dlsite::cache_keys::cover_key(product_id);
-                log_network_activity(&format!("Fetching cover image: {}", cover_url));
-                
-                if let Err(e) = archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
-                    log_network_activity(&format!("Failed to fetch/cache cover image: {}", e));
-                }
-            }
-
-            // Fetch all screenshots
-            for (idx, screenshot_url) in data.screenshots.iter().enumerate() {
-                let screenshot_key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(product_id, idx);
-                log_network_activity(&format!("Fetching screenshot {}: {}", idx, screenshot_url));
-                
-                if let Err(e) = archust_plugin_sdk::fetch_blocking(&screenshot_key, screenshot_url, ResourceType::Image) {
-                    log_network_activity(&format!("Failed to fetch/cache screenshot {}: {}", idx, e));
-                }
-            }
+    let cache_images = STATE.with(|s| s.borrow().cache_images);
+    if !cache_images || scraped.geo_blocked {
+        if scraped.geo_blocked {
+            log_network_activity("[DLSite Plugin] Skipping image cache for geo-blocked content");
         }
-    } else if is_geo_blocked {
-        log_network_activity(&format!("[DLSite Plugin] Skipping image cache for geo-blocked content"));
+        return;
     }
 
-    Some((json_data, scraped_data))
+    let mut total = scraped.screenshots.len();
+    let has_cover = scraped.cover_image.is_some();
+    if has_cover {
+        total += 1;
+    }
+    if total == 0 {
+        return;
+    }
+
+    let mut done = 0;
+
+    // Cover image
+    if let Some(ref cover_url) = scraped.cover_image {
+        let cover_key = gameta_lib::providers::dlsite::cache_keys::cover_key(product_id);
+        archust_plugin_sdk::arclain::plugin::host::set_status_message(
+            &format!("[{}] Downloading cover ({}/{})", product_id, done + 1, total),
+        );
+        log_network_activity(&format!("Fetching cover image: {}", cover_url));
+
+        if let Err(e) = archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
+            log_network_activity(&format!("Failed to fetch cover image: {}", e));
+        }
+        done += 1;
+    }
+
+    // Screenshots
+    for (idx, url) in scraped.screenshots.iter().enumerate() {
+        let key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(product_id, idx);
+        archust_plugin_sdk::arclain::plugin::host::set_status_message(
+            &format!("[{}] Downloading screenshot {}/{}", product_id, done + 1, total),
+        );
+        log_network_activity(&format!("Fetching screenshot {}: {}", idx, url));
+
+        if let Err(e) = archust_plugin_sdk::fetch_blocking(&key, url, ResourceType::Image) {
+            log_network_activity(&format!("Failed to fetch screenshot {}: {}", idx, e));
+        }
+        done += 1;
+    }
+
+    archust_plugin_sdk::arclain::plugin::host::set_status_message(
+        &format!("[{}] Downloaded {} images", product_id, done),
+    );
 }
 
 // Re-export ScrapedData from gameta_lib for convenience
