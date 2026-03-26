@@ -33,6 +33,7 @@ pub fn render_grid_view(
         .id_salt("grid_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.add_space(4.0); // Prevent clipping into toolbar
             ui.spacing_mut().item_spacing = egui::vec2(GRID_SPACING, GRID_SPACING);
 
             egui::Grid::new("file_grid")
@@ -94,6 +95,24 @@ fn render_card(
 
     ui.painter()
         .rect(rect, CARD_ROUNDING, bg, stroke, egui::StrokeKind::Outside);
+
+    // ── Selection checkmark (top-right corner) ────────────────
+    if selected {
+        let check_center = pixel_align(egui::pos2(
+            rect.max.x - 12.0,
+            rect.min.y + 12.0,
+        ));
+        // Circle background
+        ui.painter().circle_filled(check_center, 8.0, theme.colors.primary);
+        // Checkmark
+        ui.painter().text(
+            check_center,
+            egui::Align2::CENTER_CENTER,
+            egui_phosphor::regular::CHECK,
+            egui::FontId::proportional(10.0),
+            egui::Color32::WHITE,
+        );
+    }
 
     // ── Icon area ───────────────────────────────────────────────
     let icon_center = pixel_align(egui::pos2(
