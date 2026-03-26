@@ -643,6 +643,7 @@ impl TreeNode {
 mod tests {
     use super::*;
     use crate::features::organization::metadata::GameMetadata;
+    use crate::features::organization::RuleActions;
 
     fn make_entry(path: &str, size: u64, is_dir: bool) -> ArchiveEntry {
         ArchiveEntry {
@@ -922,5 +923,101 @@ mod tests {
         ];
         let pruned = RuleEngine::prune_entries(&entries);
         assert_eq!(pruned.len(), 2);
+    }
+
+    // =========================================================================
+    // screenshot cache keys (regression)
+    // =========================================================================
+
+    /// Regression: screenshot cache keys must use `gm.product_id` directly
+    /// so they match the keys produced by the gameta server cache.
+    /// Previously the code looked up a "code" key in the metadata hashmap,
+    /// which could differ from the actual product_id.
+    #[test]
+    fn test_screenshot_cache_keys_use_product_id_for_dlsite() {
+        use crate::features::organization::metadata::ScreenshotData;
+
+        let rule = OrganizationRule {
+            name: "DLSite".to_string(),
+            is_enabled: true,
+            trigger: RuleTrigger::default(),
+            actions: RuleActions {
+                root_folder: Some("[$product_id] $title".to_string()),
+                use_standard_layout: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let meta = GameMetadata {
+            product_id: "RJ123456".to_string(),
+            source: "dlsite".to_string(),
+            title: "Test".to_string(),
+            description: None,
+            tags: vec![],
+            release_date: None,
+            creator: None,
+            screenshots: vec![
+                ScreenshotData::FilePath("/imgs/main.jpg".into()),
+                ScreenshotData::FilePath("/imgs/sub.jpg".into()),
+            ],
+            metadata_json: String::new(),
+        };
+
+        let plan =
+            RuleEngine::create_plan(&rule, "RJ123456.zip", &[], Some(&meta))
+                .expect("plan should succeed");
+
+        assert_eq!(plan.downloads.len(), 2);
+        assert_eq!(
+            plan.downloads[0].cache_key,
+            "dlsite:RJ123456:screenshot_0"
+        );
+        assert_eq!(
+            plan.downloads[1].cache_key,
+            "dlsite:RJ123456:screenshot_1"
+        );
+    }
+
+    /// Non-dlsite sources use a different cache key prefix.
+    #[test]
+    fn test_screenshot_cache_keys_non_dlsite_source() {
+        use crate::features::organization::metadata::ScreenshotData;
+
+        let rule = OrganizationRule {
+            name: "Other".to_string(),
+            is_enabled: true,
+            trigger: RuleTrigger::default(),
+            actions: RuleActions {
+                root_folder: Some("$product_id".to_string()),
+                use_standard_layout: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let meta = GameMetadata {
+            product_id: "12345".to_string(),
+            source: "steam".to_string(),
+            title: "Steam Game".to_string(),
+            description: None,
+            tags: vec![],
+            release_date: None,
+            creator: None,
+            screenshots: vec![
+                ScreenshotData::FilePath("/imgs/screen.png".into()),
+            ],
+            metadata_json: String::new(),
+        };
+
+        let plan =
+            RuleEngine::create_plan(&rule, "game.zip", &[], Some(&meta))
+                .expect("plan should succeed");
+
+        assert_eq!(plan.downloads.len(), 1);
+        assert_eq!(
+            plan.downloads[0].cache_key,
+            "screenshot:12345:0"
+        );
     }
 }

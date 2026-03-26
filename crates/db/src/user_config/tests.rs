@@ -170,3 +170,20 @@ fn test_gameta_server_fields_default() {
     assert!(!config.gameta_server_enabled);
     assert!(config.gameta_server_url.is_none());
 }
+
+#[test]
+fn test_gameta_server_fields_persist() {
+    let mut conn = setup_diesel_conn();
+
+    let mut config = UserConfig::load_diesel(&mut conn).unwrap();
+    config.gameta_server_enabled = true;
+    config.gameta_server_url = Some("https://gameta.example.com".to_string());
+    config.save_diesel(&mut conn).unwrap();
+
+    let reloaded = UserConfig::load_diesel(&mut conn).unwrap();
+    assert!(reloaded.gameta_server_enabled);
+    assert_eq!(
+        reloaded.gameta_server_url,
+        Some("https://gameta.example.com".to_string())
+    );
+}

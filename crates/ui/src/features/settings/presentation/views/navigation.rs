@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn all_settings_pages_present() {
         let pages = SettingsPage::all_pages();
-        assert_eq!(pages.len(), 10);
+        assert_eq!(pages.len(), 11);
         assert!(pages.contains(&SettingsPage::General));
         assert!(pages.contains(&SettingsPage::Interface));
         assert!(pages.contains(&SettingsPage::Archives));
@@ -191,5 +191,6 @@ mod tests {
         assert!(pages.contains(&SettingsPage::Plugins));
         assert!(pages.contains(&SettingsPage::Network));
         assert!(pages.contains(&SettingsPage::KeyboardMouse));
+        assert!(pages.contains(&SettingsPage::Server));
     }
 }

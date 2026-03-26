@@ -338,6 +338,23 @@ mod tests {
     }
 
     #[test]
+    fn logs_breadcrumb_is_single_entry() {
+        let bc = PageNavigator::get_breadcrumb(&AppPage::Logs);
+        assert_eq!(bc.len(), 1);
+        assert_eq!(bc[0].0, "Network Logs");
+        assert_eq!(bc[0].1, AppPage::Logs);
+    }
+
+    #[test]
+    fn server_settings_breadcrumb() {
+        let page = AppPage::Settings(SettingsPage::Server);
+        let bc = PageNavigator::get_breadcrumb(&page);
+        assert_eq!(bc.len(), 2);
+        assert_eq!(bc[0].0, "Settings");
+        assert_eq!(bc[1].0, "Server");
+    }
+
+    #[test]
     fn settings_pages_list_has_all() {
         let pages = SettingsPage::all_pages();
         assert_eq!(pages.len(), 11);

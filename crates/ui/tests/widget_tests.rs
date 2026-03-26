@@ -160,6 +160,7 @@ fn header_renders_with_nav_buttons() {
                 true,  // can_go_back
                 false, // is_on_settings
                 &mut focus,
+                &arclain_ui::core::signals::ServerConnectionStatus::Offline,
             );
         },
         HeaderState::default(),
@@ -186,6 +187,7 @@ fn header_renders_without_nav_buttons() {
                 false, // can_go_back
                 false, // is_on_settings
                 &mut focus,
+                &arclain_ui::core::signals::ServerConnectionStatus::Offline,
             );
         },
         HeaderState::default(),
@@ -212,6 +214,7 @@ fn header_renders_on_settings_page() {
                 true, // can_go_back
                 true, // is_on_settings
                 &mut focus,
+                &arclain_ui::core::signals::ServerConnectionStatus::Offline,
             );
         },
         HeaderState::default(),
