@@ -10,13 +10,11 @@ use tracing::{debug, info, warn};
 
 impl AppState {
     pub fn list_archive(&mut self, path: &Path) -> Result<Vec<arclain_core::ArchiveEntry>> {
-        let t0 = std::time::Instant::now();
         info!("Opening archive: {}", path.display());
         self.signals.current_password.set(None);
 
         // Select appropriate backend based on file extension
         let backend = self.backend_selector.select(path)?;
-        info!("[TIMING] Backend selection: {:?}", t0.elapsed());
 
         let info = match backend.list(path, None) {
             Ok(info) => {
@@ -60,7 +58,6 @@ impl AppState {
                 }
             }
         };
-        info!("[TIMING] Archive listing: {:?} ({} entries)", t0.elapsed(), info.entries.len());
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         let archive_path = Some(path.to_path_buf());
         self.signals.archive_path.set(archive_path.clone());
@@ -122,8 +119,7 @@ impl AppState {
             self.signals.ui_ready.set(false);
 
             info!(
-                "[TIMING] Total archive open: {:?} ({} entries, plugin event pending)",
-                t0.elapsed(),
+                "Archive opened successfully with {} entries (plugin event pending)",
                 self.signals.entries.get().len()
             );
         }
