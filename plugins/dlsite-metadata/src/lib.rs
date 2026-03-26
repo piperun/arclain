@@ -1210,12 +1210,9 @@ impl archust_plugin_sdk::Guest for Component {
                  let cover_key = gameta_lib::providers::dlsite::cache_keys::cover_key(selected_id);
                  let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
 
-                 // On cached tab: check if actually cached; on search tab: show if URL exists
-                 let show_cover = if is_cached_tab {
-                     archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key)
-                 } else {
-                     cover_url.is_some()
-                 };
+                 // Show cover if we have a URL or cached bytes
+                 let show_cover = cover_url.is_some()
+                     || archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key);
 
                  if show_cover {
                      if let Some(ref url) = cover_url {
@@ -1224,30 +1221,40 @@ impl archust_plugin_sdk::Guest for Component {
                      images.push((cover_key, cover_url));
                  }
 
-                 // Add screenshots from scraped data
-                 if let Some(scraped_data) = &scraped {
+                 // Add screenshots: from scraped data URLs, or probe cache as fallback
+                 let has_scraped_screenshots = scraped.as_ref()
+                     .map(|s| !s.screenshots.is_empty())
+                     .unwrap_or(false);
+
+                 if has_scraped_screenshots {
+                     let scraped_data = scraped.as_ref().unwrap();
                      for (i, url) in scraped_data.screenshots.iter().enumerate() {
                          if !url.is_empty() && !seen_urls.contains(url) {
                              let key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(selected_id, i);
-
-                             let should_include = if is_cached_tab {
-                                 archust_plugin_sdk::arclain::plugin::host::has_data(&key)
-                             } else {
-                                 true
-                             };
-
-                             if should_include {
-                                 seen_urls.insert(url.clone());
-                                 images.push((key, Some(url.clone())));
-                             }
+                             seen_urls.insert(url.clone());
+                             images.push((key, Some(url.clone())));
+                         }
+                     }
+                 } else {
+                     // Fallback: probe content cache by key when DB extras
+                     // doesn't have screenshot URLs (stale migration data)
+                     for i in 0..20 {
+                         let key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(selected_id, i);
+                         if archust_plugin_sdk::arclain::plugin::host::has_data(&key) {
+                             images.push((key, None));
+                         } else {
+                             break;
                          }
                      }
                  }
 
-                 // Cache the built list in HashMap for instant navigation
-                 STATE.with(|s| {
-                     s.borrow_mut().cached_carousel_images.insert(selected_id.to_string(), images.clone());
-                 });
+                 // Only cache non-empty lists (empty = stale, will retry next frame
+                 // after lazy repair has a chance to populate extras)
+                 if !images.is_empty() {
+                     STATE.with(|s| {
+                         s.borrow_mut().cached_carousel_images.insert(selected_id.to_string(), images.clone());
+                     });
+                 }
 
                  images
              };
@@ -1821,6 +1828,7 @@ impl archust_plugin_sdk::Guest for Component {
                  let entry_id = id.trim_start_matches("view_cache_entry_").to_string();
 
                  // Read from local cache only - no network fetch for cached entries!
+                 // (host side does lazy repair of stale extras on read)
                  let cached_data = get_cached_dlsite_metadata(&entry_id);
 
                  STATE.with(|state| {
@@ -1828,6 +1836,8 @@ impl archust_plugin_sdk::Guest for Component {
                     if let Some((json, scraped)) = cached_data {
                         s.browser_detail_cache = Some((entry_id.clone(), json, scraped));
                     }
+                    // Clear carousel cache so it rebuilds with potentially repaired data
+                    s.cached_carousel_images.remove(&entry_id);
                     s.selected_cache_entry = Some(entry_id);
                     s.current_image_index = -1; // Reset to cover when switching entries
                     // Note: Keep cached_carousel_images HashMap intact for instant back-navigation

@@ -189,7 +189,7 @@ impl HostFunctions {
         // Serialize the ProductMetadata
         match serde_json::to_vec(&product) {
             Ok(bytes) => {
-                // Save using Data API
+                // Save using Data API (best-effort — signal fires regardless)
                 if let Err(e) = self
                     .data_service
                     .save_data(DataSource::MetadataStore, &id, &bytes)
@@ -197,12 +197,13 @@ impl HostFunctions {
                     error!("Failed to save metadata via DataService: {}", e);
                 } else {
                     debug!("[Cache SAVE] Saved {} via Data API", id);
+                }
 
-                    // Trigger reactive signal to notify UI of metadata update
-                    if let Some(ref signal) = self.metadata_signal {
-                        signal.set(Some(parsed.clone()));
-                        debug!("[Cache SAVE] Triggered metadata signal for {}", id);
-                    }
+                // Always trigger the signal so the UI receives metadata even if
+                // persistence failed (e.g. corrupt database with stale triggers)
+                if let Some(ref signal) = self.metadata_signal {
+                    signal.set(Some(parsed.clone()));
+                    debug!("[Cache SAVE] Triggered metadata signal for {}", id);
                 }
             }
             Err(e) => error!("Failed to serialize ProductMetadata: {}", e),
@@ -292,10 +293,46 @@ impl HostFunctions {
 
         let full_id = format!("{}:{}", source.to_lowercase(), product_id);
 
-        // 1. Check metadata.sqlite first (fastest) - trust the data
+        // 1. Check metadata.sqlite first (fastest)
         if let Some(lib_svc) = &self.library_service {
             match lib_svc.get_metadata(&full_id) {
-                Ok(Some(meta)) => {
+                Ok(Some(mut meta)) => {
+                    // Lazy repair: if extras is missing image data (stale migration),
+                    // try to enrich from cached HTML before returning
+                    let has_images = meta.extras.get("cover_image")
+                        .and_then(|v| v.as_str())
+                        .is_some();
+
+                    if !has_images {
+                        let html_key = format!("{}:html:{}", source.to_lowercase(), product_id);
+                        if let Some(html_bytes) = self.data_service.get_data(&html_key) {
+                            let html_str = String::from_utf8_lossy(&html_bytes);
+                            if let Ok(repaired) = self.parse_dlsite_html_to_metadata(
+                                &product_id, &source, &html_str,
+                            ) {
+                                // Merge image fields into existing extras
+                                if let Some(obj) = meta.extras.as_object_mut() {
+                                    if let Some(rep) = repaired.extras.as_object() {
+                                        for (k, v) in rep {
+                                            if !v.is_null() {
+                                                obj.insert(k.clone(), v.clone());
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    meta.extras = repaired.extras;
+                                }
+                                // Also fill in tags/genres if empty
+                                if meta.tags.is_empty() {
+                                    meta.tags = repaired.tags;
+                                }
+                                // Persist the repair
+                                let _ = lib_svc.save_metadata(&meta);
+                                debug!("[get_product_metadata] Repaired extras for {}", full_id);
+                            }
+                        }
+                    }
+
                     return serde_json::to_string(&meta).ok();
                 }
                 Ok(None) => {

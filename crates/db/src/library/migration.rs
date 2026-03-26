@@ -70,7 +70,16 @@ pub fn migrate_to_gameta_schema(
     let total = old_rows.len();
     tracing::info!("[Migration] Read {} rows from old schema", total);
 
-    // Drop old table and indexes
+    // Drop old table, indexes, and any leftover cr-sqlite triggers
+    // (cr-sqlite was removed but its triggers persist in existing databases)
+    let triggers: Vec<String> = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")?
+        .query_map([], |row| row.get(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    for trigger in &triggers {
+        let _ = conn.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{}\"", trigger));
+    }
     conn.execute_batch(
         "DROP TABLE IF EXISTS product_metadata;
          DROP INDEX IF EXISTS idx_product_source;

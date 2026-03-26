@@ -433,7 +433,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_core"
-version = "0.8.7"
+version = "0.8.8"
 dependencies = [
  "anyhow",
  "arclain-network",
