@@ -1760,23 +1760,56 @@ impl archust_plugin_sdk::Guest for Component {
                     let s = state.borrow();
                     s.fetch_in_progress
                 });
-                
+
                 if already_in_progress {
                     info("[DLSite Plugin] Fetch already in progress, ignoring");
                     return vec![];
                 }
-                
-                // Mark as in progress
-                STATE.with(|state| {
-                    state.borrow_mut().fetch_in_progress = true;
-                });
-                
+
                 info("[DLSite Plugin] Handling fetch_metadata");
 
+                // Fast path: check cache first (instant, no network)
+                match perform_scan_cached_only() {
+                    Ok(Some((product_id, json, scraped))) => {
+                        info("[DLSite Plugin] Found cached metadata");
+                        let metadata_json = generate_metadata_json(&product_id, Some(&(json.clone(), scraped.clone())));
+                        archust_plugin_sdk::emit_metadata(&metadata_json);
+
+                        STATE.with(|state| {
+                            let mut s = state.borrow_mut();
+                            s.found_metadata = Some((product_id, json, scraped));
+                        });
+                        return vec![];
+                    }
+                    Ok(None) => {
+                        // Not cached — detect code and request async fetch from host
+                        info("[DLSite Plugin] Not cached, requesting background fetch");
+
+                        let code = detect_code_from_archive();
+                        if let Some(code) = code {
+                            STATE.with(|state| {
+                                state.borrow_mut().fetch_in_progress = true;
+                            });
+                            archust_plugin_sdk::arclain::plugin::host::set_status_message(
+                                &format!("Fetching metadata for {}...", code),
+                            );
+                            return vec![PluginAction::RequestFetch(format!("dlsite:{}", code))];
+                        }
+                        info("[DLSite Plugin] No DLSite code detected");
+                        return vec![];
+                    }
+                    Err(e) => {
+                        info(&format!("[DLSite Plugin] Scan failed: {}", e));
+                        return vec![];
+                    }
+                }
+
+                // Dead code below kept for reference — this was the old blocking path
+                #[allow(unreachable_code)]
                 match perform_scan() {
                     Ok(Some((product_id, json, scraped))) => {
                         info("[DLSite Plugin] Metadata found");
-                        
+
                         STATE.with(|state| {
                             let mut s = state.borrow_mut();
                             s.found_metadata = Some((product_id, json, scraped));
@@ -2156,6 +2189,30 @@ impl archust_plugin_sdk::Guest for Component {
         
         vec![]
     }
+}
+
+/// Detect a DLSite code from the current archive filename/contents.
+/// Returns the code string (e.g., "RJ123456") or None.
+fn detect_code_from_archive() -> Option<String> {
+    use archust_plugin_sdk::{current_archive_info, list_archive_files};
+
+    let info_data = current_archive_info()?;
+
+    // 1. Check filename
+    if let Some(code) = detect_dlsite_code(&info_data.filename) {
+        return Some(code);
+    }
+
+    // 2. Check archive contents
+    if let Ok(files) = list_archive_files() {
+        for file in files {
+            if let Some(code) = detect_dlsite_code(&file) {
+                return Some(code);
+            }
+        }
+    }
+
+    None
 }
 
 /// Fast scan: detect DLSite code + check cache only. Never hits the network.

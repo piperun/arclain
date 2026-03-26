@@ -16,6 +16,7 @@ use crate::shared::dialogs::LightboxState;
 pub struct ActionContext<'a> {
     pub lightbox_signal: Option<&'a Signal<LightboxState>>,
     pub page_display_name_signal: Option<&'a Signal<Option<String>>>,
+    pub shared_state: Option<&'a crate::shared::SharedState>,
 }
 
 /// Process a list of plugin actions
@@ -30,6 +31,7 @@ pub fn process_plugin_actions(
     let ctx = ActionContext {
         lightbox_signal,
         page_display_name_signal: None,
+        shared_state: None,
     };
     for action in actions {
         process_action(action, plugin_id, dialog_state, toaster, refresh_requests, &ctx);
@@ -167,6 +169,14 @@ pub fn process_action(
                 signal.set(Some(name));
             }
         }
+
+        PluginAction::RequestFetch { key } => {
+            // Async background fetch — host handles on tokio runtime
+            tracing::info!("Plugin {} requested background fetch: {}", plugin_id, key);
+            if let Some(shared) = ctx.shared_state {
+                spawn_background_fetch(shared, &plugin_id, &key);
+            }
+        }
     }
 }
 
@@ -211,6 +221,7 @@ pub fn create_dialog_callback(
                 let ctx = ActionContext {
                     lightbox_signal: Some(&lightbox_signal),
                     page_display_name_signal: Some(&page_display_name_signal),
+                    shared_state: None, // Not available in closure context
                 };
                 for action in actions {
                     process_action(
@@ -279,6 +290,7 @@ pub fn create_page_callback(
                 let ctx = ActionContext {
                     lightbox_signal: Some(&lightbox_signal),
                     page_display_name_signal: Some(&page_display_name_signal),
+                    shared_state: None, // Not available in closure context
                 };
                 for action in actions {
                     process_action(
@@ -294,4 +306,71 @@ pub fn create_page_callback(
             }
         }
     })
+}
+
+/// Spawn a background metadata fetch on the tokio runtime.
+/// Uses gameta server if available, otherwise falls back to plugin event.
+fn spawn_background_fetch(
+    shared: &crate::shared::SharedState,
+    plugin_id: &str,
+    key: &str,
+) {
+    // Parse "source:id" format
+    let parts: Vec<&str> = key.splitn(2, ':').collect();
+    let (source, id) = if parts.len() == 2 {
+        (parts[0].to_string(), parts[1].to_string())
+    } else {
+        ("dlsite".to_string(), key.to_string())
+    };
+
+    // Try gameta server (fully async, no plugin mutex)
+    if let Some(ref client) = shared.services.gameta_client {
+        let client = client.clone();
+        let metadata_signal = shared.signals().metadata.clone();
+        let id_for_log = id.clone();
+        let source_clone = source.clone();
+        let id_clone = id.clone();
+
+        shared.services.tokio_runtime.spawn(async move {
+            let result = tokio::task::spawn_blocking(move || {
+                match client.get_metadata(&source_clone, &id_clone) {
+                    Ok(Some(meta)) => Some(meta),
+                    _ => client
+                        .fetch_metadata(&source_clone, &id_clone, false)
+                        .ok()
+                        .and_then(|r| r.metadata),
+                }
+            })
+            .await;
+
+            if let Ok(Some(meta)) = result {
+                if let Ok(json_val) = serde_json::to_value(&meta) {
+                    tracing::info!("[BackgroundFetch] Got {} from server", id_for_log);
+                    metadata_signal.set(Some(json_val));
+                }
+            }
+        });
+        return;
+    }
+
+    // No server — dispatch via plugin event system on background thread
+    if let Some(ref pm_arc) = shared.services.plugin_manager {
+        let pm = pm_arc.clone();
+        let plugin_id = plugin_id.to_string();
+        let id_clone = id;
+
+        shared.services.tokio_runtime.spawn(async move {
+            tokio::task::spawn_blocking(move || {
+                let manager = pm.lock();
+                manager.with_plugin_instance(&plugin_id, |instance| {
+                    let _ = instance.send_ui_event(
+                        &format!("background_fetch_{}", id_clone),
+                        None,
+                    );
+                });
+            })
+            .await
+            .ok();
+        });
+    }
 }

@@ -454,6 +454,9 @@ pub enum PluginAction {
     },
     /// Set the display name for the current plugin page (shown in breadcrumbs/title)
     SetPageDisplayName { name: String },
+    /// Request async background fetch — host handles on tokio runtime.
+    /// Format: "source:id" e.g. "dlsite:RJ123456"
+    RequestFetch { key: String },
 }
 
 fn default_space_size() -> f32 {
