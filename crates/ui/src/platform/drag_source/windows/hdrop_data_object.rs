@@ -266,7 +266,7 @@ impl HDropDataObject {
             .read()
             .as_ref()
             .map(|c| c.temp_dir.path().to_path_buf())
-            .unwrap();
+            .ok_or("Cache cleared between check and use")?;
         info!("[hdrop] Starting extraction to temp: {:?}", temp_dir);
 
         let file_paths: Vec<String> = self

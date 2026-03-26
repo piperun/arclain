@@ -860,8 +860,6 @@ mod pruning_tests {
 
     #[test]
     fn test_wave_random_extreme_patterns() {
-        let _rng = rand::rng();
-
         // Test extreme scenarios
         for _ in 0..3 {
             let mut entries = vec![];

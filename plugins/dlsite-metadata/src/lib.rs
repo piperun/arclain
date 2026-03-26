@@ -1303,16 +1303,9 @@ impl archust_plugin_sdk::Guest for Component {
                  .map(|s| s.tags.clone())
                  .filter(|t| !t.is_empty())
                  .or_else(|| {
-                     // Try to parse tags_json from ProductMetadata
-                     json["tags_json"].as_str()
-                         .or_else(|| json["tags"].as_str())
-                         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-                         .or_else(|| {
-                             // Might be a direct array
-                             json["tags"].as_array().map(|arr| {
-                                 arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
-                             })
-                         })
+                     json["tags"].as_array().map(|arr| {
+                         arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect()
+                     })
                  })
                  .unwrap_or_default();
              
@@ -1799,33 +1792,6 @@ impl archust_plugin_sdk::Guest for Component {
                     }
                 }
 
-                // Dead code below kept for reference — this was the old blocking path
-                #[allow(unreachable_code)]
-                match perform_scan() {
-                    Ok(Some((product_id, json, scraped))) => {
-                        info("[DLSite Plugin] Metadata found");
-
-                        STATE.with(|state| {
-                            let mut s = state.borrow_mut();
-                            s.found_metadata = Some((product_id, json, scraped));
-                            s.fetch_in_progress = false;
-                        });
-                    }
-                    Ok(None) => {
-                        info("[DLSite Plugin] No metadata found");
-                        STATE.with(|state| {
-                            let mut s = state.borrow_mut();
-                            s.fetch_in_progress = false;
-                        });
-                    }
-                    Err(e) => {
-                        info(&format!("[DLSite Plugin] Scan failed: {}", e));
-                        STATE.with(|state| {
-                            let mut s = state.borrow_mut();
-                            s.fetch_in_progress = false;
-                        });
-                    }
-                }
             }
             "show_details" => {
                 STATE.with(|state| {
