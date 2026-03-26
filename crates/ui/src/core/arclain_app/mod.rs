@@ -39,6 +39,7 @@ pub struct ArclainApp {
 
     // UI Components
     pub(crate) top_tab_bar_state: components::top_tab_bar::TopTabBarState,
+    pub(crate) network_log_state: crate::shared::components::network_log::NetworkLogState,
 
     // State & Flags
     pub(crate) _pending_archive_path: Option<PathBuf>,
@@ -66,6 +67,7 @@ impl ArclainApp {
             organization_feature: organization::OrganizationFeature::new(&shared_state),
             hotkey_manager: crate::features::hotkeys::HotkeyManager::new(),
             top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
+            network_log_state: crate::shared::components::network_log::NetworkLogState::new(),
             _pending_archive_path: None,
             _last_window_title: None,
             _signals_bound: false,

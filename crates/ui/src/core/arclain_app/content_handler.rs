@@ -77,17 +77,12 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                         Vec::new()
                     };
 
-                    ui.heading("Network Activity Logs");
-                    ui.add_space(8.0);
-
-                    if logs.is_empty() {
-                        ui.label(
-                            egui::RichText::new("No network activity logged yet.")
-                                .color(app.shared_state.theme.colors.on_surface_variant),
-                        );
-                    } else {
-                        crate::shared::components::network_log::NetworkLog::render(ui, &logs);
-                    }
+                    crate::shared::components::network_log::NetworkLog::render_page(
+                        ui,
+                        &logs,
+                        &mut app.network_log_state,
+                        &app.shared_state.theme.colors,
+                    );
                 });
             }
             AppPage::OrganizeArchive(_name) => {
