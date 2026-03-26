@@ -1456,19 +1456,14 @@ impl archust_plugin_sdk::Guest for Component {
 
             let auto_fetch = STATE.with(|s| s.borrow().auto_fetch_enabled);
             if auto_fetch {
-                info("[DLSite Plugin] Auto-fetch enabled, scanning...");
-
-                // Fast path only: detect code + check cache.
-                // Never do network fetches here — they block the UI for 20+ seconds.
-                match perform_scan_cached_only() {
-                    Ok(Some((id, json, scraped))) => {
-                        info(&format!("[DLSite Plugin] Found cached metadata for {}", id));
-                        let metadata_json = generate_metadata_json(&id, Some(&(json.clone(), scraped.clone())));
-                        archust_plugin_sdk::emit_metadata(&metadata_json);
-                    }
-                    Ok(None) => info("[DLSite Plugin] No cached metadata found (use Fetch DLSite to fetch)"),
-                    Err(e) => info(&format!("[DLSite Plugin] Scan failed: {}", e)),
+                // Only detect code (instant regex) — no cache lookup, no emit, no DB.
+                // Return RequestFetch so the host handles everything asynchronously
+                // without holding the plugin mutex.
+                if let Some(code) = detect_code_from_archive() {
+                    info(&format!("[DLSite Plugin] Detected code: {}", code));
+                    return vec![PluginAction::RequestFetch(format!("dlsite:{}", code))];
                 }
+                info("[DLSite Plugin] No DLSite code detected");
             }
             return vec![];
         }

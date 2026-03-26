@@ -354,6 +354,18 @@ impl PluginInstance {
         }
     }
 
+    /// Get gameta client reference (if configured)
+    pub fn get_gameta_client(&self) -> Option<Arc<arclain_network::features::gameta_client::GametaClient>> {
+        let data = self.store.data();
+        data.gameta_client.clone()
+    }
+
+    /// Get metadata signal reference (if set)
+    pub fn get_metadata_signal(&self) -> Option<arclain_signals::Signal<Option<serde_json::Value>>> {
+        let data = self.store.data();
+        data.metadata_signal.clone()
+    }
+
     /// Get network logs from the plugin
     pub fn get_network_log(&self) -> Vec<(std::time::SystemTime, String)> {
         let data = self.store.data();
