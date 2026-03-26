@@ -84,6 +84,17 @@ pub enum SettingsAction {
     },
     /// Save keyboard and mouse settings
     SaveKeyboardMouse { bindings: HashMap<String, String> },
+    /// Save gameta server settings
+    SaveServer {
+        enabled: bool,
+        url: Option<String>,
+        api_key: Option<String>,
+    },
+    /// Test gameta server connection
+    TestServer {
+        url: String,
+        api_key: Option<String>,
+    },
     /// Navigate to another settings page
     NavigateTo(crate::core::navigation::SettingsPage),
     /// Save the currently edited organization rule
@@ -150,6 +161,36 @@ impl Default for GeneralSettingsState {
     fn default() -> Self {
         Self {
             open_nested_in_new_tab: Signal::new(false),
+        }
+    }
+}
+
+/// Status of a gameta server connection test
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ServerConnectionStatus {
+    #[default]
+    Idle,
+    Testing,
+    Connected(String),
+    Failed(String),
+}
+
+/// State for the server settings page
+#[derive(Clone)]
+pub struct ServerSettingsState {
+    pub enabled: Signal<bool>,
+    pub url: Signal<String>,
+    pub api_key: Signal<String>,
+    pub connection_status: Signal<ServerConnectionStatus>,
+}
+
+impl Default for ServerSettingsState {
+    fn default() -> Self {
+        Self {
+            enabled: Signal::new(false),
+            url: Signal::new(String::new()),
+            api_key: Signal::new(String::new()),
+            connection_status: Signal::new(ServerConnectionStatus::Idle),
         }
     }
 }

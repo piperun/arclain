@@ -12,6 +12,7 @@ pub mod network;
 pub mod organization_rules;
 pub mod plugins;
 pub mod security;
+pub mod server;
 
 // Re-export for convenience
 pub use archive_profiles::ProfilesPage;
