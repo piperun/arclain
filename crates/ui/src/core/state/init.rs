@@ -232,6 +232,9 @@ impl AppState {
                     manager.set_resource_manager(r.clone());
                 }
                 manager.set_async_http_client(services.async_http_client.clone());
+                if let Some(ref gc) = services.gameta_client {
+                    manager.set_gameta_client(gc.clone());
+                }
                 manager.set_metadata_signal(me.signals.metadata.clone());
                 me.plugin_event_sender = Some(manager.get_event_sender());
                 plugin_manager = Some(Arc::new(Mutex::new(manager)));

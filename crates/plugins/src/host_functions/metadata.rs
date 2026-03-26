@@ -293,6 +293,47 @@ impl HostFunctions {
 
         let full_id = format!("{}:{}", source.to_lowercase(), product_id);
 
+        // 0. Try gameta server first (if configured and available)
+        if let Some(ref client) = self.gameta_client {
+            match client.get_metadata(&source, &product_id) {
+                Ok(Some(meta_resp)) => {
+                    debug!(
+                        "[get_product_metadata] Got {} from gameta server",
+                        product_id
+                    );
+                    if let Ok(json) = serde_json::to_string(&meta_resp) {
+                        return Some(json);
+                    }
+                }
+                Ok(None) => {
+                    // Not on server — try server-side fetch
+                    match client.fetch_metadata(&source, &product_id, false) {
+                        Ok(resp) if resp.metadata.is_some() => {
+                            debug!(
+                                "[get_product_metadata] Fetched {} via gameta server",
+                                product_id
+                            );
+                            if let Ok(json) = serde_json::to_string(&resp.metadata.unwrap()) {
+                                return Some(json);
+                            }
+                        }
+                        _ => {
+                            debug!(
+                                "[get_product_metadata] Server fetch failed for {}, falling back",
+                                product_id
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!(
+                        "[get_product_metadata] Gameta server error: {}, falling back",
+                        e
+                    );
+                }
+            }
+        }
+
         // 1. Check metadata.sqlite first (fastest)
         if let Some(lib_svc) = &self.library_service {
             match lib_svc.get_metadata(&full_id) {

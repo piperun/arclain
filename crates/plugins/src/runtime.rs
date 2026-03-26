@@ -342,6 +342,18 @@ impl PluginInstance {
         }
     }
 
+    /// Set the gameta server client for host functions
+    pub fn set_gameta_client(
+        &mut self,
+        client: Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
+    ) {
+        let host = self.store.data_mut();
+        match client {
+            Some(c) => host.set_gameta_client(c),
+            None => host.gameta_client = None,
+        }
+    }
+
     /// Get network logs from the plugin
     pub fn get_network_log(&self) -> Vec<(std::time::SystemTime, String)> {
         let data = self.store.data();

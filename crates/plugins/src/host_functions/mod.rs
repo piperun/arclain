@@ -35,6 +35,7 @@ pub struct HostFunctions {
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
     pub library_service: Option<Arc<arclain_core::LibraryService>>,
     pub content_cache: Option<Arc<arclain_data::ContentCache>>,
+    pub gameta_client: Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
 
     pub resource_manager: Option<Arc<ResourceManager>>,
 
@@ -76,6 +77,7 @@ impl HostFunctions {
             network_log: Arc::new(Mutex::new(Vec::new())),
             library_service: None,
             content_cache: None,
+            gameta_client: None,
 
             resource_manager: None,
 
@@ -116,6 +118,13 @@ impl HostFunctions {
 
     pub fn set_content_cache(&mut self, cache: Arc<arclain_data::ContentCache>) {
         self.content_cache = Some(cache);
+    }
+
+    pub fn set_gameta_client(
+        &mut self,
+        client: Arc<arclain_network::features::gameta_client::GametaClient>,
+    ) {
+        self.gameta_client = Some(client);
     }
 
     pub fn set_metadata_signal(
