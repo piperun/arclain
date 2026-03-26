@@ -17,9 +17,9 @@ impl CacheDb {
 
         // If opening failed and the file exists, it might be corrupt - try to delete and recreate
         if db_result.is_err() && path_ref.exists() {
-            eprintln!("Warning: Cache database appears corrupt, attempting to recreate...");
+            tracing::warn!("Cache database appears corrupt, attempting to recreate...");
             if let Err(e) = std::fs::remove_file(path_ref) {
-                eprintln!("Failed to remove corrupt cache database: {}", e);
+                tracing::error!("Failed to remove corrupt cache database: {}", e);
             } else {
                 // Also try to remove WAL and SHM files
                 let _ = std::fs::remove_file(path_ref.with_extension("sqlite-wal"));
