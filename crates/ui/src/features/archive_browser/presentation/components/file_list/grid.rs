@@ -24,7 +24,7 @@ pub fn render_grid_view(
     entries: &mut [FileEntry],
 ) -> Option<FileListAction> {
     let mut action: Option<FileListAction> = None;
-    let available_width = ui.available_width();
+    let available_width = ui.available_width() - 16.0; // account for frame margin
     let columns = ((available_width + GRID_SPACING) / (CARD_WIDTH + GRID_SPACING))
         .floor()
         .max(1.0) as usize;
@@ -33,7 +33,10 @@ pub fn render_grid_view(
         .id_salt("grid_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            ui.add_space(4.0); // Prevent clipping into toolbar
+            // Inset so cards don't clip into toolbar or panel edges
+            egui::Frame::NONE
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .show(ui, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(GRID_SPACING, GRID_SPACING);
 
             egui::Grid::new("file_grid")
@@ -51,6 +54,7 @@ pub fn render_grid_view(
                         }
                     }
                 });
+            }); // Frame
         });
 
     action
