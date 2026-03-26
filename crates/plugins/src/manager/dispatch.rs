@@ -117,15 +117,54 @@ impl PluginManager {
                 // Match event to set context and dispatch
                 match &event {
                     PluginEvent::OnArchiveOpen { path, password, .. } => {
-                        // Set context first (on background thread!)
+                        // Set archive context (fast, no WASM call)
                         instance.set_archive_context(Some(path.clone()), password.clone());
 
-                        // Then dispatch event
+                        // Dispatch to plugin (fast — plugin only does regex detection,
+                        // returns RequestFetch action if code found)
                         let id = "event:archive_opened".to_string();
                         let value = Some(path.clone());
 
-                        if let Err(e) = instance.send_ui_event(&id, value) {
-                            error!("Event worker error for {}: {:?}", plugin_id, e);
+                        match instance.send_ui_event(&id, value) {
+                            Ok(actions) => {
+                                // Process RequestFetch actions on this background thread
+                                for action in actions {
+                                    if let crate::types::PluginAction::RequestFetch { key } = action {
+                                        debug!("[EventWorker] Processing RequestFetch: {}", key);
+                                        // Use gameta client if available (async-safe)
+                                        if let Some(ref client) = instance.get_gameta_client() {
+                                            let parts: Vec<&str> = key.splitn(2, ':').collect();
+                                            let (source, product_id) = if parts.len() == 2 {
+                                                (parts[0], parts[1])
+                                            } else {
+                                                ("dlsite", key.as_str())
+                                            };
+                                            // Try cache first, then server fetch
+                                            let meta = client.get_metadata(source, product_id)
+                                                .ok()
+                                                .flatten()
+                                                .or_else(|| {
+                                                    client.fetch_metadata(source, product_id, false)
+                                                        .ok()
+                                                        .and_then(|r| r.metadata)
+                                                });
+                                            if let Some(meta) = meta {
+                                                if let Ok(json_val) = serde_json::to_value(&meta) {
+                                                    if let Some(ref signal) = instance.get_metadata_signal() {
+                                                        signal.set(Some(json_val));
+                                                        debug!("[EventWorker] Set metadata signal for {}", product_id);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Without gameta server, the host function fallback
+                                        // in get_product_metadata handles local DB + cache
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("Event worker error for {}: {:?}", plugin_id, e);
+                            }
                         }
                     }
                     _ => {
