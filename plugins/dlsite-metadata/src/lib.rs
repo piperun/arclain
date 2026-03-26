@@ -1457,16 +1457,16 @@ impl archust_plugin_sdk::Guest for Component {
             let auto_fetch = STATE.with(|s| s.borrow().auto_fetch_enabled);
             if auto_fetch {
                 info("[DLSite Plugin] Auto-fetch enabled, scanning...");
-                
-                // Note: performing scan on background thread (host spawned thread for dispatch)
-                match perform_scan() {
+
+                // Fast path only: detect code + check cache.
+                // Never do network fetches here — they block the UI for 20+ seconds.
+                match perform_scan_cached_only() {
                     Ok(Some((id, json, scraped))) => {
-                        info(&format!("[DLSite Plugin] Auto-fetched metadata for {}", id));
-                        // Automatically emit to library so Organizer can pick it up via signals
+                        info(&format!("[DLSite Plugin] Found cached metadata for {}", id));
                         let metadata_json = generate_metadata_json(&id, Some(&(json.clone(), scraped.clone())));
                         archust_plugin_sdk::emit_metadata(&metadata_json);
                     }
-                    Ok(None) => info("[DLSite Plugin] No metadata found"),
+                    Ok(None) => info("[DLSite Plugin] No cached metadata found (use Fetch DLSite to fetch)"),
                     Err(e) => info(&format!("[DLSite Plugin] Scan failed: {}", e)),
                 }
             }
@@ -2147,6 +2147,57 @@ impl archust_plugin_sdk::Guest for Component {
     }
 }
 
+/// Fast scan: detect DLSite code + check cache only. Never hits the network.
+/// Used during archive_opened to avoid blocking the UI.
+fn perform_scan_cached_only() -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
+    use archust_plugin_sdk::{current_archive_info, info, list_archive_files};
+
+    let info_data = current_archive_info().ok_or("No archive open")?;
+    info(&format!(
+        "[DLSite Plugin] Scanning archive: {}",
+        info_data.filename
+    ));
+
+    let mut checked_codes: Vec<String> = Vec::new();
+
+    let mut check_cached = |code: String| -> Option<(String, serde_json::Value, Option<ScrapedData>)> {
+        if checked_codes.contains(&code) {
+            return None;
+        }
+        checked_codes.push(code.clone());
+        info(&format!("[DLSite Plugin] Found code: {}", code));
+
+        if let Some((json, scraped)) = get_cached_dlsite_metadata(&code) {
+            info(&format!("[DLSite Plugin] Using cached metadata for {}", code));
+            return Some((code, json, scraped));
+        }
+        info(&format!("[DLSite Plugin] {} not cached, skipping network fetch", code));
+        None
+    };
+
+    // 1. Check filename
+    if let Some(code) = detect_dlsite_code(&info_data.filename) {
+        if let Some(result) = check_cached(code) {
+            return Ok(Some(result));
+        }
+    }
+
+    // 2. Check archive contents
+    if let Ok(files) = list_archive_files() {
+        for file in files {
+            if let Some(code) = detect_dlsite_code(&file) {
+                if let Some(result) = check_cached(code) {
+                    return Ok(Some(result));
+                }
+            }
+        }
+    }
+
+    Ok(None)
+}
+
+/// Full scan: detect code + check cache + fetch from network if needed.
+/// Used for explicit "Fetch DLSite" button clicks (user-initiated).
 fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
     use archust_plugin_sdk::{current_archive_info, info, list_archive_files};
 
