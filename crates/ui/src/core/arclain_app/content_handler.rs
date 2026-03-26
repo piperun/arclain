@@ -5,11 +5,15 @@ use crate::core::navigation::{AppPage, PageNavigator};
 use eframe::egui;
 
 pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
-    // Check for plugin page first - if open, render it instead of normal content
-    if crate::features::plugins::presentation::views::rendering::render_page(ctx, &app.shared_state)
-    {
-        // Plugin page handled content, skip normal rendering
-        return;
+    // Plugin pages only take over rendering when we're on the Main page.
+    // If the user navigated to Logs/Settings/etc., normal content takes priority.
+    if app.page_navigator.current_page == AppPage::Main {
+        if crate::features::plugins::presentation::views::rendering::render_page(
+            ctx,
+            &app.shared_state,
+        ) {
+            return;
+        }
     }
 
     // Render Main Content
