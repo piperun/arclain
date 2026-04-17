@@ -1,5 +1,6 @@
 // Shared dialog utilities module
 
+pub mod convert_dialog;
 pub mod form_dialog;
 pub mod helpers;
 pub mod lightbox;
