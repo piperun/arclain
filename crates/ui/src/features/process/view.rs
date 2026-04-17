@@ -19,6 +19,12 @@ pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPage
         state.last_result_summary = run_state.summary.clone();
     }
 
+    egui::TopBottomPanel::top("process_preset_bar").show(ctx, |ui| {
+        ui.add_space(4.0);
+        super::preset_bar::render(ui, shared, state);
+        ui.add_space(4.0);
+    });
+
     egui::SidePanel::left("process_input_panel")
         .resizable(true)
         .default_width(260.0)
