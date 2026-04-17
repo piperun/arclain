@@ -27,8 +27,9 @@ pub use features::organization::{
     GameMetadata, MoveAction, OrganizationRule, RuleActions, RuleTrigger,
 };
 pub use features::pipeline::{
-    execute_pipeline, preview_pipeline, Pipeline, PipelineContext, PipelineInput, PipelineOutput,
-    PipelinePreview, PipelineProgress, PipelineStep, PreviewEntry, ProcessPreset,
+    builtin_presets, default_presets_path, execute_pipeline, load_presets, preview_pipeline,
+    save_presets, Pipeline, PipelineContext, PipelineInput, PipelineOutput, PipelinePreview,
+    PipelineProgress, PipelineStep, PresetsFile, PreviewEntry, ProcessPreset, SavedPreset,
 };
 pub use services::{CacheService, ConfigService, LibraryService, OrganizationService, UiService};
 pub use utilities::{init_logging, FileOpener, OpenStrategy};

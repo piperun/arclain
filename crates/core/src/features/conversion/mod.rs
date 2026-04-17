@@ -4,7 +4,7 @@ pub mod flatten;
 
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ConvertFormat {
     Zip,
     SevenZ,
@@ -26,7 +26,7 @@ impl ConvertFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CompressionLevel {
     Fast,
     Normal,
