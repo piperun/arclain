@@ -89,6 +89,12 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                     );
                 });
             }
+            AppPage::Process => {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    ui.heading("Process");
+                    ui.label("Page skeleton — wired in Task 5");
+                });
+            }
             AppPage::OrganizeArchive(_name) => {
                 let shared_state = app.shared_state.clone();
                 let action = app.organization_feature.render(ctx, &shared_state);
