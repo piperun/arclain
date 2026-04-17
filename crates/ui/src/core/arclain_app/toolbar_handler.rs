@@ -175,39 +175,25 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     shared_state.signals().archive_info.set(archive_info);
                 }
                 if actions.convert_to_7z {
-                    // Open the format-picker dialog instead of converting directly.
-                    let mut cs = shared_state.signals().convert_dialog_state.get();
-                    cs.show = true;
-                    cs.should_start = false;
-                    cs.options = arclain_core::ConvertOptions::default();
-                    shared_state.signals().convert_dialog_state.set(cs);
-                }
-
-                // If the convert dialog asked to start, run the conversion with its options
-                {
-                    let cs = shared_state.signals().convert_dialog_state.get();
-                    if cs.should_start {
-                        let options = cs.options.clone();
-                        let mut reset = cs.clone();
-                        reset.should_start = false;
-                        shared_state.signals().convert_dialog_state.set(reset);
-
-                        let ops_state = app.archive_operations.state_mut();
-                        let mut status_info = shared_state.signals().status_bar.get();
-                        let mut dialog = shared_state.signals().conversion_dialog.get();
-                        operations::archive::convert_archive(
-                            &app.shared_state.app_state,
-                            &mut status_info,
-                            &mut dialog,
-                            &mut ops_state.conversion_rx,
-                            &mut ops_state.conversion_child,
-                            &mut ops_state.conversion_started,
-                            options,
-                        );
-                        shared_state.signals().status_bar.set(status_info);
-                        shared_state.signals().conversion_dialog.set(dialog);
+                    // Navigate to Process page pre-populated with a Convert step.
+                    use arclain_core::{
+                        CompressionLevel, ConvertFormat, Pipeline, PipelineInput, PipelineStep,
+                    };
+                    app.process_state.pipeline = Pipeline::default();
+                    app.process_state.pipeline.steps.push(PipelineStep::Convert {
+                        format: ConvertFormat::Zip,
+                        compression: CompressionLevel::Normal,
+                        password: None,
+                    });
+                    if let Some(ap) = shared_state.signals().archive_path.get() {
+                        app.process_state.pipeline.input =
+                            Some(PipelineInput::Files(vec![ap]));
                     }
+                    app.process_state.mark_dirty();
+                    app.page_navigator
+                        .navigate_to(crate::core::navigation::AppPage::Process);
                 }
+
                 if actions.organize_archive {
                     app.archive_browser.controller.handle_action(
                         Action::Organize,
@@ -218,33 +204,25 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         ctx,
                     );
                 }
+
                 if actions.batch_convert {
                     if let Some(folder) = rfd::FileDialog::new()
                         .set_title("Select folder of archives")
                         .pick_folder()
                     {
-                        let mut status_info = shared_state.signals().status_bar.get();
-                        match operations::batch_convert::find_archives_in_folder(&folder) {
-                            Ok(archives) if archives.is_empty() => {
-                                status_info.message =
-                                    "No archives found in selected folder".to_string();
-                            }
-                            Ok(archives) => {
-                                status_info.message = format!(
-                                    "Found {} archives. Batch execution coming in 1.2 — convert one at a time for now.",
-                                    archives.len()
-                                );
-                                tracing::info!(
-                                    "[BatchConvert] Scan found {} archives in {:?}",
-                                    archives.len(),
-                                    folder
-                                );
-                            }
-                            Err(e) => {
-                                status_info.message = format!("Batch scan failed: {}", e);
-                            }
-                        }
-                        shared_state.signals().status_bar.set(status_info);
+                        use arclain_core::{
+                            CompressionLevel, ConvertFormat, Pipeline, PipelineInput, PipelineStep,
+                        };
+                        app.process_state.pipeline = Pipeline::default();
+                        app.process_state.pipeline.input = Some(PipelineInput::Folder(folder));
+                        app.process_state.pipeline.steps.push(PipelineStep::Convert {
+                            format: ConvertFormat::Zip,
+                            compression: CompressionLevel::Normal,
+                            password: None,
+                        });
+                        app.process_state.mark_dirty();
+                        app.page_navigator
+                            .navigate_to(crate::core::navigation::AppPage::Process);
                     }
                 }
             });
