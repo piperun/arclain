@@ -27,7 +27,7 @@ pub use features::organization::{
     GameMetadata, MoveAction, OrganizationRule, RuleActions, RuleTrigger,
 };
 pub use features::pipeline::{
-    execute_pipeline, preview_pipeline, Pipeline, PipelineInput, PipelineOutput,
+    execute_pipeline, preview_pipeline, Pipeline, PipelineContext, PipelineInput, PipelineOutput,
     PipelinePreview, PipelineProgress, PipelineStep, PreviewEntry, ProcessPreset,
 };
 pub use services::{CacheService, ConfigService, LibraryService, OrganizationService, UiService};

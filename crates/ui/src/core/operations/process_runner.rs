@@ -2,7 +2,7 @@
 //! runtime and routes progress events to the `process_run` signal.
 
 use crate::core::signals::ProcessRunState;
-use arclain_core::{execute_pipeline, Pipeline, PipelineProgress};
+use arclain_core::{execute_pipeline, Pipeline, PipelineContext, PipelineProgress};
 use arclain_signals::Signal;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -11,6 +11,7 @@ use tokio::runtime::Runtime;
 pub fn spawn_run(
     pipeline: Pipeline,
     state_arc: Arc<Mutex<crate::core::AppState>>,
+    services: Arc<crate::core::services::Services>,
     signal: Signal<ProcessRunState>,
     runtime: &Runtime,
 ) {
@@ -24,12 +25,19 @@ pub fn spawn_run(
     runtime.spawn(async move {
         let signal_for_blocking = signal.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let backend_for = |p: &std::path::Path| state_arc.lock().backend_selector.select(p);
+            let state_clone = state_arc.clone();
+            let backend_for = move |p: &std::path::Path| state_clone.lock().backend_selector.select(p);
+
+            let ctx = PipelineContext {
+                organization_service: services.organization_service.clone(),
+                library_service: services.library_service.clone(),
+                backend_for: Arc::new(backend_for),
+            };
 
             let result = execute_pipeline(
                 &pipeline,
                 &temp_root,
-                backend_for,
+                &ctx,
                 |ev| {
                     let mut s = signal_for_blocking.get();
                     match ev {
