@@ -218,6 +218,35 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         ctx,
                     );
                 }
+                if actions.batch_convert {
+                    if let Some(folder) = rfd::FileDialog::new()
+                        .set_title("Select folder of archives")
+                        .pick_folder()
+                    {
+                        let mut status_info = shared_state.signals().status_bar.get();
+                        match operations::batch_convert::find_archives_in_folder(&folder) {
+                            Ok(archives) if archives.is_empty() => {
+                                status_info.message =
+                                    "No archives found in selected folder".to_string();
+                            }
+                            Ok(archives) => {
+                                status_info.message = format!(
+                                    "Found {} archives. Batch execution coming in 1.2 — convert one at a time for now.",
+                                    archives.len()
+                                );
+                                tracing::info!(
+                                    "[BatchConvert] Scan found {} archives in {:?}",
+                                    archives.len(),
+                                    folder
+                                );
+                            }
+                            Err(e) => {
+                                status_info.message = format!("Batch scan failed: {}", e);
+                            }
+                        }
+                        shared_state.signals().status_bar.set(status_info);
+                    }
+                }
             });
     }
 }
