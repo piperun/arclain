@@ -1,5 +1,6 @@
 //! Archive processing pipelines — compose operations into ordered workflows.
 
+pub mod apply_plan;
 pub mod context;
 pub mod executor;
 pub mod preview;
