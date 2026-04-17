@@ -85,3 +85,43 @@ fn executor_end_to_end_convert() {
     // Build a small zip via the zip crate, run pipeline to convert to 7z,
     // verify output exists. Skipped until we have a test fixture.
 }
+
+#[test]
+fn apply_plan_reorganizes_files() {
+    use arclain_core::features::organization::engine::OrganizationPlan;
+    use arclain_core::features::pipeline::apply_plan::apply_plan_to_workdir;
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Pre-populate work dir as if extraction just finished
+    fs::write(tmp.path().join("game.exe"), b"").unwrap();
+    fs::create_dir(tmp.path().join("data")).unwrap();
+    fs::write(tmp.path().join("data/sprites.dat"), b"").unwrap();
+
+    let plan = OrganizationPlan {
+        rule_name: "test".into(),
+        root_folder: "MyGame".into(),
+        root_folder_template: "MyGame".into(),
+        moves: vec![
+            ("game.exe".into(), "MyGame/game.exe".into()),
+            ("data/sprites.dat".into(), "MyGame/data/sprites.dat".into()),
+        ],
+        generated_files: vec![(
+            "MyGame/metadata.json".into(),
+            r#"{"title":"Test"}"#.into(),
+        )],
+        downloads: vec![],
+        use_standard_layout: true,
+        resolved_variables: Default::default(),
+    };
+
+    apply_plan_to_workdir(&plan, tmp.path()).unwrap();
+
+    assert!(tmp.path().join("MyGame/game.exe").exists());
+    assert!(tmp.path().join("MyGame/data/sprites.dat").exists());
+    assert!(tmp.path().join("MyGame/metadata.json").exists());
+    assert!(!tmp.path().join("game.exe").exists());
+    // Old empty top-level data/ folder should be gone after flatten
+    assert!(!tmp.path().join("data").exists());
+}
