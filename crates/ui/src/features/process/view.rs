@@ -322,6 +322,7 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
         crate::core::operations::process_runner::spawn_run(
             state.pipeline.clone(),
             shared.app_state.clone(),
+            shared.services.clone(),
             shared.signals().process_run.clone(),
             &shared.services.tokio_runtime,
         );
