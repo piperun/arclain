@@ -476,7 +476,12 @@ pub fn convert_archive(
 
             // Now compress with 7z CLI using progress
             info!("Compressing with 7z CLI...");
-            match cli_backend.spawn_convert_with_progress(&extract_dir, &dest) {
+            match cli_backend.spawn_convert_with_progress(
+                &extract_dir,
+                &dest,
+                arclain_core::ConvertFormat::SevenZ,
+                arclain_core::CompressionLevel::Normal,
+            ) {
                 Ok(handle) => {
                     *conversion_dialog =
                         crate::shared::dialogs::ExtractionProgressDialog::default();
