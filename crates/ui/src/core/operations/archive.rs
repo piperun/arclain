@@ -390,6 +390,7 @@ pub fn convert_archive(
     >,
     conversion_child: &mut Option<std::process::Child>,
     conversion_started: &mut Option<std::time::Instant>,
+    options: arclain_core::ConvertOptions,
 ) {
     let signals = state.lock().signals.clone();
     let current_archive = signals.archive_path.get();
@@ -404,110 +405,148 @@ pub fn convert_archive(
     };
 
     if let Some(source_path) = current_archive {
-        // Determine default destination filename
+        let target_ext = options.format.extension();
+
+        // Determine default destination filename with chosen format extension
         let mut default_name = source_path.file_stem().unwrap_or_default().to_os_string();
-        default_name.push(".7z");
+        default_name.push(format!(".{}", target_ext));
 
-        // Open save dialog
-        if let Some(dest) = rfd::FileDialog::new()
-            .set_file_name(default_name.to_string_lossy())
-            .add_filter("7z Archive", &["7z"])
-            .save_file()
-        {
-            info!("Converting {} to {}", source_path.display(), dest.display());
-
-            // Determine temp dir
-            let temp = temp_dir.unwrap_or_else(std::env::temp_dir);
-
-            // Get password - try current_password first, then auto-detect
-            let password = {
-                let st = state.lock();
-                let archive_name = source_path.to_str();
-                current_password.or_else(|| {
-                    arclain_core::utilities::auto_password_for(
-                        &st.pass_rules,
-                        archive_name,
-                        &last_entries,
-                    )
-                })
+        // Open save dialog — or use provided path if options.output_path is set (batch)
+        let dest = if let Some(p) = options.output_path.clone() {
+            Some(p)
+        } else {
+            let filter_label = match options.format {
+                arclain_core::ConvertFormat::Zip => "ZIP Archive",
+                arclain_core::ConvertFormat::SevenZ => "7z Archive",
             };
+            rfd::FileDialog::new()
+                .set_file_name(default_name.to_string_lossy())
+                .add_filter(filter_label, &[target_ext])
+                .save_file()
+        };
 
-            // Use 7z CLI for conversion (fast, with progress)
+        let Some(dest) = dest else {
+            return;
+        };
+
+        info!("Converting {} to {}", source_path.display(), dest.display());
+
+        let temp = temp_dir.unwrap_or_else(std::env::temp_dir);
+
+        // Password: explicit option overrides auto-detect
+        let password = options.password.clone().or_else(|| {
             let st = state.lock();
-            let cli_backend = match arclain_core::backends::SevenZipCli::detect(None) {
-                Ok(cli) => cli,
-                Err(e) => {
-                    error!("7z CLI not found: {}", e);
-                    status_info.message = format!("Conversion failed: 7z not found. {}", e);
-                    return;
-                }
-            };
+            let archive_name = source_path.to_str();
+            current_password.or_else(|| {
+                arclain_core::utilities::auto_password_for(
+                    &st.pass_rules,
+                    archive_name,
+                    &last_entries,
+                )
+            })
+        });
 
-            // Select appropriate backend for source extraction
-            let source_backend = match st.backend_selector.select(&source_path) {
-                Ok(b) => b,
-                Err(e) => {
-                    error!("Failed to select backend: {}", e);
-                    status_info.message = format!("Conversion failed: {}", e);
-                    return;
-                }
-            };
-            drop(st);
-
-            // Create Archive handle for extraction
-            let archive = if let Some(pwd) = password.clone() {
-                info!("Converting archive with password (length: {})", pwd.len());
-                arclain_core::Archive::with_password(source_backend, source_path.clone(), pwd)
-            } else {
-                info!("Converting archive without password");
-                arclain_core::Archive::new(source_backend, source_path.clone())
-            };
-
-            // Extract to temp directory first
-            let extract_dir = temp.join(format!("arclain_convert_{}", std::process::id()));
-            std::fs::create_dir_all(&extract_dir).ok();
-
-            info!("Extracting source archive to temp directory...");
-            if let Err(e) = archive.extract_all(&extract_dir) {
-                error!("Failed to extract source: {}", e);
-                status_info.message = format!("Conversion failed during extraction: {}", e);
+        let st = state.lock();
+        let cli_backend = match arclain_core::backends::SevenZipCli::detect(None) {
+            Ok(cli) => cli,
+            Err(e) => {
+                error!("7z CLI not found: {}", e);
+                status_info.message = format!("Conversion failed: 7z not found. {}", e);
                 return;
             }
+        };
 
-            // Now compress with 7z CLI using progress
-            info!("Compressing with 7z CLI...");
-            match cli_backend.spawn_convert_with_progress(
+        let source_backend = match st.backend_selector.select(&source_path) {
+            Ok(b) => b,
+            Err(e) => {
+                error!("Failed to select backend: {}", e);
+                status_info.message = format!("Conversion failed: {}", e);
+                return;
+            }
+        };
+        drop(st);
+
+        let archive = if let Some(pwd) = password.clone() {
+            info!("Converting archive with password (length: {})", pwd.len());
+            arclain_core::Archive::with_password(source_backend, source_path.clone(), pwd)
+        } else {
+            arclain_core::Archive::new(source_backend, source_path.clone())
+        };
+
+        let extract_dir = temp.join(format!("arclain_convert_{}", std::process::id()));
+        std::fs::create_dir_all(&extract_dir).ok();
+
+        info!("Extracting source archive to temp directory...");
+        if let Err(e) = archive.extract_all(&extract_dir) {
+            error!("Failed to extract source: {}", e);
+            status_info.message = format!("Conversion failed during extraction: {}", e);
+            return;
+        }
+
+        // Flatten nested archives if requested
+        if options.flatten_nested {
+            info!("Flattening nested archives in extract dir...");
+            let state_clone = state.clone();
+            let report = arclain_core::features::conversion::flatten::flatten_nested_archives(
                 &extract_dir,
-                &dest,
-                arclain_core::ConvertFormat::SevenZ,
-                arclain_core::CompressionLevel::Normal,
-            ) {
-                Ok(handle) => {
-                    *conversion_dialog =
-                        crate::shared::dialogs::ExtractionProgressDialog::default();
-                    conversion_dialog.show = true;
-                    conversion_dialog.title = format!(
-                        "Converting to {}",
-                        dest.file_name().unwrap_or_default().to_string_lossy()
+                options.strip_common_prefix,
+                |archive_path, dest_dir| {
+                    let backend = state_clone.lock().backend_selector.select(archive_path)?;
+                    backend.extract_all(archive_path, dest_dir, None)
+                },
+            );
+            match report {
+                Ok(r) => {
+                    info!(
+                        "[Convert] Flatten: {} extracted, {} skipped, {} failed",
+                        r.extracted.len(),
+                        r.skipped.len(),
+                        r.failed.len()
                     );
-                    conversion_dialog.file_action =
-                        "Compressing with 7z (fast, multi-threaded)...".to_string();
-                    #[cfg(target_os = "windows")]
-                    {
-                        conversion_dialog.can_pause = true;
+                    for (name, err) in &r.failed {
+                        tracing::warn!("[Convert] Flatten failed for {}: {}", name, err);
                     }
-                    conversion_dialog.can_cancel = true;
-                    *conversion_rx = Some(handle.rx);
-                    *conversion_child = Some(handle.child);
-                    *conversion_started = Some(std::time::Instant::now());
-                    status_info.message = "Converting archive...".to_string();
                 }
                 Err(e) => {
-                    error!("Failed to start compression: {}", e);
-                    status_info.message = format!("Conversion failed: {}", e);
-                    // Cleanup temp dir
+                    error!("Flatten operation failed: {}", e);
+                    status_info.message = format!("Flatten failed: {}", e);
                     std::fs::remove_dir_all(&extract_dir).ok();
+                    return;
                 }
+            }
+        }
+
+        info!("Compressing with 7z CLI ({})...", target_ext);
+        match cli_backend.spawn_convert_with_progress(
+            &extract_dir,
+            &dest,
+            options.format.clone(),
+            options.compression,
+        ) {
+            Ok(handle) => {
+                *conversion_dialog =
+                    crate::shared::dialogs::ExtractionProgressDialog::default();
+                conversion_dialog.show = true;
+                conversion_dialog.title = format!(
+                    "Converting to {}",
+                    dest.file_name().unwrap_or_default().to_string_lossy()
+                );
+                conversion_dialog.file_action =
+                    format!("Compressing with 7z ({}, multi-threaded)...", target_ext);
+                #[cfg(target_os = "windows")]
+                {
+                    conversion_dialog.can_pause = true;
+                }
+                conversion_dialog.can_cancel = true;
+                *conversion_rx = Some(handle.rx);
+                *conversion_child = Some(handle.child);
+                *conversion_started = Some(std::time::Instant::now());
+                status_info.message = "Converting archive...".to_string();
+            }
+            Err(e) => {
+                error!("Failed to start compression: {}", e);
+                status_info.message = format!("Conversion failed: {}", e);
+                std::fs::remove_dir_all(&extract_dir).ok();
             }
         }
     }

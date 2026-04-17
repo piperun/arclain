@@ -175,19 +175,38 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     shared_state.signals().archive_info.set(archive_info);
                 }
                 if actions.convert_to_7z {
-                    let ops_state = app.archive_operations.state_mut();
-                    let mut status_info = shared_state.signals().status_bar.get();
-                    let mut dialog = shared_state.signals().conversion_dialog.get();
-                    operations::archive::convert_archive(
-                        &app.shared_state.app_state,
-                        &mut status_info,
-                        &mut dialog,
-                        &mut ops_state.conversion_rx,
-                        &mut ops_state.conversion_child,
-                        &mut ops_state.conversion_started,
-                    );
-                    shared_state.signals().status_bar.set(status_info);
-                    shared_state.signals().conversion_dialog.set(dialog);
+                    // Open the format-picker dialog instead of converting directly.
+                    let mut cs = shared_state.signals().convert_dialog_state.get();
+                    cs.show = true;
+                    cs.should_start = false;
+                    cs.options = arclain_core::ConvertOptions::default();
+                    shared_state.signals().convert_dialog_state.set(cs);
+                }
+
+                // If the convert dialog asked to start, run the conversion with its options
+                {
+                    let cs = shared_state.signals().convert_dialog_state.get();
+                    if cs.should_start {
+                        let options = cs.options.clone();
+                        let mut reset = cs.clone();
+                        reset.should_start = false;
+                        shared_state.signals().convert_dialog_state.set(reset);
+
+                        let ops_state = app.archive_operations.state_mut();
+                        let mut status_info = shared_state.signals().status_bar.get();
+                        let mut dialog = shared_state.signals().conversion_dialog.get();
+                        operations::archive::convert_archive(
+                            &app.shared_state.app_state,
+                            &mut status_info,
+                            &mut dialog,
+                            &mut ops_state.conversion_rx,
+                            &mut ops_state.conversion_child,
+                            &mut ops_state.conversion_started,
+                            options,
+                        );
+                        shared_state.signals().status_bar.set(status_info);
+                        shared_state.signals().conversion_dialog.set(dialog);
+                    }
                 }
                 if actions.organize_archive {
                     app.archive_browser.controller.handle_action(
