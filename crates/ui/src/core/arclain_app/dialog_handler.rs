@@ -306,6 +306,18 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render plugin dialog if open
     crate::features::plugins::presentation::views::rendering::render_dialog(ctx, &app.shared_state);
 
+    // Render convert options dialog if open
+    {
+        let mut convert_state = app.shared_state.signals().convert_dialog_state.get();
+        if convert_state.show {
+            dialogs::convert_dialog::render(ctx, &app.shared_state.theme, &mut convert_state);
+            app.shared_state
+                .signals()
+                .convert_dialog_state
+                .set(convert_state);
+        }
+    }
+
     // Render lightbox if open
     let mut lightbox_state = app.shared_state.signals().lightbox_state.get();
     if lightbox_state.show {
