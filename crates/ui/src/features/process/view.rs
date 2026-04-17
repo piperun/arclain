@@ -12,6 +12,13 @@ use eframe::egui;
 pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPageState) {
     state.refresh_preview();
 
+    // Sync is_running from the signal
+    let run_state = shared.signals().process_run.get();
+    state.is_running = run_state.is_running;
+    if run_state.completed && state.last_result_summary.as_deref() != run_state.summary.as_deref() {
+        state.last_result_summary = run_state.summary.clone();
+    }
+
     egui::SidePanel::left("process_input_panel")
         .resizable(true)
         .default_width(260.0)
@@ -312,9 +319,37 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
         )
         .clicked()
     {
-        // Wired in Task 7
-        state.last_result_summary =
-            Some("Execute wiring coming in Task 7".to_string());
+        crate::core::operations::process_runner::spawn_run(
+            state.pipeline.clone(),
+            shared.app_state.clone(),
+            shared.signals().process_run.clone(),
+            &shared.services.tokio_runtime,
+        );
+    }
+
+    // Progress display while running
+    let run_state = shared.signals().process_run.get();
+    if run_state.is_running {
+        ui.add_space(8.0);
+        ui.separator();
+        ui.add_space(4.0);
+        ui.label(format!(
+            "File {} of {}: {}",
+            run_state.files_done + 1,
+            run_state.files_total.max(1),
+            run_state.current_file
+        ));
+        ui.label(format!("Step: {}", run_state.current_step));
+        ui.add(
+            egui::ProgressBar::new(run_state.step_percent as f32 / 100.0)
+                .show_percentage(),
+        );
+        if run_state.files_failed > 0 {
+            ui.colored_label(
+                shared.theme.colors.error,
+                format!("{} failed so far", run_state.files_failed),
+            );
+        }
     }
 
     if let Some(ref summary) = state.last_result_summary {
