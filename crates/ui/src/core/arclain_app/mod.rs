@@ -69,7 +69,7 @@ impl ArclainApp {
             hotkey_manager: crate::features::hotkeys::HotkeyManager::new(),
             top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
             network_log_state: crate::shared::components::network_log::NetworkLogState::new(),
-            process_state: crate::features::process::ProcessPageState::default(),
+            process_state: crate::features::process::ProcessPageState::new(),
             _pending_archive_path: None,
             _last_window_title: None,
             _signals_bound: false,
