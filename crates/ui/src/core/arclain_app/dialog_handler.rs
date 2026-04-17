@@ -306,6 +306,24 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render plugin dialog if open
     crate::features::plugins::presentation::views::rendering::render_dialog(ctx, &app.shared_state);
 
+    // Process page progress dialog (when a pipeline is running or just completed)
+    {
+        let run = app.shared_state.signals().process_run.get();
+        let mut close = false;
+        crate::features::process::progress_dialog::render(
+            ctx,
+            &app.shared_state.theme,
+            &run,
+            &mut close,
+        );
+        if close {
+            let mut s = run.clone();
+            s.completed = false;
+            s.summary = None;
+            app.shared_state.signals().process_run.set(s);
+        }
+    }
+
     // Render lightbox if open
     let mut lightbox_state = app.shared_state.signals().lightbox_state.get();
     if lightbox_state.show {
