@@ -94,22 +94,30 @@ impl SevenZipCli {
         self.spawn_with_progress(args)
     }
 
-    /// Like `compress`, but returns a running process with progress updates for conversion
+    /// Like `compress`, but returns a running process with progress updates for conversion.
+    /// Supports zip and 7z output formats via `-tzip` / `-t7z`. Compression level via `-mx`.
     pub fn spawn_convert_with_progress(
         &self,
         source_dir: &Path,
-        dest_7z: &Path,
+        dest: &Path,
+        format: crate::features::conversion::ConvertFormat,
+        compression: crate::features::conversion::CompressionLevel,
     ) -> Result<ChildWithProgress> {
         let mut args = vec![
             OsString::from("a"),
-            OsString::from("-t7z"),
-            OsString::from("-mx=5"), // Normal compression (faster than -mx=9)
-            OsString::from("-m0=LZMA2"),
+            OsString::from(format.sevenz_flag()),
+            OsString::from(compression.sevenz_flag()),
             OsString::from("-mmt=on"), // Multi-threaded
             OsString::from("-sccUTF-8"),
             OsString::from("-scsUTF-8"),
-            dest_7z.as_os_str().to_os_string(),
         ];
+
+        // LZMA2 is 7z-specific; zip uses Deflate by default
+        if matches!(format, crate::features::conversion::ConvertFormat::SevenZ) {
+            args.push(OsString::from("-m0=LZMA2"));
+        }
+
+        args.push(dest.as_os_str().to_os_string());
 
         // Add all files/folders in source directory
         args.push(OsString::from(format!(
