@@ -40,6 +40,7 @@ pub struct ArclainApp {
     // UI Components
     pub(crate) top_tab_bar_state: components::top_tab_bar::TopTabBarState,
     pub(crate) network_log_state: crate::shared::components::network_log::NetworkLogState,
+    pub(crate) process_state: crate::features::process::ProcessPageState,
 
     // State & Flags
     pub(crate) _pending_archive_path: Option<PathBuf>,
@@ -68,6 +69,7 @@ impl ArclainApp {
             hotkey_manager: crate::features::hotkeys::HotkeyManager::new(),
             top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
             network_log_state: crate::shared::components::network_log::NetworkLogState::new(),
+            process_state: crate::features::process::ProcessPageState::default(),
             _pending_archive_path: None,
             _last_window_title: None,
             _signals_bound: false,
