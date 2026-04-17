@@ -136,10 +136,40 @@ fn run_one(
                     },
                 )?;
             }
-            PipelineStep::Organize { rule_id: _ } => {
-                // Intentional no-op in 1.2: organization requires rule engine
-                // + metadata resolution. Slated for 1.3.
-                anyhow::bail!("Organize step not yet implemented in executor");
+            PipelineStep::Organize { rule_id } => {
+                use crate::features::organization::engine::RuleEngine;
+
+                let org_svc = ctx
+                    .organization_service
+                    .as_ref()
+                    .context("Organize step requires OrganizationService")?;
+
+                let rule = org_svc
+                    .get_domain_rule(*rule_id)
+                    .context("Failed to load rule")?
+                    .ok_or_else(|| anyhow::anyhow!("Rule #{} not found", rule_id))?;
+
+                let entries = scan_work_dir_as_entries(&work_dir)?;
+
+                let archive_name = input
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let metadata = resolve_metadata(&archive_name, ctx);
+
+                let plan = RuleEngine::create_plan(
+                    &rule,
+                    &archive_name,
+                    &entries,
+                    metadata.as_ref(),
+                )
+                .context("Rule plan failed")?;
+
+                crate::features::pipeline::apply_plan::apply_plan_to_workdir(
+                    &plan, &work_dir,
+                )
+                .context("Apply plan failed")?;
             }
             PipelineStep::Convert {
                 format,
@@ -201,6 +231,63 @@ impl Drop for WorkDirGuard {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
     }
+}
+
+/// Recursively walk `dir`, producing ArchiveEntry records with paths
+/// relative to `dir` using forward slashes.
+fn scan_work_dir_as_entries(dir: &Path) -> Result<Vec<crate::archive::ArchiveEntry>> {
+    let mut entries = Vec::new();
+    walk_collect(dir, dir, &mut entries)?;
+    Ok(entries)
+}
+
+fn walk_collect(
+    root: &Path,
+    current: &Path,
+    out: &mut Vec<crate::archive::ArchiveEntry>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let is_dir = path.is_dir();
+        let size = if is_dir {
+            0
+        } else {
+            path.metadata().map(|m| m.len()).unwrap_or(0)
+        };
+        out.push(crate::archive::ArchiveEntry {
+            path: rel,
+            size,
+            packed_size: size,
+            is_dir,
+            encrypted: false,
+            modified: None,
+            crc32: None,
+        });
+        if is_dir {
+            walk_collect(root, &path, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Attempt to find metadata for the archive via LibraryService.
+/// For 1.3 we only try DLSite lookup by filename pattern.
+fn resolve_metadata(
+    archive_name: &str,
+    ctx: &PipelineContext,
+) -> Option<crate::features::organization::metadata::GameMetadata> {
+    let lib = ctx.library_service.as_ref()?;
+    let code = crate::utilities::detect_dlsite_code(archive_name)?;
+    let id = format!("dlsite:{}", code);
+    let product = lib.get_metadata(&id).ok().flatten()?;
+    let json = serde_json::to_string(&product).ok()?;
+    crate::features::organization::metadata::GameMetadata::from_json(&json).ok()
 }
 
 #[cfg(test)]
