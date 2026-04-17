@@ -90,10 +90,11 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                 });
             }
             AppPage::Process => {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    ui.heading("Process");
-                    ui.label("Page skeleton — wired in Task 5");
-                });
+                crate::features::process::view::render(
+                    ctx,
+                    &app.shared_state,
+                    &mut app.process_state,
+                );
             }
             AppPage::OrganizeArchive(_name) => {
                 let shared_state = app.shared_state.clone();
