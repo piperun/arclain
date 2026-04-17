@@ -32,18 +32,6 @@ pub enum ServerConnectionStatus {
     Error(String),
 }
 
-/// State for the archive conversion options dialog.
-///
-/// Collects format, compression, password, and flatten options before
-/// kicking off a conversion. `should_start` is set when the user clicks
-/// Convert; the toolbar handler picks this up and invokes convert_archive.
-#[derive(Clone, Debug, Default)]
-pub struct ConvertDialogState {
-    pub show: bool,
-    pub options: arclain_core::ConvertOptions,
-    pub should_start: bool,
-}
-
 /// Live state of a Process page pipeline run. Updated by the background
 /// runner via signal.
 #[derive(Clone, Debug, Default)]
@@ -178,8 +166,6 @@ pub struct AppSignals {
     /// [NEW] Operation Dialogs (Phase 2)
     pub extraction_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
     pub conversion_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
-    /// Options picker dialog for Convert... (separate from the progress dialog)
-    pub convert_dialog_state: Signal<ConvertDialogState>,
     /// Live state of a Process page pipeline run
     pub process_run: Signal<ProcessRunState>,
     pub drag_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
@@ -253,8 +239,6 @@ impl AppSignals {
                 crate::shared::dialogs::ExtractionProgressDialog::default(),
             )
             .with_name("conversion_dialog"),
-            convert_dialog_state: Signal::new(ConvertDialogState::default())
-                .with_name("convert_dialog_state"),
             process_run: Signal::new(ProcessRunState::default()).with_name("process_run"),
             drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default())
                 .with_name("drag_dialog"),
@@ -301,7 +285,6 @@ impl AppSignals {
         // Note: browser_view_state is not bound - it's mutated during render so would cause repaint loops
         signal_ctx.bind_named(&self.extraction_dialog, "extraction_dialog");
         signal_ctx.bind_named(&self.conversion_dialog, "conversion_dialog");
-        signal_ctx.bind_named(&self.convert_dialog_state, "convert_dialog_state");
         signal_ctx.bind_named(&self.process_run, "process_run");
         signal_ctx.bind_named(&self.drag_dialog, "drag_dialog");
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
@@ -351,7 +334,6 @@ impl AppSignals {
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.conversion_dialog
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
-        self.convert_dialog_state.set(ConvertDialogState::default());
         self.process_run.set(ProcessRunState::default());
         self.drag_dialog
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
