@@ -112,6 +112,14 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
     ui.heading("Pipeline");
     ui.add_space(4.0);
 
+    // Load rules once per frame for the Organize step widget
+    let rules: Vec<arclain_core::OrganizationRule> = shared
+        .services
+        .organization_service
+        .as_ref()
+        .and_then(|svc| svc.list_domain_rules().ok())
+        .unwrap_or_default();
+
     let mut any_changed = false;
 
     ui.horizontal(|ui| {
@@ -175,7 +183,9 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
                 let changed = match step {
                     PipelineStep::Flatten { .. } => step_widgets::render_flatten_config(ui, step),
                     PipelineStep::Convert { .. } => step_widgets::render_convert_config(ui, step),
-                    PipelineStep::Organize { .. } => step_widgets::render_organize_config(ui, step),
+                    PipelineStep::Organize { .. } => {
+                        step_widgets::render_organize_config(ui, step, &rules)
+                    }
                 };
                 if changed {
                     any_changed = true;
