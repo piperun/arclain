@@ -44,6 +44,21 @@ pub struct ConvertDialogState {
     pub should_start: bool,
 }
 
+/// Live state of a Process page pipeline run. Updated by the background
+/// runner via signal.
+#[derive(Clone, Debug, Default)]
+pub struct ProcessRunState {
+    pub is_running: bool,
+    pub current_file: String,
+    pub current_step: String,
+    pub files_done: usize,
+    pub files_total: usize,
+    pub files_failed: usize,
+    pub step_percent: u8,
+    pub completed: bool,
+    pub summary: Option<String>,
+}
+
 /// State for extraction progress dialog
 #[derive(Clone, Debug, Default)]
 pub struct ExtractionProgressState {
@@ -165,6 +180,8 @@ pub struct AppSignals {
     pub conversion_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
     /// Options picker dialog for Convert... (separate from the progress dialog)
     pub convert_dialog_state: Signal<ConvertDialogState>,
+    /// Live state of a Process page pipeline run
+    pub process_run: Signal<ProcessRunState>,
     pub drag_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
     pub search_focus_requested: Signal<bool>,
 
@@ -238,6 +255,7 @@ impl AppSignals {
             .with_name("conversion_dialog"),
             convert_dialog_state: Signal::new(ConvertDialogState::default())
                 .with_name("convert_dialog_state"),
+            process_run: Signal::new(ProcessRunState::default()).with_name("process_run"),
             drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default())
                 .with_name("drag_dialog"),
             search_focus_requested: Signal::new(false).with_name("search_focus_requested"),
@@ -284,6 +302,7 @@ impl AppSignals {
         signal_ctx.bind_named(&self.extraction_dialog, "extraction_dialog");
         signal_ctx.bind_named(&self.conversion_dialog, "conversion_dialog");
         signal_ctx.bind_named(&self.convert_dialog_state, "convert_dialog_state");
+        signal_ctx.bind_named(&self.process_run, "process_run");
         signal_ctx.bind_named(&self.drag_dialog, "drag_dialog");
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
@@ -333,6 +352,7 @@ impl AppSignals {
         self.conversion_dialog
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.convert_dialog_state.set(ConvertDialogState::default());
+        self.process_run.set(ProcessRunState::default());
         self.drag_dialog
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.plugin_dialog_state
