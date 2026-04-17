@@ -26,6 +26,10 @@ pub use features::conversion::{CompressionLevel, ConvertFormat, ConvertOptions};
 pub use features::organization::{
     GameMetadata, MoveAction, OrganizationRule, RuleActions, RuleTrigger,
 };
+pub use features::pipeline::{
+    execute_pipeline, preview_pipeline, Pipeline, PipelineInput, PipelineOutput,
+    PipelinePreview, PipelineProgress, PipelineStep, PreviewEntry, ProcessPreset,
+};
 pub use services::{CacheService, ConfigService, LibraryService, OrganizationService, UiService};
 pub use utilities::{init_logging, FileOpener, OpenStrategy};
 
