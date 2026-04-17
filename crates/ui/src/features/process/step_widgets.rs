@@ -81,22 +81,19 @@ pub fn render_convert_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool
     changed
 }
 
-pub fn render_organize_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool {
+pub fn render_organize_config(
+    ui: &mut egui::Ui,
+    step: &mut PipelineStep,
+    rules: &[arclain_core::OrganizationRule],
+) -> bool {
     let mut changed = false;
     if let PipelineStep::Organize { rule_id } = step {
         ui.horizontal(|ui| {
-            ui.label("Rule ID:");
-            if ui.add(egui::DragValue::new(rule_id).speed(1)).changed() {
+            ui.label("Rule:");
+            if super::rule_picker::render(ui, "pipeline_organize_rule", rules, rule_id) {
                 changed = true;
             }
         });
-        ui.label(
-            egui::RichText::new(
-                "Rule picker integration pending — enter ID manually for now.",
-            )
-            .size(10.0)
-            .weak(),
-        );
     }
     changed
 }
