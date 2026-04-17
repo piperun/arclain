@@ -22,6 +22,7 @@ pub use archive::{
 };
 pub use config::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};
 pub use config::{Config, ConfigStore, PassRule};
+pub use features::conversion::{CompressionLevel, ConvertFormat, ConvertOptions};
 pub use features::organization::{
     GameMetadata, MoveAction, OrganizationRule, RuleActions, RuleTrigger,
 };
