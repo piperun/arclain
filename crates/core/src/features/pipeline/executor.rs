@@ -1,10 +1,9 @@
 //! Blocking pipeline executor — runs a `Pipeline` against each input file.
 
+use super::context::PipelineContext;
 use super::types::{Pipeline, PipelineInput, PipelineStep};
-use crate::archive::ArchiveBackend;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 /// Progress event emitted by the executor.
 #[derive(Debug, Clone)]
@@ -34,18 +33,12 @@ pub enum PipelineProgress {
 }
 
 /// Execute a pipeline. Blocks until all inputs are processed.
-///
-/// `backend_for` is a callback that returns the appropriate backend for a given
-/// file path (UI layer provides this to avoid pulling backend selector into core).
-pub fn execute_pipeline<F>(
+pub fn execute_pipeline(
     pipeline: &Pipeline,
     temp_root: &Path,
-    backend_for: F,
+    ctx: &PipelineContext,
     mut on_progress: impl FnMut(PipelineProgress),
-) -> Result<()>
-where
-    F: Fn(&Path) -> Result<Arc<dyn ArchiveBackend>>,
-{
+) -> Result<()> {
     let inputs = resolve_inputs(&pipeline.input)?;
     let total = inputs.len();
     let mut succeeded = 0usize;
@@ -64,7 +57,7 @@ where
             name: name.clone(),
         });
 
-        match run_one(input, pipeline, temp_root, &backend_for, &mut on_progress) {
+        match run_one(input, pipeline, temp_root, ctx, &mut on_progress) {
             Ok(output) => {
                 succeeded += 1;
                 on_progress(PipelineProgress::FileComplete { output });
@@ -92,16 +85,13 @@ fn resolve_inputs(input: &Option<PipelineInput>) -> Result<Vec<PathBuf>> {
     }
 }
 
-fn run_one<F>(
+fn run_one(
     input: &Path,
     pipeline: &Pipeline,
     temp_root: &Path,
-    backend_for: &F,
+    ctx: &PipelineContext,
     on_progress: &mut impl FnMut(PipelineProgress),
-) -> Result<PathBuf>
-where
-    F: Fn(&Path) -> Result<Arc<dyn ArchiveBackend>>,
-{
+) -> Result<PathBuf> {
     let work_dir = temp_root.join(format!(
         "arclain_pipeline_{}_{}",
         std::process::id(),
@@ -119,7 +109,7 @@ where
         step_index: 0,
         step_name: "Extracting source".to_string(),
     });
-    let source_backend = backend_for(input)?;
+    let source_backend = (ctx.backend_for)(input)?;
     source_backend
         .extract_all(input, &work_dir, None)
         .with_context(|| format!("Extract {:?}", input))?;
@@ -141,7 +131,7 @@ where
                     &work_dir,
                     *strip_common_prefix,
                     |archive_path, dest_dir| {
-                        let be = backend_for(archive_path)?;
+                        let be = (ctx.backend_for)(archive_path)?;
                         be.extract_all(archive_path, dest_dir, None)
                     },
                 )?;
@@ -221,7 +211,8 @@ mod tests {
     fn executor_rejects_no_input() {
         let p = Pipeline::default();
         let tmp = tempfile::tempdir().unwrap();
-        let result = execute_pipeline(&p, tmp.path(), |_| anyhow::bail!("no backend"), |_| {});
+        let ctx = PipelineContext::minimal(|_| anyhow::bail!("no backend"));
+        let result = execute_pipeline(&p, tmp.path(), &ctx, |_| {});
         assert!(result.is_err());
     }
 }
