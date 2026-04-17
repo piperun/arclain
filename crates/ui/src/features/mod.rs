@@ -7,6 +7,7 @@ pub mod hotkeys;
 pub mod organization;
 pub mod password_management;
 pub mod plugins;
+pub mod process;
 pub mod settings;
 
 // Re-export commonly used items
