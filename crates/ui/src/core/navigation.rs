@@ -17,6 +17,8 @@ pub enum AppPage {
     OrganizeArchive(String),
     /// Network activity logs
     Logs,
+    /// Archive processing pipeline page
+    Process,
 }
 
 /// Represents different settings categories
@@ -232,6 +234,7 @@ impl PageNavigator {
             AppPage::Main => vec![],
             AppPage::Plugins => vec![("Plugins".to_string(), AppPage::Plugins)],
             AppPage::Logs => vec![("Network Logs".to_string(), AppPage::Logs)],
+            AppPage::Process => vec![("Process".to_string(), AppPage::Process)],
             AppPage::Organize => vec![("Organize".to_string(), AppPage::Organize)],
             AppPage::OrganizeArchive(name) => vec![
                 ("Organize".to_string(), AppPage::Organize),
@@ -343,6 +346,14 @@ mod tests {
         assert_eq!(bc.len(), 1);
         assert_eq!(bc[0].0, "Network Logs");
         assert_eq!(bc[0].1, AppPage::Logs);
+    }
+
+    #[test]
+    fn process_breadcrumb_is_single_entry() {
+        let bc = PageNavigator::get_breadcrumb(&AppPage::Process);
+        assert_eq!(bc.len(), 1);
+        assert_eq!(bc[0].0, "Process");
+        assert_eq!(bc[0].1, AppPage::Process);
     }
 
     #[test]
