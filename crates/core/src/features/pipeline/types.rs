@@ -4,7 +4,7 @@ use crate::features::conversion::{CompressionLevel, ConvertFormat};
 use std::path::{Path, PathBuf};
 
 /// A single operation that can appear in a pipeline.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PipelineStep {
     /// Unwrap inner archives as sibling folders.
     Flatten { strip_common_prefix: bool },
@@ -29,7 +29,7 @@ impl PipelineStep {
 }
 
 /// What the pipeline operates on.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PipelineInput {
     /// One or more explicit archive files.
     Files(Vec<PathBuf>),
@@ -47,7 +47,7 @@ impl PipelineInput {
 }
 
 /// Where pipeline outputs land.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PipelineOutput {
     /// Output next to each input (e.g. input.rar → input.zip).
     SameFolder,
@@ -85,7 +85,7 @@ impl PipelineOutput {
 }
 
 /// Complete pipeline specification.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Pipeline {
     pub input: Option<PipelineInput>,
     pub steps: Vec<PipelineStep>,
