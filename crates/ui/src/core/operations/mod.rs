@@ -1,6 +1,7 @@
 // Core operations
 
 pub mod archive;
+pub mod batch_convert;
 pub mod extraction;
 pub mod file;
 // pub mod navigation;

@@ -92,6 +92,7 @@ pub struct ToolbarActions {
     pub open: bool,
     pub delete_selected: bool,
     pub convert_to_7z: bool,
+    pub batch_convert: bool,
     pub organize_archive: bool,
     /// Collected plugin events: (plugin_id, element_id, value)
     pub plugin_events: Vec<(String, String, Option<String>)>,

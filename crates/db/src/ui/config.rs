@@ -390,7 +390,8 @@ pub fn seed_defaults_if_empty(conn: &Connection) -> Result<()> {
         ("toolbar.extract_all", "Extract All", "EXPORT"),
         ("toolbar.add", "Add", "PLUS"),
         ("toolbar.delete", "Delete", "TRASH"),
-        ("toolbar.convert", "Convert to 7z", "PACKAGE"),
+        ("toolbar.convert", "Convert...", "PACKAGE"),
+        ("toolbar.batch_convert", "Batch Convert...", "FOLDER_PLUS"),
         ("toolbar.organize", "Organize", "FOLDERS"),
     ];
     for (i, (id, label, icon)) in file_actions.iter().enumerate() {

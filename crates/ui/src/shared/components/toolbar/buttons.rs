@@ -107,7 +107,10 @@ pub fn render_button(
 
         // ── Conversion / Organization ───────────────────────────
         "toolbar.convert" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::PACKAGE, "Convert to 7z", ctx.archive_loaded, || actions.convert_to_7z = true);
+            toolbar_button(ui, ctx, egui_phosphor::regular::PACKAGE, "Convert...", ctx.archive_loaded, || actions.convert_to_7z = true);
+        }
+        "toolbar.batch_convert" => {
+            toolbar_button(ui, ctx, egui_phosphor::regular::FOLDER_PLUS, "Batch Convert...", true, || actions.batch_convert = true);
         }
         "toolbar.organize" => {
             toolbar_button(ui, ctx, egui_phosphor::regular::FOLDERS, "Organize", ctx.archive_loaded, || actions.organize_archive = true);
