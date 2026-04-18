@@ -9,6 +9,7 @@ ui_archive/*
 *.txt
 *.md
 !README.md
+!docs/ARCZIP_FORMAT.md
 *.html
 mockups/*
 
