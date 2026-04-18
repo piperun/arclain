@@ -137,6 +137,7 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
         {
             state.pipeline.steps.push(PipelineStep::Flatten {
                 strip_common_prefix: true,
+                max_depth: 1,
             });
             any_changed = true;
         }
