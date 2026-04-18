@@ -6,7 +6,8 @@
 
 use arclain_core::{
     execute_pipeline, preview_pipeline, ArchiveBackend, CompressionLevel, ConvertFormat,
-    OutputCollisionPolicy, Pipeline, PipelineContext, PipelineInput, PipelineOutput, PipelineStep,
+    OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineContext, PipelineInput,
+    PipelineOutput, PipelineStep,
 };
 use arclain_db::SqliteDb;
 use std::path::PathBuf;
@@ -35,6 +36,7 @@ fn preview_for_silver_lining_style_input() {
         ],
         output: PipelineOutput::SameFolder,
         collision_policy: None,
+        output_artifact: Default::default(),
     };
 
     let preview = preview_pipeline(&pipeline);
@@ -60,6 +62,7 @@ fn preview_flags_missing_input() {
         }],
         output: PipelineOutput::SameFolder,
         collision_policy: None,
+        output_artifact: Default::default(),
     };
     let preview = preview_pipeline(&pipeline);
     assert!(preview.is_empty());
@@ -77,6 +80,7 @@ fn preview_flags_empty_folder() {
         }],
         output: PipelineOutput::SameFolder,
         collision_policy: None,
+        output_artifact: Default::default(),
     };
     let preview = preview_pipeline(&pipeline);
     assert!(preview
@@ -129,6 +133,7 @@ fn executor_end_to_end_idempotent_rerun() {
         }],
         output: PipelineOutput::NewFolder(output_dir.clone()),
         collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: Default::default(),
     };
 
     let db = open_pipeline_runs_db();
@@ -277,6 +282,7 @@ fn collision_test_pipeline(
         }],
         output: PipelineOutput::NewFolder(output_dir),
         collision_policy: Some(policy),
+        output_artifact: Default::default(),
     }
 }
 
@@ -392,6 +398,7 @@ fn collision_policy_defaults_to_smart_when_unset() {
         steps: vec![],
         output: PipelineOutput::SameFolder,
         collision_policy: None,
+        output_artifact: Default::default(),
     };
     assert_eq!(
         pipeline.effective_collision_policy(OutputCollisionPolicy::Smart),
@@ -410,6 +417,7 @@ fn collision_policy_override_wins_over_default() {
         steps: vec![],
         output: PipelineOutput::SameFolder,
         collision_policy: Some(OutputCollisionPolicy::Overwrite),
+        output_artifact: Default::default(),
     };
     assert_eq!(
         pipeline.effective_collision_policy(OutputCollisionPolicy::Smart),
@@ -434,6 +442,7 @@ fn preview_annotates_existing_output_with_policy_outcome() {
         }],
         output: PipelineOutput::NewFolder(tmp.path().to_path_buf()),
         collision_policy: Some(OutputCollisionPolicy::Skip),
+        output_artifact: Default::default(),
     };
     let preview = preview_pipeline(&pipeline_skip);
     let warnings = &preview.entries[0].warnings;
@@ -492,6 +501,7 @@ fn config_hash_is_stable_across_identical_pipelines() {
         }],
         output: PipelineOutput::SameFolder,
         collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: Default::default(),
     };
     // Same config, DIFFERENT input → hashes must match (input is excluded)
     let b = Pipeline {
@@ -512,6 +522,7 @@ fn config_hash_changes_when_steps_change() {
         }],
         output: PipelineOutput::SameFolder,
         collision_policy: None,
+        output_artifact: Default::default(),
     };
     let b = Pipeline {
         steps: vec![PipelineStep::Convert {
@@ -535,6 +546,7 @@ fn config_hash_changes_when_collision_policy_changes() {
         }],
         output: PipelineOutput::SameFolder,
         collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: Default::default(),
     };
     let b = Pipeline {
         collision_policy: Some(OutputCollisionPolicy::Overwrite),
@@ -560,6 +572,7 @@ fn smart_rerun_with_matching_db_row_skips_work() {
         }],
         output: PipelineOutput::NewFolder(tmp.path().to_path_buf()),
         collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: Default::default(),
     };
 
     // Seed a matching completed run for this exact input + pipeline config
@@ -666,6 +679,7 @@ fn smart_rerun_with_different_pipeline_reruns() {
         }],
         output: PipelineOutput::NewFolder(tmp.path().to_path_buf()),
         collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: Default::default(),
     };
 
     let ctx = PipelineContext {
@@ -711,6 +725,7 @@ fn smart_rerun_reruns_when_output_was_deleted() {
         }],
         output: PipelineOutput::NewFolder(tmp.path().to_path_buf()),
         collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: Default::default(),
     };
 
     let db = open_pipeline_runs_db();
@@ -790,6 +805,7 @@ fn db_records_run_with_in_progress_then_completed() {
         // pre-flight gate path, but no DB row is written for skips (the
         // gate returns before begin_pipeline_run).
         collision_policy: Some(OutputCollisionPolicy::Skip),
+        output_artifact: Default::default(),
     };
 
     let db = open_pipeline_runs_db();
@@ -810,6 +826,179 @@ fn db_records_run_with_in_progress_then_completed() {
         })
         .unwrap();
     assert_eq!(count, 0);
+}
+
+// ---- Folder output tests ----
+
+#[test]
+fn preview_uses_folder_path_when_output_artifact_is_folder() {
+    // Archive mode vs Folder mode should produce different expected_output shapes
+    // for the same pipeline.
+    let input = PathBuf::from("/tmp/mod.rar");
+    let base = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::SevenZ,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::NewFolder(PathBuf::from("/dst")),
+        collision_policy: None,
+        output_artifact: OutputArtifact::Archive,
+    };
+    let archive_preview = preview_pipeline(&base);
+    assert_eq!(
+        archive_preview.entries[0].expected_output,
+        Some(PathBuf::from("/dst/mod.7z"))
+    );
+
+    let folder = Pipeline {
+        output_artifact: OutputArtifact::Folder,
+        ..base
+    };
+    let folder_preview = preview_pipeline(&folder);
+    assert_eq!(
+        folder_preview.entries[0].expected_output,
+        Some(PathBuf::from("/dst/mod"))
+    );
+}
+
+#[test]
+fn folder_output_leaves_extracted_tree_on_disk() {
+    use arclain_core::backends::BackendSelector;
+    use std::io::Write;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let input_dir = tmp.path().join("in");
+    let output_dir = tmp.path().join("out");
+    std::fs::create_dir_all(&input_dir).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let input = input_dir.join("pack.zip");
+
+    // Synthetic zip input — no 7z needed because we use the native ZipBackend
+    // for extraction, and folder output skips the 7z-driven final pack.
+    {
+        let file = std::fs::File::create(&input).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        zw.start_file("readme.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(b"hello").unwrap();
+        zw.start_file("data/payload.bin", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(&[0xAA; 256]).unwrap();
+        zw.finish().unwrap();
+    }
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![], // Flatten/Organize/Convert not needed; plain extract + folder out
+        output: PipelineOutput::NewFolder(output_dir.clone()),
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: OutputArtifact::Folder,
+    };
+
+    let selector = Arc::new(BackendSelector::default());
+    let selector_cloned = selector.clone();
+    let ctx = PipelineContext {
+        organization_service: None,
+        library_service: None,
+        backend_for: Arc::new(move |p: &std::path::Path| selector_cloned.select(p)),
+        config_db: None,
+        default_collision_policy: None,
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut completions: Vec<PathBuf> = Vec::new();
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
+        use arclain_core::PipelineProgress::*;
+        match ev {
+            FileFailed { error } => failures.push(error),
+            FileComplete { output } => completions.push(output),
+            _ => {}
+        }
+    })
+    .expect("folder-output run should succeed");
+
+    assert!(failures.is_empty(), "unexpected failures: {:?}", failures);
+    assert_eq!(completions.len(), 1);
+
+    let expected_folder = output_dir.join("pack");
+    assert_eq!(completions[0], expected_folder);
+    assert!(expected_folder.is_dir(), "output should be a directory");
+    // Content came through intact
+    assert_eq!(
+        std::fs::read(expected_folder.join("readme.txt")).unwrap(),
+        b"hello"
+    );
+    assert!(expected_folder.join("data/payload.bin").exists());
+
+    // Input untouched
+    assert!(input.exists());
+}
+
+#[test]
+fn folder_output_smart_skips_on_rerun() {
+    // Second run with same pipeline + pre-existing output folder + DB row
+    // should emit FileSkipped, not redo the extraction.
+    use arclain_core::backends::BackendSelector;
+    use std::io::Write;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let input_dir = tmp.path().join("in");
+    let output_dir = tmp.path().join("out");
+    std::fs::create_dir_all(&input_dir).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let input = input_dir.join("pack.zip");
+
+    {
+        let file = std::fs::File::create(&input).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        zw.start_file("a.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(b"a").unwrap();
+        zw.finish().unwrap();
+    }
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![],
+        output: PipelineOutput::NewFolder(output_dir.clone()),
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+        output_artifact: OutputArtifact::Folder,
+    };
+
+    let db = open_pipeline_runs_db();
+    let selector = Arc::new(BackendSelector::default());
+    let selector_cloned = selector.clone();
+    let ctx = PipelineContext {
+        organization_service: None,
+        library_service: None,
+        backend_for: Arc::new(move |p: &std::path::Path| selector_cloned.select(p)),
+        config_db: Some(db.clone()),
+        default_collision_policy: None,
+    };
+
+    // First run — produces the folder
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |_| {})
+        .expect("first run should succeed");
+    let out_folder = output_dir.join("pack");
+    assert!(out_folder.is_dir());
+
+    // Second run — DB match + folder still there → skip
+    let mut skipped = 0usize;
+    let mut completed = 0usize;
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
+        use arclain_core::PipelineProgress::*;
+        match ev {
+            FileSkipped { .. } => skipped += 1,
+            FileComplete { .. } => completed += 1,
+            _ => {}
+        }
+    })
+    .expect("second run should succeed");
+
+    assert_eq!(skipped, 1, "rerun should skip");
+    assert_eq!(completed, 0, "rerun should not redo work");
 }
 
 #[test]

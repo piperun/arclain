@@ -1,6 +1,6 @@
 //! Pure pipeline preview — computes what the pipeline WILL do without running it.
 
-use super::types::{OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep};
+use super::types::{OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep};
 use crate::features::conversion::ConvertFormat;
 use std::path::PathBuf;
 
@@ -101,9 +101,11 @@ pub fn preview_pipeline(pipeline: &Pipeline) -> PipelinePreview {
             }
         }
 
-        if let Some(fmt) = final_format {
-            entry.expected_output = Some(pipeline.output.resolve(&input, fmt.extension()));
-        }
+        entry.expected_output = match pipeline.output_artifact {
+            OutputArtifact::Archive => final_format
+                .map(|fmt| pipeline.output.resolve(&input, fmt.extension())),
+            OutputArtifact::Folder => Some(pipeline.output.resolve_folder(&input)),
+        };
 
         if let Some(ref out) = entry.expected_output {
             if out.exists() && out != &input {
@@ -149,6 +151,7 @@ mod tests {
             steps: vec![],
             output: PipelineOutput::SameFolder,
             collision_policy: None,
+            output_artifact: Default::default(),
         };
         let preview = preview_pipeline(&p);
         assert!(preview
@@ -168,6 +171,7 @@ mod tests {
             }],
             output: PipelineOutput::SameFolder,
             collision_policy: None,
+            output_artifact: Default::default(),
         };
         let preview = preview_pipeline(&p);
         assert_eq!(preview.entries.len(), 1);
@@ -193,6 +197,7 @@ mod tests {
             ],
             output: PipelineOutput::SameFolder,
             collision_policy: None,
+            output_artifact: Default::default(),
         };
         let preview = preview_pipeline(&p);
         let entry = &preview.entries[0];
@@ -212,6 +217,7 @@ mod tests {
             }],
             output: PipelineOutput::NewFolder(PathBuf::from("/dst")),
             collision_policy: None,
+            output_artifact: Default::default(),
         };
         let preview = preview_pipeline(&p);
         assert_eq!(

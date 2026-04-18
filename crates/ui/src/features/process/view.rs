@@ -4,8 +4,8 @@ use super::state::ProcessPageState;
 use super::step_widgets;
 use crate::shared::SharedState;
 use arclain_core::{
-    CompressionLevel, ConvertFormat, OutputCollisionPolicy, PipelineInput, PipelineOutput,
-    PipelineStep,
+    CompressionLevel, ConvertFormat, OutputArtifact, OutputCollisionPolicy, PipelineInput,
+    PipelineOutput, PipelineStep,
 };
 use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, Text, TextButton, ThemedDropdown};
 use eframe::egui;
@@ -395,6 +395,25 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
             if ui.button("Pick folder...").clicked() {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                     state.pipeline.output = PipelineOutput::NewFolder(folder);
+                    state.mark_dirty();
+                }
+            }
+        });
+
+    ui.add_space(8.0);
+
+    // Output artifact — produce an archive or leave as a folder.
+    Text::new("Output as:").strong().show(ui);
+    let current_artifact = state.pipeline.output_artifact;
+    ThemedDropdown::new("pipeline_output_artifact", current_artifact.display_name())
+        .with_theme_colors(&shared.theme.colors)
+        .show_ui(ui, |ui| {
+            for opt in [OutputArtifact::Archive, OutputArtifact::Folder] {
+                if ui
+                    .selectable_label(current_artifact == opt, opt.display_name())
+                    .clicked()
+                {
+                    state.pipeline.output_artifact = opt;
                     state.mark_dirty();
                 }
             }
