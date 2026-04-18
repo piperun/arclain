@@ -2,6 +2,7 @@
 //! needed to resolve rules, metadata, and backends.
 
 use crate::archive::ArchiveBackend;
+use crate::features::pipeline::types::OutputCollisionPolicy;
 use crate::services::{LibraryService, OrganizationService};
 use anyhow::Result;
 use arclain_db::SqliteDb;
@@ -18,6 +19,10 @@ pub struct PipelineContext {
     /// disables persistence — the executor runs without consulting or writing
     /// history. Tests default to `None`.
     pub config_db: Option<Arc<SqliteDb>>,
+    /// App-wide default collision policy from settings. `None` falls back to
+    /// `OutputCollisionPolicy::Smart`. Per-pipeline overrides (set on the
+    /// `Pipeline` struct) still take precedence over this.
+    pub default_collision_policy: Option<OutputCollisionPolicy>,
 }
 
 impl PipelineContext {
@@ -31,6 +36,7 @@ impl PipelineContext {
             library_service: None,
             backend_for: Arc::new(backend_for),
             config_db: None,
+            default_collision_policy: None,
         }
     }
 }

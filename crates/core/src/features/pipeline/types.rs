@@ -202,7 +202,33 @@ impl OutputCollisionPolicy {
             Self::Smart => "Smart (dedup / prompt)",
         }
     }
+
+    /// Serialize to the stable identifier used in settings storage (app_config).
+    pub fn to_settings_str(&self) -> &'static str {
+        match self {
+            Self::Fail => "fail",
+            Self::Skip => "skip",
+            Self::Overwrite => "overwrite",
+            Self::Smart => "smart",
+        }
+    }
+
+    /// Parse the settings identifier back into a policy. Unknown values return None.
+    pub fn from_settings_str(s: &str) -> Option<Self> {
+        match s {
+            "fail" => Some(Self::Fail),
+            "skip" => Some(Self::Skip),
+            "overwrite" => Some(Self::Overwrite),
+            "smart" => Some(Self::Smart),
+            _ => None,
+        }
+    }
 }
+
+/// Key under which the app-wide default collision policy is stored in
+/// `app_config`. Effective policy is: pipeline override (if set) else this
+/// setting else hardcoded `Smart`.
+pub const COLLISION_POLICY_CONFIG_KEY: &str = "pipeline.default_collision_policy";
 
 /// What a producing step is about to write. Computed just before the step
 /// runs so the collision gate can consult the filesystem (and in Phase 3,
