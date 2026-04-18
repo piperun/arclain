@@ -41,6 +41,29 @@ impl PipelineStep {
             Self::Convert { .. } => "Convert format",
         }
     }
+
+    /// Predict where this step will write, if anywhere, given the pipeline's
+    /// input path and output mode. `None` means the step doesn't produce a
+    /// user-visible artifact (Flatten mutates `work_dir` in place).
+    ///
+    /// Prediction is best-effort for `Organize`: without the extracted
+    /// archive's entries + metadata we can't resolve a rule's
+    /// `root_folder_template`. Preview code should accept `None` for Organize
+    /// and rely on the executor's at-runtime collision check instead.
+    pub fn predicted_output_static(
+        &self,
+        input: &Path,
+        output_mode: &PipelineOutput,
+    ) -> Option<OutputIdentity> {
+        match self {
+            Self::Flatten { .. } => None,
+            Self::Organize { .. } => None, // needs runtime context
+            Self::Convert { format, .. } => Some(OutputIdentity {
+                kind: OutputKind::Archive,
+                path: output_mode.resolve(input, format.extension()),
+            }),
+        }
+    }
 }
 
 /// What the pipeline operates on.
@@ -105,6 +128,72 @@ pub struct Pipeline {
     pub input: Option<PipelineInput>,
     pub steps: Vec<PipelineStep>,
     pub output: PipelineOutput,
+    /// Per-pipeline override for output-collision handling.
+    /// `None` = inherit the app's `default_collision_policy` setting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub collision_policy: Option<OutputCollisionPolicy>,
+}
+
+impl Pipeline {
+    /// Resolve the effective collision policy for this pipeline: returns the
+    /// per-pipeline override if set, otherwise the caller's default.
+    pub fn effective_collision_policy(
+        &self,
+        default: OutputCollisionPolicy,
+    ) -> OutputCollisionPolicy {
+        self.collision_policy.unwrap_or(default)
+    }
+}
+
+/// What happens when a producing step is about to write to a path that
+/// already exists on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OutputCollisionPolicy {
+    /// Fail the step if the path exists.
+    Fail,
+    /// Silently skip the step; leave existing content untouched.
+    Skip,
+    /// Unconditionally overwrite.
+    Overwrite,
+    /// Phase 3: consult `pipeline_runs` + hash. Until Phase 3 lands, `Smart`
+    /// degrades to `Fail` so users never get silent unexpected behavior.
+    Smart,
+}
+
+impl Default for OutputCollisionPolicy {
+    fn default() -> Self {
+        Self::Smart
+    }
+}
+
+impl OutputCollisionPolicy {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Fail => "Fail on existing",
+            Self::Skip => "Skip if exists",
+            Self::Overwrite => "Overwrite",
+            Self::Smart => "Smart (dedup / prompt)",
+        }
+    }
+}
+
+/// What a producing step is about to write. Computed just before the step
+/// runs so the collision gate can consult the filesystem (and in Phase 3,
+/// the pipeline_runs DB).
+#[derive(Debug, Clone)]
+pub struct OutputIdentity {
+    pub kind: OutputKind,
+    pub path: PathBuf,
+}
+
+/// What artifact a step produces. Drives collision-check behavior (a missing
+/// file isn't the same as a missing folder).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputKind {
+    /// A single file (e.g. Convert → archive.zip).
+    Archive,
+    /// A directory (e.g. Organize → MyGame/).
+    Folder,
 }
 
 /// Preset for opening the Process page pre-configured.
