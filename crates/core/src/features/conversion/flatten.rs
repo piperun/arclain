@@ -51,6 +51,32 @@ pub fn find_archive_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(archives)
 }
 
+/// Find all archive files in a directory tree (recursive).
+/// Used by the pipeline flatten operation because outer archives often
+/// extract into a subfolder layout rather than files-at-root.
+pub fn find_archive_files_recursive(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut archives = Vec::new();
+    walk(dir, &mut archives)?;
+    Ok(archives)
+}
+
+fn walk(dir: &Path, archives: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(dir).with_context(|| format!("Reading {:?}", dir))? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if is_archive_filename(name) {
+                    archives.push(path);
+                }
+            }
+        } else if path.is_dir() {
+            walk(&path, archives)?;
+        }
+    }
+    Ok(())
+}
+
 /// Compute the target folder names for a list of archive files.
 /// If strip_common_prefix is true, strips the longest common prefix (if meaningful).
 pub fn target_folder_names(archives: &[PathBuf], strip_prefix: bool) -> Vec<(PathBuf, String)> {
@@ -104,12 +130,13 @@ impl FlattenReport {
     }
 }
 
-/// Extract all nested archives in the given directory to sibling folders,
+/// Extract all nested archives in the given directory tree to sibling folders,
 /// then remove the original archive files.
 ///
+/// Walks the whole tree — if the outer archive extracted into `SubFolder/*.rar`,
+/// inner archives are still found and flattened to `SubFolder/<name>/`.
+///
 /// `extractor` is a callback that extracts `(archive_path, dest_dir) -> Result<()>`.
-/// This lets the UI layer provide the backend-aware extraction logic without
-/// pulling archive backends into the core features layer.
 pub fn flatten_nested_archives<F>(
     dir: &Path,
     strip_prefix: bool,
@@ -118,13 +145,18 @@ pub fn flatten_nested_archives<F>(
 where
     F: FnMut(&Path, &Path) -> Result<()>,
 {
-    let archives = find_archive_files(dir)?;
+    let archives = find_archive_files_recursive(dir)?;
     let targets = target_folder_names(&archives, strip_prefix);
 
     let mut report = FlattenReport::default();
 
     for (archive_path, folder_name) in targets {
-        let dest_folder = dir.join(&folder_name);
+        // Place the output folder next to the archive file, not at tree root
+        let dest_parent = archive_path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| dir.to_path_buf());
+        let dest_folder = dest_parent.join(&folder_name);
 
         // Skip if destination already exists (avoid overwriting user data)
         if dest_folder.exists() {
@@ -286,5 +318,30 @@ mod tests {
         assert_eq!(report.extracted.len(), 2);
         assert!(tmp.path().join("Main").exists());
         assert!(tmp.path().join("Variant A").exists());
+    }
+
+    #[test]
+    fn test_flatten_finds_archives_in_subfolders() {
+        // Regression: outer archive extracts to a subfolder layout,
+        // inner archives must still be found and flattened next to them.
+        let tmp = tempfile::tempdir().unwrap();
+        let sub = tmp.path().join("PackRoot");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("Main.rar"), b"").unwrap();
+        std::fs::write(sub.join("Patch.rar"), b"").unwrap();
+
+        let report = flatten_nested_archives(tmp.path(), false, |_archive, dest| {
+            std::fs::write(dest.join("marker"), b"")?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(report.extracted.len(), 2);
+        // Output folders should sit next to their source archive, not at root
+        assert!(sub.join("Main/marker").exists());
+        assert!(sub.join("Patch/marker").exists());
+        // Originals removed
+        assert!(!sub.join("Main.rar").exists());
+        assert!(!sub.join("Patch.rar").exists());
     }
 }
