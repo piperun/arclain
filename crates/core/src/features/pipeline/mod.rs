@@ -15,6 +15,6 @@ pub use presets::{
 };
 pub use preview::{preview_pipeline, PipelinePreview, PreviewEntry};
 pub use types::{
-    OutputCollisionPolicy, OutputIdentity, OutputKind, Pipeline, PipelineInput, PipelineOutput,
-    PipelineStep, ProcessPreset, COLLISION_POLICY_CONFIG_KEY,
+    OutputArtifact, OutputCollisionPolicy, OutputIdentity, OutputKind, Pipeline, PipelineInput,
+    PipelineOutput, PipelineStep, ProcessPreset, COLLISION_POLICY_CONFIG_KEY,
 };

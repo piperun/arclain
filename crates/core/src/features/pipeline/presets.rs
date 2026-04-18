@@ -40,6 +40,7 @@ pub fn builtin_presets() -> Vec<SavedPreset> {
                 ],
                 output: PipelineOutput::SameFolder,
                 collision_policy: None,
+                output_artifact: Default::default(),
             },
         },
         SavedPreset {
@@ -53,6 +54,7 @@ pub fn builtin_presets() -> Vec<SavedPreset> {
                 }],
                 output: PipelineOutput::SameFolder,
                 collision_policy: None,
+                output_artifact: Default::default(),
             },
         },
     ]

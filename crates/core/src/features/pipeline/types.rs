@@ -120,6 +120,25 @@ impl PipelineOutput {
             }
         }
     }
+
+    /// Resolve the output path for a folder artifact — same-shaped path as
+    /// `resolve` but without an extension. Used when the pipeline leaves its
+    /// result as a directory instead of an archive.
+    pub fn resolve_folder(&self, input: &Path) -> PathBuf {
+        let stem = input.file_stem().unwrap_or_default();
+        match self {
+            Self::SameFolder => {
+                let mut p = input.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                p.push(stem);
+                p
+            }
+            Self::NewFolder(folder) => {
+                let mut p = folder.clone();
+                p.push(stem);
+                p
+            }
+        }
+    }
 }
 
 /// Complete pipeline specification.
@@ -132,6 +151,32 @@ pub struct Pipeline {
     /// `None` = inherit the app's `default_collision_policy` setting.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub collision_policy: Option<OutputCollisionPolicy>,
+    /// What the pipeline produces at the end — a packed archive (default,
+    /// preserves historical behavior) or a plain folder on disk.
+    #[serde(default)]
+    pub output_artifact: OutputArtifact,
+}
+
+/// What the pipeline's final artifact looks like on disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum OutputArtifact {
+    /// Pack the work dir into an archive. Format is driven by the last Convert
+    /// step, falling back to zip if no Convert is present.
+    #[default]
+    Archive,
+    /// Copy the work dir contents to a folder at the output location. Useful
+    /// when downstream tools (mod managers, deploy scripts) want the extracted
+    /// tree directly.
+    Folder,
+}
+
+impl OutputArtifact {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Archive => "Archive",
+            Self::Folder => "Folder",
+        }
+    }
 }
 
 impl Pipeline {
