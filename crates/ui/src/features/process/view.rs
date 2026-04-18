@@ -4,7 +4,8 @@ use super::state::ProcessPageState;
 use super::step_widgets;
 use crate::shared::SharedState;
 use arclain_core::{
-    CompressionLevel, ConvertFormat, PipelineInput, PipelineOutput, PipelineStep,
+    CompressionLevel, ConvertFormat, OutputCollisionPolicy, PipelineInput, PipelineOutput,
+    PipelineStep,
 };
 use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, Text, TextButton, ThemedDropdown};
 use eframe::egui;
@@ -361,6 +362,33 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
             if ui.button("Pick folder...").clicked() {
                 if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                     state.pipeline.output = PipelineOutput::NewFolder(folder);
+                    state.mark_dirty();
+                }
+            }
+        });
+
+    ui.add_space(8.0);
+
+    // Collision policy — controls what happens when output already exists.
+    Text::new("If output exists:").strong().show(ui);
+    let current_policy = state
+        .pipeline
+        .collision_policy
+        .unwrap_or(OutputCollisionPolicy::Smart);
+    ThemedDropdown::new("pipeline_collision_policy", current_policy.display_name())
+        .with_theme_colors(&shared.theme.colors)
+        .show_ui(ui, |ui| {
+            for opt in [
+                OutputCollisionPolicy::Smart,
+                OutputCollisionPolicy::Skip,
+                OutputCollisionPolicy::Overwrite,
+                OutputCollisionPolicy::Fail,
+            ] {
+                if ui
+                    .selectable_label(current_policy == opt, opt.display_name())
+                    .clicked()
+                {
+                    state.pipeline.collision_policy = Some(opt);
                     state.mark_dirty();
                 }
             }
