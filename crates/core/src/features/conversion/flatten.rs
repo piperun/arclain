@@ -176,7 +176,22 @@ where
                         e
                     );
                 }
-                report.extracted.push(folder_name);
+
+                // If the archive unpacked into a single root folder, promote that folder
+                // so mod managers see the archive's own folder name instead of our wrapper.
+                let final_name = match unwrap_single_root_folder(&dest_folder) {
+                    Ok(Some(promoted)) => promoted,
+                    Ok(None) => folder_name,
+                    Err(e) => {
+                        tracing::warn!(
+                            "[flatten] Failed to unwrap single-root for {}: {}",
+                            dest_folder.display(),
+                            e
+                        );
+                        folder_name
+                    }
+                };
+                report.extracted.push(final_name);
             }
             Err(e) => {
                 // Clean up the empty destination on failure
@@ -187,6 +202,71 @@ where
     }
 
     Ok(report)
+}
+
+/// If `dest_folder` contains exactly one entry and that entry is a directory,
+/// promote the inner folder to replace `dest_folder` (using the inner folder's name).
+///
+/// Returns:
+/// - `Ok(Some(name))` when the unwrap happened (name is the inner folder's name)
+/// - `Ok(None)` when the layout didn't qualify (multiple entries, only a file, etc.)
+/// - `Err(_)` on I/O failure
+///
+/// Motivation: archives often contain a single root folder like `ModName/...` that
+/// already identifies the mod. Our wrapper folder (derived from the archive filename)
+/// adds an extra nesting level that breaks mod managers like fluffy which expect
+/// the mod folder to be at the top level.
+fn unwrap_single_root_folder(dest_folder: &Path) -> Result<Option<String>> {
+    let entries: Vec<_> = fs::read_dir(dest_folder)
+        .with_context(|| format!("Reading {:?}", dest_folder))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+
+    if entries.len() != 1 {
+        return Ok(None);
+    }
+    let only = &entries[0];
+    if !only.path().is_dir() {
+        return Ok(None);
+    }
+
+    let inner_name = match only.file_name().to_str() {
+        Some(s) => s.to_string(),
+        None => return Ok(None), // skip non-UTF8 names
+    };
+    let inner_path = only.path();
+
+    let parent = match dest_folder.parent() {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let final_dest = parent.join(&inner_name);
+
+    // Inner name matches wrapper: must go via a temp name to avoid self-overwrite
+    if final_dest == dest_folder {
+        let tmp = parent.join(format!(
+            ".arclain_flatten_tmp_{}_{}",
+            std::process::id(),
+            inner_name
+        ));
+        fs::rename(&inner_path, &tmp)
+            .with_context(|| format!("Renaming {:?} to temp", inner_path))?;
+        fs::remove_dir(dest_folder)
+            .with_context(|| format!("Removing empty wrapper {:?}", dest_folder))?;
+        fs::rename(&tmp, &final_dest)
+            .with_context(|| format!("Renaming temp to {:?}", final_dest))?;
+        return Ok(Some(inner_name));
+    }
+
+    // Inner name collides with an unrelated existing path — keep the wrapper to be safe
+    if final_dest.exists() {
+        return Ok(None);
+    }
+
+    fs::rename(&inner_path, &final_dest)
+        .with_context(|| format!("Promoting {:?} to {:?}", inner_path, final_dest))?;
+    fs::remove_dir(dest_folder)
+        .with_context(|| format!("Removing empty wrapper {:?}", dest_folder))?;
+    Ok(Some(inner_name))
 }
 
 #[cfg(test)]
@@ -318,6 +398,83 @@ mod tests {
         assert_eq!(report.extracted.len(), 2);
         assert!(tmp.path().join("Main").exists());
         assert!(tmp.path().join("Variant A").exists());
+    }
+
+    #[test]
+    fn test_flatten_unwraps_single_root_folder() {
+        // Archive contains its own root folder matching the real mod name —
+        // the wrapper from strip_common_prefix should be promoted away so
+        // mod managers see the mod folder at the top.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Pack - Main.rar"), b"").unwrap();
+
+        let report = flatten_nested_archives(tmp.path(), true, |_archive, dest| {
+            // Simulate an archive that expands to `dest/ModName/...`
+            let inner = dest.join("ModName");
+            std::fs::create_dir(&inner)?;
+            std::fs::write(inner.join("mod.dll"), b"")?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(report.extracted, vec!["ModName".to_string()]);
+        // "Main" wrapper gone, "ModName" promoted next to the (now-removed) archive
+        assert!(tmp.path().join("ModName/mod.dll").exists());
+        assert!(!tmp.path().join("Main").exists());
+    }
+
+    #[test]
+    fn test_flatten_keeps_wrapper_when_multiple_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("pack.rar"), b"").unwrap();
+
+        let report = flatten_nested_archives(tmp.path(), false, |_archive, dest| {
+            std::fs::create_dir(dest.join("folder_a"))?;
+            std::fs::write(dest.join("loose.txt"), b"")?;
+            Ok(())
+        })
+        .unwrap();
+
+        // Multiple entries — wrapper stays
+        assert_eq!(report.extracted, vec!["pack".to_string()]);
+        assert!(tmp.path().join("pack/folder_a").exists());
+        assert!(tmp.path().join("pack/loose.txt").exists());
+    }
+
+    #[test]
+    fn test_flatten_keeps_wrapper_when_single_file_at_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("pack.rar"), b"").unwrap();
+
+        let report = flatten_nested_archives(tmp.path(), false, |_archive, dest| {
+            std::fs::write(dest.join("only_file.txt"), b"")?;
+            Ok(())
+        })
+        .unwrap();
+
+        // Single entry but it's a file, not a folder — wrapper stays
+        assert_eq!(report.extracted, vec!["pack".to_string()]);
+        assert!(tmp.path().join("pack/only_file.txt").exists());
+    }
+
+    #[test]
+    fn test_flatten_unwrap_when_inner_name_matches_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("Main.rar"), b"").unwrap();
+
+        let report = flatten_nested_archives(tmp.path(), false, |_archive, dest| {
+            let inner = dest.join("Main");
+            std::fs::create_dir(&inner)?;
+            std::fs::write(inner.join("a.txt"), b"")?;
+            Ok(())
+        })
+        .unwrap();
+
+        // Wrapper and inner happen to share the name "Main" — unwrap still succeeds
+        assert_eq!(report.extracted, vec!["Main".to_string()]);
+        assert!(tmp.path().join("Main/a.txt").exists());
+        // No leftover temp files or double-nesting
+        assert!(!tmp.path().join("Main/Main").exists());
     }
 
     #[test]
