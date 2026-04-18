@@ -40,6 +40,24 @@ impl ArchiveBackend for UnrarBackend {
     fn list(&self, path: &Path, password: Option<&str>) -> Result<ArchiveInfo> {
         info!("Using {} backend to list: {}", self.name(), path.display());
 
+        // The `unrar` crate's FileHeader does not expose packed_size, so a native
+        // listing always reports 0 for compressed size and ratio. When the CLI is
+        // available, delegate listing to it — native stays in charge of extraction.
+        if let Some(cli) = crate::backends::unrar_cli::UnrarCli::detect() {
+            match cli.list(path, password) {
+                Ok(info) => {
+                    info!("Listed via UnRAR CLI (packed_size available)");
+                    return Ok(info);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "UnRAR CLI listing failed, falling back to native (no packed_size): {}",
+                        e
+                    );
+                }
+            }
+        }
+
         let archive = if let Some(pwd) = password {
             info!("Using password for RAR archive listing");
             Archive::with_password(path, pwd.as_bytes())
