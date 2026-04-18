@@ -2,7 +2,10 @@
 //! runtime and routes progress events to the `process_run` signal.
 
 use crate::core::signals::ProcessRunState;
-use arclain_core::{execute_pipeline, Pipeline, PipelineContext, PipelineProgress};
+use arclain_core::{
+    execute_pipeline, OutputCollisionPolicy, Pipeline, PipelineContext, PipelineProgress,
+    COLLISION_POLICY_CONFIG_KEY,
+};
 use arclain_signals::Signal;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -28,11 +31,18 @@ pub fn spawn_run(
             let state_clone = state_arc.clone();
             let backend_for = move |p: &std::path::Path| state_clone.lock().backend_selector.select(p);
 
+            let default_policy = services
+                .config_service
+                .as_ref()
+                .and_then(|svc| svc.get(COLLISION_POLICY_CONFIG_KEY).ok().flatten())
+                .and_then(|s| OutputCollisionPolicy::from_settings_str(&s));
+
             let ctx = PipelineContext {
                 organization_service: services.organization_service.clone(),
                 library_service: services.library_service.clone(),
                 backend_for: Arc::new(backend_for),
                 config_db: services.config_db.clone(),
+                default_collision_policy: default_policy,
             };
 
             let result = execute_pipeline(

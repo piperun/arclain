@@ -32,8 +32,9 @@ pub fn render_archives_settings(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut ArchivesSettingsState,
+    config_service: Option<&arclain_core::services::ConfigService>,
 ) -> Option<SettingsAction> {
-    pages::archives::render(ui, theme, state)
+    pages::archives::render(ui, theme, state, config_service)
 }
 
 /// Render the Security settings page
@@ -115,7 +116,10 @@ pub fn render_settings_content(
                 None
             }
         }
-        SettingsPage::Archives => render_archives_settings(ui, theme, archives_state),
+        SettingsPage::Archives => {
+            let cfg = shared.and_then(|s| s.services.config_service.as_deref());
+            render_archives_settings(ui, theme, archives_state, cfg)
+        }
         SettingsPage::Security => render_security_settings(ui, theme, security_state),
         SettingsPage::PasswordRules => {
             render_password_rules_settings(ui, theme, password_rules_dialog)
