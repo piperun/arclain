@@ -85,12 +85,12 @@ impl UnrarCli {
     pub(crate) fn run(&self, args: &[OsString]) -> Result<String> {
         debug!("Running UnRAR: {:?} {:?}", self.exe, args);
 
-        let output = Command::new(&self.exe)
-            .args(args)
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .context("spawning unrar")?;
+            .stderr(Stdio::piped());
+        crate::utilities::hide_console(&mut cmd);
+        let output = cmd.output().context("spawning unrar")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -135,14 +135,14 @@ impl UnrarCli {
             ));
         }
 
-        let output = Command::new(&self.exe)
-            .args(args)
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .with_context(|| {
-                format!("spawning unrar at {:?} with {} args", self.exe, args.len())
-            })?;
+            .stderr(Stdio::piped());
+        crate::utilities::hide_console(&mut cmd);
+        let output = cmd.output().with_context(|| {
+            format!("spawning unrar at {:?} with {} args", self.exe, args.len())
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

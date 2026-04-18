@@ -74,12 +74,10 @@ impl SevenZipCli {
         }
 
         debug!("Spawning 7z with progress: {:?} {:?}", self.exe, argv);
-        let mut child = Command::new(&self.exe)
-            .args(&argv)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawning 7z (progress)")?;
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(&argv).stdout(Stdio::piped()).stderr(Stdio::piped());
+        crate::utilities::hide_console(&mut cmd);
+        let mut child = cmd.spawn().context("spawning 7z (progress)")?;
 
         let stdout = child.stdout.take();
         let (tx, rx) = mpsc::channel::<ProgressUpdate>();
@@ -165,12 +163,12 @@ impl SevenZipCli {
     {
         let args_vec: Vec<_> = args.into_iter().collect();
 
-        let out = Command::new(&self.exe)
-            .args(&args_vec)
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(&args_vec)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .context("spawning 7z")?;
+            .stderr(Stdio::piped());
+        crate::utilities::hide_console(&mut cmd);
+        let out = cmd.output().context("spawning 7z")?;
 
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
@@ -202,13 +200,13 @@ impl SevenZipCli {
         S: AsRef<OsStr>,
     {
         debug!("Executing 7-Zip command (status+stdin): {:?}", self.exe);
-        let mut child = Command::new(&self.exe)
-            .args(args)
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawning 7z with stdin")?;
+            .stderr(Stdio::piped());
+        crate::utilities::hide_console(&mut cmd);
+        let mut child = cmd.spawn().context("spawning 7z with stdin")?;
 
         if let Some(stdin) = child.stdin.as_mut() {
             use std::io::Write;
@@ -239,12 +237,12 @@ impl SevenZipCli {
         S: AsRef<OsStr>,
     {
         debug!("Executing 7-Zip command (status mode): {:?}", self.exe);
-        let output = Command::new(&self.exe)
-            .args(args)
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(args)
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .output()
-            .context("spawning 7z")?;
+            .stderr(Stdio::piped());
+        crate::utilities::hide_console(&mut cmd);
+        let output = cmd.output().context("spawning 7z")?;
 
         if !output.status.success() {
             let err = String::from_utf8_lossy(&output.stderr);

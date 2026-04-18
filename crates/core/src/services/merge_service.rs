@@ -347,6 +347,8 @@ impl MergeService {
         // Suppress prompts
         cmd.arg("-y");
 
+        crate::utilities::hide_console(&mut cmd);
+
         debug!("Running: {:?}", cmd);
 
         let output = cmd
