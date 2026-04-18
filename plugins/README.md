@@ -28,33 +28,31 @@ plugins/
 
 1. Install the WASM target:
    ```bash
-   rustup target add wasm32-unknown-unknown
+   rustup target add wasm32-wasip2
    ```
 
 ### Build All Plugins
 
-**Windows:**
-```cmd
-scripts\build-plugins.bat
-```
-
-**Linux/macOS:**
 ```bash
-bash scripts/build-plugins.sh
+python scripts/release.py plugins
 ```
 
-**VSCode:**
-- Press `Ctrl+Shift+B` (or `Cmd+Shift+B` on macOS)
-- Select "build-plugins" task
+This installs the target if missing, builds every plugin, and copies each `<name>.wasm` next to its `Cargo.toml`.
+
+To wipe `.wasm` artifacts and `cargo clean` every plugin:
+
+```bash
+python scripts/release.py clean-plugins
+```
 
 ### Build Individual Plugin
 
 ```bash
 cd plugins/dlsite-metadata
-cargo build --target wasm32-unknown-unknown --release
+cargo build --target wasm32-wasip2 --release
 ```
 
-The compiled `.wasm` file will be in `target/wasm32-unknown-unknown/release/`
+The compiled `.wasm` file will be in `target/wasm32-wasip2/release/`
 
 ## Plugin Manifest Format
 
