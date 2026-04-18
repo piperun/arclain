@@ -118,6 +118,15 @@ pub use domain_whitelist::{
 };
 
 pub mod library;
+
+/// Pipeline execution history — records each pipeline run against its input
+/// and pipeline-config hashes, enabling idempotent re-runs and crash recovery.
+pub mod pipeline_runs;
+pub use pipeline_runs::{
+    begin_pipeline_run, ensure_pipeline_runs_table, find_completed_run, flag_stale_in_progress,
+    list_interrupted_since, mark_run_completed, mark_run_failed, output_kind as pipeline_output_kind,
+    status as pipeline_run_status, DbPipelineRun, NewPipelineRun, INTERRUPTED_MARKER,
+};
 pub use library::{
     delete_product_content,
     get_all_content,
