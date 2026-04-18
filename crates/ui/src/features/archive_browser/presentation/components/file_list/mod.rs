@@ -90,6 +90,65 @@ fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
     }
 }
 
+/// Which optional columns fit at the current viewport width.
+///
+/// Checkbox, Name, and Actions are always shown. Everything else is hidden
+/// in priority order when the window is too narrow to fit it, so the final
+/// "Actions" column never clips off-screen.
+#[derive(Copy, Clone, Debug)]
+struct ColumnVisibility {
+    size: bool,
+    type_col: bool,
+    modified: bool,
+    compressed: bool,
+    ratio: bool,
+    crc: bool,
+    encrypted: bool,
+}
+
+const COL_CHECKBOX_W: f32 = 34.0;
+const COL_NAME_MIN_W: f32 = 220.0;
+const COL_TYPE_W: f32 = 80.0;
+const COL_SIZE_W: f32 = 110.0;
+const COL_COMPRESSED_W: f32 = 110.0;
+const COL_RATIO_W: f32 = 76.0;
+const COL_MODIFIED_W: f32 = 140.0;
+const COL_CRC_W: f32 = 120.0;
+const COL_ENCRYPTED_W: f32 = 80.0;
+const COL_ACTIONS_W: f32 = 84.0;
+
+impl ColumnVisibility {
+    /// Decide which optional columns to show given the table's available width.
+    /// Priority (first shown, last hidden): Size, Type, Modified, Compressed, Ratio, CRC-32, Encrypted.
+    fn for_width(available: f32) -> Self {
+        // Reserve space for always-on columns; Name consumes the rest via Column::remainder.
+        let must_have = COL_CHECKBOX_W + COL_NAME_MIN_W + COL_ACTIONS_W;
+        let mut remaining = (available - must_have).max(0.0);
+
+        let size = remaining >= COL_SIZE_W;
+        if size { remaining -= COL_SIZE_W; }
+
+        let type_col = remaining >= COL_TYPE_W;
+        if type_col { remaining -= COL_TYPE_W; }
+
+        let modified = remaining >= COL_MODIFIED_W;
+        if modified { remaining -= COL_MODIFIED_W; }
+
+        let compressed = remaining >= COL_COMPRESSED_W;
+        if compressed { remaining -= COL_COMPRESSED_W; }
+
+        let ratio = remaining >= COL_RATIO_W;
+        if ratio { remaining -= COL_RATIO_W; }
+
+        let crc = remaining >= COL_CRC_W;
+        if crc { remaining -= COL_CRC_W; }
+
+        let encrypted = remaining >= COL_ENCRYPTED_W;
+
+        Self { size, type_col, modified, compressed, ratio, crc, encrypted }
+    }
+}
+
 pub fn render_list_view(
     ui: &mut egui::Ui,
     theme: &AppTheme,
@@ -120,22 +179,25 @@ pub fn render_list_view(
                 egui::Id::new("file_list_table_resizable")
             };
 
-            TableBuilder::new(ui)
+            let vis = ColumnVisibility::for_width(ui.available_width());
+
+            let mut table = TableBuilder::new(ui)
                 .id_salt(table_id)
                 .striped(false)
                 .resizable(!columns_locked)
                 .sense(egui::Sense::click_and_drag())
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                .column(Column::exact(34.0)) // Checkbox
-                .column(Column::remainder().at_least(220.0)) // Name
-                .column(Column::exact(80.0)) // Type
-                .column(Column::exact(110.0)) // Size
-                .column(Column::exact(110.0)) // Compressed
-                .column(Column::exact(76.0)) // Ratio
-                .column(Column::exact(140.0)) // Modified
-                .column(Column::exact(120.0)) // CRC-32
-                .column(Column::exact(80.0)) // Encrypted
-                .column(Column::exact(84.0)) // Actions
+                .column(Column::exact(COL_CHECKBOX_W))
+                .column(Column::remainder().at_least(COL_NAME_MIN_W));
+            if vis.type_col { table = table.column(Column::exact(COL_TYPE_W)); }
+            if vis.size { table = table.column(Column::exact(COL_SIZE_W)); }
+            if vis.compressed { table = table.column(Column::exact(COL_COMPRESSED_W)); }
+            if vis.ratio { table = table.column(Column::exact(COL_RATIO_W)); }
+            if vis.modified { table = table.column(Column::exact(COL_MODIFIED_W)); }
+            if vis.crc { table = table.column(Column::exact(COL_CRC_W)); }
+            if vis.encrypted { table = table.column(Column::exact(COL_ENCRYPTED_W)); }
+            table
+                .column(Column::exact(COL_ACTIONS_W))
                 .header(28.0, |mut header| {
                     // Select all checkbox
                     header.col(|ui| {
@@ -168,7 +230,8 @@ pub fn render_list_view(
                             }
                         }
                     });
-                    header.col(|ui| {
+                    if vis.type_col {
+                        header.col(|ui| {
                         if header_sort_label(
                             ui,
                             theme,
@@ -185,7 +248,9 @@ pub fn render_list_view(
                             }
                         }
                     });
-                    header.col(|ui| {
+                    }
+                    if vis.size {
+                        header.col(|ui| {
                         if header_sort_label(
                             ui,
                             theme,
@@ -202,7 +267,9 @@ pub fn render_list_view(
                             }
                         }
                     });
-                    header.col(|ui| {
+                    }
+                    if vis.compressed {
+                        header.col(|ui| {
                         if header_sort_label(
                             ui,
                             theme,
@@ -219,7 +286,9 @@ pub fn render_list_view(
                             }
                         }
                     });
-                    header.col(|ui| {
+                    }
+                    if vis.ratio {
+                        header.col(|ui| {
                         if header_sort_label(
                             ui,
                             theme,
@@ -236,7 +305,9 @@ pub fn render_list_view(
                             }
                         }
                     });
-                    header.col(|ui| {
+                    }
+                    if vis.modified {
+                        header.col(|ui| {
                         if header_sort_label(
                             ui,
                             theme,
@@ -253,7 +324,9 @@ pub fn render_list_view(
                             }
                         }
                     });
-                    header.col(|ui| {
+                    }
+                    if vis.crc {
+                        header.col(|ui| {
                         if header_sort_label(
                             ui,
                             theme,
@@ -270,7 +343,9 @@ pub fn render_list_view(
                             }
                         }
                     });
-                    header.col(|ui| {
+                    }
+                    if vis.encrypted {
+                        header.col(|ui| {
                         if header_sort_label(
                             ui,
                             theme,
@@ -287,6 +362,7 @@ pub fn render_list_view(
                             }
                         }
                     });
+                    }
                     header.col(|ui| {
                         ui.add(
                             egui::Label::new(
@@ -353,94 +429,108 @@ pub fn render_list_view(
                                 );
                             });
 
-                            row.col(|ui| {
-                                let type_str = if is_folder {
-                                    "Folder".to_string()
-                                } else {
-                                    entry_name
-                                        .split('.')
-                                        .last()
-                                        .unwrap_or("File")
-                                        .to_uppercase()
-                                };
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(type_str).size(14.0).color(muted_color),
-                                    )
-                                    .selectable(false),
-                                );
-                            });
-
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&entry.size)
-                                            .size(14.0)
-                                            .color(text_color),
-                                    )
-                                    .selectable(false),
-                                );
-                            });
-
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&entry.compressed)
-                                            .size(14.0)
-                                            .color(text_color),
-                                    )
-                                    .selectable(false),
-                                );
-                            });
-
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&entry.ratio)
-                                            .size(14.0)
-                                            .color(text_color),
-                                    )
-                                    .selectable(false),
-                                );
-                            });
-
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&entry.modified)
-                                            .size(14.0)
-                                            .color(muted_color),
-                                    )
-                                    .selectable(false),
-                                );
-                            });
-
-                            row.col(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&entry.crc32)
-                                            .size(14.0)
-                                            .color(text_color),
-                                    )
-                                    .selectable(false),
-                                );
-                            });
-
-                            row.col(|ui| {
-                                if !entry.is_folder {
-                                    let (text, color) = if entry.encrypted {
-                                        ("Yes", theme.colors.on_surface)
+                            if vis.type_col {
+                                row.col(|ui| {
+                                    let type_str = if is_folder {
+                                        "Folder".to_string()
                                     } else {
-                                        ("No", theme.colors.on_surface_variant)
+                                        entry_name
+                                            .split('.')
+                                            .last()
+                                            .unwrap_or("File")
+                                            .to_uppercase()
                                     };
                                     ui.add(
                                         egui::Label::new(
-                                            egui::RichText::new(text).size(14.0).color(color),
+                                            egui::RichText::new(type_str).size(14.0).color(muted_color),
                                         )
                                         .selectable(false),
                                     );
-                                }
-                            });
+                                });
+                            }
+
+                            if vis.size {
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&entry.size)
+                                                .size(14.0)
+                                                .color(text_color),
+                                        )
+                                        .selectable(false),
+                                    );
+                                });
+                            }
+
+                            if vis.compressed {
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&entry.compressed)
+                                                .size(14.0)
+                                                .color(text_color),
+                                        )
+                                        .selectable(false),
+                                    );
+                                });
+                            }
+
+                            if vis.ratio {
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&entry.ratio)
+                                                .size(14.0)
+                                                .color(text_color),
+                                        )
+                                        .selectable(false),
+                                    );
+                                });
+                            }
+
+                            if vis.modified {
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&entry.modified)
+                                                .size(14.0)
+                                                .color(muted_color),
+                                        )
+                                        .selectable(false),
+                                    );
+                                });
+                            }
+
+                            if vis.crc {
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&entry.crc32)
+                                                .size(14.0)
+                                                .color(text_color),
+                                        )
+                                        .selectable(false),
+                                    );
+                                });
+                            }
+
+                            if vis.encrypted {
+                                row.col(|ui| {
+                                    if !entry.is_folder {
+                                        let (text, color) = if entry.encrypted {
+                                            ("Yes", theme.colors.on_surface)
+                                        } else {
+                                            ("No", theme.colors.on_surface_variant)
+                                        };
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(text).size(14.0).color(color),
+                                            )
+                                            .selectable(false),
+                                        );
+                                    }
+                                });
+                            }
 
                             // Actions column
                             let mut pending_row_action: Option<FileListAction> = None;
