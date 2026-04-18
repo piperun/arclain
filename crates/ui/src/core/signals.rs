@@ -42,6 +42,7 @@ pub struct ProcessRunState {
     pub files_done: usize,
     pub files_total: usize,
     pub files_failed: usize,
+    pub files_skipped: usize,
     pub step_percent: u8,
     pub completed: bool,
     pub summary: Option<String>,
