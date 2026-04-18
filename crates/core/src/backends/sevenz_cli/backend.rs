@@ -498,13 +498,13 @@ impl ArchiveBackend for SevenZipCli {
         ];
 
         debug!("Executing 7-Zip conversion command: {:?}", args);
-        let status = Command::new(&self.exe)
-            .args(&args)
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(&args)
             .current_dir(&work_dir)
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .context("spawning 7z for conversion")?;
+            .stderr(Stdio::null());
+        crate::utilities::hide_console(&mut cmd);
+        let status = cmd.status().context("spawning 7z for conversion")?;
 
         if !status.success() {
             error!("7-Zip conversion failed with code {:?}", status.code());
@@ -544,12 +544,12 @@ impl ArchiveBackend for SevenZipCli {
         args.push(archive.as_os_str().to_os_string());
         args.push(OsString::from(path_in_archive));
 
-        let mut child = Command::new(&self.exe)
-            .args(&args)
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(&args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawning 7z for crc")?;
+            .stderr(Stdio::piped());
+        crate::utilities::hide_console(&mut cmd);
+        let mut child = cmd.spawn().context("spawning 7z for crc")?;
 
         let mut hasher = crc32fast::Hasher::new();
         if let Some(mut stdout) = child.stdout.take() {
@@ -685,12 +685,12 @@ impl ArchiveBackend for SevenZipCli {
         args.push(OsString::from("--"));
         args.push(OsString::from(path_in_archive));
 
-        let mut child = Command::new(&self.exe)
-            .args(&args)
+        let mut cmd = Command::new(&self.exe);
+        cmd.args(&args)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .context("spawning 7z for streaming")?;
+            .stderr(Stdio::piped());
+        crate::utilities::hide_console(&mut cmd);
+        let mut child = cmd.spawn().context("spawning 7z for streaming")?;
 
         let mut bytes_written = 0usize;
         if let Some(mut stdout) = child.stdout.take() {
