@@ -227,6 +227,12 @@ pub struct ArchivesSettingsState {
     pub checksum_algorithm: Signal<ChecksumAlgorithm>,
     pub verify_after_extract: Signal<bool>,
     pub verify_after_organize: Signal<bool>,
+    /// App-wide default for what the pipeline executor does when a predicted
+    /// output path already exists (per-pipeline overrides still win).
+    pub default_collision_policy: Signal<arclain_core::OutputCollisionPolicy>,
+    /// Lazily loaded flag — `false` until the first render reads the stored
+    /// value from `app_config`.
+    pub collision_policy_loaded: Signal<bool>,
 }
 
 impl Default for ArchivesSettingsState {
@@ -238,6 +244,8 @@ impl Default for ArchivesSettingsState {
             checksum_algorithm: Signal::new(ChecksumAlgorithm::default()),
             verify_after_extract: Signal::new(false),
             verify_after_organize: Signal::new(false),
+            default_collision_policy: Signal::new(arclain_core::OutputCollisionPolicy::Smart),
+            collision_policy_loaded: Signal::new(false),
         }
     }
 }

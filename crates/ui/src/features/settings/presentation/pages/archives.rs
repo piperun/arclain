@@ -2,6 +2,7 @@
 //!
 //! Contains settings for extraction, compression, and integrity verification.
 
+use arclain_core::{OutputCollisionPolicy, COLLISION_POLICY_CONFIG_KEY};
 use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ThemedDropdown, ToggleSwitch};
 use crate::features::settings::types::{
     ArchivesSettingsState, ChecksumAlgorithm, ChecksumMode, SettingsAction,
@@ -15,8 +16,21 @@ pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut ArchivesSettingsState,
+    config_service: Option<&arclain_core::services::ConfigService>,
 ) -> Option<SettingsAction> {
     let mut action = None;
+
+    // One-shot: hydrate the collision policy from app_config on first render.
+    if !*state.collision_policy_loaded.read() {
+        if let Some(svc) = config_service {
+            if let Ok(Some(raw)) = svc.get(COLLISION_POLICY_CONFIG_KEY) {
+                if let Some(policy) = OutputCollisionPolicy::from_settings_str(&raw) {
+                    *state.default_collision_policy.write() = policy;
+                }
+            }
+        }
+        *state.collision_policy_loaded.write() = true;
+    }
 
     Form::new().show(ui, theme, |ui| {
         // Section: Extraction
@@ -76,6 +90,64 @@ pub fn render(
                         .color(colors.on_surface_variant)
                         .italics(),
                     );
+                }
+            })
+            .show(ui, &theme.colors);
+
+        // Section: Pipeline
+        SettingsGroup::new("Pipeline")
+            .content(|ui, colors| {
+                ui.label(
+                    egui::RichText::new(
+                        "Default behavior when a batch pipeline's output path already exists. \
+                         Individual pipelines can override this via the Process page."
+                    )
+                    .size(12.0)
+                    .color(colors.on_surface_variant),
+                );
+                ui.add_space(8.0);
+
+                ui.label(
+                    egui::RichText::new("If output exists")
+                        .size(12.0)
+                        .strong()
+                        .color(colors.on_surface),
+                );
+                ui.add_space(4.0);
+
+                let current = *state.default_collision_policy.read();
+                let mut next = current;
+                ThemedDropdown::new("settings_default_collision_policy", current.display_name())
+                    .with_theme_colors(colors)
+                    .width(240.0)
+                    .show_ui(ui, |ui| {
+                        for opt in [
+                            OutputCollisionPolicy::Smart,
+                            OutputCollisionPolicy::Skip,
+                            OutputCollisionPolicy::Overwrite,
+                            OutputCollisionPolicy::Fail,
+                        ] {
+                            if ui
+                                .selectable_label(current == opt, opt.display_name())
+                                .clicked()
+                            {
+                                next = opt;
+                            }
+                        }
+                    });
+
+                if next != current {
+                    *state.default_collision_policy.write() = next;
+                    if let Some(svc) = config_service {
+                        if let Err(e) =
+                            svc.set(COLLISION_POLICY_CONFIG_KEY, next.to_settings_str())
+                        {
+                            tracing::error!(
+                                "[settings] Failed to persist collision policy: {}",
+                                e
+                            );
+                        }
+                    }
                 }
             })
             .show(ui, &theme.colors);
