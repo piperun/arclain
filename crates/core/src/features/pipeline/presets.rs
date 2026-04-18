@@ -30,6 +30,7 @@ pub fn builtin_presets() -> Vec<SavedPreset> {
                 steps: vec![
                     PipelineStep::Flatten {
                         strip_common_prefix: true,
+                        max_depth: 0, // recursive — mod packs often have nested .rar → .zip wrappers
                     },
                     PipelineStep::Convert {
                         format: ConvertFormat::Zip,

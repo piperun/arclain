@@ -74,11 +74,17 @@ pub fn preview_pipeline(pipeline: &Pipeline) -> PipelinePreview {
             match step {
                 PipelineStep::Flatten {
                     strip_common_prefix,
+                    max_depth,
                 } => {
-                    entry.operations.push(if *strip_common_prefix {
-                        "Flatten nested archives (strip common prefix)".to_string()
+                    let base = if *strip_common_prefix {
+                        "Flatten nested archives (strip common prefix)"
                     } else {
-                        "Flatten nested archives".to_string()
+                        "Flatten nested archives"
+                    };
+                    entry.operations.push(match max_depth {
+                        0 => format!("{} (recursive)", base),
+                        1 => base.to_string(),
+                        n => format!("{} (up to {} passes)", base, n),
                     });
                 }
                 PipelineStep::Organize { rule_id } => {
@@ -165,6 +171,7 @@ mod tests {
             steps: vec![
                 PipelineStep::Flatten {
                     strip_common_prefix: true,
+                    max_depth: 1,
                 },
                 PipelineStep::Convert {
                     format: ConvertFormat::Zip,
