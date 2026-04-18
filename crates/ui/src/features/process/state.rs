@@ -13,6 +13,10 @@ pub struct ProcessPageState {
     pub presets: Vec<SavedPreset>,
     pub active_preset_name: Option<String>,
     pub presets_path: Option<std::path::PathBuf>,
+    /// Count of interrupted pipeline runs detected at app startup. Shown as
+    /// a banner until the user dismisses it. `None` = not yet queried.
+    pub interrupted_run_count: Option<usize>,
+    pub interrupted_banner_dismissed: bool,
 }
 
 impl ProcessPageState {
@@ -48,5 +52,25 @@ impl ProcessPageState {
             self.preview = arclain_core::preview_pipeline(&self.pipeline);
             self.preview_dirty = false;
         }
+    }
+
+    /// Lazily load the interrupted-run count from the DB on first access.
+    /// The count surfaces a banner until the user dismisses it (session-local).
+    pub fn ensure_interrupted_count(
+        &mut self,
+        config_db: Option<&std::sync::Arc<arclain_db::SqliteDb>>,
+    ) {
+        if self.interrupted_run_count.is_some() {
+            return;
+        }
+        let count = match config_db {
+            Some(db) => db
+                .with_connection(|conn| {
+                    Ok(arclain_db::list_interrupted_since(conn, 0)?.len())
+                })
+                .unwrap_or(0),
+            None => 0,
+        };
+        self.interrupted_run_count = Some(count);
     }
 }

@@ -32,6 +32,7 @@ pub fn spawn_run(
                 organization_service: services.organization_service.clone(),
                 library_service: services.library_service.clone(),
                 backend_for: Arc::new(backend_for),
+                config_db: services.config_db.clone(),
             };
 
             let result = execute_pipeline(
@@ -58,16 +59,23 @@ pub fn spawn_run(
                         PipelineProgress::FileComplete { .. } => {
                             s.files_done += 1;
                         }
+                        PipelineProgress::FileSkipped { .. } => {
+                            s.files_skipped += 1;
+                        }
                         PipelineProgress::FileFailed { .. } => {
                             s.files_failed += 1;
                         }
-                        PipelineProgress::AllComplete { succeeded, failed } => {
+                        PipelineProgress::AllComplete { succeeded, skipped, failed } => {
                             s.is_running = false;
                             s.completed = true;
-                            s.summary = Some(format!(
-                                "Done: {} succeeded, {} failed",
-                                succeeded, failed
-                            ));
+                            s.summary = Some(if skipped > 0 {
+                                format!(
+                                    "Done: {} succeeded, {} skipped (already done), {} failed",
+                                    succeeded, skipped, failed
+                                )
+                            } else {
+                                format!("Done: {} succeeded, {} failed", succeeded, failed)
+                            });
                         }
                     }
                     signal_for_blocking.set(s);

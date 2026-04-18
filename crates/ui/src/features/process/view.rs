@@ -12,12 +12,45 @@ use eframe::egui;
 
 pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPageState) {
     state.refresh_preview();
+    state.ensure_interrupted_count(shared.services.config_db.as_ref());
 
     // Sync is_running from the signal
     let run_state = shared.signals().process_run.get();
     state.is_running = run_state.is_running;
     if run_state.completed && state.last_result_summary.as_deref() != run_state.summary.as_deref() {
         state.last_result_summary = run_state.summary.clone();
+    }
+
+    // Non-blocking banner: previous runs interrupted (process killed mid-pipeline).
+    let show_interrupted_banner = !state.interrupted_banner_dismissed
+        && state.interrupted_run_count.map(|n| n > 0).unwrap_or(false);
+    if show_interrupted_banner {
+        egui::TopBottomPanel::top("process_interrupted_banner").show(ctx, |ui| {
+            ui.add_space(4.0);
+            let count = state.interrupted_run_count.unwrap_or(0);
+            let banner_text = format!(
+                "{} {} pipeline run(s) were interrupted in a previous session.",
+                egui_phosphor::regular::WARNING,
+                count
+            );
+            ui.horizontal(|ui| {
+                Text::new(&banner_text)
+                    .color(shared.theme.colors.error)
+                    .show(ui);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add(
+                            TextButton::new("Dismiss", ButtonSize::Small)
+                                .with_theme_colors(&shared.theme.colors),
+                        )
+                        .clicked()
+                    {
+                        state.interrupted_banner_dismissed = true;
+                    }
+                });
+            });
+            ui.add_space(4.0);
+        });
     }
 
     egui::TopBottomPanel::top("process_preset_bar").show(ctx, |ui| {
