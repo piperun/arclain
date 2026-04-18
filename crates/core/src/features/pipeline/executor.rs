@@ -1,9 +1,9 @@
 //! Blocking pipeline executor — runs a `Pipeline` against each input file.
 
 use super::context::PipelineContext;
-use super::hashing::hash_file_blake3;
+use super::hashing::hash_file_blake3_with_progress;
 use super::types::{
-    OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep,
+    OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep,
 };
 use anyhow::{Context, Result};
 use arclain_db::{pipeline_output_kind, NewPipelineRun};
@@ -136,15 +136,29 @@ fn run_one(
     // Hash the input and pipeline config up-front. These are the dedup key
     // for `pipeline_runs` lookups and also form the basis for Smart-mode
     // "we already did this exact work" detection.
-    let (input_blake3, input_size) = hash_file_blake3(input)
+    //
+    // Hashing a multi-GB archive is the first visible delay in the pipeline,
+    // so emit a dedicated step + progress events so the UI doesn't look frozen.
+    on_progress(PipelineProgress::StepStart {
+        step_index: 0,
+        step_name: "Hashing input".to_string(),
+    });
+    let (input_blake3, input_size) =
+        hash_file_blake3_with_progress(input, |percent| {
+            on_progress(PipelineProgress::StepProgress { percent });
+        })
         .with_context(|| format!("hash input {:?}", input))?;
     let pipeline_hash = pipeline.config_hash();
 
-    // Predict the final archive path from the pipeline's last Convert step
-    // (or the implicit zip fallback).
+    // Predict the final output path. For Archive mode we use the last Convert
+    // step's extension (or zip as the fallback). For Folder mode the artifact
+    // is a directory named after the input's stem.
     let final_format = last_convert_format(&pipeline.steps)
         .unwrap_or(crate::features::conversion::ConvertFormat::Zip);
-    let predicted_output_path = pipeline.output.resolve(input, final_format.extension());
+    let predicted_output_path = match pipeline.output_artifact {
+        OutputArtifact::Archive => pipeline.output.resolve(input, final_format.extension()),
+        OutputArtifact::Folder => pipeline.output.resolve_folder(input),
+    };
 
     // Phase 3: Smart consults the DB. If we already completed this exact
     // input+pipeline AND the output is still on disk, skip. No matching row
@@ -385,23 +399,86 @@ fn run_one_inner(
         }
     }
 
-    // If no Convert step, default to zip so we always produce output
-    let format = final_format.unwrap_or(crate::features::conversion::ConvertFormat::Zip);
-    let output_path = pipeline.output.resolve(input, format.extension());
+    // Finalize. Two paths:
+    //   Archive → pack work_dir via 7z CLI (historical behavior)
+    //   Folder  → move work_dir to the output location, no repacking
+    match pipeline.output_artifact {
+        OutputArtifact::Archive => {
+            let format =
+                final_format.unwrap_or(crate::features::conversion::ConvertFormat::Zip);
+            let output_path = pipeline.output.resolve(input, format.extension());
 
-    if let Some(parent) = output_path.parent() {
-        std::fs::create_dir_all(parent).ok();
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+
+            on_progress(PipelineProgress::StepStart {
+                step_index: pipeline.steps.len() + 1,
+                step_name: format!("Packing .{}", format.extension()),
+            });
+
+            let cli = crate::backends::SevenZipCli::detect(None)
+                .context("7z CLI not found — required for pipeline conversion")?;
+            let handle = cli
+                .spawn_convert_with_progress(&work_dir, &output_path, format, final_compression)
+                .context("Failed to spawn 7z compression")?;
+            drain_progress(handle, on_progress)?;
+
+            Ok(output_path)
+        }
+        OutputArtifact::Folder => {
+            let output_path = pipeline.output.resolve_folder(input);
+
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+
+            on_progress(PipelineProgress::StepStart {
+                step_index: pipeline.steps.len() + 1,
+                step_name: "Writing folder output".to_string(),
+            });
+
+            // Rename the work dir into place when we can; on cross-device moves
+            // fall back to copy + delete. Either way, `output_path` is
+            // guaranteed not to exist here — the collision gate above either
+                // removed it (Overwrite) or skipped the whole run.
+            move_dir(&work_dir, &output_path)
+                .with_context(|| format!("Moving {:?} to {:?}", work_dir, output_path))?;
+            on_progress(PipelineProgress::StepProgress { percent: 100 });
+
+            Ok(output_path)
+        }
     }
+}
 
-    let cli = crate::backends::SevenZipCli::detect(None)
-        .context("7z CLI not found — required for pipeline conversion")?;
-    let handle = cli
-        .spawn_convert_with_progress(&work_dir, &output_path, format, final_compression)
-        .context("Failed to spawn 7z compression")?;
+/// Move a directory tree. Falls back to recursive copy + delete if `rename`
+/// fails (typically because the destination is on a different filesystem).
+fn move_dir(src: &Path, dest: &Path) -> Result<()> {
+    match std::fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            copy_dir_recursive(src, dest)?;
+            std::fs::remove_dir_all(src).ok();
+            Ok(())
+        }
+    }
+}
 
-    drain_progress(handle, on_progress)?;
-
-    Ok(output_path)
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)
+        .with_context(|| format!("Creating {:?}", dest))?;
+    for entry in std::fs::read_dir(src).with_context(|| format!("Reading {:?}", src))? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)
+                .with_context(|| format!("Copying {:?} to {:?}", from, to))?;
+        }
+    }
+    Ok(())
 }
 
 fn drain_progress(
