@@ -86,10 +86,178 @@ fn preview_flags_empty_folder() {
 }
 
 #[test]
-#[ignore = "requires 7z CLI + test fixture — run locally with: cargo test -- --ignored"]
-fn executor_end_to_end_convert() {
-    // Build a small zip via the zip crate, run pipeline to convert to 7z,
-    // verify output exists. Skipped until we have a test fixture.
+#[ignore = "requires 7z CLI on PATH — run with: cargo test -- --ignored"]
+fn executor_end_to_end_idempotent_rerun() {
+    // Full end-to-end proof of Phase 3 idempotency:
+    // 1. Build a synthetic zip via the `zip` crate (no fixture checkin).
+    // 2. Convert it to .7z via the real pipeline → expect Completed, DB row.
+    // 3. Re-run same pipeline on same input → expect FileSkipped, no work done.
+    // 4. Run a DIFFERENT pipeline (output to .zip instead) → Smart falls back to Fail
+    //    because the predicted .zip doesn't exist yet, so it just runs again.
+    // 5. Change collision policy to Overwrite and re-run step 2 → Completed (overwritten).
+    use arclain_core::backends::BackendSelector;
+    use std::io::Write;
+
+    let tmp = tempfile::tempdir().unwrap();
+    // Keep input and output directories separate so the zip→zip path doesn't
+    // collide with the input file itself.
+    let input_dir = tmp.path().join("in");
+    let output_dir = tmp.path().join("out");
+    std::fs::create_dir_all(&input_dir).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let input = input_dir.join("test_mod.zip");
+
+    // 1. Build the source archive.
+    {
+        let file = std::fs::File::create(&input).unwrap();
+        let mut zw = zip::ZipWriter::new(file);
+        zw.start_file("a.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        zw.write_all(b"aaaa").unwrap();
+        zw.start_file("nested/b.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zw.write_all(b"bbbb").unwrap();
+        zw.finish().unwrap();
+    }
+    let input_bytes_before = std::fs::read(&input).unwrap();
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::SevenZ,
+            compression: CompressionLevel::Fast,
+            password: None,
+        }],
+        output: PipelineOutput::NewFolder(output_dir.clone()),
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+    };
+
+    let db = open_pipeline_runs_db();
+    let selector = Arc::new(BackendSelector::default());
+    let selector_cloned = selector.clone();
+    let backend_for = move |p: &std::path::Path| selector_cloned.select(p);
+
+    let ctx = PipelineContext {
+        organization_service: None,
+        library_service: None,
+        backend_for: Arc::new(backend_for),
+        config_db: Some(db.clone()),
+        default_collision_policy: None,
+    };
+
+    // 2. First run — should produce output and log one in_progress→completed row.
+    let mut events_first: Vec<String> = Vec::new();
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
+        events_first.push(format!("{:?}", ev));
+    })
+    .expect("first run should succeed");
+
+    let expected_output = output_dir.join("test_mod.7z");
+    assert!(
+        expected_output.exists(),
+        "first run should produce {}",
+        expected_output.display()
+    );
+
+    let run_count: i64 = db
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE status = 'completed'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(run_count, 1, "exactly one completed row after first run");
+
+    // Capture output bytes + mtime so we can prove the second run doesn't touch it.
+    let output_bytes_before = std::fs::read(&expected_output).unwrap();
+    let mtime_before = std::fs::metadata(&expected_output)
+        .unwrap()
+        .modified()
+        .unwrap();
+
+    // 3. Second run — Smart should skip via DB match.
+    let mut skipped: Vec<String> = Vec::new();
+    let mut completed: Vec<String> = Vec::new();
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
+        use arclain_core::PipelineProgress::*;
+        match ev {
+            FileSkipped { reason, .. } => skipped.push(reason),
+            FileComplete { output } => completed.push(output.display().to_string()),
+            _ => {}
+        }
+    })
+    .expect("second run should succeed");
+
+    assert_eq!(skipped.len(), 1, "second run should emit exactly one FileSkipped");
+    assert!(skipped[0].contains("already processed"));
+    assert!(completed.is_empty(), "no new FileComplete on idempotent re-run");
+
+    // Output must be byte-identical + mtime unchanged (proof it wasn't rewritten).
+    let output_bytes_after = std::fs::read(&expected_output).unwrap();
+    assert_eq!(output_bytes_before, output_bytes_after, "output bytes drifted");
+    let mtime_after = std::fs::metadata(&expected_output)
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert_eq!(mtime_before, mtime_after, "mtime advanced — work was redone");
+
+    // Input also untouched.
+    assert_eq!(input_bytes_before, std::fs::read(&input).unwrap());
+
+    // 4. Different pipeline (Zip output) → no existing .zip, no DB match → runs fresh.
+    let zip_pipeline = Pipeline {
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Fast,
+            password: None,
+        }],
+        ..pipeline.clone()
+    };
+    let mut zip_events: Vec<String> = Vec::new();
+    execute_pipeline(&zip_pipeline, tmp.path(), &ctx, |ev| {
+        zip_events.push(format!("{:?}", ev));
+    })
+    .expect("different-format run should succeed");
+    let zip_out = output_dir.join("test_mod.zip");
+    assert!(
+        zip_out.exists(),
+        "zip run didn't produce output. Events: {:#?}",
+        zip_events
+    );
+
+    let completed_count: i64 = db
+        .with_connection(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE status = 'completed'",
+                [],
+                |r| r.get(0),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(
+        completed_count, 2,
+        "zip run should have added a second completed row. Events: {:#?}",
+        zip_events
+    );
+
+    // 5. Overwrite policy — forces re-work even though the DB has a match.
+    let overwrite_pipeline = Pipeline {
+        collision_policy: Some(OutputCollisionPolicy::Overwrite),
+        ..pipeline.clone()
+    };
+    // Sleep briefly so mtime can differ
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    execute_pipeline(&overwrite_pipeline, tmp.path(), &ctx, |_| {})
+        .expect("overwrite run should succeed");
+    let mtime_overwritten = std::fs::metadata(&expected_output)
+        .unwrap()
+        .modified()
+        .unwrap();
+    assert!(
+        mtime_overwritten > mtime_before,
+        "Overwrite policy should have rewritten the output"
+    );
 }
 
 /// Minimal pipeline fixture: Convert-only, input fake paths, no Flatten/Organize.
@@ -431,6 +599,7 @@ fn smart_rerun_with_matching_db_row_skips_work() {
             )
         }),
         config_db: Some(db.clone()),
+        default_collision_policy: None,
     };
 
     let mut skipped: Vec<(PathBuf, String)> = Vec::new();
@@ -504,6 +673,7 @@ fn smart_rerun_with_different_pipeline_reruns() {
         library_service: None,
         backend_for: Arc::new(|_| panic!("should not extract — Smart with no match must Fail")),
         config_db: Some(db.clone()),
+        default_collision_policy: None,
     };
 
     let mut failures: Vec<String> = Vec::new();
@@ -579,6 +749,7 @@ fn smart_rerun_reruns_when_output_was_deleted() {
         library_service: None,
         backend_for: Arc::new(|_| anyhow::bail!("no real backend in this test")),
         config_db: Some(db.clone()),
+        default_collision_policy: None,
     };
 
     let mut failures: Vec<String> = Vec::new();
@@ -627,6 +798,7 @@ fn db_records_run_with_in_progress_then_completed() {
         library_service: None,
         backend_for: Arc::new(|_| panic!("unreachable")),
         config_db: Some(db.clone()),
+        default_collision_policy: None,
     };
 
     execute_pipeline(&pipeline, tmp.path(), &ctx, |_| {}).unwrap();
