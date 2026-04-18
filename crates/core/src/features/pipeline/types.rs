@@ -7,7 +7,17 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PipelineStep {
     /// Unwrap inner archives as sibling folders.
-    Flatten { strip_common_prefix: bool },
+    ///
+    /// `max_depth` controls how many times the extractor re-scans for archives
+    /// that appeared after a previous iteration unpacked an outer archive into
+    /// a subtree. A pathological input like `.rar → folder → .zip → folder → .7z`
+    /// needs more than one pass. `1` = one pass (original behavior), `0` = run
+    /// until the tree stabilizes (still bounded by an internal safety cap).
+    Flatten {
+        strip_common_prefix: bool,
+        #[serde(default = "default_flatten_max_depth")]
+        max_depth: u32,
+    },
     /// Apply an organization rule by its database id.
     Organize { rule_id: i64 },
     /// Convert the final layout to a target format.
@@ -16,6 +26,11 @@ pub enum PipelineStep {
         compression: CompressionLevel,
         password: Option<String>,
     },
+}
+
+/// Preserve the historical single-pass behavior when deserializing old presets.
+fn default_flatten_max_depth() -> u32 {
+    1
 }
 
 impl PipelineStep {
@@ -112,11 +127,38 @@ mod tests {
     fn step_display_names() {
         assert_eq!(
             PipelineStep::Flatten {
-                strip_common_prefix: false
+                strip_common_prefix: false,
+                max_depth: 1,
             }
             .display_name(),
             "Flatten nested archives"
         );
+    }
+
+    #[test]
+    fn flatten_deserializes_without_max_depth() {
+        // Old presets written before max_depth existed should still load
+        // with the historical single-pass default.
+        let json = r#"{"Flatten":{"strip_common_prefix":true}}"#;
+        let step: PipelineStep = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            step,
+            PipelineStep::Flatten {
+                strip_common_prefix: true,
+                max_depth: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn flatten_roundtrips_with_max_depth() {
+        let original = PipelineStep::Flatten {
+            strip_common_prefix: false,
+            max_depth: 5,
+        };
+        let json = serde_json::to_string(&original).unwrap();
+        let parsed: PipelineStep = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, original);
     }
 
     #[test]

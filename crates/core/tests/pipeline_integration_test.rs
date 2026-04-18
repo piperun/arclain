@@ -23,6 +23,7 @@ fn preview_for_silver_lining_style_input() {
         steps: vec![
             PipelineStep::Flatten {
                 strip_common_prefix: true,
+                max_depth: 1,
             },
             PipelineStep::Convert {
                 format: ConvertFormat::Zip,
