@@ -1,7 +1,9 @@
 //! Blocking pipeline executor — runs a `Pipeline` against each input file.
 
 use super::context::PipelineContext;
-use super::types::{Pipeline, PipelineInput, PipelineStep};
+use super::types::{
+    OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep,
+};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -75,6 +77,17 @@ pub fn execute_pipeline(
     Ok(())
 }
 
+/// Walk the step list for the last Convert step's format so we can predict
+/// the final output extension before extraction begins.
+fn last_convert_format(steps: &[PipelineStep]) -> Option<crate::features::conversion::ConvertFormat> {
+    for step in steps.iter().rev() {
+        if let PipelineStep::Convert { format, .. } = step {
+            return Some(format.clone());
+        }
+    }
+    None
+}
+
 fn resolve_inputs(input: &Option<PipelineInput>) -> Result<Vec<PathBuf>> {
     match input {
         None => anyhow::bail!("No input provided"),
@@ -92,6 +105,52 @@ fn run_one(
     ctx: &PipelineContext,
     on_progress: &mut impl FnMut(PipelineProgress),
 ) -> Result<PathBuf> {
+    // Pre-flight collision check. Predict the final archive path from the
+    // pipeline's last Convert step (or the implicit zip fallback) and, if it
+    // already exists, apply the effective collision policy *before* we spend
+    // time extracting + processing — skipping a known duplicate is free.
+    let final_format = last_convert_format(&pipeline.steps)
+        .unwrap_or(crate::features::conversion::ConvertFormat::Zip);
+    let predicted_output_path = pipeline.output.resolve(input, final_format.extension());
+
+    if predicted_output_path.exists() {
+        let policy = pipeline.effective_collision_policy(OutputCollisionPolicy::Smart);
+        match policy {
+            OutputCollisionPolicy::Skip => {
+                tracing::info!(
+                    "[pipeline] Skipping {}: output exists at {} (policy=Skip)",
+                    input.display(),
+                    predicted_output_path.display()
+                );
+                return Ok(predicted_output_path);
+            }
+            OutputCollisionPolicy::Overwrite => {
+                tracing::info!(
+                    "[pipeline] Overwriting {} (policy=Overwrite)",
+                    predicted_output_path.display()
+                );
+                if predicted_output_path.is_dir() {
+                    std::fs::remove_dir_all(&predicted_output_path).with_context(|| {
+                        format!("Remove existing folder {:?}", predicted_output_path)
+                    })?;
+                } else {
+                    std::fs::remove_file(&predicted_output_path).with_context(|| {
+                        format!("Remove existing file {:?}", predicted_output_path)
+                    })?;
+                }
+            }
+            OutputCollisionPolicy::Fail | OutputCollisionPolicy::Smart => {
+                // Smart falls back to Fail until Phase 3 wires the DB lookup.
+                anyhow::bail!(
+                    "Output already exists at {} (collision policy: {}). \
+                     Set policy to Overwrite or Skip to proceed.",
+                    predicted_output_path.display(),
+                    policy.display_name()
+                );
+            }
+        }
+    }
+
     let work_dir = temp_root.join(format!(
         "arclain_pipeline_{}_{}",
         std::process::id(),

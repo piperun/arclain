@@ -1,6 +1,6 @@
 //! Pure pipeline preview — computes what the pipeline WILL do without running it.
 
-use super::types::{Pipeline, PipelineInput, PipelineStep};
+use super::types::{OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep};
 use crate::features::conversion::ConvertFormat;
 use std::path::PathBuf;
 
@@ -107,9 +107,19 @@ pub fn preview_pipeline(pipeline: &Pipeline) -> PipelinePreview {
 
         if let Some(ref out) = entry.expected_output {
             if out.exists() && out != &input {
-                entry
-                    .warnings
-                    .push(format!("Output already exists: {:?}", out));
+                let policy = pipeline.effective_collision_policy(OutputCollisionPolicy::Smart);
+                let outcome = match policy {
+                    OutputCollisionPolicy::Skip => "will be skipped".to_string(),
+                    OutputCollisionPolicy::Overwrite => "will be overwritten".to_string(),
+                    OutputCollisionPolicy::Fail | OutputCollisionPolicy::Smart => {
+                        "will fail this file (change policy to Overwrite or Skip)".to_string()
+                    }
+                };
+                entry.warnings.push(format!(
+                    "Output already exists — {}: {}",
+                    outcome,
+                    out.display()
+                ));
             }
         }
 
@@ -138,6 +148,7 @@ mod tests {
             input: Some(PipelineInput::Files(vec![PathBuf::from("/tmp/a.rar")])),
             steps: vec![],
             output: PipelineOutput::SameFolder,
+            collision_policy: None,
         };
         let preview = preview_pipeline(&p);
         assert!(preview
@@ -156,6 +167,7 @@ mod tests {
                 password: None,
             }],
             output: PipelineOutput::SameFolder,
+            collision_policy: None,
         };
         let preview = preview_pipeline(&p);
         assert_eq!(preview.entries.len(), 1);
@@ -180,6 +192,7 @@ mod tests {
                 },
             ],
             output: PipelineOutput::SameFolder,
+            collision_policy: None,
         };
         let preview = preview_pipeline(&p);
         let entry = &preview.entries[0];
@@ -198,6 +211,7 @@ mod tests {
                 password: None,
             }],
             output: PipelineOutput::NewFolder(PathBuf::from("/dst")),
+            collision_policy: None,
         };
         let preview = preview_pipeline(&p);
         assert_eq!(

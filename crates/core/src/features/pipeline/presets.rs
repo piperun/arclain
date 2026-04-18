@@ -39,6 +39,7 @@ pub fn builtin_presets() -> Vec<SavedPreset> {
                     },
                 ],
                 output: PipelineOutput::SameFolder,
+                collision_policy: None,
             },
         },
         SavedPreset {
@@ -51,6 +52,7 @@ pub fn builtin_presets() -> Vec<SavedPreset> {
                     password: None,
                 }],
                 output: PipelineOutput::SameFolder,
+                collision_policy: None,
             },
         },
     ]
