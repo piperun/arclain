@@ -13,4 +13,7 @@ pub use presets::{
     builtin_presets, default_presets_path, load_presets, save_presets, PresetsFile, SavedPreset,
 };
 pub use preview::{preview_pipeline, PipelinePreview, PreviewEntry};
-pub use types::{Pipeline, PipelineInput, PipelineOutput, PipelineStep, ProcessPreset};
+pub use types::{
+    OutputCollisionPolicy, OutputIdentity, OutputKind, Pipeline, PipelineInput, PipelineOutput,
+    PipelineStep, ProcessPreset,
+};
