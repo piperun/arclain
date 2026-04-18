@@ -23,6 +23,7 @@ crc32fast = "1"
 zeroize = "1.8.1"
 base64 = "0.22"
 sha2 = "0.10"
+blake3 = "1.8"
 arclain_db = { path = "../db" }
 arclain_checksum = { path = "../checksum" }
 arclain-network = { path = "../network" }

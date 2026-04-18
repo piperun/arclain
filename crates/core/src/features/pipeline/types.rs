@@ -143,6 +143,33 @@ impl Pipeline {
     ) -> OutputCollisionPolicy {
         self.collision_policy.unwrap_or(default)
     }
+
+    /// Blake3 hash of the pipeline's configuration (hex-encoded).
+    ///
+    /// Excludes `input` so two runs of the same pipeline against different
+    /// archives share the same `pipeline_hash`. Together with the input's
+    /// content hash it forms the dedup key for `pipeline_runs`.
+    ///
+    /// Stability: relies on serde_json's default struct-field ordering, which
+    /// is source order. All the hashed types are structs/enums (no HashMaps),
+    /// so the byte output is deterministic across runs as long as the type
+    /// definitions don't change. If a type gains a new field, hashes drift
+    /// and every previous run re-runs — which is the correct behavior.
+    pub fn config_hash(&self) -> String {
+        #[derive(serde::Serialize)]
+        struct Hashable<'a> {
+            steps: &'a [PipelineStep],
+            output: &'a PipelineOutput,
+            collision_policy: &'a Option<OutputCollisionPolicy>,
+        }
+        let hashable = Hashable {
+            steps: &self.steps,
+            output: &self.output,
+            collision_policy: &self.collision_policy,
+        };
+        let bytes = serde_json::to_vec(&hashable).unwrap_or_else(|_| Vec::new());
+        blake3::hash(&bytes).to_hex().to_string()
+    }
 }
 
 /// What happens when a producing step is about to write to a path that

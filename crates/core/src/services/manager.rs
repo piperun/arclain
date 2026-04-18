@@ -6,7 +6,7 @@ use crate::services::{
     CacheService, ConfigService, LibraryService, OrganizationService, UiService,
 };
 use anyhow::Result;
-use arclain_db::DbPaths;
+use arclain_db::{DbPaths, SqliteDb};
 use arclain_network::features::gameta_client::{GametaClient, ServerConfig};
 use arclain_network::features::whitelist::DomainWhitelist;
 use arclain_network::AsyncHttpClient;
@@ -24,6 +24,10 @@ pub struct Services {
 
     // Database Paths and Connection
     pub db_paths: Option<DbPaths>,
+    /// Shared handle to the config SQLite database, used by the pipeline
+    /// executor for idempotent-run dedup and crash recovery via
+    /// `arclain_db::pipeline_runs`.
+    pub config_db: Option<Arc<SqliteDb>>,
 
     // Core Domain Services
     pub library_service: Option<Arc<LibraryService>>,
@@ -60,6 +64,7 @@ impl Services {
             async_http_client,
             domain_whitelist,
             db_paths: None,
+            config_db: None,
             library_service: None,
             organization_service: None,
             config_service: None,
@@ -76,6 +81,18 @@ impl Services {
     /// Initialize database-dependent services
     pub fn init_db_services(&mut self, dbs: &arclain_db::ConfigDbs, paths: &DbPaths) -> Result<()> {
         self.db_paths = Some(paths.clone());
+        self.config_db = Some(Arc::new(dbs.config.clone()));
+
+        // Crash recovery: any `in_progress` pipeline_runs row older than an
+        // hour can only exist because a previous arclain process died mid-run.
+        // Flip such rows to `failed` with `error = "interrupted"` so the UI
+        // can surface them and nothing downstream thinks the work is alive.
+        const STALE_THRESHOLD_SECS: i64 = 3600;
+        if let Err(e) = dbs.config.with_connection(|conn| {
+            Ok(arclain_db::flag_stale_in_progress(conn, STALE_THRESHOLD_SECS)?)
+        }) {
+            tracing::warn!("[services] Failed to sweep stale pipeline runs: {}", e);
+        }
 
         // Create core services
         let config_svc = Arc::new(ConfigService::from_connection(

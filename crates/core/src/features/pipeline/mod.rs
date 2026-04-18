@@ -3,6 +3,7 @@
 pub mod apply_plan;
 pub mod context;
 pub mod executor;
+pub mod hashing;
 pub mod presets;
 pub mod preview;
 pub mod types;
