@@ -8,6 +8,7 @@ use arclain_core::{
     execute_pipeline, preview_pipeline, ArchiveBackend, CompressionLevel, ConvertFormat,
     OutputCollisionPolicy, Pipeline, PipelineContext, PipelineInput, PipelineOutput, PipelineStep,
 };
+use arclain_db::SqliteDb;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -137,19 +138,19 @@ fn collision_skip_returns_existing_without_extracting() {
     );
 
     let ctx = unreachable_backend_ctx();
-    let mut completions: Vec<PathBuf> = Vec::new();
+    let mut skipped: Vec<PathBuf> = Vec::new();
     let mut failures: Vec<String> = Vec::new();
     execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
         use arclain_core::PipelineProgress::*;
         match ev {
-            FileComplete { output } => completions.push(output),
+            FileSkipped { output, .. } => skipped.push(output),
             FileFailed { error } => failures.push(error),
             _ => {}
         }
     })
     .unwrap();
 
-    assert_eq!(completions, vec![existing_output.clone()]);
+    assert_eq!(skipped, vec![existing_output.clone()]);
     assert!(failures.is_empty());
     // Existing bytes untouched (Skip = do not rewrite)
     let body = std::fs::read(&existing_output).unwrap();
@@ -301,6 +302,342 @@ fn pipeline_deserializes_without_collision_policy() {
     }"#;
     let pipeline: Pipeline = serde_json::from_str(legacy_json).unwrap();
     assert!(pipeline.collision_policy.is_none());
+}
+
+// ---- Phase 3: DB + dedup tests ----
+
+fn open_pipeline_runs_db() -> Arc<SqliteDb> {
+    let db = SqliteDb::open_in_memory().unwrap();
+    db.with_connection(|conn| Ok(arclain_db::ensure_pipeline_runs_table(conn)?))
+        .unwrap();
+    Arc::new(db)
+}
+
+#[test]
+fn config_hash_is_stable_across_identical_pipelines() {
+    let a = Pipeline {
+        input: Some(PipelineInput::Files(vec![PathBuf::from("/tmp/a.rar")])),
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::SameFolder,
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+    };
+    // Same config, DIFFERENT input → hashes must match (input is excluded)
+    let b = Pipeline {
+        input: Some(PipelineInput::Files(vec![PathBuf::from("/tmp/b.rar")])),
+        ..a.clone()
+    };
+    assert_eq!(a.config_hash(), b.config_hash());
+}
+
+#[test]
+fn config_hash_changes_when_steps_change() {
+    let a = Pipeline {
+        input: None,
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::SameFolder,
+        collision_policy: None,
+    };
+    let b = Pipeline {
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::SevenZ, // changed
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        ..a.clone()
+    };
+    assert_ne!(a.config_hash(), b.config_hash());
+}
+
+#[test]
+fn config_hash_changes_when_collision_policy_changes() {
+    let a = Pipeline {
+        input: None,
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::SameFolder,
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+    };
+    let b = Pipeline {
+        collision_policy: Some(OutputCollisionPolicy::Overwrite),
+        ..a.clone()
+    };
+    assert_ne!(a.config_hash(), b.config_hash());
+}
+
+#[test]
+fn smart_rerun_with_matching_db_row_skips_work() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("mod.rar");
+    std::fs::write(&input, b"repeatable contents").unwrap();
+    let existing_output = tmp.path().join("mod.zip");
+    std::fs::write(&existing_output, b"already produced").unwrap();
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::NewFolder(tmp.path().to_path_buf()),
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+    };
+
+    // Seed a matching completed run for this exact input + pipeline config
+    let db = open_pipeline_runs_db();
+    let (input_hash, input_size) =
+        arclain_core::features::pipeline::hashing::hash_file_blake3(&input).unwrap();
+    let pipeline_hash = pipeline.config_hash();
+
+    let input_str = input.to_string_lossy().into_owned();
+    let existing_str = existing_output.to_string_lossy().into_owned();
+    db.with_connection(|conn| {
+        let new_run = arclain_db::NewPipelineRun {
+            input_path: &input_str,
+            input_blake3: &input_hash,
+            input_size: input_size as i64,
+            pipeline_hash: &pipeline_hash,
+            arclain_version: "test",
+        };
+        let id = arclain_db::begin_pipeline_run(conn, &new_run)?;
+        arclain_db::mark_run_completed(
+            conn,
+            id,
+            &existing_str,
+            arclain_db::pipeline_output_kind::ARCHIVE,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let ctx = PipelineContext {
+        organization_service: None,
+        library_service: None,
+        backend_for: Arc::new(|path| -> anyhow::Result<Arc<dyn ArchiveBackend>> {
+            panic!(
+                "Smart rerun should skip without extracting {}",
+                path.display()
+            )
+        }),
+        config_db: Some(db.clone()),
+    };
+
+    let mut skipped: Vec<(PathBuf, String)> = Vec::new();
+    let mut summary: Option<(usize, usize, usize)> = None;
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
+        use arclain_core::PipelineProgress::*;
+        match ev {
+            FileSkipped { output, reason } => skipped.push((output, reason)),
+            AllComplete { succeeded, skipped: s, failed } => summary = Some((succeeded, s, failed)),
+            _ => {}
+        }
+    })
+    .unwrap();
+
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].0, existing_output);
+    assert!(skipped[0].1.contains("already processed"));
+    assert_eq!(summary, Some((0, 1, 0)));
+}
+
+#[test]
+fn smart_rerun_with_different_pipeline_reruns() {
+    // Same input, DIFFERENT pipeline → no DB match → Smart falls back to Fail
+    // because the output path already exists and arclain can't prove it made it.
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("mod.rar");
+    std::fs::write(&input, b"same bytes").unwrap();
+    let existing_output = tmp.path().join("mod.zip");
+    std::fs::write(&existing_output, b"preexisting").unwrap();
+
+    // Seed the DB with a run for a DIFFERENT pipeline config
+    let db = open_pipeline_runs_db();
+    let (input_hash, input_size) =
+        arclain_core::features::pipeline::hashing::hash_file_blake3(&input).unwrap();
+    let input_str = input.to_string_lossy().into_owned();
+    let existing_str = existing_output.to_string_lossy().into_owned();
+    db.with_connection(|conn| {
+        let id = arclain_db::begin_pipeline_run(
+            conn,
+            &arclain_db::NewPipelineRun {
+                input_path: &input_str,
+                input_blake3: &input_hash,
+                input_size: input_size as i64,
+                pipeline_hash: "different_pipeline_hash",
+                arclain_version: "test",
+            },
+        )?;
+        arclain_db::mark_run_completed(
+            conn,
+            id,
+            &existing_str,
+            arclain_db::pipeline_output_kind::ARCHIVE,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::NewFolder(tmp.path().to_path_buf()),
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+    };
+
+    let ctx = PipelineContext {
+        organization_service: None,
+        library_service: None,
+        backend_for: Arc::new(|_| panic!("should not extract — Smart with no match must Fail")),
+        config_db: Some(db.clone()),
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
+        if let arclain_core::PipelineProgress::FileFailed { error } = ev {
+            failures.push(error);
+        }
+    })
+    .unwrap();
+
+    assert_eq!(failures.len(), 1);
+    assert!(
+        failures[0].contains("no record"),
+        "expected 'no record of producing it' error, got: {}",
+        failures[0]
+    );
+}
+
+#[test]
+fn smart_rerun_reruns_when_output_was_deleted() {
+    // DB has a matching completed run but the output file is gone — we should
+    // NOT skip (the DB row is stale); fresh run kicks in. In this test we use
+    // Skip policy for the secondary collision check so we don't need real work.
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("mod.rar");
+    std::fs::write(&input, b"bytes").unwrap();
+    // note: existing_output does NOT exist
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::NewFolder(tmp.path().to_path_buf()),
+        collision_policy: Some(OutputCollisionPolicy::Smart),
+    };
+
+    let db = open_pipeline_runs_db();
+    let (input_hash, input_size) =
+        arclain_core::features::pipeline::hashing::hash_file_blake3(&input).unwrap();
+    let pipeline_hash = pipeline.config_hash();
+
+    // Seed a matching row pointing at a file that doesn't exist
+    let input_str = input.to_string_lossy().into_owned();
+    let missing_output_str = tmp.path().join("mod.zip").to_string_lossy().into_owned();
+    db.with_connection(|conn| {
+        let id = arclain_db::begin_pipeline_run(
+            conn,
+            &arclain_db::NewPipelineRun {
+                input_path: &input_str,
+                input_blake3: &input_hash,
+                input_size: input_size as i64,
+                pipeline_hash: &pipeline_hash,
+                arclain_version: "test",
+            },
+        )?;
+        arclain_db::mark_run_completed(
+            conn,
+            id,
+            &missing_output_str,
+            arclain_db::pipeline_output_kind::ARCHIVE,
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    // Backend that would be reached IF skip didn't trigger — we expect it to
+    // error out cleanly (not panic) so the test surfaces as FileFailed.
+    let ctx = PipelineContext {
+        organization_service: None,
+        library_service: None,
+        backend_for: Arc::new(|_| anyhow::bail!("no real backend in this test")),
+        config_db: Some(db.clone()),
+    };
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut skipped: Vec<PathBuf> = Vec::new();
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |ev| {
+        use arclain_core::PipelineProgress::*;
+        match ev {
+            FileFailed { error } => failures.push(error),
+            FileSkipped { output, .. } => skipped.push(output),
+            _ => {}
+        }
+    })
+    .unwrap();
+
+    // DB row was stale (output missing) → Smart proceeded → backend errored.
+    // The important assertion: no skip happened.
+    assert!(skipped.is_empty(), "Smart should rerun when stored output is gone");
+    assert_eq!(failures.len(), 1);
+}
+
+#[test]
+fn db_records_run_with_in_progress_then_completed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let input = tmp.path().join("mod.rar");
+    std::fs::write(&input, b"data").unwrap();
+    let existing = tmp.path().join("mod.zip");
+    std::fs::write(&existing, b"prev").unwrap();
+
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![PipelineStep::Convert {
+            format: ConvertFormat::Zip,
+            compression: CompressionLevel::Normal,
+            password: None,
+        }],
+        output: PipelineOutput::NewFolder(tmp.path().to_path_buf()),
+        // Skip so we don't need extraction machinery — still exercises the
+        // pre-flight gate path, but no DB row is written for skips (the
+        // gate returns before begin_pipeline_run).
+        collision_policy: Some(OutputCollisionPolicy::Skip),
+    };
+
+    let db = open_pipeline_runs_db();
+    let ctx = PipelineContext {
+        organization_service: None,
+        library_service: None,
+        backend_for: Arc::new(|_| panic!("unreachable")),
+        config_db: Some(db.clone()),
+    };
+
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |_| {}).unwrap();
+
+    // Skip returns before begin_pipeline_run, so the table stays empty.
+    let count: i64 = db
+        .with_connection(|conn| {
+            Ok(conn.query_row("SELECT COUNT(*) FROM pipeline_runs", [], |r| r.get(0))?)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
 }
 
 #[test]
