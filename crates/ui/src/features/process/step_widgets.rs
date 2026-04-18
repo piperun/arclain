@@ -9,12 +9,29 @@ pub fn render_flatten_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool
     let mut changed = false;
     if let PipelineStep::Flatten {
         strip_common_prefix,
+        max_depth,
     } = step
     {
         if ui
             .checkbox(strip_common_prefix, "Strip common prefix")
             .changed()
         {
+            changed = true;
+        }
+
+        // Simple two-state UI: recursive (0 = until stable) vs single-pass (1).
+        // Presets can encode a specific cap via max_depth > 1; the UI preserves it
+        // by only flipping between 0 and 1 based on the toggle.
+        let mut recursive = *max_depth == 0;
+        let tooltip = "Keep unpacking archives that appear after the first pass \
+                       (e.g. outer .rar contains an inner .zip). Bounded by an \
+                       internal safety cap.";
+        if ui
+            .checkbox(&mut recursive, "Recursive (unpack nested archives)")
+            .on_hover_text(tooltip)
+            .changed()
+        {
+            *max_depth = if recursive { 0 } else { 1 };
             changed = true;
         }
     }
