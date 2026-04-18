@@ -424,11 +424,11 @@ def main() -> None:
 
     release_parser = sub.add_parser("release", help="Full release workflow")
     release_parser.add_argument(
-        "--skip-version-update", action="store_true",
+        "-v", "--skip-version-update", action="store_true",
         help="Skip the cocogitto version bump step",
     )
     release_parser.add_argument(
-        "--skip-tests", action="store_true",
+        "-t", "--skip-tests", action="store_true",
         help="Skip the test suite (use for hotfixes only)",
     )
 
