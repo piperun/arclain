@@ -4,6 +4,7 @@
 use crate::archive::ArchiveBackend;
 use crate::services::{LibraryService, OrganizationService};
 use anyhow::Result;
+use arclain_db::SqliteDb;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -13,6 +14,10 @@ pub struct PipelineContext {
     pub organization_service: Option<Arc<OrganizationService>>,
     pub library_service: Option<Arc<LibraryService>>,
     pub backend_for: Arc<dyn Fn(&Path) -> Result<Arc<dyn ArchiveBackend>> + Send + Sync>,
+    /// Config DB handle for recording pipeline runs (dedup + audit). `None`
+    /// disables persistence — the executor runs without consulting or writing
+    /// history. Tests default to `None`.
+    pub config_db: Option<Arc<SqliteDb>>,
 }
 
 impl PipelineContext {
@@ -25,6 +30,7 @@ impl PipelineContext {
             organization_service: None,
             library_service: None,
             backend_for: Arc::new(backend_for),
+            config_db: None,
         }
     }
 }

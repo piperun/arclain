@@ -1,11 +1,15 @@
 //! Blocking pipeline executor — runs a `Pipeline` against each input file.
 
 use super::context::PipelineContext;
+use super::hashing::hash_file_blake3;
 use super::types::{
     OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep,
 };
 use anyhow::{Context, Result};
+use arclain_db::{pipeline_output_kind, NewPipelineRun};
 use std::path::{Path, PathBuf};
+
+const ARCLAIN_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Progress event emitted by the executor.
 #[derive(Debug, Clone)]
@@ -25,13 +29,28 @@ pub enum PipelineProgress {
     FileComplete {
         output: PathBuf,
     },
+    /// Input skipped because the pipeline's collision/dedup gate matched an
+    /// existing output. `reason` describes why (e.g. "already processed",
+    /// "output exists, Skip policy"). Distinct from `FileComplete` so callers
+    /// can report processed vs skipped counts separately.
+    FileSkipped {
+        output: PathBuf,
+        reason: String,
+    },
     FileFailed {
         error: String,
     },
     AllComplete {
         succeeded: usize,
+        skipped: usize,
         failed: usize,
     },
+}
+
+/// Result of a single-input pipeline run.
+enum RunOutcome {
+    Completed(PathBuf),
+    Skipped { output: PathBuf, reason: String },
 }
 
 /// Execute a pipeline. Blocks until all inputs are processed.
@@ -44,6 +63,7 @@ pub fn execute_pipeline(
     let inputs = resolve_inputs(&pipeline.input)?;
     let total = inputs.len();
     let mut succeeded = 0usize;
+    let mut skipped = 0usize;
     let mut failed = 0usize;
 
     for (idx, input) in inputs.iter().enumerate() {
@@ -60,9 +80,13 @@ pub fn execute_pipeline(
         });
 
         match run_one(input, pipeline, temp_root, ctx, &mut on_progress) {
-            Ok(output) => {
+            Ok(RunOutcome::Completed(output)) => {
                 succeeded += 1;
                 on_progress(PipelineProgress::FileComplete { output });
+            }
+            Ok(RunOutcome::Skipped { output, reason }) => {
+                skipped += 1;
+                on_progress(PipelineProgress::FileSkipped { output, reason });
             }
             Err(e) => {
                 failed += 1;
@@ -73,7 +97,11 @@ pub fn execute_pipeline(
         }
     }
 
-    on_progress(PipelineProgress::AllComplete { succeeded, failed });
+    on_progress(PipelineProgress::AllComplete {
+        succeeded,
+        skipped,
+        failed,
+    });
     Ok(())
 }
 
@@ -104,17 +132,59 @@ fn run_one(
     temp_root: &Path,
     ctx: &PipelineContext,
     on_progress: &mut impl FnMut(PipelineProgress),
-) -> Result<PathBuf> {
-    // Pre-flight collision check. Predict the final archive path from the
-    // pipeline's last Convert step (or the implicit zip fallback) and, if it
-    // already exists, apply the effective collision policy *before* we spend
-    // time extracting + processing — skipping a known duplicate is free.
+) -> Result<RunOutcome> {
+    // Hash the input and pipeline config up-front. These are the dedup key
+    // for `pipeline_runs` lookups and also form the basis for Smart-mode
+    // "we already did this exact work" detection.
+    let (input_blake3, input_size) = hash_file_blake3(input)
+        .with_context(|| format!("hash input {:?}", input))?;
+    let pipeline_hash = pipeline.config_hash();
+
+    // Predict the final archive path from the pipeline's last Convert step
+    // (or the implicit zip fallback).
     let final_format = last_convert_format(&pipeline.steps)
         .unwrap_or(crate::features::conversion::ConvertFormat::Zip);
     let predicted_output_path = pipeline.output.resolve(input, final_format.extension());
 
-    if predicted_output_path.exists() {
-        let policy = pipeline.effective_collision_policy(OutputCollisionPolicy::Smart);
+    // Phase 3: Smart consults the DB. If we already completed this exact
+    // input+pipeline AND the output is still on disk, skip. No matching row
+    // OR missing output → treat as a fresh run.
+    let policy = pipeline.effective_collision_policy(OutputCollisionPolicy::Smart);
+    let path_exists = predicted_output_path.exists();
+
+    if matches!(policy, OutputCollisionPolicy::Smart) {
+        if let Some(db) = ctx.config_db.as_ref() {
+            let completed = db
+                .with_connection(|conn| {
+                    Ok(arclain_db::find_completed_run(
+                        conn,
+                        &input_blake3,
+                        &pipeline_hash,
+                    )?)
+                })
+                .ok()
+                .flatten();
+
+            if let Some(run) = completed {
+                if let Some(ref stored) = run.output_path {
+                    if std::path::Path::new(stored).exists() {
+                        tracing::info!(
+                            "[pipeline] Smart skip: {} already produced {} (run #{})",
+                            input.display(),
+                            stored,
+                            run.id
+                        );
+                        return Ok(RunOutcome::Skipped {
+                            output: PathBuf::from(stored),
+                            reason: "already processed".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if path_exists {
         match policy {
             OutputCollisionPolicy::Skip => {
                 tracing::info!(
@@ -122,7 +192,10 @@ fn run_one(
                     input.display(),
                     predicted_output_path.display()
                 );
-                return Ok(predicted_output_path);
+                return Ok(RunOutcome::Skipped {
+                    output: predicted_output_path,
+                    reason: "output exists (Skip policy)".to_string(),
+                });
             }
             OutputCollisionPolicy::Overwrite => {
                 tracing::info!(
@@ -140,10 +213,13 @@ fn run_one(
                 }
             }
             OutputCollisionPolicy::Fail | OutputCollisionPolicy::Smart => {
-                // Smart falls back to Fail until Phase 3 wires the DB lookup.
+                // Smart with no matching DB row: output exists but we can't
+                // prove we produced it. Refuse rather than silently overwriting
+                // a file that may belong to someone else.
                 anyhow::bail!(
                     "Output already exists at {} (collision policy: {}). \
-                     Set policy to Overwrite or Skip to proceed.",
+                     Arclain has no record of producing it — set policy to \
+                     Overwrite or Skip to proceed.",
                     predicted_output_path.display(),
                     policy.display_name()
                 );
@@ -151,6 +227,69 @@ fn run_one(
         }
     }
 
+    // Record the run as in_progress before doing any work. DB failures are
+    // logged but don't abort — we'd rather lose audit data than the work.
+    let input_path_str = input.to_string_lossy().into_owned();
+    let run_id = ctx.config_db.as_ref().and_then(|db| {
+        db.with_connection(|conn| {
+            let new_run = NewPipelineRun {
+                input_path: &input_path_str,
+                input_blake3: &input_blake3,
+                input_size: input_size as i64,
+                pipeline_hash: &pipeline_hash,
+                arclain_version: ARCLAIN_VERSION,
+            };
+            Ok(arclain_db::begin_pipeline_run(conn, &new_run)?)
+        })
+        .map_err(|e| {
+            tracing::warn!("[pipeline] Failed to record in_progress run: {}", e);
+            e
+        })
+        .ok()
+    });
+
+    let _ = final_format; // predicted format was used for the collision gate only
+    let run_result = run_one_inner(input, pipeline, temp_root, ctx, on_progress);
+
+    // Record completion/failure. Same logic: log and continue on DB errors.
+    if let (Some(id), Some(db)) = (run_id, ctx.config_db.as_ref()) {
+        match &run_result {
+            Ok(output_path) => {
+                let kind = if output_path.is_dir() {
+                    pipeline_output_kind::FOLDER
+                } else {
+                    pipeline_output_kind::ARCHIVE
+                };
+                let output_str = output_path.to_string_lossy().to_string();
+                if let Err(e) = db.with_connection(|conn| {
+                    Ok(arclain_db::mark_run_completed(conn, id, &output_str, kind)?)
+                }) {
+                    tracing::warn!("[pipeline] Failed to mark run #{} completed: {}", id, e);
+                }
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if let Err(e2) = db.with_connection(|conn| {
+                    Ok(arclain_db::mark_run_failed(conn, id, &msg)?)
+                }) {
+                    tracing::warn!("[pipeline] Failed to mark run #{} failed: {}", id, e2);
+                }
+            }
+        }
+    }
+
+    run_result.map(RunOutcome::Completed)
+}
+
+/// The body of `run_one` — extraction + steps + final pack. Split out so the
+/// outer `run_one` can own the DB bookkeeping around it.
+fn run_one_inner(
+    input: &Path,
+    pipeline: &Pipeline,
+    temp_root: &Path,
+    ctx: &PipelineContext,
+    on_progress: &mut impl FnMut(PipelineProgress),
+) -> Result<PathBuf> {
     let work_dir = temp_root.join(format!(
         "arclain_pipeline_{}_{}",
         std::process::id(),
