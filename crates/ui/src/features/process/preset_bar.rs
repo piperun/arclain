@@ -3,12 +3,12 @@
 use super::state::ProcessPageState;
 use crate::shared::SharedState;
 use arclain_core::SavedPreset;
-use arclain_widgets::{ButtonSize, TextButton};
+use arclain_widgets::{ButtonSize, Text, TextButton, ThemedDropdown};
 use eframe::egui;
 
 pub fn render(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageState) {
     ui.horizontal(|ui| {
-        ui.label("Preset:");
+        Text::new("Preset:").strong().show(ui);
 
         let selected_text = state
             .active_preset_name
@@ -17,8 +17,9 @@ pub fn render(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageSt
 
         let presets_snapshot = state.presets.clone();
 
-        egui::ComboBox::from_id_salt("process_preset_dropdown")
-            .selected_text(selected_text)
+        ThemedDropdown::new("process_preset_dropdown", selected_text)
+            .with_theme_colors(&shared.theme.colors)
+            .width(200.0)
             .show_ui(ui, |ui| {
                 for preset in &presets_snapshot {
                     if ui
@@ -40,8 +41,11 @@ pub fn render(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageSt
 
         if ui
             .add(
-                TextButton::new("Save as...", ButtonSize::Small)
-                    .with_theme_colors(&shared.theme.colors),
+                TextButton::new(
+                    format!("{} Save", egui_phosphor::regular::FLOPPY_DISK),
+                    ButtonSize::Small,
+                )
+                .with_theme_colors(&shared.theme.colors),
             )
             .clicked()
         {
@@ -61,8 +65,11 @@ pub fn render(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageSt
         if let Some(name) = active {
             if ui
                 .add(
-                    TextButton::new("Delete", ButtonSize::Small)
-                        .with_theme_colors(&shared.theme.colors),
+                    TextButton::new(
+                        format!("{} Delete", egui_phosphor::regular::TRASH),
+                        ButtonSize::Small,
+                    )
+                    .with_theme_colors(&shared.theme.colors),
                 )
                 .clicked()
             {
