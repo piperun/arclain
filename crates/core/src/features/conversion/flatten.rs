@@ -130,11 +130,89 @@ impl FlattenReport {
     }
 }
 
+/// Hard safety caps for recursive flatten. Prevent runaway extraction if an
+/// archive contains itself, or if the extracted content is itself an archive
+/// that expands into more of the same pattern.
+pub const FLATTEN_MAX_ITERATIONS: u32 = 10;
+pub const FLATTEN_MAX_TOTAL_EXTRACTIONS: u32 = 1000;
+
+/// Run `flatten_nested_archives` iteratively until the tree stops producing
+/// new archives, or until a cap is reached.
+///
+/// `max_depth` semantics:
+/// - `0` — unlimited (still bounded by `FLATTEN_MAX_ITERATIONS` and
+///   `FLATTEN_MAX_TOTAL_EXTRACTIONS` for safety)
+/// - `1` — single pass (identical to calling `flatten_nested_archives` once)
+/// - `n` — up to `n` passes (or until stable)
+///
+/// Each iteration is a full tree walk; it exits early as soon as a pass
+/// produces zero extractions (the tree has stabilized). The returned
+/// `FlattenReport` is the union of all iterations' reports.
+pub fn flatten_nested_archives_recursive<F>(
+    dir: &Path,
+    strip_prefix: bool,
+    max_depth: u32,
+    mut extractor: F,
+) -> Result<FlattenReport>
+where
+    F: FnMut(&Path, &Path) -> Result<()>,
+{
+    let requested_cap = if max_depth == 0 {
+        FLATTEN_MAX_ITERATIONS
+    } else {
+        max_depth.min(FLATTEN_MAX_ITERATIONS)
+    };
+
+    let mut combined = FlattenReport::default();
+    let mut total_extractions: u32 = 0;
+
+    for iteration in 0..requested_cap {
+        let pass = flatten_nested_archives(dir, strip_prefix, &mut extractor)?;
+        let pass_extracted = pass.extracted.len();
+        let pass_failed = pass.failed.len();
+        let pass_skipped = pass.skipped.len();
+
+        combined.extracted.extend(pass.extracted);
+        combined.failed.extend(pass.failed);
+        combined.skipped.extend(pass.skipped);
+
+        total_extractions = total_extractions.saturating_add(pass_extracted as u32);
+
+        if total_extractions > FLATTEN_MAX_TOTAL_EXTRACTIONS {
+            tracing::warn!(
+                "[flatten] Extraction safety cap reached ({} extractions in {} iterations). \
+                 Refusing to continue — this archive likely contains a self-referential cycle.",
+                total_extractions,
+                iteration + 1,
+            );
+            break;
+        }
+
+        if pass_extracted == 0 {
+            // Tree is stable — even if this pass saw skipped or failed entries,
+            // no new content appeared, so another iteration would be pointless.
+            tracing::debug!(
+                "[flatten] Tree stabilized after {} iteration(s) (skipped={}, failed={})",
+                iteration + 1,
+                pass_skipped,
+                pass_failed,
+            );
+            break;
+        }
+    }
+
+    Ok(combined)
+}
+
 /// Extract all nested archives in the given directory tree to sibling folders,
 /// then remove the original archive files.
 ///
 /// Walks the whole tree — if the outer archive extracted into `SubFolder/*.rar`,
 /// inner archives are still found and flattened to `SubFolder/<name>/`.
+///
+/// This is a single-pass operation. If an extraction produces a new archive
+/// (e.g. `.rar` → folder → `.zip`), that inner archive will NOT be unpacked
+/// by this call — use `flatten_nested_archives_recursive` for that.
 ///
 /// `extractor` is a callback that extracts `(archive_path, dest_dir) -> Result<()>`.
 pub fn flatten_nested_archives<F>(
@@ -500,5 +578,165 @@ mod tests {
         // Originals removed
         assert!(!sub.join("Main.rar").exists());
         assert!(!sub.join("Patch.rar").exists());
+    }
+
+    // ---- Recursive flatten tests (Phase 1 of pipeline-collision plan) ----
+
+    /// Helper: "extracts" by writing a dest marker and optionally dropping
+    /// additional archive files at known paths. Tracks how many times it ran.
+    fn make_counting_extractor(
+        dir_layouts: std::collections::HashMap<String, Vec<String>>,
+    ) -> (impl FnMut(&Path, &Path) -> Result<()>, std::rc::Rc<std::cell::Cell<u32>>)
+    {
+        let count = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        let count_clone = count.clone();
+        let extractor = move |archive_path: &Path, dest: &Path| -> Result<()> {
+            count_clone.set(count_clone.get() + 1);
+            let name = archive_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            // Always drop a marker so the unwrap logic sees content
+            std::fs::write(dest.join(".flattened"), b"")?;
+            if let Some(next_files) = dir_layouts.get(&name) {
+                for rel in next_files {
+                    let p = dest.join(rel);
+                    if let Some(parent) = p.parent() {
+                        std::fs::create_dir_all(parent)?;
+                    }
+                    std::fs::write(&p, b"")?;
+                }
+            }
+            Ok(())
+        };
+        (extractor, count)
+    }
+
+    #[test]
+    fn test_recursive_flatten_three_levels() {
+        // Layout: outer.rar extracts producing inner.zip which extracts
+        // producing innermost.7z which extracts producing loose files.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("outer.rar"), b"").unwrap();
+
+        let mut layouts = std::collections::HashMap::new();
+        // outer.rar extraction deposits an inner.zip sibling
+        layouts.insert("outer.rar".to_string(), vec!["inner.zip".to_string()]);
+        // inner.zip extraction deposits innermost.7z sibling
+        layouts.insert("inner.zip".to_string(), vec!["innermost.7z".to_string()]);
+        // innermost.7z extraction deposits loose payload
+        layouts.insert("innermost.7z".to_string(), vec!["payload.txt".to_string()]);
+
+        let (extractor, count) = make_counting_extractor(layouts);
+        let report = flatten_nested_archives_recursive(tmp.path(), false, 0, extractor).unwrap();
+
+        // Three archives should have been processed
+        assert_eq!(count.get(), 3);
+        assert_eq!(report.extracted.len(), 3);
+        // Original outer.rar is gone
+        assert!(!tmp.path().join("outer.rar").exists());
+        // Payload is somewhere in the tree (exact path depends on unwrapping, just probe recursively)
+        let mut found_payload = false;
+        for entry in walkdir::WalkDir::new(tmp.path()) {
+            let e = entry.unwrap();
+            if e.file_name() == "payload.txt" {
+                found_payload = true;
+                break;
+            }
+        }
+        assert!(found_payload, "payload.txt should have been extracted somewhere");
+    }
+
+    #[test]
+    fn test_max_depth_1_matches_single_pass() {
+        // With max_depth=1, an outer archive that produces an inner archive
+        // should leave the inner one unflattened (same as calling flatten once).
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("outer.rar"), b"").unwrap();
+
+        let mut layouts = std::collections::HashMap::new();
+        layouts.insert("outer.rar".to_string(), vec!["inner.zip".to_string()]);
+
+        let (extractor, count) = make_counting_extractor(layouts);
+        let _report = flatten_nested_archives_recursive(tmp.path(), false, 1, extractor).unwrap();
+
+        // Only the outer archive should have been extracted
+        assert_eq!(count.get(), 1);
+        // The inner.zip should still exist somewhere in the tree
+        let mut found_inner = false;
+        for entry in walkdir::WalkDir::new(tmp.path()) {
+            let e = entry.unwrap();
+            if e.file_name() == "inner.zip" {
+                found_inner = true;
+                break;
+            }
+        }
+        assert!(found_inner, "inner.zip should remain after a single-pass flatten");
+    }
+
+    #[test]
+    fn test_recursive_flatten_exits_early_when_stable() {
+        // Layout produces no new archives on the first pass.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("plain.rar"), b"").unwrap();
+
+        let layouts = std::collections::HashMap::new(); // no nested archives
+        let (extractor, count) = make_counting_extractor(layouts);
+
+        // max_depth=0 (unlimited) must still exit after one pass when nothing new appears
+        let report = flatten_nested_archives_recursive(tmp.path(), false, 0, extractor).unwrap();
+
+        assert_eq!(count.get(), 1, "should only run once when nothing nested");
+        assert_eq!(report.extracted.len(), 1);
+    }
+
+    #[test]
+    fn test_recursive_flatten_respects_depth_cap() {
+        // Self-replicating layout: every extraction produces another archive
+        // with the same name pattern. max_depth=3 should cap at 3 extractions.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.rar"), b"").unwrap();
+
+        let mut layouts = std::collections::HashMap::new();
+        layouts.insert("a.rar".to_string(), vec!["b.rar".to_string()]);
+        layouts.insert("b.rar".to_string(), vec!["c.rar".to_string()]);
+        layouts.insert("c.rar".to_string(), vec!["d.rar".to_string()]);
+        layouts.insert("d.rar".to_string(), vec!["e.rar".to_string()]);
+        layouts.insert("e.rar".to_string(), vec!["f.rar".to_string()]);
+
+        let (extractor, count) = make_counting_extractor(layouts);
+        let report = flatten_nested_archives_recursive(tmp.path(), false, 3, extractor).unwrap();
+
+        // Exactly 3 iterations → 3 extractions
+        assert_eq!(count.get(), 3);
+        assert_eq!(report.extracted.len(), 3);
+    }
+
+    #[test]
+    fn test_recursive_flatten_hard_safety_cap_iterations() {
+        // Force unlimited mode (max_depth=0) against a layout that keeps
+        // producing archives. The FLATTEN_MAX_ITERATIONS cap must stop it.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("level0.rar"), b"").unwrap();
+
+        let mut layouts = std::collections::HashMap::new();
+        for i in 0..(FLATTEN_MAX_ITERATIONS + 5) {
+            layouts.insert(
+                format!("level{}.rar", i),
+                vec![format!("level{}.rar", i + 1)],
+            );
+        }
+
+        let (extractor, count) = make_counting_extractor(layouts);
+        let _ = flatten_nested_archives_recursive(tmp.path(), false, 0, extractor).unwrap();
+
+        // Must not exceed the hard cap even in unlimited mode
+        assert!(
+            count.get() <= FLATTEN_MAX_ITERATIONS,
+            "extraction count {} exceeded hard cap {}",
+            count.get(),
+            FLATTEN_MAX_ITERATIONS
+        );
     }
 }

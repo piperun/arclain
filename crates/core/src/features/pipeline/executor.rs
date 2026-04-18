@@ -126,10 +126,12 @@ fn run_one(
         match step {
             PipelineStep::Flatten {
                 strip_common_prefix,
+                max_depth,
             } => {
-                crate::features::conversion::flatten::flatten_nested_archives(
+                crate::features::conversion::flatten::flatten_nested_archives_recursive(
                     &work_dir,
                     *strip_common_prefix,
+                    *max_depth,
                     |archive_path, dest_dir| {
                         let be = (ctx.backend_for)(archive_path)?;
                         be.extract_all(archive_path, dest_dir, None)
