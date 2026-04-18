@@ -1,6 +1,8 @@
 //! Per-step config widgets.
 
+use crate::shared::SharedState;
 use arclain_core::{CompressionLevel, ConvertFormat, PipelineStep};
+use arclain_widgets::{Text, ThemedDropdown};
 use eframe::egui;
 
 pub fn render_flatten_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool {
@@ -19,7 +21,11 @@ pub fn render_flatten_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool
     changed
 }
 
-pub fn render_convert_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool {
+pub fn render_convert_config(
+    ui: &mut egui::Ui,
+    shared: &SharedState,
+    step: &mut PipelineStep,
+) -> bool {
     let mut changed = false;
     if let PipelineStep::Convert {
         format,
@@ -28,9 +34,10 @@ pub fn render_convert_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool
     } = step
     {
         ui.horizontal(|ui| {
-            ui.label("Format:");
-            egui::ComboBox::from_id_salt("pipeline_convert_format")
-                .selected_text(format!(".{}", format.extension()))
+            Text::new("Format:").strong().show(ui);
+            let current = format!(".{}", format.extension());
+            ThemedDropdown::new("pipeline_convert_format", current)
+                .with_theme_colors(&shared.theme.colors)
                 .show_ui(ui, |ui| {
                     if ui
                         .selectable_value(format, ConvertFormat::Zip, ".zip")
@@ -47,13 +54,14 @@ pub fn render_convert_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool
                 });
         });
         ui.horizontal(|ui| {
-            ui.label("Compression:");
-            egui::ComboBox::from_id_salt("pipeline_convert_compression")
-                .selected_text(match compression {
-                    CompressionLevel::Fast => "Fast",
-                    CompressionLevel::Normal => "Normal",
-                    CompressionLevel::Max => "Max",
-                })
+            Text::new("Compression:").strong().show(ui);
+            let current = match compression {
+                CompressionLevel::Fast => "Fast",
+                CompressionLevel::Normal => "Normal",
+                CompressionLevel::Max => "Max",
+            };
+            ThemedDropdown::new("pipeline_convert_compression", current)
+                .with_theme_colors(&shared.theme.colors)
                 .show_ui(ui, |ui| {
                     for (lvl, label) in [
                         (CompressionLevel::Fast, "Fast"),
@@ -67,7 +75,7 @@ pub fn render_convert_config(ui: &mut egui::Ui, step: &mut PipelineStep) -> bool
                 });
         });
         ui.horizontal(|ui| {
-            ui.label("Password:");
+            Text::new("Password:").strong().show(ui);
             let mut pw = password.clone().unwrap_or_default();
             if ui
                 .add(egui::TextEdit::singleline(&mut pw).password(true))
@@ -89,7 +97,7 @@ pub fn render_organize_config(
     let mut changed = false;
     if let PipelineStep::Organize { rule_id } = step {
         ui.horizontal(|ui| {
-            ui.label("Rule:");
+            Text::new("Rule:").strong().show(ui);
             if super::rule_picker::render(ui, "pipeline_organize_rule", rules, rule_id) {
                 changed = true;
             }

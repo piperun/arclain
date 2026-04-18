@@ -6,7 +6,7 @@ use crate::shared::SharedState;
 use arclain_core::{
     CompressionLevel, ConvertFormat, PipelineInput, PipelineOutput, PipelineStep,
 };
-use arclain_widgets::{ButtonSize, TextButton};
+use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, Text, TextButton, ThemedDropdown};
 use eframe::egui;
 
 pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPageState) {
@@ -39,36 +39,44 @@ pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPage
 }
 
 fn render_input_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageState) {
-    ui.heading("Input");
-    ui.add_space(4.0);
+    Text::new("Input").size(16.0).strong().show(ui);
+    ui.add_space(6.0);
 
-    if ui
-        .add(
-            TextButton::new("Pick file(s)...", ButtonSize::Small)
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add(
+                TextButton::new(
+                    format!("{} Files", egui_phosphor::regular::FILE),
+                    ButtonSize::Small,
+                )
                 .with_theme_colors(&shared.theme.colors),
-        )
-        .clicked()
-    {
-        if let Some(files) = rfd::FileDialog::new()
-            .add_filter("Archives", &["rar", "zip", "7z"])
-            .pick_files()
+            )
+            .clicked()
         {
-            state.pipeline.input = Some(PipelineInput::Files(files));
-            state.mark_dirty();
+            if let Some(files) = rfd::FileDialog::new()
+                .add_filter("Archives", &["rar", "zip", "7z"])
+                .pick_files()
+            {
+                state.pipeline.input = Some(PipelineInput::Files(files));
+                state.mark_dirty();
+            }
         }
-    }
-    if ui
-        .add(
-            TextButton::new("Pick folder...", ButtonSize::Small)
+        if ui
+            .add(
+                TextButton::new(
+                    format!("{} Folder", egui_phosphor::regular::FOLDER),
+                    ButtonSize::Small,
+                )
                 .with_theme_colors(&shared.theme.colors),
-        )
-        .clicked()
-    {
-        if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-            state.pipeline.input = Some(PipelineInput::Folder(folder));
-            state.mark_dirty();
+            )
+            .clicked()
+        {
+            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                state.pipeline.input = Some(PipelineInput::Folder(folder));
+                state.mark_dirty();
+            }
         }
-    }
+    });
 
     ui.add_space(12.0);
     ui.separator();
@@ -76,47 +84,35 @@ fn render_input_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Proce
 
     match &state.pipeline.input {
         None => {
-            ui.label(
-                egui::RichText::new("No input selected")
-                    .color(shared.theme.colors.on_surface_variant),
-            );
+            Text::new("No input selected").muted().show(ui);
         }
         Some(PipelineInput::Files(v)) => {
-            ui.label(format!("{} file(s)", v.len()));
+            let count = format!("{} file(s)", v.len());
+            Text::new(&count).show(ui);
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for f in v {
-                    ui.label(
-                        egui::RichText::new(
-                            f.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        )
-                        .monospace()
-                        .size(11.0),
-                    );
+                    let name = f.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    Text::new(name).monospace().size(11.0).show(ui);
                 }
             });
         }
         Some(PipelineInput::Folder(p)) => {
-            ui.label(format!(
+            let folder_line = format!(
                 "Folder: {}",
                 p.file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or_default()
-            ));
-            ui.label(
-                egui::RichText::new(p.to_string_lossy().to_string())
-                    .size(10.0)
-                    .color(shared.theme.colors.on_surface_variant),
             );
+            Text::new(&folder_line).show(ui);
+            let full = p.to_string_lossy().into_owned();
+            Text::new(&full).size(10.0).muted().show(ui);
         }
     }
 }
 
 fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageState) {
-    ui.heading("Pipeline");
-    ui.add_space(4.0);
+    Text::new("Pipeline").size(16.0).strong().show(ui);
+    ui.add_space(6.0);
 
     // Load rules once per frame for the Organize step widget
     let rules: Vec<arclain_core::OrganizationRule> = shared
@@ -128,18 +124,45 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
 
     let mut any_changed = false;
 
-    ui.horizontal(|ui| {
-        if ui.button("+ Flatten").clicked() {
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .add(
+                TextButton::new(
+                    format!("{} Flatten", egui_phosphor::regular::PLUS),
+                    ButtonSize::Small,
+                )
+                .with_theme_colors(&shared.theme.colors),
+            )
+            .clicked()
+        {
             state.pipeline.steps.push(PipelineStep::Flatten {
                 strip_common_prefix: true,
             });
             any_changed = true;
         }
-        if ui.button("+ Organize").clicked() {
+        if ui
+            .add(
+                TextButton::new(
+                    format!("{} Organize", egui_phosphor::regular::PLUS),
+                    ButtonSize::Small,
+                )
+                .with_theme_colors(&shared.theme.colors),
+            )
+            .clicked()
+        {
             state.pipeline.steps.push(PipelineStep::Organize { rule_id: 0 });
             any_changed = true;
         }
-        if ui.button("+ Convert").clicked() {
+        if ui
+            .add(
+                TextButton::new(
+                    format!("{} Convert", egui_phosphor::regular::PLUS),
+                    ButtonSize::Small,
+                )
+                .with_theme_colors(&shared.theme.colors),
+            )
+            .clicked()
+        {
             state.pipeline.steps.push(PipelineStep::Convert {
                 format: ConvertFormat::Zip,
                 compression: CompressionLevel::Normal,
@@ -163,20 +186,39 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
             .corner_radius(4.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.strong(format!("{}. {}", i + 1, step.display_name()));
+                    let title = format!("{}. {}", i + 1, step.display_name());
+                    Text::new(&title).strong().show(ui);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("✕").on_hover_text("Remove").clicked() {
+                        if ui
+                            .add(
+                                IconButton::new(egui_phosphor::regular::X)
+                                    .size(IconButtonSize::Small)
+                                    .with_theme_colors(&shared.theme.colors),
+                            )
+                            .on_hover_text("Remove")
+                            .clicked()
+                        {
                             remove_idx = Some(i);
                         }
                         if ui
-                            .add_enabled(i + 1 < step_count, egui::Button::new("↓").small())
+                            .add(
+                                IconButton::new(egui_phosphor::regular::ARROW_DOWN)
+                                    .size(IconButtonSize::Small)
+                                    .enabled(i + 1 < step_count)
+                                    .with_theme_colors(&shared.theme.colors),
+                            )
                             .on_hover_text("Move down")
                             .clicked()
                         {
                             move_down_idx = Some(i);
                         }
                         if ui
-                            .add_enabled(i > 0, egui::Button::new("↑").small())
+                            .add(
+                                IconButton::new(egui_phosphor::regular::ARROW_UP)
+                                    .size(IconButtonSize::Small)
+                                    .enabled(i > 0)
+                                    .with_theme_colors(&shared.theme.colors),
+                            )
                             .on_hover_text("Move up")
                             .clicked()
                         {
@@ -188,7 +230,9 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
 
                 let changed = match step {
                     PipelineStep::Flatten { .. } => step_widgets::render_flatten_config(ui, step),
-                    PipelineStep::Convert { .. } => step_widgets::render_convert_config(ui, step),
+                    PipelineStep::Convert { .. } => {
+                        step_widgets::render_convert_config(ui, shared, step)
+                    }
                     PipelineStep::Organize { .. } => {
                         step_widgets::render_organize_config(ui, step, &rules)
                     }
@@ -220,30 +264,29 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
 
     if state.pipeline.steps.is_empty() {
         ui.add_space(12.0);
-        ui.label(
-            egui::RichText::new("Add a step to get started").color(shared.theme.colors.on_surface_variant),
-        );
+        Text::new("Add a step to get started").muted().show(ui);
     }
 }
 
 fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageState) {
-    ui.heading("Preview");
-    ui.add_space(4.0);
+    Text::new("Preview").size(16.0).strong().show(ui);
+    ui.add_space(6.0);
 
     if state.preview.is_empty() && state.preview.global_warnings.is_empty() {
-        ui.label(
-            egui::RichText::new("Add input and operations to see preview")
-                .color(shared.theme.colors.on_surface_variant),
-        );
+        Text::new("Add input and operations to see preview")
+            .muted()
+            .show(ui);
     } else {
         for w in &state.preview.global_warnings {
-            ui.colored_label(shared.theme.colors.error, format!("⚠ {}", w));
+            let line = format!("{} {}", egui_phosphor::regular::WARNING, w);
+            Text::new(&line).color(shared.theme.colors.error).show(ui);
         }
 
-        ui.label(format!(
+        let header = format!(
             "{} file(s) will be processed",
             state.preview.total_files()
-        ));
+        );
+        Text::new(&header).show(ui);
 
         egui::ScrollArea::vertical()
             .id_salt("process_preview_scroll")
@@ -251,34 +294,35 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
             .show(ui, |ui| {
                 for entry in &state.preview.entries {
                     ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(
-                            entry
-                                .input
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or(""),
-                        )
-                        .monospace()
-                        .strong(),
-                    );
+                    Text::new(
+                        entry
+                            .input
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(""),
+                    )
+                    .monospace()
+                    .strong()
+                    .show(ui);
                     for op in &entry.operations {
-                        ui.label(format!("  → {}", op));
+                        let op_line = format!("  → {}", op);
+                        Text::new(&op_line).show(ui);
                     }
                     if let Some(out) = &entry.expected_output {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "  ⇒ {}",
-                                out.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or_default()
-                            ))
-                            .color(shared.theme.colors.on_surface_variant)
-                            .size(11.0),
+                        let out_line = format!(
+                            "  ⇒ {}",
+                            out.file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or_default()
                         );
+                        Text::new(&out_line).muted().size(11.0).show(ui);
                     }
                     for w in &entry.warnings {
-                        ui.colored_label(shared.theme.colors.error, format!("  ⚠ {}", w));
+                        let warn_line =
+                            format!("  {} {}", egui_phosphor::regular::WARNING, w);
+                        Text::new(&warn_line)
+                            .color(shared.theme.colors.error)
+                            .show(ui);
                     }
                 }
             });
@@ -289,7 +333,7 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
     ui.add_space(4.0);
 
     // Output picker
-    ui.label("Output:");
+    Text::new("Output:").strong().show(ui);
     let current = state.pipeline.output.clone();
     let current_label = match &current {
         PipelineOutput::SameFolder => "Same folder as input".to_string(),
@@ -300,8 +344,8 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
                 .unwrap_or_default()
         ),
     };
-    egui::ComboBox::from_id_salt("pipeline_output_picker")
-        .selected_text(current_label)
+    ThemedDropdown::new("pipeline_output_picker", current_label)
+        .with_theme_colors(&shared.theme.colors)
         .show_ui(ui, |ui| {
             if ui
                 .selectable_label(
@@ -330,8 +374,11 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
     if ui
         .add_enabled(
             can_run,
-            TextButton::new("Execute", ButtonSize::Medium)
-                .with_theme_colors(&shared.theme.colors),
+            TextButton::new(
+                format!("{} Execute", egui_phosphor::regular::PLAY),
+                ButtonSize::Medium,
+            )
+            .with_theme_colors(&shared.theme.colors),
         )
         .clicked()
     {
@@ -346,6 +393,6 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
 
     if let Some(ref summary) = state.last_result_summary {
         ui.add_space(8.0);
-        ui.label(summary);
+        Text::new(summary).show(ui);
     }
 }
