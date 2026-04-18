@@ -149,7 +149,10 @@ fn run_one(
     // Phase 3: Smart consults the DB. If we already completed this exact
     // input+pipeline AND the output is still on disk, skip. No matching row
     // OR missing output → treat as a fresh run.
-    let policy = pipeline.effective_collision_policy(OutputCollisionPolicy::Smart);
+    let app_default = ctx
+        .default_collision_policy
+        .unwrap_or(OutputCollisionPolicy::Smart);
+    let policy = pipeline.effective_collision_policy(app_default);
     let path_exists = predicted_output_path.exists();
 
     if matches!(policy, OutputCollisionPolicy::Smart) {
