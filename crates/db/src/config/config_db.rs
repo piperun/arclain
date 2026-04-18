@@ -119,6 +119,9 @@ impl ConfigDb {
         // Initialize domain whitelist table
         crate::domain_whitelist::ensure_whitelist_table(conn)?;
 
+        // Pipeline execution history table
+        crate::pipeline_runs::ensure_pipeline_runs_table(conn)?;
+
         Ok(())
     }
 
