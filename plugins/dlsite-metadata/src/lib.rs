@@ -1462,6 +1462,40 @@ impl archust_plugin_sdk::Guest for Component {
             return vec![];
         }
 
+        // Background-fetch completion events from the host. The host emits
+        // these whenever a `RequestFetch` action finishes (success OR failure)
+        // so the plugin can clear its in-progress flag and re-check the cache
+        // for newly-arrived data. Without these, the plugin hangs in the
+        // "Fetch already in progress, ignoring" state until the archive is
+        // reopened.
+        if let Some(key) = id.strip_prefix("background_fetch_complete:") {
+            info(&format!("[DLSite Plugin] Background fetch complete: {}", key));
+            STATE.with(|s| s.borrow_mut().fetch_in_progress = false);
+            if let Some(code) = key.strip_prefix("dlsite:") {
+                if let Some((json, scraped)) = get_cached_dlsite_metadata(code) {
+                    info(&format!("[DLSite Plugin] Loaded {} from cache after fetch", code));
+                    let metadata_json =
+                        generate_metadata_json(code, Some(&(json.clone(), scraped.clone())));
+                    archust_plugin_sdk::emit_metadata(&metadata_json);
+                    STATE.with(|s| {
+                        s.borrow_mut().found_metadata =
+                            Some((code.to_string(), json, scraped));
+                    });
+                } else {
+                    info(&format!(
+                        "[DLSite Plugin] Fetch reported done but {} not in cache",
+                        code
+                    ));
+                }
+            }
+            return vec![];
+        }
+        if let Some(key) = id.strip_prefix("background_fetch_failed:") {
+            info(&format!("[DLSite Plugin] Background fetch FAILED: {}", key));
+            STATE.with(|s| s.borrow_mut().fetch_in_progress = false);
+            return vec![];
+        }
+
         info(&format!(
             "[DLSite Plugin] on_ui_event called: id={}, value={:?}",
             id, value

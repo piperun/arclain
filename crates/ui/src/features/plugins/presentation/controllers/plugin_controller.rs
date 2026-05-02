@@ -310,6 +310,12 @@ pub fn create_page_callback(
 
 /// Spawn a background metadata fetch on the tokio runtime.
 /// Uses gameta server if available, otherwise falls back to plugin event.
+///
+/// Always notifies the plugin via a `background_fetch_complete:{source}:{id}`
+/// UI event when the fetch finishes (success OR failure) so the plugin can
+/// clear its in-progress flag and re-check its cache. Silent hangs were
+/// previously possible when the gameta-server path returned an error and the
+/// plugin had no way to learn the fetch was over.
 fn spawn_background_fetch(
     shared: &crate::shared::SharedState,
     plugin_id: &str,
@@ -323,54 +329,126 @@ fn spawn_background_fetch(
         ("dlsite".to_string(), key.to_string())
     };
 
+    let plugin_id_owned = plugin_id.to_string();
+    let metadata_signal = shared.signals().metadata.clone();
+
+    // Send fetch-completion event back to the plugin. Called once whether the
+    // fetch succeeded, failed, or no fetch path was taken at all. Captures
+    // its own clones of plugin_id, key and the plugin-manager Arc so the two
+    // call sites below can both invoke it.
+    let make_notifier = || {
+        let pid = plugin_id_owned.clone();
+        let pm = shared.services.plugin_manager.clone();
+        let key = key.to_string();
+        move |success: bool| {
+            if let Some(pm) = pm {
+                let event = if success {
+                    format!("background_fetch_complete:{}", key)
+                } else {
+                    format!("background_fetch_failed:{}", key)
+                };
+                let manager = pm.lock();
+                manager.with_plugin_instance(&pid, |instance| {
+                    let _ = instance.send_ui_event(&event, None);
+                });
+            }
+        }
+    };
+
     // Try gameta server (fully async, no plugin mutex)
     if let Some(ref client) = shared.services.gameta_client {
         let client = client.clone();
-        let metadata_signal = shared.signals().metadata.clone();
         let id_for_log = id.clone();
         let source_clone = source.clone();
         let id_clone = id.clone();
+        let notify_plugin = make_notifier();
 
         shared.services.tokio_runtime.spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
                 match client.get_metadata(&source_clone, &id_clone) {
-                    Ok(Some(meta)) => Some(meta),
-                    _ => client
+                    Ok(Some(meta)) => Ok(Some(meta)),
+                    Ok(None) => client
                         .fetch_metadata(&source_clone, &id_clone, false)
-                        .ok()
-                        .and_then(|r| r.metadata),
+                        .map(|r| r.metadata),
+                    Err(e) => Err(e),
                 }
             })
             .await;
 
-            if let Ok(Some(meta)) = result {
-                if let Ok(json_val) = serde_json::to_value(&meta) {
-                    tracing::info!("[BackgroundFetch] Got {} from server", id_for_log);
-                    metadata_signal.set(Some(json_val));
+            let success = match result {
+                Ok(Ok(Some(meta))) => {
+                    if let Ok(json_val) = serde_json::to_value(&meta) {
+                        tracing::info!("[BackgroundFetch] Got {} from server", id_for_log);
+                        metadata_signal.set(Some(json_val));
+                        true
+                    } else {
+                        tracing::warn!(
+                            "[BackgroundFetch] {} fetched but JSON serialization failed",
+                            id_for_log
+                        );
+                        false
+                    }
                 }
-            }
+                Ok(Ok(None)) => {
+                    tracing::warn!(
+                        "[BackgroundFetch] {} not found on gameta server",
+                        id_for_log
+                    );
+                    false
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "[BackgroundFetch] gameta server fetch failed for {}: {}",
+                        id_for_log,
+                        e
+                    );
+                    false
+                }
+                Err(join_err) => {
+                    tracing::error!(
+                        "[BackgroundFetch] blocking task panicked for {}: {}",
+                        id_for_log,
+                        join_err
+                    );
+                    false
+                }
+            };
+
+            // Always notify the plugin so its in-progress flag clears.
+            notify_plugin(success);
         });
         return;
     }
 
-    // No server — dispatch via plugin event system on background thread
-    if let Some(ref pm_arc) = shared.services.plugin_manager {
-        let pm = pm_arc.clone();
-        let plugin_id = plugin_id.to_string();
+    // No gameta server — try the plugin's own fetch path via a custom event.
+    if shared.services.plugin_manager.is_some() {
+        let plugin_id_inner = plugin_id_owned.clone();
         let id_clone = id;
+        let pm_arc_inner = shared.services.plugin_manager.clone();
+        let notify_plugin = make_notifier();
 
         shared.services.tokio_runtime.spawn(async move {
             tokio::task::spawn_blocking(move || {
-                let manager = pm.lock();
-                manager.with_plugin_instance(&plugin_id, |instance| {
-                    let _ = instance.send_ui_event(
-                        &format!("background_fetch_{}", id_clone),
-                        None,
-                    );
-                });
+                if let Some(pm) = pm_arc_inner {
+                    let manager = pm.lock();
+                    manager.with_plugin_instance(&plugin_id_inner, |instance| {
+                        let _ = instance.send_ui_event(
+                            &format!("background_fetch_{}", id_clone),
+                            None,
+                        );
+                    });
+                }
             })
             .await
             .ok();
+
+            // Plugin handled the fetch directly; still emit the completion
+            // event so it knows we're done dispatching.
+            notify_plugin(true);
         });
+    } else {
+        // No mechanism available — let the plugin off the hook anyway.
+        let notify_plugin = make_notifier();
+        notify_plugin(false);
     }
 }
