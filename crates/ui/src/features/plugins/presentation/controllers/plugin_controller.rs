@@ -191,6 +191,10 @@ pub fn create_dialog_callback(
     let page_display_name_signal = shared.signals().page_display_name.clone();
     let toaster_arc = shared.toaster.clone();
     let plugin_manager_arc = shared.services.plugin_manager.clone();
+    // Owned clone so we can hand a reference into ActionContext from within
+    // the 'static closure below — without this, RequestFetch / CacheContent
+    // and other shared-state-dependent actions silently no-op.
+    let shared_owned = shared.clone();
     let pid = plugin_id;
 
     Box::new(move |element_id: &str, value: Option<String>| {
@@ -221,7 +225,7 @@ pub fn create_dialog_callback(
                 let ctx = ActionContext {
                     lightbox_signal: Some(&lightbox_signal),
                     page_display_name_signal: Some(&page_display_name_signal),
-                    shared_state: None, // Not available in closure context
+                    shared_state: Some(&shared_owned),
                 };
                 for action in actions {
                     process_action(
@@ -249,6 +253,10 @@ pub fn create_page_callback(
     let page_display_name_signal = shared.signals().page_display_name.clone();
     let toaster_arc = shared.toaster.clone();
     let plugin_manager_arc = shared.services.plugin_manager.clone();
+    // Owned clone so the closure can pass a reference to ActionContext;
+    // without this, RequestFetch (etc.) silently no-ops because process_action
+    // skips its body when ctx.shared_state is None.
+    let shared_owned = shared.clone();
     let pid = plugin_id;
 
     Box::new(move |element_id: &str, value: Option<String>| {
@@ -290,7 +298,7 @@ pub fn create_page_callback(
                 let ctx = ActionContext {
                     lightbox_signal: Some(&lightbox_signal),
                     page_display_name_signal: Some(&page_display_name_signal),
-                    shared_state: None, // Not available in closure context
+                    shared_state: Some(&shared_owned),
                 };
                 for action in actions {
                     process_action(
