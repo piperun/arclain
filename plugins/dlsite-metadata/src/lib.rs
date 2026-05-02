@@ -1496,6 +1496,42 @@ impl archust_plugin_sdk::Guest for Component {
             return vec![];
         }
 
+        // The host asks the plugin to perform its own DLsite fetch when no
+        // gameta server is available (or the gameta fetch returned nothing).
+        // We hold the plugin lock for the duration of the HTTP call, but
+        // since this only fires when the user has explicitly clicked Fetch
+        // or auto-fetch is enabled, the cost is contained to occasional
+        // archive opens / button clicks rather than every UI frame.
+        if let Some(key) = id.strip_prefix("do_native_fetch:") {
+            info(&format!("[DLSite Plugin] Native fetch requested for {}", key));
+            let code = key.strip_prefix("dlsite:").unwrap_or(key).to_string();
+
+            match fetch_dlsite_metadata(&code) {
+                Some((json, scraped)) => {
+                    info(&format!(
+                        "[DLSite Plugin] Native fetch succeeded for {}",
+                        code
+                    ));
+                    let metadata_json =
+                        generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
+                    archust_plugin_sdk::emit_metadata(&metadata_json);
+                    STATE.with(|s| {
+                        let mut state = s.borrow_mut();
+                        state.found_metadata = Some((code.clone(), json, scraped));
+                        state.fetch_in_progress = false;
+                    });
+                }
+                None => {
+                    info(&format!(
+                        "[DLSite Plugin] Native fetch returned no metadata for {}",
+                        code
+                    ));
+                    STATE.with(|s| s.borrow_mut().fetch_in_progress = false);
+                }
+            }
+            return vec![];
+        }
+
         info(&format!(
             "[DLSite Plugin] on_ui_event called: id={}, value={:?}",
             id, value
