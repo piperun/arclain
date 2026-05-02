@@ -130,16 +130,20 @@ impl PluginManager {
                                 // Process RequestFetch actions on this background thread
                                 for action in actions {
                                     if let crate::types::PluginAction::RequestFetch { key } = action {
-                                        debug!("[EventWorker] Processing RequestFetch: {}", key);
-                                        // Use gameta client if available (async-safe)
+                                        info!("[EventWorker] Processing RequestFetch: {}", key);
+
+                                        let parts: Vec<&str> = key.splitn(2, ':').collect();
+                                        let (source, product_id) = if parts.len() == 2 {
+                                            (parts[0], parts[1])
+                                        } else {
+                                            ("dlsite", key.as_str())
+                                        };
+
+                                        // Try gameta server first, fall back to having the
+                                        // plugin do its own fetch via the host's HTTP capability
+                                        // when the server is missing or returns nothing.
+                                        let mut handled_by_server = false;
                                         if let Some(ref client) = instance.get_gameta_client() {
-                                            let parts: Vec<&str> = key.splitn(2, ':').collect();
-                                            let (source, product_id) = if parts.len() == 2 {
-                                                (parts[0], parts[1])
-                                            } else {
-                                                ("dlsite", key.as_str())
-                                            };
-                                            // Try cache first, then server fetch
                                             let meta = client.get_metadata(source, product_id)
                                                 .ok()
                                                 .flatten()
@@ -152,13 +156,35 @@ impl PluginManager {
                                                 if let Ok(json_val) = serde_json::to_value(&meta) {
                                                     if let Some(ref signal) = instance.get_metadata_signal() {
                                                         signal.set(Some(json_val));
-                                                        debug!("[EventWorker] Set metadata signal for {}", product_id);
+                                                        info!(
+                                                            "[EventWorker] Set metadata signal for {} via gameta server",
+                                                            product_id
+                                                        );
+                                                        handled_by_server = true;
                                                     }
                                                 }
+                                            } else {
+                                                info!(
+                                                    "[EventWorker] gameta server returned no metadata for {}, falling back to native fetch",
+                                                    product_id
+                                                );
                                             }
                                         }
-                                        // Without gameta server, the host function fallback
-                                        // in get_product_metadata handles local DB + cache
+
+                                        if !handled_by_server {
+                                            // Ask the plugin to fetch via its own HTTP path. The
+                                            // plugin holds the lock during the HTTP call, but
+                                            // this is the auto-fetch path so it only fires once
+                                            // per archive open.
+                                            let event = format!("do_native_fetch:{}", key);
+                                            info!("[EventWorker] Dispatching native fetch: {}", event);
+                                            if let Err(e) = instance.send_ui_event(&event, None) {
+                                                error!(
+                                                    "[EventWorker] Native fetch dispatch failed for {}: {:?}",
+                                                    key, e
+                                                );
+                                            }
+                                        }
                                     }
                                 }
                             }
