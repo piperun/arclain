@@ -79,7 +79,11 @@ impl AppState {
             fallback_backend,
             last_entries: vec![],
 
-            encrypted_crc_policy: crc_policy.unwrap_or_else(|| "on_open".to_string()),
+            // Default to on_access: only compute CRC when the user actually
+            // looks at an entry. The legacy on_open default fired one 7z
+            // subprocess per entry on archive open, which on multi-thousand-
+            // entry encrypted archives ran for minutes.
+            encrypted_crc_policy: crc_policy.unwrap_or_else(|| "on_access".to_string()),
             db_paths: Some(db_paths.clone()),
             dbs: None,
             plugin_event_sender: None,
