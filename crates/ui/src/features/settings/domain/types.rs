@@ -15,7 +15,10 @@ pub enum EncryptedCrcPolicy {
 
 impl Default for EncryptedCrcPolicy {
     fn default() -> Self {
-        Self::OnOpen
+        // On-open eagerly fired one 7z subprocess per encrypted entry, which
+        // turned a 5933-entry encrypted RAR into a ~6-minute hang. On-access
+        // defers CRC to the moment the user inspects an entry.
+        Self::OnAccess
     }
 }
 
