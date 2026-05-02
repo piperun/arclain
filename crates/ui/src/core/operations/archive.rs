@@ -249,6 +249,17 @@ pub fn load_archive_data(
         };
 
         if let (Some(pw), Some(arc_path)) = (password, archive_path) {
+            // Each entry triggers a 7z subprocess via crc32_of_entry, so
+            // surface the cost up-front rather than letting the user stare
+            // at a frozen UI for minutes on a multi-thousand-entry archive.
+            if !paths_to_compute.is_empty() {
+                tracing::info!(
+                    "[archive] Computing CRC-32 for {} encrypted entries (policy={}). \
+                     Switch to 'on_access' in Settings if this hangs.",
+                    paths_to_compute.len(),
+                    policy
+                );
+            }
             let mut computed: Vec<(String, String)> = Vec::new();
             for p in paths_to_compute {
                 if let Ok(sum) = backend.crc32_of_entry(&arc_path, &p, Some(&pw)) {
