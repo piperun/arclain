@@ -19,7 +19,13 @@ pub struct ActionContext<'a> {
     pub shared_state: Option<&'a crate::shared::SharedState>,
 }
 
-/// Process a list of plugin actions
+/// Process a list of plugin actions.
+///
+/// Pass `shared_state` so that actions which need to spawn background work
+/// (notably `RequestFetch` and `CacheContent`) can reach the tokio runtime,
+/// the gameta client, and the plugin manager. Without it, those actions are
+/// silently no-op'd — the historic toolbar default for years, which is why
+/// "Fetch DLSite" looked like it ran but never actually fetched anything.
 pub fn process_plugin_actions(
     actions: Vec<PluginAction>,
     plugin_id: &str,
@@ -27,11 +33,12 @@ pub fn process_plugin_actions(
     toaster: &mut Toaster,
     refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
     lightbox_signal: Option<&Signal<LightboxState>>,
+    shared_state: Option<&crate::shared::SharedState>,
 ) {
     let ctx = ActionContext {
         lightbox_signal,
         page_display_name_signal: None,
-        shared_state: None,
+        shared_state,
     };
     for action in actions {
         process_action(action, plugin_id, dialog_state, toaster, refresh_requests, &ctx);
