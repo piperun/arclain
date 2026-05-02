@@ -313,6 +313,19 @@ interface ui {
         carousel(carousel-config),
         key-value-list(key-value-list-config),
         metadata-grid(metadata-grid-config),
+        // Visually-grouped settings section. The plugin emits a `group-begin`
+        // followed by ordinary elements, then `group-end`. The host wraps
+        // everything between the markers in a Form/SettingsGroup container so
+        // plugin-supplied panels match the rest of the app.
+        group-begin(settings-group-header),
+        group-end,
+    }
+
+    // Title + optional description for a settings group, paired with
+    // group-begin. group-end has no payload.
+    record settings-group-header {
+        title: string,
+        description: option<string>,
     }
 
     // Top-level layout structure

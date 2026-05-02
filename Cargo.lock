@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_core"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_db"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_ui"
-version = "1.3.0"
+version = "1.4.0"
 dependencies = [
  "anyhow",
  "arboard",

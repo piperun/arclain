@@ -2,8 +2,8 @@
 
 use super::context::{RenderContext, UiEventHandler};
 use super::image::{trigger_image_fetch, try_render_image};
-use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
-use arclain_plugins::types::{ButtonAction, WarningIcon};
+use crate::shared::components::settings_form::{SectionHeader, SettingsGroup, SettingsRow};
+use arclain_plugins::types::{ButtonAction, PluginUiElement, WarningIcon};
 use arclain_widgets::{TextInput, ThemedDropdown};
 use eframe::egui;
 
@@ -37,11 +37,12 @@ pub fn render_button(
     label: &str,
     action: &Option<ButtonAction>,
 ) {
+    let colors = ctx.colors;
     if ui
-        .add(arclain_widgets::TextButton::new(
-            label,
-            arclain_widgets::ButtonSize::Small,
-        ))
+        .add(
+            arclain_widgets::TextButton::new(label, arclain_widgets::ButtonSize::Small)
+                .with_theme_colors(colors),
+        )
         .clicked()
     {
         match action.as_ref().unwrap_or(&ButtonAction::None) {
@@ -406,6 +407,18 @@ pub fn render_toolbar(
     ctx: &mut RenderContext<'_, impl UiEventHandler + ?Sized>,
     buttons: &[arclain_plugins::types::ToolbarButton],
 ) {
+    let colors = ctx.colors;
+    let make_button = |label: &str, primary: bool| {
+        arclain_widgets::TextButton::new(
+            label.to_string(),
+            if primary {
+                arclain_widgets::ButtonSize::Medium
+            } else {
+                arclain_widgets::ButtonSize::Small
+            },
+        )
+        .with_theme_colors(colors)
+    };
     ui.horizontal(|ui| {
         for btn in buttons {
             // Add flexible space before this button if requested
@@ -417,16 +430,7 @@ pub fn render_toolbar(
                             continue; // Skip buttons before spacer
                         }
 
-                        let button = arclain_widgets::TextButton::new(
-                            &rbtn.label,
-                            if rbtn.primary {
-                                arclain_widgets::ButtonSize::Medium
-                            } else {
-                                arclain_widgets::ButtonSize::Small
-                            },
-                        );
-
-                        if ui.add(button).clicked() {
+                        if ui.add(make_button(&rbtn.label, rbtn.primary)).clicked() {
                             (ctx.event_callback)(&rbtn.id, None);
                         }
                     }
@@ -434,17 +438,7 @@ pub fn render_toolbar(
                 return; // Done rendering
             }
 
-            // Use different styling for primary buttons
-            let button = arclain_widgets::TextButton::new(
-                &btn.label,
-                if btn.primary {
-                    arclain_widgets::ButtonSize::Medium
-                } else {
-                    arclain_widgets::ButtonSize::Small
-                },
-            );
-
-            if ui.add(button).clicked() {
+            if ui.add(make_button(&btn.label, btn.primary)).clicked() {
                 (ctx.event_callback)(&btn.id, None);
             }
         }
@@ -585,6 +579,39 @@ pub fn render_list_item(
     if response.interact(egui::Sense::click()).clicked() {
         (ctx.event_callback)(id, None);
     }
+}
+
+/// Render a visually-grouped settings section (matches the host's
+/// `Form/SettingsGroup` styling). The `walk_body` callback receives a
+/// per-frame `Ui` plus the inner elements and is expected to render them —
+/// typically by recursing through `walk_with_groups` so nested
+/// `GroupBegin`/`GroupEnd` pairs work.
+pub fn render_settings_group<H, F>(
+    ui: &mut egui::Ui,
+    ctx: &mut RenderContext<'_, H>,
+    title: &str,
+    description: &Option<String>,
+    body: &[PluginUiElement],
+    mut walk_body: F,
+) where
+    H: UiEventHandler + ?Sized,
+    F: FnMut(&mut egui::Ui, &[PluginUiElement], &mut RenderContext<'_, H>),
+{
+    let colors = ctx.colors;
+    let description = description.clone();
+    SettingsGroup::new(title)
+        .content(|ui, group_colors| {
+            if let Some(desc) = description {
+                ui.label(
+                    egui::RichText::new(desc)
+                        .size(12.0)
+                        .color(group_colors.on_surface_variant),
+                );
+                ui.add_space(6.0);
+            }
+            walk_body(ui, body, ctx);
+        })
+        .show(ui, colors);
 }
 
 /// Render a section header with semantic title hierarchy (h1-h4 style)
