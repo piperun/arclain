@@ -40,24 +40,12 @@ impl ArchiveBackend for UnrarBackend {
     fn list(&self, path: &Path, password: Option<&str>) -> Result<ArchiveInfo> {
         info!("Using {} backend to list: {}", self.name(), path.display());
 
-        // The `unrar` crate's FileHeader does not expose packed_size, so a native
-        // listing always reports 0 for compressed size and ratio. When the CLI is
-        // available, delegate listing to it — native stays in charge of extraction.
-        if let Some(cli) = crate::backends::unrar_cli::UnrarCli::detect() {
-            match cli.list(path, password) {
-                Ok(info) => {
-                    info!("Listed via UnRAR CLI (packed_size available)");
-                    return Ok(info);
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "UnRAR CLI listing failed, falling back to native (no packed_size): {}",
-                        e
-                    );
-                }
-            }
-        }
-
+        // Native listing first — the `unrar` crate hands us proper Unicode
+        // filenames via WideCString. We previously delegated the entire
+        // listing to UnrarCli to recover packed_size, but UnRAR.exe writes to
+        // its piped stdout in the Windows console code page, which mangles
+        // CJK characters into '?'. Doing the listing natively keeps the names
+        // intact; we then enrich packed_size from a CLI run by entry order.
         let archive = if let Some(pwd) = password {
             info!("Using password for RAR archive listing");
             Archive::with_password(path, pwd.as_bytes())
@@ -139,6 +127,35 @@ impl ArchiveBackend for UnrarBackend {
         } else {
             None
         };
+
+        // Enrich packed_size from the CLI by entry-order zip. The CLI may
+        // mangle filenames on non-CJK Windows (OEM stdout codepage) but the
+        // pack-size data is correct, and entry order between the unrar crate
+        // and UnRAR.exe matches because both call into libunrar internals.
+        // Skip silently if the CLI isn't available, fails, or produces a
+        // different number of entries.
+        if let Some(cli) = crate::backends::unrar_cli::UnrarCli::detect() {
+            match cli.list(path, password) {
+                Ok(cli_info) if cli_info.entries.len() == entries.len() => {
+                    for (entry, cli_entry) in entries.iter_mut().zip(cli_info.entries.iter()) {
+                        if cli_entry.packed_size > 0 {
+                            entry.packed_size = cli_entry.packed_size;
+                        }
+                    }
+                }
+                Ok(cli_info) => {
+                    tracing::warn!(
+                        "[unrar] Native listing returned {} entries but CLI returned {} — \
+                         skipping packed_size enrichment",
+                        entries.len(),
+                        cli_info.entries.len()
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("[unrar] CLI packed_size enrichment failed: {}", e);
+                }
+            }
+        }
 
         Ok(ArchiveInfo {
             archive_path: path.to_path_buf(),
