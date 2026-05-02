@@ -209,6 +209,12 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
         PluginUiElement::MetadataGrid { items, columns } => {
             widgets::render_metadata_grid(ui, ctx, items, *columns);
         }
+        // Group markers are handled at the list-walker level (render_ui_elements);
+        // hitting one here means the plugin emitted unbalanced markers, so
+        // skip silently rather than panic.
+        PluginUiElement::GroupBegin { .. } | PluginUiElement::GroupEnd => {
+            tracing::debug!("[plugin-ui] group marker rendered as leaf — likely unbalanced");
+        }
     }
 }
 
@@ -229,7 +235,55 @@ pub fn render_ui_elements<'a, H: UiEventHandler + ?Sized>(
         shared_state,
         plugin_id,
     };
-    for element in elements {
-        render_recursive(ui, element, &mut ctx);
+    walk_with_groups(ui, elements, &mut ctx);
+}
+
+/// Walk a flat list of elements, gathering anything between matched
+/// `GroupBegin` / `GroupEnd` markers into a host SettingsGroup container.
+/// Unmatched markers are tolerated (logged at debug, ignored otherwise).
+fn walk_with_groups<H: UiEventHandler + ?Sized>(
+    ui: &mut egui::Ui,
+    elements: &[PluginUiElement],
+    ctx: &mut RenderContext<'_, H>,
+) {
+    let mut i = 0;
+    while i < elements.len() {
+        match &elements[i] {
+            PluginUiElement::GroupBegin { title, description } => {
+                // Find matching GroupEnd, supporting nesting (we render nested
+                // groups as flat sub-sections — the inner render call recurses
+                // through walk_with_groups again).
+                let mut depth = 1usize;
+                let mut end = i + 1;
+                while end < elements.len() {
+                    match &elements[end] {
+                        PluginUiElement::GroupBegin { .. } => depth += 1,
+                        PluginUiElement::GroupEnd => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    end += 1;
+                }
+                let body = &elements[i + 1..end.min(elements.len())];
+                widgets::render_settings_group(ui, ctx, title, description, body, |ui, body, ctx| {
+                    walk_with_groups(ui, body, ctx)
+                });
+                // Skip past the matched end marker (or to EOL if unbalanced)
+                i = end + 1;
+            }
+            PluginUiElement::GroupEnd => {
+                // Stray end without a matching begin — skip
+                tracing::debug!("[plugin-ui] stray GroupEnd at index {}, ignoring", i);
+                i += 1;
+            }
+            _ => {
+                render_recursive(ui, &elements[i], ctx);
+                i += 1;
+            }
+        }
     }
 }

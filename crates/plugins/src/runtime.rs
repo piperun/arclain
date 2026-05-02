@@ -578,6 +578,11 @@ fn convert_ui_element(element: crate::arclain::plugin::ui::UiElement) -> PluginU
                 .collect(),
             columns: config.columns,
         },
+        UiElement::GroupBegin(header) => InternalElement::GroupBegin {
+            title: header.title,
+            description: header.description,
+        },
+        UiElement::GroupEnd => InternalElement::GroupEnd,
     }
 }
 
