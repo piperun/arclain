@@ -339,6 +339,17 @@ pub enum PluginUiElement {
         #[serde(default)]
         message: Option<String>,
     },
+    /// Marker: open a visually-grouped settings section with this title.
+    /// Pair with a later `GroupEnd` marker; everything between the two
+    /// markers is wrapped in the host's standard Form/SettingsGroup container
+    /// so plugin-supplied panels match the rest of the app.
+    GroupBegin {
+        title: String,
+        #[serde(default)]
+        description: Option<String>,
+    },
+    /// Marker: close the most recently opened `GroupBegin`.
+    GroupEnd,
     /// Warning / Alert banner
     Warning { icon: WarningIcon, message: String },
     /// Tag chips displayed as styled pills
