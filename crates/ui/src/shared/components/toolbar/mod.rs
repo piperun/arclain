@@ -171,6 +171,7 @@ pub fn render(
                 &mut toaster,
                 Some(&shared.refresh_requests),
                 Some(&shared.signals().lightbox_state),
+                Some(shared),
             );
         }
 
