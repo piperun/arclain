@@ -172,7 +172,8 @@ impl archust_plugin_sdk::Guest for Component {
             PluginLayout, SplitConfig, UiElement, LabelConfig, TabsConfig, TextInputConfig,
             ButtonConfig, ButtonAction, ListContainerConfig, ListItemConfig, ImageConfig, LoadingConfig,
             CheckboxConfig, WarningConfig, WarningIcon, TagChipsConfig, ToolbarConfig, ToolbarButtonConfig,
-            CarouselConfig, KeyValueListConfig, KeyValuePair, MetadataGridConfig, SectionHeaderConfig
+            CarouselConfig, KeyValueListConfig, KeyValuePair, MetadataGridConfig, SectionHeaderConfig,
+            SettingsGroupHeader,
         };
 
         match extension_point.as_str() {
@@ -211,17 +212,19 @@ impl archust_plugin_sdk::Guest for Component {
                 let auto_fetch_enabled = STATE.with(|s| s.borrow().auto_fetch_enabled);
                 let enable_cache = STATE.with(|s| s.borrow().enable_cache);
                 let dump_html_debug = STATE.with(|s| s.borrow().dump_html_debug);
-                
-                let mut elements = vec![
-                    // Master switch: auto-fetch when archive opens
-                    UiElement::Checkbox(CheckboxConfig {
-                        id: "auto_fetch_enabled".to_string(),
-                        label: "Auto-fetch metadata when archive opens".to_string(),
-                        checked: auto_fetch_enabled,
-                    }),
-                ];
-                
-                // Only show cache option if auto-fetch is enabled
+
+                let mut elements = Vec::new();
+
+                // Plugin Configuration group
+                elements.push(UiElement::GroupBegin(SettingsGroupHeader {
+                    title: "Plugin Configuration".to_string(),
+                    description: None,
+                }));
+                elements.push(UiElement::Checkbox(CheckboxConfig {
+                    id: "auto_fetch_enabled".to_string(),
+                    label: "Auto-fetch metadata when archive opens".to_string(),
+                    checked: auto_fetch_enabled,
+                }));
                 if auto_fetch_enabled {
                     elements.push(UiElement::Checkbox(CheckboxConfig {
                         id: "enable_cache".to_string(),
@@ -229,47 +232,45 @@ impl archust_plugin_sdk::Guest for Component {
                         checked: enable_cache,
                     }));
                 }
-                
                 elements.push(UiElement::TextInput(TextInputConfig {
                     id: "request_timeout".to_string(),
                     label: "API Request Timeout (seconds)".to_string(),
                     value: "30".to_string(),
                     placeholder: None,
                 }));
+                elements.push(UiElement::GroupEnd);
 
-                // Cache Management
-                elements.push(UiElement::Label(LabelConfig {
-                    text: "Cache Management".to_string(),
-                    bold: true,
-                    size: Some(16.0),
+                // Cache Management group
+                elements.push(UiElement::GroupBegin(SettingsGroupHeader {
+                    title: "Cache Management".to_string(),
+                    description: None,
                 }));
-
                 elements.push(UiElement::Button(ButtonConfig {
                     id: "clear_invalid_cache".to_string(),
                     label: "Prune Invalid/Corrupt Entries".to_string(),
                     action: Some(ButtonAction::Custom("prune_cache".to_string())),
                 }));
-
                 elements.push(UiElement::Button(ButtonConfig {
                     id: "clear_all_cache".to_string(),
                     label: "Clear All DLSite Cache".to_string(),
-                    // We trigger a warning/confirmation dialog first
                     action: Some(ButtonAction::ShowDialog("confirm_clear_cache".to_string())),
                 }));
+                elements.push(UiElement::GroupEnd);
 
-                // Debug
-                elements.push(UiElement::Label(LabelConfig {
-                    text: "Debug".to_string(),
-                    bold: true,
-                    size: Some(16.0),
+                // Debug group
+                elements.push(UiElement::GroupBegin(SettingsGroupHeader {
+                    title: "Debug".to_string(),
+                    description: Some(
+                        "Diagnostic helpers — leave off unless troubleshooting.".to_string(),
+                    ),
                 }));
-
                 elements.push(UiElement::Checkbox(CheckboxConfig {
                     id: "dump_html_debug".to_string(),
                     label: "Dump HTML to file on Geo-Block".to_string(),
                     checked: dump_html_debug,
                 }));
-                
+                elements.push(UiElement::GroupEnd);
+
                 PluginLayout::Single(elements)
             },
             "Panel" => {
