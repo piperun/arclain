@@ -112,89 +112,98 @@ impl PluginManager {
             };
 
             for (plugin_id, instance_arc) in dispatch_list {
-                let mut instance = instance_arc.lock();
-
-                // Match event to set context and dispatch
-                match &event {
+                // Phase 1: under lock — set archive context and dispatch
+                // the event. The plugin's regex check is fast, so the lock
+                // is only held briefly here.
+                let actions = match &event {
                     PluginEvent::OnArchiveOpen { path, password, .. } => {
-                        // Set archive context (fast, no WASM call)
+                        let mut instance = instance_arc.lock();
                         instance.set_archive_context(Some(path.clone()), password.clone());
 
-                        // Dispatch to plugin (fast — plugin only does regex detection,
-                        // returns RequestFetch action if code found)
                         let id = "event:archive_opened".to_string();
                         let value = Some(path.clone());
 
                         match instance.send_ui_event(&id, value) {
-                            Ok(actions) => {
-                                // Process RequestFetch actions on this background thread
-                                for action in actions {
-                                    if let crate::types::PluginAction::RequestFetch { key } = action {
-                                        info!("[EventWorker] Processing RequestFetch: {}", key);
-
-                                        let parts: Vec<&str> = key.splitn(2, ':').collect();
-                                        let (source, product_id) = if parts.len() == 2 {
-                                            (parts[0], parts[1])
-                                        } else {
-                                            ("dlsite", key.as_str())
-                                        };
-
-                                        // Try gameta server first, fall back to having the
-                                        // plugin do its own fetch via the host's HTTP capability
-                                        // when the server is missing or returns nothing.
-                                        let mut handled_by_server = false;
-                                        if let Some(ref client) = instance.get_gameta_client() {
-                                            let meta = client.get_metadata(source, product_id)
-                                                .ok()
-                                                .flatten()
-                                                .or_else(|| {
-                                                    client.fetch_metadata(source, product_id, false)
-                                                        .ok()
-                                                        .and_then(|r| r.metadata)
-                                                });
-                                            if let Some(meta) = meta {
-                                                if let Ok(json_val) = serde_json::to_value(&meta) {
-                                                    if let Some(ref signal) = instance.get_metadata_signal() {
-                                                        signal.set(Some(json_val));
-                                                        info!(
-                                                            "[EventWorker] Set metadata signal for {} via gameta server",
-                                                            product_id
-                                                        );
-                                                        handled_by_server = true;
-                                                    }
-                                                }
-                                            } else {
-                                                info!(
-                                                    "[EventWorker] gameta server returned no metadata for {}, falling back to native fetch",
-                                                    product_id
-                                                );
-                                            }
-                                        }
-
-                                        if !handled_by_server {
-                                            // Ask the plugin to fetch via its own HTTP path. The
-                                            // plugin holds the lock during the HTTP call, but
-                                            // this is the auto-fetch path so it only fires once
-                                            // per archive open.
-                                            let event = format!("do_native_fetch:{}", key);
-                                            info!("[EventWorker] Dispatching native fetch: {}", event);
-                                            if let Err(e) = instance.send_ui_event(&event, None) {
-                                                error!(
-                                                    "[EventWorker] Native fetch dispatch failed for {}: {:?}",
-                                                    key, e
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            Ok(actions) => actions,
                             Err(e) => {
                                 error!("Event worker error for {}: {:?}", plugin_id, e);
+                                continue;
                             }
                         }
                     }
-                    _ => {
-                        // Other events (future)
+                    _ => continue, // other events (future)
+                };
+
+                // Phase 2: process actions WITHOUT holding the instance
+                // lock, so concurrent UI renders and other operations on
+                // the same plugin can proceed during the gameta HTTP
+                // round-trip. Snapshot the client/signal Arcs under a brief
+                // lock, drop it, then run the blocking HTTP outside.
+                for action in actions {
+                    let crate::types::PluginAction::RequestFetch { key } = action else {
+                        continue;
+                    };
+                    info!("[EventWorker] Processing RequestFetch: {}", key);
+
+                    let parts: Vec<&str> = key.splitn(2, ':').collect();
+                    let (source, product_id) = if parts.len() == 2 {
+                        (parts[0], parts[1])
+                    } else {
+                        ("dlsite", key.as_str())
+                    };
+
+                    let (gameta_client, metadata_signal) = {
+                        let instance = instance_arc.lock();
+                        (instance.get_gameta_client(), instance.get_metadata_signal())
+                    };
+
+                    let mut handled_by_server = false;
+                    if let Some(client) = gameta_client {
+                        let meta = client
+                            .get_metadata(source, product_id)
+                            .ok()
+                            .flatten()
+                            .or_else(|| {
+                                client
+                                    .fetch_metadata(source, product_id, false)
+                                    .ok()
+                                    .and_then(|r| r.metadata)
+                            });
+                        if let Some(meta) = meta {
+                            if let Ok(json_val) = serde_json::to_value(&meta) {
+                                if let Some(signal) = metadata_signal {
+                                    signal.set(Some(json_val));
+                                    info!(
+                                        "[EventWorker] Set metadata signal for {} via gameta server",
+                                        product_id
+                                    );
+                                    handled_by_server = true;
+                                }
+                            }
+                        } else {
+                            info!(
+                                "[EventWorker] gameta server returned no metadata for {}, falling back to native fetch",
+                                product_id
+                            );
+                        }
+                    }
+
+                    if !handled_by_server {
+                        // Native fallback. The plugin still holds the
+                        // lock during its own HTTP call inside
+                        // send_ui_event — releasing the lock there would
+                        // require plugin-host architecture changes.
+                        // This auto-fetch path only fires once per
+                        // archive open.
+                        let event_name = format!("do_native_fetch:{}", key);
+                        info!("[EventWorker] Dispatching native fetch: {}", event_name);
+                        let mut instance = instance_arc.lock();
+                        if let Err(e) = instance.send_ui_event(&event_name, None) {
+                            error!(
+                                "[EventWorker] Native fetch dispatch failed for {}: {:?}",
+                                key, e
+                            );
+                        }
                     }
                 }
             }
