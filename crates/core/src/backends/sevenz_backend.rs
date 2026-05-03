@@ -82,7 +82,7 @@ impl ArchiveBackend for SevenZBackend {
 
         let reader = ArchiveReader::open(path, pwd).context("Failed to open 7z archive")?;
 
-        let mut entries = Vec::new();
+        let mut entries = Vec::with_capacity(reader.archive().files.len());
         let mut any_encrypted = false;
         let headers_encrypted = false; // 7z-rust2 doesn't easily expose this
 
