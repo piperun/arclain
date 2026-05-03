@@ -117,60 +117,87 @@ impl PluginManager {
         })
     }
 
+    /// Snapshot the per-plugin instance Arcs under a brief
+    /// `plugins.read()`, then drop the read guard. Every setter below
+    /// uses this so `instance.lock()` and downstream mutations
+    /// (`whitelist.write()` in particular) never run while the plugins
+    /// RwLock is held — which would otherwise create a deadlock cycle
+    /// with any concurrent path that holds `whitelist.read()` and
+    /// wants `plugins.read()` (parking_lot writer-preference for new
+    /// readers).
+    fn instance_snapshot(
+        &self,
+    ) -> Vec<Arc<parking_lot::Mutex<crate::runtime::PluginInstance>>> {
+        let plugins = self.plugins.read();
+        plugins.values().map(|p| p.instance.clone()).collect()
+    }
+
     /// Set the metadata signal for reactive updates
     pub fn set_metadata_signal(
         &mut self,
         signal: arclain_signals::Signal<Option<serde_json::Value>>,
     ) {
         self.metadata_signal = Some(signal.clone());
-        let plugins = self.plugins.read();
-        for plugin in plugins.values() {
-            let mut instance = plugin.instance.lock();
-            instance.set_metadata_signal(Some(signal.clone()));
+        for instance in self.instance_snapshot() {
+            instance.lock().set_metadata_signal(Some(signal.clone()));
         }
     }
 
     /// Update the library service for all plugins
     pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
         self.library_service = Some(lib_svc.clone());
-        let plugins = self.plugins.read();
-        for plugin in plugins.values() {
-            let mut instance = plugin.instance.lock();
-            instance.set_library_service(Some(lib_svc.clone()));
+        for instance in self.instance_snapshot() {
+            instance.lock().set_library_service(Some(lib_svc.clone()));
         }
     }
 
     /// Set content cache
     pub fn set_content_cache(&mut self, cache: Arc<arclain_data::ContentCache>) {
         self.content_cache = Some(cache.clone());
-        let plugins = self.plugins.read();
-        for plugin in plugins.values() {
-            let mut instance = plugin.instance.lock();
-            instance.set_content_cache(Some(cache.clone()));
+        for instance in self.instance_snapshot() {
+            instance.lock().set_content_cache(Some(cache.clone()));
         }
     }
 
     /// Set resource manager
     pub fn set_resource_manager(&mut self, manager: Arc<arclain_data::ResourceManager>) {
         self.resource_manager = Some(manager.clone());
-        let plugins = self.plugins.read();
-        for plugin in plugins.values() {
-            let mut instance = plugin.instance.lock();
-            instance.set_resource_manager(Some(manager.clone()));
+        for instance in self.instance_snapshot() {
+            instance.lock().set_resource_manager(Some(manager.clone()));
         }
     }
 
-    /// Set async http client
+    /// Set async http client. Snapshots `(id, instance, network_domains)`
+    /// under `plugins.read()`, drops the read guard, then takes per-plugin
+    /// `instance.lock()` and `client.approve_domain()` (which acquires
+    /// `whitelist.write()`). Without the snapshot/drop, plugins.read +
+    /// whitelist.write nest, forming a deadlock cycle (see
+    /// `tests/c1_cascading_lock_test.rs`).
     pub fn set_async_http_client(&mut self, client: Arc<arclain_network::AsyncHttpClient>) {
         self.async_http_client = Some(client.clone());
-        let plugins = self.plugins.read();
-        for (plugin_id, plugin) in plugins.iter() {
-            let mut instance = plugin.instance.lock();
-            instance.set_async_http_client(Some(client.clone()));
 
-            // Auto-approve network domains from manifest for already-loaded plugins
-            for domain in &plugin.manifest.capabilities.network_domains {
-                client.approve_domain(plugin_id, domain);
+        let snapshot: Vec<(
+            String,
+            Arc<parking_lot::Mutex<crate::runtime::PluginInstance>>,
+            Vec<String>,
+        )> = {
+            let plugins = self.plugins.read();
+            plugins
+                .iter()
+                .map(|(id, p)| {
+                    (
+                        id.clone(),
+                        p.instance.clone(),
+                        p.manifest.capabilities.network_domains.clone(),
+                    )
+                })
+                .collect()
+        };
+
+        for (plugin_id, instance, domains) in snapshot {
+            instance.lock().set_async_http_client(Some(client.clone()));
+            for domain in &domains {
+                client.approve_domain(&plugin_id, domain);
             }
         }
     }
@@ -181,19 +208,17 @@ impl PluginManager {
         client: Arc<arclain_network::features::gameta_client::GametaClient>,
     ) {
         self.gameta_client = Some(client.clone());
-        let plugins = self.plugins.read();
-        for plugin in plugins.values() {
-            let mut instance = plugin.instance.lock();
-            instance.set_gameta_client(Some(client.clone()));
+        for instance in self.instance_snapshot() {
+            instance.lock().set_gameta_client(Some(client.clone()));
         }
     }
 
     /// Set the archive context for all plugins
     pub fn set_archive_context(&mut self, archive_path: Option<String>, password: Option<String>) {
-        let plugins = self.plugins.read();
-        for plugin in plugins.values() {
-            let mut instance = plugin.instance.lock();
-            instance.set_archive_context(archive_path.clone(), password.clone());
+        for instance in self.instance_snapshot() {
+            instance
+                .lock()
+                .set_archive_context(archive_path.clone(), password.clone());
         }
     }
 }
