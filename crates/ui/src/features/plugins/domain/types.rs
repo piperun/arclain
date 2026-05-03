@@ -1,6 +1,9 @@
 //! Plugin UI type definitions
 
+use arclain_plugins::types::PluginAction;
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// UI representation of a plugin
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -82,6 +85,12 @@ pub struct PluginsListState {
     pub show_permissions: bool,
     /// Filter text for searching
     pub filter_text: String,
+    /// Plugin actions emitted from background `send_ui_event` threads
+    /// in detail_view, drained at the start of the next render so the
+    /// actions reach `process_plugin_actions`. Without this long-lived
+    /// queue, actions pushed by spawned threads disappear when the
+    /// render function returns and its local sink is dropped.
+    pub pending_plugin_actions: Arc<Mutex<Vec<(String, PluginAction)>>>,
 }
 
 impl PluginsListState {
