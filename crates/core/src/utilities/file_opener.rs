@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::{debug, info};
@@ -152,14 +153,14 @@ impl FileOpener {
 
     /// Add common DLL dependencies for Windows executables
     fn add_dll_dependencies(&self, files: &mut Vec<String>, all_entries: &[String]) {
-        // Add .dll files from common locations
+        let mut seen: HashSet<String> = files.iter().cloned().collect();
         for entry in all_entries {
             let lower = entry.to_lowercase();
-            if lower.ends_with(".dll") || lower.ends_with(".config") {
-                if !files.contains(entry) {
-                    debug!("Adding potential dependency: {}", entry);
-                    files.push(entry.clone());
-                }
+            if (lower.ends_with(".dll") || lower.ends_with(".config"))
+                && seen.insert(entry.clone())
+            {
+                debug!("Adding potential dependency: {}", entry);
+                files.push(entry.clone());
             }
         }
     }
