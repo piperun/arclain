@@ -52,17 +52,18 @@ pub fn migrate_to_gameta_schema(
 
     tracing::info!("[Migration] Old arclain schema detected, migrating to gameta format...");
 
-    // Back up the database file
+    // Back up the database file before the destructive DROP TABLE. If the
+    // backup fails we abort the migration — the user can fix the cause
+    // (full disk, perms, stale .bak path) and retry.
     if let Some(path) = db_path {
         let backup_path = path.with_extension("sqlite.bak");
-        match std::fs::copy(path, &backup_path) {
-            Ok(_) => tracing::info!("[Migration] Backup created at {:?}", backup_path),
-            Err(e) => tracing::warn!(
-                "[Migration] Failed to create backup at {:?}: {}",
+        std::fs::copy(path, &backup_path).with_context(|| {
+            format!(
+                "Failed to create migration backup at {:?}; refusing to proceed with destructive schema migration",
                 backup_path,
-                e
-            ),
-        }
+            )
+        })?;
+        tracing::info!("[Migration] Backup created at {:?}", backup_path);
     }
 
     // Read all rows from old table
@@ -608,25 +609,19 @@ mod tests {
 
     /// Regression test for C4 from `docs/AUDIT_2026-05-03.md`.
     ///
-    /// `migrate_to_gameta_schema` (lines 56-66) attempts a `.sqlite.bak`
-    /// backup via `std::fs::copy`, but only logs a warning if the copy
-    /// fails — the destructive `DROP TABLE` then proceeds anyway. This
-    /// violates "never destroy without verified backup": if the new-schema
-    /// population then fails partway, the user has no recovery path.
+    /// Pre-fix, `migrate_to_gameta_schema` only logged a warning when the
+    /// `.sqlite.bak` backup failed and proceeded with the destructive
+    /// `DROP TABLE` — violating "never destroy without verified backup."
+    /// Post-fix, a backup failure aborts the migration so the user can
+    /// fix the cause (full disk, perms, stale .bak path) and retry.
     ///
     /// Force the backup to fail by pre-creating `<db>.sqlite.bak` as a
-    /// *directory* — `std::fs::copy` then fails with `Is a directory` /
-    /// `Access is denied`, cross-platform. Currently, migration still
-    /// returns `Ok(MigrationResult::Migrated{..})` and the DROP TABLE
-    /// went through. The backup directory is untouched (proving the
-    /// copy failed), and the DB now has the new schema (proving the
-    /// destructive migration proceeded).
-    ///
-    /// After the C4 fix (propagate the backup error), this test should
-    /// assert the function returns `Err` and the original schema is
-    /// preserved.
+    /// directory — `std::fs::copy` fails cross-platform when the
+    /// destination is a directory. Assert the function returns `Err`,
+    /// the backup directory is untouched, and the original schema is
+    /// preserved (the destructive DROP TABLE didn't run).
     #[test]
-    fn c4_migration_proceeds_despite_backup_failure() {
+    fn c4_migration_aborts_on_backup_failure() {
         let temp = tempfile::tempdir().unwrap();
         let db_path = temp.path().join("library.sqlite");
         let backup_path = temp.path().join("library.sqlite.bak");
@@ -653,35 +648,26 @@ mod tests {
         )
         .unwrap();
 
-        // Sanity: the destructive path won't fire if has_old_schema is wrong.
         assert!(has_old_schema(&conn).unwrap());
 
         let result = migrate_to_gameta_schema(&conn, Some(&db_path));
 
-        // C4: migration returned Ok despite backup failing.
         assert!(
-            matches!(
-                result,
-                Ok(MigrationResult::Migrated {
-                    total: 1,
-                    converted: 1,
-                })
-            ),
-            "C4 not reproduced: expected migration to proceed silently, got: {:?}",
-            result.as_ref().map(|_| "Ok").unwrap_or("Err"),
+            result.is_err(),
+            "C4 fix regressed: migration returned Ok despite backup failing",
         );
 
-        // The .bak directory should be untouched — proving fs::copy failed.
+        // The .bak directory should be untouched.
         assert!(
             backup_path.is_dir(),
-            "C4 sanity: backup_path should still be a directory; if fs::copy somehow succeeded, the test setup is wrong"
+            "Sanity: backup destination should still be a directory",
         );
 
-        // And the DB now has the new schema — proving the destructive
-        // DROP TABLE + CREATE TABLE went through despite no backup.
+        // And the original schema is still in place — destructive ops
+        // never ran.
         assert!(
-            !has_old_schema(&conn).unwrap(),
-            "C4 sanity: schema should have been migrated to gameta format"
+            has_old_schema(&conn).unwrap(),
+            "C4 fix regressed: old schema was destroyed even though backup failed",
         );
     }
 }
