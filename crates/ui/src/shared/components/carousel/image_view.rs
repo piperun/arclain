@@ -1,7 +1,7 @@
 //! Main image view component for carousel
 
 use super::CarouselEvent;
-use crate::shared::{async_image, theme::ThemeColors};
+use crate::shared::{async_image, theme::ThemeColors, SharedState};
 use arclain_data::ContentCache;
 use eframe::egui;
 use std::sync::Arc;
@@ -9,8 +9,11 @@ use std::sync::Arc;
 /// Main image display widget
 pub struct ImageView<'a> {
     cache_key: &'a str,
+    image_url: Option<&'a str>,
     colors: Option<&'a ThemeColors>,
     content_cache: Option<&'a Arc<ContentCache>>,
+    shared_state: Option<&'a SharedState>,
+    plugin_id: Option<&'a str>,
     enable_lightbox: bool,
 }
 
@@ -18,8 +21,11 @@ impl<'a> ImageView<'a> {
     pub fn new(cache_key: &'a str) -> Self {
         Self {
             cache_key,
+            image_url: None,
             colors: None,
             content_cache: None,
+            shared_state: None,
+            plugin_id: None,
             enable_lightbox: true,
         }
     }
@@ -31,6 +37,26 @@ impl<'a> ImageView<'a> {
 
     pub fn content_cache(mut self, cache: Option<&'a Arc<ContentCache>>) -> Self {
         self.content_cache = cache;
+        self
+    }
+
+    /// Source URL for cache-miss fetches. Without this, the view spins
+    /// forever when the bytes haven't been cached yet.
+    pub fn image_url(mut self, url: Option<&'a str>) -> Self {
+        self.image_url = url;
+        self
+    }
+
+    /// SharedState gives access to AsyncHttpClient + tokio runtime for the
+    /// cache-miss fetch path. Must be set together with `image_url`.
+    pub fn shared_state(mut self, shared: Option<&'a SharedState>) -> Self {
+        self.shared_state = shared;
+        self
+    }
+
+    /// Plugin id for proxy / domain-whitelist scoping when the fetch fires.
+    pub fn plugin_id(mut self, plugin_id: Option<&'a str>) -> Self {
+        self.plugin_id = plugin_id;
         self
     }
 
@@ -123,6 +149,31 @@ impl<'a> ImageView<'a> {
                 render_loading(painter, rect, colors);
                 ctx.request_repaint();
                 return false;
+            }
+        }
+
+        // 6. Cache miss — kick off a network fetch if we have a URL +
+        //    SharedState. Throttled to once per 30s per cache_key (so we
+        //    don't fire the same fetch every frame). The plugin emits the
+        //    URL in its Carousel config; we just need to act on it.
+        if let (Some(url), Some(shared)) = (self.image_url, self.shared_state) {
+            let fetch_id = egui::Id::new(("carousel_fetch", self.cache_key));
+            let now = std::time::Instant::now();
+            let last_fired: Option<std::time::Instant> =
+                ctx.data(|d| d.get_temp(fetch_id));
+            let should_fetch = match last_fired {
+                None => true,
+                Some(t) => now.duration_since(t).as_secs() > 30,
+            };
+            if should_fetch {
+                ctx.data_mut(|d| d.insert_temp(fetch_id, now));
+                crate::features::plugins::presentation::rendering::image::trigger_image_fetch(
+                    shared,
+                    self.plugin_id.map(|s| s.to_string()),
+                    url.to_string(),
+                    self.cache_key.to_string(),
+                    ctx.clone(),
+                );
             }
         }
 

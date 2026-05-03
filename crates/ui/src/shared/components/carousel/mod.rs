@@ -20,7 +20,7 @@ pub use image_view::ImageView;
 pub use nav_button::{NavButton, NavButtonStyle};
 pub use thumbnail_strip::{ThumbnailStrip, ThumbnailStripStyle};
 
-use crate::shared::theme::ThemeColors;
+use crate::shared::{theme::ThemeColors, SharedState};
 use arclain_data::ContentCache;
 use eframe::egui;
 use std::sync::Arc;
@@ -70,6 +70,8 @@ pub struct Carousel<'a> {
     config: CarouselConfig,
     colors: Option<&'a ThemeColors>,
     content_cache: Option<&'a Arc<ContentCache>>,
+    shared_state: Option<&'a SharedState>,
+    plugin_id: Option<&'a str>,
 }
 
 impl<'a> Carousel<'a> {
@@ -85,6 +87,8 @@ impl<'a> Carousel<'a> {
             config: CarouselConfig::default(),
             colors: None,
             content_cache: None,
+            shared_state: None,
+            plugin_id: None,
         }
     }
 
@@ -115,6 +119,19 @@ impl<'a> Carousel<'a> {
 
     pub fn content_cache(mut self, cache: &'a Arc<ContentCache>) -> Self {
         self.content_cache = Some(cache);
+        self
+    }
+
+    /// SharedState — needed for cache-miss network fetches. Without it, the
+    /// carousel images stay on a forever spinner because the image_view /
+    /// thumbnail_strip never trigger a download for missing bytes.
+    pub fn shared_state(mut self, shared: Option<&'a SharedState>) -> Self {
+        self.shared_state = shared;
+        self
+    }
+
+    pub fn plugin_id(mut self, plugin_id: Option<&'a str>) -> Self {
+        self.plugin_id = plugin_id;
         self
     }
 
@@ -195,10 +212,13 @@ impl<'a> Carousel<'a> {
             );
             x += content_width;
 
-            if let Some((cache_key, _)) = self.images.get(current_idx) {
+            if let Some((cache_key, image_url)) = self.images.get(current_idx) {
                 let image_event = ImageView::new(cache_key)
+                    .image_url(image_url.as_deref())
                     .colors(colors)
                     .content_cache(self.content_cache)
+                    .shared_state(self.shared_state)
+                    .plugin_id(self.plugin_id)
                     .enable_lightbox(self.config.enable_lightbox)
                     .show_at(ui, image_rect);
 
@@ -272,6 +292,8 @@ impl<'a> Carousel<'a> {
                     .max_width(strip_width)
                     .colors(colors)
                     .content_cache(self.content_cache)
+                    .shared_state(self.shared_state)
+                    .plugin_id(self.plugin_id)
                     .show_at(ui, strip_rect);
 
                 if let Some(idx) = strip_event {
