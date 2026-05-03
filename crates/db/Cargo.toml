@@ -8,7 +8,7 @@ name = "arclain_db"
 path = "src/lib.rs"
 
 [dependencies]
-anyhow = "1"
+anyhow.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
 diesel = { version = "2.2", features = ["sqlite", "returning_clauses_for_sqlite_3_35", "r2d2", "64-column-tables"] }
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
@@ -16,19 +16,19 @@ redb = "2.1"
 aes-gcm = "0.10"
 zeroize = "1.7"
 base64 = "0.22"
-dirs = "6"
+dirs.workspace = true
 rand = "0.8"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde.workspace = true
+serde_json.workspace = true
 uuid = { version = "1.0", features = ["v4"] }
 mini-orm = { path = "../mini-orm" }
-tracing = "0.1"
-chrono = "0.4"
+tracing.workspace = true
+chrono.workspace = true
 
 # External gameta dependencies (https://codeberg.org/0xdev/gameta)
 gameta_core = { path = "../../../../codeberg/gameta/gameta_core" }
 gameta_database = { path = "../../../../codeberg/gameta/gameta_database" }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true
 rand = "0.8"

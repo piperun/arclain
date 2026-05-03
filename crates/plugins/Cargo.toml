@@ -9,21 +9,21 @@ arclain_db = { path = "../db" }
 arclain_data = { path = "../data" }
 wasmtime = { version = "26.0.0", features = ["component-model", "cache"] }
 wasmtime-wasi = "26.0.0"
-anyhow = "1"
+anyhow.workspace = true
 thiserror = "2.0"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-tracing = "0.1"
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
 toml = "0.9.8"
-parking_lot = "0.12"
-dirs = "6.0.0"
+parking_lot.workspace = true
+dirs.workspace = true
 tokio = { version = "1", features = ["rt", "sync"] }
 rfd = "0.16.0"
 arclain-network = { path = "../network" }
 arclain_signals = { path = "../signals" }
-chrono = "0.4"
+chrono.workspace = true
 # External gameta dependency (https://codeberg.org/0xdev/gameta)
 gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", features = ["dlsite"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile.workspace = true

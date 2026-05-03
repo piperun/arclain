@@ -5,7 +5,7 @@ edition = "2021"
 description = "Minimal SQLite ORM with derive macro - shared between arclain and metastore"
 
 [dependencies]
-anyhow = "1.0"
+anyhow.workspace = true
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Re-export the derive macro
