@@ -17,7 +17,6 @@ tracing = "0.1"
 toml = "0.9.8"
 parking_lot = "0.12"
 dirs = "6.0.0"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
 tokio = { version = "1", features = ["rt", "sync"] }
 rfd = "0.16.0"
 arclain-network = { path = "../network" }
@@ -28,4 +27,3 @@ gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", features = ["dls
 
 [dev-dependencies]
 tempfile = "3"
-mockito = "1.5"
