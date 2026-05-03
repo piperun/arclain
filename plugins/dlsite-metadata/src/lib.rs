@@ -179,17 +179,27 @@ impl archust_plugin_sdk::Guest for Component {
         match extension_point.as_str() {
             "PluginButton" => {
                 use archust_plugin_sdk::current_archive_info;
-                
-                // Fetch button - only if archive is open
+
+                // Fetch button - only if archive is open. Show a Loading
+                // spinner instead while a fetch is already in flight so the
+                // button can't be re-clicked (and the user gets visual
+                // feedback that something is happening).
                 let mut buttons = vec![];
                 if current_archive_info().is_some() {
-                    buttons.push(UiElement::Button(ButtonConfig {
-                        id: "fetch_metadata".to_string(),
-                        label: "Fetch DLSite".to_string(),
-                        action: None,
-                    }));
+                    let in_progress = STATE.with(|s| s.borrow().fetch_in_progress);
+                    if in_progress {
+                        buttons.push(UiElement::Loading(LoadingConfig {
+                            message: Some("Fetching DLSite metadata\u{2026}".to_string()),
+                        }));
+                    } else {
+                        buttons.push(UiElement::Button(ButtonConfig {
+                            id: "fetch_metadata".to_string(),
+                            label: "Fetch DLSite".to_string(),
+                            action: None,
+                        }));
+                    }
                 }
-                
+
                 buttons.push(UiElement::Button(ButtonConfig {
                     id: "view_cache".to_string(),
                     label: "Browse DLSite".to_string(),
