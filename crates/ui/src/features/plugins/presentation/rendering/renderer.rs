@@ -182,7 +182,9 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
                 .main_height(max_height.unwrap_or(300.0))
                 .thumbnail_height(thumbnail_height.unwrap_or(60.0))
                 .enable_lightbox(*enable_lightbox)
-                .colors(ctx.colors);
+                .colors(ctx.colors)
+                .shared_state(ctx.shared_state)
+                .plugin_id(ctx.plugin_id);
 
             if let Some(cache) = ctx.content_cache {
                 carousel = carousel.content_cache(cache);

@@ -1,6 +1,6 @@
 //! Thumbnail strip component for carousel
 
-use crate::shared::{async_image, theme::ThemeColors};
+use crate::shared::{async_image, theme::ThemeColors, SharedState};
 use arclain_data::ContentCache;
 use eframe::egui;
 use std::sync::Arc;
@@ -53,6 +53,8 @@ pub struct ThumbnailStrip<'a> {
     max_width: f32,
     colors: Option<&'a ThemeColors>,
     content_cache: Option<&'a Arc<ContentCache>>,
+    shared_state: Option<&'a SharedState>,
+    plugin_id: Option<&'a str>,
 }
 
 impl<'a> ThumbnailStrip<'a> {
@@ -69,6 +71,8 @@ impl<'a> ThumbnailStrip<'a> {
             max_width: 500.0,
             colors: None,
             content_cache: None,
+            shared_state: None,
+            plugin_id: None,
         }
     }
 
@@ -89,6 +93,17 @@ impl<'a> ThumbnailStrip<'a> {
 
     pub fn content_cache(mut self, cache: Option<&'a Arc<ContentCache>>) -> Self {
         self.content_cache = cache;
+        self
+    }
+
+    /// SharedState for cache-miss fetches.
+    pub fn shared_state(mut self, shared: Option<&'a SharedState>) -> Self {
+        self.shared_state = shared;
+        self
+    }
+
+    pub fn plugin_id(mut self, plugin_id: Option<&'a str>) -> Self {
+        self.plugin_id = plugin_id;
         self
     }
 
@@ -118,7 +133,7 @@ impl<'a> ThumbnailStrip<'a> {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = self.style.spacing;
 
-                    for (i, (cache_key, _url)) in self.images.iter().enumerate() {
+                    for (i, (cache_key, url)) in self.images.iter().enumerate() {
                         let is_selected = i == self.current_index;
                         let thumb_size = self.style.thumb_size();
 
@@ -153,7 +168,7 @@ impl<'a> ThumbnailStrip<'a> {
 
                         // Render thumbnail
                         let inner_rect = rect.shrink(2.0);
-                        self.render_thumbnail(ui, cache_key, inner_rect, colors);
+                        self.render_thumbnail(ui, cache_key, url.as_deref(), inner_rect, colors);
 
                         // Handle click
                         if response.clicked() {
@@ -172,6 +187,7 @@ impl<'a> ThumbnailStrip<'a> {
         &self,
         ui: &egui::Ui,
         cache_key: &str,
+        url: Option<&str>,
         rect: egui::Rect,
         colors: &ThemeColors,
     ) {
@@ -210,6 +226,27 @@ impl<'a> ThumbnailStrip<'a> {
         if let Some(cache) = self.content_cache {
             if let Ok(Some(bytes)) = cache.get(cache_key) {
                 async_image::request_decode(ctx, cache_key, bytes);
+            } else if let (Some(u), Some(shared)) = (url, self.shared_state) {
+                // 5. Cache miss — fetch the image. Throttle to once / 30s
+                //    per cache_key so we don't spam the network every frame.
+                let fetch_id = egui::Id::new(("thumb_fetch", cache_key));
+                let now = std::time::Instant::now();
+                let last_fired: Option<std::time::Instant> =
+                    ctx.data(|d| d.get_temp(fetch_id));
+                let should_fetch = match last_fired {
+                    None => true,
+                    Some(t) => now.duration_since(t).as_secs() > 30,
+                };
+                if should_fetch {
+                    ctx.data_mut(|d| d.insert_temp(fetch_id, now));
+                    crate::features::plugins::presentation::rendering::image::trigger_image_fetch(
+                        shared,
+                        self.plugin_id.map(|s| s.to_string()),
+                        u.to_string(),
+                        cache_key.to_string(),
+                        ctx.clone(),
+                    );
+                }
             }
         }
 
