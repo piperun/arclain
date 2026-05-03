@@ -1,30 +1,23 @@
-//! Characterization test for C2 from `docs/AUDIT_2026-05-03.md`.
+//! Characterization tests for C2 from `docs/AUDIT_2026-05-03.md`.
 //!
-//! `crates/plugins/src/manager/dispatch.rs:115-186` (`event_worker`) takes
-//! `instance.lock()` on a plugin, then while holding that guard calls
-//! `client.get_metadata(...)` — a synchronous `reqwest::blocking` HTTP request
-//! with a 10s timeout. Any other code path that needs the same plugin's
-//! instance lock (every UI render that calls `get_top_tabs`,
-//! `get_ui_layout`, `get_all_settings`, etc.) is forced to wait for the
-//! HTTP round-trip to finish.
+//! Pre-fix, `crates/plugins/src/manager/dispatch.rs::event_worker` held
+//! `instance.lock()` across blocking `client.get_metadata` calls, forcing
+//! every other operation on the same plugin (every UI render that touched
+//! `get_top_tabs`, `get_ui_layout`, `get_all_settings`, etc.) to wait for
+//! the HTTP round-trip to finish.
 //!
-//! Constructing a real `PluginInstance` for testing requires a compiled WASM
-//! component and a full wasmtime engine, so we can't drive `event_worker`
-//! end-to-end here. Instead this test uses the same primitives the buggy
-//! path uses (`parking_lot::Mutex`, real `GametaClient`, real reqwest
-//! blocking HTTP, wiremock for the server) and reproduces the structure:
-//! lock the mutex, call `get_metadata` while holding it, then time how long
-//! a concurrent acquirer waits.
+//! Post-fix, `event_worker` snapshots `gameta_client` and `metadata_signal`
+//! under a brief lock, drops the lock, then runs the blocking HTTP call
+//! outside any lock. The native-fetch fallback re-acquires briefly for the
+//! WASM call.
 //!
-//! The assertion is that the concurrent waiter blocks for the full HTTP
-//! latency. This proves the C2 finding: the dispatch pattern at lines
-//! 115-186 holds the instance lock across a blocking network call.
-//!
-//! After the C2 fix (drop the instance lock before HTTP, re-acquire to push
-//! the result back into instance state), the production dispatch path
-//! should be covered by a separate regression test that exercises
-//! `event_worker` directly — likely with a stub plugin loaded into a real
-//! `PluginManager`. This test would then be retired or repurposed.
+//! These tests document the anti-pattern (test 1) and the fixed shape
+//! (test 2) using the same primitives `event_worker` uses
+//! (`parking_lot::Mutex`, real `GametaClient`, real reqwest blocking HTTP,
+//! wiremock). They both pass regardless of `dispatch.rs` state — they
+//! characterize Rust mutex semantics, not the production path. A true
+//! regression test against `event_worker` would need WASM scaffolding to
+//! load a stub plugin and is tracked separately.
 
 use arclain_network::features::gameta_client::{GametaClient, ServerConfig};
 use parking_lot::Mutex;
@@ -47,8 +40,11 @@ const FAST_LOCK_THRESHOLD: Duration = Duration::from_millis(150);
 /// HTTP duration. Below the actual HTTP_LATENCY to allow startup overhead.
 const SLOW_LOCK_THRESHOLD: Duration = Duration::from_millis(400);
 
+/// Pre-fix shape: lock held across the HTTP call. Concurrent acquirers
+/// wait the full round-trip. `event_worker` no longer follows this
+/// pattern; this test documents what it used to do.
 #[tokio::test]
-async fn c2_event_worker_pattern_holds_lock_during_get_metadata() {
+async fn c2_lock_held_during_blocking_http_blocks_other_acquirers() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/v1/metadata/dlsite/RJ12345"))
@@ -111,9 +107,10 @@ async fn c2_event_worker_pattern_holds_lock_during_get_metadata() {
     );
 }
 
-/// Counterexample: when the lock is dropped before HTTP, a concurrent
-/// acquirer should not be forced to wait for HTTP. This is the shape the
-/// fix should restore in `event_worker`.
+/// Post-fix shape: snapshot the client under the lock, drop the lock,
+/// then run the blocking HTTP. Concurrent acquirers acquire fast.
+/// This is the shape `event_worker` now uses (with the gameta_client
+/// + metadata_signal snapshot).
 #[tokio::test]
 async fn c2_dropping_lock_before_http_does_not_block_others() {
     let server = MockServer::start().await;
