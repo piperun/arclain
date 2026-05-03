@@ -29,6 +29,29 @@ pub fn render(
 ) -> bool {
     let mut needs_refresh = false;
 
+    // Drain any plugin actions that background `send_ui_event` threads
+    // pushed since the last render. Without this, the actions sit in
+    // `state.pending_plugin_actions` indefinitely (or, pre-fix, were
+    // pushed into a per-frame local sink that got dropped on return).
+    if let Some(shared) = shared {
+        let mut toaster = shared.toaster.lock();
+        let dialog_signal = shared.signals().plugin_dialog_state.clone();
+        let mut dialog_state = dialog_signal.get();
+        drain_pending_plugin_actions(
+            &state.pending_plugin_actions,
+            &mut toaster,
+            &mut dialog_state,
+            Some(&shared.refresh_requests),
+            Some(&shared.signals().lightbox_state),
+            Some(shared),
+        );
+        dialog_signal.set(dialog_state);
+    } else {
+        // No shared state available (unusual); drop the queue to avoid
+        // unbounded growth.
+        state.pending_plugin_actions.lock().clear();
+    }
+
     let selected_id = match &state.selected_plugin {
         Some(id) => id.clone(),
         None => return false,
@@ -214,6 +237,7 @@ pub fn render(
                     app_state,
                     shared,
                     content_cache,
+                    &state.pending_plugin_actions,
                 );
             } else {
                 ui.label(
@@ -320,6 +344,7 @@ fn render_plugin_ui(
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
     content_cache: Option<&Arc<arclain_data::ContentCache>>,
+    pending_plugin_actions: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
 ) {
     let mgr_arc = if let Some(shared) = shared {
         if let Some(mgr_mutex) = shared.services.plugin_manager.clone() {
@@ -365,10 +390,13 @@ fn render_plugin_ui(
                 let config_service_clone: Option<Arc<arclain_core::ConfigService>> =
                     config_service.clone();
 
-                // Collect actions for processing after callback
-                let collected_actions: Arc<Mutex<Vec<arclain_plugins::types::PluginAction>>> =
-                    Arc::new(Mutex::new(Vec::new()));
-                let actions_sink = collected_actions.clone();
+                // Push actions into the long-lived `pending_plugin_actions`
+                // sink so the next render picks them up via
+                // `drain_pending_plugin_actions`. The previous design used a
+                // per-render `Arc<Mutex<Vec<_>>>` whose only owner was this
+                // function — when render returned, the spawned thread's
+                // pushes ended up in a dropped buffer.
+                let actions_sink = pending_plugin_actions.clone();
 
                 let mut event_callback = Box::new(move |id: &str, value: Option<String>| {
                     let mgr_thread = mgr_clone.clone();
@@ -392,11 +420,10 @@ fn render_plugin_ui(
                             }
                         };
 
-                        // Collect actions for later processing (though async)
                         if let Some(actions) = actions {
                             let mut s = sink.lock();
                             for a in actions {
-                                s.push(a);
+                                s.push((pid_thread.clone(), a));
                             }
                         }
 
@@ -425,10 +452,10 @@ fn render_plugin_ui(
                     shared,
                     Some(plugin_id),
                 );
-
-                // Note: Actions are collected async via thread, so we can't process them
-                // synchronously here. For detail_view, toasts etc. will fire after thread completes.
-                // A future improvement could use channels for immediate processing.
+                // Actions pushed by the spawned thread are now visible to
+                // `drain_pending_plugin_actions` on the NEXT render of this
+                // panel. Toasts, RefreshPanel, etc. propagate within ~1
+                // frame instead of being silently dropped.
             }
         }
         Some(Err(e)) => {
@@ -446,5 +473,118 @@ fn render_plugin_ui(
                 );
             });
         }
+    }
+}
+
+/// Drain a queue of plugin actions into `process_plugin_actions`.
+///
+/// Background `send_ui_event` threads in this view push actions into a
+/// long-lived sink on `PluginsListState`. Each render of the detail
+/// panel calls this to forward them to toaster / refresh_requests /
+/// dialog state. Without it, `ShowToast`, `ShowMessage`, `RefreshPanel`,
+/// `EmitMetadata`, etc. emitted by plugin events are silently dropped.
+///
+/// Takes its dependencies explicitly rather than going through
+/// `SharedState` so it remains unit-testable without bootstrapping the
+/// full app state.
+pub(crate) fn drain_pending_plugin_actions(
+    pending: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
+    toaster: &mut arclain_widgets::Toaster,
+    dialog_state: &mut crate::features::plugins::domain::state::PluginDialogState,
+    refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
+    lightbox_signal: Option<&arclain_signals::Signal<crate::shared::dialogs::LightboxState>>,
+    shared_state: Option<&SharedState>,
+) {
+    let drained: Vec<(String, arclain_plugins::types::PluginAction)> =
+        std::mem::take(&mut *pending.lock());
+    for (plugin_id, action) in drained {
+        crate::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
+            vec![action],
+            &plugin_id,
+            dialog_state,
+            toaster,
+            refresh_requests,
+            lightbox_signal,
+            shared_state,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arclain_plugins::types::PluginAction;
+    use arclain_widgets::Toaster;
+    use crate::features::plugins::domain::state::PluginDialogState;
+
+    /// Regression test for C7 from `docs/AUDIT_2026-05-03.md`.
+    ///
+    /// Pre-fix, plugin actions returned by `send_ui_event` in the
+    /// detail view were pushed into a function-local
+    /// `Arc<Mutex<Vec<PluginAction>>>` whose only owner was the render
+    /// function itself. When render returned the local was dropped and
+    /// the actions were lost — the inline comment at the bottom of the
+    /// match arm even said "we can't process them synchronously here".
+    ///
+    /// Post-fix, actions land in `state.pending_plugin_actions` (a
+    /// long-lived sink on `PluginsListState`) and the next render
+    /// calls `drain_pending_plugin_actions`. This test pre-loads a
+    /// `RefreshPanel` action, runs the drain, and asserts the queue
+    /// is empty AND the observable side effect (push into the
+    /// `refresh_requests` Vec) happened.
+    #[test]
+    fn c7_drain_processes_pending_actions() {
+        let pending: Arc<Mutex<Vec<(String, PluginAction)>>> = Arc::new(Mutex::new(vec![(
+            "test_plugin".to_string(),
+            PluginAction::RefreshPanel {
+                extension_point: "info_panel".to_string(),
+            },
+        )]));
+        let mut toaster = Toaster::new();
+        let mut dialog_state = PluginDialogState::default();
+        let refresh_requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+        drain_pending_plugin_actions(
+            &pending,
+            &mut toaster,
+            &mut dialog_state,
+            Some(&refresh_requests),
+            None,
+            None,
+        );
+
+        assert!(
+            pending.lock().is_empty(),
+            "C7 fix regressed: pending queue should be empty after drain",
+        );
+        assert_eq!(
+            refresh_requests.lock().len(),
+            1,
+            "C7 fix regressed: RefreshPanel should have pushed an entry into refresh_requests",
+        );
+        assert_eq!(
+            refresh_requests.lock()[0],
+            "info_panel",
+            "C7 fix regressed: pushed entry should match the action's extension_point",
+        );
+    }
+
+    /// Drain on an empty queue should be a no-op.
+    #[test]
+    fn c7_drain_on_empty_queue_is_noop() {
+        let pending: Arc<Mutex<Vec<(String, PluginAction)>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut toaster = Toaster::new();
+        let mut dialog_state = PluginDialogState::default();
+
+        drain_pending_plugin_actions(
+            &pending,
+            &mut toaster,
+            &mut dialog_state,
+            None,
+            None,
+            None,
+        );
+
+        assert!(pending.lock().is_empty());
     }
 }
