@@ -460,10 +460,14 @@ fn move_dir(src: &Path, dest: &Path) -> Result<()> {
     }
 }
 
-/// Cross-device fallback: copy the tree, then remove the source.
+/// Cross-device fallback: copy the tree, then remove the source. If the
+/// removal fails after a successful copy, both `src` and `dest` will hold
+/// identical data; we propagate the error so callers can decide whether
+/// to clean up `dest` or surface a warning to the user.
 fn move_dir_via_copy(src: &Path, dest: &Path) -> Result<()> {
     copy_dir_recursive(src, dest)?;
-    std::fs::remove_dir_all(src).ok();
+    std::fs::remove_dir_all(src)
+        .with_context(|| format!("Removing source dir after copy: {:?}", src))?;
     Ok(())
 }
 
@@ -588,32 +592,23 @@ mod tests {
 
     /// Regression test for C3 from `docs/AUDIT_2026-05-03.md`.
     ///
-    /// `move_dir_via_copy` (the cross-device fallback) calls
-    /// `std::fs::remove_dir_all(src).ok()` — the `.ok()` silently swallows
-    /// any removal error. After the cross-device copy succeeds, if removal
-    /// of the source then fails, the function still returns `Ok(())` and
-    /// the caller sees no signal that the source directory still exists.
-    /// Subsequent pipeline runs see the leftover work-dir and may corrupt
-    /// `WorkDirGuard` cleanup or duplicate archives in the user's library.
+    /// Pre-fix, `move_dir_via_copy` swallowed `remove_dir_all` failures with
+    /// `.ok()` — the function returned `Ok(())` even when the source dir
+    /// couldn't be removed, leaving identical data at both `src` and `dest`.
+    /// Subsequent pipeline runs would then see the leftover work-dir and
+    /// could corrupt `WorkDirGuard` cleanup.
     ///
-    /// This test forces removal to fail by holding an exclusive child
-    /// process or, on Unix, by removing write permission on the parent of
-    /// `src` so that unlinking entries inside `src` is impossible.
-    /// It then asserts that `move_dir_via_copy` returns `Ok` despite `src`
-    /// still existing — confirming the silent-failure pattern.
-    ///
-    /// After the C3 fix (replace `.ok()` with `.with_context(...)?`), this
-    /// test should be updated to assert the function returns `Err`.
+    /// Post-fix, removal failures propagate via `with_context`. This test
+    /// engineers a removal failure (held file handle on Windows; chmodded
+    /// parent on Unix) and asserts the error surfaces. The destination copy
+    /// is intentionally left in place so the caller can choose to clean it
+    /// up or surface a partial-success warning.
     #[cfg(unix)]
     #[test]
-    fn c3_move_dir_via_copy_silently_swallows_remove_failure() {
+    fn c3_move_dir_via_copy_propagates_remove_failure() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
-        // Layout: temp/parent/src/file.txt
-        // We chmod `parent` to read+execute only (0o555). That blocks any
-        // unlink inside `parent`, so `remove_dir_all(parent/src)` fails on
-        // its first attempt to remove a child inside the locked parent.
         let parent = temp.path().join("parent");
         std::fs::create_dir_all(&parent).unwrap();
         let src = parent.join("src");
@@ -622,7 +617,6 @@ mod tests {
         let dest = temp.path().join("dest");
 
         // Strip write+exec from parent so children can't be unlinked.
-        // (read+execute = traversal only)
         let mut perms = std::fs::metadata(&parent).unwrap().permissions();
         perms.set_mode(0o555);
         std::fs::set_permissions(&parent, perms).unwrap();
@@ -635,32 +629,20 @@ mod tests {
         std::fs::set_permissions(&parent, perms).unwrap();
 
         assert!(
-            result.is_ok(),
-            "C3 not reproduced: move_dir_via_copy returned Err — \
-             either remove unexpectedly succeeded or the .ok() was already replaced",
-        );
-        assert!(
-            src.exists(),
-            "C3 not reproduced: src was removed despite locked parent — \
-             the test fault setup didn't actually block removal",
+            result.is_err(),
+            "C3 fix regressed: move_dir_via_copy returned Ok despite a blocked remove",
         );
         assert!(
             dest.join("file.txt").exists(),
-            "Sanity: dest copy must have succeeded for this test to be meaningful",
+            "Dest copy should still be in place — caller decides whether to clean up",
         );
     }
 
-    /// Windows variant of the C3 regression test. Uses an open `File` handle
-    /// without `FILE_SHARE_DELETE` to block deletion. Rust's
-    /// `std::fs::File::open` shares delete by default on Windows, so we use
-    /// the `OpenOptions` extension to explicitly request exclusive access.
-    ///
-    /// If this test ends up flaky on a given Windows version (for example
-    /// due to `remove_dir_all` retrying internally), it should be replaced
-    /// with a dedicated fault-injection helper.
+    /// Windows variant of the C3 regression test. Holds a file handle
+    /// without `FILE_SHARE_DELETE` to block removal.
     #[cfg(windows)]
     #[test]
-    fn c3_move_dir_via_copy_silently_swallows_remove_failure() {
+    fn c3_move_dir_via_copy_propagates_remove_failure() {
         use std::os::windows::fs::OpenOptionsExt;
 
         const FILE_SHARE_READ: u32 = 0x1;
@@ -674,9 +656,6 @@ mod tests {
         std::fs::write(&file_path, "hello").unwrap();
         let dest = temp.path().join("dest");
 
-        // Open the file without delete-share. Holding this handle blocks
-        // any other process (including this one's remove_dir_all) from
-        // unlinking the file.
         let _locked = std::fs::OpenOptions::new()
             .read(true)
             .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
@@ -686,23 +665,15 @@ mod tests {
         let result = move_dir_via_copy(&src, &dest);
 
         assert!(
-            result.is_ok(),
-            "C3 not reproduced: move_dir_via_copy returned Err — \
-             either the OS allowed deletion of the open handle or the .ok() \
-             was already replaced. Got: {:?}",
+            result.is_err(),
+            "C3 fix regressed: move_dir_via_copy returned Ok despite a blocked remove. Got: {:?}",
             result,
         );
         assert!(
-            src.exists(),
-            "C3 not reproduced: src was removed despite the held file handle — \
-             the OS may have queued deletion (DELETE_ON_CLOSE) after the handle drops",
-        );
-        assert!(
             dest.join("locked.txt").exists(),
-            "Sanity: dest copy must have succeeded for this test to be meaningful",
+            "Dest copy should still be in place — caller decides whether to clean up",
         );
 
-        // Drop the handle so tempdir cleanup can succeed.
         drop(_locked);
     }
 }
