@@ -6,4 +6,4 @@ edition = "2021"
 [dependencies]
 egui = "0.33.0"
 egui-phosphor = "0.11.0"
-tracing = "0.1"
+tracing.workspace = true
