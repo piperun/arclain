@@ -15,15 +15,21 @@ impl CacheDb {
         // Try to open the database
         let db_result = SqliteDb::open(path_ref);
 
-        // If opening failed and the file exists, it might be corrupt - try to delete and recreate
+        // If opening failed and the file exists, it's likely corrupt — wipe
+        // the main file *and* the WAL/SHM siblings so the recreate doesn't
+        // pick up stale journal records. If any sibling can't be removed
+        // (typically: another process still has it open), abort rather
+        // than press on into an inconsistent state.
         if db_result.is_err() && path_ref.exists() {
             tracing::warn!("Cache database appears corrupt, attempting to recreate...");
-            if let Err(e) = std::fs::remove_file(path_ref) {
-                tracing::error!("Failed to remove corrupt cache database: {}", e);
-            } else {
-                // Also try to remove WAL and SHM files
-                let _ = std::fs::remove_file(path_ref.with_extension("sqlite-wal"));
-                let _ = std::fs::remove_file(path_ref.with_extension("sqlite-shm"));
+            std::fs::remove_file(path_ref)
+                .with_context(|| format!("Removing corrupt cache db {:?}", path_ref))?;
+            for ext in ["sqlite-wal", "sqlite-shm"] {
+                let sibling = path_ref.with_extension(ext);
+                if sibling.exists() {
+                    std::fs::remove_file(&sibling)
+                        .with_context(|| format!("Removing stale {:?}", sibling))?;
+                }
             }
         }
 
