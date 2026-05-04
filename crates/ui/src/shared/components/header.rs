@@ -206,11 +206,11 @@ pub fn render(
 
                 let (dot_color, hover_text) = match server_status {
                     ServerConnectionStatus::Connected(version) => (
-                        egui::Color32::from_rgb(34, 197, 94), // green-500
+                        theme.colors.success,
                         format!("Gameta server connected ({})", version),
                     ),
                     ServerConnectionStatus::Error(msg) => (
-                        egui::Color32::from_rgb(239, 68, 68), // red-500
+                        theme.colors.error,
                         format!("Gameta server unavailable: {}", msg),
                     ),
                     ServerConnectionStatus::Offline => unreachable!(),

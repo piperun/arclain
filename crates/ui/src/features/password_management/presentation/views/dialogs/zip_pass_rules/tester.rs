@@ -245,9 +245,9 @@ pub fn render_regex_tester_modal(
                             for result in &dialog.regex_test_results {
                                 ui.horizontal(|ui| {
                                     let (icon, color) = if result.matched {
-                                        ("✓", egui::Color32::from_rgb(76, 175, 80))
+                                        ("✓", theme.colors.success)
                                     } else {
-                                        ("✗", egui::Color32::from_rgb(244, 67, 54))
+                                        ("✗", theme.colors.error)
                                     };
 
                                     ui.label(egui::RichText::new(icon).size(12.0).color(color));
