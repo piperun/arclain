@@ -272,8 +272,18 @@ where
                 report.extracted.push(final_name);
             }
             Err(e) => {
-                // Clean up the empty destination on failure
-                let _ = fs::remove_dir_all(&dest_folder);
+                // Clean up the empty destination on failure. If removal
+                // fails (typical cause: another process has a file in
+                // dest_folder open), surface it in the failure report
+                // so the user knows there's leftover state to clean up
+                // manually (audit finding M6).
+                if let Err(rm_err) = fs::remove_dir_all(&dest_folder) {
+                    tracing::warn!(
+                        "[flatten] cleanup of {:?} after extract failure failed: {}",
+                        dest_folder,
+                        rm_err
+                    );
+                }
                 report.failed.push((folder_name, e.to_string()));
             }
         }
