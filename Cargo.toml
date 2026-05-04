@@ -13,7 +13,6 @@ members = [
     # Shared ORM
     "crates/mini-orm",
     "crates/mini-orm/derive",
-    "crates/freya-spike",
 ]
 default-members = ["crates/ui"]
 exclude = [
@@ -22,6 +21,7 @@ exclude = [
     "plugins/ui-demo",
     "plugin-sdk",
     "crates/dioxus-spike",
+    "crates/freya-spike",
     "crates/iced-spike",
 ]
 resolver = "2"
