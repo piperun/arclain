@@ -100,6 +100,7 @@ impl PluginManager {
         // Store plugin
         self.plugins.write().insert(plugin_id.clone(), managed);
         self.enabled_plugins.write().insert(plugin_id.clone(), true);
+        self.invalidate_top_tabs_cache();
 
         // Auto-approve network domains from manifest
         if !discovered.manifest.capabilities.network_domains.is_empty() {
@@ -145,6 +146,8 @@ impl PluginManager {
 
         if let Some(plugin) = plugins.remove(plugin_id) {
             plugin.instance.lock().cleanup()?;
+            drop(plugins);
+            self.invalidate_top_tabs_cache();
             info!("Plugin unloaded: {}", plugin_id);
             Ok(())
         } else {
