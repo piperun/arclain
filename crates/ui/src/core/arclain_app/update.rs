@@ -10,10 +10,9 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    // Use the panic-free helper: a misconfigured system clock should
+    // not bring down the UI thread (audit finding H5).
+    let now = arclain_core::utilities::unix_seconds();
     let last = LAST_LOG.load(std::sync::atomic::Ordering::Relaxed);
     FRAME_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
