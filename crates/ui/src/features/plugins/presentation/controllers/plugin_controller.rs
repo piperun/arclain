@@ -396,6 +396,14 @@ fn spawn_background_fetch(
         let source_clone = source.clone();
         let id_clone = id.clone();
         let notify_complete = make_complete_notifier();
+        // Pre-create notifiers for each fallback arm. Each is FnOnce and
+        // only one will fire per execution; the rest drop unused.
+        // Pre-creating outside the async block avoids the lifetime issue
+        // of calling the factory closure (which borrows local vars) from
+        // inside `async move`.
+        let notifier_json_fail = make_complete_notifier();
+        let notifier_no_meta = make_complete_notifier();
+        let notifier_server_err = make_complete_notifier();
         let dispatch_native = make_native_dispatcher();
 
         shared.services.tokio_runtime.spawn(async move {
@@ -422,7 +430,8 @@ fn spawn_background_fetch(
                             "[BackgroundFetch] {} fetched but JSON serialization failed — falling back to native fetch",
                             id_for_log
                         );
-                        tokio::task::spawn_blocking(dispatch_native).await.ok();
+                        spawn_native_dispatch(dispatch_native, &id_for_log, notifier_json_fail)
+                            .await;
                     }
                 },
                 Ok(Ok(None)) => {
@@ -430,7 +439,7 @@ fn spawn_background_fetch(
                         "[BackgroundFetch] {} not on gameta server — falling back to native fetch",
                         id_for_log
                     );
-                    tokio::task::spawn_blocking(dispatch_native).await.ok();
+                    spawn_native_dispatch(dispatch_native, &id_for_log, notifier_no_meta).await;
                 }
                 Ok(Err(e)) => {
                     tracing::warn!(
@@ -438,7 +447,8 @@ fn spawn_background_fetch(
                         id_for_log,
                         e
                     );
-                    tokio::task::spawn_blocking(dispatch_native).await.ok();
+                    spawn_native_dispatch(dispatch_native, &id_for_log, notifier_server_err)
+                        .await;
                 }
                 Err(join_err) => {
                     tracing::error!(
@@ -456,8 +466,10 @@ fn spawn_background_fetch(
     // No gameta server — go straight to the plugin's native HTTP fetch.
     if shared.services.plugin_manager.is_some() {
         let dispatch_native = make_native_dispatcher();
+        let notifier = make_complete_notifier();
+        let id_for_log = id.clone();
         shared.services.tokio_runtime.spawn(async move {
-            tokio::task::spawn_blocking(dispatch_native).await.ok();
+            spawn_native_dispatch(dispatch_native, &id_for_log, notifier).await;
         });
     } else {
         tracing::warn!(
@@ -465,5 +477,105 @@ fn spawn_background_fetch(
         );
         let notify_plugin = make_complete_notifier();
         notify_plugin(false);
+    }
+}
+
+/// Run a native-dispatch closure on a blocking thread and clear the
+/// plugin's in-progress flag if the closure panics.
+///
+/// Audit finding M5: the previous shape was
+/// `tokio::task::spawn_blocking(dispatch).await.ok()`, which silently
+/// dropped both panics and other JoinErrors. The plugin's own handler
+/// clears its in-progress flag at the end of its native fetch, so a
+/// pre-flag-clear panic would leave the UI showing "fetching..."
+/// forever.
+///
+/// On clean completion we call no notifier — the plugin handler has
+/// already cleared its flag. On panic or other JoinError we log and
+/// call `notify_on_failure(false)` so the flag clears via the
+/// `background_fetch_failed:` event path.
+async fn spawn_native_dispatch<F, N>(dispatch: F, id_for_log: &str, notify_on_failure: N)
+where
+    F: FnOnce() + Send + 'static,
+    N: FnOnce(bool) + Send + 'static,
+{
+    match tokio::task::spawn_blocking(dispatch).await {
+        Ok(()) => {}
+        Err(e) if e.is_panic() => {
+            tracing::error!(
+                "[BackgroundFetch] native dispatch panicked for {}: {}",
+                id_for_log,
+                e
+            );
+            notify_on_failure(false);
+        }
+        Err(e) => {
+            tracing::error!(
+                "[BackgroundFetch] native dispatch task error for {}: {}",
+                id_for_log,
+                e
+            );
+            notify_on_failure(false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::Arc;
+
+    /// Regression test for M5 from `docs/AUDIT_2026-05-03.md`.
+    ///
+    /// Pre-fix, native-dispatch fallbacks ran as
+    /// `tokio::task::spawn_blocking(dispatch).await.ok()`. The `.ok()`
+    /// converted any `JoinError` (including panics from the dispatch
+    /// closure) into `None` and the function moved on without telling
+    /// anyone. The plugin's in-progress flag — which the dispatch
+    /// closure was supposed to clear at the end of its work — would
+    /// stay set forever, so the user's "Fetch DLSite" button looked
+    /// stuck.
+    ///
+    /// Post-fix, `spawn_native_dispatch` matches on the JoinError and
+    /// calls the supplied notifier with `false` so the plugin clears
+    /// its flag via the `background_fetch_failed:` path.
+    #[tokio::test]
+    async fn m5_panic_in_dispatch_calls_notify_with_false() {
+        let notified_with = Arc::new(AtomicU8::new(0)); // 0 = not called
+        let n = notified_with.clone();
+        spawn_native_dispatch(
+            || panic!("simulated plugin panic"),
+            "test_id",
+            move |success| {
+                n.store(if success { 1 } else { 2 }, Ordering::SeqCst);
+            },
+        )
+        .await;
+        assert_eq!(
+            notified_with.load(Ordering::SeqCst),
+            2,
+            "M5 fix regressed: notifier should have been called with false on panic",
+        );
+    }
+
+    /// Clean completion: notifier is NOT called (plugin handler clears
+    /// its own flag during normal flow).
+    #[tokio::test]
+    async fn m5_clean_dispatch_does_not_invoke_notifier() {
+        let called = Arc::new(AtomicBool::new(false));
+        let c = called.clone();
+        spawn_native_dispatch(
+            || { /* clean run */ },
+            "test_id",
+            move |_| {
+                c.store(true, Ordering::SeqCst);
+            },
+        )
+        .await;
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "Notifier must not be called when dispatch completes cleanly",
+        );
     }
 }
