@@ -33,6 +33,12 @@ pub fn render(
     // pushed since the last render. Without this, the actions sit in
     // `state.pending_plugin_actions` indefinitely (or, pre-fix, were
     // pushed into a per-frame local sink that got dropped on return).
+    //
+    // Also: scan the queue BEFORE draining for a `RefreshPanel` action
+    // targeting `MainPage`. If present, invalidate `cached_main_layout`
+    // so the next render fetches a fresh layout (audit P4 invalidation).
+    invalidate_main_layout_on_refresh_panel(state);
+
     if let Some(shared) = shared {
         let mut toaster = shared.toaster.lock();
         let dialog_signal = shared.signals().plugin_dialog_state.clone();
@@ -51,6 +57,11 @@ pub fn render(
         // unbounded growth.
         state.pending_plugin_actions.lock().clear();
     }
+
+    // Drop cached MainPage layout if the user switched plugins, so
+    // render_plugin_ui fetches the new plugin's layout on the next
+    // call below (audit P4).
+    invalidate_main_layout_on_plugin_change(state);
 
     let selected_id = match &state.selected_plugin {
         Some(id) => id.clone(),
@@ -238,6 +249,7 @@ pub fn render(
                     shared,
                     content_cache,
                     &state.pending_plugin_actions,
+                    &mut state.cached_main_layout,
                 );
             } else {
                 ui.label(
@@ -345,6 +357,7 @@ fn render_plugin_ui(
     shared: Option<&SharedState>,
     content_cache: Option<&Arc<arclain_data::ContentCache>>,
     pending_plugin_actions: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
+    cached_main_layout: &mut Option<(String, arclain_plugins::types::PluginLayout)>,
 ) {
     let mgr_arc = if let Some(shared) = shared {
         if let Some(mgr_mutex) = shared.services.plugin_manager.clone() {
@@ -364,9 +377,29 @@ fn render_plugin_ui(
         None
     };
 
-    let ui_result = if let Some(instance_arc) = manager.get_plugin_instance(plugin_id) {
+    // Audit P4: cached_main_layout serves the layout for the
+    // currently-selected plugin. Fetch fresh only when the cache is
+    // empty or holds a different plugin's layout. Re-fetches happen
+    // when the cache is explicitly invalidated (selected plugin
+    // change in the parent render, or `RefreshPanel` action targeting
+    // `MainPage` drained on the next frame).
+    let cache_hit_for_this_plugin = cached_main_layout
+        .as_ref()
+        .is_some_and(|(id, _)| id == plugin_id);
+
+    let ui_result = if cache_hit_for_this_plugin {
+        cached_main_layout
+            .as_ref()
+            .map(|(_, layout)| Ok(layout.clone()))
+    } else if let Some(instance_arc) = manager.get_plugin_instance(plugin_id) {
         if let Some(mut instance) = instance_arc.try_lock() {
-            Some(instance.get_ui_layout(arclain_plugins::types::PluginExtensionPoint::MainPage))
+            let res = instance.get_ui_layout(
+                arclain_plugins::types::PluginExtensionPoint::MainPage,
+            );
+            if let Ok(ref layout) = res {
+                *cached_main_layout = Some((plugin_id.to_string(), layout.clone()));
+            }
+            Some(res)
         } else {
             None // Busy
         }
@@ -473,6 +506,40 @@ fn render_plugin_ui(
                 );
             });
         }
+    }
+}
+
+/// Drop `state.cached_main_layout` if it doesn't belong to the
+/// currently-selected plugin. Called once per render of the detail
+/// view, before `render_plugin_ui` reads the cache.
+pub(crate) fn invalidate_main_layout_on_plugin_change(state: &mut PluginsListState) {
+    if let (Some(sel), Some((cached_id, _))) = (
+        state.selected_plugin.as_ref(),
+        state.cached_main_layout.as_ref(),
+    ) {
+        if sel != cached_id {
+            state.cached_main_layout = None;
+        }
+    }
+}
+
+/// Drop `state.cached_main_layout` if `pending_plugin_actions`
+/// contains a `RefreshPanel` action targeting the `MainPage`
+/// extension point. Called once per render of the detail view, before
+/// `drain_pending_plugin_actions` removes the action from the queue.
+pub(crate) fn invalidate_main_layout_on_refresh_panel(state: &mut PluginsListState) {
+    let needs_invalidation = {
+        let pending = state.pending_plugin_actions.lock();
+        pending.iter().any(|(_, action)| {
+            matches!(
+                action,
+                arclain_plugins::types::PluginAction::RefreshPanel { extension_point }
+                    if extension_point == "MainPage"
+            )
+        })
+    };
+    if needs_invalidation {
+        state.cached_main_layout = None;
     }
 }
 
@@ -586,5 +653,98 @@ mod tests {
         );
 
         assert!(pending.lock().is_empty());
+    }
+
+    /// Regression test for P4 from `docs/AUDIT_2026-05-03.md`.
+    ///
+    /// `cached_main_layout` is per-plugin. When the user switches the
+    /// selected plugin in the detail view, the cache from the previous
+    /// plugin must be dropped so render_plugin_ui fetches the new
+    /// plugin's layout (rather than reusing the stale one for the
+    /// wrong plugin).
+    #[test]
+    fn p4_invalidate_main_layout_when_plugin_changes() {
+        let mut state = PluginsListState::default();
+        state.selected_plugin = Some("plugin_b".to_string());
+        state.cached_main_layout = Some((
+            "plugin_a".to_string(),
+            arclain_plugins::types::PluginLayout::default(),
+        ));
+
+        invalidate_main_layout_on_plugin_change(&mut state);
+
+        assert!(
+            state.cached_main_layout.is_none(),
+            "Cache held plugin_a's layout while plugin_b is selected; should have dropped",
+        );
+    }
+
+    /// Same selected plugin → keep the cache.
+    #[test]
+    fn p4_keep_main_layout_when_same_plugin() {
+        let mut state = PluginsListState::default();
+        state.selected_plugin = Some("plugin_a".to_string());
+        state.cached_main_layout = Some((
+            "plugin_a".to_string(),
+            arclain_plugins::types::PluginLayout::default(),
+        ));
+
+        invalidate_main_layout_on_plugin_change(&mut state);
+
+        assert!(
+            state.cached_main_layout.is_some(),
+            "Cache for plugin_a should not be dropped when plugin_a is still selected",
+        );
+    }
+
+    /// `RefreshPanel { extension_point: "MainPage" }` in the pending
+    /// queue must invalidate `cached_main_layout` even if the same
+    /// plugin is still selected (e.g. the plugin's settings changed).
+    #[test]
+    fn p4_invalidate_main_layout_on_refresh_panel_for_main_page() {
+        let mut state = PluginsListState::default();
+        state.selected_plugin = Some("plugin_a".to_string());
+        state.cached_main_layout = Some((
+            "plugin_a".to_string(),
+            arclain_plugins::types::PluginLayout::default(),
+        ));
+        state.pending_plugin_actions.lock().push((
+            "plugin_a".to_string(),
+            arclain_plugins::types::PluginAction::RefreshPanel {
+                extension_point: "MainPage".to_string(),
+            },
+        ));
+
+        invalidate_main_layout_on_refresh_panel(&mut state);
+
+        assert!(
+            state.cached_main_layout.is_none(),
+            "RefreshPanel for MainPage should drop the cache",
+        );
+    }
+
+    /// `RefreshPanel` for a different extension point must NOT
+    /// invalidate `cached_main_layout`.
+    #[test]
+    fn p4_keep_main_layout_when_refresh_targets_other_extension() {
+        let mut state = PluginsListState::default();
+        state.selected_plugin = Some("plugin_a".to_string());
+        state.cached_main_layout = Some((
+            "plugin_a".to_string(),
+            arclain_plugins::types::PluginLayout::default(),
+        ));
+        state.pending_plugin_actions.lock().push((
+            "plugin_a".to_string(),
+            arclain_plugins::types::PluginAction::RefreshPanel {
+                extension_point: "Settings".to_string(),
+            },
+        ));
+
+        invalidate_main_layout_on_refresh_panel(&mut state);
+
+        assert!(
+            state.cached_main_layout.is_some(),
+            "RefreshPanel for Settings should not drop the MainPage cache",
+        );
     }
 }
