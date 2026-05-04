@@ -154,6 +154,6 @@ pub fn render_rule_editor(
     });
 
     if !dialog.error.is_empty() {
-        ui.colored_label(egui::Color32::from_rgb(220, 53, 69), &dialog.error);
+        ui.colored_label(theme.colors.error, &dialog.error);
     }
 }

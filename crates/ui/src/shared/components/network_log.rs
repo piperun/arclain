@@ -100,7 +100,7 @@ impl NetworkLog {
 
             // Severity toggles
             Self::severity_toggle(ui, &mut state.show_requests, "REQ", colors.primary);
-            Self::severity_toggle(ui, &mut state.show_success, "OK", egui::Color32::from_rgb(34, 197, 94));
+            Self::severity_toggle(ui, &mut state.show_success, "OK", colors.success);
             Self::severity_toggle(ui, &mut state.show_errors, "ERR", colors.error);
             Self::severity_toggle(ui, &mut state.show_info, "INFO", colors.on_surface_variant);
 
@@ -245,10 +245,7 @@ impl NetworkLog {
                 let severity = classify(msg);
                 let (indicator_color, msg_color) = match severity {
                     Severity::Request => (colors.primary, colors.on_surface),
-                    Severity::Success => (
-                        egui::Color32::from_rgb(34, 197, 94),
-                        colors.on_surface,
-                    ),
+                    Severity::Success => (colors.success, colors.on_surface),
                     Severity::Error => (colors.error, colors.error),
                     Severity::Info => (colors.on_surface_variant, colors.on_surface_variant),
                 };

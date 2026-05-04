@@ -4,6 +4,7 @@
 
 use arclain_core::features::organization::{ArchiveFormat, ArchiveProfile};
 use arclain_widgets::{TextInput, ThemedDropdown};
+use crate::shared::components::settings_form::SectionHeader;
 use crate::shared::dialogs::{DialogMode, FormDialog, FormDialogConfig, FormDialogResult};
 use eframe::egui;
 
@@ -86,7 +87,7 @@ impl AddProfileDialog {
         is_edit: bool,
     ) {
         // Basic Info
-        ui.heading("Profile Information");
+        SectionHeader::new("Profile Information").show(ui, &theme.colors);
         ui.add_space(8.0);
 
         egui::Grid::new("profile_basic_info")
@@ -102,7 +103,7 @@ impl AddProfileDialog {
 
                 if let Some(err) = name_error {
                     ui.label("");
-                    ui.colored_label(egui::Color32::RED, err);
+                    ui.colored_label(theme.colors.error, err);
                     ui.end_row();
                 }
 
@@ -123,7 +124,7 @@ impl AddProfileDialog {
         ui.separator();
 
         // Format Settings
-        ui.heading("Format Settings");
+        SectionHeader::new("Format Settings").show(ui, &theme.colors);
         ui.add_space(8.0);
 
         egui::Grid::new("profile_format")
@@ -166,7 +167,7 @@ impl AddProfileDialog {
         ui.separator();
 
         // Compression Settings
-        ui.heading("Compression Settings");
+        SectionHeader::new("Compression Settings").show(ui, &theme.colors);
         ui.add_space(8.0);
 
         egui::Grid::new("profile_compression")
