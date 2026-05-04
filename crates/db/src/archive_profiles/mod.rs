@@ -3,6 +3,7 @@
 //! Stores compression presets (e.g., "Max 7z", "Fast 7z", "Zip Compatible")
 //! that can be selected when organizing archives.
 
+use crate::diesel_err;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -216,7 +217,7 @@ pub fn list_profiles_diesel(
     let results = archive_profiles
         .order((is_default.desc(), name.asc()))
         .load::<DbArchiveProfileRow>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(results.into_iter().map(row_to_profile).collect())
 }
@@ -233,7 +234,7 @@ pub fn get_profile_diesel(
         .filter(id.eq(profile_id))
         .first::<DbArchiveProfileRow>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(result.map(row_to_profile))
 }
@@ -249,7 +250,7 @@ pub fn get_default_profile_diesel(
         .filter(is_default.eq(true))
         .first::<DbArchiveProfileRow>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(result.map(row_to_profile))
 }
@@ -260,7 +261,7 @@ pub fn delete_profile_diesel(conn: &mut diesel::SqliteConnection, profile_id: i3
 
     diesel::delete(archive_profiles.filter(id.eq(profile_id).and(is_system.eq(false))))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+        .map_err(diesel_err("delete"))?;
 
     Ok(())
 }
@@ -277,7 +278,7 @@ pub fn save_profile_diesel(
         diesel::update(archive_profiles)
             .set(is_default.eq(false))
             .execute(conn)
-            .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+            .map_err(diesel_err("update"))?;
     }
 
     if let Some(profile_id) = profile.id {
@@ -296,7 +297,7 @@ pub fn save_profile_diesel(
                 modified_at.eq(chrono::Utc::now().to_rfc3339()),
             ))
             .execute(conn)
-            .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+            .map_err(diesel_err("update"))?;
         Ok(profile_id)
     } else {
         // Insert
@@ -314,7 +315,7 @@ pub fn save_profile_diesel(
             ))
             .returning(id)
             .get_result(conn)
-            .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+            .map_err(diesel_err("insert"))?;
         Ok(new_id as i64)
     }
 }
@@ -330,13 +331,13 @@ pub fn set_default_profile_diesel(
     diesel::update(archive_profiles)
         .set(is_default.eq(false))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+        .map_err(diesel_err("update"))?;
 
     // Set the new default
     diesel::update(archive_profiles.filter(id.eq(profile_id)))
         .set(is_default.eq(true))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+        .map_err(diesel_err("update"))?;
 
     Ok(())
 }

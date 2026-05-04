@@ -1,3 +1,4 @@
+use crate::diesel_err;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -148,7 +149,7 @@ pub fn list_rules_diesel(conn: &mut diesel::SqliteConnection) -> Result<Vec<DbOr
     let results = organization_rules
         .order((priority.desc(), name.asc()))
         .load::<DbOrganizationRuleRow>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(results
         .into_iter()
@@ -178,7 +179,7 @@ pub fn get_rule_diesel(
         .filter(id.eq(rule_id))
         .first::<DbOrganizationRuleRow>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(result.map(|r| DbOrganizationRule {
         id: Some(r.id as i64),
@@ -199,7 +200,7 @@ pub fn delete_rule_diesel(conn: &mut diesel::SqliteConnection, rule_id: i32) -> 
 
     diesel::delete(organization_rules.filter(id.eq(rule_id).and(is_system.eq(false))))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+        .map_err(diesel_err("delete"))?;
 
     Ok(())
 }
@@ -226,7 +227,7 @@ pub fn save_rule_diesel(
                 modified_at.eq(chrono::Utc::now().to_rfc3339()), // Use formatted string for Text column
             ))
             .execute(conn)
-            .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+            .map_err(diesel_err("update"))?;
         Ok(rule_id)
     } else {
         // Insert
@@ -244,7 +245,7 @@ pub fn save_rule_diesel(
             // .returning(id) -- requires feature
             .returning(id)
             .get_result(conn)
-            .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+            .map_err(diesel_err("insert"))?;
         Ok(new_id as i64)
     }
 }

@@ -1,3 +1,4 @@
+use crate::diesel_err;
 use anyhow::Result;
 use mini_orm::SqliteDb;
 use rusqlite::Connection;
@@ -351,7 +352,7 @@ pub fn list_title_replacements_diesel(
         .select((id, original, replacement, is_system))
         .order(original.asc())
         .load::<(i32, String, String, bool)>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(results
         .into_iter()
@@ -379,7 +380,7 @@ pub fn save_title_replacement_diesel(
         .do_update()
         .set(replacement.eq(repl))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+        .map_err(diesel_err("insert"))?;
 
     Ok(())
 }
@@ -393,7 +394,7 @@ pub fn delete_title_replacement_diesel(
 
     diesel::delete(title_replacements.filter(id.eq(rule_id).and(is_system.eq(false))))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+        .map_err(diesel_err("delete"))?;
 
     Ok(())
 }
