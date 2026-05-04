@@ -167,13 +167,27 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                         Ok(_) => {
                             status.message = "File saved".to_string();
 
-                            // Re-list the archive to update entries signal
+                            // Re-list the archive to update entries signal.
+                            // Audit finding H2: previously the error was
+                            // swallowed via `if let Ok(_) = ...` and the
+                            // user saw "File saved" with stale entries.
+                            // Now log + surface so a stale view is at
+                            // least visible.
                             let mut state = app.shared_state.app_state.lock();
-                            if let Ok(_) = state.list_archive(&archive) {
-                                // Refresh the browser view from updated entries
-                                crate::core::operations::navigation_view::refresh_view_entries(
-                                    &state.signals,
-                                );
+                            match state.list_archive(&archive) {
+                                Ok(_) => {
+                                    crate::core::operations::navigation_view::refresh_view_entries(
+                                        &state.signals,
+                                    );
+                                }
+                                Err(e) => {
+                                    let msg = format!(
+                                        "File saved but failed to reload archive entries: {}",
+                                        e
+                                    );
+                                    crate::core::utils::log_failure("FileEdit", &msg);
+                                    status.message = msg;
+                                }
                             }
                         }
                         Err(e) => {
