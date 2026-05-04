@@ -129,7 +129,7 @@ fn render_plugin_indicator(ui: &mut egui::Ui, theme: &AppTheme, info: &PluginSta
     };
 
     let color = if info.enabled_plugins > 0 {
-        egui::Color32::from_rgb(76, 175, 80) // Green when plugins are active
+        theme.colors.success
     } else {
         theme.colors.on_surface_variant
     };
