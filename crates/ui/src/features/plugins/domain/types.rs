@@ -1,6 +1,6 @@
 //! Plugin UI type definitions
 
-use arclain_plugins::types::PluginAction;
+use arclain_plugins::types::{PluginAction, PluginLayout};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -91,6 +91,13 @@ pub struct PluginsListState {
     /// queue, actions pushed by spawned threads disappear when the
     /// render function returns and its local sink is dropped.
     pub pending_plugin_actions: Arc<Mutex<Vec<(String, PluginAction)>>>,
+    /// Cached `MainPage` layout for the currently-selected plugin.
+    /// Keyed as `(plugin_id, layout)`. Populated lazily on first
+    /// render and invalidated when the selected plugin changes or
+    /// the plugin sends a `RefreshPanel` action targeting `MainPage`.
+    /// Without this, every render frame issued a WASM
+    /// `get_ui_layout(MainPage)` call into the plugin (audit P4).
+    pub cached_main_layout: Option<(String, PluginLayout)>,
 }
 
 impl PluginsListState {
