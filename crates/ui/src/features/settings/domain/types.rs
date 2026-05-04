@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn encrypted_crc_policy_default() {
-        assert_eq!(EncryptedCrcPolicy::default(), EncryptedCrcPolicy::OnOpen);
+        assert_eq!(EncryptedCrcPolicy::default(), EncryptedCrcPolicy::OnAccess);
     }
 
     #[test]
