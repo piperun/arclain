@@ -110,3 +110,29 @@ fn p3_enable_disable_invalidates_top_tabs_cache() {
     manager.invalidate_top_tabs_cache();
     assert!(manager.cached_top_tabs.lock().is_none());
 }
+
+/// Regression test for P7 from `docs/AUDIT_2026-05-03.md`.
+///
+/// `get_settings_for(plugin_id)` is the per-plugin-settings query
+/// detail_view's UI event handler now uses instead of the
+/// whole-map-cloning `get_all_settings`. For unloaded plugins, the
+/// helper falls back to `initial_settings` so settings persist
+/// across runs even before the plugin is loaded.
+#[test]
+fn p7_get_settings_for_falls_back_to_initial_settings() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut initial = HashMap::new();
+    let mut plugin_a = HashMap::new();
+    plugin_a.insert("api_key".to_string(), "secret".to_string());
+    initial.insert("plugin_a".to_string(), plugin_a.clone());
+
+    let manager = PluginManager::new(temp_dir.path().to_path_buf(), initial).unwrap();
+
+    // plugin_a isn't loaded (no WASM), but its initial settings are
+    // available via the fallback path.
+    let got = manager.get_settings_for("plugin_a");
+    assert_eq!(got, Some(plugin_a));
+
+    // Unknown plugin → None.
+    assert_eq!(manager.get_settings_for("plugin_b"), None);
+}
