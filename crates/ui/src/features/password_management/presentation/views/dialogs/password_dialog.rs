@@ -100,7 +100,7 @@ pub fn render_password_dialog(
                 ui.checkbox(&mut dialog.save_password, "Save password for future use");
 
                 if !dialog.error.is_empty() {
-                    ui.colored_label(theme.colors.error, &dialog.error);
+                    crate::shared::components::error_label(ui, theme, &dialog.error);
                 }
                 
                 ui.add_space(8.0);

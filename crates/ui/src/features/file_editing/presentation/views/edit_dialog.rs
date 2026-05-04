@@ -70,7 +70,7 @@ pub fn render_file_edit_dialog(
             );
 
             if !dialog.error.is_empty() {
-                ui.colored_label(theme.colors.error, &dialog.error);
+                crate::shared::components::error_label(ui, theme, &dialog.error);
             }
         },
         |ui| {
