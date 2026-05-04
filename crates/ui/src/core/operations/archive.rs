@@ -159,8 +159,18 @@ pub fn try_open_with_password(
                 st.signals.navigation.set(nav);
             }
 
-            // Save successful password rule
-            st.save_password_rule_from_archive(path, password).ok();
+            // Save successful password rule. Audit finding H3:
+            // previously the failure was silently dropped via `.ok()`,
+            // so the next archive open would re-prompt without
+            // explanation. Log so the failure is visible to support.
+            if let Err(e) = st.save_password_rule_from_archive(path, password) {
+                tracing::warn!(
+                    "Failed to persist password rule for {}: {}; user will be \
+                     re-prompted next time they open this archive",
+                    path.display(),
+                    e
+                );
+            }
 
             let current_archive = st.signals.archive_path.get();
             drop(st);
