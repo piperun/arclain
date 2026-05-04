@@ -11,7 +11,7 @@ mod lifecycle;
 mod queries;
 mod types;
 
-pub use types::PluginListItem;
+pub use types::{PluginListItem, PluginStatusSummary};
 use types::ManagedPlugin;
 
 use crate::loader::PluginLoader;
@@ -41,6 +41,11 @@ pub struct PluginManager {
     _event_worker_handle: Option<std::thread::JoinHandle<()>>,
     /// Reactive signal for metadata updates
     pub(crate) metadata_signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
+    /// Cached result of `get_all_top_tabs` — invalidated whenever a
+    /// plugin is loaded, enabled, or disabled. Avoids the per-frame
+    /// WASM call into every enabled plugin (audit finding P3).
+    pub(crate) cached_top_tabs:
+        parking_lot::Mutex<Option<Vec<(String, crate::types::TopTabConfig)>>>,
 }
 
 impl PluginManager {
@@ -77,6 +82,7 @@ impl PluginManager {
             event_sender,
             _event_worker_handle: Some(worker_handle),
             metadata_signal: None,
+            cached_top_tabs: parking_lot::Mutex::new(None),
         })
     }
 
@@ -114,7 +120,14 @@ impl PluginManager {
             event_sender,
             _event_worker_handle: Some(worker_handle),
             metadata_signal: None,
+            cached_top_tabs: parking_lot::Mutex::new(None),
         })
+    }
+
+    /// Drop the cached top-tabs list. Called from any place that
+    /// changes which plugins are enabled or which instances exist.
+    pub(crate) fn invalidate_top_tabs_cache(&self) {
+        *self.cached_top_tabs.lock() = None;
     }
 
     /// Snapshot the per-plugin instance Arcs under a brief

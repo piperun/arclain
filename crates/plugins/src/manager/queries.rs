@@ -18,6 +18,8 @@ impl PluginManager {
             self.enabled_plugins
                 .write()
                 .insert(plugin_id.to_string(), true);
+            drop(plugins);
+            self.invalidate_top_tabs_cache();
             info!("Plugin enabled: {}", plugin_id);
             Ok(())
         } else {
@@ -33,6 +35,8 @@ impl PluginManager {
             self.enabled_plugins
                 .write()
                 .insert(plugin_id.to_string(), false);
+            drop(plugins);
+            self.invalidate_top_tabs_cache();
             info!("Plugin disabled: {}", plugin_id);
             Ok(())
         } else {
@@ -65,6 +69,27 @@ impl PluginManager {
             .collect()
     }
 
+    /// Cheap counts-only summary suitable for status-bar style usage
+    /// where the caller only needs `(total, enabled)` and does NOT need
+    /// each plugin's manifest. The status bar previously called
+    /// `list_plugins()` every render frame and threw away everything
+    /// except the counts — cloning every plugin's manifest (Vec of
+    /// capability/domain strings) per frame for nothing (audit
+    /// finding P5).
+    pub fn status_summary(&self) -> super::types::PluginStatusSummary {
+        let plugins = self.plugins.read();
+        let enabled = self.enabled_plugins.read();
+        let total = plugins.len();
+        let enabled_count = plugins
+            .keys()
+            .filter(|id| enabled.get(id.as_str()).copied().unwrap_or(false))
+            .count();
+        super::types::PluginStatusSummary {
+            total,
+            enabled: enabled_count,
+        }
+    }
+
     /// Get plugin metadata
     pub fn get_plugin_metadata(&self, plugin_id: &str) -> Option<PluginMetadata> {
         self.plugins
@@ -74,8 +99,17 @@ impl PluginManager {
     }
 
     /// Get all top-level tabs registered by enabled plugins
-    /// Returns tabs sorted by priority (lower priority = earlier in list)
+    /// Returns tabs sorted by priority (lower priority = earlier in list).
+    ///
+    /// Result is cached and re-used until `invalidate_top_tabs_cache` is
+    /// called (audit finding P3 — pre-fix this WASM-called every enabled
+    /// plugin every render frame). Cache is dropped automatically on
+    /// `enable_plugin` / `disable_plugin` / `load_plugin`.
     pub fn get_all_top_tabs(&self) -> Vec<(String, crate::types::TopTabConfig)> {
+        if let Some(cached) = self.cached_top_tabs.lock().clone() {
+            return cached;
+        }
+
         let mut all_tabs = Vec::new();
         let plugins = self.plugins.read();
         let enabled = self.enabled_plugins.read();
@@ -100,9 +134,14 @@ impl PluginManager {
                 }
             }
         }
+        drop(plugins);
+        drop(enabled);
 
         // Sort by priority (lower = first)
         all_tabs.sort_by(|a, b| a.1.priority.cmp(&b.1.priority));
+        // Cache the sorted output so subsequent renders just clone from
+        // cache without re-sorting or re-querying any plugin.
+        *self.cached_top_tabs.lock() = Some(all_tabs.clone());
         all_tabs
     }
 
