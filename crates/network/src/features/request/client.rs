@@ -252,23 +252,9 @@ impl AsyncHttpClient {
             };
 
             // Global/Domain specific headers injection - mimic Firefox exactly
-            if request.url.contains("dlsite.com") || request.url.contains("dlsite.jp") {
+            if is_dlsite_url(&request.url) {
                 info!("Injecting DLSite headers for {}", request.url);
-                req_builder = req_builder.header("Cookie", "adultchecked=1; locale=ja-JP");
-                req_builder = req_builder.header(
-                    "Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                );
-                req_builder =
-                    req_builder.header("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7");
-                req_builder = req_builder.header("Accept-Encoding", "gzip, deflate, br");
-                req_builder = req_builder.header("Connection", "keep-alive");
-                req_builder = req_builder.header("Referer", "https://www.dlsite.com/");
-                req_builder = req_builder.header("Sec-Fetch-Dest", "image");
-                req_builder = req_builder.header("Sec-Fetch-Mode", "no-cors");
-                req_builder = req_builder.header("Sec-Fetch-Site", "cross-site");
-                req_builder = req_builder.header("Cache-Control", "no-cache");
-                req_builder = req_builder.header("Pragma", "no-cache");
+                req_builder = inject_dlsite_browser_headers(req_builder);
             }
 
             // Add headers
@@ -414,22 +400,9 @@ impl AsyncHttpClient {
             let mut req = client.get(&url);
 
             // Domain specific headers - mimic Firefox exactly
-            if url.contains("dlsite.com") || url.contains("dlsite.jp") {
+            if is_dlsite_url(&url) {
                 info!("Injecting DLSite headers (blocking) for {}", url);
-                req = req.header("Cookie", "adultchecked=1; locale=ja-JP");
-                req = req.header(
-                    "Accept",
-                    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                );
-                req = req.header("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7");
-                req = req.header("Accept-Encoding", "gzip, deflate, br");
-                req = req.header("Connection", "keep-alive");
-                req = req.header("Referer", "https://www.dlsite.com/");
-                req = req.header("Sec-Fetch-Dest", "image");
-                req = req.header("Sec-Fetch-Mode", "no-cors");
-                req = req.header("Sec-Fetch-Site", "cross-site");
-                req = req.header("Cache-Control", "no-cache");
-                req = req.header("Pragma", "no-cache");
+                req = inject_dlsite_browser_headers(req);
             }
 
             let response = req
@@ -528,4 +501,57 @@ fn fix_dlsite_cdn_folder(url: &str) -> String {
     }
 
     url.to_string()
+}
+
+/// True if `url` points to dlsite.com or dlsite.jp.
+///
+/// Used to gate DLsite-specific behavior (browser-mimicking headers,
+/// CDN folder-name fix-ups) without sprinkling the literal pair
+/// across multiple sites.
+pub(crate) fn is_dlsite_url(url: &str) -> bool {
+    url.contains("dlsite.com") || url.contains("dlsite.jp")
+}
+
+/// Apply the Firefox-mimicking header set DLsite expects on age-gated
+/// product/CDN requests. Centralized here so the async and blocking
+/// request paths can't drift.
+pub(crate) fn inject_dlsite_browser_headers(
+    builder: reqwest::RequestBuilder,
+) -> reqwest::RequestBuilder {
+    builder
+        .header("Cookie", "adultchecked=1; locale=ja-JP")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        )
+        .header("Accept-Language", "ja-JP,ja;q=0.9,en-US;q=0.8,en;q=0.7")
+        .header("Accept-Encoding", "gzip, deflate, br")
+        .header("Connection", "keep-alive")
+        .header("Referer", "https://www.dlsite.com/")
+        .header("Sec-Fetch-Dest", "image")
+        .header("Sec-Fetch-Mode", "no-cors")
+        .header("Sec-Fetch-Site", "cross-site")
+        .header("Cache-Control", "no-cache")
+        .header("Pragma", "no-cache")
+}
+
+#[cfg(test)]
+mod dlsite_url_tests {
+    use super::is_dlsite_url;
+
+    #[test]
+    fn matches_dlsite_com() {
+        assert!(is_dlsite_url("https://www.dlsite.com/maniax/work/=/product_id/RJ123.html"));
+    }
+
+    #[test]
+    fn matches_dlsite_jp() {
+        assert!(is_dlsite_url("https://img.dlsite.jp/modpub/images2/work/.../img.jpg"));
+    }
+
+    #[test]
+    fn does_not_match_unrelated_host() {
+        assert!(!is_dlsite_url("https://example.com/file"));
+        assert!(!is_dlsite_url("https://dlsite.example.org/spoof"));
+    }
 }
