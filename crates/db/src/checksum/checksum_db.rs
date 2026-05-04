@@ -1,6 +1,6 @@
 //! Checksum database for file integrity verification
 
-use crate::SqliteDb;
+use crate::{diesel_err, SqliteDb};
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
@@ -446,7 +446,7 @@ pub fn get_checksum_algorithm_diesel(conn: &mut diesel::SqliteConnection) -> Res
         .select(value)
         .first::<String>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(result.unwrap_or_else(|| "blake3".to_string()))
 }
@@ -464,7 +464,7 @@ pub fn set_checksum_algorithm_diesel(
         .do_update()
         .set(value.eq(algo))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+        .map_err(diesel_err("insert"))?;
 
     Ok(())
 }
@@ -479,7 +479,7 @@ pub fn get_checksum_mode_diesel(conn: &mut diesel::SqliteConnection) -> Result<V
         .select(value)
         .first::<String>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(result
         .and_then(|s| VerifyMode::from_str(&s))
@@ -499,7 +499,7 @@ pub fn set_checksum_mode_diesel(
         .do_update()
         .set(value.eq(mode.as_str()))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+        .map_err(diesel_err("insert"))?;
 
     Ok(())
 }
