@@ -27,6 +27,11 @@ pub struct ProxyConfig {
 }
 
 impl ProxyConfig {
+    /// Build a `reqwest::Proxy` from this config. Returns `None` when
+    /// the config is disabled OR when the address fails to parse —
+    /// callers can't tell these two cases apart, which is the M4
+    /// silent-disable bug. Use [`ProxyConfig::validate`] when the
+    /// distinction matters (e.g. saving user-entered settings).
     pub fn to_proxy(&self) -> Option<reqwest::Proxy> {
         if !self.enabled || self.address.is_empty() {
             tracing::debug!("[ProxyConfig] to_proxy: disabled or empty address");
@@ -47,6 +52,29 @@ impl ProxyConfig {
             Err(e) => tracing::error!("[ProxyConfig] Failed to create proxy: {}", e),
         }
         result.ok()
+    }
+
+    /// Validate that the config can be turned into a usable proxy.
+    ///
+    /// Returns `Ok(())` when the config is disabled (no proxy needed)
+    /// OR when the address parses cleanly. Returns a user-readable
+    /// `Err(String)` when proxying is enabled but the address fails to
+    /// parse. Used by the settings save flow to surface invalid input
+    /// instead of silently disabling the proxy (audit finding M4).
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+        if self.address.trim().is_empty() {
+            return Err("Proxy is enabled but the address is empty.".to_string());
+        }
+        let url = match (&self.username, &self.password) {
+            (Some(u), Some(p)) => format!("socks5h://{}:{}@{}", u, p, self.address),
+            _ => format!("socks5h://{}", self.address),
+        };
+        reqwest::Proxy::all(&url)
+            .map(|_| ())
+            .map_err(|e| format!("Invalid SOCKS5 address '{}': {}", self.address, e))
     }
 
     /// Test the connection with current configuration
@@ -276,5 +304,81 @@ mod tests {
             password: Some("pass".to_string()),
         };
         assert!(config.to_proxy().is_some());
+    }
+
+    /// Regression test for M4 from `docs/AUDIT_2026-05-03.md`.
+    ///
+    /// Pre-fix, an invalid proxy address silently dropped to `None`
+    /// from `to_proxy()`, indistinguishable from "proxy disabled". The
+    /// settings-save path would then build an HTTP client with no
+    /// proxy attached even though the user thought SOCKS5 was on.
+    ///
+    /// Post-fix, `validate()` surfaces invalid addresses as `Err` so
+    /// the settings controller can show a toast and refuse the save.
+    /// This test asserts the new contract directly.
+    #[test]
+    fn m4_validate_surfaces_invalid_address() {
+        let config = ProxyConfig {
+            enabled: true,
+            // Spaces are not valid in URL authority; reqwest's URL
+            // parser rejects this.
+            address: "not a valid host:1080".to_string(),
+            ..Default::default()
+        };
+
+        let result = config.validate();
+        assert!(
+            result.is_err(),
+            "M4 fix regressed: validate() accepted an unparseable address",
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("Invalid SOCKS5 address"),
+            "Error message should identify the invalid address: {}",
+            msg
+        );
+    }
+
+    /// `validate()` is a no-op when proxy is disabled — only the
+    /// "enabled but invalid" combination should surface as `Err`.
+    #[test]
+    fn m4_validate_passes_when_disabled() {
+        let config = ProxyConfig {
+            enabled: false,
+            address: "not a valid host:1080".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn m4_validate_passes_for_well_formed_address() {
+        let config = ProxyConfig {
+            enabled: true,
+            address: "127.0.0.1:9050".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    /// Documents the pre-fix bug shape for posterity: `to_proxy()`
+    /// returns `None` for both "disabled" and "invalid" cases. Callers
+    /// that only check for `None` can't tell them apart.
+    #[test]
+    fn m4_to_proxy_remains_silent_on_invalid_address() {
+        let invalid = ProxyConfig {
+            enabled: true,
+            address: "not a valid host:1080".to_string(),
+            ..Default::default()
+        };
+        let disabled = ProxyConfig {
+            enabled: false,
+            address: "127.0.0.1:9050".to_string(),
+            ..Default::default()
+        };
+        assert!(invalid.to_proxy().is_none());
+        assert!(disabled.to_proxy().is_none());
+        // Both look the same to `to_proxy()` — the silent-disable bug.
+        // Callers that need to distinguish must use `validate()`.
     }
 }
