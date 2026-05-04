@@ -1,8 +1,9 @@
 use arclain_db::ConfigDb;
 use once_cell::sync::Lazy;
+use parking_lot::RwLock;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 // --- Constants (Factory Defaults) ---
 
@@ -127,8 +128,10 @@ pub fn refresh_cache(db: &ConfigDb) -> anyhow::Result<()> {
             replacements = DEFAULT_SYSTEM_REPLACEMENTS.clone();
         }
 
-        // Update cache
-        let mut cache = FILTER_CACHE.write().unwrap();
+        // Update cache. parking_lot::RwLock has no poisoning, so a panic
+        // somewhere upstream while holding the guard does not break
+        // subsequent sanitize_title calls (audit finding M3).
+        let mut cache = FILTER_CACHE.write();
         *cache = TitleFilterConfig {
             filters,
             replacements,
@@ -173,7 +176,8 @@ fn seed_system_replacements(db: &ConfigDb) -> anyhow::Result<()> {
 /// This function replaces invalid filesystem characters with safe alternatives.
 /// It uses the cached configuration.
 pub fn sanitize_title(title: &str) -> String {
-    let cache = FILTER_CACHE.read().unwrap();
+    // parking_lot::RwLock — no poisoning, no .unwrap() needed.
+    let cache = FILTER_CACHE.read();
     sanitize_title_with_config(title, &cache)
 }
 
@@ -276,6 +280,46 @@ mod tests {
         assert_eq!(
             sanitize_title_with_config("【Test】Game", &config),
             "[Test]Game"
+        );
+    }
+
+    /// Regression test for M3 from `docs/AUDIT_2026-05-03.md`.
+    ///
+    /// `FILTER_CACHE` originally used `std::sync::RwLock` and called
+    /// `.write().unwrap()` / `.read().unwrap()` everywhere. If any
+    /// caller panicked while holding either guard, the lock became
+    /// poisoned and every subsequent `sanitize_title` call panicked
+    /// too — taking the whole UI thread down with it. The fix switches
+    /// to `parking_lot::RwLock`, which has no poisoning concept.
+    ///
+    /// This is a type-level regression test: it asserts (at compile
+    /// time) that `FILTER_CACHE` is `Arc<parking_lot::RwLock<…>>`. If
+    /// someone reverts to `std::sync::RwLock`, this test fails to
+    /// compile, which is the boundary we want to defend.
+    #[test]
+    fn m3_filter_cache_uses_parking_lot_rwlock() {
+        let _: &Arc<parking_lot::RwLock<TitleFilterConfig>> = &*FILTER_CACHE;
+    }
+
+    /// Companion runtime smoke test: a thread that panics while
+    /// holding the cache write guard does not break subsequent
+    /// `sanitize_title` calls. Pre-fix, this test panics in the
+    /// foreground call to `sanitize_title` because `std::sync::RwLock`
+    /// poisons. Post-fix, it returns normally.
+    #[test]
+    fn m3_sanitize_title_resilient_to_panic_holding_cache() {
+        let cache = FILTER_CACHE.clone();
+        let h = std::thread::spawn(move || {
+            let _g = cache.write();
+            panic!("intentional poisoning attempt");
+        });
+        let _ = h.join(); // ignore the panic propagated by join
+
+        let result = sanitize_title("simple_title");
+        assert_eq!(
+            result, "simple_title",
+            "M3 fix regressed: sanitize_title broke after a thread panicked \
+             while holding the cache lock"
         );
     }
 }
