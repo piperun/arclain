@@ -2,11 +2,30 @@
 
 use super::types::ManagedPlugin;
 use super::PluginManager;
+use crate::runtime::PluginInstance;
 use crate::types::{PluginError, PluginEvent, PluginResponse, Result};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info};
+
+/// Snapshot the `(plugin_id, instance_arc)` pairs for currently-enabled
+/// plugins. Briefly acquires both the `plugins` and `enabled_plugins`
+/// read locks, then drops them before returning so callers can iterate
+/// without holding the maps. Used by every dispatch path
+/// (`dispatch_event_async`, `event_worker`, `dispatch_event`) — keeps
+/// the lock-acquire-drop semantics consistent (audit finding D4).
+fn enabled_plugin_snapshot(
+    plugins: &Arc<RwLock<HashMap<String, ManagedPlugin>>>,
+    enabled_plugins: &Arc<RwLock<HashMap<String, bool>>>,
+) -> Vec<(String, Arc<Mutex<PluginInstance>>)> {
+    let enabled = enabled_plugins.read();
+    let map = plugins.read();
+    map.iter()
+        .filter(|(id, _)| enabled.get(id.as_str()).copied().unwrap_or(false))
+        .map(|(id, p)| (id.clone(), p.instance.clone()))
+        .collect()
+}
 
 impl PluginManager {
     /// Send a UI event to a plugin asynchronously (non-blocking).
@@ -60,18 +79,7 @@ impl PluginManager {
         std::thread::spawn(move || {
             debug!("Async dispatching event: {:?}", event);
 
-            // Collect enabled plugin instances in a single pass (2 lock acquisitions
-            // instead of 2N).
-            let dispatch_list: Vec<(String, _)> = {
-                let enabled = enabled_plugins.read();
-                let map = plugins.read();
-                map.iter()
-                    .filter(|(id, _)| enabled.get(*id).copied().unwrap_or(false))
-                    .map(|(id, p)| (id.clone(), p.instance.clone()))
-                    .collect()
-            };
-
-            for (plugin_id, instance_arc) in dispatch_list {
+            for (plugin_id, instance_arc) in enabled_plugin_snapshot(&plugins, &enabled_plugins) {
                 let mut instance = instance_arc.lock();
 
                 // Map PluginEvent to UI event for compatibility
@@ -100,18 +108,7 @@ impl PluginManager {
         while let Ok(event) = receiver.recv() {
             debug!("Event worker processing: {:?}", event);
 
-            // Collect enabled plugin instances in a single pass (2 lock acquisitions
-            // instead of 2N).
-            let dispatch_list: Vec<(String, _)> = {
-                let enabled = enabled_plugins.read();
-                let map = plugins.read();
-                map.iter()
-                    .filter(|(id, _)| enabled.get(*id).copied().unwrap_or(false))
-                    .map(|(id, p)| (id.clone(), p.instance.clone()))
-                    .collect()
-            };
-
-            for (plugin_id, instance_arc) in dispatch_list {
+            for (plugin_id, instance_arc) in enabled_plugin_snapshot(&plugins, &enabled_plugins) {
                 // Phase 1: under lock — set archive context and dispatch
                 // the event. The plugin's regex check is fast, so the lock
                 // is only held briefly here.
@@ -231,19 +228,10 @@ impl PluginManager {
     pub fn dispatch_event(&mut self, event: &PluginEvent) -> Vec<PluginResponse> {
         debug!("Dispatching event: {:?}", event);
 
-        // Collect enabled plugin instances in a single pass (2 lock acquisitions
-        // instead of 2N).
-        let dispatch_list: Vec<(String, _)> = {
-            let enabled = self.enabled_plugins.read();
-            let map = self.plugins.read();
-            map.iter()
-                .filter(|(id, _)| enabled.get(*id).copied().unwrap_or(false))
-                .map(|(id, p)| (id.clone(), p.instance.clone()))
-                .collect()
-        };
-
         let mut responses = Vec::new();
-        for (plugin_id, instance_arc) in dispatch_list {
+        for (plugin_id, instance_arc) in
+            enabled_plugin_snapshot(&self.plugins, &self.enabled_plugins)
+        {
             let mut instance = instance_arc.lock();
             match instance.on_event(event) {
                 Ok(response) => {
