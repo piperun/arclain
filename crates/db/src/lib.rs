@@ -381,7 +381,7 @@ pub fn get_config_diesel(
         .select(value)
         .first::<String>(conn)
         .optional() // This is diesel's optional from DieselOptionalExtension
-        .map_err(|e| anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(result)
 }
@@ -396,9 +396,21 @@ pub fn set_config_diesel(conn: &mut diesel::SqliteConnection, k: &str, v: &str) 
         .do_update()
         .set(value.eq(v))
         .execute(conn)
-        .map_err(|e| anyhow!("Diesel insert failed: {}", e))?;
+        .map_err(diesel_err("insert"))?;
 
     Ok(())
+}
+
+/// Helper that returns a `.map_err`-shaped closure wrapping a diesel
+/// error in `anyhow::Error` with a "Diesel <op> failed: <err>" message.
+///
+/// Centralises the boilerplate that previously appeared at ~49 call
+/// sites across 9 db modules. Use as
+/// `query.execute(conn).map_err(diesel_err("insert"))?`.
+pub(crate) fn diesel_err(
+    op: &'static str,
+) -> impl FnOnce(diesel::result::Error) -> anyhow::Error {
+    move |e| anyhow::anyhow!("Diesel {} failed: {}", op, e)
 }
 
 /// Helpers

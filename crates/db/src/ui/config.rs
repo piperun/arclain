@@ -3,6 +3,7 @@
 //! Provides normalized tables for UI items (toolbar, context menu, tools dialog),
 //! regions, and display options with full CRUD support.
 
+use crate::diesel_err;
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -571,7 +572,7 @@ pub fn list_items_by_region_diesel(
         .filter(region.eq(reg.as_str()))
         .order(sort_order.asc())
         .load::<DbUiItemRow>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(rows.iter().map(|r| r.to_ui_item()).collect())
 }
@@ -588,7 +589,7 @@ pub fn get_item_diesel(
         .filter(id.eq(item_id))
         .first::<DbUiItemRow>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(row.map(|r| r.to_ui_item()))
 }
@@ -624,7 +625,7 @@ pub fn upsert_item_diesel(conn: &mut diesel::SqliteConnection, item: &UiItem) ->
             action_data.eq(&item.action_data),
         ))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel upsert failed: {}", e))?;
+        .map_err(diesel_err("upsert"))?;
 
     Ok(())
 }
@@ -635,7 +636,7 @@ pub fn delete_item_diesel(conn: &mut diesel::SqliteConnection, item_id: &str) ->
 
     diesel::delete(ui_items.filter(id.eq(item_id)))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+        .map_err(diesel_err("delete"))?;
 
     Ok(())
 }
@@ -651,7 +652,7 @@ pub fn set_item_visibility_diesel(
     diesel::update(ui_items.filter(id.eq(item_id)))
         .set(visible.eq(is_visible))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel update failed: {}", e))?;
+        .map_err(diesel_err("update"))?;
 
     Ok(())
 }
@@ -669,7 +670,7 @@ pub fn get_display_option_diesel(
         .select(value)
         .first::<String>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(result)
 }
@@ -688,7 +689,7 @@ pub fn set_display_option_diesel(
         .do_update()
         .set(value.eq(opt_value))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel insert failed: {}", e))?;
+        .map_err(diesel_err("insert"))?;
 
     Ok(())
 }

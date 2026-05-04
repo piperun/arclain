@@ -3,6 +3,7 @@
 //! This module provides a SQLite-backed index that tracks where cached
 //! content is stored in the cacache content-addressable store.
 
+use crate::diesel_err;
 use anyhow::Result;
 
 /// Type of cached content
@@ -211,7 +212,7 @@ pub fn upsert_cache_entry(
             dsl::size_bytes.eq(size_bytes),
         ))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel upsert failed: {}", e))?;
+        .map_err(diesel_err("upsert"))?;
 
     // Fetch ID
     let id: i32 = dsl::cache_index
@@ -234,7 +235,7 @@ pub fn get_cache_entry(
         .select(DbCacheEntry::as_select())
         .first::<DbCacheEntry>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel get failed: {}", e))?;
+        .map_err(diesel_err("get"))?;
 
     Ok(entry.map(|e| e.to_cache_entry()))
 }
@@ -251,7 +252,7 @@ pub fn get_entries_by_product(
         .order(created_at.desc())
         .select(DbCacheEntry::as_select())
         .load::<DbCacheEntry>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel get_entries failed: {}", e))?;
+        .map_err(diesel_err("get_entries"))?;
 
     Ok(entries.into_iter().map(|e| e.to_cache_entry()).collect())
 }
@@ -265,7 +266,7 @@ pub fn has_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -> 
         .filter(key.eq(key_param))
         .select(count(id))
         .first(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel count failed: {}", e))?;
+        .map_err(diesel_err("count"))?;
 
     Ok(cnt > 0)
 }
@@ -276,7 +277,7 @@ pub fn delete_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) 
 
     let affected = diesel::delete(cache_index.filter(key.eq(key_param)))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+        .map_err(diesel_err("delete"))?;
 
     Ok(affected > 0)
 }
@@ -291,7 +292,7 @@ pub fn delete_by_pattern(conn: &mut diesel::SqliteConnection, pattern: &str) -> 
 
     let affected = diesel::delete(cache_index.filter(key.like(sql_pattern)))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete_by_pattern failed: {}", e))?;
+        .map_err(diesel_err("delete_by_pattern"))?;
 
     Ok(affected)
 }
@@ -303,7 +304,7 @@ pub fn touch_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -
     diesel::update(cache_index.filter(key.eq(key_param)))
         .set(last_accessed.eq(diesel::dsl::sql("CURRENT_TIMESTAMP")))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel touch failed: {}", e))?;
+        .map_err(diesel_err("touch"))?;
 
     Ok(())
 }
@@ -314,7 +315,7 @@ pub fn clear_all_entries(conn: &mut diesel::SqliteConnection) -> Result<()> {
 
     diesel::delete(cache_index)
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel clear failed: {}", e))?;
+        .map_err(diesel_err("clear"))?;
 
     Ok(())
 }

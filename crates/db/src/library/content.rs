@@ -3,6 +3,7 @@
 //! This tracks images (cover, screenshots, thumbnails) that are stored
 //! in cacache, linked to their parent ProductMetadata.
 
+use crate::diesel_err;
 use anyhow::Result;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -174,7 +175,7 @@ pub fn delete_product_content(conn: &mut diesel::SqliteConnection, prod_id: &str
 
     diesel::delete(product_content.filter(product_id.eq(prod_id)))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+        .map_err(diesel_err("delete"))?;
 
     Ok(())
 }
@@ -191,7 +192,7 @@ pub fn get_all_content(
         .order((content_type.asc(), content_index.asc()))
         .select(DbProductContent::as_select())
         .load::<DbProductContent>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(rows.into_iter().map(|r| r.to_product_content()).collect())
 }
@@ -218,7 +219,7 @@ pub fn save(conn: &mut diesel::SqliteConnection, c: &ProductContent) -> Result<i
         .do_update()
         .set(&new_content)
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel save failed: {}", e))?;
+        .map_err(diesel_err("save"))?;
 
     // Returning last inserted ID in Diesel is backend specific and tricky with upserts in SQLite.
     // For now, we can just return 0 or fetch it if strictly necessary.
@@ -242,7 +243,7 @@ pub fn get_cover(
         .select(DbProductContent::as_select())
         .first::<DbProductContent>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel get_cover failed: {}", e))?;
+        .map_err(diesel_err("get_cover"))?;
 
     Ok(result.map(|r| r.to_product_content()))
 }
@@ -263,7 +264,7 @@ pub fn get_screenshots(
         .order(content_index.asc())
         .select(DbProductContent::as_select())
         .load::<DbProductContent>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel get_screenshots failed: {}", e))?;
+        .map_err(diesel_err("get_screenshots"))?;
 
     Ok(rows.into_iter().map(|r| r.to_product_content()).collect())
 }

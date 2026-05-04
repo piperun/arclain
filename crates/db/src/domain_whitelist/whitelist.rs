@@ -2,6 +2,7 @@
 //!
 //! Stores which domains each plugin is allowed to access.
 
+use crate::diesel_err;
 use anyhow::Result;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -256,7 +257,7 @@ pub fn list_whitelist_entries_diesel(
     let results = domain_whitelist
         .order((plugin_id.asc(), domain.asc()))
         .load::<DbWhitelistRow>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(results)
 }
@@ -272,7 +273,7 @@ pub fn list_plugin_domains_diesel(
         .filter(plugin_id.eq(pid))
         .order(domain.asc())
         .load::<DbWhitelistRow>(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(results)
 }
@@ -290,7 +291,7 @@ pub fn is_domain_approved_diesel(
         .select(approved)
         .first::<bool>(conn)
         .optional()
-        .map_err(|e| anyhow::anyhow!("Diesel query failed: {}", e))?;
+        .map_err(diesel_err("query"))?;
 
     Ok(result == Some(true))
 }
@@ -320,7 +321,7 @@ pub fn approve_domain_diesel(
             approved_at.eq(diesel::dsl::sql("CURRENT_TIMESTAMP")),
         ))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel approve failed: {}", e))?;
+        .map_err(diesel_err("approve"))?;
 
     Ok(())
 }
@@ -336,7 +337,7 @@ pub fn revoke_domain_diesel(
     diesel::update(domain_whitelist.filter(plugin_id.eq(pid).and(domain.eq(dom))))
         .set(approved.eq(false))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel revoke failed: {}", e))?;
+        .map_err(diesel_err("revoke"))?;
 
     Ok(())
 }
@@ -351,7 +352,7 @@ pub fn delete_whitelist_entry_diesel(
 
     diesel::delete(domain_whitelist.filter(plugin_id.eq(pid).and(domain.eq(dom))))
         .execute(conn)
-        .map_err(|e| anyhow::anyhow!("Diesel delete failed: {}", e))?;
+        .map_err(diesel_err("delete"))?;
 
     Ok(())
 }
