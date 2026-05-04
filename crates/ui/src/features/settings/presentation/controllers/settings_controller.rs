@@ -277,7 +277,9 @@ pub fn handle_action(
                 }
             }
 
-            // Update client
+            // Update client. Validate the config first so an invalid
+            // SOCKS5 address surfaces as a toast rather than silently
+            // disabling the proxy (audit finding M4).
             use arclain_network::features::proxy::ProxyConfig;
             let config = ProxyConfig {
                 enabled: socks5_enabled,
@@ -286,11 +288,22 @@ pub fn handle_action(
                 password: password_to_use,
             };
 
-            shared
-                .services
-                .async_http_client
-                .update_config(Some(config));
-            tracing::info!("Network settings saved");
+            if let Err(msg) = config.validate() {
+                tracing::warn!("[SaveNetwork] Refusing to apply invalid proxy: {}", msg);
+                shared.toaster.lock().error(format!(
+                    "Network settings saved, but proxy is disabled: {}",
+                    msg,
+                ));
+                // Apply with proxy_config = None so we don't ship a half-broken
+                // client to the rest of the app.
+                shared.services.async_http_client.update_config(None);
+            } else {
+                shared
+                    .services
+                    .async_http_client
+                    .update_config(Some(config));
+                tracing::info!("Network settings saved");
+            }
         }
         SettingsAction::TestNetwork {
             socks5_enabled,
