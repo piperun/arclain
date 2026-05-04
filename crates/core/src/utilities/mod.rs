@@ -16,6 +16,7 @@ pub mod file_opener;
 pub mod logging;
 pub mod password_matcher;
 pub mod process;
+pub mod time;
 pub mod title_filter;
 
 pub use checksum_service::{ChecksumService, RecoveryAction, VerifyResult};
@@ -24,6 +25,7 @@ pub use file_opener::{FileOpener, OpenStrategy};
 pub use logging::{init_logging, init_logging_with_filter};
 pub use password_matcher::{auto_password_for, PassRule};
 pub use process::hide_console;
+pub use time::{unix_seconds, unix_seconds_i64};
 pub use title_filter::{sanitize_title, TitleFilterConfig};
 
 pub mod proxy;
