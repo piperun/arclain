@@ -358,10 +358,9 @@ pub enum RecoveryAction {
 }
 
 fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs() as i64
+    // Audit finding H6: panic-free; a misconfigured system clock
+    // should not crash a checksum operation.
+    crate::utilities::unix_seconds_i64()
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
