@@ -277,12 +277,14 @@ pub fn render_status_bar_panel(
             }
             let has_metadata = shared_state.signals().metadata.get().is_some();
 
+            // Status bar only needs counts. Use the cheap status_summary
+            // path so we don't clone every plugin's manifest per frame
+            // (audit finding P5).
             let plugin_info = if let Some(manager) = &shared_state.services.plugin_manager {
-                let mgr = manager.lock();
-                let list = mgr.list_plugins();
+                let summary = manager.lock().status_summary();
                 Some(components::status_bar::PluginStatusInfo {
-                    total_plugins: list.len(),
-                    enabled_plugins: list.iter().filter(|p| p.enabled).count(),
+                    total_plugins: summary.total,
+                    enabled_plugins: summary.enabled,
                     has_metadata,
                 })
             } else {
