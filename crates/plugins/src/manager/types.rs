@@ -14,6 +14,16 @@ pub struct PluginListItem {
     pub instance: Option<()>, // Just a marker for whether it's loaded
 }
 
+/// Cheap counts-only snapshot returned by [`super::PluginManager::status_summary`].
+///
+/// Avoids cloning per-plugin manifests when the caller only needs
+/// totals (e.g. status bar rendering every frame).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PluginStatusSummary {
+    pub total: usize,
+    pub enabled: usize,
+}
+
 /// A managed plugin with its instance and metadata
 pub(crate) struct ManagedPlugin {
     pub(crate) metadata: PluginMetadata,
