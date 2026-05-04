@@ -422,6 +422,10 @@ fn render_plugin_ui(
                 let app_state_clone = app_state.clone();
                 let config_service_clone: Option<Arc<arclain_core::ConfigService>> =
                     config_service.clone();
+                // Use the existing tokio runtime instead of std::thread::spawn
+                // (audit P7). Falls back to thread::spawn if no runtime is
+                // available (e.g. headless test contexts).
+                let tokio_runtime = shared.map(|s| s.services.tokio_runtime.clone());
 
                 // Push actions into the long-lived `pending_plugin_actions`
                 // sink so the next render picks them up via
@@ -441,13 +445,19 @@ fn render_plugin_ui(
                     let cfg_svc_thread: Option<Arc<arclain_core::ConfigService>> =
                         config_service_clone.clone();
 
-                    std::thread::spawn(move || {
+                    let work = move || {
+                        // Audit P7: only fetch this plugin's settings,
+                        // not the whole map. send_ui_event is the slow
+                        // step (WASM call); the settings snapshot used
+                        // to clone every plugin's HashMap unnecessarily.
                         let (settings_to_save, actions) = {
                             let mgr = mgr_thread.lock();
                             if let Some(instance_arc) = mgr.get_plugin_instance(&pid_thread) {
                                 let mut instance = instance_arc.lock();
                                 let actions = instance.send_ui_event(&id_thread, val_thread).ok();
-                                (Some(mgr.get_all_settings()), actions)
+                                drop(instance);
+                                let snapshot = mgr.get_settings_for(&pid_thread);
+                                (snapshot, actions)
                             } else {
                                 (None, None)
                             }
@@ -462,7 +472,9 @@ fn render_plugin_ui(
 
                         if let Some(settings_to_save) = settings_to_save {
                             let mut state = state_thread.lock();
-                            state.user_config.set_all_plugin_settings(&settings_to_save);
+                            state
+                                .user_config
+                                .set_plugin_settings(&pid_thread, settings_to_save);
 
                             if let Some(ref cfg_svc) = cfg_svc_thread {
                                 let res: anyhow::Result<()> =
@@ -472,7 +484,22 @@ fn render_plugin_ui(
                                 }
                             }
                         }
-                    });
+                    };
+
+                    // Dispatch on the existing tokio runtime via
+                    // spawn_blocking (the work locks parking_lot mutexes
+                    // and calls into WASM, so it stays on a blocking
+                    // thread — but managed by tokio rather than as a
+                    // raw OS thread per click).
+                    if let Some(rt) = &tokio_runtime {
+                        rt.spawn(async move {
+                            let _ = tokio::task::spawn_blocking(work).await;
+                        });
+                    } else {
+                        // No runtime (e.g. headless test); fall back to
+                        // a raw thread so the work still happens.
+                        std::thread::spawn(work);
+                    }
                 }) as ui::UiEventCallback;
 
                 let flat_elements = ui_elements.flatten();
