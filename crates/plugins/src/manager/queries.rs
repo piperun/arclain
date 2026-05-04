@@ -219,4 +219,22 @@ impl PluginManager {
 
         all_settings
     }
+
+    /// Get a snapshot of a single plugin's settings.
+    ///
+    /// Returns the live in-memory settings if the plugin is loaded,
+    /// otherwise falls back to the initial_settings provided at
+    /// `PluginManager::new`. Used by the detail-view UI event handler
+    /// so a single click only fetches the one plugin's settings
+    /// rather than `get_all_settings`-ing the whole map (audit P7).
+    pub fn get_settings_for(&self, plugin_id: &str) -> Option<HashMap<String, String>> {
+        let plugins = self.plugins.read();
+        if let Some(plugin) = plugins.get(plugin_id) {
+            let instance = plugin.instance.lock();
+            if let Some(settings) = (*instance).get_settings() {
+                return Some(settings);
+            }
+        }
+        self.initial_settings.get(plugin_id).cloned()
+    }
 }
