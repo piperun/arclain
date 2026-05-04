@@ -16,7 +16,6 @@ pub mod settings_form;
 pub mod settings_header;
 pub mod status_bar;
 pub mod status_icon;
-pub mod switch;
 pub mod toolbar;
 pub mod variables_panel;
 pub mod top_tab_bar;
@@ -28,7 +27,6 @@ pub use search_bar::SearchBar;
 pub use settings_card::SettingsCard;
 pub use settings_form::Form;
 pub use settings_header::SettingsHeader;
-pub use switch::Switch;
 pub use variables_panel::{TemplateVariable, VariableGroup, VariablePicker, VariablesPanel};
 
 // Re-export commonly used types and states

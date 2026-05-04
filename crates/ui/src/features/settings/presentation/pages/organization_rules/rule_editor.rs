@@ -3,8 +3,8 @@
 //! Full-page editor for organization rules with template variable support.
 
 use arclain_core::features::organization::OrganizationRule;
-use arclain_widgets::TextInput;
-use crate::shared::components::{Form, Switch, VariablePicker, VariableGroup, TemplateVariable};
+use arclain_widgets::{TextInput, ToggleSwitch};
+use crate::shared::components::{Form, VariablePicker, VariableGroup, TemplateVariable};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -131,7 +131,13 @@ fn render_rule_form(
     );
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        if ui.add(Switch::new(&mut state.rule.is_enabled)).changed() {
+        if ui
+            .add(
+                ToggleSwitch::new(&mut state.rule.is_enabled)
+                    .with_theme_colors(&theme.colors),
+            )
+            .changed()
+        {
             state.is_dirty = true;
         }
         ui.add_space(8.0);
