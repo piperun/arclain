@@ -232,17 +232,12 @@ pub fn trigger_image_fetch(
             };
 
             if let Ok(id) = id_res {
-                // Poll loop (max 30s)
-                for _ in 0..300 {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    if let Some(status) = client.status(&id) {
-                        if status.is_complete() {
-                            break;
-                        }
-                    } else {
-                        break;
-                    }
-                }
+                // Audit P2: wake on completion via `await_complete`
+                // instead of a 100ms-tick poll loop. await_complete
+                // returns immediately if the request is already done,
+                // otherwise notifies-waits until the HTTP task fires
+                // notify_waiters.
+                let _ = client.await_complete(&id).await;
 
                 if let Some(status) = client.take_response(&id) {
                     if let RequestStatus::Ready(resp) = status {
