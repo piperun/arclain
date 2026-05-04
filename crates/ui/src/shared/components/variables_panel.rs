@@ -346,7 +346,3 @@ impl VariablePicker {
     }
 }
 
-// Keep old types as aliases for backwards compatibility
-pub type VariablesPanel = VariablePicker;
-#[allow(dead_code)]
-pub type VariableGroupOld = VariableGroup;
