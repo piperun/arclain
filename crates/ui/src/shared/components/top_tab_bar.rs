@@ -98,7 +98,7 @@ pub fn render(
 
                         // Badge
                         if let Some(badge) = &tab.badge {
-                            render_badge(ui, badge);
+                            render_badge(ui, badge, colors);
                         }
                     });
                 });
@@ -129,8 +129,8 @@ pub fn render(
 }
 
 /// Render a badge (count or dot)
-fn render_badge(ui: &mut Ui, badge: &BadgeConfig) {
-    let color = badge_color(&badge.color);
+fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
+    let color = badge_color(&badge.color, colors);
 
     if let Some(count) = badge.count {
         if count > 0 {
@@ -149,14 +149,19 @@ fn render_badge(ui: &mut Ui, badge: &BadgeConfig) {
     }
 }
 
-/// Convert badge color string to Color32
-fn badge_color(color: &str) -> Color32 {
+/// Map a plugin-emitted badge color name to a theme token.
+///
+/// Plugins describe badge color semantically ("red" for failure,
+/// "green" for success, etc.); this routes through `ThemeColors` so
+/// the actual hex follows the active theme rather than being baked
+/// into the renderer.
+fn badge_color(color: &str, colors: &ThemeColors) -> Color32 {
     match color {
-        "red" => Color32::from_rgb(248, 81, 73),
-        "green" => Color32::from_rgb(63, 185, 80),
-        "blue" => Color32::from_rgb(88, 166, 255),
-        "orange" => Color32::from_rgb(210, 153, 34),
-        _ => Color32::from_rgb(88, 166, 255), // Default to blue
+        "red" => colors.error,
+        "green" => colors.success,
+        "blue" => colors.primary,
+        "orange" => colors.warning,
+        _ => colors.primary,
     }
 }
 
@@ -202,30 +207,39 @@ mod tests {
     // badge_color
     // =========================================================================
 
-    #[test]
-    fn badge_color_red() {
-        assert_eq!(badge_color("red"), Color32::from_rgb(248, 81, 73));
+    fn test_colors() -> ThemeColors {
+        ThemeColors::default()
     }
 
     #[test]
-    fn badge_color_green() {
-        assert_eq!(badge_color("green"), Color32::from_rgb(63, 185, 80));
+    fn badge_color_red_maps_to_theme_error() {
+        let colors = test_colors();
+        assert_eq!(badge_color("red", &colors), colors.error);
     }
 
     #[test]
-    fn badge_color_blue() {
-        assert_eq!(badge_color("blue"), Color32::from_rgb(88, 166, 255));
+    fn badge_color_green_maps_to_theme_success() {
+        let colors = test_colors();
+        assert_eq!(badge_color("green", &colors), colors.success);
     }
 
     #[test]
-    fn badge_color_orange() {
-        assert_eq!(badge_color("orange"), Color32::from_rgb(210, 153, 34));
+    fn badge_color_blue_maps_to_theme_primary() {
+        let colors = test_colors();
+        assert_eq!(badge_color("blue", &colors), colors.primary);
     }
 
     #[test]
-    fn badge_color_unknown_defaults_to_blue() {
-        assert_eq!(badge_color("purple"), badge_color("blue"));
-        assert_eq!(badge_color(""), badge_color("blue"));
+    fn badge_color_orange_maps_to_theme_warning() {
+        let colors = test_colors();
+        assert_eq!(badge_color("orange", &colors), colors.warning);
+    }
+
+    #[test]
+    fn badge_color_unknown_defaults_to_primary() {
+        let colors = test_colors();
+        assert_eq!(badge_color("purple", &colors), colors.primary);
+        assert_eq!(badge_color("", &colors), colors.primary);
     }
 
     // =========================================================================
