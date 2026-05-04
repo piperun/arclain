@@ -297,16 +297,23 @@ impl HostFunctions {
                 Ok(None) => {
                     // Not on server — try server-side fetch
                     match client.fetch_metadata(&source, &product_id, false) {
-                        Ok(resp) if resp.metadata.is_some() => {
-                            debug!(
-                                "[get_product_metadata] Fetched {} via gameta server",
-                                product_id
-                            );
-                            if let Ok(json) = serde_json::to_string(&resp.metadata.unwrap()) {
-                                return Some(json);
+                        Ok(resp) => {
+                            if let Some(meta) = resp.metadata {
+                                debug!(
+                                    "[get_product_metadata] Fetched {} via gameta server",
+                                    product_id
+                                );
+                                if let Ok(json) = serde_json::to_string(&meta) {
+                                    return Some(json);
+                                }
+                            } else {
+                                debug!(
+                                    "[get_product_metadata] Server fetch returned no metadata for {}, falling back",
+                                    product_id
+                                );
                             }
                         }
-                        _ => {
+                        Err(_) => {
                             debug!(
                                 "[get_product_metadata] Server fetch failed for {}, falling back",
                                 product_id

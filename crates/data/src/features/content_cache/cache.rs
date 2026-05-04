@@ -127,7 +127,13 @@ impl ContentCache {
         let sri = cacache::write_hash_sync(&self.base_dir, data)?;
 
         // Retry upsert up to 3 times on database lock
-        let mut last_error = None;
+        // Audit finding H7: the original code ended with
+        // `Err(last_error.unwrap())`. Today every loop iteration that
+        // doesn't return Ok sets `last_error`, so the unwrap is safe —
+        // but it's a brittle invariant. A future refactor that adds an
+        // Ok-without-return path would silently start panicking. Use
+        // unwrap_or_else with an explicit fallback message instead.
+        let mut last_error: Option<anyhow::Error> = None;
         for attempt in 1..=3 {
             match self.service.upsert(
                 key,
@@ -150,7 +156,13 @@ impl ContentCache {
             }
         }
 
-        Err(last_error.unwrap())
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!(
+                "content cache upsert failed for key {} after 3 attempts \
+                 (with no recorded error — likely a control-flow bug)",
+                key
+            )
+        }))
     }
 
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
