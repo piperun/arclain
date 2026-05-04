@@ -10,6 +10,12 @@ ui_archive/*
 *.md
 !README.md
 !docs/ARCZIP_FORMAT.md
+# Cog-generated package changelogs — must be tracked so they survive
+# fresh clones and reach the remote. Cog rewrites these on `cog bump`
+# and stages them automatically; see cog.toml for `changelog_path`
+# entries.
+!CHANGELOG.md
+!**/CHANGELOG.md
 *.html
 mockups/*
 
