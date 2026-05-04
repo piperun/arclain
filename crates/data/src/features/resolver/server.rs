@@ -3,40 +3,45 @@
 use super::{DataSourceResolver, ResolveError};
 use crate::features::api::DataRequest;
 use arclain_network::features::gameta_client::GametaClient;
-use parking_lot::Mutex;
+use parking_lot::RwLock;
 use std::sync::Arc;
 
 /// Resolver that fetches metadata from a gameta server instance.
 ///
-/// Holds a nullable `GametaClient` so it can be registered at startup and
-/// reconfigured at runtime without replacing the resolver in the chain.
+/// Holds a nullable `Arc<GametaClient>` so it can be registered at
+/// startup and reconfigured at runtime. The Arc-wrapped storage lets
+/// `try_resolve` snapshot the client under a brief read guard, drop
+/// the guard, and run the blocking HTTP call without holding any of
+/// the resolver's locks (audit P6 — pre-fix the lock was held
+/// throughout the HTTP round-trip, blocking config swaps for the
+/// duration).
 pub struct ServerResolver {
-    client: Arc<Mutex<Option<GametaClient>>>,
+    client: Arc<RwLock<Option<Arc<GametaClient>>>>,
 }
 
 impl ServerResolver {
     /// Create a resolver with no client configured (disabled).
     pub fn new() -> Self {
         Self {
-            client: Arc::new(Mutex::new(None)),
+            client: Arc::new(RwLock::new(None)),
         }
     }
 
     /// Create a resolver pre-configured with a client.
     pub fn with_client(client: GametaClient) -> Self {
         Self {
-            client: Arc::new(Mutex::new(Some(client))),
+            client: Arc::new(RwLock::new(Some(Arc::new(client)))),
         }
     }
 
     /// Replace (or clear) the underlying client at runtime.
     pub fn set_client(&self, client: Option<GametaClient>) {
-        *self.client.lock() = client;
+        *self.client.write() = client.map(Arc::new);
     }
 
     /// Returns `true` when a client is configured.
     pub fn is_available(&self) -> bool {
-        self.client.lock().is_some()
+        self.client.read().is_some()
     }
 
     /// Parse a data key into `(source, id)` for the gameta API.
@@ -78,8 +83,16 @@ impl DataSourceResolver for ServerResolver {
     fn try_resolve(&self, key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
         let (source, id) = Self::parse_key(key).ok_or(ResolveError::NotConfigured)?;
 
-        let guard = self.client.lock();
-        let client = guard.as_ref().ok_or(ResolveError::NotConfigured)?;
+        // Snapshot the client Arc under a brief read guard, then drop
+        // the guard before the blocking HTTP call. This lets `set_client`
+        // and concurrent `try_resolve` calls proceed without waiting
+        // for an in-flight request (audit P6).
+        let client = self
+            .client
+            .read()
+            .as_ref()
+            .cloned()
+            .ok_or(ResolveError::NotConfigured)?;
 
         tracing::debug!(
             "[ServerResolver] Fetching metadata source='{}' id='{}'",
@@ -228,5 +241,28 @@ mod tests {
 
         resolver.set_client(None);
         assert!(!resolver.is_available());
+    }
+
+    /// Regression test for P6 from `docs/AUDIT_2026-05-03.md`.
+    ///
+    /// Pre-fix, `try_resolve` held the resolver's `Mutex<Option<...>>`
+    /// guard across the blocking `client.get_metadata` HTTP call.
+    /// `set_client` then had to wait for that round-trip to finish
+    /// before swapping the client.
+    ///
+    /// Post-fix, the storage is `RwLock<Option<Arc<GametaClient>>>` and
+    /// `try_resolve` clones the inner `Arc` under a brief read guard,
+    /// drops the guard, then runs HTTP. This test pins the type-level
+    /// shape so a future revert to `Mutex<Option<GametaClient>>`
+    /// fails to compile.
+    #[test]
+    fn p6_server_resolver_storage_is_rwlock_of_arc_client() {
+        use arclain_network::features::gameta_client::GametaClient;
+
+        // Type-level assertion: if someone reverts the storage shape,
+        // this binding fails to compile.
+        fn _accept<T>(_: &Arc<parking_lot::RwLock<Option<Arc<T>>>>) {}
+        let resolver = ServerResolver::new();
+        _accept::<GametaClient>(&resolver.client);
     }
 }
