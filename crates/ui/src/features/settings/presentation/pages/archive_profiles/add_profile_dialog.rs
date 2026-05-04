@@ -103,7 +103,7 @@ impl AddProfileDialog {
 
                 if let Some(err) = name_error {
                     ui.label("");
-                    ui.colored_label(theme.colors.error, err);
+                    crate::shared::components::error_label(ui, theme, err);
                     ui.end_row();
                 }
 

@@ -178,7 +178,7 @@ pub fn render_form(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
 
             if !dialog.error.is_empty() {
                 ui.add_space(8.0);
-                ui.colored_label(theme.colors.error, &dialog.error);
+                crate::shared::components::error_label(ui, theme, &dialog.error);
             }
         });
 }

@@ -1,5 +1,17 @@
 // Shared reusable UI components module
 
+use crate::shared::theme::AppTheme;
+use eframe::egui;
+
+/// Render an error-tinted label using the theme's `colors.error`.
+///
+/// Centralizes the pattern of `ui.colored_label(theme.colors.error, msg)`
+/// that previously appeared inline at 5+ form/dialog sites with
+/// hardcoded `Color32::from_rgb(220, 53, 69)` or `Color32::RED`.
+pub fn error_label(ui: &mut egui::Ui, theme: &AppTheme, msg: &str) {
+    ui.colored_label(theme.colors.error, msg);
+}
+
 pub mod breadcrumbs;
 pub mod carousel;
 pub mod context_menu;
