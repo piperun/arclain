@@ -40,7 +40,12 @@ impl Hash {
 /// Threshold for using memory-mapped I/O (10 MB)
 const MMAP_THRESHOLD: u64 = 10 * 1024 * 1024;
 
-/// Hash a single file
+/// Hash a single file.
+///
+/// **Synchronous: do not call from inside an async task** — the
+/// `std::fs` operations and the actual hashing both block the calling
+/// thread. From a tokio context use
+/// `tokio::task::spawn_blocking(|| hash_file(...))` (audit finding M2).
 pub fn hash_file(path: &Path, algorithm: Algorithm) -> Result<Hash> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("Failed to read metadata for {}", path.display()))?;

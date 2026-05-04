@@ -372,7 +372,18 @@ impl HostFunctions {
                         }
                     }
 
-                    return serde_json::to_string(&meta).ok();
+                    return serde_json::to_string(&meta)
+                        .map_err(|e| {
+                            // Audit finding M1: previously .ok() silently
+                            // dropped serialization errors; the plugin
+                            // saw "no metadata" with no debugging trail.
+                            warn!(
+                                "[get_product_metadata] failed to serialize metadata for {}: {}",
+                                full_id, e
+                            );
+                            e
+                        })
+                        .ok();
                 }
                 Ok(None) => {
                     debug!(
@@ -404,7 +415,15 @@ impl HostFunctions {
                             warn!("[get_product_metadata] Failed to save to DB: {}", e);
                         }
                     }
-                    return serde_json::to_string(&meta).ok();
+                    return serde_json::to_string(&meta)
+                        .map_err(|e| {
+                            warn!(
+                                "[get_product_metadata] failed to serialize JSON-cache metadata for {}: {}",
+                                product_id, e
+                            );
+                            e
+                        })
+                        .ok();
                 }
             }
         }
@@ -425,7 +444,15 @@ impl HostFunctions {
                         warn!("[get_product_metadata] Failed to save to DB: {}", e);
                     }
                 }
-                return serde_json::to_string(&meta).ok();
+                return serde_json::to_string(&meta)
+                    .map_err(|e| {
+                        warn!(
+                            "[get_product_metadata] failed to serialize HTML-cache metadata for {}: {}",
+                            product_id, e
+                        );
+                        e
+                    })
+                    .ok();
             }
         }
 
