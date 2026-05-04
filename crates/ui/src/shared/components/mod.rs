@@ -39,7 +39,7 @@ pub use search_bar::SearchBar;
 pub use settings_card::SettingsCard;
 pub use settings_form::Form;
 pub use settings_header::SettingsHeader;
-pub use variables_panel::{TemplateVariable, VariableGroup, VariablePicker, VariablesPanel};
+pub use variables_panel::{TemplateVariable, VariableGroup, VariablePicker};
 
 // Re-export commonly used types and states
 // pub use file_list::{FileEntry, FileListAction, SortState};
