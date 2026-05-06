@@ -216,7 +216,7 @@ impl BrowserController {
         if let Some(dbs) = &state.dbs {
             let pool = &dbs.config_pool;
             if let Ok(mut conn) = pool.get() {
-                if let Ok(db_profiles) = arclain_db::list_profiles_diesel(&mut conn) {
+                if let Ok(db_profiles) = arclain_core::list_profiles_diesel(&mut conn) {
                     return db_profiles
                         .iter()
                         .map(arclain_core::features::organization::ArchiveProfile::from_db)
