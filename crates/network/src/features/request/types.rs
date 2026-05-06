@@ -59,7 +59,7 @@ impl HttpRequest {
             method: HttpMethod::Get,
             headers: HashMap::new(),
             body: None,
-            timeout: Duration::from_secs(30),
+            timeout: crate::DEFAULT_REQUEST_TIMEOUT,
         }
     }
 
@@ -70,7 +70,7 @@ impl HttpRequest {
             method: HttpMethod::Post,
             headers: HashMap::new(),
             body: Some(body),
-            timeout: Duration::from_secs(30),
+            timeout: crate::DEFAULT_REQUEST_TIMEOUT,
         }
     }
 
