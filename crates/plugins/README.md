@@ -27,37 +27,36 @@ The plugin system consists of several components:
 
 ```rust
 use arclain_plugins::{PluginManager, default_plugins_dir};
+use std::collections::HashMap;
 
 let plugins_dir = default_plugins_dir();
-let mut manager = PluginManager::new(plugins_dir)?;
+let mut manager = PluginManager::new(plugins_dir, HashMap::new())?;
 manager.init()?;
 ```
 
 ### Dispatching Events
 
+Production code dispatches events through a cloned channel sender;
+events are processed by a background worker thread and the call
+never blocks. The synchronous `dispatch_event` API on the manager
+is retained for tests only.
+
 ```rust
 use arclain_plugins::PluginEvent;
 use arclain_core::ArchiveKind;
 
-let event = PluginEvent::OnArchiveOpen {
+let tx = manager.get_event_sender();
+
+tx.send(PluginEvent::OnArchiveOpen {
     path: "test.zip".to_string(),
     kind: ArchiveKind::Zip,
-};
-
-let responses = manager.dispatch_event(&event);
-
-for response in responses {
-    match response {
-        PluginResponse::Metadata { data } => {
-            println!("Plugin returned metadata: {:?}", data);
-        }
-        PluginResponse::Error { message } => {
-            eprintln!("Plugin error: {}", message);
-        }
-        PluginResponse::None => {}
-    }
-}
+    password: None,
+})?;
 ```
+
+Plugin responses are surfaced through other channels (e.g. the
+metadata signal, the network log, or `set_status_message`) rather
+than as a synchronous return value.
 
 ### Managing Plugins
 
