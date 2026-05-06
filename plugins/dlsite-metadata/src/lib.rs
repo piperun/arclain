@@ -2370,9 +2370,9 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
     Ok(None)
 }
 
-/// Detect DLSite code using gameta_lib provider
+/// Detect DLSite code using gameta_lib (same path as `arclain_core::utilities::detect_dlsite_code`).
 fn detect_dlsite_code(text: &str) -> Option<String> {
-    gameta_lib::providers::dlsite::detect_dlsite_code(text)
+    gameta_lib::detect::detect_dlsite_code(text)
 }
 
 /// Read metadata from local cache - uses host's get_product_metadata which handles:
