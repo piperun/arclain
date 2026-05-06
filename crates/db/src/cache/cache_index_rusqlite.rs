@@ -1,13 +1,23 @@
-//! Legacy Rusqlite implementation for cache index
+//! Rusqlite-backed helpers for the legacy `cache_index` table.
 //!
-//! Moved from crates/db/src/cache/cache_index.rs
+//! The diesel-backed implementation lives in [`crate::cache::cache_index`];
+//! this module is the rusqlite mirror used by `CacheDb::open` (which
+//! still operates over a raw `rusqlite::Connection` for migration
+//! purposes) and the unit tests in `cache/tests.rs`.
+//!
+//! Only the four helpers actually called from those two sites are kept.
+//! The legacy `delete_cache_entry`, `touch_cache_entry`,
+//! `clear_all_entries`, and `get_entries_by_product` had no callers and
+//! were dropped along with the obsolete `legacy/` module.
 
+#[cfg(test)]
 use crate::cache::cache_index::{CacheEntry, CacheType};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
+#[cfg(test)]
 use rusqlite::OptionalExtension;
 
-/// Initialize the cache_index table schema
+/// Initialize the cache_index table schema.
 pub fn init_cache_index_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         r#"
@@ -31,7 +41,8 @@ pub fn init_cache_index_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Insert or update a cache entry
+/// Insert or update a cache entry.
+#[cfg(test)]
 pub fn upsert_cache_entry(
     conn: &Connection,
     key: &str,
@@ -65,11 +76,12 @@ pub fn upsert_cache_entry(
     Ok(conn.last_insert_rowid())
 }
 
-/// Get a cache entry by key
+/// Get a cache entry by key.
+#[cfg(test)]
 pub fn get_cache_entry(conn: &Connection, key: &str) -> Result<Option<CacheEntry>> {
     let mut stmt = conn.prepare(
         r#"
-        SELECT id, key, product_id, content_hash, source_url, cache_type, 
+        SELECT id, key, product_id, content_hash, source_url, cache_type,
                created_at, last_accessed, size_bytes
         FROM cache_index WHERE key = ?1
         "#,
@@ -94,37 +106,8 @@ pub fn get_cache_entry(conn: &Connection, key: &str) -> Result<Option<CacheEntry
     Ok(entry)
 }
 
-/// Get all cache entries for a product
-pub fn get_entries_by_product(conn: &Connection, product_id: &str) -> Result<Vec<CacheEntry>> {
-    let mut stmt = conn.prepare(
-        r#"
-        SELECT id, key, product_id, content_hash, source_url, cache_type, 
-               created_at, last_accessed, size_bytes
-        FROM cache_index WHERE product_id = ?1
-        ORDER BY created_at DESC
-        "#,
-    )?;
-
-    let entries = stmt
-        .query_map([product_id], |row| {
-            Ok(CacheEntry {
-                id: row.get(0)?,
-                key: row.get(1)?,
-                product_id: row.get(2)?,
-                content_hash: row.get(3)?,
-                source_url: row.get(4)?,
-                cache_type: CacheType::from_str(&row.get::<_, String>(5)?),
-                created_at: row.get(6)?,
-                last_accessed: row.get(7)?,
-                size_bytes: row.get(8)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(entries)
-}
-
-/// Check if a cache entry exists
+/// Check if a cache entry exists.
+#[cfg(test)]
 pub fn has_cache_entry(conn: &Connection, key: &str) -> Result<bool> {
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM cache_index WHERE key = ?1",
@@ -132,26 +115,4 @@ pub fn has_cache_entry(conn: &Connection, key: &str) -> Result<bool> {
         |row| row.get(0),
     )?;
     Ok(count > 0)
-}
-
-/// Delete a cache entry by key
-pub fn delete_cache_entry(conn: &Connection, key: &str) -> Result<bool> {
-    let affected = conn.execute("DELETE FROM cache_index WHERE key = ?1", [key])?;
-    Ok(affected > 0)
-}
-
-/// Update last_accessed timestamp
-pub fn touch_cache_entry(conn: &Connection, key: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE cache_index SET last_accessed = CURRENT_TIMESTAMP WHERE key = ?1",
-        [key],
-    )?;
-    Ok(())
-}
-
-/// Remove all cache entries
-pub fn clear_all_entries(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM cache_index", [])
-        .context("Failed to clear cache index")?;
-    Ok(())
 }

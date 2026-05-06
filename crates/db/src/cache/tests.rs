@@ -1,7 +1,7 @@
 //! Unit tests for cache module
 
 use super::*;
-use crate::legacy::cache_index::{
+use crate::cache::cache_index_rusqlite::{
     get_cache_entry, has_cache_entry, init_cache_index_schema, upsert_cache_entry,
 };
 

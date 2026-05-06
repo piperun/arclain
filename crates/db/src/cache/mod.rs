@@ -2,6 +2,7 @@
 
 mod cache_db;
 pub mod cache_index;
+pub(crate) mod cache_index_rusqlite;
 
 #[cfg(test)]
 mod tests;

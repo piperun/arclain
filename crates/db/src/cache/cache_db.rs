@@ -40,7 +40,9 @@ impl CacheDb {
         db.init_schema(init_cache_schema)?;
 
         // Initialize cache_index table for ContentCache
-        db.with_connection(|conn| crate::legacy::cache_index::init_cache_index_schema(conn))?;
+        db.with_connection(|conn| {
+            crate::cache::cache_index_rusqlite::init_cache_index_schema(conn)
+        })?;
 
         Ok(Self { db })
     }
