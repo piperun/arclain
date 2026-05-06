@@ -24,6 +24,8 @@ pub use shared::{
     StorageStrategy,
 };
 
-// Re-export common types
-pub use anyhow::Result;
+// `IndexSet` is exposed by `SourceChain` in our public API; re-export
+// so callers building chains don't need a separate `indexmap` dep.
+// (`anyhow::Result` was previously re-exported too — dropped because
+// it polluted callers' `Result` namespace and had zero consumers.)
 pub use indexmap::IndexSet;
