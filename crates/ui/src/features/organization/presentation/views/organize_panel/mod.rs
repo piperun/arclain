@@ -2,13 +2,14 @@
 //!
 //! Main panel for organizing archive contents with preview.
 
+mod header;
 mod integrity;
 mod network_tab;
 mod preview_tab;
-mod variables_tab;
-mod header;
 mod profile_selector;
 mod rule_selector;
+mod tab_bar;
+mod variables_tab;
 
 pub use arclain_core::features::organization::metrics::IntegrityReport;
 use integrity::export_issues_report;
@@ -217,8 +218,31 @@ impl OrganizePanel {
         }
     }
 
-    pub fn render(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, theme: &AppTheme) -> Option<OrganizePanelAction> {
-        
+    /// True when the selected rule wants DLsite metadata but the
+    /// session has none — used both to gate Apply and to pick between
+    /// the empty-state view and the tabbed view.
+    fn is_dlsite_rule_without_metadata(&self) -> bool {
+        let is_dlsite_rule = self
+            .session
+            .rules
+            .get(self.ui_state.selected_rule_index)
+            .map(|r| {
+                r.trigger
+                    .metadata_source
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("dlsite"))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        is_dlsite_rule && self.session.metadata.is_none()
+    }
+
+    pub fn render(
+        &mut self,
+        ui: &mut egui::Ui,
+        ctx: &egui::Context,
+        theme: &AppTheme,
+    ) -> Option<OrganizePanelAction> {
         self.ui_state.export_dialog.show(
             ctx,
             &self.ui_state.original_tree,
@@ -226,118 +250,69 @@ impl OrganizePanel {
             self.session.metadata.as_ref(),
         );
 
-        let mut action = None;
-
-        // EARLY VALIDATION: Check for DLsite rule without metadata
-        let is_dlsite_rule = self
-            .session.rules
-            .get(self.ui_state.selected_rule_index)
-            .map(|r| r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false))
-            .unwrap_or(false);
-        let missing_metadata = is_dlsite_rule && self.session.metadata.is_none();
+        let missing_metadata = self.is_dlsite_rule_without_metadata();
         let can_apply = !missing_metadata && self.session.preview_plan.is_some();
 
-        // Main content panel
-        {
-            ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
+        let mut action = None;
 
-            // Header extracted to header.rs
-            if let Some(act) = header::render_header(ui, &self.session, can_apply, theme) {
-                action = Some(act);
-            }
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 10.0);
 
-            ui.add_space(4.0);
-
-            // Rule selector extracted to rule_selector.rs
-            let (sel_action, changed) = rule_selector::render_rule_selector(ui, &self.session, &mut self.ui_state.selected_rule_index);
-            if let Some(act) = sel_action {
-                action = Some(act);
-            }
-            if changed {
-                self.update_preview();
-            }
-
-            ui.add_space(4.0);
-
-            // Profile selector
-            profile_selector::render_profile_selector(
-                ui,
-                &self.ui_state.profiles,
-                &mut self.ui_state.selected_profile_index,
-            );
-
-            ui.separator();
-
-            if missing_metadata {
-                self.render_empty_state(ui, theme);
-            } else {
-                    ui.horizontal(|ui| {
-                        // Tab Selector
-                        ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                        
-                        let tab_btn = |ui: &mut egui::Ui, label: &str, tab: OrganizeTab, active: OrganizeTab| {
-                            let is_active = tab == active;
-                            let text = egui::RichText::new(label)
-                                .size(13.0)
-                                .color(if is_active {
-                                    ui.visuals().text_color()
-                                } else {
-                                    ui.visuals().text_color().gamma_multiply(0.6)
-                                });
-                                
-                            if ui
-                                .add(egui::Button::new(text).frame(false))
-                                .clicked()
-                            {
-                                return Some(tab);
-                            }
-                            None
-                        };
-
-                        if let Some(tab) = tab_btn(ui, &format!("{} Preview", egui_phosphor::regular::EYE), OrganizeTab::Preview, self.ui_state.active_tab) {
-                            self.ui_state.active_tab = tab;
-                        }
-                        
-                        ui.add_space(16.0);
-                        
-                        if let Some(tab) = tab_btn(ui, &format!("{} Variables", egui_phosphor::regular::CODE), OrganizeTab::Variables, self.ui_state.active_tab) {
-                            self.ui_state.active_tab = tab;
-                        }
-
-                        ui.add_space(16.0);
-
-                        let net_count = self.session.network_log.len();
-                        let net_label = if net_count > 0 {
-                            format!("{} Network ({})", egui_phosphor::regular::GLOBE, net_count)
-                        } else {
-                            format!("{} Network", egui_phosphor::regular::GLOBE)
-                        };
-
-                        if let Some(tab) = tab_btn(ui, &net_label, OrganizeTab::NetworkActivity, self.ui_state.active_tab) {
-                            self.ui_state.active_tab = tab;
-                        }
-                    });
-
-                    ui.separator();
-                    ui.add_space(4.0);
-
-                    match self.ui_state.active_tab {
-                        OrganizeTab::Preview => self.render_preview_tab(ui, theme),
-                        OrganizeTab::Variables => self.render_variables_tab(ui, theme),
-                        OrganizeTab::NetworkActivity => self.render_network_tab(ui),
-                    }
-                }
+        if let Some(act) = header::render_header(ui, &self.session, can_apply, theme) {
+            action = Some(act);
         }
 
-        if let Some(OrganizePanelAction::Apply) = action {
-            let is_dlsite_rule = self
-                .session.rules
-                .get(self.ui_state.selected_rule_index)
-                .map(|r| r.trigger.metadata_source.as_deref().map(|s| s.eq_ignore_ascii_case("dlsite")).unwrap_or(false))
-                .unwrap_or(false);
-            if is_dlsite_rule && self.session.metadata.is_none() {
-                action = None;
+        ui.add_space(4.0);
+
+        let (sel_action, changed) = rule_selector::render_rule_selector(
+            ui,
+            &self.session,
+            &mut self.ui_state.selected_rule_index,
+        );
+        if let Some(act) = sel_action {
+            action = Some(act);
+        }
+        if changed {
+            self.update_preview();
+        }
+
+        ui.add_space(4.0);
+
+        profile_selector::render_profile_selector(
+            ui,
+            &self.ui_state.profiles,
+            &mut self.ui_state.selected_profile_index,
+        );
+
+        ui.separator();
+
+        if missing_metadata {
+            self.render_empty_state(ui, theme);
+        } else {
+            if let Some(new_tab) = tab_bar::render_tab_bar(
+                ui,
+                self.ui_state.active_tab,
+                self.session.network_log.len(),
+            ) {
+                self.ui_state.active_tab = new_tab;
             }
+
+            ui.separator();
+            ui.add_space(4.0);
+
+            match self.ui_state.active_tab {
+                OrganizeTab::Preview => self.render_preview_tab(ui, theme),
+                OrganizeTab::Variables => self.render_variables_tab(ui, theme),
+                OrganizeTab::NetworkActivity => self.render_network_tab(ui),
+            }
+        }
+
+        // Final guard: if a child raised Apply but metadata went missing
+        // mid-frame, swallow it so we don't kick off an organize against
+        // an incomplete plan.
+        if matches!(action, Some(OrganizePanelAction::Apply))
+            && self.is_dlsite_rule_without_metadata()
+        {
+            action = None;
         }
 
         action
