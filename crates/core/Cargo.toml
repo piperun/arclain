@@ -32,7 +32,9 @@ arclain-network = { path = "../network" }
 gameta_core = { path = "../../../../codeberg/gameta/gameta_core" }
 gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", features = ["dlsite"] }
 gameta_database = { path = "../../../../codeberg/gameta/gameta_database" }
-reqwest = { version = "0.12.24", features = ["blocking", "json"] }
+# Match arclain-network's TLS stack (rustls only) so the binary doesn't
+# pull in two TLS implementations side-by-side (audit: TLS stack split).
+reqwest = { version = "0.12.24", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip"] }
 unrar = "0.5"
 zip = "7.0.0"
 tempfile.workspace = true
