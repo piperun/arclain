@@ -50,6 +50,166 @@ fn header_sort_label(
     resp.clicked()
 }
 
+/// Apply a header click: flip ascending if the same column is
+/// already active, otherwise switch to that column and reset to
+/// ascending order.
+fn apply_sort_click(sort: &mut SortState, this_col: SortColumn) {
+    if sort.column == this_col {
+        sort.ascending = !sort.ascending;
+    } else {
+        sort.column = this_col;
+        sort.ascending = true;
+    }
+}
+
+/// Add an optional sortable header column. No-op if `visible` is
+/// false. Replaces 7 near-identical `if vis.X { header.col(|ui| ...) }`
+/// arms with one call each.
+fn add_sort_header_col(
+    header: &mut egui_extras::TableRow<'_, '_>,
+    theme: &AppTheme,
+    label: &str,
+    this_col: SortColumn,
+    sort: &mut SortState,
+    visible: bool,
+) {
+    if !visible {
+        return;
+    }
+    header.col(|ui| {
+        if header_sort_label(ui, theme, label, sort.column, this_col, sort.ascending) {
+            apply_sort_click(sort, this_col);
+        }
+    });
+}
+
+/// Add a plain text body cell. Most optional columns are just
+/// `Label::new(text).size(14.0).color(c).selectable(false)`.
+fn add_text_col(
+    row: &mut egui_extras::TableRow<'_, '_>,
+    visible: bool,
+    text: &str,
+    color: egui::Color32,
+) {
+    if !visible {
+        return;
+    }
+    row.col(|ui| {
+        ui.add(
+            egui::Label::new(egui::RichText::new(text).size(14.0).color(color))
+                .selectable(false),
+        );
+    });
+}
+
+/// Paint the selection highlight for a row: a translucent fill plus
+/// a 1px border on the top edge if the previous row isn't selected
+/// and the bottom edge if the next row isn't, so a contiguous block
+/// of selected rows draws as a single rounded slab.
+fn paint_row_selection(
+    row_response: &egui::Response,
+    list_clip_rect: egui::Rect,
+    theme: &AppTheme,
+    row_index: usize,
+    selection_flags: &[bool],
+) {
+    let painter = egui::Painter::new(
+        row_response.ctx.clone(),
+        row_response.layer_id,
+        list_clip_rect,
+    );
+
+    let mut fill_rect = row_response.rect.shrink2(egui::vec2(2.0, 0.0));
+    fill_rect.min.y -= 0.5;
+    fill_rect.max.y += 0.5;
+
+    let fill_color = theme.colors.selection.linear_multiply(0.14);
+    painter.rect_filled(fill_rect, 0.0, fill_color);
+
+    let prev_selected = row_index > 0 && selection_flags[row_index - 1];
+    let next_selected =
+        row_index + 1 < selection_flags.len() && selection_flags[row_index + 1];
+    let stroke_color = theme.colors.selection.linear_multiply(0.35);
+    let stroke = egui::Stroke::new(1.0, stroke_color);
+
+    if !prev_selected {
+        let y = fill_rect.min.y + 0.5;
+        painter.line_segment(
+            [egui::pos2(fill_rect.min.x, y), egui::pos2(fill_rect.max.x, y)],
+            stroke,
+        );
+    }
+    if !next_selected {
+        let y = fill_rect.max.y - 0.5;
+        painter.line_segment(
+            [egui::pos2(fill_rect.min.x, y), egui::pos2(fill_rect.max.x, y)],
+            stroke,
+        );
+    }
+}
+
+/// Build the row right-click context menu. Returns the action the
+/// user picked, if any.
+fn row_context_menu(
+    row_response: &egui::Response,
+    theme: &AppTheme,
+    entry_path: &str,
+    is_folder: bool,
+) -> Option<FileListAction> {
+    let mut picked: Option<FileListAction> = None;
+
+    let menu_btn = |ui: &mut egui::Ui, label: &str| -> egui::Response {
+        ui.add(TextButton::new(label, ButtonSize::Medium).with_theme_colors(&theme.colors))
+    };
+
+    row_response.context_menu(|ui| {
+        if menu_btn(ui, "📂  Open").clicked() {
+            picked = Some(if is_folder {
+                FileListAction::Navigate(entry_path.to_string())
+            } else {
+                FileListAction::Open(entry_path.to_string())
+            });
+            ui.close();
+        }
+        ui.separator();
+        if menu_btn(ui, "📦  Extract").clicked() {
+            picked = Some(FileListAction::Extract(entry_path.to_string()));
+            ui.close();
+        }
+        if menu_btn(ui, "📁  Extract To...").clicked() {
+            picked = Some(FileListAction::ExtractTo(entry_path.to_string()));
+            ui.close();
+        }
+        ui.separator();
+        if menu_btn(ui, "📋  Copy Path").clicked() {
+            picked = Some(FileListAction::CopyPath(entry_path.to_string()));
+            ui.close();
+        }
+        ui.separator();
+        if menu_btn(ui, "ℹ️  Properties").clicked() {
+            picked = Some(FileListAction::ShowProperties(entry_path.to_string()));
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .add_enabled(
+                !is_folder,
+                TextButton::new("✏️  Edit", ButtonSize::Medium).with_theme_colors(&theme.colors),
+            )
+            .clicked()
+        {
+            picked = Some(FileListAction::Edit(entry_path.to_string()));
+            ui.close();
+        }
+        if menu_btn(ui, "🗑️  Delete").clicked() {
+            picked = Some(FileListAction::Delete(entry_path.to_string()));
+            ui.close();
+        }
+    });
+
+    picked
+}
+
 fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
     // Use sort_by_cached_key where the key involves allocation (Name, Type, Crc32)
     // to avoid repeated allocations per comparison. Other columns use cheap keys.
@@ -222,147 +382,16 @@ pub fn render_list_view(
                             SortColumn::Name,
                             sort.ascending,
                         ) {
-                            if sort.column == SortColumn::Name {
-                                sort.ascending = !sort.ascending;
-                            } else {
-                                sort.column = SortColumn::Name;
-                                sort.ascending = true;
-                            }
+                            apply_sort_click(sort, SortColumn::Name);
                         }
                     });
-                    if vis.type_col {
-                        header.col(|ui| {
-                        if header_sort_label(
-                            ui,
-                            theme,
-                            "Type",
-                            sort.column,
-                            SortColumn::Type,
-                            sort.ascending,
-                        ) {
-                            if sort.column == SortColumn::Type {
-                                sort.ascending = !sort.ascending;
-                            } else {
-                                sort.column = SortColumn::Type;
-                                sort.ascending = true;
-                            }
-                        }
-                    });
-                    }
-                    if vis.size {
-                        header.col(|ui| {
-                        if header_sort_label(
-                            ui,
-                            theme,
-                            "Size",
-                            sort.column,
-                            SortColumn::Size,
-                            sort.ascending,
-                        ) {
-                            if sort.column == SortColumn::Size {
-                                sort.ascending = !sort.ascending;
-                            } else {
-                                sort.column = SortColumn::Size;
-                                sort.ascending = true;
-                            }
-                        }
-                    });
-                    }
-                    if vis.compressed {
-                        header.col(|ui| {
-                        if header_sort_label(
-                            ui,
-                            theme,
-                            "Compressed",
-                            sort.column,
-                            SortColumn::Compressed,
-                            sort.ascending,
-                        ) {
-                            if sort.column == SortColumn::Compressed {
-                                sort.ascending = !sort.ascending;
-                            } else {
-                                sort.column = SortColumn::Compressed;
-                                sort.ascending = true;
-                            }
-                        }
-                    });
-                    }
-                    if vis.ratio {
-                        header.col(|ui| {
-                        if header_sort_label(
-                            ui,
-                            theme,
-                            "Ratio",
-                            sort.column,
-                            SortColumn::Ratio,
-                            sort.ascending,
-                        ) {
-                            if sort.column == SortColumn::Ratio {
-                                sort.ascending = !sort.ascending;
-                            } else {
-                                sort.column = SortColumn::Ratio;
-                                sort.ascending = true;
-                            }
-                        }
-                    });
-                    }
-                    if vis.modified {
-                        header.col(|ui| {
-                        if header_sort_label(
-                            ui,
-                            theme,
-                            "Modified",
-                            sort.column,
-                            SortColumn::Modified,
-                            sort.ascending,
-                        ) {
-                            if sort.column == SortColumn::Modified {
-                                sort.ascending = !sort.ascending;
-                            } else {
-                                sort.column = SortColumn::Modified;
-                                sort.ascending = true;
-                            }
-                        }
-                    });
-                    }
-                    if vis.crc {
-                        header.col(|ui| {
-                        if header_sort_label(
-                            ui,
-                            theme,
-                            "CRC-32",
-                            sort.column,
-                            SortColumn::Crc32,
-                            sort.ascending,
-                        ) {
-                            if sort.column == SortColumn::Crc32 {
-                                sort.ascending = !sort.ascending;
-                            } else {
-                                sort.column = SortColumn::Crc32;
-                                sort.ascending = true;
-                            }
-                        }
-                    });
-                    }
-                    if vis.encrypted {
-                        header.col(|ui| {
-                        if header_sort_label(
-                            ui,
-                            theme,
-                            "Encrypted",
-                            sort.column,
-                            SortColumn::Encrypted,
-                            sort.ascending,
-                        ) {
-                            if sort.column == SortColumn::Encrypted {
-                                sort.ascending = !sort.ascending;
-                            } else {
-                                sort.column = SortColumn::Encrypted;
-                                sort.ascending = true;
-                            }
-                        }
-                    });
-                    }
+                    add_sort_header_col(&mut header, theme, "Type", SortColumn::Type, sort, vis.type_col);
+                    add_sort_header_col(&mut header, theme, "Size", SortColumn::Size, sort, vis.size);
+                    add_sort_header_col(&mut header, theme, "Compressed", SortColumn::Compressed, sort, vis.compressed);
+                    add_sort_header_col(&mut header, theme, "Ratio", SortColumn::Ratio, sort, vis.ratio);
+                    add_sort_header_col(&mut header, theme, "Modified", SortColumn::Modified, sort, vis.modified);
+                    add_sort_header_col(&mut header, theme, "CRC-32", SortColumn::Crc32, sort, vis.crc);
+                    add_sort_header_col(&mut header, theme, "Encrypted", SortColumn::Encrypted, sort, vis.encrypted);
                     header.col(|ui| {
                         ui.add(
                             egui::Label::new(
@@ -429,90 +458,21 @@ pub fn render_list_view(
                                 );
                             });
 
-                            if vis.type_col {
-                                row.col(|ui| {
-                                    let type_str = if is_folder {
-                                        "Folder".to_string()
-                                    } else {
-                                        entry_name
-                                            .split('.')
-                                            .last()
-                                            .unwrap_or("File")
-                                            .to_uppercase()
-                                    };
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(type_str).size(14.0).color(muted_color),
-                                        )
-                                        .selectable(false),
-                                    );
-                                });
-                            }
-
-                            if vis.size {
-                                row.col(|ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&entry.size)
-                                                .size(14.0)
-                                                .color(text_color),
-                                        )
-                                        .selectable(false),
-                                    );
-                                });
-                            }
-
-                            if vis.compressed {
-                                row.col(|ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&entry.compressed)
-                                                .size(14.0)
-                                                .color(text_color),
-                                        )
-                                        .selectable(false),
-                                    );
-                                });
-                            }
-
-                            if vis.ratio {
-                                row.col(|ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&entry.ratio)
-                                                .size(14.0)
-                                                .color(text_color),
-                                        )
-                                        .selectable(false),
-                                    );
-                                });
-                            }
-
-                            if vis.modified {
-                                row.col(|ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&entry.modified)
-                                                .size(14.0)
-                                                .color(muted_color),
-                                        )
-                                        .selectable(false),
-                                    );
-                                });
-                            }
-
-                            if vis.crc {
-                                row.col(|ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&entry.crc32)
-                                                .size(14.0)
-                                                .color(text_color),
-                                        )
-                                        .selectable(false),
-                                    );
-                                });
-                            }
+                            let type_str = if is_folder {
+                                "Folder".to_string()
+                            } else {
+                                entry_name
+                                    .split('.')
+                                    .last()
+                                    .unwrap_or("File")
+                                    .to_uppercase()
+                            };
+                            add_text_col(&mut row, vis.type_col, &type_str, muted_color);
+                            add_text_col(&mut row, vis.size, &entry.size, text_color);
+                            add_text_col(&mut row, vis.compressed, &entry.compressed, text_color);
+                            add_text_col(&mut row, vis.ratio, &entry.ratio, text_color);
+                            add_text_col(&mut row, vis.modified, &entry.modified, muted_color);
+                            add_text_col(&mut row, vis.crc, &entry.crc32, text_color);
 
                             if vis.encrypted {
                                 row.col(|ui| {
@@ -572,47 +532,14 @@ pub fn render_list_view(
 
                             let row_response = row.response();
 
-                            // Paint selection highlight
                             if entry.selected {
-                                let painter = egui::Painter::new(
-                                    row_response.ctx.clone(),
-                                    row_response.layer_id,
+                                paint_row_selection(
+                                    &row_response,
                                     list_clip_rect,
+                                    theme,
+                                    row_index,
+                                    &selection_flags,
                                 );
-
-                                let mut fill_rect = row_response.rect.shrink2(egui::vec2(2.0, 0.0));
-                                fill_rect.min.y -= 0.5;
-                                fill_rect.max.y += 0.5;
-
-                                let fill_color = theme.colors.selection.linear_multiply(0.14);
-                                painter.rect_filled(fill_rect, 0.0, fill_color);
-
-                                let prev_selected = row_index > 0 && selection_flags[row_index - 1];
-                                let next_selected = row_index + 1 < selection_flags.len()
-                                    && selection_flags[row_index + 1];
-                                let stroke_color = theme.colors.selection.linear_multiply(0.35);
-                                let stroke = egui::Stroke::new(1.0, stroke_color);
-
-                                if !prev_selected {
-                                    let y = fill_rect.min.y + 0.5;
-                                    painter.line_segment(
-                                        [
-                                            egui::pos2(fill_rect.min.x, y),
-                                            egui::pos2(fill_rect.max.x, y),
-                                        ],
-                                        stroke,
-                                    );
-                                }
-                                if !next_selected {
-                                    let y = fill_rect.max.y - 0.5;
-                                    painter.line_segment(
-                                        [
-                                            egui::pos2(fill_rect.min.x, y),
-                                            egui::pos2(fill_rect.max.x, y),
-                                        ],
-                                        stroke,
-                                    );
-                                }
                             }
                             if row_response.hovered() {
                                 row_response
@@ -620,49 +547,11 @@ pub fn render_list_view(
                                     .set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
 
-                            // Right-click context menu
-                            row_response.context_menu(|ui| {
-                                if ui.add(TextButton::new("📂  Open", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
-                                    if is_folder {
-                                        action = Some(FileListAction::Navigate(entry_path.clone()));
-                                    } else {
-                                        action = Some(FileListAction::Open(entry_path.clone()));
-                                    }
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui.add(TextButton::new("📦  Extract", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
-                                    action = Some(FileListAction::Extract(entry_path.clone()));
-                                    ui.close();
-                                }
-                                if ui.add(TextButton::new("📁  Extract To...", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
-                                    action = Some(FileListAction::ExtractTo(entry_path.clone()));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui.add(TextButton::new("📋  Copy Path", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
-                                    action = Some(FileListAction::CopyPath(entry_path.clone()));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui.add(TextButton::new("ℹ️  Properties", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
-                                    action =
-                                        Some(FileListAction::ShowProperties(entry_path.clone()));
-                                    ui.close();
-                                }
-                                ui.separator();
-                                if ui
-                                    .add_enabled(!is_folder, TextButton::new("✏️  Edit", ButtonSize::Medium).with_theme_colors(&theme.colors))
-                                    .clicked()
-                                {
-                                    action = Some(FileListAction::Edit(entry_path.clone()));
-                                    ui.close();
-                                }
-                                if ui.add(TextButton::new("🗑️  Delete", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
-                                    action = Some(FileListAction::Delete(entry_path.clone()));
-                                    ui.close();
-                                }
-                            });
+                            if let Some(menu_action) =
+                                row_context_menu(&row_response, theme, &entry_path, is_folder)
+                            {
+                                action = Some(menu_action);
+                            }
 
                             // Drag started - collect selected files/folders for drag-out
                             if row_response.drag_started() {
