@@ -3,6 +3,11 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+const PATH_HEALTH: &str = "/api/v1/health";
+const PATH_FETCH: &str = "/api/v1/fetch";
+const PATH_SEARCH: &str = "/api/v1/search";
+const PATH_METADATA_PREFIX: &str = "/api/v1/metadata";
+
 /// Connection configuration for a gameta server instance.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -135,7 +140,7 @@ impl GametaClient {
     /// On success the server's version string is cached and retrievable via
     /// [`GametaClient::last_known_version`].
     pub fn health(&self) -> Result<HealthResponse, String> {
-        let url = self.endpoint("/api/v1/health");
+        let url = self.endpoint(PATH_HEALTH);
         let resp = self
             .client
             .get(&url)
@@ -165,7 +170,8 @@ impl GametaClient {
         id: &str,
     ) -> Result<Option<MetadataResponse>, String> {
         let url = self.endpoint(&format!(
-            "/api/v1/metadata/{}/{}",
+            "{}/{}/{}",
+            PATH_METADATA_PREFIX,
             urlencoding::encode(source),
             urlencoding::encode(id),
         ));
@@ -200,7 +206,7 @@ impl GametaClient {
         id: &str,
         force: bool,
     ) -> Result<FetchResponse, String> {
-        let url = self.endpoint("/api/v1/fetch");
+        let url = self.endpoint(PATH_FETCH);
         let body = FetchRequest {
             source: source.to_string(),
             id: id.to_string(),
@@ -233,7 +239,7 @@ impl GametaClient {
         source: Option<&str>,
         limit: Option<u32>,
     ) -> Result<SearchResponse, String> {
-        let url = self.endpoint("/api/v1/search");
+        let url = self.endpoint(PATH_SEARCH);
         let mut req = self.auth(self.client.get(&url)).query(&[("q", query)]);
 
         if let Some(src) = source {
