@@ -28,74 +28,6 @@ fn enabled_plugin_snapshot(
 }
 
 impl PluginManager {
-    /// Send a UI event to a plugin asynchronously (non-blocking).
-    /// The callback will be called on the background thread with the plugin's response.
-    /// This prevents the UI from freezing during plugin execution.
-    pub fn send_event_async<F>(
-        &self,
-        plugin_id: &str,
-        event_id: &str,
-        value: Option<String>,
-        callback: F,
-    ) where
-        F: FnOnce(std::result::Result<Vec<crate::types::PluginUiElement>, String>) + Send + 'static,
-    {
-        // Get the plugin instance Arc before spawning thread
-        let Some(instance_arc) = self.get_plugin_instance(plugin_id) else {
-            callback(Err(format!("Plugin '{}' not found", plugin_id)));
-            return;
-        };
-
-        let event_id = event_id.to_string();
-
-        std::thread::spawn(move || {
-            // Lock the instance on the background thread
-            let mut instance = instance_arc.lock();
-
-            match instance.send_ui_event(&event_id, value) {
-                Ok(actions) => {
-                    // Convert PluginAction to PluginUiElement for the callback
-                    // For now, just pass an empty vec since actions are handled differently
-                    callback(Ok(vec![]));
-
-                    // Actions would need to be processed here or passed to a channel
-                    // For UI refresh purposes, we'll handle this differently
-                    if !actions.is_empty() {
-                        tracing::debug!("Plugin returned {} actions (async)", actions.len());
-                    }
-                }
-                Err(e) => {
-                    callback(Err(format!("Plugin error: {:?}", e)));
-                }
-            }
-        });
-    }
-
-    /// Dispatch an event to all enabled plugins asynchronously
-    pub fn dispatch_event_async(&self, event: PluginEvent) {
-        let plugins = self.plugins.clone();
-        let enabled_plugins = self.enabled_plugins.clone();
-
-        std::thread::spawn(move || {
-            debug!("Async dispatching event: {:?}", event);
-
-            for (plugin_id, instance_arc) in enabled_plugin_snapshot(&plugins, &enabled_plugins) {
-                let mut instance = instance_arc.lock();
-
-                // Map PluginEvent to UI event for compatibility
-                // (Since on_event is not exposed in WIT yet)
-                if let PluginEvent::OnArchiveOpen { path, .. } = &event {
-                    let id = "event:archive_opened".to_string();
-                    let value = Some(path.clone());
-
-                    if let Err(e) = instance.send_ui_event(&id, value) {
-                        error!("Async event error for {}: {}", plugin_id, e);
-                    }
-                }
-            }
-        });
-    }
-
     /// Background worker that processes events from the channel.
     /// Runs on a dedicated thread and never blocks the caller.
     pub(crate) fn event_worker(
@@ -209,22 +141,23 @@ impl PluginManager {
         info!("Plugin event worker stopped");
     }
 
-    /// Send an event to all enabled plugins asynchronously.
-    /// This method returns immediately - never blocks the caller.
-    /// Events are processed by a background worker thread.
-    pub fn send_event(&self, event: PluginEvent) {
-        if let Err(e) = self.event_sender.send(event) {
-            error!("Failed to send event to worker: {}", e);
-        }
-    }
-
-    /// Get a cloned sender for lock-free event dispatch.
-    /// Use this to avoid needing to lock the PluginManager when sending events.
+    /// Canonical event-dispatch API: hand callers a cloned channel
+    /// sender so they can fire events without locking the manager.
+    /// Events land in the background worker started in
+    /// [`PluginManager::new`] and never block the caller.
+    ///
+    /// The synchronous `dispatch_event` / `dispatch_event_to_plugin`
+    /// below are test fixtures — production should always go through
+    /// the channel.
     pub fn get_event_sender(&self) -> std::sync::mpsc::Sender<PluginEvent> {
         self.event_sender.clone()
     }
 
-    /// Dispatch an event to all enabled plugins
+    /// Synchronously dispatch an event to every enabled plugin and
+    /// collect their responses. **Test fixture only** — production
+    /// should use [`PluginManager::get_event_sender`] so events go
+    /// through the background worker. Kept `pub` because the
+    /// integration tests in `crates/plugins/tests` need it.
     pub fn dispatch_event(&mut self, event: &PluginEvent) -> Vec<PluginResponse> {
         debug!("Dispatching event: {:?}", event);
 
@@ -250,7 +183,8 @@ impl PluginManager {
         responses
     }
 
-    /// Dispatch event to a specific plugin
+    /// Synchronously dispatch an event to a specific plugin. **Test
+    /// fixture only** — same caveat as [`PluginManager::dispatch_event`].
     pub fn dispatch_event_to_plugin(
         &mut self,
         plugin_id: &str,

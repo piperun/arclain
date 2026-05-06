@@ -23,14 +23,15 @@
 //! let mut manager = PluginManager::new(plugins_dir, initial_settings).unwrap();
 //! manager.init().unwrap();
 //!
-//! // Dispatch an event to all plugins
-//! let event = PluginEvent::OnArchiveOpen {
+//! // Grab a sender once at startup; events flow through the
+//! // background worker without locking the manager.
+//! let tx = manager.get_event_sender();
+//!
+//! tx.send(PluginEvent::OnArchiveOpen {
 //!     path: "test.zip".to_string(),
 //!     kind: arclain_core::ArchiveKind::Zip,
 //!     password: None,
-//! };
-//!
-//! let responses = manager.dispatch_event(&event);
+//! }).unwrap();
 //! ```
 
 pub mod host_functions;
