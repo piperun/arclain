@@ -470,108 +470,11 @@ pub fn render_list_item(
     let response = frame
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                // Optional thumbnail
                 if let Some(key) = image_key {
-                    if let Some(cache) = ctx.content_cache {
-                        if let Ok(Some(bytes)) = cache.get(key) {
-                            // Small thumbnail (48x48)
-                            if try_render_image(ui, key, &bytes, Some(48.0)).is_none() {
-                                // Image decode failed - delete bad cache entry and show spinner
-                                tracing::debug!("Deleting corrupt cache entry: {}", key);
-                                let _ = cache.remove(key);
-                                ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
-
-                                // Trigger re-fetch
-                                if let Some(url) = image_url {
-                                    if let Some(shared) = ctx.shared_state {
-                                        trigger_image_fetch(
-                                            shared,
-                                            ctx.plugin_id.map(|s| s.to_string()),
-                                            url.clone(),
-                                            key.clone(),
-                                            ui.ctx().clone(),
-                                        );
-                                    }
-                                }
-                            }
-                        } else {
-                            // Placeholder & Fetch - use primary color for visibility
-                            ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
-
-                            // Only fetch if we have a URL to fetch from
-                            if let Some(url) = image_url {
-                                if let Some(shared) = ctx.shared_state {
-                                    // Use timestamp to allow retry after 30 seconds if fetch failed
-                                    let fetch_id = egui::Id::new(("fetch", key.as_str()));
-                                    let now = std::time::Instant::now();
-                                    let fetch_started: Option<std::time::Instant> =
-                                        ui.data(|d| d.get_temp(fetch_id));
-
-                                    let should_fetch = match fetch_started {
-                                        None => true,
-                                        Some(started) => {
-                                            now.duration_since(started).as_secs() > 30
-                                        }
-                                    };
-
-                                    if should_fetch {
-                                        ui.data_mut(|d| d.insert_temp(fetch_id, now));
-                                        trigger_image_fetch(
-                                            shared,
-                                            ctx.plugin_id.map(|s| s.to_string()),
-                                            url.clone(),
-                                            key.clone(),
-                                            ui.ctx().clone(),
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    render_list_item_thumbnail(ui, ctx, key, image_url);
                 }
-
-                // Text content with truncation (ellipsis) to prevent width overflow
-                // Set max width to allow truncation to work
-                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                    ui.set_max_width(ui.available_width() - 80.0); // Leave space for badge/icon
-
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(title).strong().color(colors.on_surface),
-                        )
-                        .truncate(),
-                    );
-                    if let Some(sub) = subtitle {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(sub)
-                                    .small()
-                                    .color(colors.on_surface_variant),
-                            )
-                            .truncate(),
-                        );
-                    }
-                });
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Warning icon (if present)
-                    if let Some(icon) = warning_icon {
-                        let icon_str = match icon {
-                            WarningIcon::Warning => egui_phosphor::regular::WARNING,
-                            WarningIcon::GlobeX => egui_phosphor::regular::GLOBE_X,
-                        };
-                        ui.label(egui::RichText::new(icon_str).size(16.0).color(colors.error));
-                    }
-
-                    if let Some(badge_text) = badge {
-                        ui.label(
-                            egui::RichText::new(badge_text)
-                                .small()
-                                .color(colors.primary)
-                                .background_color(colors.primary.gamma_multiply(0.1)),
-                        );
-                    }
-                });
+                render_list_item_text(ui, colors, title, subtitle);
+                render_list_item_meta(ui, colors, badge, warning_icon);
             });
         })
         .response;
@@ -579,6 +482,132 @@ pub fn render_list_item(
     if response.interact(egui::Sense::click()).clicked() {
         (ctx.event_callback)(id, None);
     }
+}
+
+/// Re-fetch a failed image at most every this often. Avoids hammering
+/// a flaky CDN every frame for an image that just isn't available.
+const IMAGE_FETCH_RETRY_INTERVAL_SECS: u64 = 30;
+
+/// Render a 48px-square thumbnail tied to a content-cache key.
+///
+/// Three states:
+/// * cache hit + decode ok → image is drawn.
+/// * cache hit + decode fail → drop the corrupt entry, draw a spinner,
+///   and re-trigger the fetch (cache poisoning recovery).
+/// * cache miss → draw a spinner and trigger a fetch the first time, or
+///   after `IMAGE_FETCH_RETRY_INTERVAL_SECS` have passed since the last
+///   attempt.
+fn render_list_item_thumbnail(
+    ui: &mut egui::Ui,
+    ctx: &mut RenderContext<'_, impl UiEventHandler + ?Sized>,
+    key: &str,
+    image_url: &Option<String>,
+) {
+    let Some(cache) = ctx.content_cache else {
+        return;
+    };
+    let colors = ctx.colors;
+
+    match cache.get(key) {
+        Ok(Some(bytes)) => {
+            if try_render_image(ui, key, &bytes, Some(48.0)).is_none() {
+                // Decode failed — drop the bad entry and re-trigger.
+                tracing::debug!("Deleting corrupt cache entry: {}", key);
+                let _ = cache.remove(key);
+                ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
+                if let (Some(url), Some(shared)) = (image_url, ctx.shared_state) {
+                    trigger_image_fetch(
+                        shared,
+                        ctx.plugin_id.map(|s| s.to_string()),
+                        url.clone(),
+                        key.to_string(),
+                        ui.ctx().clone(),
+                    );
+                }
+            }
+        }
+        _ => {
+            ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
+            if let (Some(url), Some(shared)) = (image_url, ctx.shared_state) {
+                let fetch_id = egui::Id::new(("fetch", key));
+                let now = std::time::Instant::now();
+                let fetch_started: Option<std::time::Instant> =
+                    ui.data(|d| d.get_temp(fetch_id));
+
+                let should_fetch = match fetch_started {
+                    None => true,
+                    Some(started) => {
+                        now.duration_since(started).as_secs()
+                            > IMAGE_FETCH_RETRY_INTERVAL_SECS
+                    }
+                };
+
+                if should_fetch {
+                    ui.data_mut(|d| d.insert_temp(fetch_id, now));
+                    trigger_image_fetch(
+                        shared,
+                        ctx.plugin_id.map(|s| s.to_string()),
+                        url.clone(),
+                        key.to_string(),
+                        ui.ctx().clone(),
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn render_list_item_text(
+    ui: &mut egui::Ui,
+    colors: &arclain_theme::ThemeColors,
+    title: &str,
+    subtitle: &Option<String>,
+) {
+    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+        // Leave space for badge/icon on the right.
+        ui.set_max_width(ui.available_width() - 80.0);
+
+        ui.add(
+            egui::Label::new(egui::RichText::new(title).strong().color(colors.on_surface))
+                .truncate(),
+        );
+        if let Some(sub) = subtitle {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(sub)
+                        .small()
+                        .color(colors.on_surface_variant),
+                )
+                .truncate(),
+            );
+        }
+    });
+}
+
+fn render_list_item_meta(
+    ui: &mut egui::Ui,
+    colors: &arclain_theme::ThemeColors,
+    badge: &Option<String>,
+    warning_icon: &Option<WarningIcon>,
+) {
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        if let Some(icon) = warning_icon {
+            let icon_str = match icon {
+                WarningIcon::Warning => egui_phosphor::regular::WARNING,
+                WarningIcon::GlobeX => egui_phosphor::regular::GLOBE_X,
+            };
+            ui.label(egui::RichText::new(icon_str).size(16.0).color(colors.error));
+        }
+
+        if let Some(badge_text) = badge {
+            ui.label(
+                egui::RichText::new(badge_text)
+                    .small()
+                    .color(colors.primary)
+                    .background_color(colors.primary.gamma_multiply(0.1)),
+            );
+        }
+    });
 }
 
 /// Render a visually-grouped settings section (matches the host's
