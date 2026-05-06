@@ -39,3 +39,18 @@ pub use utilities::{init_logging, FileOpener, OpenStrategy};
 // Re-export UI/DB types so consumers don't need to import arclain_db directly
 pub use arclain_db::{ActionType, CacheType, DisplayMode, UiItem, UiRegion, UserConfig};
 pub use arclain_db::{CacheEntry, CompletenessScore, MetadataSource, ProductContent, ProductMetadata};
+
+// Additional db re-exports for the UI / state layer. These were
+// previously imported directly from `arclain_db` across `crates/ui`
+// (audit: crate-boundary smell). Surfacing them through `arclain_core`
+// gives the binary one entry point for persistence types.
+//
+// `arclain_data::ContentCache` etc. cannot be re-exported here
+// because `arclain_data` already depends on `arclain_core` —
+// re-exporting would create a dependency cycle. UI keeps a direct
+// `arclain_data` dep for those.
+pub use arclain_db::{
+    delete_profile_diesel, get_config, list_interrupted_since, list_profiles_diesel,
+    save_profile_diesel, set_config, set_default_profile_diesel, DbConnection, DbPassRule,
+    SqliteDb,
+};

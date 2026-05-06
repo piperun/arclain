@@ -4,7 +4,7 @@ use super::AppState;
 use anyhow::Result;
 use arclain_core::services::SecretsService;
 use arclain_core::utilities::PassRule;
-use arclain_db::{open_databases, set_config, ConfigDb, DbPaths, SecretsKey, SqliteDb};
+use arclain_core::{open_databases, set_config, ConfigDb, DbPaths, SecretsKey, SqliteDb};
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
 use std::path::PathBuf;
@@ -188,7 +188,7 @@ impl AppState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arclain_db::DbConnection;
+    use arclain_core::DbConnection;
     use tempfile::TempDir;
 
     fn corrupt_app_config_schema(path: &std::path::Path) {
@@ -240,7 +240,7 @@ mod tests {
     /// provided override.
     #[test]
     fn h4_persist_preferences_overrides_writes_each_override() {
-        use arclain_db::get_config;
+        use arclain_core::get_config;
 
         let temp = TempDir::new().unwrap();
         let cfg_path = temp.path().join("config.sqlite");
