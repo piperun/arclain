@@ -163,15 +163,6 @@ impl RulesPage {
                                     }
 
                                     ui.add_space(4.0);
-
-                                    // Delete button commented out as in original
-                                    // if ui
-                                    //     .button(format!("{}", egui_phosphor::regular::TRASH))
-                                    //     .on_hover_text("Delete rule")
-                                    //     .clicked()
-                                    // {
-                                    //     actions.delete(idx);
-                                    // }
                                 });
                             });
                         })
@@ -189,18 +180,6 @@ impl RulesPage {
                     }
                 }
 
-                // Handle delete action (currently commented out but infrastructure is ready)
-                // if let Some(delete_idx) = actions.get_delete() {
-                //     if let Some(rules) = &self.rules {
-                //         if let Some(rule) = rules.get(*delete_idx) {
-                //             if let Err(e) = service.delete_domain_rule(rule.id) {
-                //                 self.error = Some(format!("Failed to delete: {}", e));
-                //             } else {
-                //                 self.rules = None; // Trigger refresh
-                //             }
-                //         }
-                //     }
-                // }
             });
 
         action

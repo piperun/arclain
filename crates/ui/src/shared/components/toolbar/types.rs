@@ -1,6 +1,6 @@
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_core::{DisplayMode, UiItem, UiRegion};
+use arclain_core::{UiItem, UiRegion};
 use arclain_plugins::types::PluginUiElement;
 use std::collections::HashMap;
 
@@ -24,26 +24,6 @@ impl ToolbarConfig {
             .collect();
         items.sort_by_key(|i| i.sort_order);
         Self { items }
-    }
-
-    /// Check if an item is visible by its id (e.g., "toolbar.back")
-    #[allow(dead_code)]
-    pub fn is_visible(&self, id: &str) -> bool {
-        self.items
-            .iter()
-            .find(|i| i.id == id)
-            .map(|i| i.visible)
-            .unwrap_or(true) // Default to visible if not configured
-    }
-
-    /// Get display mode for an item
-    #[allow(dead_code)]
-    pub fn display_mode(&self, id: &str) -> DisplayMode {
-        self.items
-            .iter()
-            .find(|i| i.id == id)
-            .map(|i| i.display_mode)
-            .unwrap_or(DisplayMode::IconAndText)
     }
 
     /// Get visible items grouped by group_id, in sort order
