@@ -31,6 +31,18 @@
 pub mod features;
 pub mod shared;
 
+use std::time::Duration;
+
+/// Default per-request HTTP timeout. Applied to long-running fetches
+/// (DLsite metadata, image downloads) where the response body may
+/// take a while to stream.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Probe / preflight timeout — used for fast-failing clients that just
+/// need to confirm a server is reachable (gameta health checks, proxy
+/// availability tests).
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
 // Re-export main types at crate root
 pub use features::rate_limiting::RateLimiter;
 pub use features::request::{AsyncHttpClient, HttpRequest, RequestId, RequestStatus};

@@ -386,8 +386,6 @@ impl AsyncHttpClient {
     /// Blocking GET request (for use from background threads, NOT main thread)
     /// This uses block_on to wait for the async request to complete.
     pub fn blocking_get(&self, url: &str, use_proxy: bool) -> Result<Vec<u8>, String> {
-        use std::time::Duration;
-
         let client = if use_proxy {
             self.client_proxied.read().clone()
         } else {
@@ -406,7 +404,7 @@ impl AsyncHttpClient {
             }
 
             let response = req
-                .timeout(Duration::from_secs(30))
+                .timeout(crate::DEFAULT_REQUEST_TIMEOUT)
                 .send()
                 .await
                 .map_err(|e| format!("Request failed: {}", e))?;

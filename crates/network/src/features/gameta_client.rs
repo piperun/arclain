@@ -1,7 +1,6 @@
 //! HTTP client for the gameta metadata server API.
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
 
 const PATH_HEALTH: &str = "/api/v1/health";
 const PATH_FETCH: &str = "/api/v1/fetch";
@@ -97,7 +96,7 @@ impl GametaClient {
     /// Build a new client from `config`. Times out requests after 10 seconds.
     pub fn new(config: ServerConfig) -> Self {
         let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(10))
+            .timeout(crate::PROBE_TIMEOUT)
             .build()
             .expect("Failed to build GametaClient HTTP client");
 
