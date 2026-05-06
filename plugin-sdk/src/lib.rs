@@ -93,6 +93,12 @@ pub fn poll_data(request_id: &str) -> DataResult {
     arclain::plugin::host::poll_data(request_id)
 }
 
+/// Interval between `poll_data` calls when waiting for an in-flight
+/// request. The host currently resolves synchronously so a `Pending`
+/// or `Fetching` status is rare, but we keep a small backoff in case
+/// that changes (audit: magic-number callout).
+const FETCH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Fetch data blocking until complete
 /// Host automatically checks cache before network.
 pub fn fetch_blocking(
@@ -135,7 +141,7 @@ pub fn fetch_blocking(
                 return Err(result.error.unwrap_or_else(|| "Unknown error".to_string()));
             }
             DataStatus::Pending | DataStatus::Fetching => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(FETCH_POLL_INTERVAL);
             }
         }
     }

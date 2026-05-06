@@ -6,6 +6,11 @@ use parking_lot::Mutex;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
+/// The sliding window over which `requests_per_minute` is measured.
+/// Named so the connection between the per-domain RPM limit and the
+/// 60-second budget is explicit, rather than buried in a literal.
+const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
+
 /// Rate limiter for HTTP requests
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -32,7 +37,7 @@ impl RateLimiter {
             limits: HashMap::new(),
             default_limit: default_rpm,
             history: Mutex::new(HashMap::new()),
-            window: Duration::from_secs(60),
+            window: RATE_LIMIT_WINDOW,
         }
     }
 
