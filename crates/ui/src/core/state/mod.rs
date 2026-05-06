@@ -18,7 +18,7 @@ use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::backends::BackendSelector;
 use arclain_core::utilities::PassRule;
 use arclain_core::UserConfig;
-use arclain_db::{ConfigDbs, DbPaths};
+use arclain_core::{ConfigDbs, DbPaths};
 
 use super::signals::AppSignals;
 

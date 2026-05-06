@@ -3,7 +3,7 @@
 use super::AppState;
 use anyhow::Result;
 use arclain_core::utilities::PassRule;
-use arclain_db::DbPassRule;
+use arclain_core::DbPassRule;
 use std::path::Path;
 use tracing::{info, warn};
 

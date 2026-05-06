@@ -41,7 +41,7 @@ impl ProfilesPage {
             let pool = &dbs.config_pool;
             match pool.get() {
                 Ok(mut conn) => {
-                    match arclain_db::list_profiles_diesel(&mut conn) {
+                    match arclain_core::list_profiles_diesel(&mut conn) {
                         Ok(db_profiles) => {
                             self.profiles = Some(
                                 db_profiles
@@ -72,7 +72,7 @@ impl ProfilesPage {
             match pool.get() {
                 Ok(mut conn) => {
                     let db_profile = profile.to_db();
-                    arclain_db::save_profile_diesel(&mut conn, &db_profile)
+                    arclain_core::save_profile_diesel(&mut conn, &db_profile)
                         .map_err(|e| format!("Failed to save profile: {}", e))?;
                     Ok(())
                 }
@@ -89,7 +89,7 @@ impl ProfilesPage {
             let pool = &dbs.config_pool;
             match pool.get() {
                 Ok(mut conn) => {
-                    arclain_db::delete_profile_diesel(&mut conn, id as i32)
+                    arclain_core::delete_profile_diesel(&mut conn, id as i32)
                         .map_err(|e| format!("Failed to delete profile: {}", e))?;
                     Ok(())
                 }
@@ -106,7 +106,7 @@ impl ProfilesPage {
             let pool = &dbs.config_pool;
             match pool.get() {
                 Ok(mut conn) => {
-                    arclain_db::set_default_profile_diesel(&mut conn, id as i32)
+                    arclain_core::set_default_profile_diesel(&mut conn, id as i32)
                         .map_err(|e| format!("Failed to set default: {}", e))?;
                     Ok(())
                 }

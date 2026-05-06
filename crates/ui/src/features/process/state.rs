@@ -58,7 +58,7 @@ impl ProcessPageState {
     /// The count surfaces a banner until the user dismisses it (session-local).
     pub fn ensure_interrupted_count(
         &mut self,
-        config_db: Option<&std::sync::Arc<arclain_db::SqliteDb>>,
+        config_db: Option<&std::sync::Arc<arclain_core::SqliteDb>>,
     ) {
         if self.interrupted_run_count.is_some() {
             return;
@@ -66,7 +66,7 @@ impl ProcessPageState {
         let count = match config_db {
             Some(db) => db
                 .with_connection(|conn| {
-                    Ok(arclain_db::list_interrupted_since(conn, 0)?.len())
+                    Ok(arclain_core::list_interrupted_since(conn, 0)?.len())
                 })
                 .unwrap_or(0),
             None => 0,
