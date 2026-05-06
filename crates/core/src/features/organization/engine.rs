@@ -123,201 +123,31 @@ impl RuleEngine {
         entries: &[ArchiveEntry],
         game_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
     ) -> Result<OrganizationPlan> {
-        // Prune unnecessary files/folders first
+        // Prune unnecessary files/folders before any analysis.
         let pruned_entries = Self::prune_entries(entries);
         let entries = &pruned_entries;
 
-        let mut moves = Vec::new();
-        let mut metadata = HashMap::new();
-
-        // 1. Populate from GameMetadata if available
-        if let Some(gm) = game_metadata {
-            metadata.insert("product_id".to_string(), gm.product_id.clone());
-            metadata.insert("source".to_string(), gm.source.clone());
-            metadata.insert("title".to_string(), gm.title.clone());
-
-            // NEW: Add filtered_title for safe folder names
-            let filtered = crate::utilities::title_filter::sanitize_title(&gm.title);
-            metadata.insert("filtered_title".to_string(), filtered);
-
-            if let Some(creator) = &gm.creator {
-                metadata.insert("creator".to_string(), creator.clone());
-                metadata.insert("circle".to_string(), creator.clone()); // Alias
-            }
-            if let Some(date) = &gm.release_date {
-                metadata.insert("release_date".to_string(), date.clone());
-            }
-
-            // Parse JSON for platform-specific fields (generic flattening)
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&gm.metadata_json) {
-                crate::features::organization::flatten_helper::flatten_json_value(
-                    &json,
-                    &mut metadata,
-                    "",
-                );
-            }
-        }
-
-        // 2. Extract metadata from filename if pattern exists (overrides/supplements)
-        if let Some(pattern) = &rule.trigger.filename_pattern {
-            if let Ok(re) = Regex::new(pattern) {
-                if let Some(caps) = re.captures(archive_name) {
-                    for name in re.capture_names().flatten() {
-                        if let Some(m) = caps.name(name) {
-                            metadata.insert(name.to_string(), m.as_str().to_string());
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. Extract version from filename
-        if let Ok(re) = Regex::new(r"[vV](\d+(\.\d+)+)") {
-            if let Some(caps) = re.captures(archive_name) {
-                if let Some(v) = caps.get(1) {
-                    metadata.insert("version".to_string(), v.as_str().to_string());
-                }
-            }
-        }
-
-        // Detect content root early if sanitization is enabled
+        // Detect the inner content root early — its folder name is one
+        // of the metadata sources (version + tags), and the move
+        // computation needs it too.
         let content_root = if rule.actions.use_standard_layout {
             Some(Self::find_game_content_root_in_entries(entries))
         } else {
             None
         };
 
-        // If we found a content root (e.g. "Game_v1.0_[Patched]"), try to extract useful info from its name
-        if let Some(root_path) = &content_root {
-            if let Some(folder_name) = root_path.file_name().and_then(|n| n.to_str()) {
-                // Extract Version from folder name
-                if let Ok(re) = Regex::new(r"[vV](\d+(\.\d+)+)") {
-                    if let Some(caps) = re.captures(folder_name) {
-                        if let Some(v) = caps.get(1) {
-                            metadata.insert("version".to_string(), v.as_str().to_string());
-                        }
-                    }
-                }
+        let metadata = Self::build_metadata_map(rule, archive_name, game_metadata, &content_root);
 
-                // Extract [TaGs] from folder name
-                if let Ok(re) = Regex::new(r"\[([^\]]+)\]") {
-                    let mut tags = Vec::new();
-                    for cap in re.captures_iter(folder_name) {
-                        if let Some(m) = cap.get(1) {
-                            tags.push(m.as_str().to_string());
-                        }
-                    }
-                    if !tags.is_empty() {
-                        metadata.insert("root_tags".to_string(), tags.join(", "));
-                        metadata.insert("folder_name".to_string(), folder_name.to_string());
-                    }
-                }
-            }
-        }
+        let root_folder = rule
+            .actions
+            .root_folder
+            .as_deref()
+            .map(|tpl| Self::expand_variables(tpl, &metadata))
+            .unwrap_or_else(|| "Game".to_string());
 
-        // Determine root folder name
-        let root_folder = if let Some(root_template) = &rule.actions.root_folder {
-            Self::expand_variables(root_template, &metadata)
-        } else {
-            "Game".to_string()
-        };
+        let moves =
+            Self::compute_moves(rule, entries, content_root.as_ref(), &metadata, &root_folder);
 
-        // Process file moves
-        if let Some(content_root) = content_root {
-            // Sanitization Mode: We already found the root, use it to flatten
-            // Put game content inside a "Game" subfolder within the root_folder
-            let content_root_path = Path::new(&content_root);
-
-            for entry in entries {
-                if entry.is_dir {
-                    continue;
-                }
-
-                // Only include files that are inside the content root
-                // (This filters out junk wrappers efficiently)
-                if let Ok(relative_content_path) =
-                    Path::new(&entry.path).strip_prefix(content_root_path)
-                {
-                    // Add "Game/" prefix to put content in a subfolder
-                    let dest_path = format!(
-                        "{}/Game/{}",
-                        root_folder,
-                        relative_content_path.to_string_lossy()
-                    );
-                    let new_path = dest_path.replace("//", "/").replace("\\", "/");
-                    moves.push((entry.path.clone(), new_path));
-                }
-            }
-        } else if !rule.actions.use_standard_layout {
-            // 1. Find common root directory to handle nested archives properly
-            // e.g. if everything is in "GameName/...", we want to strip "GameName/"
-            let paths: Vec<&Path> = entries.iter().map(|e| Path::new(&e.path)).collect();
-            let common_root = if paths.is_empty() {
-                PathBuf::new()
-            } else {
-                let mut iter = paths.iter();
-                let mut root = iter
-                    .next()
-                    .unwrap()
-                    .parent()
-                    .unwrap_or(Path::new(""))
-                    .to_path_buf();
-
-                for path in iter {
-                    while !path.starts_with(&root) {
-                        if !root.pop() {
-                            break;
-                        }
-                    }
-                }
-                root
-            };
-
-            for entry in entries {
-                if entry.is_dir {
-                    continue;
-                }
-
-                let mut target_dir = "game/".to_string(); // Default fallback
-
-                // Find matching move rule
-                for move_rule in &rule.actions.move_files {
-                    if Self::matches_glob(&move_rule.pattern, &entry.path) {
-                        target_dir = move_rule.target.clone();
-                        break;
-                    }
-                }
-
-                // Expand variables in target
-                target_dir = Self::expand_variables(&target_dir, &metadata);
-
-                // Construct new path: root_folder / target_dir / relative_path
-                // Instead of taking just filename, we take path relative to common_root
-                let relative_path = Path::new(&entry.path)
-                    .strip_prefix(&common_root)
-                    .unwrap_or(Path::new(&entry.path));
-
-                // If the relative path is empty (shouldn't happen for files) or just filename, it works.
-                // If it has subdirs, they are preserved.
-
-                let dest_path = if target_dir.is_empty() || target_dir == "." {
-                    format!("{}/{}", root_folder, relative_path.to_string_lossy())
-                } else {
-                    format!(
-                        "{}/{}/{}",
-                        root_folder,
-                        target_dir,
-                        relative_path.to_string_lossy()
-                    )
-                };
-
-                let new_path = dest_path.replace("//", "/").replace("\\", "/");
-
-                moves.push((entry.path.clone(), new_path));
-            }
-        }
-
-        // Generate metadata.json if metadata is available
         let mut generated_files = Vec::new();
         if let Some(gm) = game_metadata {
             if let Ok(json_str) = serde_json::to_string_pretty(gm) {
@@ -325,54 +155,8 @@ impl RuleEngine {
             }
         }
 
-        // Add screenshots to downloads
-        let mut downloads = Vec::new();
-        if let Some(gm) = game_metadata {
-            let is_dlsite = gm.source.eq_ignore_ascii_case("dlsite");
+        let downloads = Self::compute_downloads(rule, game_metadata, &root_folder);
 
-            for (i, screenshot) in gm.screenshots.iter().enumerate() {
-                if let crate::features::organization::metadata::ScreenshotData::FilePath(path) =
-                    screenshot
-                {
-                    let url = path.to_string_lossy().to_string();
-                    // Determine extension from URL or default to jpg
-                    let ext = Path::new(&url)
-                        .extension()
-                        .map(|e| e.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "jpg".to_string());
-
-                    let filename = format!("image_{:03}.{}", i + 1, ext);
-                    // Standard layout uses lowercase "screenshots"
-                    let screenshots_folder = if rule.actions.use_standard_layout {
-                        "screenshots"
-                    } else {
-                        "Screenshots"
-                    };
-                    let dest_path = format!("{}/{}/{}", root_folder, screenshots_folder, filename);
-
-                    // Cache key must match gameta's cache_keys format
-                    let cache_key = if is_dlsite {
-                        format!("dlsite:{}:screenshot_{}", gm.product_id, i)
-                    } else {
-                        format!("screenshot:{}:{}", gm.product_id, i)
-                    };
-
-                    downloads.push(PendingDownload {
-                        product_id: if is_dlsite {
-                            Some(gm.product_id.clone())
-                        } else {
-                            None
-                        },
-                        url,
-                        dest_path,
-                        cache_key,
-                        cached: false, // Will be checked by UI when loading
-                    });
-                }
-            }
-        }
-
-        // Store the original template for UI display
         let root_folder_template = rule
             .actions
             .root_folder
@@ -389,6 +173,276 @@ impl RuleEngine {
             use_standard_layout: rule.actions.use_standard_layout,
             resolved_variables: metadata,
         })
+    }
+
+    /// Build the variable map used for expanding `$name` placeholders
+    /// in the rule's `root_folder` and per-file move targets. Pulls
+    /// from (in order, last write wins): GameMetadata fields,
+    /// flattened `metadata_json`, named captures from
+    /// `trigger.filename_pattern`, the archive filename version regex,
+    /// and the inner content-root folder name (version + bracketed
+    /// tags).
+    fn build_metadata_map(
+        rule: &OrganizationRule,
+        archive_name: &str,
+        game_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
+        content_root: &Option<PathBuf>,
+    ) -> HashMap<String, String> {
+        let mut metadata = HashMap::new();
+
+        if let Some(gm) = game_metadata {
+            metadata.insert("product_id".to_string(), gm.product_id.clone());
+            metadata.insert("source".to_string(), gm.source.clone());
+            metadata.insert("title".to_string(), gm.title.clone());
+
+            // filtered_title is a folder-safe variant for templates
+            // like `$creator/$filtered_title`.
+            let filtered = crate::utilities::title_filter::sanitize_title(&gm.title);
+            metadata.insert("filtered_title".to_string(), filtered);
+
+            if let Some(creator) = &gm.creator {
+                metadata.insert("creator".to_string(), creator.clone());
+                metadata.insert("circle".to_string(), creator.clone()); // Alias
+            }
+            if let Some(date) = &gm.release_date {
+                metadata.insert("release_date".to_string(), date.clone());
+            }
+
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&gm.metadata_json) {
+                crate::features::organization::flatten_helper::flatten_json_value(
+                    &json,
+                    &mut metadata,
+                    "",
+                );
+            }
+        }
+
+        // Filename-pattern named captures override/supplement
+        // anything from GameMetadata.
+        if let Some(pattern) = &rule.trigger.filename_pattern {
+            if let Ok(re) = Regex::new(pattern) {
+                if let Some(caps) = re.captures(archive_name) {
+                    for name in re.capture_names().flatten() {
+                        if let Some(m) = caps.name(name) {
+                            metadata.insert(name.to_string(), m.as_str().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // Version from archive filename — `vN.M[.K]` — overrides
+        // anything from JSON if present.
+        if let Ok(re) = Regex::new(r"[vV](\d+(\.\d+)+)") {
+            if let Some(caps) = re.captures(archive_name) {
+                if let Some(v) = caps.get(1) {
+                    metadata.insert("version".to_string(), v.as_str().to_string());
+                }
+            }
+        }
+
+        // Inner-folder version + tag extraction. Useful when the
+        // archive contains a `Game_v1.0_[Patched]` wrapper.
+        if let Some(root_path) = content_root {
+            if let Some(folder_name) = root_path.file_name().and_then(|n| n.to_str()) {
+                if let Ok(re) = Regex::new(r"[vV](\d+(\.\d+)+)") {
+                    if let Some(caps) = re.captures(folder_name) {
+                        if let Some(v) = caps.get(1) {
+                            metadata.insert("version".to_string(), v.as_str().to_string());
+                        }
+                    }
+                }
+
+                if let Ok(re) = Regex::new(r"\[([^\]]+)\]") {
+                    let mut tags = Vec::new();
+                    for cap in re.captures_iter(folder_name) {
+                        if let Some(m) = cap.get(1) {
+                            tags.push(m.as_str().to_string());
+                        }
+                    }
+                    if !tags.is_empty() {
+                        metadata.insert("root_tags".to_string(), tags.join(", "));
+                        metadata.insert("folder_name".to_string(), folder_name.to_string());
+                    }
+                }
+            }
+        }
+
+        metadata
+    }
+
+    /// Generate the (source_path, dest_path) move list. Three
+    /// branches:
+    ///
+    /// * `content_root.is_some()` (sanitization mode) — flatten the
+    ///   archive's wrapper folder, putting everything under
+    ///   `{root_folder}/Game/...`.
+    /// * `!use_standard_layout` (explicit-rule mode) — strip the
+    ///   common parent path, then route each file through
+    ///   `actions.move_files` glob rules into `{root_folder}/{target}/...`.
+    /// * Otherwise — empty (caller has standard layout but no content
+    ///   root was found).
+    fn compute_moves(
+        rule: &OrganizationRule,
+        entries: &[ArchiveEntry],
+        content_root: Option<&PathBuf>,
+        metadata: &HashMap<String, String>,
+        root_folder: &str,
+    ) -> Vec<(String, String)> {
+        let mut moves = Vec::new();
+
+        if let Some(content_root) = content_root {
+            let content_root_path = Path::new(content_root);
+
+            for entry in entries {
+                if entry.is_dir {
+                    continue;
+                }
+
+                // Only include files inside the content root
+                // (filters out junk wrappers efficiently).
+                if let Ok(relative_content_path) =
+                    Path::new(&entry.path).strip_prefix(content_root_path)
+                {
+                    let dest_path = format!(
+                        "{}/Game/{}",
+                        root_folder,
+                        relative_content_path.to_string_lossy()
+                    );
+                    moves.push((entry.path.clone(), Self::normalize_dest(&dest_path)));
+                }
+            }
+        } else if !rule.actions.use_standard_layout {
+            let common_root = Self::common_parent(entries);
+
+            for entry in entries {
+                if entry.is_dir {
+                    continue;
+                }
+
+                let mut target_dir = "game/".to_string(); // Default fallback
+                for move_rule in &rule.actions.move_files {
+                    if Self::matches_glob(&move_rule.pattern, &entry.path) {
+                        target_dir = move_rule.target.clone();
+                        break;
+                    }
+                }
+                target_dir = Self::expand_variables(&target_dir, metadata);
+
+                // Strip the common root so nested archives don't
+                // double-up the wrapper folder; preserve the
+                // remaining subdirectory structure.
+                let relative_path = Path::new(&entry.path)
+                    .strip_prefix(&common_root)
+                    .unwrap_or(Path::new(&entry.path));
+
+                let dest_path = if target_dir.is_empty() || target_dir == "." {
+                    format!("{}/{}", root_folder, relative_path.to_string_lossy())
+                } else {
+                    format!(
+                        "{}/{}/{}",
+                        root_folder,
+                        target_dir,
+                        relative_path.to_string_lossy()
+                    )
+                };
+                moves.push((entry.path.clone(), Self::normalize_dest(&dest_path)));
+            }
+        }
+
+        moves
+    }
+
+    /// Longest path prefix shared by every entry, used to strip the
+    /// outer wrapper folder in explicit-rule mode.
+    fn common_parent(entries: &[ArchiveEntry]) -> PathBuf {
+        let paths: Vec<&Path> = entries.iter().map(|e| Path::new(&e.path)).collect();
+        if paths.is_empty() {
+            return PathBuf::new();
+        }
+
+        let mut iter = paths.iter();
+        let mut root = iter
+            .next()
+            .unwrap()
+            .parent()
+            .unwrap_or(Path::new(""))
+            .to_path_buf();
+
+        for path in iter {
+            while !path.starts_with(&root) {
+                if !root.pop() {
+                    break;
+                }
+            }
+        }
+        root
+    }
+
+    /// Forward-slashify and collapse double slashes so plans built on
+    /// Windows match the layout produced on Unix.
+    fn normalize_dest(path: &str) -> String {
+        path.replace("//", "/").replace('\\', "/")
+    }
+
+    /// Build the screenshot download list. Skips non-file-path
+    /// screenshots (URL-only entries are downloaded by a separate
+    /// path). DLsite uses cache keys keyed by product_id; other
+    /// sources fall back to a generic `screenshot:` prefix.
+    fn compute_downloads(
+        rule: &OrganizationRule,
+        game_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
+        root_folder: &str,
+    ) -> Vec<PendingDownload> {
+        let mut downloads = Vec::new();
+
+        let Some(gm) = game_metadata else {
+            return downloads;
+        };
+        let is_dlsite = gm.source.eq_ignore_ascii_case("dlsite");
+        let screenshots_folder = if rule.actions.use_standard_layout {
+            "screenshots"
+        } else {
+            "Screenshots"
+        };
+
+        for (i, screenshot) in gm.screenshots.iter().enumerate() {
+            let crate::features::organization::metadata::ScreenshotData::FilePath(path) =
+                screenshot
+            else {
+                continue;
+            };
+
+            let url = path.to_string_lossy().to_string();
+            let ext = Path::new(&url)
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_else(|| "jpg".to_string());
+
+            let filename = format!("image_{:03}.{}", i + 1, ext);
+            let dest_path = format!("{}/{}/{}", root_folder, screenshots_folder, filename);
+
+            // Cache key must match gameta's cache_keys format.
+            let cache_key = if is_dlsite {
+                format!("dlsite:{}:screenshot_{}", gm.product_id, i)
+            } else {
+                format!("screenshot:{}:{}", gm.product_id, i)
+            };
+
+            downloads.push(PendingDownload {
+                product_id: if is_dlsite {
+                    Some(gm.product_id.clone())
+                } else {
+                    None
+                },
+                url,
+                dest_path,
+                cache_key,
+                cached: false, // Will be checked by UI when loading
+            });
+        }
+
+        downloads
     }
 
     fn expand_variables(template: &str, metadata: &HashMap<String, String>) -> String {
