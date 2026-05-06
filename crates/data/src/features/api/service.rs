@@ -120,6 +120,13 @@ impl DataService {
 
         let resolvers = self.resolvers.read();
 
+        // Track real (non-NotFound) failures so they can be surfaced to
+        // callers. Cache misses are uninteresting, but I/O errors from
+        // the network resolver carry the actual diagnostic (HTTP 403,
+        // timeout, DNS failure, etc.) and were previously swallowed by
+        // the generic "No source could provide data" message.
+        let mut io_errors: Vec<(DataSource, String)> = Vec::new();
+
         for source in sources {
             if let Some(resolver) = resolvers.get(source) {
                 match resolver.try_resolve(&request.key, request) {
@@ -143,12 +150,25 @@ impl DataService {
                             "[DataService] Source {:?} failed for '{}': {}",
                             source, request.key, e
                         );
+                        if let crate::features::resolver::ResolveError::IoError(msg) = &e {
+                            io_errors.push((*source, msg.clone()));
+                        }
                         continue;
                     }
                 }
             } else {
                 debug!("[DataService] No resolver registered for {:?}", source);
             }
+        }
+
+        // Prefer the first IoError as the user-facing message — it
+        // explains *why* the fetch failed (HTTP status, network error)
+        // instead of hiding behind a generic "no source" message.
+        if let Some((source, msg)) = io_errors.into_iter().next() {
+            return DataResult::failed(format!(
+                "Failed to fetch '{}' ({:?}): {}",
+                request.key, source, msg
+            ));
         }
 
         DataResult::failed(format!(
