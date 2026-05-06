@@ -8,6 +8,13 @@
 use eframe::egui;
 use std::time::{Duration, Instant};
 
+/// How long a freshly-created toast stays fully visible before
+/// starting to fade out.
+const DEFAULT_TOAST_DURATION: Duration = Duration::from_millis(3000);
+
+/// Length of the fade-out animation at the end of a toast's lifetime.
+const TOAST_FADE_DURATION: Duration = Duration::from_millis(300);
+
 /// Toast severity level
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastLevel {
@@ -54,7 +61,7 @@ impl Toast {
         Self {
             level,
             message: message.into(),
-            duration: Duration::from_millis(3000),
+            duration: DEFAULT_TOAST_DURATION,
             shown_at: None,
         }
     }
@@ -170,9 +177,8 @@ impl Toaster {
                         .shown_at
                         .map(|t| toast.duration.saturating_sub(t.elapsed()))
                         .unwrap_or(toast.duration);
-                    let fade_duration = Duration::from_millis(300);
-                    let opacity = if remaining < fade_duration {
-                        remaining.as_secs_f32() / fade_duration.as_secs_f32()
+                    let opacity = if remaining < TOAST_FADE_DURATION {
+                        remaining.as_secs_f32() / TOAST_FADE_DURATION.as_secs_f32()
                     } else {
                         1.0
                     };
