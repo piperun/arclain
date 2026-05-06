@@ -20,7 +20,6 @@ pub struct AppCoordinator {
     // Feature modules
     settings: settings::SettingsFeature,
     plugins: plugins::PluginsFeature,
-    // passwords: password_management::PasswordFeature,
     organization: organization::OrganizationFeature,
     browser: archive_browser::ArchiveBrowser,
     operations: archive_operations::ArchiveOperations,
@@ -36,7 +35,6 @@ impl AppCoordinator {
 
         let settings = settings::SettingsFeature::new(&shared);
         let plugins = plugins::PluginsFeature::new(&shared);
-        // let passwords = password_management::PasswordFeature::new(&shared);
         let organization = organization::OrganizationFeature::new(&shared);
         let browser = archive_browser::ArchiveBrowser::new(&shared);
         let operations = archive_operations::ArchiveOperations::new(&shared);
@@ -45,7 +43,6 @@ impl AppCoordinator {
             shared,
             settings,
             plugins,
-            // passwords,
             organization,
             browser,
             operations,

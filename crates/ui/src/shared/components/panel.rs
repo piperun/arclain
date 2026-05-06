@@ -1,7 +1,8 @@
 //! Standardized Panel Component
 //!
-//! A reusable panel with optional header, body sections, and footer.
-//! Supports collapsible sections and theme-aware styling.
+//! A reusable panel with optional header and body sections, theme-aware.
+//! The collapsible/header-action/footer-action machinery from the
+//! original sketch was never wired up, so it's been trimmed here.
 
 use crate::features::plugins::presentation::rendering as ui;
 
@@ -13,31 +14,12 @@ use eframe::egui;
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// Header action types
-#[derive(Clone)]
-pub enum HeaderAction {
-    #[allow(dead_code)]
-    Button {
-        id: String,
-        label: String,
-        on_click: Arc<dyn Fn() + Send + Sync>,
-    },
-    #[allow(dead_code)]
-    Toggle {
-        id: String,
-        label: String,
-        enabled: bool,
-        on_toggle: Arc<dyn Fn(bool) + Send + Sync>,
-    },
-}
-
 /// Panel header configuration
 #[derive(Clone, Default)]
 pub struct PanelHeader {
     pub title: String,
     pub subtitle: Option<String>,
     pub icon: Option<String>,
-    pub actions: Vec<HeaderAction>,
 }
 
 impl PanelHeader {
@@ -46,7 +28,6 @@ impl PanelHeader {
             title: title.into(),
             subtitle: None,
             icon: None,
-            actions: Vec::new(),
         }
     }
 }
@@ -61,20 +42,6 @@ pub enum PanelBody {
         plugin_id: String,
         elements: Vec<PluginUiElement>,
     },
-    /// Separator line
-    #[allow(dead_code)]
-    Separator,
-    /// Space
-    #[allow(dead_code)]
-    Space(f32),
-}
-
-/// Action returned from panel interactions
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PanelAction {
-    None,
-    HeaderAction(String),
-    FooterAction(String),
 }
 
 /// Configuration for the Panel component
@@ -82,8 +49,6 @@ pub struct Panel {
     pub id: String,
     pub header: Option<PanelHeader>,
     pub body: Vec<PanelBody>,
-    pub collapsible: bool,
-    pub initially_collapsed: bool,
 }
 
 impl Panel {
@@ -93,8 +58,6 @@ impl Panel {
             id: id.into(),
             header: None,
             body: Vec::new(),
-            collapsible: false,
-            initially_collapsed: false,
         }
     }
 
@@ -110,15 +73,7 @@ impl Panel {
         self
     }
 
-    /// Make the panel collapsible
-    #[allow(dead_code)]
-    pub fn collapsible(mut self, initially_collapsed: bool) -> Self {
-        self.collapsible = true;
-        self.initially_collapsed = initially_collapsed;
-        self
-    }
-
-    /// Render the panel and return any action triggered
+    /// Render the panel
     pub fn render(
         &self,
         ui: &mut egui::Ui,
@@ -126,9 +81,7 @@ impl Panel {
         plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
         shared: Option<&SharedState>,
         content_cache: Option<&Arc<arclain_data::ContentCache>>,
-    ) -> PanelAction {
-        let mut action = PanelAction::None;
-
+    ) {
         let panel_frame = egui::Frame::NONE
             .fill(theme.colors.surface)
             .stroke(egui::Stroke::new(1.0, theme.colors.outline))
@@ -137,43 +90,20 @@ impl Panel {
 
         panel_frame.show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-
-            if self.collapsible {
-                // Use collapsible section
-                let title = self
-                    .header
-                    .as_ref()
-                    .map(|h| h.title.as_str())
-                    .unwrap_or("Panel");
-
-                arclain_widgets::CollapsibleSection::new(&self.id, title)
-                    .with_theme_colors(&theme.colors)
-                    .default_open(!self.initially_collapsed)
-                    .show(ui, |ui| {
-                        self.render_body(ui, theme, plugin_manager, shared, content_cache);
-                    });
-            } else {
-                // Non-collapsible panel
-                if let Some(header_action) = self.render_header(ui, theme) {
-                    action = header_action;
-                }
-
-                ui.add_space(8.0);
-                self.render_body(ui, theme, plugin_manager, shared, content_cache);
-            }
+            self.render_header(ui, theme);
+            ui.add_space(8.0);
+            self.render_body(ui, theme, plugin_manager, shared, content_cache);
         });
-
-        action
     }
 
-    fn render_header(&self, ui: &mut egui::Ui, theme: &AppTheme) -> Option<PanelAction> {
-        let header = self.header.as_ref()?;
-        let mut action = None;
+    fn render_header(&self, ui: &mut egui::Ui, theme: &AppTheme) {
+        let Some(header) = self.header.as_ref() else {
+            return;
+        };
 
         ui.horizontal(|ui| {
             ui.add_space(12.0);
 
-            // Icon if present
             if let Some(icon) = &header.icon {
                 ui.label(
                     egui::RichText::new(icon)
@@ -183,7 +113,6 @@ impl Panel {
                 ui.add_space(4.0);
             }
 
-            // Title
             ui.label(
                 egui::RichText::new(&header.title)
                     .size(11.0)
@@ -191,7 +120,6 @@ impl Panel {
                     .color(theme.colors.on_surface_variant),
             );
 
-            // Subtitle if present
             if let Some(subtitle) = &header.subtitle {
                 ui.add_space(8.0);
                 ui.label(
@@ -200,33 +128,7 @@ impl Panel {
                         .color(theme.colors.on_surface_variant),
                 );
             }
-
-            // Actions on the right
-            if !header.actions.is_empty() {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add_space(12.0);
-                    for header_action in header.actions.iter().rev() {
-                        match header_action {
-                            HeaderAction::Button { id, label, .. } => {
-                                if ui.small_button(label).clicked() {
-                                    action = Some(PanelAction::HeaderAction(id.clone()));
-                                }
-                            }
-                            HeaderAction::Toggle {
-                                id, label, enabled, ..
-                            } => {
-                                let mut checked = *enabled;
-                                if ui.checkbox(&mut checked, label).changed() {
-                                    action = Some(PanelAction::HeaderAction(id.clone()));
-                                }
-                            }
-                        }
-                    }
-                });
-            }
         });
-
-        action
     }
 
     fn render_body(
@@ -286,8 +188,6 @@ impl Panel {
                     plugin_id,
                     elements,
                 } => {
-                    // content_cache is now passed as parameter (extracted by caller before rendering)
-
                     if let Some(manager_arc) = plugin_manager {
                         // Get plugin instance handle
                         let instance_arc = {
@@ -359,14 +259,6 @@ impl Panel {
                             None,
                         );
                     }
-                }
-                PanelBody::Separator => {
-                    ui.add_space(4.0);
-                    ui.separator();
-                    ui.add_space(4.0);
-                }
-                PanelBody::Space(amount) => {
-                    ui.add_space(*amount);
                 }
             }
         }
