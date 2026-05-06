@@ -150,8 +150,8 @@ impl ProxyConfig {
         }
 
         let mut builder = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(10))
+            .connect_timeout(crate::PROBE_TIMEOUT)
+            .timeout(crate::PROBE_TIMEOUT)
             .no_proxy(); // Disable system proxy detection
 
         if let Some(proxy) = self.to_proxy() {
