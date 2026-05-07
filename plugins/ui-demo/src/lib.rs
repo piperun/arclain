@@ -3,6 +3,18 @@ use archust_plugin_sdk::info;
 struct Component;
 
 impl archust_plugin_sdk::Guest for Component {
+    fn get_metadata() -> archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+        // Mirrors ui-demo.toml.
+        archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+            id: "ui-demo".to_string(),
+            name: "UI Demo Plugin".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            author: "Arclain Team".to_string(),
+            description: "Demonstrates UI capabilities in the sidebar and plugins page"
+                .to_string(),
+        }
+    }
+
     fn init() {
         info("UI Demo Plugin initialized via Component Model!");
     }

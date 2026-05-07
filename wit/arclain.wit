@@ -485,19 +485,40 @@ interface rules {
     }
 }
 
+// Plugin self-description. Plugins implement `get-metadata` so the host
+// can populate the plugin manager UI and (more importantly) derive a
+// stable plugin id when the user installs a bare .wasm file with no
+// sidecar manifest. Pre-2026-05-07 this came back as
+// `id: "unknown", name: "Unknown Plugin", ...` because the WIT had no
+// such export, so every auto-installed plugin landed under the same
+// id and collided with itself on second install.
+interface meta {
+    record plugin-metadata {
+        id: string,
+        name: string,
+        version: string,
+        author: string,
+        description: string,
+    }
+}
+
 world plugin-world {
     import host;
-    
+
     // Plugin exports
     export init: func();
     use rules.{plugin-rule-definition};
     export get-default-rules: func() -> list<plugin-rule-definition>;
-    
+
     // UI exports
     use ui.{ui-element, plugin-action, top-tab-config, plugin-layout};
     export get-ui-layout: func(extension-point: string) -> plugin-layout;
     export on-ui-event: func(id: string, value: option<string>) -> list<plugin-action>;
-    
+
     // Top Tab registration
     export get-top-tabs: func() -> list<top-tab-config>;
+
+    // Self-description.
+    use meta.{plugin-metadata};
+    export get-metadata: func() -> plugin-metadata;
 }

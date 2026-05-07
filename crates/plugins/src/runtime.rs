@@ -170,21 +170,33 @@ impl PluginInstance {
         Ok(())
     }
 
-    /// Get plugin metadata
+    /// Get plugin metadata.
+    ///
+    /// Cached per-instance after the first WIT call. Plugins built
+    /// against the post-2026-05-07 WIT export `get-metadata` and
+    /// self-report id/name/version/author/description; the host caches
+    /// the result so repeated calls don't re-cross the WASM boundary
+    /// (the manager's `install_plugin` flow asks once at install time
+    /// to derive a stable plugin id for the manifest it writes).
     pub fn get_metadata(&mut self) -> Result<PluginMetadata> {
         if let Some(metadata) = &self.metadata {
             return Ok(metadata.clone());
         }
 
-        // TODO: Add metadata to WIT interface
-        // For now, return default
-        Ok(PluginMetadata {
-            id: "unknown".to_string(),
-            name: "Unknown Plugin".to_string(),
-            version: "0.0.0".to_string(),
-            description: "Metadata not yet implemented in WIT".to_string(),
-            author: "Unknown".to_string(),
-        })
+        let wit_meta = self
+            .plugin
+            .call_get_metadata(&mut self.store)
+            .map_err(|e| PluginError::ExecutionError(e.to_string()))?;
+
+        let metadata = PluginMetadata {
+            id: wit_meta.id,
+            name: wit_meta.name,
+            version: wit_meta.version,
+            author: wit_meta.author,
+            description: wit_meta.description,
+        };
+        self.metadata = Some(metadata.clone());
+        Ok(metadata)
     }
 
     /// Get default organization rules from the plugin
