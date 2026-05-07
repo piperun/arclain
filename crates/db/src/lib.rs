@@ -1,8 +1,8 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
 
-// SqliteDb comes from mini-orm (shared ORM crate)
-pub use mini_orm::SqliteDb;
+mod sqlite_db;
+pub use sqlite_db::SqliteDb;
 
 mod redb_wrapper;
 
@@ -61,13 +61,6 @@ pub use checksum::{
     store_file_checksum, store_merkle_root, update_checksum_operation, ChecksumDb, DbFileChecksum,
     DbOperation, OpId, OpState, OpType, VerifyMode,
 };
-pub use mini_orm::{JoinType, OrderDirection, QueryBuilder};
-
-/// Type-safe database schema definitions
-pub mod schema;
-
-/// Re-export derive macros from mini-orm
-pub use mini_orm::{DbConfig, DbTable};
 
 mod user_config;
 pub use user_config::UserConfig;
@@ -141,20 +134,11 @@ mod secrets_key;
 pub use bootstrap::{open_databases, ConfigDbs, DbPaths};
 pub use secrets_key::SecretsKey;
 
-/// Simple K/V config helpers (stored in plain config.sqlite)
-/// Uses schema::AppConfig with ParamExpr for type-safe parameterized queries
+/// Simple K/V config helpers (stored in plain config.sqlite).
+/// Used by the rusqlite startup path — Diesel mirrors live as
+/// `get_config_diesel` / `set_config_diesel` below.
 pub fn get_config(conn: &Connection, key: &str) -> Result<Option<String>> {
-    use mini_orm::Table;
-    use schema::AppConfig;
-
-    // Type-safe SQL: "SELECT value FROM app_config WHERE key = ?1"
-    let sql = format!(
-        "SELECT {} FROM {} WHERE {}",
-        AppConfig::value.col_name(),
-        AppConfig::table_name(),
-        AppConfig::key.eq_param(1).to_sql()
-    );
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare("SELECT value FROM app_config WHERE key = ?1")?;
     let val = stmt
         .query_row([key], |row| row.get::<_, String>(0))
         .optional()?;
@@ -162,21 +146,11 @@ pub fn get_config(conn: &Connection, key: &str) -> Result<Option<String>> {
 }
 
 pub fn set_config(conn: &Connection, key: &str, value: &str) -> Result<()> {
-    use mini_orm::Table;
-    use schema::AppConfig;
-
-    // Type-safe upsert
-    let sql = format!(
-        "INSERT INTO {}({}, {}) VALUES(?1, ?2) \
-         ON CONFLICT({}) DO UPDATE SET {} = excluded.{}",
-        AppConfig::table_name(),
-        AppConfig::key.col_name(),
-        AppConfig::value.col_name(),
-        AppConfig::key.col_name(),
-        AppConfig::value.col_name(),
-        AppConfig::value.col_name()
-    );
-    conn.execute(&sql, (key, value))?;
+    conn.execute(
+        "INSERT INTO app_config(key, value) VALUES(?1, ?2) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )?;
     Ok(())
 }
 
