@@ -109,7 +109,7 @@ impl ChecksumService {
         match self.mode {
             VerifyMode::Simple => {
                 // Just store root hash
-                let archive_id = dest_folder.to_string_lossy().to_string();
+                let archive_id = dest_folder.to_string_lossy().into_owned();
                 self.db.with_conn(|conn| {
                     store_merkle_root(
                         conn,
@@ -122,7 +122,7 @@ impl ChecksumService {
             }
             VerifyMode::Full => {
                 // Store all file checksums
-                let archive_id = dest_folder.to_string_lossy().to_string();
+                let archive_id = dest_folder.to_string_lossy().into_owned();
                 for file in &file_results {
                     self.db.with_conn(|conn| {
                         store_file_checksum(
@@ -184,7 +184,7 @@ impl ChecksumService {
             return Ok(VerifyResult::Skipped);
         }
 
-        let archive_id = folder.to_string_lossy().to_string();
+        let archive_id = folder.to_string_lossy().into_owned();
 
         // Get stored root hash
         let stored_root = self

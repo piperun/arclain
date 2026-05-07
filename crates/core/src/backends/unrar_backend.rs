@@ -72,7 +72,7 @@ impl ArchiveBackend for UnrarBackend {
                     }
 
                     // Check for invalid UTF-8/encoding issues (detect replacement char)
-                    let filename = entry.filename.to_string_lossy().to_string();
+                    let filename = entry.filename.to_string_lossy().into_owned();
                     if filename.contains('\u{FFFD}') {
                         tracing::warn!(
                             "Detected invalid encoding (replacement char) in RAR entry: {}",
@@ -189,7 +189,7 @@ impl ArchiveBackend for UnrarBackend {
             .context("Failed to open RAR archive for extraction")?;
 
         while let Some(header) = open_archive.read_header()? {
-            let entry_name = header.entry().filename.to_string_lossy().to_string();
+            let entry_name = header.entry().filename.to_string_lossy().into_owned();
             let full_dest = dest.join(&entry_name);
 
             // Check if path is too long for Windows (MAX_PATH = 260)
@@ -285,7 +285,7 @@ impl ArchiveBackend for UnrarBackend {
                 }
             }
 
-            let entry_path = header.entry().filename.to_string_lossy().to_string();
+            let entry_path = header.entry().filename.to_string_lossy().into_owned();
 
             if files
                 .iter()
@@ -364,7 +364,7 @@ impl ArchiveBackend for UnrarBackend {
 
         let mut extracted_count = 0;
         while let Some(header) = open_archive.read_header()? {
-            let entry_path = header.entry().filename.to_string_lossy().to_string();
+            let entry_path = header.entry().filename.to_string_lossy().into_owned();
             // Normalize entry path separators for comparison
             let entry_path_normalized = entry_path.replace('\\', "/");
 
@@ -461,7 +461,7 @@ impl ArchiveBackend for UnrarBackend {
                 }
             }
 
-            let entry_path = header.entry().filename.to_string_lossy().to_string();
+            let entry_path = header.entry().filename.to_string_lossy().into_owned();
 
             // Use proper EntryRef matching
             if refs.iter().any(|r| r.matches(&entry_path)) {

@@ -99,7 +99,7 @@ pub fn update_current_path(
     *current_path = if nav_current_path.is_empty() {
         current_archive
             .as_ref()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default()
     } else {
         format!(

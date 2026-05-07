@@ -60,7 +60,7 @@ pub fn render(
                         .clicked()
                     {
                         if let Some(file) = rfd::FileDialog::new().pick_file() {
-                            *state.key_file_path.write() = file.to_string_lossy().to_string();
+                            *state.key_file_path.write() = file.to_string_lossy().into_owned();
                         }
                     }
                 });
@@ -103,7 +103,7 @@ pub fn render(
                         .clicked()
                     {
                         if let Some(file) = rfd::FileDialog::new().pick_file() {
-                            *state.secrets_db_path.write() = file.to_string_lossy().to_string();
+                            *state.secrets_db_path.write() = file.to_string_lossy().into_owned();
                         }
                     }
                 });
@@ -176,7 +176,7 @@ pub fn render(
                             .save_file()
                         {
                             action = Some(SettingsAction::MoveVault {
-                                dest_path: path.to_string_lossy().to_string(),
+                                dest_path: path.to_string_lossy().into_owned(),
                             });
                         }
                     }
@@ -192,7 +192,7 @@ pub fn render(
                     {
                         if let Some(file) = rfd::FileDialog::new().pick_file() {
                             action = Some(SettingsAction::RekeyVault {
-                                new_key_file_path: file.to_string_lossy().to_string(),
+                                new_key_file_path: file.to_string_lossy().into_owned(),
                             });
                         }
                     }

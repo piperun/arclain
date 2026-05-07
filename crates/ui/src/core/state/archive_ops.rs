@@ -110,7 +110,7 @@ impl AppState {
         if self.plugin_event_sender.is_some() {
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
-                path: path.to_string_lossy().to_string(),
+                path: path.to_string_lossy().into_owned(),
                 kind: info.archive_kind,
                 password: self.signals.current_password.get(),
             };
@@ -175,7 +175,7 @@ impl AppState {
         if self.plugin_event_sender.is_some() {
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
-                path: path.to_string_lossy().to_string(),
+                path: path.to_string_lossy().into_owned(),
                 kind: info.archive_kind.clone(),
                 password: Some(password.to_string()),
             };

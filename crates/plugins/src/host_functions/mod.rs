@@ -177,7 +177,7 @@ impl HostFunctions {
         file.write_all(&content)
             .map_err(|e| format!("Failed to write file: {}", e))?;
 
-        let path_str = path.to_string_lossy().to_string();
+        let path_str = path.to_string_lossy().into_owned();
         tracing::debug!("[HostFunctions] Created file: {}", path_str);
         Ok(path_str)
     }

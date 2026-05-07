@@ -145,7 +145,7 @@ pub fn render_regex_tester_modal(
                                             if file_type.is_file() {
                                                 let file_name = entry.file_name();
                                                 let file_name_str =
-                                                    file_name.to_string_lossy().to_string();
+                                                    file_name.to_string_lossy().into_owned();
                                                 let matched = re.is_match(&file_name_str);
 
                                                 dialog.regex_test_results.push(
@@ -182,7 +182,7 @@ pub fn render_regex_tester_modal(
                                             if file_type.is_file() {
                                                 let file_name = entry.file_name();
                                                 let file_name_str =
-                                                    file_name.to_string_lossy().to_string();
+                                                    file_name.to_string_lossy().into_owned();
                                                 let matched = re.is_match(&file_name_str);
 
                                                 dialog.regex_test_results.push(

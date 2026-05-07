@@ -211,7 +211,7 @@ pub fn update_window_title(
     let title = {
         if let Some(path) = shared_state.signals().archive_path.get() {
             path.file_name()
-                .map(|n| n.to_string_lossy().to_string())
+                .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Arclain".to_string())
         } else if let Some(settings_page) = page_navigator.current_settings_page() {
             format!("Settings - {}", settings_page.display_name())

@@ -257,7 +257,7 @@ pub fn render_path_bar_panel(
                 .get()
                 .as_ref()
                 .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
+                .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
             let current_path = shared_state.signals().navigation.get().current_path.clone();
 
