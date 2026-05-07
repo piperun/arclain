@@ -312,34 +312,49 @@ fn render_domain_row(
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let mut approved_state = is_approved;
             if ui.add(ToggleSwitch::new(&mut approved_state)).changed() {
-                // Update in-memory whitelist via shared.services
+                // Audit reactive-smells: "mutates whitelist signal then
+                // DB in non-atomic sequence" — if the DB write failed,
+                // the in-memory whitelist diverged from the on-disk
+                // truth and stayed approved across restarts only if
+                // DB happened to win on the next save.
+                //
+                // Safer ordering: persist to DB first, mirror to the
+                // in-memory whitelist only on success. A failed DB
+                // write now keeps both halves consistent.
                 if let Some(shared) = shared {
-                    if approved_state {
-                        shared
-                            .services
-                            .domain_whitelist
-                            .write()
-                            .approve(&entry.plugin_id, domain);
-                    } else {
-                        shared
-                            .services
-                            .domain_whitelist
-                            .write()
-                            .revoke(&entry.plugin_id, domain);
-                    }
-                }
-
-                // Update DB via ConfigService
-                if let Some(shared) = shared {
-                    if let Some(config_svc) = shared.services.config_service.as_ref() {
-                        if approved_state {
-                            let _ = config_svc.approve_plugin_domain(&entry.plugin_id, domain);
+                    let plugin_id = entry.plugin_id.as_str();
+                    let db_result =
+                        if let Some(config_svc) = shared.services.config_service.as_ref() {
+                            if approved_state {
+                                config_svc.approve_plugin_domain(plugin_id, domain)
+                            } else {
+                                config_svc.revoke_plugin_domain(plugin_id, domain)
+                            }
                         } else {
-                            let _ = config_svc.revoke_plugin_domain(&entry.plugin_id, domain);
+                            // No config service wired: skip the DB
+                            // step and keep the in-memory mirror
+                            // working (test/headless contexts).
+                            Ok(())
+                        };
+
+                    if let Err(e) = &db_result {
+                        tracing::error!(
+                            "Failed to {} domain '{}' for plugin '{}': {}",
+                            if approved_state { "approve" } else { "revoke" },
+                            domain,
+                            plugin_id,
+                            e,
+                        );
+                    } else {
+                        let wl = shared.services.domain_whitelist.write();
+                        if approved_state {
+                            wl.approve(plugin_id, domain);
+                        } else {
+                            wl.revoke(plugin_id, domain);
                         }
+                        changed = true;
                     }
                 }
-                changed = true;
             }
         });
     });
