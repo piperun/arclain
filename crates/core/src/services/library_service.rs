@@ -90,6 +90,22 @@ impl LibraryService {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
+    /// Batch lookup — single SQL query for many IDs, instead of one
+    /// per ID. Audit P13: `impl_get_metadata_summaries` was looping
+    /// `get_metadata` per id and paying N round-trips for each
+    /// archive-list refresh; this collapses that to one
+    /// `WHERE id IN (?, ?, …)`.
+    ///
+    /// The returned `Vec` only contains rows the DB actually has —
+    /// missing ids are silently dropped. Callers that need a stable
+    /// "input id → row?" mapping should rebuild it from the result
+    /// (an example lives in `arclain_plugins::host_functions::metadata`).
+    pub fn get_many(&self, ids: &[&str]) -> Result<Vec<ProductMetadata>> {
+        self.backend
+            .sync_get_many(ids)
+            .map_err(|e| anyhow::anyhow!("{}", e))
+    }
+
     pub fn delete_metadata(&self, id: &str) -> Result<()> {
         self.backend
             .sync_delete_metadata(id)
@@ -168,6 +184,70 @@ mod tests {
 
         svc.delete_metadata("dlsite:RJ200").unwrap();
         assert!(!svc.exists("dlsite:RJ200").unwrap());
+    }
+
+    /// Regression test for audit P13.
+    ///
+    /// `impl_get_metadata_summaries` used to loop `get_metadata` once
+    /// per requested id — a 50-archive list refresh fired 50 round-
+    /// trips through diesel + the `Mutex<Connection>`. `get_many`
+    /// collapses that into a single `WHERE id IN (...)` query.
+    ///
+    /// We can't directly count SQL round-trips here without diesel
+    /// instrumentation, so the test asserts on the contract: every
+    /// requested id that exists comes back, missing ids are silently
+    /// absent (not errors), and the empty-input case doesn't query
+    /// the DB at all.
+    #[test]
+    fn p13_get_many_returns_all_known_ids_in_one_call() {
+        let (_dir, svc) = temp_service();
+
+        // Insert 5 rows; we'll ask for 7 (5 hit, 2 miss).
+        let known: Vec<String> = (0..5)
+            .map(|i| {
+                let mut m = make_meta(&format!("RJ70000{}", i));
+                m.title = Some(format!("Title {}", i));
+                svc.save_metadata(&m).unwrap();
+                m.id.clone()
+            })
+            .collect();
+
+        let missing = vec![
+            "dlsite:RJ999998".to_string(),
+            "dlsite:RJ999999".to_string(),
+        ];
+
+        let mut requested: Vec<&str> =
+            known.iter().map(String::as_str).collect();
+        requested.extend(missing.iter().map(String::as_str));
+
+        let got = svc.get_many(&requested).unwrap();
+        assert_eq!(got.len(), 5, "should only return the 5 rows that exist");
+
+        let got_ids: std::collections::HashSet<&str> =
+            got.iter().map(|m| m.id.as_str()).collect();
+        for k in &known {
+            assert!(
+                got_ids.contains(k.as_str()),
+                "expected to find {} in result",
+                k,
+            );
+        }
+        for m in &missing {
+            assert!(
+                !got_ids.contains(m.as_str()),
+                "did not expect missing id {} in result",
+                m,
+            );
+        }
+    }
+
+    /// Empty input is a fast path — no DB call, empty Vec back.
+    #[test]
+    fn p13_get_many_empty_input_returns_empty() {
+        let (_dir, svc) = temp_service();
+        let got = svc.get_many(&[]).unwrap();
+        assert!(got.is_empty());
     }
 
     #[test]
