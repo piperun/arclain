@@ -1,4 +1,9 @@
-//! SQLite database wrapper with connection pooling
+//! SQLite database wrapper with connection pooling.
+//!
+//! Was previously `mini_orm::SqliteDb`. Pulled in-tree as part of the
+//! mini-orm removal — it's just a thin `Arc<Mutex<rusqlite::Connection>>`
+//! handle with WAL/foreign-key bootstrap, no ORM machinery involved, so
+//! it didn't need the in-house ORM crate to host it.
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;

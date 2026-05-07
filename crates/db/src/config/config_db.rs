@@ -1,6 +1,6 @@
 use crate::diesel_err;
 use anyhow::Result;
-use mini_orm::SqliteDb;
+use crate::SqliteDb;
 use rusqlite::Connection;
 use std::path::Path;
 

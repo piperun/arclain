@@ -10,9 +10,6 @@ members = [
     "crates/network",
     "crates/data",
     "crates/signals",
-    # Shared ORM
-    "crates/mini-orm",
-    "crates/mini-orm/derive",
 ]
 default-members = ["crates/ui"]
 exclude = [

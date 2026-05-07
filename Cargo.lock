@@ -412,7 +412,6 @@ dependencies = [
  "gameta_core",
  "gameta_database",
  "libsqlite3-sys",
- "mini-orm",
  "rand 0.8.5",
  "redb",
  "rusqlite",
@@ -3943,24 +3942,6 @@ dependencies = [
  "phf",
  "phf_shared",
  "unicase",
-]
-
-[[package]]
-name = "mini-orm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "mini-orm-derive",
- "rusqlite",
-]
-
-[[package]]
-name = "mini-orm-derive"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]
