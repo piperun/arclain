@@ -237,38 +237,64 @@ impl HostFunctions {
         ids: Vec<String>,
     ) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
         use crate::arclain::plugin::host::MetadataSummary;
+        use std::collections::HashMap;
 
-        if let Some(lib_svc) = &self.library_service {
-            ids.into_iter()
-                .map(|external_id| {
-                    let full_id = format!("dlsite:{}", external_id);
-
-                    match lib_svc.get_metadata(&full_id) {
-                        Ok(Some(meta)) => MetadataSummary {
-                            id: external_id,
-                            title: meta.title,
-                            geo_blocked: meta.geo_blocked,
-                        },
-                        Ok(None) => MetadataSummary {
-                            id: external_id,
-                            title: None,
-                            geo_blocked: false,
-                        },
-                        Err(e) => {
-                            error!("Failed to get metadata for {}: {}", external_id, e);
-                            MetadataSummary {
-                                id: external_id,
-                                title: None,
-                                geo_blocked: false,
-                            }
-                        }
-                    }
-                })
-                .collect()
-        } else {
+        let Some(lib_svc) = &self.library_service else {
             warn!("LibraryService not initialized");
-            vec![]
+            return vec![];
+        };
+
+        if ids.is_empty() {
+            return vec![];
         }
+
+        // Audit P13: the previous implementation looped
+        // `lib_svc.get_metadata(&full_id)` once per id — N round-trips
+        // through diesel + the per-DB `Mutex<Connection>`, fired on
+        // every archive-list refresh. Now we do one
+        // `WHERE id IN (?, ?, …)` and rebuild the per-id mapping
+        // client-side.
+        let full_ids: Vec<String> = ids.iter().map(|i| format!("dlsite:{}", i)).collect();
+        let full_id_refs: Vec<&str> = full_ids.iter().map(String::as_str).collect();
+
+        let rows = match lib_svc.get_many(&full_id_refs) {
+            Ok(r) => r,
+            Err(e) => {
+                error!("get_metadata_summaries: get_many failed: {}", e);
+                // Same fallback as the old loop's per-id error case —
+                // return a placeholder summary per requested id so the
+                // UI doesn't have to reason about partial failures.
+                return ids
+                    .into_iter()
+                    .map(|external_id| MetadataSummary {
+                        id: external_id,
+                        title: None,
+                        geo_blocked: false,
+                    })
+                    .collect();
+            }
+        };
+
+        // Index the result rows so each requested external id can be
+        // resolved without a second linear scan per id.
+        let by_full_id: HashMap<&str, &arclain_core::ProductMetadata> =
+            rows.iter().map(|m| (m.id.as_str(), m)).collect();
+
+        ids.into_iter()
+            .zip(full_ids.iter())
+            .map(|(external_id, full_id)| match by_full_id.get(full_id.as_str()) {
+                Some(meta) => MetadataSummary {
+                    id: external_id,
+                    title: meta.title.clone(),
+                    geo_blocked: meta.geo_blocked,
+                },
+                None => MetadataSummary {
+                    id: external_id,
+                    title: None,
+                    geo_blocked: false,
+                },
+            })
+            .collect()
     }
 
     /// Get full product metadata with fallback chain:
