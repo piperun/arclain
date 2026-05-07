@@ -1,6 +1,6 @@
 use anyhow::Result;
-use arclain_db::cache::cache_index::{self, CacheEntry, CacheType};
-use arclain_db::DieselPool;
+use arclain_db::cache::cache_index;
+use arclain_db::{CacheEntry, CacheType, DieselPool};
 
 pub struct CacheService {
     pool: DieselPool,

@@ -11,7 +11,7 @@
 //! were dropped along with the obsolete `legacy/` module.
 
 #[cfg(test)]
-use crate::cache::cache_index::{CacheEntry, CacheType};
+use crate::cache::types::{CacheEntry, CacheType};
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 #[cfg(test)]
