@@ -18,40 +18,49 @@ pub struct MerkleTree {
 }
 
 impl MerkleTree {
-    /// Build a Merkle tree from file hash results
+    /// Build a Merkle tree from file hash results.
+    ///
+    /// Pre-fix (audit P12) each leaf was cloned five times: once into
+    /// `leaves`, once into the sort tuple, once back into a sorted
+    /// `leaves`, once into the seed of `nodes`, and again into a
+    /// parallel `current_level` for the build loop. For a 10k-file
+    /// archive that's 50k+ extra `Hash` clones plus 50k+ `String`
+    /// clones for paths.
+    ///
+    /// Now we sort an index permutation, materialise leaves and paths
+    /// exactly once each, and borrow each level back out of `nodes`
+    /// instead of cloning it into a parallel `current_level`.
     pub fn from_file_hashes(files: &[FileHashResult], algorithm: Algorithm) -> Self {
         if files.is_empty() {
             return Self::empty(algorithm);
         }
 
-        // Level 0: leaf nodes (file hashes)
-        let leaves: Vec<Hash> = files.iter().map(|f| f.hash.clone()).collect();
-        let file_paths: Vec<String> = files.iter().map(|f| f.relative_path.clone()).collect();
+        // Sort by path via an index permutation — no payload clones
+        // just to reorder.
+        let mut indices: Vec<usize> = (0..files.len()).collect();
+        indices.sort_by(|&a, &b| files[a].relative_path.cmp(&files[b].relative_path));
 
-        // Sort by path for consistent ordering
-        let mut indexed: Vec<_> = leaves
+        let file_paths: Vec<String> = indices
             .iter()
-            .cloned()
-            .zip(file_paths.iter().cloned())
+            .map(|&i| files[i].relative_path.clone())
             .collect();
-        indexed.sort_by(|a, b| a.1.cmp(&b.1));
+        let leaves: Vec<Hash> = indices.iter().map(|&i| files[i].hash.clone()).collect();
 
-        let leaves: Vec<Hash> = indexed.iter().map(|(h, _)| h.clone()).collect();
-        let file_paths: Vec<String> = indexed.iter().map(|(_, p)| p.clone()).collect();
-
-        let mut nodes: Vec<Vec<Hash>> = vec![leaves.clone()];
-
-        // Build tree bottom-up
-        let mut current_level = leaves;
-        while current_level.len() > 1 {
-            let next_level = Self::build_next_level(&current_level, algorithm);
-            nodes.push(next_level.clone());
-            current_level = next_level;
+        // `nodes[0]` owns the leaves; subsequent levels are appended.
+        // `current_idx` indexes the level we're folding, so the loop
+        // never needs a parallel `current_level` clone.
+        let mut nodes: Vec<Vec<Hash>> = vec![leaves];
+        let mut current_idx = 0;
+        while nodes[current_idx].len() > 1 {
+            let next = Self::build_next_level(&nodes[current_idx], algorithm);
+            nodes.push(next);
+            current_idx += 1;
         }
 
-        let root = current_level
-            .into_iter()
-            .next()
+        let root = nodes
+            .last()
+            .and_then(|level| level.first())
+            .cloned()
             .unwrap_or_else(|| Hash::new(algorithm, vec![]));
 
         Self {

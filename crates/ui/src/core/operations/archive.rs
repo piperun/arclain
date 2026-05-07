@@ -215,7 +215,7 @@ pub fn load_archive_data(
                     .as_ref()
                     .and_then(|p| p.to_str())
                     .map(|s| s.to_string());
-                signals.current_password.get().is_some()
+                signals.current_password.read().is_some()
                     || arclain_core::utilities::auto_password_for(
                         &st.pass_rules,
                         archive_name.as_deref(),

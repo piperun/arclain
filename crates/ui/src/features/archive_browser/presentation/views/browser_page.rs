@@ -11,8 +11,7 @@ use eframe::egui;
 pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Action {
     let mut action = Action::None;
 
-    // Check if archive is loaded
-    let archive_loaded = shared.signals().archive_path.get().is_some();
+    let archive_loaded = shared.signals().archive_path.read().is_some();
 
     if !archive_loaded {
         render_empty_state(ctx, shared);

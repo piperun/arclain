@@ -358,11 +358,18 @@ impl AsyncHttpClient {
         None
     }
 
-    /// Cancel a pending request
+    /// Cancel a pending request: notify any waiters, then drop the
+    /// entry so it can't accumulate in the `pending` map (audit P19 —
+    /// previously `cancel` flipped status to `Cancelled` and left the
+    /// entry behind, which leaked memory across long sessions if no
+    /// one ever called `take_response` afterwards).
+    ///
+    /// Subsequent `take_response` / `status` / `await_complete` calls
+    /// for the cancelled id return `None` — no caller in the workspace
+    /// branched on `RequestStatus::Cancelled` specifically.
     pub fn cancel(&self, id: &RequestId) {
         let mut pending = self.pending.lock();
-        if let Some(entry) = pending.get_mut(id) {
-            entry.status = RequestStatus::Cancelled;
+        if let Some(entry) = pending.remove(id) {
             entry.notify.notify_waiters();
         }
     }
@@ -374,6 +381,15 @@ impl AsyncHttpClient {
             .values()
             .filter(|e| e.status.is_pending())
             .count()
+    }
+
+    /// Total number of entries the `pending` map is currently holding,
+    /// including terminal (Ready/Failed) ones that haven't been
+    /// `take_response`'d yet. Mainly useful for memory-leak regression
+    /// tests; production should use `pending_count` for the
+    /// "in-flight" semantic.
+    pub fn pending_total(&self) -> usize {
+        self.pending.lock().len()
     }
 
     /// Set rate limit for a domain
