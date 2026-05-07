@@ -3,6 +3,20 @@ use archust_plugin_sdk::info;
 struct Component;
 
 impl archust_plugin_sdk::Guest for Component {
+    fn get_metadata() -> archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+        // Mirrors gstreamer-preview.toml.
+        archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+            id: "gstreamer-preview".to_string(),
+            name: "GStreamer Media Preview".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            author: "Archust Team".to_string(),
+            description:
+                "Provides media file previews and thumbnail generation using GStreamer \
+                 (hybrid WASM/native approach)"
+                    .to_string(),
+        }
+    }
+
     fn init() {
         info("GStreamer Preview Plugin initialized via Component Model");
     }
