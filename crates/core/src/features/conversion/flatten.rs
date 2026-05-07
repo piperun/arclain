@@ -79,6 +79,23 @@ fn walk(dir: &Path, archives: &mut Vec<PathBuf>) -> Result<()> {
 
 /// Compute the target folder names for a list of archive files.
 /// If strip_common_prefix is true, strips the longest common prefix (if meaningful).
+///
+/// The whole batch reverts to unstripped names if the candidate prefix
+/// would produce a broken folder name for any archive — empty, or
+/// starting with a non-alphanumeric character (`-`, ` `, `_` etc.).
+/// This catches the addon-pack pattern where the parent mod's name
+/// itself is the longest common prefix:
+///
+///   - `ModName v1.0`              → after strip: `v1.0`
+///   - `ModName - Variant A v1.0`  → after strip: `- Variant A v1.0`
+///   - `ModName - Variant B v1.0`  → after strip: `- Variant B v1.0`
+///
+/// The parent loses its mod-name identity (folder is just `v1.0`) and
+/// the addon folders get leading-dash names. Mod managers that use a
+/// `addonfor=ModName` field in modinfo.ini to group addons under their
+/// parent then can't resolve the link, because no folder is named
+/// `ModName` anymore. Whole-batch abort preserves identity for every
+/// row in the pack.
 pub fn target_folder_names(archives: &[PathBuf], strip_prefix: bool) -> Vec<(PathBuf, String)> {
     let base_names: Vec<String> = archives
         .iter()
@@ -88,7 +105,14 @@ pub fn target_folder_names(archives: &[PathBuf], strip_prefix: bool) -> Vec<(Pat
 
     let prefix = if strip_prefix {
         let refs: Vec<&str> = base_names.iter().map(|s| s.as_str()).collect();
-        longest_common_prefix(&refs)
+        let candidate = longest_common_prefix(&refs);
+        if !candidate.is_empty() && would_produce_broken_names(&base_names, &candidate) {
+            // Whole-batch abort: any archive would get a malformed
+            // folder name post-strip, so keep originals for everyone.
+            String::new()
+        } else {
+            candidate
+        }
     } else {
         String::new()
     };
@@ -110,6 +134,23 @@ pub fn target_folder_names(archives: &[PathBuf], strip_prefix: bool) -> Vec<(Pat
             (path.clone(), folder_name)
         })
         .collect()
+}
+
+/// Returns true if applying `prefix` as a strip to any of `names` would
+/// leave an empty string OR a string starting with a non-alphanumeric
+/// character (the "broken folder name" signal — `- X Addon`, ` Extra`,
+/// etc.). When this fires the caller aborts prefix-stripping for the
+/// whole batch.
+fn would_produce_broken_names(names: &[String], prefix: &str) -> bool {
+    names.iter().any(|name| {
+        let Some(stripped) = name.strip_prefix(prefix) else {
+            return false;
+        };
+        match stripped.chars().next() {
+            None => true, // empty after strip
+            Some(c) => !c.is_alphanumeric(),
+        }
+    })
 }
 
 /// Summary of a flatten operation.
@@ -269,6 +310,28 @@ where
                         folder_name
                     }
                 };
+
+                // Prefer modinfo.ini's `name=` field as the folder name
+                // when present — that's the value mod managers display
+                // and use to resolve `addonfor=` links between addons
+                // and their parent mod. Folder-on-disk and display-name
+                // stay in sync, and addon packs whose archive-derived
+                // names lost the parent-mod identity (`v1.0/`,
+                // `- Variant A v1.0/`, etc.) get clean folders matching
+                // their modinfo `name=` values.
+                let final_path = dest_parent.join(&final_name);
+                let final_name = match rename_to_modinfo_name(&final_path) {
+                    Ok(Some(renamed)) => renamed,
+                    Ok(None) => final_name,
+                    Err(e) => {
+                        tracing::warn!(
+                            "[flatten] modinfo.ini rename failed for {:?}: {}",
+                            final_path,
+                            e
+                        );
+                        final_name
+                    }
+                };
                 report.extracted.push(final_name);
             }
             Err(e) => {
@@ -290,6 +353,119 @@ where
     }
 
     Ok(report)
+}
+
+/// Read a `modinfo.ini`-style `name=...` value from a folder, if present.
+///
+/// Mod managers (Fluffy and friends) ship a `modinfo.ini` next to each
+/// mod's content with at minimum a `name=Display Name` line. We prefer
+/// that value over the archive-derived folder name because:
+///
+/// 1. It's the string the mod manager shows in its list, so folder-on-
+///    disk and display-name stay in sync.
+/// 2. Addon → parent linking via `addonfor=DisplayName` matches against
+///    `name=DisplayName` in the parent's modinfo, NOT the parent's
+///    folder name. When the archive-derived parent folder is something
+///    like `v1.0/` (because `target_folder_names` stripped the common
+///    prefix that happened to be the mod's name), `addonfor=` still
+///    resolves correctly — but the user can't tell from the disk
+///    layout which folder is which. Renaming to the modinfo name fixes
+///    the disk layout to match.
+///
+/// Returns `None` if the file is missing, has no `name=` line, the
+/// value is empty, or sanitisation produces an empty string.
+fn read_modinfo_name(folder: &Path) -> Option<String> {
+    let path = folder.join("modinfo.ini");
+    let contents = fs::read_to_string(&path).ok()?;
+
+    for line in contents.lines() {
+        let line = line.trim();
+        // Skip `[section]` headers and comments.
+        if line.is_empty() || line.starts_with('[') || line.starts_with('#')
+            || line.starts_with(';')
+        {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("name=").or_else(|| line.strip_prefix("name = ")) {
+            let raw = rest.trim();
+            if raw.is_empty() {
+                return None;
+            }
+            let sanitized = sanitize_modinfo_name(raw);
+            if sanitized.is_empty() {
+                return None;
+            }
+            return Some(sanitized);
+        }
+    }
+    None
+}
+
+/// Strip filesystem-illegal characters from a modinfo `name=` value.
+///
+/// Windows is the strict platform: `< > : " / \ | ? *` plus control
+/// chars are reserved. Trailing `.` and whitespace are also unsafe.
+/// We replace illegal chars with `_` rather than dropping them so a
+/// `Mod: Subtitle` doesn't collapse two siblings into the same folder.
+/// Leading/trailing dots and whitespace get trimmed.
+fn sanitize_modinfo_name(name: &str) -> String {
+    let mapped: String = name
+        .chars()
+        .map(|c| match c {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if (c as u32) < 0x20 => '_',
+            c => c,
+        })
+        .collect();
+    mapped
+        .trim()
+        .trim_end_matches('.')
+        .trim_start_matches('.')
+        .to_string()
+}
+
+/// If `folder` contains a modinfo.ini whose `name=` value differs from
+/// the folder's current name, rename the folder to match. No-op when
+/// modinfo.ini is missing, the values already agree, or the rename
+/// target already exists (a sibling mod with the same modinfo name —
+/// keep the archive-derived folder name to avoid clobber).
+///
+/// Returns `Some(new_name)` on rename, `None` for any no-op path, and
+/// an `Err` only on filesystem failure during the rename itself.
+fn rename_to_modinfo_name(folder: &Path) -> Result<Option<String>> {
+    let mod_name = match read_modinfo_name(folder) {
+        Some(n) => n,
+        None => return Ok(None),
+    };
+
+    let current = folder
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    if current.as_deref() == Some(mod_name.as_str()) {
+        return Ok(None);
+    }
+
+    let parent = match folder.parent() {
+        Some(p) => p,
+        None => return Ok(None),
+    };
+    let target = parent.join(&mod_name);
+    if target.exists() {
+        // Don't clobber an existing sibling. The archive-derived name
+        // stays — modinfo display still works because mod managers
+        // read modinfo.ini contents, the folder name is just disk
+        // layout.
+        tracing::debug!(
+            "[flatten] modinfo rename target {:?} already exists; keeping archive-derived name",
+            target
+        );
+        return Ok(None);
+    }
+
+    fs::rename(folder, &target)
+        .with_context(|| format!("Renaming {:?} to {:?}", folder, target))?;
+    Ok(Some(mod_name))
 }
 
 /// If `dest_folder` contains exactly one entry and that entry is a directory,
