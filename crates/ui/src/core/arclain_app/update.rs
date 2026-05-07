@@ -66,7 +66,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // 1. If on main page with archive loaded, try archive back navigation first
                 // 2. If that fails (e.g. at root), navigate UI page back
                 let is_on_main = app.page_navigator.is_on_main();
-                let archive_loaded = app.shared_state.signals().archive_path.get().is_some();
+                let archive_loaded = app.shared_state.signals().archive_path.read().is_some();
                 let signals = app.shared_state.signals();
 
                 let mut handled = false;
@@ -89,7 +89,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // 1. If on main page with archive loaded, try archive forward navigation first
                 // 2. If that fails, navigate UI page forward
                 let is_on_main = app.page_navigator.is_on_main();
-                let archive_loaded = app.shared_state.signals().archive_path.get().is_some();
+                let archive_loaded = app.shared_state.signals().archive_path.read().is_some();
                 let signals = app.shared_state.signals();
 
                 let mut handled = false;
