@@ -366,6 +366,65 @@ impl Host for HostFunctions {
         ok
     }
 
+    fn play_cached_blob(
+        &mut self,
+        key: String,
+        extension: String,
+    ) -> std::result::Result<(), String> {
+        // Pull the blob out of the host's content cache.
+        let bytes = self
+            .data_service
+            .get_data(&key)
+            .ok_or_else(|| format!("no cached blob for key '{}'", key))?;
+
+        // OS players (especially on Windows) sniff the file extension
+        // to pick a codec — cacache's content-addressable filenames
+        // don't have one, so we materialise a copy in temp with the
+        // caller-supplied extension. Sanitise both the extension
+        // ("mp4" / "webm" / etc.) and the key (it contains colons:
+        // `dlsite:RJ123:video:abc:720p`).
+        let safe_ext: String = extension
+            .trim_start_matches('.')
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .take(8)
+            .collect();
+        let ext = if safe_ext.is_empty() {
+            "bin".to_string()
+        } else {
+            safe_ext
+        };
+
+        let safe_key = key.replace(
+            [':', '/', '\\', '*', '?', '"', '<', '>', '|', ' '],
+            "_",
+        );
+
+        let mut path = std::env::temp_dir();
+        path.push(format!("arclain_{}.{}", safe_key, ext));
+
+        std::fs::write(&path, &bytes).map_err(|e| {
+            format!("Failed to write temp blob to {}: {}", path.display(), e)
+        })?;
+
+        tracing::info!(
+            "[HostFunctions::play_cached_blob] key='{}' -> {} ({} bytes); shelling out",
+            key,
+            path.display(),
+            bytes.len(),
+        );
+
+        // `open::that` (v5) returns Ok(()) once the OS shell handler
+        // has accepted the request — the launched app then runs
+        // asynchronously, so this function returns control even
+        // though playback continues.
+        open::that(&path).map_err(|e| {
+            format!("Failed to launch default app for {}: {}", path.display(), e)
+        })?;
+
+        Ok(())
+    }
+
     fn poll_data(&mut self, request_id: String) -> crate::arclain::plugin::host::DataResult {
         tracing::debug!(
             "[HostFunctions::poll_data] Polling for request_id: {}",

@@ -84,6 +84,18 @@ interface host {
     // cached entry the same way they would for `request-data`.
     fetch-to-cache: func(request: data-request) -> bool;
 
+    // Read a cached blob and hand it to the OS default application.
+    // Host writes the bytes to a temp file with the supplied
+    // extension (e.g. "mp4", "webm"), then `open::that(path)` —
+    // shells out to whatever the OS has registered for that file
+    // type (mpv / VLC / system player on the user's setup).
+    //
+    // The bytes never enter the plugin's sandbox; the plugin only
+    // needs to know the cache key and the desired extension.
+    // Returns Err on missing cache entry, write failure, or shell
+    // failure.
+    play-cached-blob: func(key: string, extension: string) -> result<_, string>;
+
     // Invalidate cache entry (to force refetch from network)
     invalidate-cache: func(key: string) -> bool;
 
