@@ -1,6 +1,6 @@
 use anyhow::Result;
 use arclain_core::CacheService;
-use arclain_db::cache::cache_index::CacheType;
+use arclain_db::CacheType;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
