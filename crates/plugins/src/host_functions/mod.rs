@@ -159,6 +159,71 @@ impl HostFunctions {
         self.resource_manager = Some(manager);
     }
 
+    /// Translate a WIT-side `DataRequest` into the internal
+    /// `arclain_data::DataRequest`, applying the same source-chain
+    /// defaults that the Data API has always used. Shared by both
+    /// `request_data` (returns bytes) and `fetch_to_cache` (drops
+    /// bytes); the only difference between them is whether the
+    /// resolver's result body crosses back over the WASM boundary.
+    fn build_data_request(
+        &self,
+        request: crate::arclain::plugin::host::DataRequest,
+    ) -> arclain_data::DataRequest {
+        use arclain_data::{DataRequest, DataSource, ResourceType};
+
+        let resource_type = match request.resource_type {
+            crate::arclain::plugin::host::ResourceType::Binary => ResourceType::Binary,
+            crate::arclain::plugin::host::ResourceType::Image => ResourceType::Image,
+            crate::arclain::plugin::host::ResourceType::Json => ResourceType::Metadata,
+        };
+
+        let mut req = DataRequest::new(&request.key)
+            .with_type(resource_type)
+            .with_plugin_id(&self.plugin_id);
+
+        tracing::debug!(
+            "[HostFunctions::build_data_request] key='{}' plugin_id='{}' url={:?}",
+            request.key,
+            self.plugin_id,
+            request.url,
+        );
+
+        if let Some(url) = request.url {
+            req = req.with_url(url);
+        }
+        if let Some(pid) = request.product_id {
+            req = req.with_product(pid);
+        }
+
+        if !request.sources.is_empty() {
+            let mut sources = arclain_data::IndexSet::new();
+            for src in request.sources {
+                let ds = match src {
+                    crate::arclain::plugin::host::DataSource::MetadataCache => {
+                        DataSource::MetadataStore
+                    }
+                    crate::arclain::plugin::host::DataSource::ContentCache => {
+                        DataSource::ContentCache
+                    }
+                    crate::arclain::plugin::host::DataSource::LocalFile => DataSource::LocalFile,
+                    crate::arclain::plugin::host::DataSource::Memory => DataSource::Memory,
+                    crate::arclain::plugin::host::DataSource::Network => DataSource::Network,
+                };
+                sources.insert(ds);
+            }
+            req = req.with_sources(sources);
+        } else if resource_type == ResourceType::Metadata {
+            // Default: for metadata type, check MetadataCache first.
+            let mut sources = arclain_data::IndexSet::new();
+            sources.insert(DataSource::MetadataStore);
+            sources.insert(DataSource::ContentCache);
+            sources.insert(DataSource::Network);
+            req = req.with_sources(sources);
+        }
+
+        req
+    }
+
     /// Create a file in the host's temp directory
     pub(super) fn impl_create_file(
         &self,
@@ -264,67 +329,41 @@ impl Host for HostFunctions {
     }
 
     // === Data API (unified) ===
-    // === Data API (unified) ===
     fn request_data(&mut self, request: crate::arclain::plugin::host::DataRequest) -> String {
-        // Map buf-generated request to arclain_data::DataRequest
-        use arclain_data::{DataRequest, DataSource, ResourceType};
-
-        let resource_type = match request.resource_type {
-            crate::arclain::plugin::host::ResourceType::Binary => ResourceType::Binary,
-            crate::arclain::plugin::host::ResourceType::Image => ResourceType::Image,
-            crate::arclain::plugin::host::ResourceType::Json => ResourceType::Metadata,
-        };
-
-        // Build request
-        let mut req = DataRequest::new(&request.key)
-            .with_type(resource_type)
-            .with_plugin_id(&self.plugin_id);
-
-        tracing::debug!(
-            "[HostFunctions::request_data] key='{}' plugin_id='{}' url={:?}",
-            request.key,
-            self.plugin_id,
-            request.url
-        );
-
-        // Set URL if provided
-        if let Some(url) = request.url {
-            req = req.with_url(url);
-        }
-
-        // Set product ID if provided
-        if let Some(pid) = request.product_id {
-            req = req.with_product(pid);
-        }
-
-        // Map WIT sources to internal DataSource
-        if !request.sources.is_empty() {
-            let mut sources = arclain_data::IndexSet::new();
-            for src in request.sources {
-                let ds = match src {
-                    crate::arclain::plugin::host::DataSource::MetadataCache => {
-                        DataSource::MetadataStore
-                    }
-                    crate::arclain::plugin::host::DataSource::ContentCache => {
-                        DataSource::ContentCache
-                    }
-                    crate::arclain::plugin::host::DataSource::LocalFile => DataSource::LocalFile,
-                    crate::arclain::plugin::host::DataSource::Memory => DataSource::Memory,
-                    crate::arclain::plugin::host::DataSource::Network => DataSource::Network,
-                };
-                sources.insert(ds);
-            }
-            req = req.with_sources(sources);
-        } else if resource_type == ResourceType::Metadata {
-            // Default: for metadata type, check MetadataCache first
-            let mut sources = arclain_data::IndexSet::new();
-            sources.insert(DataSource::MetadataStore);
-            sources.insert(DataSource::ContentCache);
-            sources.insert(DataSource::Network);
-            req = req.with_sources(sources);
-        }
-
+        let req = self.build_data_request(request);
         self.data_service.request_data(req)
+    }
+
+    fn fetch_to_cache(&mut self, request: crate::arclain::plugin::host::DataRequest) -> bool {
+        // Build the request the same way `request_data` does, then run
+        // it through `data_service.resolve` directly. The Network
+        // resolver's `try_resolve` writes the bytes into ContentCache
+        // as a side effect (see `DataService::resolve` →
+        // `store_to_caches`); we discard the returned `data` so the
+        // body never crosses back over the WASM ABI. Used for big
+        // blobs (chobit videos, etc.) where the round-trip would burn
+        // through plugin heap.
+        let req = self.build_data_request(request);
+        let key = req.key.clone();
+        let result = self.data_service.resolve(&req);
+        let ok = matches!(
+            result.status,
+            arclain_data::DataStatus::Ready | arclain_data::DataStatus::Cached,
+        );
+        if ok {
+            tracing::debug!(
+                "[HostFunctions::fetch_to_cache] key='{}' stored, dropping {} bytes from WASM path",
+                key,
+                result.data.as_ref().map(|d| d.len()).unwrap_or(0),
+            );
+        } else {
+            tracing::warn!(
+                "[HostFunctions::fetch_to_cache] key='{}' failed: {}",
+                key,
+                result.error.as_deref().unwrap_or("unknown"),
+            );
+        }
+        ok
     }
 
     fn poll_data(&mut self, request_id: String) -> crate::arclain::plugin::host::DataResult {

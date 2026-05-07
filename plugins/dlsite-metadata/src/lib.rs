@@ -2689,7 +2689,7 @@ fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData) {
 /// like "720" / "480"). Files land in the host's temp dir as
 /// `dlsite_<product_id>_video_<idx>_<resolution>p.mp4`.
 fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData) {
-    use archust_plugin_sdk::{create_file, fetch_blocking, fetch_string_blocking,
+    use archust_plugin_sdk::{fetch_string_blocking, fetch_to_cache,
         log_network_activity, ResourceType};
     use gameta_lib::parsers::chobit::{parse_chobit_embed, ChobitVideoInfo, VideoSource};
     use gameta_lib::providers::dlsite::cache_keys;
@@ -2774,8 +2774,7 @@ fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData) {
             }
         };
 
-        let resolution = chosen.resolution;
-        let video_key = cache_keys::video_key(product_id, video_id, resolution);
+        let video_key = cache_keys::video_key(product_id, video_id, chosen.resolution);
         archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
             "[{}] Downloading video {}/{} ({})",
             product_id,
@@ -2788,30 +2787,17 @@ fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData) {
             video_id, chosen.quality_label, chosen.url,
         ));
 
-        let bytes = match fetch_blocking(&video_key, &chosen.url, ResourceType::Binary) {
-            Ok(b) => b,
-            Err(e) => {
-                log_network_activity(&format!("Failed to download video {}: {}", video_id, e));
-                continue;
-            }
-        };
-
-        let res_suffix = resolution
-            .map(|r| format!("_{}p", r))
-            .unwrap_or_default();
-        let filename = format!(
-            "dlsite_{}_video_{}{}.mp4",
-            product_id, video_id, res_suffix,
-        );
-        match create_file(&filename, &bytes) {
-            Ok(path) => log_network_activity(&format!(
-                "Saved video {} ({} bytes) to {}",
-                video_id,
-                bytes.len(),
-                path,
+        // The video lives in the host's content cache after this —
+        // bytes never enter the WASM heap. Consumers (organizer,
+        // future preview widget) read it back via has_data/get_data
+        // on `video_key`.
+        match fetch_to_cache(&video_key, &chosen.url, ResourceType::Binary) {
+            Ok(()) => log_network_activity(&format!(
+                "Cached video {} ({}) under key {}",
+                video_id, chosen.quality_label, video_key,
             )),
             Err(e) => log_network_activity(&format!(
-                "Failed to write video file for {}: {}",
+                "Failed to cache video {}: {}",
                 video_id, e,
             )),
         }
