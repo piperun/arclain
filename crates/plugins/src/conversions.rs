@@ -1,16 +1,18 @@
-//! WIT-binding ↔ internal-type conversions.
+//! WIT-binding ↔ host-type conversions.
 //!
 //! The wasmtime `bindgen!` macro generates one set of types under
-//! `crate::arclain::plugin::ui::*` for the WASM ABI. The host uses a
-//! parallel set under `crate::types::*` that's `Send + Sync`,
-//! `Serialize`-able, and otherwise idiomatic Rust. These functions
-//! shuffle values across — pure data, no plugin-store / runtime
-//! state involved, so they live separately from `runtime.rs`.
+//! `crate::arclain::plugin::*` for the WASM ABI. The host uses a
+//! parallel set under `crate::types::*` (UI elements, plugin actions,
+//! tab configs) and `arclain_core::*` (organization rules) that's
+//! `Send + Sync`, `Serialize`-able, and otherwise idiomatic Rust.
+//! These functions / `From` impls shuffle values across — pure data,
+//! no plugin-store / runtime state involved.
 //!
-//! Lifted out of `runtime.rs` so the runtime file can focus on
-//! `WasmRuntime` / `LoadedPlugin` / `PluginInstance` instead of being
-//! buried under 250 LOC of variant-by-variant matches.
+//! Lifted out of `runtime.rs` (UI-element conversions) and `types.rs`
+//! (rule `From` impls — they're not type definitions and don't belong
+//! next to the host-side `PluginUiElement` / `PluginManifest` shapes).
 
+use crate::bindings::arclain::plugin::rules as wit_rules;
 use crate::types::PluginUiElement;
 
 pub(crate) fn convert_plugin_layout(
@@ -269,5 +271,57 @@ pub(crate) fn convert_plugin_action(
         },
         WitAction::SetPageDisplayName(name) => InternalAction::SetPageDisplayName { name },
         WitAction::RequestFetch(key) => InternalAction::RequestFetch { key },
+    }
+}
+
+// ============================================================================
+// Organization rules: WIT → arclain_core
+// ============================================================================
+//
+// These are the `From` impls invoked when a plugin's
+// `get_default_rules` return is folded into the host's organization
+// rule store (`Vec<wit_rules::PluginRuleDefinition>` →
+// `Vec<arclain_core::OrganizationRule>`).
+
+impl From<wit_rules::PluginRuleDefinition> for arclain_core::OrganizationRule {
+    fn from(def: wit_rules::PluginRuleDefinition) -> Self {
+        arclain_core::OrganizationRule {
+            name: def.name,
+            priority: 100, // Plugins get high priority by default? Or config?
+            is_enabled: true,
+            trigger: def.trigger.into(),
+            actions: def.actions.into(),
+            ..Default::default()
+        }
+    }
+}
+
+impl From<wit_rules::PluginRuleTrigger> for arclain_core::RuleTrigger {
+    fn from(t: wit_rules::PluginRuleTrigger) -> Self {
+        arclain_core::RuleTrigger {
+            filename_pattern: t.filename_pattern,
+            has_file: t.has_file,
+            metadata_source: t.metadata_source,
+        }
+    }
+}
+
+impl From<wit_rules::PluginRuleActions> for arclain_core::RuleActions {
+    fn from(a: wit_rules::PluginRuleActions) -> Self {
+        arclain_core::RuleActions {
+            root_folder: a.root_folder,
+            move_files: a.move_files.into_iter().map(|m| m.into()).collect(),
+            use_standard_layout: a.use_standard_layout,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<wit_rules::MoveFileRule> for arclain_core::MoveAction {
+    fn from(m: wit_rules::MoveFileRule) -> Self {
+        arclain_core::MoveAction {
+            pattern: m.pattern,
+            target: m.target,
+        }
     }
 }
