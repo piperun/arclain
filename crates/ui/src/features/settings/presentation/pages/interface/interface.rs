@@ -4,6 +4,7 @@ use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_core::UiService;
 use arclain_core::{UiItem, UiRegion};
+use arclain_theme::spacing;
 use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 
@@ -311,7 +312,7 @@ fn render_section<R>(
     egui::Frame::NONE
         .stroke(egui::Stroke::new(1.0, theme.colors.outline))  // Keep border
         .corner_radius(egui::CornerRadius::ZERO)                // Y2K: zero radius
-        .inner_margin(12.0)                                     // Reduce from 20.0
+        .inner_margin(spacing::CARD)
         .show(ui, |ui| {
             ui.vertical(|ui| {
                 ui.label(

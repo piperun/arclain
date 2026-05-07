@@ -205,8 +205,17 @@ fn render_rule_form(
         Some("Configure what happens when this rule matches"),
     );
 
-    // Folder organization checkbox
-    if ui.checkbox(&mut state.rule.actions.use_standard_layout, "Consolidate into single folder").changed() {
+    let consolidate_changed = ui
+        .horizontal(|ui| {
+            let resp = ui.add(
+                ToggleSwitch::new(&mut state.rule.actions.use_standard_layout)
+                    .with_theme_colors(&theme.colors),
+            );
+            ui.label("Consolidate into single folder");
+            resp.changed()
+        })
+        .inner;
+    if consolidate_changed {
         state.is_dirty = true;
     }
     ui.add_space(12.0);

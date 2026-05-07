@@ -1,5 +1,6 @@
 use super::OrganizePanel;
 use crate::shared::theme::AppTheme;
+use arclain_theme::spacing;
 use eframe::egui::{self, RichText};
 
 impl OrganizePanel {
@@ -11,7 +12,7 @@ impl OrganizePanel {
                 // Pattern Header
                 egui::Frame::NONE
                     .fill(ui.style().visuals.faint_bg_color)
-                    .inner_margin(12.0)
+                    .inner_margin(spacing::CARD)
                     .corner_radius(6.0)
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {

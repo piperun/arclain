@@ -3,7 +3,8 @@
 
 use crate::features::plugins::domain::types::{PluginInfo, PluginsListState};
 
-use arclain_widgets::{ButtonSize, TextButton, TextInput};
+use arclain_widgets::{ButtonSize, Chips, TextButton, ToggleSwitch};
+use crate::shared::components::SearchBar;
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -25,14 +26,14 @@ pub fn render(
             .corner_radius(8.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    // Search box
                     ui.label(egui::RichText::new("🔍").size(16.0));
                     ui.add_space(4.0);
-                    let search_response = TextInput::new(&mut state.filter_text)
-                        .hint("Search plugins...")
-                        .width(200.0)
-                        .with_theme_colors(&theme.colors)
-                        .show(ui);
+                    let search_response = ui.add(
+                        SearchBar::new(&mut state.filter_text)
+                            .hint("Search plugins...")
+                            .width(200.0)
+                            .with_theme_colors(&theme.colors),
+                    );
 
                     if search_response.changed() {
                         // Filter will be applied when rendering list
@@ -40,8 +41,11 @@ pub fn render(
 
                     ui.add_space(8.0);
 
-                    // Show disabled checkbox
-                    ui.checkbox(&mut state.show_disabled, "Show disabled");
+                    ui.add(
+                        ToggleSwitch::new(&mut state.show_disabled)
+                            .with_theme_colors(&theme.colors),
+                    );
+                    ui.label("Show disabled");
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // Install plugin button
@@ -174,29 +178,23 @@ fn render_plugin_card(
                                 .color(theme.colors.on_surface_variant),
                         );
 
-                        // Enabled/Disabled badge
                         let badge_text = if plugin.enabled {
                             "Enabled"
                         } else {
                             "Disabled"
                         };
                         let badge_color = if plugin.enabled {
-                            egui::Color32::from_rgb(100, 200, 100)
+                            theme.colors.success
                         } else {
-                            egui::Color32::GRAY
+                            theme.colors.on_surface_variant
                         };
 
-                        egui::Frame::NONE
-                            .fill(badge_color.linear_multiply(0.2))
-                            .inner_margin(egui::Margin::symmetric(6, 2))
-                            .corner_radius(4.0)
-                            .show(ui, |ui| {
-                                ui.label(
-                                    egui::RichText::new(badge_text)
-                                        .size(10.0)
-                                        .color(badge_color),
-                                );
-                            });
+                        ui.add(
+                            Chips::new(badge_text)
+                                .background_color(badge_color.linear_multiply(0.2))
+                                .stroke_color(badge_color)
+                                .text_color(badge_color),
+                        );
                     });
 
                     // Description
@@ -222,17 +220,7 @@ fn render_plugin_card(
                         ui.horizontal_wrapped(|ui| {
                             ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
                             for cap in &plugin.capabilities {
-                                egui::Frame::NONE
-                                    .fill(theme.colors.outline)
-                                    .inner_margin(egui::Margin::symmetric(4, 2))
-                                    .corner_radius(3.0)
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            egui::RichText::new(cap)
-                                                .size(9.0)
-                                                .color(theme.colors.on_surface_variant),
-                                        );
-                                    });
+                                ui.add(Chips::new(cap).with_theme_colors(&theme.colors));
                             }
                         });
                     }

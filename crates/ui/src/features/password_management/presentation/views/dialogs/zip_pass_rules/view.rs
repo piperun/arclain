@@ -1,5 +1,7 @@
 // UI rendering for Zip Password Rules dialog
 use crate::shared::theme::AppTheme;
+use arclain_theme::ButtonVariant;
+use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 
 use super::state::PasswordRulesDialog;
@@ -133,14 +135,29 @@ pub fn render_password_rules_dialog(
                     .rect_filled(sep_rect, 0.0, theme.colors.outline);
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let save_btn = egui::Button::new(egui::RichText::new("Save All").strong())
-                        .min_size(egui::vec2(120.0, 36.0));
-                    let cancel_btn = egui::Button::new("Cancel").min_size(egui::vec2(120.0, 36.0));
+                    let action_btn_size = ButtonSize::Custom {
+                        width: 120.0,
+                        height: 36.0,
+                    };
 
-                    if ui.add(cancel_btn).clicked() {
+                    if ui
+                        .add(
+                            TextButton::new("Cancel", action_btn_size)
+                                .variant(ButtonVariant::Secondary)
+                                .with_theme_colors(&theme.colors),
+                        )
+                        .clicked()
+                    {
                         result = Some(PasswordRulesResult::Cancel);
                     }
-                    if ui.add(save_btn).clicked() {
+                    if ui
+                        .add(
+                            TextButton::new("Save All", action_btn_size)
+                                .variant(ButtonVariant::Primary)
+                                .with_theme_colors(&theme.colors),
+                        )
+                        .clicked()
+                    {
                         result = Some(PasswordRulesResult::Save {
                             rules: dialog.rules.clone(),
                         });

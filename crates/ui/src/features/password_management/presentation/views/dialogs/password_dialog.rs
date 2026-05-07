@@ -1,4 +1,5 @@
-use arclain_widgets::{TextInput, TextInputSize};
+use arclain_theme::ButtonVariant;
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use crate::shared::theme::AppTheme;
 use eframe::egui;
 
@@ -28,8 +29,7 @@ pub fn render_password_dialog(
         .order(egui::Order::Middle)
         .show(ctx, |ui| {
             let screen = ctx.viewport_rect();
-            ui.painter()
-                .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(180));
+            ui.painter().rect_filled(screen, 0.0, theme.colors.scrim);
             // Visual-only overlay; don't capture input so the modal receives scroll.
         });
 
@@ -96,8 +96,13 @@ pub fn render_password_dialog(
                     result = Some(PasswordDialogResult::Cancel);
                 }
 
-                // Save password checkbox
-                ui.checkbox(&mut dialog.save_password, "Save password for future use");
+                ui.horizontal(|ui| {
+                    ui.add(
+                        ToggleSwitch::new(&mut dialog.save_password)
+                            .with_theme_colors(&theme.colors),
+                    );
+                    ui.label("Save password for future use");
+                });
 
                 if !dialog.error.is_empty() {
                     crate::shared::components::error_label(ui, theme, &dialog.error);
@@ -107,44 +112,36 @@ pub fn render_password_dialog(
                 
                 ui.horizontal(|ui| {
                     ui.add_space(content.width() - 212.0);
-                    
-                    let cancel_btn = egui::Button::new(
-                        egui::RichText::new("Cancel")
-                            .size(14.0)
-                            .color(theme.colors.on_surface)
-                    )
-                    .fill(theme.colors.surface_variant)
-                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-                    .corner_radius(4.0)
-                    .min_size(egui::vec2(100.0, 36.0));
-                    
-                    if ui.add(cancel_btn).clicked() { 
-                        result = Some(PasswordDialogResult::Cancel); 
+
+                    let dialog_btn_size = ButtonSize::Custom {
+                        width: 100.0,
+                        height: 36.0,
+                    };
+
+                    if ui
+                        .add(
+                            TextButton::new("Cancel", dialog_btn_size)
+                                .variant(ButtonVariant::Secondary)
+                                .with_theme_colors(&theme.colors),
+                        )
+                        .clicked()
+                    {
+                        result = Some(PasswordDialogResult::Cancel);
                     }
-                    
+
                     ui.add_space(12.0);
-                    
+
                     let unlock_enabled = !dialog.password.is_empty();
-                    let unlock_btn = egui::Button::new(
-                        egui::RichText::new("Unlock")
-                            .size(14.0)
-                            .strong()
-                            .color(if theme.dark_mode { 
-                                egui::Color32::BLACK 
-                            } else { 
-                                egui::Color32::WHITE 
-                            })
-                    )
-                    .fill(if theme.dark_mode {
-                        egui::Color32::WHITE
-                    } else {
-                        egui::Color32::BLACK
-                    })
-                    .corner_radius(4.0)
-                    .min_size(egui::vec2(100.0, 36.0));
-                    
-                    if ui.add_enabled(unlock_enabled, unlock_btn).clicked() { 
-                        result = Some(PasswordDialogResult::Unlock); 
+                    if ui
+                        .add_enabled(
+                            unlock_enabled,
+                            TextButton::new("Unlock", dialog_btn_size)
+                                .variant(ButtonVariant::Primary)
+                                .with_theme_colors(&theme.colors),
+                        )
+                        .clicked()
+                    {
+                        result = Some(PasswordDialogResult::Unlock);
                     }
                 });
             });

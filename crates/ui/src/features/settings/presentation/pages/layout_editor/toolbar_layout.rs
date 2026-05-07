@@ -10,6 +10,7 @@ use arclain_core::UiService;
 use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::{PluginExtensionPoint, PluginUiElement};
+use arclain_theme::spacing;
 use arclain_widgets::SelectableChip;
 use eframe::egui;
 
@@ -205,7 +206,7 @@ fn render_clickable_preview(
     egui::Frame::NONE
         .fill(theme.colors.surface_variant)
         .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-        .inner_margin(egui::Margin::same(12))
+        .inner_margin(spacing::CARD)
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);

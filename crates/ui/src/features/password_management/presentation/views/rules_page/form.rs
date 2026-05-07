@@ -1,4 +1,4 @@
-use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize};
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use crate::features::password_management::dialogs::zip_pass_rules::{
     PasswordRule, PasswordRulesDialog,
 };
@@ -107,7 +107,11 @@ pub fn render_form(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
                             .with_theme_colors(&theme.colors)
                             .show(ui);
                         ui.add_space(20.0);
-                        ui.checkbox(&mut dialog.edit_enabled, "Enabled");
+                        ui.add(
+                            ToggleSwitch::new(&mut dialog.edit_enabled)
+                                .with_theme_colors(&theme.colors),
+                        );
+                        ui.label("Enabled");
                     });
                     ui.end_row();
                 });
