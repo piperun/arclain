@@ -54,13 +54,142 @@ fn test_target_folder_names_with_prefix_strip() {
 
 #[test]
 fn test_target_folder_names_prefix_would_empty_name() {
+    // When stripping would leave any archive with an empty name OR a
+    // name starting with a non-alphanumeric char, the WHOLE batch
+    // reverts to unstripped names rather than emitting a half-stripped
+    // result like " Extra" (leading space) alongside the unstripped
+    // parent. Catches the addon-pack pattern where the prefix is the
+    // actual mod name.
     let paths = vec![
         PathBuf::from("/tmp/MyModName.rar"),
         PathBuf::from("/tmp/MyModName Extra.rar"),
     ];
     let result = target_folder_names(&paths, true);
-    assert_eq!(result[0].1, "MyModName"); // kept original (would be empty)
-    assert_eq!(result[1].1, " Extra");
+    assert_eq!(result[0].1, "MyModName");
+    assert_eq!(result[1].1, "MyModName Extra");
+}
+
+/// Helper: write a minimal modinfo.ini next to a marker file in the
+/// test extractor, so the post-extract modinfo-rename step has
+/// something to read.
+fn extractor_writes_modinfo(
+    name: &str,
+) -> impl FnMut(&Path, &Path) -> Result<()> + use<'_> {
+    move |_archive: &Path, dest: &Path| {
+        std::fs::write(dest.join("modinfo.ini"), format!("name={}\nversion=1.0\n", name))?;
+        std::fs::write(dest.join("marker"), b"")?;
+        Ok(())
+    }
+}
+
+#[test]
+fn test_flatten_renames_to_modinfo_name() {
+    // Archive named `weird_archive_name.rar` extracts content with a
+    // modinfo.ini saying `name=Pretty Display Name`. After flatten,
+    // the folder on disk should be `Pretty Display Name`, not
+    // `weird_archive_name`.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("weird_archive_name.rar"), b"").unwrap();
+
+    let report = flatten_nested_archives(
+        tmp.path(),
+        false,
+        extractor_writes_modinfo("Pretty Display Name"),
+    )
+    .unwrap();
+
+    assert_eq!(report.extracted, vec!["Pretty Display Name".to_string()]);
+    assert!(tmp.path().join("Pretty Display Name").exists());
+    assert!(!tmp.path().join("weird_archive_name").exists());
+}
+
+#[test]
+fn test_flatten_modinfo_rename_falls_back_when_target_exists() {
+    // If a sibling already exists at the modinfo name, keep the
+    // archive-derived folder name rather than clobbering. Mod manager
+    // display still works because it reads modinfo.ini contents.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir(tmp.path().join("Existing Mod")).unwrap();
+    std::fs::write(tmp.path().join("source_archive.rar"), b"").unwrap();
+
+    let report = flatten_nested_archives(
+        tmp.path(),
+        false,
+        extractor_writes_modinfo("Existing Mod"),
+    )
+    .unwrap();
+
+    // Keeps archive-derived name; existing folder is untouched.
+    assert_eq!(report.extracted, vec!["source_archive".to_string()]);
+    assert!(tmp.path().join("source_archive").exists());
+    assert!(tmp.path().join("source_archive/modinfo.ini").exists());
+    assert!(tmp.path().join("Existing Mod").exists());
+}
+
+#[test]
+fn test_flatten_modinfo_rename_sanitises_illegal_chars() {
+    // `name=Mod: Sub/Title` must end up on disk with `:` and `/`
+    // replaced — Windows is the stricter platform.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("source.rar"), b"").unwrap();
+
+    let report = flatten_nested_archives(
+        tmp.path(),
+        false,
+        extractor_writes_modinfo("Mod: Sub/Title"),
+    )
+    .unwrap();
+
+    assert_eq!(report.extracted, vec!["Mod_ Sub_Title".to_string()]);
+    assert!(tmp.path().join("Mod_ Sub_Title").exists());
+}
+
+#[test]
+fn test_flatten_modinfo_rename_skipped_when_no_modinfo() {
+    // Archive without a modinfo.ini falls back to the archive-derived
+    // folder name (existing behaviour).
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("plain.rar"), b"").unwrap();
+
+    let report = flatten_nested_archives(tmp.path(), false, |_archive, dest| {
+        std::fs::write(dest.join("readme.txt"), b"")?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(report.extracted, vec!["plain".to_string()]);
+    assert!(tmp.path().join("plain/readme.txt").exists());
+}
+
+/// Regression: addon pack where the parent mod name IS the longest
+/// common prefix. Inner archive names follow this shape:
+///
+///   ModName v1.0
+///   ModName - Variant A Addon v1.0
+///   ModName - Variant B Addon v1.0
+///
+/// `longest_common_prefix` returns `"ModName "` (>5 char threshold).
+/// Pre-fix, naive stripping produced three broken folder names —
+/// `v1.0`, `- Variant A Addon v1.0`, `- Variant B Addon v1.0` — which
+/// (a) lose the parent mod name on the parent folder, and (b) leave
+/// addons with leading-dash names. Mod managers that group via
+/// `addonfor=ModName` in modinfo.ini then can't resolve the link
+/// because no folder is named `ModName`.
+///
+/// Post-fix, the whole batch keeps its original names because the
+/// `- ` and `v` characters at strip-position-0 trip the "broken
+/// folder name" guard and abort prefix-stripping for everyone.
+#[test]
+fn test_target_folder_names_addon_pack_keeps_full_names() {
+    let paths = vec![
+        PathBuf::from("/tmp/ModName v1.0.rar"),
+        PathBuf::from("/tmp/ModName - Variant A Addon v1.0.rar"),
+        PathBuf::from("/tmp/ModName - Variant B Addon v1.0.rar"),
+    ];
+    let result = target_folder_names(&paths, true);
+    assert_eq!(result[0].1, "ModName v1.0");
+    assert_eq!(result[1].1, "ModName - Variant A Addon v1.0");
+    assert_eq!(result[2].1, "ModName - Variant B Addon v1.0");
 }
 
 #[test]
