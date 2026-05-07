@@ -42,7 +42,7 @@ pub fn convert_to_file_entry(entry: &arclain_core::ArchiveEntry) -> FileEntry {
     // Extract just the filename/folder name from the full path
     let name = std::path::Path::new(&entry.path)
         .file_name()
-        .map(|n| n.to_string_lossy().to_string())
+        .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| entry.path.clone());
 
     FileEntry {

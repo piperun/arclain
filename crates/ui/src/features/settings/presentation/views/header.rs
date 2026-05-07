@@ -303,7 +303,7 @@ SettingsHeaderConfig::new(page.display_name())
             .pick_file()
         {
             action = Some(SettingsAction::InstallPlugin {
-                wasm_path: file.to_string_lossy().to_string(),
+                wasm_path: file.to_string_lossy().into_owned(),
             });
         }
     }

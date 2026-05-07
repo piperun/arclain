@@ -286,7 +286,7 @@ fn run_one(
                 } else {
                     pipeline_output_kind::ARCHIVE
                 };
-                let output_str = output_path.to_string_lossy().to_string();
+                let output_str = output_path.to_string_lossy().into_owned();
                 if let Err(e) = db.with_connection(|conn| {
                     Ok(arclain_db::mark_run_completed(conn, id, &output_str, kind)?)
                 }) {

@@ -102,7 +102,7 @@ fn render_tree_panel(
                 .get()
                 .as_ref()
                 .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().to_string())
+                .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "archive".to_string());
 
             let entries = shared.signals().entries.get();

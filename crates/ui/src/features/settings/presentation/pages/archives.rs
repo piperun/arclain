@@ -76,7 +76,7 @@ pub fn render(
                         .clicked()
                     {
                         if let Some(path) = rfd::FileDialog::new().pick_folder() {
-                            *state.temp_dir.write() = path.to_string_lossy().to_string();
+                            *state.temp_dir.write() = path.to_string_lossy().into_owned();
                         }
                     }
                 });

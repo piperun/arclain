@@ -413,10 +413,10 @@ impl RuleEngine {
                 continue;
             };
 
-            let url = path.to_string_lossy().to_string();
+            let url = path.to_string_lossy().into_owned();
             let ext = Path::new(&url)
                 .extension()
-                .map(|e| e.to_string_lossy().to_string())
+                .map(|e| e.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "jpg".to_string());
 
             let filename = format!("image_{:03}.{}", i + 1, ext);
