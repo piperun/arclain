@@ -34,6 +34,7 @@
 //! }).unwrap();
 //! ```
 
+mod conversions;
 pub mod host_functions;
 pub mod loader;
 pub mod manager;
