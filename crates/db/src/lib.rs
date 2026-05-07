@@ -1,13 +1,5 @@
-use anyhow::{anyhow, Context, Result};
-use base64::engine::general_purpose::STANDARD as B64;
-use base64::Engine;
+use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
-use std::fs;
-use std::path::{Path, PathBuf};
-use zeroize::Zeroizing;
-
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 
 // SqliteDb comes from mini-orm (shared ORM crate)
 pub use mini_orm::SqliteDb;
@@ -143,182 +135,11 @@ pub use rusqlite::Connection as DbConnection;
 /// Re-export Diesel connection type
 pub use diesel::SqliteConnection;
 
-/// Canonical paths for the two databases and optional key-file
-#[derive(Debug, Clone)]
-pub struct DbPaths {
-    pub config_db: PathBuf,
-    pub cache_db: PathBuf,
-    pub secrets_db: PathBuf,
-    pub key_file: Option<PathBuf>,
-}
+mod bootstrap;
+mod secrets_key;
 
-impl DbPaths {
-    /// Calculate default paths without creating them.
-    /// Creation is now handled by arclain_core::dirs::AppDirectories.
-    pub fn calculate_defaults(app_name: &str) -> Result<Self> {
-        let base = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join(app_name);
-
-        let databases_dir = base.join("databases");
-        let secrets_dir = base.join("secrets");
-
-        Ok(Self {
-            config_db: databases_dir.join("config.sqlite"),
-            cache_db: databases_dir.join("metadata.sqlite"),
-            secrets_db: secrets_dir.join("pass.redb"),
-            key_file: Some(secrets_dir.join("master.key")),
-        })
-    }
-}
-
-/// Zeroizing in-memory holder for the 32-byte AES encryption key
-pub struct SecretsKey(pub Zeroizing<Vec<u8>>);
-
-// Custom Debug implementation to avoid logging key material
-impl std::fmt::Debug for SecretsKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SecretsKey")
-            .field("len", &self.0.len())
-            .field("data", &"[REDACTED]")
-            .finish()
-    }
-}
-
-impl SecretsKey {
-    /// Generate a new random 32-byte key
-    pub fn generate() -> Self {
-        use rand::RngCore;
-        let mut key = vec![0u8; 32];
-        rand::thread_rng().fill_bytes(&mut key);
-        Self(Zeroizing::new(key))
-    }
-
-    /// Save the key to a file in base64 format with secure permissions
-    pub fn save_to_file(&self, path: &Path) -> Result<()> {
-        // Validate path to prevent directory traversal
-        validate_path(path)?;
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating directory {}", parent.display()))?;
-
-            // Set directory permissions to 700 (user-only) on Unix
-            #[cfg(unix)]
-            {
-                let perms = fs::Permissions::from_mode(0o700);
-                fs::set_permissions(parent, perms)
-                    .with_context(|| format!("setting permissions on {}", parent.display()))?;
-            }
-        }
-
-        let encoded = B64.encode(&*self.0);
-        fs::write(path, encoded).with_context(|| format!("writing key to {}", path.display()))?;
-
-        // Set file permissions to 600 (read/write user only) on Unix
-        #[cfg(unix)]
-        {
-            let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(path, perms)
-                .with_context(|| format!("setting permissions on {}", path.display()))?;
-        }
-
-        Ok(())
-    }
-
-    /// Load the key from a file
-    pub fn load_from_file(path: &Path) -> Result<Self> {
-        let contents = fs::read_to_string(path)
-            .with_context(|| format!("reading key from {}", path.display()))?;
-        let bytes = B64
-            .decode(contents.trim())
-            .context("Invalid base64 in key file")?;
-
-        if bytes.len() != 32 {
-            return Err(anyhow!("Invalid key length: expected 32 bytes"));
-        }
-
-        Ok(Self(Zeroizing::new(bytes)))
-    }
-
-    /// Get the 32-byte key as a fixed-size array
-    pub fn as_bytes(&self) -> [u8; 32] {
-        let mut arr = [0u8; 32];
-        arr.copy_from_slice(&self.0);
-        arr
-    }
-
-    /// Return hex string (for debugging/logging)
-    pub fn as_hex_upper(&self) -> String {
-        hex_encode_upper(&self.0)
-    }
-}
-
-/// Validate that a path is safe (no parent traversal)
-fn validate_path(path: &Path) -> Result<()> {
-    for component in path.components() {
-        if matches!(component, std::path::Component::ParentDir) {
-            return Err(anyhow!("Invalid path: contains parent directory traversal"));
-        }
-    }
-    Ok(())
-}
-
-/// Holds open connections to both databases
-pub struct ConfigDbs {
-    pub config: SqliteDb,
-    pub secrets: SecretsDb,
-    pub metadata: MetadataStore,
-    pub config_pool: DieselPool,
-    pub cache_pool: DieselPool,
-}
-
-/// Open all databases, initializing schemas if needed
-pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
-    // Open config database using new module
-    let config_db = ConfigDb::open(&paths.config_db)
-        .with_context(|| format!("Failed to open config database at {:?}", paths.config_db))?;
-
-    // Create Diesel pool for config
-    let config_pool = DieselPool::new(&paths.config_db)
-        .with_context(|| "Failed to create config database pool")?;
-
-    // Ensure cache directory exists - REMOVED (Handled by AppDirectories)
-    // if let Some(parent) = paths.cache_db.parent() {
-    //     std::fs::create_dir_all(parent)
-    //         .with_context(|| format!("Failed to create cache directory at {:?}", parent))?;
-    // }
-
-    // Open cache database
-    let cache_db = CacheDb::open(&paths.cache_db)
-        .with_context(|| format!("Failed to open cache database at {:?}", paths.cache_db))?;
-
-    // Create Diesel pool for cache
-    let cache_pool =
-        DieselPool::new(&paths.cache_db).with_context(|| "Failed to create cache database pool")?;
-
-    // Open secrets database using new module
-    let secrets_db = SecretsDb::open(&paths.secrets_db, &key.as_bytes())
-        .with_context(|| format!("Failed to open secrets database at {:?}", paths.secrets_db))?;
-
-    Ok(ConfigDbs {
-        config: config_db.into_sqlite_db(),
-        secrets: secrets_db,
-        metadata: MetadataStore::new(
-            cache_db.into_sqlite_db(),
-            cache_pool.clone(),
-            paths
-                .cache_db
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("metadata"),
-            Some(paths.cache_db.clone()),
-        ),
-        config_pool,
-        cache_pool,
-    })
-}
+pub use bootstrap::{open_databases, ConfigDbs, DbPaths};
+pub use secrets_key::SecretsKey;
 
 /// Simple K/V config helpers (stored in plain config.sqlite)
 /// Uses schema::AppConfig with ParamExpr for type-safe parameterized queries
@@ -408,18 +229,6 @@ pub(crate) fn diesel_err(
     op: &'static str,
 ) -> impl FnOnce(diesel::result::Error) -> anyhow::Error {
     move |e| anyhow::anyhow!("Diesel {} failed: {}", op, e)
-}
-
-/// Helpers
-
-fn hex_encode_upper(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &v in bytes {
-        s.push(HEX[(v >> 4) as usize] as char);
-        s.push(HEX[(v & 0x0F) as usize] as char);
-    }
-    s
 }
 
 #[cfg(test)]
