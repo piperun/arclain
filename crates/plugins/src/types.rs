@@ -514,52 +514,6 @@ pub enum PluginError {
 
 pub type Result<T> = std::result::Result<T, PluginError>;
 
-// Conversion from WIT types to Core types
-use crate::bindings::arclain::plugin::rules as wit_rules;
-
-impl From<wit_rules::PluginRuleDefinition> for arclain_core::OrganizationRule {
-    fn from(def: wit_rules::PluginRuleDefinition) -> Self {
-        arclain_core::OrganizationRule {
-            name: def.name,
-            priority: 100, // Plugins get high priority by default? Or config?
-            is_enabled: true,
-            trigger: def.trigger.into(),
-            actions: def.actions.into(),
-            ..Default::default()
-        }
-    }
-}
-
-impl From<wit_rules::PluginRuleTrigger> for arclain_core::RuleTrigger {
-    fn from(t: wit_rules::PluginRuleTrigger) -> Self {
-        arclain_core::RuleTrigger {
-            filename_pattern: t.filename_pattern,
-            has_file: t.has_file,
-            metadata_source: t.metadata_source,
-        }
-    }
-}
-
-impl From<wit_rules::PluginRuleActions> for arclain_core::RuleActions {
-    fn from(a: wit_rules::PluginRuleActions) -> Self {
-        arclain_core::RuleActions {
-            root_folder: a.root_folder,
-            move_files: a.move_files.into_iter().map(|m| m.into()).collect(),
-            use_standard_layout: a.use_standard_layout,
-            ..Default::default()
-        }
-    }
-}
-
-impl From<wit_rules::MoveFileRule> for arclain_core::MoveAction {
-    fn from(m: wit_rules::MoveFileRule) -> Self {
-        arclain_core::MoveAction {
-            pattern: m.pattern,
-            target: m.target,
-        }
-    }
-}
-
 // === Top Tab Registration Types ===
 
 /// Badge configuration for tabs
