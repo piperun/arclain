@@ -123,6 +123,24 @@ fn get_total_image_count(state: &PluginState) -> usize {
 }
 
 impl archust_plugin_sdk::Guest for Component {
+    fn get_metadata() -> archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+        // Pre-2026-05-07 the host's `runtime::get_metadata` returned a
+        // hardcoded "Unknown Plugin" placeholder because the WIT had
+        // no such export. install_plugin therefore couldn't derive a
+        // stable id from a bare .wasm. Now it asks the plugin
+        // directly. Values mirror dlsite-metadata.toml.
+        archust_plugin_sdk::arclain::plugin::meta::PluginMetadata {
+            id: "dlsite-metadata".to_string(),
+            name: "DLSite Metadata".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            author: "Archust Team".to_string(),
+            description:
+                "Extracts DLSite product codes (RJ/VJ/BJ) from archive names and enriches them \
+                 with metadata from DLSite API"
+                    .to_string(),
+        }
+    }
+
     fn init() {
         info("DLSite Metadata plugin initialized");
         
