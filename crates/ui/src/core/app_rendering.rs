@@ -178,7 +178,11 @@ pub fn render_status_bar_panel(
                 .inner_margin(egui::Margin::symmetric(0, 6)),
         )
         .show(ctx, |ui| {
-            let archive_loaded = shared_state.signals().archive_path.get().is_some();
+            // Audit P9/P10: prefer `read()` (RwLock guard, zero-copy)
+            // over `get()` (full clone) when we only need a flag —
+            // metadata in particular is `Option<serde_json::Value>`
+            // and can be KBs.
+            let archive_loaded = shared_state.signals().archive_path.read().is_some();
 
             // Update status info from state
             if archive_loaded {
@@ -189,7 +193,7 @@ pub fn render_status_bar_panel(
                     crate::core::utils::format_size(archive_info.compressed_size);
                 status_info.archive_format = archive_info.archive_format;
             }
-            let has_metadata = shared_state.signals().metadata.get().is_some();
+            let has_metadata = shared_state.signals().metadata.read().is_some();
 
             // Status bar only needs counts. Use the cheap status_summary
             // path so we don't clone every plugin's manifest per frame
@@ -229,7 +233,7 @@ pub fn render_path_bar_panel(
     page_navigator: &PageNavigator,
 ) -> PathBarAction {
     // Only show when Archive tab is active and archive is loaded
-    let archive_loaded = shared_state.signals().archive_path.get().is_some();
+    let archive_loaded = shared_state.signals().archive_path.read().is_some();
     let is_archive_context = matches!(
         shared_state.signals().active_toolbar.get(),
         crate::core::signals::ToolbarContext::Archive

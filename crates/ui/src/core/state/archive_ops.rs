@@ -78,7 +78,7 @@ impl AppState {
             .set(std::sync::Arc::new(info.entries.clone()));
 
         // Attempt password detection with correct archive context
-        if self.signals.current_password.get().is_none() {
+        if self.signals.current_password.read().is_none() {
             let archive_name = archive_path.as_ref().and_then(|p| p.to_str());
             debug!(
                 "Attempting auto-password detection for archive: {:?}",

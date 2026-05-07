@@ -24,10 +24,10 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 let can_go_back = nav.can_go_back();
                 let can_go_forward = nav.can_go_forward();
                 let can_go_up = nav.can_go_up();
-                let archive_loaded = app.shared_state.signals().archive_path.get().is_some();
+                let archive_loaded = app.shared_state.signals().archive_path.read().is_some();
                 // Use selection_count signal for decoupled toolbar state
                 let has_selection = app.shared_state.signals().selection_count.get() > 0;
-                let has_metadata = app.shared_state.signals().metadata.get().is_some();
+                let has_metadata = app.shared_state.signals().metadata.read().is_some();
                 let toolbar_config = components::toolbar::ToolbarConfig::new(
                     app.shared_state.signals().toolbar_items.get(),
                 );

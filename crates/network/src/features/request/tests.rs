@@ -276,3 +276,57 @@ async fn p2_await_complete_returns_none_for_unknown_id() {
     let result = client.await_complete(&bogus).await;
     assert!(result.is_none());
 }
+
+/// Regression test for P19 from `docs/AUDIT_2026-05-03.md`.
+///
+/// Pre-fix, `AsyncHttpClient::cancel(id)` flipped the entry's status
+/// to `Cancelled` and left the entry inside the `pending` map. Long
+/// sessions that fired-and-forgot many requests (carousel scroll,
+/// abandoned image fetches) would accumulate cancelled entries
+/// indefinitely — each holding the full `HttpResponse` body for any
+/// requests that completed before the cancel call.
+///
+/// Post-fix, `cancel(id)` removes the entry outright (still notifying
+/// any awaiters first). `pending_total()` reflects the actual map
+/// size and is what this test asserts on.
+#[tokio::test]
+async fn p19_cancel_removes_entry_from_pending_map() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/leak"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+
+    // Fire 5 requests; their entries land in `pending` synchronously
+    // inside `request()` before the spawned HTTP task runs.
+    let ids: Vec<_> = (0..5)
+        .map(|_| client.request(HttpRequest::get(&format!("{}/leak", mock_server.uri()))))
+        .collect();
+    assert_eq!(client.pending_total(), 5, "all 5 requests should be tracked");
+
+    // Cancel each. Pre-fix this would have left 5 Cancelled entries
+    // sitting in the map; post-fix the map empties.
+    for id in &ids {
+        client.cancel(id);
+    }
+    assert_eq!(
+        client.pending_total(),
+        0,
+        "P19 regression: cancel() left entries in the pending map",
+    );
+
+    // Cancelling again is a no-op (entry already gone).
+    for id in &ids {
+        client.cancel(id);
+    }
+    assert_eq!(client.pending_total(), 0);
+
+    // Subsequent reads on a cancelled id return None.
+    assert!(client.status(&ids[0]).is_none());
+    assert!(client.take_response(&ids[0]).is_none());
+}
