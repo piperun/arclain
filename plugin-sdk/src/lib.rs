@@ -178,6 +178,18 @@ pub fn fetch_to_cache(key: &str, url: &str, resource_type: ResourceType) -> Resu
     }
 }
 
+/// Hand a cached blob to the OS default application. The host writes
+/// the bytes to a temp file with `extension` (no leading dot — e.g.
+/// `"mp4"`, `"webm"`) and shells out via the system file-association
+/// handler (mpv / VLC / whatever the user has registered).
+///
+/// The bytes never re-enter the WASM sandbox; the plugin only needs
+/// to know the cache key. Returns `Err` if the cache entry is
+/// missing, the temp write fails, or the OS launcher fails.
+pub fn play_cached_blob(key: &str, extension: &str) -> Result<(), String> {
+    arclain::plugin::host::play_cached_blob(key, extension)
+}
+
 // Cache helpers (for cache management UI, not data access)
 pub fn list_cached_entries() -> Result<Vec<String>, String> {
     Ok(arclain::plugin::host::list_cached_entries())
