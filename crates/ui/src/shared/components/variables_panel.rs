@@ -3,7 +3,8 @@
 //! A dialog for selecting template variables with search and tabbed categories.
 
 use crate::shared::theme::AppTheme;
-use arclain_widgets::{ButtonSize, TextButton, TextInput};
+use super::SearchBar;
+use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 
 /// A single variable definition
@@ -157,17 +158,18 @@ impl VariablePicker {
             .fixed_size([360.0, 320.0])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                // Search input
                 ui.horizontal(|ui| {
                     ui.label(egui_phosphor::regular::MAGNIFYING_GLASS);
-                    let search_response = TextInput::new(&mut self.search)
-                        .hint("Search variables (e.g. $title)")
-                        .width(ui.available_width() - 8.0)
-                        .with_theme_colors(&theme.colors)
-                        .show(ui);
+                    let avail = ui.available_width() - 8.0;
+                    let search_response = ui.add(
+                        SearchBar::new(&mut self.search)
+                            .hint("Search variables (e.g. $title)")
+                            .width(avail)
+                            .with_theme_colors(&theme.colors),
+                    );
                     // Focus search on open
-                    if search_response.response.gained_focus() || self.search.is_empty() {
-                        search_response.response.request_focus();
+                    if search_response.gained_focus() || self.search.is_empty() {
+                        search_response.request_focus();
                     }
                 });
 

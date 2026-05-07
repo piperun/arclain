@@ -6,6 +6,7 @@ use crate::features::plugins::domain::types::{PluginStatus, PluginsListState};
 
 use crate::shared::components::Form;
 use crate::shared::theme::AppTheme;
+use arclain_theme::spacing;
 use arclain_widgets::Chips;
 use eframe::egui;
 
@@ -56,7 +57,7 @@ fn render_plugin_card(
 ) -> egui::Response {
     egui::Frame::NONE
         .fill(theme.colors.surface_variant.linear_multiply(0.3))
-        .inner_margin(12.0)
+        .inner_margin(spacing::CARD)
         .corner_radius(6.0)
         .stroke(egui::Stroke::new(
             1.0,

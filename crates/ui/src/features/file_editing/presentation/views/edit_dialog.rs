@@ -1,4 +1,5 @@
-use arclain_widgets::TextInput;
+use arclain_theme::ButtonVariant;
+use arclain_widgets::{ButtonSize, TextButton, TextInput};
 use crate::features::file_editing::domain::types::{FileEditDialog, FileEditResult};
 use crate::shared::dialogs::helpers::{show_dimmed_modal, ModalParams};
 use crate::shared::theme::AppTheme;
@@ -75,15 +76,28 @@ pub fn render_file_edit_dialog(
         },
         |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let save = ui.add(
-                    egui::Button::new(egui::RichText::new("Save").strong())
-                        .min_size(egui::vec2(100.0, 32.0)),
-                );
-                let cancel = ui.add(egui::Button::new("Cancel").min_size(egui::vec2(100.0, 32.0)));
-                if save.clicked() {
+                let dialog_btn_size = ButtonSize::Custom {
+                    width: 100.0,
+                    height: 32.0,
+                };
+                if ui
+                    .add(
+                        TextButton::new("Save", dialog_btn_size)
+                            .variant(ButtonVariant::Primary)
+                            .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     want_save = true;
                 }
-                if cancel.clicked() {
+                if ui
+                    .add(
+                        TextButton::new("Cancel", dialog_btn_size)
+                            .variant(ButtonVariant::Secondary)
+                            .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     want_cancel = true;
                 }
             });

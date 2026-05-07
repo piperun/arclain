@@ -1,6 +1,7 @@
 use super::OrganizePanelAction;
 use crate::shared::theme::AppTheme;
 use arclain_core::features::organization::session::OrganizationSession;
+use arclain_theme::spacing;
 use eframe::egui;
 
 pub fn render_header(
@@ -12,7 +13,7 @@ pub fn render_header(
     let mut action = None;
     egui::Frame::NONE
         .fill(ui.style().visuals.extreme_bg_color)
-        .inner_margin(12.0)
+        .inner_margin(spacing::CARD)
         .corner_radius(8.0)
         .show(ui, |ui| {
             ui.horizontal(|ui| {

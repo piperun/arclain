@@ -2,7 +2,7 @@
 //!
 //! Contains gameta server connection configuration.
 
-use arclain_theme::ThemeColors;
+use arclain_theme::{spacing, ThemeColors};
 use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use crate::features::settings::types::{
     ServerConnectionStatus, ServerSettingsState, SettingsAction,
@@ -143,7 +143,7 @@ fn render_connection_status(
             egui::Frame::new()
                 .fill(colors.surface_variant)
                 .corner_radius(6.0)
-                .inner_margin(12.0)
+                .inner_margin(spacing::CARD)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -163,7 +163,7 @@ fn render_connection_status(
                 .fill(bg_color)
                 .stroke(egui::Stroke::new(1.0, border_color))
                 .corner_radius(6.0)
-                .inner_margin(12.0)
+                .inner_margin(spacing::CARD)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(
@@ -189,7 +189,7 @@ fn render_connection_status(
                 .fill(bg_color)
                 .stroke(egui::Stroke::new(1.0, border_color))
                 .corner_radius(6.0)
-                .inner_margin(12.0)
+                .inner_margin(spacing::CARD)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(

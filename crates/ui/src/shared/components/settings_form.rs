@@ -1,4 +1,5 @@
 use crate::shared::theme::{AppTheme, ThemeColors};
+use arclain_theme::spacing;
 use eframe::egui;
 
 /// A standardized page layout for content with scrolling
@@ -194,7 +195,7 @@ impl<'a> SettingsGroup<'a> {
         // Y2K: 1px border, zero radius
         egui::Frame::NONE
             .stroke(egui::Stroke::new(1.0, colors.outline))
-            .inner_margin(egui::Margin::same(12))
+            .inner_margin(spacing::CARD)
             .corner_radius(egui::CornerRadius::ZERO)
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());

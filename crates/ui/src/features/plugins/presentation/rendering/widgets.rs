@@ -4,7 +4,7 @@ use super::context::{RenderContext, UiEventHandler};
 use super::image::{trigger_image_fetch, try_render_image};
 use crate::shared::components::settings_form::{SectionHeader, SettingsGroup, SettingsRow};
 use arclain_plugins::types::{ButtonAction, PluginUiElement, WarningIcon};
-use arclain_widgets::{TextInput, ThemedDropdown};
+use arclain_widgets::{Chips, TextInput, ThemedDropdown, ThemedSlider};
 use eframe::egui;
 
 pub fn render_label(
@@ -212,21 +212,22 @@ pub fn render_slider(
     value: f64,
     min: f64,
     max: f64,
-    step: Option<f64>,
+    _step: Option<f64>,
 ) {
+    // ThemedSlider works in f32. Plugin sliders are integer-or-low-
+    // precision (volumes, percentages, counts), so the cast is fine.
+    // _step is currently ignored; ThemedSlider does continuous values
+    // — wire it up if a plugin requests stepped behaviour.
     let colors = ctx.colors;
     SettingsRow::new(label)
         .action(|ui| {
-            let mut current_value = value;
-            let slider = egui::Slider::new(&mut current_value, min..=max);
-            let slider = if let Some(s) = step {
-                slider.step_by(s)
-            } else {
-                slider
-            };
-
-            if ui.add(slider).changed() {
-                (ctx.event_callback)(id, Some(current_value.to_string()));
+            let mut current_value = value as f32;
+            let response = ui.add(
+                ThemedSlider::new(&mut current_value, (min as f32)..=(max as f32))
+                    .with_theme_colors(colors),
+            );
+            if response.changed() {
+                (ctx.event_callback)(id, Some((current_value as f64).to_string()));
             }
         })
         .show(ui, colors);
@@ -381,15 +382,12 @@ pub fn render_tag_chips(
 
     ui.horizontal_wrapped(|ui| {
         for tag in visible_tags {
-            // Chip-style tag button
-            let chip_frame = egui::Frame::NONE
-                .fill(colors.primary.gamma_multiply(0.15))
-                .inner_margin(egui::Margin::symmetric(8, 4))
-                .corner_radius(12.0);
-
-            chip_frame.show(ui, |ui| {
-                ui.label(egui::RichText::new(tag).small().color(colors.primary));
-            });
+            ui.add(
+                Chips::new(tag)
+                    .background_color(colors.primary.gamma_multiply(0.15))
+                    .stroke_color(colors.primary.gamma_multiply(0.15))
+                    .text_color(colors.primary),
+            );
         }
 
         if remaining > 0 {
