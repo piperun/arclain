@@ -84,7 +84,7 @@ impl HostFunctions {
         std::fs::rename(&path, &new_path).map_err(|e| format!("Failed to rename: {}", e))?;
 
         // Update the current archive path
-        let new_path_str = new_path.to_string_lossy().to_string();
+        let new_path_str = new_path.to_string_lossy().into_owned();
         *self.current_archive.lock() = Some(new_path_str.clone());
 
         info!(

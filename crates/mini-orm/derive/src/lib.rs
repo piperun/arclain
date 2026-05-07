@@ -123,11 +123,11 @@ pub fn derive_db_config(input: TokenStream) -> TokenStream {
                 // PathBuf types need conversion
                 if type_str.starts_with("Option") {
                     insert_values.push(quote! {
-                        self.#field_name.as_ref().map(|p| p.to_string_lossy().to_string())
+                        self.#field_name.as_ref().map(|p| p.to_string_lossy().into_owned())
                     });
                 } else {
                     insert_values.push(quote! {
-                        self.#field_name.to_string_lossy().to_string()
+                        self.#field_name.to_string_lossy().into_owned()
                     });
                 }
             } else if type_str.starts_with("Option") {

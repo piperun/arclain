@@ -21,7 +21,7 @@ pub struct DieselPool {
 impl DieselPool {
     /// Create a new connection pool from a database path
     pub fn new(db_path: &Path) -> Result<Self> {
-        let db_url = db_path.to_string_lossy().to_string();
+        let db_url = db_path.to_string_lossy().into_owned();
         let manager = ConnectionManager::<SqliteConnection>::new(&db_url);
 
         let pool = Pool::builder()

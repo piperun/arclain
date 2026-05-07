@@ -363,7 +363,7 @@ pub fn begin_checksum_operation(conn: &Connection, op: &DbOperation) -> Result<(
             op.op_type.as_str(),
             op.state.as_str(),
             op.source_path.to_string_lossy(),
-            op.dest_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            op.dest_path.as_ref().map(|p| p.to_string_lossy().into_owned()),
             op.source_hash,
             op.dest_hash,
             op.error_message,
