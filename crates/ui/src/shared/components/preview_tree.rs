@@ -335,36 +335,34 @@ pub fn build_original_tree(entries: &[String]) -> Vec<PreviewTreeNode> {
     build_tree_from_paths(&paths)
 }
 
-/// Count files recursively in a tree (used in tests)
-#[allow(dead_code)]
-pub fn count_files_in_tree(nodes: &[PreviewTreeNode]) -> usize {
-    let mut count = 0;
-    for node in nodes {
-        if node.is_dir {
-            count += count_files_in_tree(&node.children);
-        } else {
-            count += 1;
-        }
-    }
-    count
-}
-
-/// Count folders recursively in a tree (used in tests)
-#[allow(dead_code)]
-pub fn count_folders_in_tree(nodes: &[PreviewTreeNode]) -> usize {
-    let mut count = 0;
-    for node in nodes {
-        if node.is_dir {
-            count += 1;
-            count += count_folders_in_tree(&node.children);
-        }
-    }
-    count
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Count files recursively in a tree.
+    fn count_files_in_tree(nodes: &[PreviewTreeNode]) -> usize {
+        let mut count = 0;
+        for node in nodes {
+            if node.is_dir {
+                count += count_files_in_tree(&node.children);
+            } else {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Count folders recursively in a tree.
+    fn count_folders_in_tree(nodes: &[PreviewTreeNode]) -> usize {
+        let mut count = 0;
+        for node in nodes {
+            if node.is_dir {
+                count += 1;
+                count += count_folders_in_tree(&node.children);
+            }
+        }
+        count
+    }
 
     #[test]
     fn test_build_tree_simple() {
