@@ -1,7 +1,7 @@
 //! Context and types for plugin UI rendering
 
 use crate::shared::{theme::ThemeColors, SharedState};
-use arclain_data::ContentCache;
+use arclain_core::ContentCache;
 use std::sync::Arc;
 
 /// Callback trait

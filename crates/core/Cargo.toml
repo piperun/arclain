@@ -25,6 +25,7 @@ base64 = "0.22"
 sha2 = "0.10"
 blake3 = "1.8"
 arclain_db = { path = "../db" }
+arclain_data = { path = "../data" }
 arclain_checksum = { path = "../checksum" }
 arclain-network = { path = "../network" }
 

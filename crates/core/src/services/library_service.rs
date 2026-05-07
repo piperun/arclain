@@ -135,6 +135,19 @@ impl LibraryService {
     }
 }
 
+/// Bridge to `arclain_data::MetadataReader` so `MetadataStoreResolver`
+/// can hold `Arc<dyn MetadataReader>` without depending on this crate.
+/// See `arclain_data::traits` for why.
+impl arclain_data::MetadataReader for LibraryService {
+    fn get_metadata(&self, id: &str) -> Result<Option<ProductMetadata>> {
+        LibraryService::get_metadata(self, id)
+    }
+
+    fn save_metadata(&self, meta: &ProductMetadata) -> Result<()> {
+        LibraryService::save_metadata(self, meta)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

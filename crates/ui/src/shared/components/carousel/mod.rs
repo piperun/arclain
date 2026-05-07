@@ -21,7 +21,7 @@ pub use nav_button::{NavButton, NavButtonStyle};
 pub use thumbnail_strip::{ThumbnailStrip, ThumbnailStripStyle};
 
 use crate::shared::{theme::ThemeColors, SharedState};
-use arclain_data::ContentCache;
+use arclain_core::ContentCache;
 use eframe::egui;
 use std::sync::Arc;
 

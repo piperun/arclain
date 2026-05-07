@@ -10,7 +10,7 @@ use arclain_core::services::Services as CoreServices;
 use arclain_core::utilities::{ChecksumService, PassRule};
 use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
 use arclain_core::{open_databases, DbPaths, SecretsKey};
-use arclain_data::{ContentCache, ResourceConfig, ResourceManager};
+use arclain_core::{ContentCache, ResourceConfig, ResourceManager};
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
 use std::{
@@ -148,7 +148,10 @@ impl AppState {
                                     warn!("Failed to create cache directory: {}", e);
                                 }
 
-                                if let Ok(cache) = ContentCache::new(cache_dir, cache_svc) {
+                                if let Ok(cache) = ContentCache::new(
+                                    cache_dir,
+                                    cache_svc as Arc<dyn arclain_core::CacheIndex>,
+                                ) {
                                     content_cache = Some(Arc::new(cache));
                                     info!("Content cache initialized via Services");
                                 }

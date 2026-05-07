@@ -4,7 +4,7 @@ use super::context::{RenderContext, UiEventHandler};
 use super::{image, layout, widgets};
 use crate::shared::components::carousel::{Carousel, CarouselEvent};
 use crate::shared::{theme::ThemeColors, SharedState};
-use arclain_data::ContentCache;
+use arclain_core::ContentCache;
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 use std::sync::Arc;
