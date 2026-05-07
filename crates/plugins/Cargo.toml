@@ -19,6 +19,7 @@ parking_lot.workspace = true
 dirs.workspace = true
 tokio = { version = "1", features = ["rt", "sync"] }
 rfd = "0.16.0"
+open = "5"
 arclain-network = { path = "../network" }
 arclain_signals = { path = "../signals" }
 chrono.workspace = true
