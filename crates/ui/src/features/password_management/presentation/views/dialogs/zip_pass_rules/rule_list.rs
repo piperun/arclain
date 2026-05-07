@@ -1,5 +1,6 @@
 use super::state::PasswordRulesDialog;
 use crate::shared::theme::AppTheme;
+use arclain_widgets::ToggleSwitch;
 use eframe::egui;
 
 pub fn render_rule_list(
@@ -80,7 +81,10 @@ pub fn render_rule_list(
                     ui.horizontal(|ui| {
                         ui.set_min_width(content_width - 20.0);
                         let mut enabled = rule.enabled;
-                        if ui.checkbox(&mut enabled, "").changed() {
+                        if ui
+                            .add(ToggleSwitch::new(&mut enabled).with_theme_colors(&theme.colors))
+                            .changed()
+                        {
                             enable_toggles.push((idx, enabled));
                         }
                         ui.add_space(12.0);

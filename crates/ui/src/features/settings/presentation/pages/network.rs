@@ -2,7 +2,7 @@
 //!
 //! Contains network and proxy configuration.
 
-use arclain_theme::ThemeColors;
+use arclain_theme::{spacing, ThemeColors};
 use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use crate::features::settings::types::{
     ConnectionTestResult, ConnectionTestStatus, NetworkSettingsState, SettingsAction,
@@ -167,7 +167,7 @@ fn render_test_results_panel(
             egui::Frame::new()
                 .fill(colors.surface_variant)
                 .corner_radius(6.0)
-                .inner_margin(12.0)
+                .inner_margin(spacing::CARD)
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -203,7 +203,7 @@ fn render_test_result(ui: &mut egui::Ui, colors: &ThemeColors, result: &Connecti
         .fill(bg_color)
         .stroke(egui::Stroke::new(1.0, border_color))
         .corner_radius(6.0)
-        .inner_margin(12.0)
+        .inner_margin(spacing::CARD)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
