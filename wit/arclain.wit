@@ -70,7 +70,20 @@ interface host {
 
     // Get data from storage (no fetch, returns None if not cached)
     get-data: func(key: string) -> option<list<u8>>;
-    
+
+    // Fetch a URL through the host's data service and store it in
+    // the appropriate cache, *without* returning the bytes to the
+    // plugin. Designed for large blobs (videos, full archives) where
+    // shipping the body across the WASM ABI boundary would waste
+    // memory and copy work — the bytes never enter the plugin's
+    // sandbox. Returns true on success, false on any failure.
+    //
+    // Equivalent to `request-data` + a discarded `poll-data`, but the
+    // plugin doesn't pay for the cross-boundary copy. Storage is keyed
+    // by `request.key`; subsequent `has-data` / `get-data` see the
+    // cached entry the same way they would for `request-data`.
+    fetch-to-cache: func(request: data-request) -> bool;
+
     // Invalidate cache entry (to force refetch from network)
     invalidate-cache: func(key: string) -> bool;
 

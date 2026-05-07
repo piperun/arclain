@@ -153,6 +153,31 @@ pub fn fetch_string_blocking(key: &str, url: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|e| format!("UTF8 error: {}", e))
 }
 
+/// Fetch `url` and store it in the host's content cache under `key`,
+/// **without** moving the body across the WASM ABI. Returns `Ok(())`
+/// on success; the bytes never enter the plugin's heap.
+///
+/// Use this for big blobs — videos, archive blobs — where
+/// `fetch_blocking` would force the full body through three buffers
+/// (host vec → ABI copy → plugin vec). Subsequent
+/// `arclain::plugin::host::has_data(key)` /
+/// `arclain::plugin::host::get_data(key)` see the cached entry the
+/// same way they would after a `fetch_blocking`.
+pub fn fetch_to_cache(key: &str, url: &str, resource_type: ResourceType) -> Result<(), String> {
+    let req = DataRequest {
+        key: key.to_string(),
+        url: Some(url.to_string()),
+        resource_type,
+        product_id: None,
+        sources: vec![],
+    };
+    if arclain::plugin::host::fetch_to_cache(&req) {
+        Ok(())
+    } else {
+        Err(format!("fetch_to_cache failed for {}", key))
+    }
+}
+
 // Cache helpers (for cache management UI, not data access)
 pub fn list_cached_entries() -> Result<Vec<String>, String> {
     Ok(arclain::plugin::host::list_cached_entries())
