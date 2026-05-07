@@ -22,7 +22,7 @@ pub fn render(
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
-    content_cache: Option<Arc<arclain_data::ContentCache>>,
+    content_cache: Option<Arc<arclain_core::ContentCache>>,
 ) -> Option<SettingsAction> {
     let action = None;
 

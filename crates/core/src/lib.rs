@@ -44,13 +44,18 @@ pub use arclain_db::{CacheEntry, CompletenessScore, MetadataSource, ProductConte
 // previously imported directly from `arclain_db` across `crates/ui`
 // (audit: crate-boundary smell). Surfacing them through `arclain_core`
 // gives the binary one entry point for persistence types.
-//
-// `arclain_data::ContentCache` etc. cannot be re-exported here
-// because `arclain_data` already depends on `arclain_core` —
-// re-exporting would create a dependency cycle. UI keeps a direct
-// `arclain_data` dep for those.
 pub use arclain_db::{
     delete_profile_diesel, get_config, list_interrupted_since, list_profiles_diesel,
     save_profile_diesel, set_config, set_default_profile_diesel, DbConnection, DbPassRule,
     SqliteDb,
+};
+
+// Cache + resource surface lives in `arclain_data`. The data crate
+// declares `MetadataReader`/`CacheIndex` traits and we implement them
+// on `LibraryService`/`CacheService` (see `services::library_service`
+// and `services::cache_service`). UI consumers reach this surface
+// through us — no direct `arclain_data` dep needed.
+pub use arclain_data::{
+    CacheIndex, ContentCache, DataRequest, DataService, DataSource, DataSourceResolver,
+    MetadataReader, ResolveError, ResourceConfig, ResourceManager,
 };

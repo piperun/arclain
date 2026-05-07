@@ -1,16 +1,17 @@
 use arclain_core::services::Services as CoreServices;
-use arclain_data::{ContentCache, ResourceManager};
+use arclain_core::{ContentCache, ResourceManager};
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
 use std::ops::Deref;
 use std::sync::Arc;
 
 /// UI-layer Services container
-/// Wraps CoreServices and adds UI-specific (Data/Plugins) services
+/// Wraps CoreServices and adds UI-specific services (PluginManager).
+/// Cache + ResourceManager live here too because they aren't part of
+/// the headless `arclain_core::services::Services` bag.
 pub struct Services {
     pub core: CoreServices,
 
-    // Services that cannot be in Core due to circular deps
     pub plugin_manager: Option<Arc<Mutex<PluginManager>>>,
     pub content_cache: Option<Arc<ContentCache>>,
     pub resource_manager: Option<Arc<ResourceManager>>,

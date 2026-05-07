@@ -3,7 +3,7 @@
 //! Provides a modal image viewer with keyboard navigation and overlay controls.
 
 use crate::shared::theme::AppTheme;
-use arclain_data::ContentCache;
+use arclain_core::ContentCache;
 use eframe::egui;
 use std::sync::Arc;
 

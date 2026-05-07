@@ -109,7 +109,9 @@ impl HostFunctions {
 
     pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
         // Register MetadataStore resolver with DataService
-        let resolver = Arc::new(arclain_data::MetadataStoreResolver::new(lib_svc.clone()));
+        let resolver = Arc::new(arclain_data::MetadataStoreResolver::new(
+            lib_svc.clone() as Arc<dyn arclain_data::MetadataReader>,
+        ));
 
         self.data_service
             .register_resolver(arclain_data::DataSource::MetadataStore, resolver);
