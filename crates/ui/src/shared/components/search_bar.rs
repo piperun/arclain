@@ -1,3 +1,4 @@
+use arclain_theme::ThemeColors;
 use arclain_widgets::TextInput;
 use eframe::egui;
 use egui::Widget;
@@ -6,6 +7,7 @@ pub struct SearchBar<'a> {
     query: &'a mut String,
     hint: Option<String>,
     desired_width: Option<f32>,
+    theme_colors: Option<&'a ThemeColors>,
 }
 
 #[allow(dead_code)]
@@ -15,6 +17,7 @@ impl<'a> SearchBar<'a> {
             query,
             hint: None,
             desired_width: None,
+            theme_colors: None,
         }
     }
 
@@ -27,6 +30,11 @@ impl<'a> SearchBar<'a> {
         self.desired_width = Some(width);
         self
     }
+
+    pub fn with_theme_colors(mut self, colors: &'a ThemeColors) -> Self {
+        self.theme_colors = Some(colors);
+        self
+    }
 }
 
 impl<'a> Widget for SearchBar<'a> {
@@ -34,11 +42,10 @@ impl<'a> Widget for SearchBar<'a> {
         let hint = self.hint.unwrap_or_else(|| "Search...".to_string());
         let width = self.desired_width.unwrap_or(250.0);
 
-        // Potential future enhancement: Add a search icon inside or next to it
-        TextInput::new(self.query)
-            .hint(hint)
-            .width(width)
-            .show(ui)
-            .response
+        let mut input = TextInput::new(self.query).hint(hint).width(width);
+        if let Some(colors) = self.theme_colors {
+            input = input.with_theme_colors(colors);
+        }
+        input.show(ui).response
     }
 }
