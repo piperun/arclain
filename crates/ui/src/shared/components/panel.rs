@@ -80,7 +80,7 @@ impl Panel {
         theme: &AppTheme,
         plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
         shared: Option<&SharedState>,
-        content_cache: Option<&Arc<arclain_data::ContentCache>>,
+        content_cache: Option<&Arc<arclain_core::ContentCache>>,
     ) {
         let panel_frame = egui::Frame::NONE
             .fill(theme.colors.surface)
@@ -137,7 +137,7 @@ impl Panel {
         theme: &AppTheme,
         plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
         shared: Option<&SharedState>,
-        content_cache: Option<&Arc<arclain_data::ContentCache>>,
+        content_cache: Option<&Arc<arclain_core::ContentCache>>,
     ) {
         for body in &self.body {
             match body {

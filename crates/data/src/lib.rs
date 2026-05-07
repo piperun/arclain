@@ -8,6 +8,9 @@
 
 pub mod features;
 pub mod shared;
+pub mod traits;
+
+pub use traits::{CacheIndex, MetadataReader};
 
 // Re-export main types at crate root
 pub use features::api::{

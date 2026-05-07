@@ -1,24 +1,30 @@
 //! MetadataStore resolver
 //!
-//! Resolves structured metadata from the persistent LibraryService.
+//! Resolves structured metadata from a persistent metadata store.
 //! Checks:
-//! - LibraryService (library.sqlite via Diesel)
-//! - ContentCache (cacache) for raw data
+//! - `MetadataReader` (e.g. `arclain_core::LibraryService` →
+//!   library.sqlite via Diesel)
+//! - `ContentCache` (cacache) for raw data
+//!
+//! The `MetadataReader` indirection breaks the old hard dep on
+//! `arclain_core::LibraryService` — see `crate::traits` and the audit
+//! note about the data→core cycle.
 
 use super::{DataSourceResolver, ResolveError};
 use crate::features::api::DataRequest;
 use crate::features::resource_manager::ResourceManager;
-use arclain_core::{LibraryService, ProductMetadata};
+use crate::traits::MetadataReader;
+use arclain_db::ProductMetadata;
 use std::sync::Arc;
 
-/// Resolver for structured metadata stored via LibraryService
+/// Resolver for structured metadata stored via a `MetadataReader`
 pub struct MetadataStoreResolver {
-    library_service: Option<Arc<LibraryService>>,
+    library_service: Option<Arc<dyn MetadataReader>>,
     resource_manager: Option<Arc<ResourceManager>>,
 }
 
 impl MetadataStoreResolver {
-    pub fn new(library_service: Arc<LibraryService>) -> Self {
+    pub fn new(library_service: Arc<dyn MetadataReader>) -> Self {
         Self {
             library_service: Some(library_service),
             resource_manager: None,

@@ -63,3 +63,48 @@ impl CacheService {
             .with_conn(|conn| cache_index::clear_all_entries(conn))
     }
 }
+
+/// Bridge to `arclain_data::CacheIndex` so `ContentCache` can hold
+/// `Arc<dyn CacheIndex>` without depending on this crate.
+/// See `arclain_data::traits` for why.
+impl arclain_data::CacheIndex for CacheService {
+    fn upsert(
+        &self,
+        key: &str,
+        product_id: Option<&str>,
+        content_hash: &str,
+        source_url: Option<&str>,
+        cache_type: CacheType,
+        size_bytes: Option<i64>,
+    ) -> Result<i64> {
+        CacheService::upsert(
+            self,
+            key,
+            product_id,
+            content_hash,
+            source_url,
+            cache_type,
+            size_bytes,
+        )
+    }
+
+    fn get(&self, key: &str) -> Result<Option<CacheEntry>> {
+        CacheService::get(self, key)
+    }
+
+    fn has(&self, key: &str) -> Result<bool> {
+        CacheService::has(self, key)
+    }
+
+    fn delete(&self, key: &str) -> Result<bool> {
+        CacheService::delete(self, key)
+    }
+
+    fn delete_by_pattern(&self, pattern: &str) -> Result<usize> {
+        CacheService::delete_by_pattern(self, pattern)
+    }
+
+    fn update_last_accessed(&self, key: &str) -> Result<()> {
+        CacheService::update_last_accessed(self, key)
+    }
+}

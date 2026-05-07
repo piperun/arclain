@@ -25,7 +25,7 @@ pub fn render(
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
-    content_cache: Option<&Arc<arclain_data::ContentCache>>,
+    content_cache: Option<&Arc<arclain_core::ContentCache>>,
 ) -> bool {
     let mut needs_refresh = false;
 
@@ -370,7 +370,7 @@ fn render_plugin_ui(
     plugin_id: &str,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
-    content_cache: Option<&Arc<arclain_data::ContentCache>>,
+    content_cache: Option<&Arc<arclain_core::ContentCache>>,
     pending_plugin_actions: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
     cached_main_layout: &mut Option<(String, arclain_plugins::types::PluginLayout)>,
 ) {

@@ -2,7 +2,7 @@
 
 use super::CarouselEvent;
 use crate::shared::{async_image, theme::ThemeColors, SharedState};
-use arclain_data::ContentCache;
+use arclain_core::ContentCache;
 use eframe::egui;
 use std::sync::Arc;
 

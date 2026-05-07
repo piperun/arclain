@@ -1,5 +1,5 @@
+use crate::traits::CacheIndex;
 use anyhow::Result;
-use arclain_core::CacheService;
 use arclain_db::CacheType;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
@@ -19,12 +19,12 @@ struct CacheWriteRequest {
 #[derive(Clone)]
 pub struct ContentCache {
     base_dir: PathBuf,
-    service: Arc<CacheService>,
+    service: Arc<dyn CacheIndex>,
     write_sender: Sender<CacheWriteRequest>,
 }
 
 impl ContentCache {
-    pub fn new(base_dir: PathBuf, service: Arc<CacheService>) -> Result<Self> {
+    pub fn new(base_dir: PathBuf, service: Arc<dyn CacheIndex>) -> Result<Self> {
         // Create channel for write queue
         let (tx, rx) = mpsc::channel::<CacheWriteRequest>();
 
