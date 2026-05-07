@@ -9,6 +9,10 @@ struct PluginState {
     auto_fetch_enabled: bool, // Master switch: auto-fetch when archive opens
     enable_cache: bool, // Sub-option: cache fetched results (only relevant if auto_fetch enabled)
     cache_images: bool, // Cache cover and screenshot images
+    cache_videos: bool, // Download chobit-embed videos referenced from the description
+    /// Video quality preference: "best", "low" (lowest available), or a
+    /// numeric resolution like "720" / "480". Defaults to "best".
+    video_quality: String,
     dump_html_debug: bool, // Debug: dump HTML to file when geo-blocked detected
     fetch_in_progress: bool, // Prevent double-fetch when spamming buttons
     cached_entries: Option<Vec<String>>, // Cache of checking the cache (UI spam prevention)
@@ -39,6 +43,8 @@ thread_local! {
         auto_fetch_enabled: true,
         enable_cache: true,
         cache_images: true,
+        cache_videos: false, // Videos are big — opt-in
+        video_quality: "best".to_string(),
         dump_html_debug: true, // Default to enabled for debugging
         fetch_in_progress: false,
         last_archive_path: None,
@@ -127,12 +133,18 @@ impl archust_plugin_sdk::Guest for Component {
             .unwrap_or_else(|| "true".to_string()) == "true";
         let cache_images = archust_plugin_sdk::arclain::plugin::host::get_setting("cache_images")
             .unwrap_or_else(|| "true".to_string()) == "true";
-        
+        let cache_videos = archust_plugin_sdk::arclain::plugin::host::get_setting("cache_videos")
+            .unwrap_or_else(|| "false".to_string()) == "true";
+        let video_quality = archust_plugin_sdk::arclain::plugin::host::get_setting("video_quality")
+            .unwrap_or_else(|| "best".to_string());
+
         STATE.with(|state| {
             let mut s = state.borrow_mut();
             s.auto_fetch_enabled = auto_fetch;
             s.enable_cache = enable_cache;
             s.cache_images = cache_images;
+            s.cache_videos = cache_videos;
+            s.video_quality = video_quality;
         });
         
         // NOTE: Auto-load happens when archive is opened, not at init time
@@ -171,9 +183,9 @@ impl archust_plugin_sdk::Guest for Component {
         use archust_plugin_sdk::arclain::plugin::ui::{
             PluginLayout, SplitConfig, UiElement, LabelConfig, TabsConfig, TextInputConfig,
             ButtonConfig, ButtonAction, ListContainerConfig, ListItemConfig, ImageConfig, LoadingConfig,
-            CheckboxConfig, WarningConfig, WarningIcon, TagChipsConfig, ToolbarConfig, ToolbarButtonConfig,
-            CarouselConfig, KeyValueListConfig, KeyValuePair, MetadataGridConfig, SectionHeaderConfig,
-            SettingsGroupHeader,
+            CheckboxConfig, DropdownConfig, WarningConfig, WarningIcon, TagChipsConfig, ToolbarConfig,
+            ToolbarButtonConfig, CarouselConfig, KeyValueListConfig, KeyValuePair, MetadataGridConfig,
+            SectionHeaderConfig, SettingsGroupHeader,
         };
 
         match extension_point.as_str() {
@@ -222,6 +234,10 @@ impl archust_plugin_sdk::Guest for Component {
                 let auto_fetch_enabled = STATE.with(|s| s.borrow().auto_fetch_enabled);
                 let enable_cache = STATE.with(|s| s.borrow().enable_cache);
                 let dump_html_debug = STATE.with(|s| s.borrow().dump_html_debug);
+                let (cache_videos, video_quality) = STATE.with(|s| {
+                    let st = s.borrow();
+                    (st.cache_videos, st.video_quality.clone())
+                });
 
                 let mut elements = Vec::new();
 
@@ -265,6 +281,38 @@ impl archust_plugin_sdk::Guest for Component {
                     label: "Clear All DLSite Cache".to_string(),
                     action: Some(ButtonAction::ShowDialog("confirm_clear_cache".to_string())),
                 }));
+                elements.push(UiElement::GroupEnd);
+
+                // Media Downloads group
+                elements.push(UiElement::GroupBegin(SettingsGroupHeader {
+                    title: "Media Downloads".to_string(),
+                    description: Some(
+                        "Optionally download videos referenced from the work's description page. \
+                         Videos are big — leave off unless you really want them locally."
+                            .to_string(),
+                    ),
+                }));
+                elements.push(UiElement::Checkbox(CheckboxConfig {
+                    id: "cache_videos".to_string(),
+                    label: "Download chobit-embed videos".to_string(),
+                    checked: cache_videos,
+                }));
+                if cache_videos {
+                    let quality_options = vec![
+                        "best".to_string(),
+                        "1080".to_string(),
+                        "720".to_string(),
+                        "480".to_string(),
+                        "360".to_string(),
+                        "low".to_string(),
+                    ];
+                    elements.push(UiElement::Dropdown(DropdownConfig {
+                        id: "video_quality".to_string(),
+                        label: "Preferred quality".to_string(),
+                        options: quality_options,
+                        selected: video_quality.clone(),
+                    }));
+                }
                 elements.push(UiElement::GroupEnd);
 
                 // Debug group
@@ -1565,9 +1613,10 @@ impl archust_plugin_sdk::Guest for Component {
                 let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
                 archust_plugin_sdk::emit_metadata(&metadata_json);
 
-                // Download images with progress
+                // Download images + videos with progress
                 if let Some(ref s) = scraped {
                     fetch_images_with_progress(&code, s);
+                    fetch_videos_with_progress(&code, s);
                 }
 
                 // Rename archive if option is checked
@@ -1760,6 +1809,25 @@ impl archust_plugin_sdk::Guest for Component {
                     });
                     // We don't persist this one to disk as it's a temp debug setting, or we could if needed
                     info(&format!("[DLSite Plugin] Dump HTML debug setting changed to: {}", enabled));
+                }
+            }
+            "cache_videos" => {
+                if let Some(val) = value {
+                    let enabled = val == "true";
+                    STATE.with(|state| {
+                        state.borrow_mut().cache_videos = enabled;
+                    });
+                    archust_plugin_sdk::arclain::plugin::host::set_setting("cache_videos", &val);
+                    info(&format!("[DLSite Plugin] Cache videos setting changed to: {}", enabled));
+                }
+            }
+            "video_quality" => {
+                if let Some(val) = value {
+                    STATE.with(|state| {
+                        state.borrow_mut().video_quality = val.clone();
+                    });
+                    archust_plugin_sdk::arclain::plugin::host::set_setting("video_quality", &val);
+                    info(&format!("[DLSite Plugin] Video quality setting changed to: {}", val));
                 }
             }
 
@@ -2168,9 +2236,10 @@ impl archust_plugin_sdk::Guest for Component {
                         let metadata_json = generate_metadata_json(&entry_id, Some(&(json.clone(), scraped.clone())));
                         archust_plugin_sdk::emit_metadata(&metadata_json);
 
-                        // Download images with progress
+                        // Download images + videos with progress
                         if let Some(ref s) = scraped {
                             fetch_images_with_progress(&entry_id, s);
+                            fetch_videos_with_progress(&entry_id, s);
                         }
 
                         STATE.with(|state| {
@@ -2332,9 +2401,10 @@ fn perform_scan() -> Result<Option<(String, serde_json::Value, Option<ScrapedDat
             let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
             archust_plugin_sdk::emit_metadata(&metadata_json);
 
-            // Then download images with progress (non-blocking for metadata signal)
+            // Then download images + videos with progress (non-blocking for metadata signal)
             if let Some(ref s) = scraped {
                 fetch_images_with_progress(&code, s);
+                fetch_videos_with_progress(&code, s);
             }
 
             return Ok(Some((code, json, scraped)));
@@ -2608,6 +2678,198 @@ fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData) {
     archust_plugin_sdk::arclain::plugin::host::set_status_message(
         &format!("[{}] Downloaded {} images", product_id, done),
     );
+}
+
+/// Walk `scraped.description_structure` for chobit-embed videos, fetch
+/// each embed page, parse the player data to find video sources, pick
+/// the user-selected quality, and download the video.
+///
+/// Off by default — toggled via the `cache_videos` plugin setting and
+/// configured via `video_quality` ("best" / "low" / a numeric height
+/// like "720" / "480"). Files land in the host's temp dir as
+/// `dlsite_<product_id>_video_<idx>_<resolution>p.mp4`.
+fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData) {
+    use archust_plugin_sdk::{create_file, fetch_blocking, fetch_string_blocking,
+        log_network_activity, ResourceType};
+    use gameta_lib::parsers::chobit::{parse_chobit_embed, ChobitVideoInfo, VideoSource};
+    use gameta_lib::providers::dlsite::cache_keys;
+    use gameta_lib::parsers::dlsite::DescriptionSection as Section;
+
+    let (cache_videos, quality_pref) = STATE.with(|s| {
+        let st = s.borrow();
+        (st.cache_videos, st.video_quality.clone())
+    });
+    if !cache_videos || scraped.geo_blocked {
+        if scraped.geo_blocked {
+            log_network_activity("[DLSite Plugin] Skipping video cache for geo-blocked content");
+        }
+        return;
+    }
+
+    // Collect every chobit embed referenced in the description.
+    let videos: Vec<(String, String)> = scraped
+        .description_structure
+        .iter()
+        .filter_map(|section| match section {
+            Section::Video {
+                video_id,
+                embed_url: Some(url),
+                ..
+            } => Some((video_id.clone(), url.clone())),
+            _ => None,
+        })
+        .collect();
+
+    if videos.is_empty() {
+        return;
+    }
+
+    log_network_activity(&format!(
+        "[DLSite Plugin] Found {} video embed(s) for {}",
+        videos.len(),
+        product_id,
+    ));
+
+    let total = videos.len();
+    for (idx, (video_id, embed_url)) in videos.iter().enumerate() {
+        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+            "[{}] Resolving video {}/{}",
+            product_id,
+            idx + 1,
+            total,
+        ));
+
+        let embed_key = cache_keys::chobit_embed_key(product_id, video_id);
+        log_network_activity(&format!("Fetching chobit embed: {}", embed_url));
+
+        let embed_html = match fetch_string_blocking(&embed_key, embed_url) {
+            Ok(html) => html,
+            Err(e) => {
+                log_network_activity(&format!("Failed to fetch chobit embed {}: {}", video_id, e));
+                continue;
+            }
+        };
+
+        let info: ChobitVideoInfo = match parse_chobit_embed(&embed_html) {
+            Some(info) => info,
+            None => {
+                log_network_activity(&format!(
+                    "No video sources parsed from chobit embed {}",
+                    video_id,
+                ));
+                continue;
+            }
+        };
+
+        let chosen: &VideoSource = match select_video_source(&info, &quality_pref) {
+            Some(s) => s,
+            None => {
+                log_network_activity(&format!(
+                    "No matching quality '{}' for {} (have {})",
+                    quality_pref,
+                    video_id,
+                    info.sources.len(),
+                ));
+                continue;
+            }
+        };
+
+        let resolution = chosen.resolution;
+        let video_key = cache_keys::video_key(product_id, video_id, resolution);
+        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+            "[{}] Downloading video {}/{} ({})",
+            product_id,
+            idx + 1,
+            total,
+            chosen.quality_label,
+        ));
+        log_network_activity(&format!(
+            "Fetching video {} ({}): {}",
+            video_id, chosen.quality_label, chosen.url,
+        ));
+
+        let bytes = match fetch_blocking(&video_key, &chosen.url, ResourceType::Binary) {
+            Ok(b) => b,
+            Err(e) => {
+                log_network_activity(&format!("Failed to download video {}: {}", video_id, e));
+                continue;
+            }
+        };
+
+        let res_suffix = resolution
+            .map(|r| format!("_{}p", r))
+            .unwrap_or_default();
+        let filename = format!(
+            "dlsite_{}_video_{}{}.mp4",
+            product_id, video_id, res_suffix,
+        );
+        match create_file(&filename, &bytes) {
+            Ok(path) => log_network_activity(&format!(
+                "Saved video {} ({} bytes) to {}",
+                video_id,
+                bytes.len(),
+                path,
+            )),
+            Err(e) => log_network_activity(&format!(
+                "Failed to write video file for {}: {}",
+                video_id, e,
+            )),
+        }
+    }
+
+    archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+        "[{}] Video downloads complete",
+        product_id,
+    ));
+}
+
+/// Pick a `VideoSource` according to the user's `video_quality`
+/// preference. Accepts:
+/// * "best" / "" — highest available resolution.
+/// * "low" / "lowest" — lowest available resolution.
+/// * "720" / "720p" — exact resolution match, falls back to nearest
+///   below if the requested height isn't available.
+fn select_video_source<'a>(
+    info: &'a gameta_lib::parsers::chobit::ChobitVideoInfo,
+    pref: &str,
+) -> Option<&'a gameta_lib::parsers::chobit::VideoSource> {
+    if info.sources.is_empty() {
+        return None;
+    }
+
+    let pref = pref.trim().to_lowercase();
+    match pref.as_str() {
+        "" | "best" | "high" | "highest" => info.best_quality(),
+        "low" | "lowest" => info.sources.iter().min_by_key(|s| s.resolution.unwrap_or(u32::MAX)),
+        _ => {
+            // Accept "720", "720p", " 720 ".
+            let target: Option<u32> = pref
+                .trim_end_matches('p')
+                .trim()
+                .parse::<u32>()
+                .ok();
+            if let Some(target) = target {
+                if let Some(exact) = info.by_resolution(target) {
+                    return Some(exact);
+                }
+                // Fall back to the nearest source ≤ target; if none,
+                // pick the lowest available.
+                let nearest_below = info
+                    .sources
+                    .iter()
+                    .filter(|s| s.resolution.map(|r| r <= target).unwrap_or(false))
+                    .max_by_key(|s| s.resolution.unwrap_or(0));
+                nearest_below.or_else(|| {
+                    info.sources
+                        .iter()
+                        .min_by_key(|s| s.resolution.unwrap_or(u32::MAX))
+                })
+            } else {
+                // Unknown preference string — fall back to best.
+                info.best_quality()
+            }
+        }
+    }
 }
 
 // Re-export ScrapedData from gameta_lib for convenience
