@@ -27,6 +27,7 @@
 mod colors;
 mod extensions;
 mod fonts;
+pub mod spacing;
 mod theme;
 pub mod themes;
 mod variants;

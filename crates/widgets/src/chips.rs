@@ -9,6 +9,7 @@ pub struct Chips<'a> {
     colors: Option<&'a ThemeColors>,
     stroke_color: Option<egui::Color32>,
     background_color: Option<egui::Color32>,
+    text_color: Option<egui::Color32>,
 }
 
 impl<'a> Chips<'a> {
@@ -18,6 +19,7 @@ impl<'a> Chips<'a> {
             colors: None,
             stroke_color: None,
             background_color: None,
+            text_color: None,
         }
     }
 
@@ -37,6 +39,13 @@ impl<'a> Chips<'a> {
         self.background_color = Some(color);
         self
     }
+
+    /// Override the text color (defaults to `on_surface` from the
+    /// theme or the inactive widget fg color).
+    pub fn text_color(mut self, color: egui::Color32) -> Self {
+        self.text_color = Some(color);
+        self
+    }
 }
 
 impl<'a> Widget for Chips<'a> {
@@ -44,15 +53,19 @@ impl<'a> Widget for Chips<'a> {
         let (bg_fill, stroke, text_color) = if let Some(colors) = self.colors {
             let stroke_col = self.stroke_color.unwrap_or(colors.outline);
             let bg = self.background_color.unwrap_or(colors.surface_variant);
-            (bg, egui::Stroke::new(1.0, stroke_col), colors.on_surface)
+            let txt = self.text_color.unwrap_or(colors.on_surface);
+            (bg, egui::Stroke::new(1.0, stroke_col), txt)
         } else {
             let bg = self
                 .background_color
                 .unwrap_or(ui.visuals().widgets.inactive.bg_fill);
+            let txt = self
+                .text_color
+                .unwrap_or(ui.visuals().widgets.inactive.fg_stroke.color);
             (
                 bg,
                 egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color),
-                ui.visuals().widgets.inactive.fg_stroke.color,
+                txt,
             )
         };
 
