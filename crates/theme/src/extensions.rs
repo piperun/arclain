@@ -10,11 +10,16 @@ use crate::ThemeColors;
 /// Extension colors for specific use cases (file types, status badges, etc.)
 ///
 /// These derive from core theme colors by default but can be overridden.
+/// File-type defaults are the Tailwind palette values that the file
+/// list grid view was already using inline; ThemeExtensions just gives
+/// them a single home so the mapping can be themed.
 #[derive(Clone, Debug)]
 pub struct ThemeExtensions {
     // =========================================================================
     // FILE TYPE COLORS
     // =========================================================================
+    /// Folder entries.
+    pub file_folder: Color32,
     /// Archive files (.zip, .rar, .7z, etc.)
     pub file_archive: Color32,
     /// Image files (.jpg, .png, .gif, etc.)
@@ -23,13 +28,18 @@ pub struct ThemeExtensions {
     pub file_video: Color32,
     /// Audio files (.mp3, .flac, .wav, etc.)
     pub file_audio: Color32,
-    /// Document files (.pdf, .doc, .txt, etc.)
+    /// Plain text and structured-text documents (.txt, .md, .doc, .docx, .toml, etc.)
     pub file_document: Color32,
-    /// Code/script files (.rs, .py, .js, etc.)
+    /// PDF documents — kept distinct from `file_document` since the
+    /// red PDF brand is a near-universal convention.
+    pub file_pdf: Color32,
+    /// Code / script files (.rs, .py, .js, etc.)
     pub file_code: Color32,
-    /// Executable files (.exe, .app, etc.)
+    /// Executable files (.exe, .msi, .bat, etc.)
     pub file_executable: Color32,
-    /// Unknown/other files
+    /// Shortcut / link / library files (.url, .lnk, .dll, .so).
+    pub file_link: Color32,
+    /// Unknown / other files — falls back to surface variant.
     pub file_other: Color32,
 
     // =========================================================================
@@ -49,14 +59,18 @@ impl ThemeExtensions {
     /// Create default extensions derived from core colors
     pub fn from_colors(colors: &ThemeColors) -> Self {
         Self {
-            // File type colors (semantic defaults)
-            file_archive: Color32::from_rgb(255, 193, 7), // amber
-            file_image: Color32::from_rgb(233, 30, 99),   // pink
-            file_video: Color32::from_rgb(156, 39, 176),  // purple
-            file_audio: Color32::from_rgb(0, 188, 212),   // cyan
-            file_document: Color32::from_rgb(33, 150, 243), // blue
-            file_code: Color32::from_rgb(76, 175, 80),    // green
-            file_executable: Color32::from_rgb(244, 67, 54), // red
+            // File-type defaults — Tailwind 400-ish palette for legibility on
+            // both light and dark surfaces.
+            file_folder: Color32::from_rgb(251, 191, 36),     // amber-400
+            file_archive: Color32::from_rgb(251, 146, 60),    // orange-400
+            file_image: Color32::from_rgb(74, 222, 128),      // green-400
+            file_video: Color32::from_rgb(248, 113, 113),     // red-400
+            file_audio: Color32::from_rgb(192, 132, 252),     // purple-400
+            file_document: Color32::from_rgb(96, 165, 250),   // blue-400
+            file_pdf: Color32::from_rgb(239, 68, 68),         // red-500
+            file_code: Color32::from_rgb(45, 212, 191),       // teal-400
+            file_executable: Color32::from_rgb(96, 165, 250), // blue-400
+            file_link: Color32::from_rgb(156, 163, 175),      // gray-400
             file_other: colors.on_surface_variant,
 
             // Badge colors

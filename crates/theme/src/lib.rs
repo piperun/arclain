@@ -30,6 +30,7 @@ mod fonts;
 pub mod spacing;
 mod theme;
 pub mod themes;
+pub mod typography;
 mod variants;
 
 // Re-export all public types
