@@ -7,6 +7,7 @@
 //! - `runner` - Core SevenZipCli struct and command execution helpers
 //! - `parser` - Output parsing for archive listings
 //! - `backend` - ArchiveBackend trait implementation
+//! - `selective_extract` - Subset-extraction strategies (exclude/include response files)
 //! - `progress` - Progress tracking types
 //! - `progress_ops` - Progress-enabled extraction operations
 
@@ -15,6 +16,7 @@ mod parser;
 mod progress;
 mod progress_ops;
 mod runner;
+mod selective_extract;
 
 pub use progress::{ChildWithProgress, ProgressUpdate};
 pub use runner::SevenZipCli;
