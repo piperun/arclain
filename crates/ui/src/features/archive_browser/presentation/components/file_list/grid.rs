@@ -124,7 +124,7 @@ fn render_card(
         rect.min.y + CARD_PADDING + ICON_SIZE * 0.5,
     ));
 
-    let (icon_char, icon_color) = file_type_icon(&entry.name, entry.is_folder, &theme.colors);
+    let (icon_char, icon_color) = file_type_icon(&entry.name, entry.is_folder, theme);
 
     ui.painter().text(
         icon_center,
@@ -297,88 +297,49 @@ fn render_card(
 
 // ── File type icon mapping ──────────────────────────────────────────
 
-fn file_type_icon<'a>(
-    name: &str,
-    is_folder: bool,
-    colors: &crate::shared::theme::ThemeColors,
-) -> (&'a str, egui::Color32) {
+fn file_type_icon<'a>(name: &str, is_folder: bool, theme: &AppTheme) -> (&'a str, egui::Color32) {
+    let ext_colors = &theme.extensions;
     if is_folder {
-        return (
-            egui_phosphor::regular::FOLDER,
-            egui::Color32::from_rgb(251, 191, 36), // amber
-        );
+        return (egui_phosphor::regular::FOLDER, ext_colors.file_folder);
     }
 
     let ext = extension(name).to_lowercase();
     match ext.as_str() {
-        // Executables
         "exe" | "msi" | "bat" | "cmd" | "com" | "scr" => (
             egui_phosphor::regular::APP_WINDOW,
-            egui::Color32::from_rgb(96, 165, 250), // blue
+            ext_colors.file_executable,
         ),
-        // Archives
-        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "zst" => (
-            egui_phosphor::regular::FILE_ZIP,
-            egui::Color32::from_rgb(251, 146, 60), // orange
-        ),
-        // Images
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" => (
-            egui_phosphor::regular::IMAGE,
-            egui::Color32::from_rgb(74, 222, 128), // green
-        ),
-        // Audio
-        "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" | "opus" => (
-            egui_phosphor::regular::MUSIC_NOTE,
-            egui::Color32::from_rgb(192, 132, 252), // purple
-        ),
-        // Video
-        "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" => (
-            egui_phosphor::regular::FILM_STRIP,
-            egui::Color32::from_rgb(248, 113, 113), // red
-        ),
-        // Text / Documents
+        "zip" | "rar" | "7z" | "tar" | "gz" | "bz2" | "xz" | "zst" => {
+            (egui_phosphor::regular::FILE_ZIP, ext_colors.file_archive)
+        }
+        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" => {
+            (egui_phosphor::regular::IMAGE, ext_colors.file_image)
+        }
+        "mp3" | "wav" | "ogg" | "flac" | "aac" | "wma" | "m4a" | "opus" => {
+            (egui_phosphor::regular::MUSIC_NOTE, ext_colors.file_audio)
+        }
+        "mp4" | "avi" | "mkv" | "mov" | "wmv" | "flv" | "webm" => {
+            (egui_phosphor::regular::FILM_STRIP, ext_colors.file_video)
+        }
+        // Text + word-processor docs share file_document.
         "txt" | "md" | "log" | "nfo" | "ini" | "cfg" | "conf" | "toml" | "yaml" | "yml"
-        | "csv" | "tsv" => (
-            egui_phosphor::regular::FILE_TEXT,
-            colors.on_surface_variant,
-        ),
-        // Code
+        | "csv" | "tsv" | "doc" | "docx" | "odt" | "rtf" => {
+            (egui_phosphor::regular::FILE_TEXT, ext_colors.file_document)
+        }
         "rs" | "py" | "js" | "ts" | "html" | "css" | "json" | "xml" | "c" | "cpp" | "h"
-        | "java" | "rb" | "go" | "sh" | "ps1" | "lua" => (
-            egui_phosphor::regular::FILE_CODE,
-            egui::Color32::from_rgb(45, 212, 191), // teal
-        ),
-        // PDF / Documents
-        "pdf" => (
-            egui_phosphor::regular::FILE_PDF,
-            egui::Color32::from_rgb(239, 68, 68), // red
-        ),
-        "doc" | "docx" | "odt" | "rtf" => (
-            egui_phosphor::regular::FILE_DOC,
-            egui::Color32::from_rgb(96, 165, 250), // blue
-        ),
-        // Web shortcuts
-        "url" | "lnk" | "desktop" => (
-            egui_phosphor::regular::LINK,
-            egui::Color32::from_rgb(156, 163, 175), // gray
-        ),
-        // DLL / Libraries
-        "dll" | "so" | "dylib" => (
-            egui_phosphor::regular::PUZZLE_PIECE,
-            egui::Color32::from_rgb(156, 163, 175),
-        ),
-        // Fonts
-        "ttf" | "otf" | "woff" | "woff2" => (
-            egui_phosphor::regular::TEXT_AA,
-            colors.on_surface_variant,
-        ),
-        // Data
-        "db" | "sqlite" | "sql" => (
-            egui_phosphor::regular::DATABASE,
-            egui::Color32::from_rgb(251, 191, 36),
-        ),
-        // Default
-        _ => (egui_phosphor::regular::FILE, colors.on_surface_variant),
+        | "java" | "rb" | "go" | "sh" | "ps1" | "lua" => {
+            (egui_phosphor::regular::FILE_CODE, ext_colors.file_code)
+        }
+        "pdf" => (egui_phosphor::regular::FILE_PDF, ext_colors.file_pdf),
+        "url" | "lnk" | "desktop" => (egui_phosphor::regular::LINK, ext_colors.file_link),
+        "dll" | "so" | "dylib" => {
+            (egui_phosphor::regular::PUZZLE_PIECE, ext_colors.file_link)
+        }
+        "ttf" | "otf" | "woff" | "woff2" => {
+            (egui_phosphor::regular::TEXT_AA, ext_colors.file_other)
+        }
+        "db" | "sqlite" | "sql" => (egui_phosphor::regular::DATABASE, ext_colors.file_folder),
+        _ => (egui_phosphor::regular::FILE, ext_colors.file_other),
     }
 }
 

@@ -3,6 +3,7 @@
 
 use crate::features::plugins::domain::types::{PluginInfo, PluginsListState};
 
+use arclain_theme::typography;
 use arclain_widgets::{ButtonSize, Chips, TextButton, ToggleSwitch};
 use crate::shared::components::SearchBar;
 use crate::shared::theme::AppTheme;
@@ -26,7 +27,7 @@ pub fn render(
             .corner_radius(8.0)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("🔍").size(16.0));
+                    ui.label(egui::RichText::new("🔍").size(typography::SUBTITLE));
                     ui.add_space(4.0);
                     let search_response = ui.add(
                         SearchBar::new(&mut state.filter_text)
@@ -96,13 +97,13 @@ pub fn render(
                         ui.add_space(40.0);
                         ui.label(
                             egui::RichText::new("No plugins found")
-                                .size(16.0)
+                                .size(typography::SUBTITLE)
                                 .color(theme.colors.on_surface_variant),
                         );
                         ui.add_space(8.0);
                         ui.label(
                             egui::RichText::new("Install plugins to extend functionality")
-                                .size(12.0)
+                                .size(typography::LABEL)
                                 .color(theme.colors.on_surface_variant),
                         );
                     });
@@ -167,14 +168,14 @@ fn render_plugin_card(
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(&plugin.name)
-                                .size(14.0)
+                                .size(typography::BODY)
                                 .strong()
                                 .color(theme.colors.on_surface),
                         );
 
                         ui.label(
                             egui::RichText::new(format!("v{}", plugin.version))
-                                .size(11.0)
+                                .size(typography::CAPTION)
                                 .color(theme.colors.on_surface_variant),
                         );
 
@@ -201,7 +202,7 @@ fn render_plugin_card(
                     if let Some(desc) = &plugin.description {
                         ui.label(
                             egui::RichText::new(desc)
-                                .size(12.0)
+                                .size(typography::LABEL)
                                 .color(theme.colors.on_surface_variant),
                         );
                     }
@@ -210,7 +211,7 @@ fn render_plugin_card(
                     if let Some(author) = &plugin.author {
                         ui.label(
                             egui::RichText::new(format!("by {}", author))
-                                .size(11.0)
+                                .size(typography::CAPTION)
                                 .color(theme.colors.on_surface_variant),
                         );
                     }
@@ -229,8 +230,8 @@ fn render_plugin_card(
                     if let Some(error) = &plugin.error {
                         ui.label(
                             egui::RichText::new(format!("⚠ {}", error))
-                                .size(11.0)
-                                .color(egui::Color32::from_rgb(255, 100, 100)),
+                                .size(typography::CAPTION)
+                                .color(theme.colors.error),
                         );
                     }
                 });
