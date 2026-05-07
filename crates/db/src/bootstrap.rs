@@ -11,7 +11,7 @@ use crate::pool::DieselPool;
 use crate::secrets::SecretsDb;
 use crate::secrets_key::SecretsKey;
 use anyhow::{Context, Result};
-use mini_orm::SqliteDb;
+use crate::SqliteDb;
 use std::path::{Path, PathBuf};
 
 /// Canonical paths for the two databases and optional key-file
