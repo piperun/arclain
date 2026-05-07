@@ -195,26 +195,44 @@ impl PluginManager {
         all_logs
     }
 
-    /// Get a snapshot of all plugin settings for persistence
+    /// Get a snapshot of all plugin settings for persistence.
+    ///
+    /// Each plugin carries a `settings_dirty: AtomicBool` that flips to
+    /// `true` when [`HostFunctions::impl_set_setting`] writes a value.
+    /// We swap it back to `false` here and only re-lock + clone the
+    /// instance whose flag was set; everyone else gets returned from
+    /// the manager-side `settings_cache` (audit P14). The very first
+    /// call always populates the cache because instances start with
+    /// `dirty == true`.
     pub fn get_all_settings(&self) -> HashMap<String, HashMap<String, String>> {
+        use std::sync::atomic::Ordering;
+
         let plugins = self.plugins.read();
-        let mut all_settings = HashMap::new();
+        let mut cache = self.settings_cache.lock();
 
         for (id, plugin) in plugins.iter() {
-            let instance = plugin.instance.lock();
-            // We need to access the settings from the store data
-            // Since PluginInstance wraps the store, we need to modify PluginInstance/runtime
-            // to expose a way to get settings.
-            if let Some(settings) = (*instance).get_settings() {
-                all_settings.insert(id.clone(), settings);
+            // AcqRel pairs with the Release store in `impl_set_setting`.
+            // If a write lands between the swap and the lock below it
+            // re-flips dirty to true, so the next call picks it up.
+            let was_dirty = plugin.settings_dirty.swap(false, Ordering::AcqRel);
+            if was_dirty {
+                let instance = plugin.instance.lock();
+                if let Some(settings) = instance.get_settings() {
+                    cache.insert(id.clone(), settings);
+                }
             }
         }
 
-        // Merge with initial settings to preserve settings for plugins that failed to load or aren't active
+        // Drop unloaded plugins from the cache so the snapshot doesn't
+        // resurrect stale entries after a plugin is unloaded.
+        cache.retain(|id, _| plugins.contains_key(id));
+
+        let mut all_settings: HashMap<String, HashMap<String, String>> = cache.clone();
+
+        // Merge with initial settings to preserve settings for plugins
+        // that failed to load or aren't active.
         for (id, settings) in &self.initial_settings {
-            if !all_settings.contains_key(id) {
-                all_settings.insert(id.clone(), settings.clone());
-            }
+            all_settings.entry(id.clone()).or_insert_with(|| settings.clone());
         }
 
         all_settings
@@ -227,12 +245,23 @@ impl PluginManager {
     /// `PluginManager::new`. Used by the detail-view UI event handler
     /// so a single click only fetches the one plugin's settings
     /// rather than `get_all_settings`-ing the whole map (audit P7).
+    /// Same dirty-bit + cache short-circuit as `get_all_settings`.
     pub fn get_settings_for(&self, plugin_id: &str) -> Option<HashMap<String, String>> {
+        use std::sync::atomic::Ordering;
+
         let plugins = self.plugins.read();
         if let Some(plugin) = plugins.get(plugin_id) {
-            let instance = plugin.instance.lock();
-            if let Some(settings) = (*instance).get_settings() {
-                return Some(settings);
+            let was_dirty = plugin.settings_dirty.swap(false, Ordering::AcqRel);
+            if was_dirty {
+                let instance = plugin.instance.lock();
+                if let Some(settings) = instance.get_settings() {
+                    self.settings_cache
+                        .lock()
+                        .insert(plugin_id.to_string(), settings.clone());
+                    return Some(settings);
+                }
+            } else if let Some(cached) = self.settings_cache.lock().get(plugin_id) {
+                return Some(cached.clone());
             }
         }
         self.initial_settings.get(plugin_id).cloned()

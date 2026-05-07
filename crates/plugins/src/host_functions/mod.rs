@@ -17,6 +17,7 @@ use arclain_data::ResourceManager;
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
@@ -30,6 +31,12 @@ pub struct HostFunctions {
     pub current_archive: Arc<Mutex<Option<String>>>,
     pub current_password: Arc<Mutex<Option<String>>>,
     pub settings: Arc<Mutex<HashMap<String, String>>>,
+    /// Flips to `true` whenever the plugin (or host) writes a setting.
+    /// `PluginManager::get_all_settings` swaps this back to `false` after
+    /// snapshotting, so subsequent calls can skip the lock + clone for
+    /// untouched plugins (audit P14). Initialized to `true` so the very
+    /// first snapshot populates the manager-side cache.
+    pub settings_dirty: Arc<AtomicBool>,
     pub pending_messages: Arc<Mutex<Vec<(String, String)>>>,
     pub emitted_metadata: Arc<Mutex<Option<String>>>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
@@ -72,6 +79,7 @@ impl HostFunctions {
             current_archive: Arc::new(Mutex::new(None)),
             current_password: Arc::new(Mutex::new(None)),
             settings: Arc::new(Mutex::new(initial_settings)),
+            settings_dirty: Arc::new(AtomicBool::new(true)),
             pending_messages: Arc::new(Mutex::new(Vec::new())),
             emitted_metadata: Arc::new(Mutex::new(None)),
             network_log: Arc::new(Mutex::new(Vec::new())),

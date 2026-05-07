@@ -393,6 +393,13 @@ impl PluginInstance {
         Some(settings.clone())
     }
 
+    /// Cheap clone of the plugin's `settings_dirty` flag — checked by
+    /// `PluginManager::get_all_settings` without taking the instance
+    /// lock (audit P14).
+    pub fn settings_dirty_handle(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+        self.store.data().settings_dirty.clone()
+    }
+
     /// Get top-level tabs registered by this plugin
     pub fn get_top_tabs(&mut self) -> Result<Vec<crate::types::TopTabConfig>> {
         let tabs = self

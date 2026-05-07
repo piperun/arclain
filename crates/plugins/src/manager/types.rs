@@ -3,6 +3,7 @@
 use crate::runtime::PluginInstance;
 use crate::types::PluginMetadata;
 use parking_lot::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 /// Information about a plugin for UI display
@@ -30,4 +31,8 @@ pub(crate) struct ManagedPlugin {
     pub(crate) instance: Arc<Mutex<PluginInstance>>,
     pub(crate) manifest: crate::types::PluginManifest,
     pub(crate) enabled: bool,
+    /// Cloned from the instance's `HostFunctions::settings_dirty` so
+    /// `get_all_settings` can probe it without taking
+    /// `instance.lock()` (audit P14).
+    pub(crate) settings_dirty: Arc<AtomicBool>,
 }
