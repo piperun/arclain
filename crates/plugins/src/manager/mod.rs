@@ -46,6 +46,13 @@ pub struct PluginManager {
     /// WASM call into every enabled plugin (audit finding P3).
     pub(crate) cached_top_tabs:
         parking_lot::Mutex<Option<Vec<(String, crate::types::TopTabConfig)>>>,
+    /// Cached settings snapshots indexed by plugin id. `get_all_settings`
+    /// uses this to avoid locking + cloning instances whose
+    /// `settings_dirty` flag is still `false` (audit P14). Populated on
+    /// first read; refreshed only for the plugins that flipped dirty
+    /// since.
+    pub(crate) settings_cache:
+        parking_lot::Mutex<HashMap<String, HashMap<String, String>>>,
 }
 
 impl PluginManager {
@@ -83,6 +90,7 @@ impl PluginManager {
             _event_worker_handle: Some(worker_handle),
             metadata_signal: None,
             cached_top_tabs: parking_lot::Mutex::new(None),
+            settings_cache: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 
@@ -121,6 +129,7 @@ impl PluginManager {
             _event_worker_handle: Some(worker_handle),
             metadata_signal: None,
             cached_top_tabs: parking_lot::Mutex::new(None),
+            settings_cache: parking_lot::Mutex::new(HashMap::new()),
         })
     }
 

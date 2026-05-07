@@ -89,12 +89,17 @@ impl PluginManager {
             author: manifest.plugin.author.clone(),
         };
 
+        // Snapshot the dirty handle BEFORE moving the instance into the
+        // Arc<Mutex<...>> — saves a redundant lock just to clone an Arc.
+        let settings_dirty = instance.settings_dirty_handle();
+
         // Create managed plugin
         let managed = ManagedPlugin {
             metadata: metadata.clone(),
             instance: Arc::new(Mutex::new(instance)),
             manifest: discovered.manifest.clone(),
             enabled: true,
+            settings_dirty,
         };
 
         // Store plugin
