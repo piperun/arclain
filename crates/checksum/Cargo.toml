@@ -1,6 +1,6 @@
 [package]
 name = "arclain_checksum"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "File integrity verification with Merkle trees and parallel hashing"
 

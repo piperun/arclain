@@ -2,6 +2,29 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## arclain_db-0.8.1 - 2026-05-07
+#### Bug Fixes
+- (**db**) abort cache recovery when WAL or SHM removal fails (C6) - (89e0056) - piperun
+- (**db**) abort migration when backup fails (C4) - (b5e7828) - piperun
+#### Tests
+- (**audit**) regression tests for critical findings C1/C5/C6 - (62bca76) - piperun
+- (**audit**) regression tests for critical findings C2/C3/C4 - (e9d0e67) - piperun
+#### Refactoring
+- (**db**) split lib.rs bootstrap, extract cache types, rename archive_profiles - (c3f11e5) - piperun
+- (**db**) split ui/config.rs into 4 cohesive sub-modules - (52269c7) - piperun
+- (**db**) drop legacy module, keep only used cache_index helpers - (7f0f7a9) - piperun
+- (**db**) extract diesel_err helper, kill 49x boilerplate - (c73383d) - piperun
+- nuke mini-orm crate, fold SqliteDb into arclain_db - (8eeb38b) - piperun
+- split fat files per audit recommendations - (3631f76) - piperun
+- move cache_index + flatten tests to sibling files - (d34b00a) - piperun
+- swap PathBuf.to_string_lossy().to_string() for .into_owned() - (efdf209) - piperun
+#### Miscellaneous Chores
+- (**ci**) un-gitignore CHANGELOG.md and track current state - (e300c30) - piperun
+- (**deps**) introduce [workspace.dependencies] for shared deps - (6b069e8) - piperun
+- (**deps**) remove unused dependencies - (c05cc12) - piperun
+
+- - -
+
 ## arclain_db-0.8.0 - 2026-04-18
 #### Features
 - (**db**) add pipeline_runs table + repo for idempotent pipeline dedup - (aa13994) - piperun
