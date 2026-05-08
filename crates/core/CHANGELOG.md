@@ -2,6 +2,40 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## arclain_core-0.11.1 - 2026-05-07
+#### Bug Fixes
+- (**audit**) defensive cleanups for medium findings (M1, M2, M6, M7) - (f5df66b) - piperun
+- (**core**) use parking_lot::RwLock for title FILTER_CACHE (M3) - (480df2c) - piperun
+- (**core**) panic-free unix_seconds helper (H5, H6) - (638e0dc) - piperun
+- (**core**) propagate set_config errors in vault operations (C5) - (8b8dad3) - piperun
+- (**core**) propagate move_dir remove failure (C3) - (48164a6) - piperun
+- (**core**) use native unrar for filenames, CLI only for packed_size - (2514892) - piperun
+- (**flatten**) use modinfo.ini name= as folder name + abort broken strips - (92131d5) - piperun
+#### Performance Improvements
+- (**core**) O(1) DLL dedup; preallocate archive listing capacity - (4d693c7) - piperun
+- (**plugins**) batch get_metadata_summaries — N+1 → 1 SQL query - (aed4eed) - piperun
+#### Tests
+- (**audit**) regression tests for critical findings C1/C5/C6 - (62bca76) - piperun
+- (**audit**) regression tests for critical findings C2/C3/C4 - (e9d0e67) - piperun
+#### Build system
+- (**core**) drop native-tls from reqwest, align with network's rustls - (2973c04) - piperun
+#### Refactoring
+- (**arch**) break data->core cycle via IoC traits - (aec9783) - piperun
+- (**core**) split engine.rs into engine/{mod,plan_builder,tree}.rs - (fa45ce5) - piperun
+- (**core**) split RuleEngine::create_plan into focused helpers - (0cd6641) - piperun
+- (**db**) split lib.rs bootstrap, extract cache types, rename archive_profiles - (c3f11e5) - piperun
+- split fat files per audit recommendations - (3631f76) - piperun
+- move cache_index + flatten tests to sibling files - (d34b00a) - piperun
+- swap PathBuf.to_string_lossy().to_string() for .into_owned() - (efdf209) - piperun
+- route UI's db access through arclain_core re-exports - (5665518) - piperun
+#### Miscellaneous Chores
+- (**ci**) un-gitignore CHANGELOG.md and track current state - (e300c30) - piperun
+- (**core**) add flatten_demo example for spot-checking real data - (4460a81) - piperun
+- (**deps**) introduce [workspace.dependencies] for shared deps - (6b069e8) - piperun
+- (**deps**) remove unused dependencies - (c05cc12) - piperun
+
+- - -
+
 ## arclain_core-0.11.0 - 2026-04-18
 #### Features
 - (**core**) add OutputArtifact::Folder for no-pack pipeline output - (258e85b) - piperun
