@@ -2,6 +2,26 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## dlsite-metadata-0.11.0 - 2026-05-07
+#### Features
+- (**dlsite**) chobit-embed video downloads (off by default) - (7a311db) - piperun
+- (**plugin/dlsite**) show Loading spinner instead of Fetch button while busy - (347570d) - piperun
+- (**plugins**) WIT get-metadata export — plugins self-report instead of "Unknown" - (210919e) - piperun
+- (**plugins**) play_cached_blob — hand cached videos to OS default app - (58873bc) - piperun
+- (**plugins**) fetch_to_cache host fn — store blobs without crossing WASM boundary - (cb05b93) - piperun
+#### Bug Fixes
+- (**plugins**) add native HTTP fallback when gameta server is absent - (4aab72d) - piperun
+#### Refactoring
+- (**arch**) break data->core cycle via IoC traits - (aec9783) - piperun
+- (**dlsite-metadata**) flatten Panel cached-videos nesting - (4cfd7e3) - piperun
+- (**dlsite-metadata**) extract on_ui_event to events.rs - (7a565af) - piperun
+- (**dlsite-metadata**) extract get_ui_layout to views.rs - (dd91584) - piperun
+- (**plugins**) align dlsite code wrapper on gameta_lib::detect - (804a6b9) - piperun
+#### Miscellaneous Chores
+- (**ci**) un-gitignore CHANGELOG.md and track current state - (e300c30) - piperun
+
+- - -
+
 ## dlsite-metadata-0.10.0 - 2026-05-02
 #### Features
 - (**plugin/dlsite**) use settings groups for the MainPage sections - (6e0f981) - piperun

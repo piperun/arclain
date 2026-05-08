@@ -2,6 +2,26 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## arclain-network-0.2.1 - 2026-05-07
+#### Bug Fixes
+- (**network,ui**) surface invalid SOCKS5 addresses to the user (M4) - (4eb7e36) - piperun
+- (**plugins**) release instance lock during gameta HTTP fetch (C2) - (8ba504e) - piperun
+#### Performance Improvements
+- (**network,ui**) notify-driven HTTP completion (P2) - (fadaa04) - piperun
+- medium-impact wins (P10/P12/P19) + cancel-removes-entry - (7473ef5) - piperun
+#### Tests
+- (**audit**) regression tests for critical findings C2/C3/C4 - (e9d0e67) - piperun
+#### Refactoring
+- (**network**) hoist HTTP timeout magic numbers to crate consts - (31f7b7a) - piperun
+- (**network**) extract gameta API path constants - (c6a08d6) - piperun
+- (**network**) extract dlsite-header injection helper - (6514b38) - piperun
+- name magic-number duration constants - (d369f04) - piperun
+#### Miscellaneous Chores
+- (**ci**) un-gitignore CHANGELOG.md and track current state - (e300c30) - piperun
+- (**deps**) introduce [workspace.dependencies] for shared deps - (6b069e8) - piperun
+
+- - -
+
 ## arclain-network-0.2.0 - 2026-03-26
 #### Features
 - (**data**) add ServerResolver for gameta server API routing - (7094b2a) - piperun

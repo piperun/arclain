@@ -2,6 +2,22 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## arclain_data-0.4.1 - 2026-05-07
+#### Bug Fixes
+- (**audit**) surface previously-swallowed errors (H1, H2, H3, H7) - (be51153) - piperun
+- (**data**) surface resolver IoErrors instead of generic 'no source' msg - (d442412) - piperun
+#### Performance Improvements
+- (**data**) release ServerResolver lock during gameta HTTP (P6) - (759973d) - piperun
+#### Refactoring
+- (**arch**) break data->core cycle via IoC traits - (aec9783) - piperun
+- (**data**) drop unused anyhow::Result re-export - (c43b7d3) - piperun
+- (**db**) split lib.rs bootstrap, extract cache types, rename archive_profiles - (c3f11e5) - piperun
+#### Miscellaneous Chores
+- (**ci**) un-gitignore CHANGELOG.md and track current state - (e300c30) - piperun
+- (**deps**) introduce [workspace.dependencies] for shared deps - (6b069e8) - piperun
+
+- - -
+
 ## arclain_data-0.4.0 - 2026-03-26
 #### Features
 - (**data**) add ServerResolver for gameta server API routing - (7094b2a) - piperun

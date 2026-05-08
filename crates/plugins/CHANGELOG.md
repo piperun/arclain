@@ -2,6 +2,40 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## arclain_plugins-0.12.0 - 2026-05-07
+#### Features
+- (**plugins**) WIT get-metadata export — plugins self-report instead of "Unknown" - (210919e) - piperun
+- (**plugins**) play_cached_blob — hand cached videos to OS default app - (58873bc) - piperun
+- (**plugins**) fetch_to_cache host fn — store blobs without crossing WASM boundary - (cb05b93) - piperun
+#### Bug Fixes
+- (**audit**) defensive cleanups for medium findings (M1, M2, M6, M7) - (f5df66b) - piperun
+- (**audit**) surface previously-swallowed errors (H1, H2, H3, H7) - (be51153) - piperun
+- (**plugins**) release plugins.read() before per-instance work (C1) - (4a650e1) - piperun
+- (**plugins**) release instance lock during gameta HTTP fetch (C2) - (8ba504e) - piperun
+- (**plugins**) add native HTTP fallback when gameta server is absent - (4aab72d) - piperun
+#### Performance Improvements
+- (**plugins**) dirty-bit short-circuit on get_all_settings (audit P14) - (553eae9) - piperun
+- (**plugins**) batch get_metadata_summaries — N+1 → 1 SQL query - (aed4eed) - piperun
+- (**plugins**) invalidate top tabs cache on load/unload (P3 follow-up) - (ea71c01) - piperun
+- (**plugins,ui**) cache plugin counts and top tabs (P5, P3) - (9671b7b) - piperun
+- (**ui,plugins**) tokio + per-plugin settings for UI events (P7) - (e216ac3) - piperun
+#### Tests
+- (**audit**) regression tests for critical findings C1/C5/C6 - (62bca76) - piperun
+#### Refactoring
+- (**arch**) break data->core cycle via IoC traits - (aec9783) - piperun
+- (**plugins**) flatten get_product_metadata lazy-repair nesting - (8bc2363) - piperun
+- (**plugins**) move wit_rules From impls to conversions.rs - (8b53439) - piperun
+- (**plugins**) extract WIT conversions to conversions.rs - (17432b4) - piperun
+- (**plugins**) collapse PluginManager dispatch APIs to one canonical path - (ea2452a) - piperun
+- (**plugins**) extract enabled_plugin_snapshot helper - (63084bf) - piperun
+- swap PathBuf.to_string_lossy().to_string() for .into_owned() - (efdf209) - piperun
+#### Miscellaneous Chores
+- (**ci**) un-gitignore CHANGELOG.md and track current state - (e300c30) - piperun
+- (**deps**) introduce [workspace.dependencies] for shared deps - (6b069e8) - piperun
+- (**deps**) remove unused dependencies - (c05cc12) - piperun
+
+- - -
+
 ## arclain_plugins-0.11.0 - 2026-05-02
 #### Features
 - (**plugins**) add GroupBegin/GroupEnd markers + theme plugin buttons - (44a644c) - piperun
