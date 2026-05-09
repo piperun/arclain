@@ -30,6 +30,7 @@ pub(crate) const DEFAULT_DAILY_BYTE_CAP: u64 = 50 * 1024 * 1024; // 50 MiB
 pub struct PluginLogger {
     plugin_id: String,
     log_dir: PathBuf,
+    byte_cap: u64,
     state: Mutex<LoggerState>,
     bucket: TokenBucket,
 }
@@ -51,9 +52,14 @@ struct LoggerState {
 
 impl PluginLogger {
     pub fn new(plugin_id: &str, log_dir: &Path) -> Self {
+        Self::with_byte_cap(plugin_id, log_dir, DEFAULT_DAILY_BYTE_CAP)
+    }
+
+    pub fn with_byte_cap(plugin_id: &str, log_dir: &Path, byte_cap: u64) -> Self {
         Self {
             plugin_id: plugin_id.to_string(),
             log_dir: log_dir.to_path_buf(),
+            byte_cap,
             state: Mutex::new(LoggerState {
                 file: None,
                 file_date: None,
@@ -110,10 +116,13 @@ impl PluginLogger {
             }
         }
 
-        // Size cap check happens in Task 1.3.
+        let line = format!("{} {}\n", timestamp, message);
+        if s.bytes_written + line.len() as u64 > self.byte_cap {
+            s.dropped_since_summary += 1;
+            return false;
+        }
 
         if let Some(file) = s.file.as_mut() {
-            let line = format!("{} {}\n", timestamp, message);
             match file.write_all(line.as_bytes()) {
                 Ok(()) => {
                     s.bytes_written += line.len() as u64;
