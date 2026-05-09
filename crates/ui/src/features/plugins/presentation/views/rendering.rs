@@ -7,6 +7,39 @@ use crate::shared::components::Form;
 use crate::shared::SharedState;
 use eframe::egui;
 
+/// Layout shown while we wait for the plugin instance lock to free up
+/// (e.g. during a long-running DLSite fetch holding the lock on a
+/// worker thread). Rendered only when there is no cached layout to
+/// show in its place; if a previous layout exists we keep showing it
+/// until the next refetch succeeds.
+fn loading_placeholder_layout() -> arclain_plugins::types::PluginLayout {
+    use arclain_plugins::types::{PluginLayout, PluginUiElement};
+    PluginLayout::Single {
+        elements: vec![PluginUiElement::Label {
+            text: "Loading plugin UI…".to_string(),
+            bold: false,
+            size: None,
+        }],
+    }
+}
+
+/// Try to fetch the layout for a plugin extension point without
+/// blocking the UI thread. Returns the layout if the lock was free,
+/// `None` if a worker thread is mid-event and we should keep using
+/// whatever the caller has cached.
+fn try_fetch_layout(
+    shared: &SharedState,
+    plugin_id: &str,
+    point: arclain_plugins::types::PluginExtensionPoint,
+) -> Option<arclain_plugins::types::PluginLayout> {
+    let pm_arc = shared.services.plugin_manager.as_ref()?;
+    let pm = pm_arc.lock();
+    pm.try_with_plugin_instance(plugin_id, |instance| {
+        instance.get_ui_layout(point).unwrap_or_default()
+    })
+    .flatten()
+}
+
 /// Render an open plugin dialog as a modal overlay
 pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
     // Check if a dialog is open and get cached layout
@@ -18,39 +51,49 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
     };
 
     if let Some((plugin_id, dialog_id)) = dialog_info {
-        // Use cached layout if available, otherwise fetch from plugin
-        let dialog_elements = if let Some(layout) = cached_layout {
-            layout
-        } else {
-            // Fetch layout from plugin (only on first render or after invalidation).
-            // try_lock so a worker holding the instance for a long-running
-            // event (e.g. a 15s DLSite fetch) doesn't freeze the UI.
-            // On contention, render an empty layout this frame and DON'T
-            // cache it — next frame will retry.
-            let (layout, lock_was_free) = {
-                if let Some(pm_arc) = &shared.services.plugin_manager {
-                    let pm = pm_arc.lock();
-                    match pm.try_with_plugin_instance(&plugin_id, |instance| {
-                        instance
-                            .get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Dialog(
-                                dialog_id.clone(),
-                            ))
-                            .unwrap_or_default()
-                    }) {
-                        Some(Some(layout)) => (layout, true),
-                        Some(None) => (arclain_plugins::types::PluginLayout::default(), false),
-                        None => (arclain_plugins::types::PluginLayout::default(), true),
-                    }
+        // Resolve which layout to render this frame:
+        //   - cache + not stale → use cache directly (cheap path)
+        //   - cache + stale     → try refetch; on success replace
+        //                         cache, on busy keep stale visible
+        //                         so the user doesn't see a blank
+        //                         dialog while the worker is mid-event
+        //   - no cache          → try fetch; on success cache it,
+        //                         on busy show "Loading…" placeholder
+        let is_stale = shared.signals().plugin_dialog_state.get().cached_dialog_layout_stale;
+        let dialog_elements = match (cached_layout, is_stale) {
+            (Some(layout), false) => layout,
+            (Some(stale), true) => {
+                if let Some(fresh) = try_fetch_layout(
+                    shared,
+                    &plugin_id,
+                    arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()),
+                ) {
+                    let mut ds = shared.signals().plugin_dialog_state.get();
+                    ds.cached_dialog_layout = Some(fresh.clone());
+                    ds.cached_dialog_layout_stale = false;
+                    shared.signals().plugin_dialog_state.set(ds);
+                    fresh
                 } else {
-                    (arclain_plugins::types::PluginLayout::default(), true)
+                    ctx.request_repaint();
+                    stale
                 }
-            };
-            if lock_was_free {
-                let mut dialog_state = shared.signals().plugin_dialog_state.get();
-                dialog_state.cached_dialog_layout = Some(layout.clone());
-                shared.signals().plugin_dialog_state.set(dialog_state);
             }
-            layout
+            (None, _) => match try_fetch_layout(
+                shared,
+                &plugin_id,
+                arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()),
+            ) {
+                Some(fresh) => {
+                    let mut ds = shared.signals().plugin_dialog_state.get();
+                    ds.cached_dialog_layout = Some(fresh.clone());
+                    shared.signals().plugin_dialog_state.set(ds);
+                    fresh
+                }
+                None => {
+                    ctx.request_repaint();
+                    loading_placeholder_layout()
+                }
+            },
         };
 
         // Render modal dialog
@@ -168,38 +211,52 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
         }
     }
 
-    // Use cached layout if available, otherwise fetch from plugin
-    let page_layout = if let Some(layout) = cached_layout {
-        layout
-    } else {
-        // Fetch layout from plugin (only on first render or after invalidation).
-        // try_lock + skip-cache-on-contention so a worker holding the
-        // instance for a long-running event (e.g. DLSite fetch) doesn't
-        // freeze the UI; the next frame retries the fetch.
-        let (layout, lock_was_free) = {
-            if let Some(pm_arc) = &shared.services.plugin_manager {
-                let pm = pm_arc.lock();
-                match pm.try_with_plugin_instance(&plugin_id, |instance| {
-                    instance
-                        .get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Page(
-                            page_id.clone(),
-                        ))
-                        .unwrap_or_default()
-                }) {
-                    Some(Some(layout)) => (layout, true),
-                    Some(None) => (arclain_plugins::types::PluginLayout::default(), false),
-                    None => (arclain_plugins::types::PluginLayout::default(), true),
-                }
+    // Resolve the page layout for this frame. Same three-case shape
+    // as render_dialog above:
+    //   - cache + not stale → use cache directly
+    //   - cache + stale     → try refetch; keep stale on contention
+    //                         so the user doesn't see the page blank
+    //                         out while a worker is mid-event (e.g.
+    //                         clicking Refetch while a fetch is
+    //                         already running)
+    //   - no cache          → try fetch; on busy show "Loading…"
+    //                         placeholder (e.g. drop-archive
+    //                         auto-fetch with the DLSite tab open)
+    let is_stale = shared.signals().plugin_dialog_state.get().cached_page_layout_stale;
+    let page_layout = match (cached_layout, is_stale) {
+        (Some(layout), false) => layout,
+        (Some(stale), true) => {
+            if let Some(fresh) = try_fetch_layout(
+                shared,
+                &plugin_id,
+                arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()),
+            ) {
+                let mut ds = shared.signals().plugin_dialog_state.get();
+                ds.cached_page_layout = Some(fresh.clone());
+                ds.cached_page_layout_stale = false;
+                shared.signals().plugin_dialog_state.set(ds);
+                fresh
             } else {
-                (arclain_plugins::types::PluginLayout::default(), true)
+                ctx.request_repaint();
+                stale
             }
-        };
-        if lock_was_free {
-            let mut dialog_state = shared.signals().plugin_dialog_state.get();
-            dialog_state.cached_page_layout = Some(layout.clone());
-            shared.signals().plugin_dialog_state.set(dialog_state);
         }
-        layout
+        (None, _) => match try_fetch_layout(
+            shared,
+            &plugin_id,
+            arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()),
+        ) {
+            Some(fresh) => {
+                let mut ds = shared.signals().plugin_dialog_state.get();
+                ds.cached_page_layout = Some(fresh.clone());
+                shared.signals().plugin_dialog_state.set(ds);
+                fresh
+            }
+            None => {
+                ctx.request_repaint();
+                loading_placeholder_layout()
+            }
+        },
     };
 
     // Get display name from signal, fallback to page_id

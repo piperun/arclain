@@ -12,10 +12,17 @@ pub struct PluginDialogState {
     pub open_dialog: Option<(String, String)>,
     /// Page stack: each entry is (plugin_id, page_id)
     pub page_stack: Vec<(String, String)>,
-    /// Cached layout for the current dialog (invalidated on events)
+    /// Cached layout for the current dialog. Kept across UI events so
+    /// the user sees the previous layout instead of a blank panel
+    /// while a worker thread holds the plugin lock; the `*_stale`
+    /// flag below tells the renderer to refetch when the lock is free.
     pub cached_dialog_layout: Option<PluginLayout>,
-    /// Cached layout for the current page (invalidated on events)
+    /// Cached layout for the current page (same semantics as dialog).
     pub cached_page_layout: Option<PluginLayout>,
+    /// Layout cache is stale and should be refetched on the next
+    /// frame where the plugin instance lock is free.
+    pub cached_dialog_layout_stale: bool,
+    pub cached_page_layout_stale: bool,
     /// Flag to send __page_init event on next render (for SetPageDisplayName etc)
     pub page_needs_init: bool,
 }
@@ -29,13 +36,16 @@ impl PluginDialogState {
     /// Open a dialog for a specific plugin
     pub fn open_dialog(&mut self, plugin_id: &str, dialog_id: &str) {
         self.open_dialog = Some((plugin_id.to_string(), dialog_id.to_string()));
-        self.cached_dialog_layout = None; // Invalidate cache on dialog change
+        // Different dialog → previous cache is for a different layout.
+        self.cached_dialog_layout = None;
+        self.cached_dialog_layout_stale = false;
     }
 
     /// Close the current dialog
     pub fn close_dialog(&mut self) {
         self.open_dialog = None;
-        self.cached_dialog_layout = None; // Clear cache
+        self.cached_dialog_layout = None;
+        self.cached_dialog_layout_stale = false;
     }
 
     /// Check if a dialog is currently open
@@ -47,14 +57,17 @@ impl PluginDialogState {
     pub fn open_page(&mut self, plugin_id: &str, page_id: &str) {
         self.page_stack
             .push((plugin_id.to_string(), page_id.to_string()));
-        self.cached_page_layout = None; // Invalidate cache on page change
+        // Different page → previous cache is for a different layout.
+        self.cached_page_layout = None;
+        self.cached_page_layout_stale = false;
         self.page_needs_init = true; // Request init event on next render
     }
 
     /// Pop the current page from the stack
     pub fn close_page(&mut self) {
         self.page_stack.pop();
-        self.cached_page_layout = None; // Clear cache
+        self.cached_page_layout = None;
+        self.cached_page_layout_stale = false;
     }
 
     /// Get the current page (if any)
@@ -69,13 +82,17 @@ impl PluginDialogState {
         !self.page_stack.is_empty()
     }
 
-    /// Invalidate the cached page layout (call after UI events to refresh)
+    /// Mark the cached page layout stale. The renderer keeps showing
+    /// the existing cache until it can refetch — this prevents the
+    /// page from blanking while a worker thread holds the plugin lock
+    /// during a long-running event.
     pub fn invalidate_page_layout(&mut self) {
-        self.cached_page_layout = None;
+        self.cached_page_layout_stale = true;
     }
 
-    /// Invalidate the cached dialog layout (call after UI events to refresh)
+    /// Mark the cached dialog layout stale (same semantics as
+    /// `invalidate_page_layout`).
     pub fn invalidate_dialog_layout(&mut self) {
-        self.cached_dialog_layout = None;
+        self.cached_dialog_layout_stale = true;
     }
 }
