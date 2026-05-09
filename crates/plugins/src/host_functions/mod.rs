@@ -7,6 +7,7 @@ mod archive;
 
 mod logging;
 mod metadata;
+mod plugin_logger;
 mod settings;
 
 use crate::arclain::plugin::host::{Host, LogLevel};
