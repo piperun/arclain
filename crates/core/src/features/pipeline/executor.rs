@@ -150,14 +150,32 @@ fn run_one(
         .with_context(|| format!("hash input {:?}", input))?;
     let pipeline_hash = pipeline.config_hash();
 
+    // Resolve metadata for this input ONCE (DB lookup) and reuse it for both
+    // the predicted output path AND the finalize step, so the path the
+    // collision check examines matches the path the executor actually writes
+    // to. Without this both paths could disagree on whether to use the
+    // metadata title vs the input stem.
+    let archive_name_for_meta = input
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_string();
+    let output_metadata = resolve_metadata(&archive_name_for_meta, ctx);
+
     // Predict the final output path. For Archive mode we use the last Convert
     // step's extension (or zip as the fallback). For Folder mode the artifact
-    // is a directory named after the input's stem.
+    // is a directory named after the input's stem (or metadata title).
     let final_format = last_convert_format(&pipeline.steps)
         .unwrap_or(crate::features::conversion::ConvertFormat::Zip);
     let predicted_output_path = match pipeline.output_artifact {
-        OutputArtifact::Archive => pipeline.output.resolve(input, final_format.extension()),
-        OutputArtifact::Folder => pipeline.output.resolve_folder(input),
+        OutputArtifact::Archive => pipeline.output.resolve_with_metadata(
+            input,
+            final_format.extension(),
+            output_metadata.as_ref(),
+        ),
+        OutputArtifact::Folder => pipeline
+            .output
+            .resolve_folder_with_metadata(input, output_metadata.as_ref()),
     };
 
     // Phase 3: Smart consults the DB. If we already completed this exact
@@ -275,7 +293,15 @@ fn run_one(
     });
 
     let _ = final_format; // predicted format was used for the collision gate only
-    let run_result = run_one_inner(input, pipeline, temp_root, ctx, on_progress);
+    let run_result = run_one_inner(
+        input,
+        pipeline,
+        temp_root,
+        ctx,
+        on_progress,
+        &archive_name_for_meta,
+        output_metadata.as_ref(),
+    );
 
     // Record completion/failure. Same logic: log and continue on DB errors.
     if let (Some(id), Some(db)) = (run_id, ctx.config_db.as_ref()) {
@@ -315,6 +341,8 @@ fn run_one_inner(
     temp_root: &Path,
     ctx: &PipelineContext,
     on_progress: &mut impl FnMut(PipelineProgress),
+    archive_name_for_meta: &str,
+    output_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
 ) -> Result<PathBuf> {
     let work_dir = temp_root.join(format!(
         "arclain_pipeline_{}_{}",
@@ -377,18 +405,13 @@ fn run_one_inner(
 
                 let entries = scan_work_dir_as_entries(&work_dir)?;
 
-                let archive_name = input
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string();
-                let metadata = resolve_metadata(&archive_name, ctx);
-
+                // Reuse the metadata resolved at the top of run_one so we
+                // don't repeat the DB lookup for each Organize step.
                 let plan = RuleEngine::create_plan(
                     &rule,
-                    &archive_name,
+                    &archive_name_for_meta,
                     &entries,
-                    metadata.as_ref(),
+                    output_metadata,
                 )
                 .context("Rule plan failed")?;
 
@@ -411,11 +434,19 @@ fn run_one_inner(
     // Finalize. Two paths:
     //   Archive → pack work_dir via 7z CLI (historical behavior)
     //   Folder  → move work_dir to the output location, no repacking
+    //
+    // Both reuse `output_metadata` resolved at the start of run_one so the
+    // final write path matches `predicted_output_path` from the collision
+    // check above.
     match pipeline.output_artifact {
         OutputArtifact::Archive => {
             let format =
                 final_format.unwrap_or(crate::features::conversion::ConvertFormat::Zip);
-            let output_path = pipeline.output.resolve(input, format.extension());
+            let output_path = pipeline.output.resolve_with_metadata(
+                input,
+                format.extension(),
+                output_metadata,
+            );
 
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent).ok();
@@ -436,7 +467,9 @@ fn run_one_inner(
             Ok(output_path)
         }
         OutputArtifact::Folder => {
-            let output_path = pipeline.output.resolve_folder(input);
+            let output_path = pipeline
+                .output
+                .resolve_folder_with_metadata(input, output_metadata);
 
             if let Some(parent) = output_path.parent() {
                 std::fs::create_dir_all(parent).ok();

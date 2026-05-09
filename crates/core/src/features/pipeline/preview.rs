@@ -2,6 +2,7 @@
 
 use super::types::{OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep};
 use crate::features::conversion::ConvertFormat;
+use crate::features::organization::metadata::GameMetadata;
 use std::path::PathBuf;
 
 /// Preview of one input file going through the pipeline.
@@ -31,7 +32,22 @@ impl PipelinePreview {
 }
 
 /// Compute the preview for a pipeline.
+///
+/// Equivalent to `preview_pipeline_with_metadata(pipeline, None)`.
+/// Output paths use the input's stem; for metadata-aware naming
+/// (e.g. so the preview shows `<title>.zip` matching what the
+/// executor will actually produce) call `preview_pipeline_with_metadata`.
 pub fn preview_pipeline(pipeline: &Pipeline) -> PipelinePreview {
+    preview_pipeline_with_metadata(pipeline, None)
+}
+
+/// Compute the preview for a pipeline using the supplied metadata to
+/// derive the output path stem. The UI passes the currently-selected
+/// `game_metadata` so the preview matches what the executor will write.
+pub fn preview_pipeline_with_metadata(
+    pipeline: &Pipeline,
+    metadata: Option<&GameMetadata>,
+) -> PipelinePreview {
     let mut preview = PipelinePreview::default();
 
     let inputs: Vec<PathBuf> = match &pipeline.input {
@@ -102,9 +118,16 @@ pub fn preview_pipeline(pipeline: &Pipeline) -> PipelinePreview {
         }
 
         entry.expected_output = match pipeline.output_artifact {
-            OutputArtifact::Archive => final_format
-                .map(|fmt| pipeline.output.resolve(&input, fmt.extension())),
-            OutputArtifact::Folder => Some(pipeline.output.resolve_folder(&input)),
+            OutputArtifact::Archive => final_format.map(|fmt| {
+                pipeline
+                    .output
+                    .resolve_with_metadata(&input, fmt.extension(), metadata)
+            }),
+            OutputArtifact::Folder => Some(
+                pipeline
+                    .output
+                    .resolve_folder_with_metadata(&input, metadata),
+            ),
         };
 
         if let Some(ref out) = entry.expected_output {
