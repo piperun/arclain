@@ -214,13 +214,22 @@ fn render_properties_panel(
                                     if let Some(manager_arc) = &shared.services.plugin_manager {
                                         let manager = manager_arc.lock();
 
-                                        let elements = manager
-                                            .with_plugin_instance(plugin_id, |instance| {
+                                        // try_lock so a worker holding
+                                        // the plugin instance during a
+                                        // long-running fetch doesn't
+                                        // freeze the UI. On contention
+                                        // skip this plugin's panel
+                                        // section for this frame; it
+                                        // reappears next frame.
+                                        let elements = match manager
+                                            .try_with_plugin_instance(plugin_id, |instance| {
                                                 instance
                                                     .get_ui_layout(PluginExtensionPoint::Panel)
                                                     .unwrap_or_default()
-                                            })
-                                            .unwrap_or_default();
+                                            }) {
+                                            Some(Some(layout)) => layout,
+                                            _ => Default::default(),
+                                        };
 
                                         if !elements.is_empty() {
                                             let flat = elements.flatten();

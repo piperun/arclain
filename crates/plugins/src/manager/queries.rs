@@ -170,6 +170,31 @@ impl PluginManager {
         Some(f(&mut instance))
     }
 
+    /// Non-blocking variant of `with_plugin_instance`. Returns:
+    /// - `Some(Some(value))` — the lock was free, `f` ran and produced `value`.
+    /// - `Some(None)` — the plugin id exists but the instance lock is held by
+    ///   another thread (e.g. a background fetch holding it during HTTP).
+    ///   Callers on the UI thread should fall back to a cached value or
+    ///   render an empty state for this frame; do NOT block.
+    /// - `None` — the plugin id is unknown.
+    ///
+    /// Use this on the UI thread for plugin reads (`get_ui_layout`,
+    /// `get_top_tabs`, etc.) so a long-running plugin event on a worker
+    /// thread doesn't freeze the UI.
+    pub fn try_with_plugin_instance<F, R>(&self, plugin_id: &str, f: F) -> Option<Option<R>>
+    where
+        F: FnOnce(&mut PluginInstance) -> R,
+        R: 'static,
+    {
+        let instance_arc = self.get_plugin_instance(plugin_id)?;
+        let result = if let Some(mut instance) = instance_arc.try_lock() {
+            Some(f(&mut instance))
+        } else {
+            None
+        };
+        Some(result)
+    }
+
     /// Get the plugins directory path
     pub fn plugins_dir(&self) -> &std::path::Path {
         self.loader.plugins_dir()

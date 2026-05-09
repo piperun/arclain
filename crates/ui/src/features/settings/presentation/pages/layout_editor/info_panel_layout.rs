@@ -135,16 +135,19 @@ fn sync_plugin_items(state: &mut InfoPanelLayoutState, manager: &PluginManager) 
     let mut changed = false;
 
     for (plugin_id, plugin_name) in enabled_plugins {
-        // Check if plugin provides InfoPanel UI
-        let has_info_panel = manager
-            .with_plugin_instance(&plugin_id, |instance| {
-                if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::Panel) {
-                    !elements.is_empty()
-                } else {
-                    false
-                }
-            })
-            .unwrap_or(false);
+        // Check if plugin provides InfoPanel UI via try_lock; if a
+        // worker is holding the plugin we skip this entry for the
+        // current render and pick it up next frame.
+        let has_info_panel = match manager.try_with_plugin_instance(&plugin_id, |instance| {
+            if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::Panel) {
+                !elements.is_empty()
+            } else {
+                false
+            }
+        }) {
+            Some(Some(v)) => v,
+            _ => false,
+        };
 
         if !has_info_panel {
             continue;

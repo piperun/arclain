@@ -35,19 +35,24 @@ pub fn render(
     // dispatcher below.
     let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Pre-fetch plugin elements
+    // Pre-fetch plugin elements. Uses try_lock so a worker thread
+    // holding the instance for a long-running event (e.g. DLSite
+    // fetch) doesn't freeze the UI. On contention this plugin's
+    // toolbar buttons are skipped for the current frame and reappear
+    // once the lock releases.
     let mut plugin_elements = HashMap::new();
     if let Some(manager_arc) = plugin_manager {
         let manager = manager_arc.lock();
         let plugins = manager.list_plugins();
         for plugin in plugins.iter().filter(|p| p.enabled) {
             let pid = plugin.id.clone();
-            let _ = manager.with_plugin_instance(&pid, |instance| {
-                if let Ok(layout) = instance.get_ui_layout(PluginExtensionPoint::PluginButton) {
-                    plugin_elements.insert(pid.clone(), layout.flatten());
+            if let Some(Some(layout)) = manager.try_with_plugin_instance(&pid, |instance| {
+                instance.get_ui_layout(PluginExtensionPoint::PluginButton).ok()
+            }) {
+                if let Some(layout) = layout {
+                    plugin_elements.insert(pid, layout.flatten());
                 }
-                Ok::<_, anyhow::Error>(())
-            });
+            }
         }
     }
 
