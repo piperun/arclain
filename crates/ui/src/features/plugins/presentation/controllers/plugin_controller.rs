@@ -294,6 +294,11 @@ fn spawn_background_fetch(
 
     // Send fetch-completion event back to the plugin. Called when the gameta
     // server succeeds; the plugin clears its in_progress flag in response.
+    //
+    // Direct `send_ui_event` is correct here: this closure runs inside
+    // `tokio_runtime.spawn(async move { ... })` below, never on the UI
+    // thread, and the returned actions (if any) are pure notifications
+    // — the plugin uses the metadata_signal for actual data flow.
     let make_complete_notifier = || {
         let pid = plugin_id_owned.clone();
         let pm = shared.services.plugin_manager.clone();
@@ -316,6 +321,10 @@ fn spawn_background_fetch(
     // Hand the work off to the plugin's own HTTP path (uses the host's
     // SOCKS5-aware client). The plugin's `do_native_fetch:` handler clears
     // its in-progress flag on completion, so no separate notifier needed.
+    //
+    // Same as above — this closure runs on a tokio blocking thread inside
+    // spawn_native_dispatch, not the UI thread, so direct `send_ui_event`
+    // is correct.
     let make_native_dispatcher = || {
         let pid = plugin_id_owned.clone();
         let pm = shared.services.plugin_manager.clone();
