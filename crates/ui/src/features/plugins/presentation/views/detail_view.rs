@@ -236,18 +236,13 @@ pub fn render(
 
         if let Some(manager) = plugin_manager {
             if plugin_info.loaded {
-                let actions_sink = shared
-                    .map(|s| s.pending_plugin_actions.clone())
-                    .unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())));
                 render_plugin_ui(
                     ui,
                     theme,
                     manager,
                     &plugin_info.id,
-                    app_state,
                     shared,
                     content_cache,
-                    &actions_sink,
                     &mut state.cached_main_layout,
                 );
             } else {
@@ -375,29 +370,16 @@ fn render_plugin_ui(
     theme: &AppTheme,
     manager: &PluginManager,
     plugin_id: &str,
-    app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
     content_cache: Option<&Arc<arclain_core::ContentCache>>,
-    pending_plugin_actions: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
     cached_main_layout: &mut Option<(String, arclain_plugins::types::PluginLayout)>,
 ) {
-    let mgr_arc = if let Some(shared) = shared {
-        if let Some(mgr_mutex) = shared.services.plugin_manager.clone() {
-            mgr_mutex
-        } else {
-            return;
-        }
-    } else {
-        // No shared state means no plugin_manager available
+    // Render path requires a SharedState (the dispatcher pulls
+    // services + sink from it). Returning early if absent matches the
+    // pre-refactor behavior.
+    if shared.is_none() {
         return;
-    };
-
-    // Capture config_service for use in closures
-    let config_service: Option<Arc<arclain_core::ConfigService>> = if let Some(s) = shared {
-        s.services.config_service.clone()
-    } else {
-        None
-    };
+    }
 
     // Audit P4: cached_main_layout serves the layout for the
     // currently-selected plugin. Fetch fresh only when the cache is
@@ -440,88 +422,20 @@ fn render_plugin_ui(
                 );
             } else {
                 let plugin_id_clone = plugin_id.to_string();
-                let mgr_clone = mgr_arc.clone();
-                let app_state_clone = app_state.clone();
-                let config_service_clone: Option<Arc<arclain_core::ConfigService>> =
-                    config_service.clone();
-                // Use the existing tokio runtime instead of std::thread::spawn
-                // (audit P7). Falls back to thread::spawn if no runtime is
-                // available (e.g. headless test contexts).
-                let tokio_runtime = shared.map(|s| s.services.tokio_runtime.clone());
-
-                // Push actions into the long-lived `pending_plugin_actions`
-                // sink so the next render picks them up via
-                // `drain_pending_plugin_actions`. The previous design used a
-                // per-render `Arc<Mutex<Vec<_>>>` whose only owner was this
-                // function — when render returned, the spawned thread's
-                // pushes ended up in a dropped buffer.
-                let actions_sink = pending_plugin_actions.clone();
+                // Render path requires a SharedState — render_plugin_ui
+                // returned earlier above when shared is None. Cloning a
+                // SharedState is just refcount bumps; no allocations.
+                let shared_clone = shared
+                    .expect("render_plugin_ui requires SharedState")
+                    .clone();
 
                 let mut event_callback = Box::new(move |id: &str, value: Option<String>| {
-                    let mgr_thread = mgr_clone.clone();
-                    let pid_thread = plugin_id_clone.clone();
-                    let id_thread = id.to_string();
-                    let val_thread = value.clone();
-                    let state_thread = app_state_clone.clone();
-                    let sink = actions_sink.clone();
-                    let cfg_svc_thread: Option<Arc<arclain_core::ConfigService>> =
-                        config_service_clone.clone();
-
-                    let work = move || {
-                        // Audit P7: only fetch this plugin's settings,
-                        // not the whole map. send_ui_event is the slow
-                        // step (WASM call); the settings snapshot used
-                        // to clone every plugin's HashMap unnecessarily.
-                        let (settings_to_save, actions) = {
-                            let mgr = mgr_thread.lock();
-                            if let Some(instance_arc) = mgr.get_plugin_instance(&pid_thread) {
-                                let mut instance = instance_arc.lock();
-                                let actions = instance.send_ui_event(&id_thread, val_thread).ok();
-                                drop(instance);
-                                let snapshot = mgr.get_settings_for(&pid_thread);
-                                (snapshot, actions)
-                            } else {
-                                (None, None)
-                            }
-                        };
-
-                        if let Some(actions) = actions {
-                            let mut s = sink.lock();
-                            for a in actions {
-                                s.push((pid_thread.clone(), a));
-                            }
-                        }
-
-                        if let Some(settings_to_save) = settings_to_save {
-                            let mut state = state_thread.lock();
-                            state
-                                .user_config
-                                .set_plugin_settings(&pid_thread, settings_to_save);
-
-                            if let Some(ref cfg_svc) = cfg_svc_thread {
-                                let res: anyhow::Result<()> =
-                                    cfg_svc.save_user_config(&state.user_config);
-                                if let Err(e) = res {
-                                    tracing::error!("Failed to save plugin settings: {}", e);
-                                }
-                            }
-                        }
-                    };
-
-                    // Dispatch on the existing tokio runtime via
-                    // spawn_blocking (the work locks parking_lot mutexes
-                    // and calls into WASM, so it stays on a blocking
-                    // thread — but managed by tokio rather than as a
-                    // raw OS thread per click).
-                    if let Some(rt) = &tokio_runtime {
-                        rt.spawn(async move {
-                            let _ = tokio::task::spawn_blocking(work).await;
-                        });
-                    } else {
-                        // No runtime (e.g. headless test); fall back to
-                        // a raw thread so the work still happens.
-                        std::thread::spawn(work);
-                    }
+                    crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+                        &shared_clone,
+                        plugin_id_clone.clone(),
+                        id.to_string(),
+                        value,
+                    );
                 }) as ui::UiEventCallback;
 
                 let flat_elements = ui_elements.flatten();
