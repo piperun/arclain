@@ -187,25 +187,22 @@ pub fn process_action(
     }
 }
 
-/// Create a callback handler for plugin dialog events
+/// Create a callback handler for plugin dialog events.
+///
+/// Plugin events are dispatched through `dispatch_plugin_event`, which
+/// runs the WASM call on a tokio blocking thread. Returned actions
+/// land in `SharedState::pending_plugin_actions` and the next render
+/// drains them via `drain_pending_plugin_actions` in detail_view.
+/// Layout invalidation is a pure signal mutation and stays inline.
 pub fn create_dialog_callback(
     shared: &crate::shared::SharedState,
     plugin_id: String,
 ) -> Box<dyn FnMut(&str, Option<String>)> {
-    // Use signal instead of Arc<Mutex>
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
-    let lightbox_signal = shared.signals().lightbox_state.clone();
-    let page_display_name_signal = shared.signals().page_display_name.clone();
-    let toaster_arc = shared.toaster.clone();
-    let plugin_manager_arc = shared.services.plugin_manager.clone();
-    // Owned clone so we can hand a reference into ActionContext from within
-    // the 'static closure below — without this, RequestFetch / CacheContent
-    // and other shared-state-dependent actions silently no-op.
     let shared_owned = shared.clone();
     let pid = plugin_id;
 
     Box::new(move |element_id: &str, value: Option<String>| {
-        // Check for close dialog signal
         if element_id == "__dialog_close" {
             let mut ds = dialog_signal.get();
             ds.close_dialog();
@@ -213,113 +210,61 @@ pub fn create_dialog_callback(
             return;
         }
 
-        // Normal event - use plugin_manager from services
-        if let Some(pm_arc) = &plugin_manager_arc {
-            let pm = pm_arc.lock();
-            if let Some(actions) = pm
-                .with_plugin_instance(&pid, |instance| {
-                    instance.send_ui_event(element_id, value).ok()
-                })
-                .flatten()
-            {
-                drop(pm); // Release plugin manager lock before locking toaster
-                let mut toaster = toaster_arc.lock();
+        crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+            &shared_owned,
+            pid.clone(),
+            element_id.to_string(),
+            value,
+        );
 
-                // Get state from signal, modify, and write back
-                let mut ds = dialog_signal.get();
-                // Invalidate layout cache so next frame fetches fresh layout
-                ds.invalidate_dialog_layout();
-                let ctx = ActionContext {
-                    lightbox_signal: Some(&lightbox_signal),
-                    page_display_name_signal: Some(&page_display_name_signal),
-                    shared_state: Some(&shared_owned),
-                };
-                for action in actions {
-                    process_action(
-                        action,
-                        &pid,
-                        &mut ds,
-                        &mut toaster,
-                        None, // No refresh requests for dialog callbacks
-                        &ctx,
-                    );
-                }
-                dialog_signal.set(ds);
-            }
-        }
+        // Drop cached layout so the next render fetches a fresh one
+        // (the plugin may have changed its layout in response).
+        let mut ds = dialog_signal.get();
+        ds.invalidate_dialog_layout();
+        dialog_signal.set(ds);
     })
 }
 
-/// Create a callback handler for plugin page events
+/// Create a callback handler for plugin page events. See
+/// `create_dialog_callback` for the dispatch model — this is the
+/// page-level analogue with one extra prefix (`__page_open:`) handled
+/// inline because it's a UI navigation, not a plugin event.
 pub fn create_page_callback(
     shared: &crate::shared::SharedState,
     plugin_id: String,
 ) -> Box<dyn FnMut(&str, Option<String>)> {
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
-    let lightbox_signal = shared.signals().lightbox_state.clone();
     let page_display_name_signal = shared.signals().page_display_name.clone();
-    let toaster_arc = shared.toaster.clone();
-    let plugin_manager_arc = shared.services.plugin_manager.clone();
-    // Owned clone so the closure can pass a reference to ActionContext;
-    // without this, RequestFetch (etc.) silently no-ops because process_action
-    // skips its body when ctx.shared_state is None.
     let shared_owned = shared.clone();
     let pid = plugin_id;
 
     Box::new(move |element_id: &str, value: Option<String>| {
-        // Check for close page signal
         if element_id == "__page_close" {
             let mut ds = dialog_signal.get();
             ds.close_page();
-            // Clear page display name when closing
             page_display_name_signal.set(None);
             dialog_signal.set(ds);
             return;
         }
 
-        // Check for open page signal (nested navigation)
-        if element_id.starts_with("__page_open:") {
-            let new_page_id = element_id.trim_start_matches("__page_open:").to_string();
+        if let Some(new_page_id) = element_id.strip_prefix("__page_open:") {
             let mut ds = dialog_signal.get();
-            ds.open_page(&pid, &new_page_id);
-            // Clear display name for new page (plugin will set it)
+            ds.open_page(&pid, new_page_id);
             page_display_name_signal.set(None);
             dialog_signal.set(ds);
             return;
         }
 
-        // Normal event - use plugin_manager from services
-        if let Some(pm_arc) = &plugin_manager_arc {
-            let pm = pm_arc.lock();
-            if let Some(actions) = pm
-                .with_plugin_instance(&pid, |instance| {
-                    instance.send_ui_event(element_id, value).ok()
-                })
-                .flatten()
-            {
-                drop(pm);
-                let mut toaster = toaster_arc.lock();
-                let mut ds = dialog_signal.get();
-                // Invalidate layout cache so next frame fetches fresh layout
-                ds.invalidate_page_layout();
-                let ctx = ActionContext {
-                    lightbox_signal: Some(&lightbox_signal),
-                    page_display_name_signal: Some(&page_display_name_signal),
-                    shared_state: Some(&shared_owned),
-                };
-                for action in actions {
-                    process_action(
-                        action,
-                        &pid,
-                        &mut ds,
-                        &mut toaster,
-                        None, // No refresh requests for page callbacks
-                        &ctx,
-                    );
-                }
-                dialog_signal.set(ds);
-            }
-        }
+        crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+            &shared_owned,
+            pid.clone(),
+            element_id.to_string(),
+            value,
+        );
+
+        let mut ds = dialog_signal.get();
+        ds.invalidate_page_layout();
+        dialog_signal.set(ds);
     })
 }
 
