@@ -5,6 +5,7 @@
 /target
 target/
 release/
+debug/
 ui_archive/*
 *.txt
 *.md

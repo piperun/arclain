@@ -4,10 +4,15 @@ Arclain dev + release CLI.
 
 Usage:
     python scripts/release.py release [--skip-version-update] [--skip-tests]
+    python scripts/release.py debug
     python scripts/release.py plugins
     python scripts/release.py ui [-- <cargo run args>]
     python scripts/release.py clean-plugins
     python scripts/release.py deps [--update | --upgrade [--incompatible]] [--dry-run]
+
+`release` produces an optimized, version-bumped, test-gated zip under
+release/. `debug` skips all that and produces an unoptimized binary +
+plugins under debug/ for fast UI iteration; not meant for distribution.
 """
 
 from __future__ import annotations
@@ -217,17 +222,110 @@ def load_rust_log() -> str:
 # ---------------------------------------------------------------------------
 
 
+def _package_build(
+    *,
+    profile: str,
+    out_root: Path,
+    archive_output: bool,
+    label: str,
+    version: str,
+) -> None:
+    """Shared build-and-package pipeline used by both `release` and `debug`.
+
+    `profile` is the cargo build profile ("release" or "dev"/"debug"). Plugins
+    are always built with --release because debug WASM is enormous and the
+    runtime difference doesn't matter for testing host UI changes.
+
+    `out_root` is the top-level output dir (e.g. `release/` or `debug/`).
+    Inside it we create `arclain-<version>-<os>-<arch>/` with the binary +
+    plugins, mirroring the release layout.
+
+    `archive_output=True` zips the folder for distribution. Debug builds
+    skip this since they're not meant for distribution.
+    """
+    target_dir = REPO_ROOT / "target"
+    build_env = {"CARGO_TARGET_DIR": str(target_dir)}
+
+    cargo_cmd = ["cargo", "build", "--package", "arclain_ui"]
+    if profile == "release":
+        cargo_cmd.insert(2, "--release")
+    run(cargo_cmd, cwd=REPO_ROOT, env=build_env)
+
+    print("\nBuilding plugins...")
+    if not build_plugins():
+        print("WARNING: Some plugins failed to build, continuing...")
+
+    os_name, arch = get_platform()
+    binary_name = "arclain.exe" if os_name == "windows" else "arclain"
+    src_binary = "arclain_ui.exe" if os_name == "windows" else "arclain_ui"
+
+    pkg_name = f"arclain-{version}-{os_name}-{arch}"
+    pkg_dir = out_root / pkg_name
+
+    print(f"\nPackaging {label} ({pkg_name})...")
+
+    if pkg_dir.exists():
+        shutil.rmtree(pkg_dir)
+    pkg_dir.mkdir(parents=True)
+
+    # cargo profile dir layout: target/release/ for --release,
+    # target/debug/ for the default profile.
+    cargo_profile_dir = "release" if profile == "release" else "debug"
+    exe_path = target_dir / cargo_profile_dir / src_binary
+    if not exe_path.exists():
+        print(f"Error: Binary not found at {exe_path}")
+        sys.exit(1)
+    shutil.copy2(exe_path, pkg_dir / binary_name)
+
+    plugins_dest = pkg_dir / "plugins"
+    plugins_dest.mkdir()
+    for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
+        if not plugin_dir.is_dir():
+            continue
+        name = plugin_dir.name
+        if name in SKIP_PLUGINS:
+            print(f"  Skipping unused plugin: {name}")
+            continue
+
+        wasm = plugin_dir / f"{name}.wasm"
+        if wasm.exists():
+            shutil.copy2(wasm, plugins_dest)
+            print(f"  Copied plugin: {name}.wasm")
+
+        toml = plugin_dir / f"{name}.toml"
+        if toml.exists():
+            shutil.copy2(toml, plugins_dest)
+
+    if archive_output:
+        archive_fmt = "zip" if os_name == "windows" else "gztar"
+        archive_base = out_root / pkg_name
+        archive_path = Path(shutil.make_archive(
+            str(archive_base), archive_fmt,
+            root_dir=str(out_root),
+            base_dir=pkg_name,
+        ))
+        checksum = sha256_file(archive_path)
+        checksum_file = archive_path.with_suffix(archive_path.suffix + ".sha256")
+        checksum_file.write_text(f"{checksum}  {archive_path.name}\n")
+        print(f"\n=== {label.capitalize()} Complete ===")
+        print(f"Package:  {archive_path}")
+        print(f"Checksum: {checksum_file}")
+        print(f"Version:  {version}")
+    else:
+        print(f"\n=== {label.capitalize()} Build Complete ===")
+        print(f"Folder:   {pkg_dir}")
+        print(f"Run with: {pkg_dir / binary_name}")
+
+
 def cmd_release(args: argparse.Namespace) -> None:
-    """Full release workflow."""
+    """Full release workflow: version bump, tests, optimized build, zip."""
     print("=== Arclain Release Build ===")
     print(f"Repository: {REPO_ROOT}")
 
-    # Use project-local target dir for release builds (not ramdisk)
     target_dir = REPO_ROOT / "target"
     release_env = {"CARGO_TARGET_DIR": str(target_dir)}
     print(f"Using project target directory: {target_dir}\n")
 
-    # Step 1: Version bump
     if not args.skip_version_update:
         print("Step 1: Bumping crate versions (cog)...")
         result = subprocess.run(
@@ -249,11 +347,9 @@ def cmd_release(args: argparse.Namespace) -> None:
     else:
         print("Step 1: Skipping version update")
 
-    # Read version for package naming
     version = get_version_from_cargo()
     print(f"Building version: {version}\n")
 
-    # Step 2: Tests
     if not args.skip_tests:
         print("Step 2: Running test suite...")
         run(
@@ -264,80 +360,42 @@ def cmd_release(args: argparse.Namespace) -> None:
     else:
         print("Step 2: Skipping tests\n")
 
-    # Step 3: Build release binary
-    print("Step 3: Building release binary...")
-    run(
-        ["cargo", "build", "--release", "--package", "arclain_ui"],
-        cwd=REPO_ROOT, env=release_env,
+    print("Step 3: Building optimized binary + plugins...")
+    _package_build(
+        profile="release",
+        out_root=REPO_ROOT / "release",
+        archive_output=True,
+        label="release",
+        version=version,
     )
 
-    # Build plugins
-    print("\nBuilding plugins...")
-    if not build_plugins():
-        print("WARNING: Some plugins failed to build, continuing...")
 
-    # Step 4: Package
-    os_name, arch = get_platform()
-    binary_name = "arclain.exe" if os_name == "windows" else "arclain"
-    src_binary = "arclain_ui.exe" if os_name == "windows" else "arclain_ui"
+def cmd_debug(_args: argparse.Namespace) -> None:
+    """Fast iteration build: debug profile, with plugins, no zip, no version
+    bump, no test suite. Lands under `debug/` so release artifacts stay
+    untouched.
 
-    release_name = f"arclain-{version}-{os_name}-{arch}"
-    release_dir = REPO_ROOT / "release" / release_name
+    Cuts host compile time from ~3min to ~30-60s for iteration. Use when
+    you want to test a UI change end-to-end with plugins loaded but
+    don't need an optimized binary.
+    """
+    print("=== Arclain Debug Build (fast iteration) ===")
+    print(f"Repository: {REPO_ROOT}")
 
-    print(f"\nStep 4: Packaging release ({release_name})...")
+    target_dir = REPO_ROOT / "target"
+    print(f"Using project target directory: {target_dir}\n")
 
-    # Clean and create
-    if release_dir.exists():
-        shutil.rmtree(release_dir)
-    release_dir.mkdir(parents=True)
+    version = get_version_from_cargo()
+    print(f"Building version: {version}\n")
 
-    # Copy binary
-    exe_path = target_dir / "release" / src_binary
-    if not exe_path.exists():
-        print(f"Error: Binary not found at {exe_path}")
-        sys.exit(1)
-    shutil.copy2(exe_path, release_dir / binary_name)
-
-    # Copy plugins
-    plugins_dest = release_dir / "plugins"
-    plugins_dest.mkdir()
-
-    for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
-        if not plugin_dir.is_dir():
-            continue
-        name = plugin_dir.name
-        if name in SKIP_PLUGINS:
-            print(f"  Skipping unused plugin: {name}")
-            continue
-
-        wasm = plugin_dir / f"{name}.wasm"
-        if wasm.exists():
-            shutil.copy2(wasm, plugins_dest)
-            print(f"  Copied plugin: {name}.wasm")
-
-        toml = plugin_dir / f"{name}.toml"
-        if toml.exists():
-            shutil.copy2(toml, plugins_dest)
-
-    # Create archive
-    archive_fmt = "zip" if os_name == "windows" else "gztar"
-    archive_base = REPO_ROOT / "release" / release_name
-
-    archive_path = Path(shutil.make_archive(
-        str(archive_base), archive_fmt,
-        root_dir=str(REPO_ROOT / "release"),
-        base_dir=release_name,
-    ))
-
-    # Checksum
-    checksum = sha256_file(archive_path)
-    checksum_file = archive_path.with_suffix(archive_path.suffix + ".sha256")
-    checksum_file.write_text(f"{checksum}  {archive_path.name}\n")
-
-    print(f"\n=== Release Complete ===")
-    print(f"Package:  {archive_path}")
-    print(f"Checksum: {checksum_file}")
-    print(f"Version:  {version}")
+    print("Building debug binary + plugins...")
+    _package_build(
+        profile="debug",
+        out_root=REPO_ROOT / "debug",
+        archive_output=False,
+        label="debug",
+        version=version,
+    )
 
 
 def cmd_plugins(_args: argparse.Namespace) -> None:
@@ -432,6 +490,16 @@ def main() -> None:
         help="Skip the test suite (use for hotfixes only)",
     )
 
+    sub.add_parser(
+        "debug",
+        help=(
+            "Fast iteration build: debug profile, with plugins, no zip, no "
+            "version bump, no tests. Output goes under debug/ so release "
+            "artifacts stay untouched. Use during UI iteration; switch back "
+            "to `release` when shipping."
+        ),
+    )
+
     sub.add_parser("plugins", help="Build WASM plugins")
     sub.add_parser("clean-plugins", help="Remove .wasm artifacts and cargo clean each plugin")
 
@@ -460,6 +528,7 @@ def main() -> None:
 
     dispatch: dict[str, Callable[[argparse.Namespace], None]] = {
         "release": cmd_release,
+        "debug": cmd_debug,
         "plugins": cmd_plugins,
         "clean-plugins": cmd_clean_plugins,
         "ui": cmd_ui,
