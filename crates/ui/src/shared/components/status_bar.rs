@@ -1,5 +1,6 @@
 use crate::core::operations::window::format_duration;
 use crate::shared::theme::AppTheme;
+use arclain_core::features::organization::GameMetadata;
 use eframe::egui;
 use egui::Widget;
 use std::time::Duration;
@@ -44,6 +45,7 @@ pub fn render(
     info: &StatusBarInfo,
     archive_loaded: bool,
     plugin_info: Option<&PluginStatusInfo>,
+    selected_item: Option<&GameMetadata>,
 ) {
     ui.horizontal_centered(|ui| {
         ui.add_space(12.0);
@@ -60,6 +62,16 @@ pub fn render(
                 ui.add_space(8.0);
                 render_plugin_indicator(ui, theme, pinfo);
             }
+        }
+
+        // "Item selected" chip — visible whenever a plugin has emitted
+        // metadata for the current archive. Click to open a popup with
+        // the full details. Both the Organizer and Process pages
+        // observe this same metadata, so the chip serves as a "this is
+        // what both pages will use" indicator.
+        if let Some(meta) = selected_item {
+            ui.add_space(8.0);
+            render_selected_item_chip(ui, theme, meta);
         }
 
         // Active operation indicator
@@ -118,6 +130,112 @@ pub fn render(
             });
         }
     });
+}
+
+/// Render the "Item selected" chip with a click-to-show popup of the
+/// metadata fields that both the Organizer and Process pages will
+/// consume.
+fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMetadata) {
+    // Build a short label: title is the most informative, with the
+    // product code as a fallback when the plugin only had the id.
+    let label = if !meta.title.is_empty() {
+        format!(
+            "{} {}",
+            egui_phosphor::regular::CHECK_CIRCLE,
+            truncate_chars(&meta.title, 40)
+        )
+    } else {
+        format!(
+            "{} {}",
+            egui_phosphor::regular::CHECK_CIRCLE,
+            meta.product_id
+        )
+    };
+
+    let response = arclain_widgets::Chips::new(&label)
+        .with_theme_colors(&theme.colors)
+        .ui(ui)
+        .on_hover_text("Click to see what's selected");
+
+    let popup_id = response.id.with("selected_item_popup");
+    if response.clicked() {
+        egui::Popup::toggle_id(ui.ctx(), popup_id);
+    }
+
+    egui::Popup::from_response(&response)
+        .id(popup_id)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(280.0);
+            ui.set_max_width(420.0);
+            ui.spacing_mut().item_spacing.y = 4.0;
+
+            arclain_widgets::Text::new("Selected for use")
+                .size(11.0)
+                .muted()
+                .show(ui);
+            ui.separator();
+
+            if !meta.title.is_empty() {
+                ui.label(
+                    egui::RichText::new(&meta.title)
+                        .strong()
+                        .color(theme.colors.on_surface),
+                );
+            }
+            metadata_row(ui, theme, "ID", &meta.product_id);
+            if let Some(creator) = meta.creator.as_deref() {
+                metadata_row(ui, theme, "Creator", creator);
+            }
+            if let Some(date) = meta.release_date.as_deref() {
+                metadata_row(ui, theme, "Released", date);
+            }
+            if !meta.tags.is_empty() {
+                let preview = meta
+                    .tags
+                    .iter()
+                    .take(6)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let suffix = if meta.tags.len() > 6 {
+                    format!(" (+{} more)", meta.tags.len() - 6)
+                } else {
+                    String::new()
+                };
+                metadata_row(ui, theme, "Tags", &format!("{}{}", preview, suffix));
+            }
+
+            ui.add_space(4.0);
+            arclain_widgets::Text::new("Used by Organizer + Process")
+                .size(10.0)
+                .muted()
+                .show(ui);
+        });
+}
+
+fn metadata_row(ui: &mut egui::Ui, theme: &AppTheme, label: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{}:", label))
+                .size(11.0)
+                .color(theme.colors.on_surface_variant),
+        );
+        ui.label(
+            egui::RichText::new(value)
+                .size(11.0)
+                .color(theme.colors.on_surface),
+        );
+    });
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max - 1).collect();
+        format!("{}…", truncated)
+    }
 }
 
 /// Render a small plugin status indicator using StatusIcon

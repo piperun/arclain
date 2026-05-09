@@ -209,12 +209,19 @@ pub fn render_status_bar_panel(
                 None
             };
 
+            // The current "selected" item is whatever metadata the
+            // host has stored from the most recent emit_metadata call.
+            // The chip in the status bar surfaces it to the user so
+            // they know both Organizer and Process will use this entry.
+            let selected_item = shared_state.signals().game_metadata.get();
+
             components::status_bar::render(
                 ui,
                 &shared_state.theme,
                 status_info,
                 archive_loaded,
                 plugin_info.as_ref(),
+                selected_item.as_ref(),
             );
         });
 }
