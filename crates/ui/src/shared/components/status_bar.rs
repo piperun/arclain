@@ -152,23 +152,11 @@ fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMet
         )
     };
 
-    // Render the chip ourselves rather than via `arclain_widgets::Chips`
-    // because that widget returns the frame's hover-only response —
-    // can't be clicked, and the inner ui.label enables text drag-select
-    // which is what made the cursor "float" over the chip. Building it
-    // as an egui::Button with chip-styled fill/stroke/rounding gives
-    // proper click semantics AND lets the row vertically-center it
-    // alongside the muted text labels.
-    let chip_text = egui::RichText::new(&label)
-        .size(12.0)
-        .color(theme.colors.on_surface);
     let response = ui
         .add(
-            egui::Button::new(chip_text)
-                .fill(theme.colors.surface_variant)
-                .stroke(egui::Stroke::new(1.0, theme.colors.outline))
-                .corner_radius(12.0)
-                .min_size(egui::vec2(0.0, 18.0)),
+            arclain_widgets::Chips::new(&label)
+                .with_theme_colors(&theme.colors)
+                .clickable(true),
         )
         .on_hover_text("Click to see what's selected");
 
