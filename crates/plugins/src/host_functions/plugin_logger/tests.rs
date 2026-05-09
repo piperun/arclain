@@ -1,5 +1,21 @@
-use super::TokenBucket;
+use super::{PluginLogger, TokenBucket};
+use std::path::PathBuf;
 use std::time::Duration;
+
+fn temp_log_dir() -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let id = COUNTER.fetch_add(1, Ordering::SeqCst);
+    let mut p = std::env::temp_dir();
+    p.push(format!(
+        "arclain_plugin_logger_test_{}_{}",
+        std::process::id(),
+        id
+    ));
+    let _ = std::fs::remove_dir_all(&p);
+    std::fs::create_dir_all(&p).unwrap();
+    p
+}
 
 #[test]
 fn token_bucket_allows_burst_up_to_capacity() {
@@ -35,4 +51,41 @@ fn token_bucket_refills_at_configured_rate() {
         "expected ~50 refilled tokens after 50 ms, got {}",
         taken
     );
+}
+
+#[test]
+fn logger_writes_to_per_plugin_dated_file() {
+    let dir = temp_log_dir();
+    let logger = PluginLogger::new("dlsite-metadata", &dir);
+
+    logger.write("hello from plugin");
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let path = dir.join(format!("dlsite-metadata-{}.log", today));
+    assert!(path.exists(), "log file at {:?} should exist", path);
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(content.contains("hello from plugin"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn logger_isolates_plugins_into_different_files() {
+    let dir = temp_log_dir();
+    let a = PluginLogger::new("plugin-a", &dir);
+    let b = PluginLogger::new("plugin-b", &dir);
+
+    a.write("from A");
+    b.write("from B");
+
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let a_path = dir.join(format!("plugin-a-{}.log", today));
+    let b_path = dir.join(format!("plugin-b-{}.log", today));
+
+    let a_content = std::fs::read_to_string(&a_path).unwrap();
+    let b_content = std::fs::read_to_string(&b_path).unwrap();
+    assert!(a_content.contains("from A") && !a_content.contains("from B"));
+    assert!(b_content.contains("from B") && !b_content.contains("from A"));
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
