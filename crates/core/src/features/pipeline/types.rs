@@ -168,9 +168,13 @@ impl PipelineOutput {
     }
 }
 
-/// Pick the stem to use for the output path. Metadata title (sanitized
-/// for filesystem use) wins when available; otherwise we fall back to
-/// the input file's stem.
+/// Pick the stem to use for the output path, preferred order:
+///   1. Sanitized metadata title (when a plugin emitted metadata for
+///      this archive).
+///   2. Detected product code from the filename — strips any
+///      group/scene prefix and uses the bare code as the stem.
+///   3. Raw input file stem (last resort, also covers archives that
+///      don't match any product-code regex).
 fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> OsString {
     if let Some(meta) = metadata {
         let title = meta.title.trim();
@@ -181,6 +185,13 @@ fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> OsString {
             }
         }
     }
+
+    if let Some(name) = input.file_name().and_then(|n| n.to_str()) {
+        if let Some(code) = crate::utilities::detect_dlsite_code(name) {
+            return OsString::from(code);
+        }
+    }
+
     input.file_stem().unwrap_or_default().to_os_string()
 }
 
