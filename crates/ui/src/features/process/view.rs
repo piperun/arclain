@@ -11,7 +11,8 @@ use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, Text, TextButton, 
 use eframe::egui;
 
 pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPageState) {
-    state.refresh_preview();
+    let selected_metadata = shared.signals().game_metadata.get();
+    state.refresh_preview(selected_metadata.as_ref());
     state.ensure_interrupted_count(shared.services.config_db.as_ref());
 
     // Sync is_running from the signal
@@ -294,7 +295,8 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
 
     if any_changed {
         state.mark_dirty();
-        state.refresh_preview();
+        let selected_metadata = shared.signals().game_metadata.get();
+        state.refresh_preview(selected_metadata.as_ref());
     }
 
     if state.pipeline.steps.is_empty() {

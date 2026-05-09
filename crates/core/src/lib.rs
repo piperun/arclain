@@ -28,10 +28,10 @@ pub use features::organization::{
 };
 pub use features::pipeline::{
     builtin_presets, default_presets_path, execute_pipeline, load_presets, preview_pipeline,
-    save_presets, OutputArtifact, OutputCollisionPolicy, OutputIdentity, OutputKind, Pipeline,
-    PipelineContext, PipelineInput, PipelineOutput, PipelinePreview, PipelineProgress,
-    PipelineStep, PresetsFile, PreviewEntry, ProcessPreset, SavedPreset,
-    COLLISION_POLICY_CONFIG_KEY,
+    preview_pipeline_with_metadata, save_presets, OutputArtifact, OutputCollisionPolicy,
+    OutputIdentity, OutputKind, Pipeline, PipelineContext, PipelineInput, PipelineOutput,
+    PipelinePreview, PipelineProgress, PipelineStep, PresetsFile, PreviewEntry, ProcessPreset,
+    SavedPreset, COLLISION_POLICY_CONFIG_KEY,
 };
 pub use services::{CacheService, ConfigService, LibraryService, OrganizationService, UiService};
 pub use utilities::{init_logging, FileOpener, OpenStrategy};

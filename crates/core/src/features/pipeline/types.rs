@@ -1,6 +1,8 @@
 //! Core data types for archive processing pipelines.
 
 use crate::features::conversion::{CompressionLevel, ConvertFormat};
+use crate::features::organization::metadata::GameMetadata;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// A single operation that can appear in a pipeline.
@@ -101,19 +103,35 @@ impl Default for PipelineOutput {
 
 impl PipelineOutput {
     /// Resolve the output path for a given input file with the target extension.
+    /// Uses the input's file stem; for metadata-aware naming see
+    /// `resolve_with_metadata`.
     pub fn resolve(&self, input: &Path, ext: &str) -> PathBuf {
-        let stem = input.file_stem().unwrap_or_default();
+        self.resolve_with_metadata(input, ext, None)
+    }
+
+    /// Like `resolve`, but uses the metadata's sanitized title as the
+    /// output stem when present. Falls back to the input's stem when
+    /// metadata is `None` or its title is empty. Used by the pipeline
+    /// executor + UI preview so the output matches the "Item selected"
+    /// chip (e.g. `<title>.zip` instead of `<original>.zip`).
+    pub fn resolve_with_metadata(
+        &self,
+        input: &Path,
+        ext: &str,
+        metadata: Option<&GameMetadata>,
+    ) -> PathBuf {
+        let stem = stem_from(input, metadata);
         match self {
             Self::SameFolder => {
                 let mut p = input.parent().map(|p| p.to_path_buf()).unwrap_or_default();
-                let mut name = stem.to_os_string();
+                let mut name = stem;
                 name.push(format!(".{}", ext));
                 p.push(name);
                 p
             }
             Self::NewFolder(folder) => {
                 let mut p = folder.clone();
-                let mut name = stem.to_os_string();
+                let mut name = stem;
                 name.push(format!(".{}", ext));
                 p.push(name);
                 p
@@ -125,7 +143,16 @@ impl PipelineOutput {
     /// `resolve` but without an extension. Used when the pipeline leaves its
     /// result as a directory instead of an archive.
     pub fn resolve_folder(&self, input: &Path) -> PathBuf {
-        let stem = input.file_stem().unwrap_or_default();
+        self.resolve_folder_with_metadata(input, None)
+    }
+
+    /// Folder counterpart of `resolve_with_metadata`.
+    pub fn resolve_folder_with_metadata(
+        &self,
+        input: &Path,
+        metadata: Option<&GameMetadata>,
+    ) -> PathBuf {
+        let stem = stem_from(input, metadata);
         match self {
             Self::SameFolder => {
                 let mut p = input.parent().map(|p| p.to_path_buf()).unwrap_or_default();
@@ -139,6 +166,22 @@ impl PipelineOutput {
             }
         }
     }
+}
+
+/// Pick the stem to use for the output path. Metadata title (sanitized
+/// for filesystem use) wins when available; otherwise we fall back to
+/// the input file's stem.
+fn stem_from(input: &Path, metadata: Option<&GameMetadata>) -> OsString {
+    if let Some(meta) = metadata {
+        let title = meta.title.trim();
+        if !title.is_empty() {
+            let sanitized = crate::utilities::title_filter::sanitize_title(title);
+            if !sanitized.is_empty() {
+                return OsString::from(sanitized);
+            }
+        }
+    }
+    input.file_stem().unwrap_or_default().to_os_string()
 }
 
 /// Complete pipeline specification.
