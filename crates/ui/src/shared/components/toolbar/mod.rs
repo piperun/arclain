@@ -29,11 +29,10 @@ pub fn render(
 ) -> ToolbarActions {
     let mut actions = ToolbarActions::default();
 
-    // Collect plugin actions for processing after render
-    let collected_actions: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
-        Arc::new(Mutex::new(Vec::new()));
-
-    // Collect dialog signals for processing after render
+    // Collect dialog open/close signals for processing after render.
+    // These are pure UI-state mutations (no plugin work) and stay
+    // synchronous; plugin events themselves go through the async
+    // dispatcher below.
     let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Pre-fetch plugin elements
@@ -123,59 +122,34 @@ pub fn render(
         }
     });
 
-    // Process plugin events collected from render_button
-    if let Some(manager_arc) = plugin_manager {
-        let manager = manager_arc.lock();
-        let actions_sink = collected_actions.clone();
-        let dialog_sink = dialog_signals.clone();
+    // Process plugin events collected from render_button. Dialog
+    // control prefixes stay synchronous (UI-state only); plugin
+    // events go through the async dispatcher so the WASM call doesn't
+    // block the UI thread.
+    let dialog_sink = dialog_signals.clone();
+    for (plugin_id, event_id, value) in actions.plugin_events.drain(..) {
+        if event_id.starts_with("__dialog_open:") {
+            let dialog_id = event_id.trim_start_matches("__dialog_open:").to_string();
+            dialog_sink.lock().push((plugin_id, dialog_id));
+            continue;
+        }
+        if event_id == "__dialog_close" {
+            dialog_sink.lock().push((plugin_id, "__close".to_string()));
+            continue;
+        }
 
-        for (plugin_id, event_id, value) in actions.plugin_events.drain(..) {
-            // Check for dialog control signals
-            if event_id.starts_with("__dialog_open:") {
-                let dialog_id = event_id.trim_start_matches("__dialog_open:").to_string();
-                dialog_sink.lock().push((plugin_id.clone(), dialog_id));
-                continue;
-            }
-            if event_id == "__dialog_close" {
-                dialog_sink
-                    .lock()
-                    .push((plugin_id.clone(), "__close".to_string()));
-                continue;
-            }
-
-            // Send to plugin
-            let _ = manager.with_plugin_instance(&plugin_id, |instance| {
-                if let Ok(returned_actions) = instance.send_ui_event(&event_id, value.clone()) {
-                    let mut sink = actions_sink.lock();
-                    for a in returned_actions {
-                        sink.push((plugin_id.clone(), a));
-                    }
-                }
-                Ok::<_, anyhow::Error>(())
-            });
+        if let Some(shared) = shared {
+            crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+                shared, plugin_id, event_id, value,
+            );
         }
     }
 
-    // Process collected plugin actions and dialog signals
+    // Process dialog signals (synchronous — pure signal mutation).
     if let Some(shared) = shared {
-        let actions_list = collected_actions.lock();
-        let mut toaster = shared.toaster.lock();
         let dialog_signal = shared.signals().plugin_dialog_state.clone();
         let mut dialog_state = dialog_signal.get();
 
-        for (plugin_id, plugin_action) in actions_list.iter() {
-            crate::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
-                vec![plugin_action.clone()],
-                plugin_id,
-                &mut dialog_state,
-                &mut toaster,
-                Some(&shared.refresh_requests),
-                Some(&shared.signals().lightbox_state),
-                Some(shared),
-            );
-        }
-
-        // Process dialog signals
         let dialog_sigs = dialog_signals.lock();
         for (plugin_id, dialog_id) in dialog_sigs.iter() {
             if dialog_id == "__close" {
