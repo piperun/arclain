@@ -5,7 +5,23 @@ use crate::core::navigation::{AppPage, SettingsPage};
 use crate::core::{app_lifecycle, app_rendering, operations};
 use eframe::egui;
 
-pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    let __frame_start = std::time::Instant::now();
+    update_app_inner(app, ctx, frame);
+    let __elapsed = __frame_start.elapsed();
+    // DIAGNOSTIC: a UI frame normally takes 1-15ms. If we're seeing
+    // multi-second frames the UI thread is blocked on something —
+    // the warning below names the call so the freeze is locatable
+    // in arclain.log without needing a profiler.
+    if __elapsed > std::time::Duration::from_millis(100) {
+        tracing::warn!(
+            "[FREEZE-DIAG] update_app took {} ms (target <16 ms)",
+            __elapsed.as_millis()
+        );
+    }
+}
+
+fn update_app_inner(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe::Frame) {
     // FPS tracking — trace level only (use RUST_LOG=trace to see)
     static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     static FRAME_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -24,10 +40,18 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         LAST_LOG.store(now, std::sync::atomic::Ordering::Relaxed);
     }
     // === Handle files dropped from Explorer ===
+    let __t = std::time::Instant::now();
     crate::core::arclain_app::drop_handler::handle_drop_events(app, ctx);
+    if __t.elapsed() > std::time::Duration::from_millis(50) {
+        tracing::warn!("[FREEZE-DIAG] drop_handler {} ms", __t.elapsed().as_millis());
+    }
 
     // === Lifecycle: Refresh requests, signals, theme ===
+    let __t = std::time::Instant::now();
     app_lifecycle::process_refresh_requests(&app.shared_state, ctx);
+    if __t.elapsed() > std::time::Duration::from_millis(50) {
+        tracing::warn!("[FREEZE-DIAG] process_refresh_requests {} ms", __t.elapsed().as_millis());
+    }
     app_lifecycle::bind_signals_once(&app.shared_state.app_state, ctx, &mut app._signals_bound);
 
     // Apply theme only once on init or when dark_mode changes (prevent continuous repaint loop)
@@ -207,7 +231,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     }
 
     // === Lifecycle: Process metadata signal updates from plugins ===
+    let __t = std::time::Instant::now();
     app_lifecycle::process_metadata_signal(&app.shared_state, &mut app.organization_feature);
+    if __t.elapsed() > std::time::Duration::from_millis(50) {
+        tracing::warn!("[FREEZE-DIAG] process_metadata_signal {} ms", __t.elapsed().as_millis());
+    }
 
     // === Lifecycle: Handle extraction progress from native backends ===
     {
@@ -294,12 +322,16 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     }
 
     // === Render Header Panel ===
+    let __t = std::time::Instant::now();
     let header_actions = app_rendering::render_header_panel(
         ctx,
         &app.shared_state,
         &app.page_navigator,
         &mut app.header_state,
     );
+    if __t.elapsed() > std::time::Duration::from_millis(50) {
+        tracing::warn!("[FREEZE-DIAG] render_header_panel {} ms", __t.elapsed().as_millis());
+    }
 
     // Handle header actions
     if header_actions.theme_toggle {
@@ -323,8 +355,12 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     }
 
     // === Render Tab Bar Panel ===
+    let __t = std::time::Instant::now();
     let tab_action =
         app_rendering::render_tab_bar_panel(ctx, &app.shared_state, &mut app.top_tab_bar_state);
+    if __t.elapsed() > std::time::Duration::from_millis(50) {
+        tracing::warn!("[FREEZE-DIAG] render_tab_bar_panel {} ms", __t.elapsed().as_millis());
+    }
 
     // Handle tab bar actions
     match tab_action {
@@ -364,7 +400,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     }
 
     // Render Toolbar (only on Main page AND when Archive context is active)
+    let __t = std::time::Instant::now();
     crate::core::arclain_app::toolbar_handler::render_toolbar(app, ctx);
+    if __t.elapsed() > std::time::Duration::from_millis(50) {
+        tracing::warn!("[FREEZE-DIAG] render_toolbar {} ms", __t.elapsed().as_millis());
+    }
 
     // === Render Path Bar (Archive context only) ===
     // === Render Path Bar (Archive context only) ===
@@ -393,8 +433,16 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     crate::core::arclain_app::dialog_handler::render_dialogs(app, ctx);
 
     // Render Main Content
+    let __t = std::time::Instant::now();
     crate::core::arclain_app::content_handler::render_content(app, ctx);
+    if __t.elapsed() > std::time::Duration::from_millis(50) {
+        tracing::warn!("[FREEZE-DIAG] render_content {} ms", __t.elapsed().as_millis());
+    }
 
     // Render toast notifications (always on top) & Plugin Dialog & Logs
+    let __t = std::time::Instant::now();
     crate::core::arclain_app::dialog_handler::render_overlays(app, ctx);
+    if __t.elapsed() > std::time::Duration::from_millis(50) {
+        tracing::warn!("[FREEZE-DIAG] render_overlays {} ms", __t.elapsed().as_millis());
+    }
 }
