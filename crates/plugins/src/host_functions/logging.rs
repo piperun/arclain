@@ -2,17 +2,27 @@
 
 use super::HostFunctions;
 use crate::arclain::plugin::host::LogLevel;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, warn};
 
 impl HostFunctions {
     pub(super) fn impl_log(&mut self, level: LogLevel, message: String) {
+        // Always escalate ERROR and WARN to arclain.log so operators
+        // see them without grepping per-plugin files. INFO/DEBUG/TRACE
+        // go to the per-plugin file only.
         match level {
-            LogLevel::Error => error!("[Plugin] {}", message),
-            LogLevel::Warn => warn!("[Plugin] {}", message),
-            LogLevel::Info => info!("[Plugin] {}", message),
-            LogLevel::Debug => debug!("[Plugin] {}", message),
-            LogLevel::Trace => trace!("[Plugin] {}", message),
+            LogLevel::Error => error!("[Plugin {}] {}", self.plugin_id, message),
+            LogLevel::Warn => warn!("[Plugin {}] {}", self.plugin_id, message),
+            _ => {}
         }
+
+        let prefixed = match level {
+            LogLevel::Error => format!("ERROR {}", message),
+            LogLevel::Warn => format!("WARN  {}", message),
+            LogLevel::Info => format!("INFO  {}", message),
+            LogLevel::Debug => format!("DEBUG {}", message),
+            LogLevel::Trace => format!("TRACE {}", message),
+        };
+        self.plugin_logger.write(&prefixed);
     }
 
     pub(super) fn impl_log_network_activity(&mut self, message: String) {

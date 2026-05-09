@@ -10,6 +10,8 @@ mod metadata;
 mod plugin_logger;
 mod settings;
 
+pub use plugin_logger::PluginLogger;
+
 use crate::arclain::plugin::host::{Host, LogLevel};
 use crate::types::PluginCapability;
 use arclain_core::ArchiveBackend;
@@ -60,6 +62,21 @@ pub struct HostFunctions {
 
     // Pending clipboard text from plugin (to be copied by UI)
     pub pending_clipboard: Arc<Mutex<Option<String>>>,
+
+    /// Per-plugin log file with rate limit + size cap. ERROR/WARN
+    /// lines also escalate to arclain.log; INFO/DEBUG/TRACE go here
+    /// only.
+    pub plugin_logger: Arc<PluginLogger>,
+}
+
+/// Default location for per-plugin log files. Mirrors
+/// `init_logging`'s arclain.log directory: `{data_dir}/arclain/logs/plugins`.
+fn default_plugin_log_dir() -> std::path::PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("arclain")
+        .join("logs")
+        .join("plugins")
 }
 
 impl HostFunctions {
@@ -71,6 +88,11 @@ impl HostFunctions {
     ) -> Self {
         // Initialize WASI context
         let ctx = WasiCtxBuilder::new().inherit_stdio().inherit_args().build();
+
+        let plugin_logger = Arc::new(PluginLogger::new(
+            &plugin_id,
+            &default_plugin_log_dir(),
+        ));
 
         Self {
             plugin_id: plugin_id.clone(),
@@ -96,6 +118,7 @@ impl HostFunctions {
             metadata_signal: None,
             pending_status_message: Arc::new(Mutex::new(None)),
             pending_clipboard: Arc::new(Mutex::new(None)),
+            plugin_logger,
         }
     }
 
