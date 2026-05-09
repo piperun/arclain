@@ -13,7 +13,7 @@ use egui_kittest::Harness;
 fn switch_renders_without_panic() {
     let mut harness = Harness::new_ui_state(
         |ui, value: &mut bool| {
-            ui.add(arclain_ui::shared::components::switch::Switch::new(value));
+            ui.add(arclain_widgets::ToggleSwitch::new(value));
         },
         false,
     );

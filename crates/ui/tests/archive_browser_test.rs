@@ -11,7 +11,7 @@ use arclain_widgets::Toaster;
 
 use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::backends::BackendSelector;
-use arclain_db::UserConfig;
+use arclain_core::UserConfig;
 use eframe::egui;
 use parking_lot::Mutex;
 use std::path::PathBuf;
