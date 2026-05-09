@@ -46,6 +46,7 @@ fn create_test_shared_state() -> SharedState {
         theme: AppTheme::new(false),
         toaster: Arc::new(Mutex::new(Toaster::new())),
         refresh_requests: Arc::new(Mutex::new(Vec::new())),
+        pending_plugin_actions: Arc::new(Mutex::new(Vec::new())),
         signals,
     }
 }
