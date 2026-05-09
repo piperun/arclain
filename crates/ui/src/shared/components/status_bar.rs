@@ -136,25 +136,28 @@ pub fn render(
 /// metadata fields that both the Organizer and Process pages will
 /// consume.
 fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMetadata) {
-    // Build a short label: title is the most informative, with the
-    // product code as a fallback when the plugin only had the id.
+    // Title is the most informative, with the product code as a
+    // fallback when the plugin only had the id. The icon goes through
+    // `Chips::icon` rather than being inlined in the label so the
+    // phosphor font's baseline tweak doesn't push it out of vertical
+    // alignment with the text.
     let label = if !meta.title.is_empty() {
-        format!(
-            "{} {}",
-            egui_phosphor::regular::CHECK_CIRCLE,
-            truncate_chars(&meta.title, 40)
-        )
+        truncate_chars(&meta.title, 40)
     } else {
-        format!(
-            "{} {}",
-            egui_phosphor::regular::CHECK_CIRCLE,
-            meta.product_id
-        )
+        meta.product_id.clone()
     };
 
+    // U+2713 CHECK MARK as the "selected" indicator. We can't use
+    // egui_phosphor's CHECK_CIRCLE here because the phosphor font has
+    // a y_offset_factor tweak applied at load time (arclain_theme::fonts)
+    // — when phosphor glyphs sit next to regular text, they render
+    // ~15% font_size higher than the text. A plain Unicode glyph
+    // routes through the proportional / CJK fallback fonts which
+    // share a baseline with the title text, so they line up.
     let response = ui
         .add(
             arclain_widgets::Chips::new(&label)
+                .icon("\u{2713}")
                 .with_theme_colors(&theme.colors)
                 .clickable(true),
         )

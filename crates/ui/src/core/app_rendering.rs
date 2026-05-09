@@ -171,7 +171,10 @@ pub fn render_status_bar_panel(
     status_info: &mut components::StatusBarInfo,
 ) {
     egui::TopBottomPanel::bottom("status_bar")
-        .exact_height(28.0)
+        // Tall enough to fit a pill-style chip (Chips widget renders
+        // as Frame + Label, ~22px content height); previous 28px
+        // squeezed the chip and made centering unreliable.
+        .exact_height(36.0)
         .frame(
             egui::Frame::NONE
                 .fill(shared_state.theme.colors.surface_variant)

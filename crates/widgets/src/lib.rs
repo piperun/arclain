@@ -18,12 +18,14 @@
 pub mod button;
 pub mod chips;
 pub mod collapsible_section;
+pub mod debug;
 pub mod dropdown;
 pub mod icon_button;
 pub mod segmented_control;
 pub mod selectable_chip;
 pub mod text;
 pub mod text_input;
+pub mod text_layout;
 pub mod themed_slider;
 pub mod toast;
 pub mod toggle_button;
@@ -32,12 +34,20 @@ pub mod toggle_switch;
 pub use button::{ButtonSize, TextButton};
 pub use chips::Chips;
 pub use collapsible_section::CollapsibleSection;
+pub use debug::{
+    paint_centering_debug, paint_child_in_parent_debug, paint_text_centering_debug,
+    paint_widget_rect_debug,
+};
 pub use dropdown::ThemedDropdown;
 pub use icon_button::{IconButton, IconButtonSize};
 pub use segmented_control::SegmentedControl;
 pub use selectable_chip::SelectableChip;
 pub use text::{get_theme, pixel_align, set_theme, Text};
 pub use text_input::{TextInput, TextInputSize, TextInputState, TextInputResponse, SlotContent};
+pub use text_layout::{
+    layout_text_visually_centered, paint_text_left_in_rect_visually_centered,
+    paint_text_visually_centered,
+};
 pub use themed_slider::ThemedSlider;
 pub use toast::{Toast, ToastLevel, Toaster};
 pub use toggle_button::ToggleButton;
