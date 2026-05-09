@@ -120,7 +120,7 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                 let local_sink: StdArc<PlMutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
                     StdArc::new(PlMutex::new(Vec::new()));
                 let pm = pm_arc.lock();
-                crate::features::plugins::presentation::dispatch::dispatch_plugin_event_blocking(
+                let ran = crate::features::plugins::presentation::dispatch::dispatch_plugin_event_blocking(
                     &pm,
                     &plugin_id,
                     "__page_init",
@@ -129,31 +129,40 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                 );
                 drop(pm); // Release lock before processing actions
 
-                let actions: Vec<arclain_plugins::types::PluginAction> = local_sink
-                    .lock()
-                    .drain(..)
-                    .map(|(_, a)| a)
-                    .collect();
-                if !actions.is_empty() {
-                    let mut toaster = shared.toaster.lock();
+                // Only clear page_needs_init when the dispatch actually
+                // ran. If it bailed because a worker was mid-event we
+                // leave the flag set so the next frame retries — and
+                // request_repaint to make sure the next frame happens
+                // soon (otherwise repaint may not fire until input).
+                if ran {
+                    let actions: Vec<arclain_plugins::types::PluginAction> = local_sink
+                        .lock()
+                        .drain(..)
+                        .map(|(_, a)| a)
+                        .collect();
                     let mut ds = shared.signals().plugin_dialog_state.get();
-                    ds.page_needs_init = false; // Clear flag
-                    let ctx = crate::features::plugins::presentation::controllers::plugin_controller::ActionContext {
-                        lightbox_signal: Some(&shared.signals().lightbox_state),
-                        page_display_name_signal: Some(&shared.signals().page_display_name),
-                        shared_state: Some(shared),
-                    };
-                    for action in actions {
-                        crate::features::plugins::presentation::controllers::plugin_controller::process_action(
-                            action,
-                            &plugin_id,
-                            &mut ds,
-                            &mut toaster,
-                            None,
-                            &ctx,
-                        );
+                    ds.page_needs_init = false;
+                    if !actions.is_empty() {
+                        let mut toaster = shared.toaster.lock();
+                        let ctx = crate::features::plugins::presentation::controllers::plugin_controller::ActionContext {
+                            lightbox_signal: Some(&shared.signals().lightbox_state),
+                            page_display_name_signal: Some(&shared.signals().page_display_name),
+                            shared_state: Some(shared),
+                        };
+                        for action in actions {
+                            crate::features::plugins::presentation::controllers::plugin_controller::process_action(
+                                action,
+                                &plugin_id,
+                                &mut ds,
+                                &mut toaster,
+                                None,
+                                &ctx,
+                            );
+                        }
                     }
                     shared.signals().plugin_dialog_state.set(ds);
+                } else {
+                    ctx.request_repaint();
                 }
             }
         }

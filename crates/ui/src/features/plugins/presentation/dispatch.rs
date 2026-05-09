@@ -76,28 +76,37 @@ pub fn dispatch_plugin_event(
     });
 }
 
-/// Synchronous variant for code paths that *must* see the actions
-/// immediately (e.g. opening a plugin page where the layout fetch
-/// depends on `__page_init` having run). Locks the UI thread.
+/// Synchronous-when-possible variant for code paths that *must* see
+/// the actions before the next paint (e.g. opening a plugin page
+/// where the breadcrumb display name action must apply this frame).
 ///
-/// AVOID where possible — only used for `__page_init`-style events
-/// that the UI synchronously needs the response from. The callers'
-/// motivation is documented inline at each use site.
+/// Returns `true` if the event ran (lock was free). Returns `false`
+/// if the instance lock was held by a worker (e.g. mid-fetch); the
+/// caller should leave whatever flag triggered the dispatch SET so
+/// the next frame retries — that way the UI doesn't freeze waiting
+/// for a long-running plugin event to finish, but the action still
+/// runs eventually.
 pub fn dispatch_plugin_event_blocking(
     manager: &PluginManager,
     plugin_id: &str,
     event_id: &str,
     value: Option<String>,
     sink: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
-) {
+) -> bool {
     let Some(instance_arc) = manager.get_plugin_instance(plugin_id) else {
-        return;
+        return true; // No instance to dispatch to — treat as "done".
     };
-    let mut instance = instance_arc.lock();
+    let Some(mut instance) = instance_arc.try_lock() else {
+        // Worker thread is mid-event (e.g. holding the lock during a
+        // DLSite fetch). Bail rather than freeze the UI; caller
+        // retries on the next frame.
+        return false;
+    };
     if let Ok(actions) = instance.send_ui_event(event_id, value) {
         let mut s = sink.lock();
         for a in actions {
             s.push((plugin_id.to_string(), a));
         }
     }
+    true
 }
