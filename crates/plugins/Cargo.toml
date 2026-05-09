@@ -28,3 +28,4 @@ gameta_lib = { path = "../../../../codeberg/gameta/gameta_lib", features = ["dls
 
 [dev-dependencies]
 tempfile.workspace = true
+tracing-test = "0.2"

@@ -23,6 +23,10 @@ const DEFAULT_BURST: u32 = 10_000;
 /// Hard byte cap per plugin per day. Beyond this we drop further
 /// writes for the rest of the day.
 pub(crate) const DEFAULT_DAILY_BYTE_CAP: u64 = 50 * 1024 * 1024; // 50 MiB
+/// Minimum spacing between drop-summary lines emitted to arclain.log.
+/// One line per ~10 s is enough to make a misbehaving plugin visible
+/// without itself becoming the noise.
+const SUMMARY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Per-plugin file logger. One instance per plugin, lives in
 /// `HostFunctions`. Lazy-opens the log file on first write so plugins
@@ -119,10 +123,12 @@ impl PluginLogger {
         let line = format!("{} {}\n", timestamp, message);
         if s.bytes_written + line.len() as u64 > self.byte_cap {
             s.dropped_since_summary += 1;
+            drop(s);
+            self.maybe_flush_summary();
             return false;
         }
 
-        if let Some(file) = s.file.as_mut() {
+        let written = if let Some(file) = s.file.as_mut() {
             match file.write_all(line.as_bytes()) {
                 Ok(()) => {
                     s.bytes_written += line.len() as u64;
@@ -136,7 +142,46 @@ impl PluginLogger {
         } else {
             s.dropped_since_summary += 1;
             false
+        };
+        drop(s);
+        self.maybe_flush_summary();
+        written
+    }
+
+    /// Emit a "dropped N lines" summary to arclain.log if more than
+    /// SUMMARY_INTERVAL has elapsed since the last summary AND there
+    /// are drops to report. Called from `write` (so the cost is
+    /// amortized across legitimate writes); plugins that spam without
+    /// any successful writes still get a summary on their next
+    /// dropped attempt.
+    pub fn maybe_flush_summary(&self) {
+        let mut s = self.state.lock();
+        if s.dropped_since_summary == 0 {
+            return;
         }
+        if s.last_summary.elapsed() < SUMMARY_INTERVAL {
+            return;
+        }
+        let dropped = std::mem::replace(&mut s.dropped_since_summary, 0);
+        s.last_summary = std::time::Instant::now();
+        drop(s);
+        tracing::warn!(
+            "[plugin-logger] {} dropped {} log lines (rate or byte-cap)",
+            self.plugin_id,
+            dropped
+        );
+    }
+
+    #[cfg(test)]
+    pub fn flush_drop_summary_for_test(&self) {
+        let mut s = self.state.lock();
+        let dropped = std::mem::replace(&mut s.dropped_since_summary, 0);
+        drop(s);
+        tracing::warn!(
+            "[plugin-logger] {} dropped {} log lines (rate or byte-cap)",
+            self.plugin_id,
+            dropped
+        );
     }
 }
 
