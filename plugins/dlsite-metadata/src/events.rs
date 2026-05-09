@@ -136,10 +136,27 @@ pub(crate) fn dispatch(
                 let metadata_json =
                     generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
                 archust_plugin_sdk::emit_metadata(&metadata_json);
+
+                // Mirror the select_result_ / refetch_entry_ paths: kick off
+                // image + video downloads after metadata so the new entry
+                // shows up complete in the DLSite browser. Without this,
+                // auto-fetched archives ended up in the DB but rendered
+                // without cover/screenshots, and `cache_videos = true`
+                // never produced any video downloads.
+                if let Some(ref s) = scraped {
+                    fetch_images_with_progress(&code, s);
+                    fetch_videos_with_progress(&code, s);
+                }
+
                 STATE.with(|s| {
                     let mut state = s.borrow_mut();
                     state.found_metadata = Some((code.clone(), json, scraped));
                     state.fetch_in_progress = false;
+                    // Drop the browser-list caches so the newly cached
+                    // entry shows up on the DLSite tab without a manual
+                    // refresh.
+                    state.cached_entries = None;
+                    state.cached_summaries = None;
                 });
             }
             None => {
