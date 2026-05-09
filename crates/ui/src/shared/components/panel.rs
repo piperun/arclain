@@ -189,23 +189,27 @@ impl Panel {
                     elements,
                 } => {
                     if let Some(manager_arc) = plugin_manager {
-                        // Get plugin instance handle
-                        let instance_arc = {
+                        // Quick check that the plugin instance still
+                        // exists; the dispatcher does the same lookup
+                        // again on its background thread, but rendering
+                        // an empty panel for a missing plugin is the
+                        // right thing to do here.
+                        let instance_exists = {
                             let manager = manager_arc.lock();
-                            manager.get_plugin_instance(plugin_id)
+                            manager.get_plugin_instance(plugin_id).is_some()
                         };
 
-                        if let Some(ref instance_arc) = instance_arc {
-                            let instance_arc = instance_arc.clone();
+                        if instance_exists {
                             let pid = plugin_id.clone();
 
                             // Get dialog state for navigation
                             let dialog_signal =
                                 shared.map(|s| s.signals().plugin_dialog_state.clone());
+                            let shared_owned = shared.cloned();
 
                             let mut callback: ui::UiEventCallback =
                                 Box::new(move |element_id: &str, value: Option<String>| {
-                                    // Handle page navigation
+                                    // Handle page navigation (UI-state only)
                                     if element_id.starts_with("__page_open:") {
                                         if let Some(ref signal) = dialog_signal {
                                             let page_id =
@@ -217,7 +221,7 @@ impl Panel {
                                         return;
                                     }
 
-                                    // Handle dialog open
+                                    // Handle dialog open (UI-state only)
                                     if element_id.starts_with("__dialog_open:") {
                                         if let Some(ref signal) = dialog_signal {
                                             let dialog_id =
@@ -229,9 +233,17 @@ impl Panel {
                                         return;
                                     }
 
-                                    // Normal event - send to plugin
-                                    let mut instance = instance_arc.lock();
-                                    let _ = instance.send_ui_event(element_id, value);
+                                    // Plugin event — async dispatch so
+                                    // the WASM call doesn't block the
+                                    // UI thread.
+                                    if let Some(ref s) = shared_owned {
+                                        crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+                                            s,
+                                            pid.clone(),
+                                            element_id.to_string(),
+                                            value,
+                                        );
+                                    }
                                 });
 
                             ui::render_ui_elements(

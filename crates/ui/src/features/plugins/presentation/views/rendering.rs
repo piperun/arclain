@@ -96,20 +96,37 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
         return false;
     };
 
-    // Send __page_init event if this page was just opened (for SetPageDisplayName etc)
+    // Send __page_init event if this page was just opened (for SetPageDisplayName etc).
+    //
+    // This path uses the BLOCKING dispatch variant because any
+    // `SetPageDisplayName` action returned has to be applied to the
+    // breadcrumb signal BEFORE this same frame paints the breadcrumb.
+    // Pushing into shared.pending_plugin_actions and waiting for the
+    // next render would render once with the wrong title.
     {
         let needs_init = shared.signals().plugin_dialog_state.get().page_needs_init;
         if needs_init {
-            // Send init event to plugin
             if let Some(pm_arc) = &shared.services.plugin_manager {
+                use parking_lot::Mutex as PlMutex;
+                use std::sync::Arc as StdArc;
+                let local_sink: StdArc<PlMutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
+                    StdArc::new(PlMutex::new(Vec::new()));
                 let pm = pm_arc.lock();
-                if let Some(actions) = pm
-                    .with_plugin_instance(&plugin_id, |instance| {
-                        instance.send_ui_event("__page_init", Some(page_id.clone())).ok()
-                    })
-                    .flatten()
-                {
-                    drop(pm); // Release lock before processing actions
+                crate::features::plugins::presentation::dispatch::dispatch_plugin_event_blocking(
+                    &pm,
+                    &plugin_id,
+                    "__page_init",
+                    Some(page_id.clone()),
+                    &local_sink,
+                );
+                drop(pm); // Release lock before processing actions
+
+                let actions: Vec<arclain_plugins::types::PluginAction> = local_sink
+                    .lock()
+                    .drain(..)
+                    .map(|(_, a)| a)
+                    .collect();
+                if !actions.is_empty() {
                     let mut toaster = shared.toaster.lock();
                     let mut ds = shared.signals().plugin_dialog_state.get();
                     ds.page_needs_init = false; // Clear flag
