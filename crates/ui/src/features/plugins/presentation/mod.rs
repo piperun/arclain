@@ -1,4 +1,5 @@
 pub mod controllers;
+pub mod dispatch;
 pub mod feature;
 pub mod pages;
 pub mod rendering;
