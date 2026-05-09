@@ -22,26 +22,34 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
         let dialog_elements = if let Some(layout) = cached_layout {
             layout
         } else {
-            // Fetch layout from plugin (only on first render or after invalidation)
-            let layout = {
+            // Fetch layout from plugin (only on first render or after invalidation).
+            // try_lock so a worker holding the instance for a long-running
+            // event (e.g. a 15s DLSite fetch) doesn't freeze the UI.
+            // On contention, render an empty layout this frame and DON'T
+            // cache it — next frame will retry.
+            let (layout, lock_was_free) = {
                 if let Some(pm_arc) = &shared.services.plugin_manager {
                     let pm = pm_arc.lock();
-                    pm.with_plugin_instance(&plugin_id, |instance| {
+                    match pm.try_with_plugin_instance(&plugin_id, |instance| {
                         instance
                             .get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Dialog(
                                 dialog_id.clone(),
                             ))
                             .unwrap_or_default()
-                    })
-                    .unwrap_or_default()
+                    }) {
+                        Some(Some(layout)) => (layout, true),
+                        Some(None) => (arclain_plugins::types::PluginLayout::default(), false),
+                        None => (arclain_plugins::types::PluginLayout::default(), true),
+                    }
                 } else {
-                    arclain_plugins::types::PluginLayout::default()
+                    (arclain_plugins::types::PluginLayout::default(), true)
                 }
             };
-            // Store in cache for next frame
-            let mut dialog_state = shared.signals().plugin_dialog_state.get();
-            dialog_state.cached_dialog_layout = Some(layout.clone());
-            shared.signals().plugin_dialog_state.set(dialog_state);
+            if lock_was_free {
+                let mut dialog_state = shared.signals().plugin_dialog_state.get();
+                dialog_state.cached_dialog_layout = Some(layout.clone());
+                shared.signals().plugin_dialog_state.set(dialog_state);
+            }
             layout
         };
 
@@ -155,26 +163,33 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
     let page_layout = if let Some(layout) = cached_layout {
         layout
     } else {
-        // Fetch layout from plugin (only on first render or after invalidation)
-        let layout = {
+        // Fetch layout from plugin (only on first render or after invalidation).
+        // try_lock + skip-cache-on-contention so a worker holding the
+        // instance for a long-running event (e.g. DLSite fetch) doesn't
+        // freeze the UI; the next frame retries the fetch.
+        let (layout, lock_was_free) = {
             if let Some(pm_arc) = &shared.services.plugin_manager {
                 let pm = pm_arc.lock();
-                pm.with_plugin_instance(&plugin_id, |instance| {
+                match pm.try_with_plugin_instance(&plugin_id, |instance| {
                     instance
                         .get_ui_layout(arclain_plugins::types::PluginExtensionPoint::Page(
                             page_id.clone(),
                         ))
                         .unwrap_or_default()
-                })
-                .unwrap_or_default()
+                }) {
+                    Some(Some(layout)) => (layout, true),
+                    Some(None) => (arclain_plugins::types::PluginLayout::default(), false),
+                    None => (arclain_plugins::types::PluginLayout::default(), true),
+                }
             } else {
-                arclain_plugins::types::PluginLayout::default()
+                (arclain_plugins::types::PluginLayout::default(), true)
             }
         };
-        // Store in cache for next frame
-        let mut dialog_state = shared.signals().plugin_dialog_state.get();
-        dialog_state.cached_page_layout = Some(layout.clone());
-        shared.signals().plugin_dialog_state.set(dialog_state);
+        if lock_was_free {
+            let mut dialog_state = shared.signals().plugin_dialog_state.get();
+            dialog_state.cached_page_layout = Some(layout.clone());
+            shared.signals().plugin_dialog_state.set(dialog_state);
+        }
         layout
     };
 

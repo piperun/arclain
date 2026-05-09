@@ -135,14 +135,17 @@ fn sync_plugin_items(state: &mut ToolbarLayoutState, manager: &PluginManager) {
     let mut changed = false;
 
     for (plugin_id, plugin_name) in enabled_plugins {
-        // Get toolbar elements
-        let elements = manager
-            .with_plugin_instance(&plugin_id, |instance| {
-                instance
-                    .get_ui_layout(PluginExtensionPoint::PluginButton)
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default();
+        // Get toolbar elements via try_lock; if a worker is mid-fetch
+        // we skip this plugin in the current render of the layout
+        // editor and pick it up next frame.
+        let elements = match manager.try_with_plugin_instance(&plugin_id, |instance| {
+            instance
+                .get_ui_layout(PluginExtensionPoint::PluginButton)
+                .unwrap_or_default()
+        }) {
+            Some(Some(layout)) => layout,
+            _ => Default::default(),
+        };
 
         if elements.is_empty() {
             continue;
