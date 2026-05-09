@@ -9,25 +9,57 @@ use egui::{Response, Ui, Widget};
 /// `.clickable(true)` to opt into click semantics — the returned
 /// `Response` will then react to `clicked()` and the cursor will
 /// switch to a hand pointer over the chip.
+///
+/// Use `.icon(...)` to prefix a phosphor (or other) icon glyph to
+/// the text. The icon is rendered as a separate label inside an
+/// `ui.horizontal_centered` so it shares vertical center with the
+/// text — combining icon + text into one `RichText` doesn't work
+/// because the phosphor font has a y_offset_factor tweak applied at
+/// load time (see `arclain_theme::fonts`), so the icon glyph baseline
+/// sits higher than the regular text baseline.
 pub struct Chips<'a> {
     text: &'a str,
+    icon: Option<&'a str>,
     colors: Option<&'a ThemeColors>,
     stroke_color: Option<egui::Color32>,
     background_color: Option<egui::Color32>,
     text_color: Option<egui::Color32>,
     clickable: bool,
+    debug_lines: bool,
 }
 
 impl<'a> Chips<'a> {
     pub fn new(text: &'a str) -> Self {
         Self {
             text,
+            icon: None,
             colors: None,
             stroke_color: None,
             background_color: None,
             text_color: None,
             clickable: false,
+            debug_lines: false,
         }
+    }
+
+    /// Draw colored guide lines so you can SEE what's happening with
+    /// vertical alignment. Magenta = pill geometric center; cyan =
+    /// galley bounding-box center; yellow = visible-glyph top
+    /// (galley top + ascent); green = baseline. Use to tune
+    /// inner_margin without guessing.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
+        self
+    }
+
+    /// Set an icon glyph to render before the text. Pass an
+    /// `egui_phosphor` constant (e.g. `egui_phosphor::regular::CHECK_CIRCLE`)
+    /// or any printable string. Rendered as a separate label inside
+    /// the chip so vertical centering against the text works
+    /// regardless of the icon font's baseline tweak.
+    pub fn icon(mut self, icon: &'a str) -> Self {
+        self.icon = Some(icon);
+        self
     }
 
     pub fn with_theme_colors(mut self, colors: &'a ThemeColors) -> Self {
@@ -84,29 +116,74 @@ impl<'a> Widget for Chips<'a> {
             )
         };
 
-        let frame = egui::Frame::NONE
-            .fill(bg_fill)
-            .stroke(stroke)
-            .corner_radius(12.0)
-            .inner_margin(egui::Margin::symmetric(10, 4));
+        // Manual paint via the standardized text_layout helpers, so
+        // every widget that needs visually-centered text in arclain
+        // shares the same correct behavior. See `text_layout.rs` for
+        // why mesh_bounds-based centering is the right answer rather
+        // than relying on egui's bounding-box midpoint anchors.
+        let combined = if let Some(icon) = self.icon {
+            format!("{} {}", icon, self.text)
+        } else {
+            self.text.to_string()
+        };
 
-        let inner = frame.show(ui, |ui| {
-            // Use a non-selectable label inside so the chip area
-            // doesn't show a text-cursor / drag-select feedback —
-            // that read as "the text is floating" before this fix.
-            ui.add(egui::Label::new(
-                egui::RichText::new(self.text).size(12.0).color(text_color),
-            ).selectable(false));
-        });
+        let font_id = egui::FontId::proportional(12.0);
+        let h_pad = 10.0_f32;
+        let chip_height = 24.0_f32;
+
+        // Pre-layout to size the chip rect.
+        let probe_galley = ui.painter().layout_no_wrap(
+            combined.clone(),
+            font_id.clone(),
+            text_color,
+        );
+        let chip_size = egui::vec2(
+            (probe_galley.size().x + h_pad * 2.0).ceil(),
+            chip_height,
+        );
+        let (rect, response) = ui.allocate_exact_size(
+            chip_size,
+            if self.clickable {
+                egui::Sense::click()
+            } else {
+                egui::Sense::hover()
+            },
+        );
+
+        ui.painter().rect(
+            rect,
+            egui::CornerRadius::same((chip_height / 2.0) as u8),
+            bg_fill,
+            stroke,
+            egui::StrokeKind::Middle,
+        );
+
+        let painted_rect =
+            crate::text_layout::paint_text_left_in_rect_visually_centered(
+                ui.painter(),
+                combined,
+                font_id,
+                text_color,
+                rect,
+                h_pad,
+            );
+
+        // Standardized debug overlay (widgets::paint_centering_debug) —
+        // shows pill rect, painted-text rect, and the (dx, dy) offset
+        // between their centers. Use any time a widget visibly
+        // misaligns its inner content.
+        crate::debug::paint_centering_debug(
+            ui.painter(),
+            rect,
+            painted_rect,
+            "chip",
+            self.debug_lines,
+        );
 
         if self.clickable {
-            // Upgrade the frame's hover-only response to a clickable
-            // one over the same rect. `on_hover_cursor` flips the
-            // pointer to a hand so users get the affordance.
-            ui.interact(inner.response.rect, inner.response.id, egui::Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
+            response.on_hover_cursor(egui::CursorIcon::PointingHand)
         } else {
-            inner.response
+            response
         }
     }
 }
