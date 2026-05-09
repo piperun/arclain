@@ -89,3 +89,30 @@ fn logger_isolates_plugins_into_different_files() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn logger_drops_lines_after_byte_cap() {
+    let dir = temp_log_dir();
+    // 1 KiB cap so we hit it fast in test
+    let logger = PluginLogger::with_byte_cap("capper", &dir, 1024);
+
+    let line = "x".repeat(100); // ~120 bytes per line incl. timestamp
+    let mut accepted = 0;
+    let mut rejected = 0;
+    for _ in 0..50 {
+        if logger.write(&line) {
+            accepted += 1;
+        } else {
+            rejected += 1;
+        }
+    }
+
+    assert!(accepted > 0, "at least some writes should succeed");
+    assert!(rejected > 0, "byte cap must have triggered some rejections");
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let path = dir.join(format!("capper-{}.log", today));
+    let len = std::fs::metadata(&path).unwrap().len();
+    assert!(len <= 1024 + 200, "file should be near cap, got {}", len);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
