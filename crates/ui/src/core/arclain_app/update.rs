@@ -311,15 +311,31 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     if header_actions.navigate_back {
         app.page_navigator.navigate_back();
     }
+    // Top-level page buttons toggle: clicking the button while
+    // already on that page navigates back to the previous page,
+    // matching common app patterns (e.g. clicking Logs again hides
+    // the Logs page).
     if header_actions.navigate_plugins {
-        app.page_navigator.navigate_to(AppPage::Plugins);
+        if matches!(app.page_navigator.current_page, AppPage::Plugins) {
+            app.page_navigator.navigate_back();
+        } else {
+            app.page_navigator.navigate_to(AppPage::Plugins);
+        }
     }
     if header_actions.navigate_settings {
-        app.page_navigator
-            .navigate_to(AppPage::Settings(SettingsPage::Overview));
+        if matches!(app.page_navigator.current_page, AppPage::Settings(_)) {
+            app.page_navigator.navigate_back();
+        } else {
+            app.page_navigator
+                .navigate_to(AppPage::Settings(SettingsPage::Overview));
+        }
     }
     if header_actions.show_logs {
-        app.page_navigator.navigate_to(AppPage::Logs);
+        if matches!(app.page_navigator.current_page, AppPage::Logs) {
+            app.page_navigator.navigate_back();
+        } else {
+            app.page_navigator.navigate_to(AppPage::Logs);
+        }
     }
 
     // === Render Tab Bar Panel ===
