@@ -8,10 +8,19 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
     // Plugin pages only take over rendering when we're on the Main page.
     // If the user navigated to Logs/Settings/etc., normal content takes priority.
     if app.page_navigator.current_page == AppPage::Main {
-        if crate::features::plugins::presentation::views::rendering::render_page(
+        let __t = std::time::Instant::now();
+        let took_over = crate::features::plugins::presentation::views::rendering::render_page(
             ctx,
             &app.shared_state,
-        ) {
+        );
+        if __t.elapsed() > std::time::Duration::from_millis(50) {
+            tracing::warn!(
+                "[FREEZE-DIAG] plugin render_page {} ms (took_over={})",
+                __t.elapsed().as_millis(),
+                took_over
+            );
+        }
+        if took_over {
             return;
         }
     }
@@ -23,10 +32,18 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
             AppPage::Main => {
                 let shared_state = app.shared_state.clone();
 
+                let __t = std::time::Instant::now();
                 let action = app.archive_browser.render(ctx, &shared_state);
+                if __t.elapsed() > std::time::Duration::from_millis(50) {
+                    tracing::warn!(
+                        "[FREEZE-DIAG] archive_browser.render {} ms",
+                        __t.elapsed().as_millis()
+                    );
+                }
 
 
                 // Handle actions via BrowserController
+                let __t = std::time::Instant::now();
                 app.archive_browser.controller.handle_action(
                     action,
                     &shared_state,
@@ -35,6 +52,12 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                     &mut app.page_navigator,
                     ctx,
                 );
+                if __t.elapsed() > std::time::Duration::from_millis(50) {
+                    tracing::warn!(
+                        "[FREEZE-DIAG] archive_browser.handle_action {} ms",
+                        __t.elapsed().as_millis()
+                    );
+                }
             }
             AppPage::Settings(page) => {
                 let breadcrumb = PageNavigator::get_breadcrumb(&AppPage::Settings(page.clone()));
