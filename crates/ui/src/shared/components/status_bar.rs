@@ -157,61 +157,108 @@ fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMet
         .ui(ui)
         .on_hover_text("Click to see what's selected");
 
-    let popup_id = response.id.with("selected_item_popup");
+    // Explicit toggle state stored in egui memory. Using the Popup
+    // builder's auto-open-on-click together with a manual toggle_id
+    // ended up double-handling the click and the popup wouldn't
+    // close — easier to track the open bit ourselves.
+    let memory_key = response.id.with("selected_item_open");
+    let was_open = ui
+        .data(|d| d.get_temp::<bool>(memory_key))
+        .unwrap_or(false);
+    let mut is_open = was_open;
+
     if response.clicked() {
-        egui::Popup::toggle_id(ui.ctx(), popup_id);
+        is_open = !is_open;
     }
 
-    egui::Popup::from_response(&response)
-        .id(popup_id)
-        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-        .show(|ui| {
-            ui.set_min_width(280.0);
-            ui.set_max_width(420.0);
-            ui.spacing_mut().item_spacing.y = 4.0;
+    if is_open {
+        let popup_id = response.id.with("selected_item_area");
+        let popup_response = egui::Area::new(popup_id)
+            .order(egui::Order::Foreground)
+            // Anchor above the chip so the popup grows upward (status
+            // bar is at the bottom of the window — opening downward
+            // would clip).
+            .fixed_pos(response.rect.left_top() - egui::vec2(0.0, 4.0))
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(theme.colors.surface)
+                    .stroke(egui::Stroke::new(1.0, theme.colors.outline))
+                    .inner_margin(egui::Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.set_min_width(280.0);
+                        ui.set_max_width(420.0);
+                        ui.spacing_mut().item_spacing.y = 4.0;
 
-            arclain_widgets::Text::new("Selected for use")
-                .size(11.0)
-                .muted()
-                .show(ui);
-            ui.separator();
+                        arclain_widgets::Text::new("Selected for use")
+                            .size(11.0)
+                            .muted()
+                            .show(ui);
+                        ui.separator();
 
-            if !meta.title.is_empty() {
-                ui.label(
-                    egui::RichText::new(&meta.title)
-                        .strong()
-                        .color(theme.colors.on_surface),
-                );
-            }
-            metadata_row(ui, theme, "ID", &meta.product_id);
-            if let Some(creator) = meta.creator.as_deref() {
-                metadata_row(ui, theme, "Creator", creator);
-            }
-            if let Some(date) = meta.release_date.as_deref() {
-                metadata_row(ui, theme, "Released", date);
-            }
-            if !meta.tags.is_empty() {
-                let preview = meta
-                    .tags
-                    .iter()
-                    .take(6)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let suffix = if meta.tags.len() > 6 {
-                    format!(" (+{} more)", meta.tags.len() - 6)
-                } else {
-                    String::new()
-                };
-                metadata_row(ui, theme, "Tags", &format!("{}{}", preview, suffix));
-            }
+                        if !meta.title.is_empty() {
+                            ui.label(
+                                egui::RichText::new(&meta.title)
+                                    .strong()
+                                    .color(theme.colors.on_surface),
+                            );
+                        }
+                        metadata_row(ui, theme, "ID", &meta.product_id);
+                        if let Some(creator) = meta.creator.as_deref() {
+                            metadata_row(ui, theme, "Creator", creator);
+                        }
+                        if let Some(date) = meta.release_date.as_deref() {
+                            metadata_row(ui, theme, "Released", date);
+                        }
+                        if !meta.tags.is_empty() {
+                            let preview = meta
+                                .tags
+                                .iter()
+                                .take(6)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let suffix = if meta.tags.len() > 6 {
+                                format!(" (+{} more)", meta.tags.len() - 6)
+                            } else {
+                                String::new()
+                            };
+                            metadata_row(
+                                ui,
+                                theme,
+                                "Tags",
+                                &format!("{}{}", preview, suffix),
+                            );
+                        }
 
-            ui.add_space(4.0);
-            arclain_widgets::Text::new("Used by Organizer + Process")
-                .size(10.0)
-                .muted()
-                .show(ui);
-        });
+                        ui.add_space(4.0);
+                        arclain_widgets::Text::new("Used by Organizer + Process")
+                            .size(10.0)
+                            .muted()
+                            .show(ui);
+                    });
+            })
+            .response;
+
+        // Close on click outside the popup AND outside the chip (so
+        // the toggle on the chip's own click still works).
+        let clicked_anywhere = ui.input(|i| i.pointer.any_click());
+        if clicked_anywhere
+            && !popup_response.contains_pointer()
+            && !response.contains_pointer()
+        {
+            is_open = false;
+        }
+
+        // Also close on Escape.
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            is_open = false;
+        }
+    }
+
+    if is_open != was_open {
+        ui.data_mut(|d| d.insert_temp(memory_key, is_open));
+    }
 }
 
 fn metadata_row(ui: &mut egui::Ui, theme: &AppTheme, label: &str, value: &str) {
