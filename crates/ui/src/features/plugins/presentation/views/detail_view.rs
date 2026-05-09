@@ -290,7 +290,15 @@ fn render_domain_row(
         }
 
         ui.vertical(|ui| {
-            ui.label(egui::RichText::new(domain).strong());
+            // Explicit color: in egui 0.33, RichText::strong() switches the
+            // colour to visuals.strong_text_color() and bypasses our
+            // override_text_color, which made the domain render as black on
+            // the dark plugin-detail background.
+            ui.label(
+                egui::RichText::new(domain)
+                    .strong()
+                    .color(theme.colors.on_surface),
+            );
 
             // Security Analysis
             let url_for_check = format!("https://{}", domain);
