@@ -31,20 +31,20 @@ pub fn render(
 
     // Drain any plugin actions that background `send_ui_event` threads
     // pushed since the last render. Without this, the actions sit in
-    // `state.pending_plugin_actions` indefinitely (or, pre-fix, were
+    // `shared.pending_plugin_actions` indefinitely (or, pre-fix, were
     // pushed into a per-frame local sink that got dropped on return).
     //
     // Also: scan the queue BEFORE draining for a `RefreshPanel` action
     // targeting `MainPage`. If present, invalidate `cached_main_layout`
     // so the next render fetches a fresh layout (audit P4 invalidation).
-    invalidate_main_layout_on_refresh_panel(state);
-
     if let Some(shared) = shared {
+        invalidate_main_layout_on_refresh_panel(state, &shared.pending_plugin_actions);
+
         let mut toaster = shared.toaster.lock();
         let dialog_signal = shared.signals().plugin_dialog_state.clone();
         let mut dialog_state = dialog_signal.get();
         drain_pending_plugin_actions(
-            &state.pending_plugin_actions,
+            &shared.pending_plugin_actions,
             &mut toaster,
             &mut dialog_state,
             Some(&shared.refresh_requests),
@@ -52,10 +52,6 @@ pub fn render(
             Some(shared),
         );
         dialog_signal.set(dialog_state);
-    } else {
-        // No shared state available (unusual); drop the queue to avoid
-        // unbounded growth.
-        state.pending_plugin_actions.lock().clear();
     }
 
     // Drop cached MainPage layout if the user switched plugins, so
@@ -240,6 +236,9 @@ pub fn render(
 
         if let Some(manager) = plugin_manager {
             if plugin_info.loaded {
+                let actions_sink = shared
+                    .map(|s| s.pending_plugin_actions.clone())
+                    .unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())));
                 render_plugin_ui(
                     ui,
                     theme,
@@ -248,7 +247,7 @@ pub fn render(
                     app_state,
                     shared,
                     content_cache,
-                    &state.pending_plugin_actions,
+                    &actions_sink,
                     &mut state.cached_main_layout,
                 );
             } else {
@@ -577,9 +576,12 @@ pub(crate) fn invalidate_main_layout_on_plugin_change(state: &mut PluginsListSta
 /// contains a `RefreshPanel` action targeting the `MainPage`
 /// extension point. Called once per render of the detail view, before
 /// `drain_pending_plugin_actions` removes the action from the queue.
-pub(crate) fn invalidate_main_layout_on_refresh_panel(state: &mut PluginsListState) {
+pub(crate) fn invalidate_main_layout_on_refresh_panel(
+    state: &mut PluginsListState,
+    pending: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
+) {
     let needs_invalidation = {
-        let pending = state.pending_plugin_actions.lock();
+        let pending = pending.lock();
         pending.iter().any(|(_, action)| {
             matches!(
                 action,
@@ -758,14 +760,15 @@ mod tests {
             "plugin_a".to_string(),
             arclain_plugins::types::PluginLayout::default(),
         ));
-        state.pending_plugin_actions.lock().push((
-            "plugin_a".to_string(),
-            arclain_plugins::types::PluginAction::RefreshPanel {
-                extension_point: "MainPage".to_string(),
-            },
-        ));
+        let pending: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
+            Arc::new(Mutex::new(vec![(
+                "plugin_a".to_string(),
+                arclain_plugins::types::PluginAction::RefreshPanel {
+                    extension_point: "MainPage".to_string(),
+                },
+            )]));
 
-        invalidate_main_layout_on_refresh_panel(&mut state);
+        invalidate_main_layout_on_refresh_panel(&mut state, &pending);
 
         assert!(
             state.cached_main_layout.is_none(),
@@ -783,14 +786,15 @@ mod tests {
             "plugin_a".to_string(),
             arclain_plugins::types::PluginLayout::default(),
         ));
-        state.pending_plugin_actions.lock().push((
-            "plugin_a".to_string(),
-            arclain_plugins::types::PluginAction::RefreshPanel {
-                extension_point: "Settings".to_string(),
-            },
-        ));
+        let pending: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
+            Arc::new(Mutex::new(vec![(
+                "plugin_a".to_string(),
+                arclain_plugins::types::PluginAction::RefreshPanel {
+                    extension_point: "Settings".to_string(),
+                },
+            )]));
 
-        invalidate_main_layout_on_refresh_panel(&mut state);
+        invalidate_main_layout_on_refresh_panel(&mut state, &pending);
 
         assert!(
             state.cached_main_layout.is_some(),
