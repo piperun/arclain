@@ -90,6 +90,31 @@ fn logger_isolates_plugins_into_different_files() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+use tracing_test::traced_test;
+
+#[traced_test]
+#[test]
+fn logger_emits_summary_when_drops_accumulate() {
+    let dir = temp_log_dir();
+    let logger = PluginLogger::with_byte_cap("noisy", &dir, 100);
+
+    // Drop a bunch of lines (most fail the byte cap after the first
+    // few are written).
+    for _ in 0..50 {
+        logger.write("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+    }
+
+    // Force a summary flush regardless of timer
+    logger.flush_drop_summary_for_test();
+
+    assert!(
+        logs_contain("[plugin-logger] noisy dropped"),
+        "expected drop summary to appear in tracing output"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn logger_drops_lines_after_byte_cap() {
     let dir = temp_log_dir();
