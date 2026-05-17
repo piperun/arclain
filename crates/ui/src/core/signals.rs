@@ -46,6 +46,10 @@ pub struct ProcessRunState {
     pub step_percent: u8,
     pub completed: bool,
     pub summary: Option<String>,
+    /// Pre-formatted read-only warnings emitted by pipeline steps
+    /// (currently only Flatten). Each entry is one warning ready for
+    /// display — see `arclain_core::WarningKind::human()`.
+    pub warnings: Vec<String>,
 }
 
 /// State for extraction progress dialog

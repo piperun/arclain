@@ -1,6 +1,10 @@
 //! Archive conversion options and utilities
 
+pub mod diagnose;
 pub mod flatten;
+pub mod modinfo;
+
+pub use diagnose::{diagnose_mods, ModWarning, WarningKind};
 
 use std::path::PathBuf;
 

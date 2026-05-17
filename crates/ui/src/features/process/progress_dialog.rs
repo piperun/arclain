@@ -58,8 +58,28 @@ pub fn render(
                 // Completed
                 Text::new("Complete").size(18.0).strong().show(ui);
                 ui.add_space(6.0);
+                let summary_suffix = if state.warnings.is_empty() {
+                    String::new()
+                } else {
+                    format!(" — {} warning(s)", state.warnings.len())
+                };
                 if let Some(ref summary) = state.summary {
-                    Text::new(summary).show(ui);
+                    Text::new(&format!("{}{}", summary, summary_suffix)).show(ui);
+                } else if !summary_suffix.is_empty() {
+                    Text::new(summary_suffix.trim_start_matches(" — ")).show(ui);
+                }
+                if !state.warnings.is_empty() {
+                    ui.add_space(10.0);
+                    Text::new("Warnings").strong().show(ui);
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(180.0)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| {
+                            for w in &state.warnings {
+                                Text::new(w).color(theme.colors.warning).show(ui);
+                            }
+                        });
                 }
             }
         },
