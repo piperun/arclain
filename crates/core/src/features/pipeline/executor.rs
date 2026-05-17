@@ -45,6 +45,13 @@ pub enum PipelineProgress {
         skipped: usize,
         failed: usize,
     },
+    /// Read-only diagnostic warnings emitted by a step (currently
+    /// only Flatten). Surfaces source-archive quality issues such as
+    /// missing screenshot files or orphan addons. Step succeeded; this
+    /// is informational only.
+    StepWarnings {
+        warnings: Vec<crate::features::conversion::ModWarning>,
+    },
 }
 
 /// Result of a single-input pipeline run.
@@ -380,7 +387,7 @@ fn run_one_inner(
                 strip_common_prefix,
                 max_depth,
             } => {
-                crate::features::conversion::flatten::flatten_nested_archives_recursive(
+                let report = crate::features::conversion::flatten::flatten_nested_archives_recursive(
                     &work_dir,
                     *strip_common_prefix,
                     *max_depth,
@@ -389,6 +396,11 @@ fn run_one_inner(
                         be.extract_all(archive_path, dest_dir, None)
                     },
                 )?;
+                if !report.warnings.is_empty() {
+                    on_progress(PipelineProgress::StepWarnings {
+                        warnings: report.warnings,
+                    });
+                }
             }
             PipelineStep::Organize { rule_id } => {
                 use crate::features::organization::engine::RuleEngine;

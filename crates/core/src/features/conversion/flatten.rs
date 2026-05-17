@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use super::diagnose::{diagnose_mods, ModWarning};
 use super::longest_common_prefix;
 
 const ARCHIVE_EXTENSIONS: &[&str] = &["rar", "zip", "7z", "tar", "tgz"];
@@ -159,6 +160,11 @@ pub struct FlattenReport {
     pub extracted: Vec<String>,
     pub skipped: Vec<String>,
     pub failed: Vec<(String, String)>,
+    /// Read-only diagnostics over the final extracted state. See
+    /// [`super::diagnose::diagnose_mods`]. In recursive flatten, this
+    /// reflects the last (stable) iteration's diagnostics — earlier
+    /// iterations' results are intentionally discarded.
+    pub warnings: Vec<ModWarning>,
 }
 
 impl FlattenReport {
@@ -216,6 +222,11 @@ where
         combined.extracted.extend(pass.extracted);
         combined.failed.extend(pass.failed);
         combined.skipped.extend(pass.skipped);
+        // Warnings reflect the final extracted state — overwrite (not
+        // extend) so the recursive caller sees the last (stable)
+        // iteration's diagnostics, not the union of intermediate
+        // partially-extracted states.
+        combined.warnings = pass.warnings;
 
         total_extractions = total_extractions.saturating_add(pass_extracted as u32);
 
@@ -352,76 +363,18 @@ where
         }
     }
 
+    // Read-only post-extraction diagnostics. Failures here shouldn't
+    // fail the whole operation — flatten succeeded, we just don't have
+    // diagnostics to attach. Log and continue with empty warnings.
+    report.warnings = match diagnose_mods(dir) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!("[flatten] diagnose_mods failed: {}", e);
+            Vec::new()
+        }
+    };
+
     Ok(report)
-}
-
-/// Read a `modinfo.ini`-style `name=...` value from a folder, if present.
-///
-/// Mod managers (Fluffy and friends) ship a `modinfo.ini` next to each
-/// mod's content with at minimum a `name=Display Name` line. We prefer
-/// that value over the archive-derived folder name because:
-///
-/// 1. It's the string the mod manager shows in its list, so folder-on-
-///    disk and display-name stay in sync.
-/// 2. Addon → parent linking via `addonfor=DisplayName` matches against
-///    `name=DisplayName` in the parent's modinfo, NOT the parent's
-///    folder name. When the archive-derived parent folder is something
-///    like `v1.0/` (because `target_folder_names` stripped the common
-///    prefix that happened to be the mod's name), `addonfor=` still
-///    resolves correctly — but the user can't tell from the disk
-///    layout which folder is which. Renaming to the modinfo name fixes
-///    the disk layout to match.
-///
-/// Returns `None` if the file is missing, has no `name=` line, the
-/// value is empty, or sanitisation produces an empty string.
-fn read_modinfo_name(folder: &Path) -> Option<String> {
-    let path = folder.join("modinfo.ini");
-    let contents = fs::read_to_string(&path).ok()?;
-
-    for line in contents.lines() {
-        let line = line.trim();
-        // Skip `[section]` headers and comments.
-        if line.is_empty() || line.starts_with('[') || line.starts_with('#')
-            || line.starts_with(';')
-        {
-            continue;
-        }
-        if let Some(rest) = line.strip_prefix("name=").or_else(|| line.strip_prefix("name = ")) {
-            let raw = rest.trim();
-            if raw.is_empty() {
-                return None;
-            }
-            let sanitized = sanitize_modinfo_name(raw);
-            if sanitized.is_empty() {
-                return None;
-            }
-            return Some(sanitized);
-        }
-    }
-    None
-}
-
-/// Strip filesystem-illegal characters from a modinfo `name=` value.
-///
-/// Windows is the strict platform: `< > : " / \ | ? *` plus control
-/// chars are reserved. Trailing `.` and whitespace are also unsafe.
-/// We replace illegal chars with `_` rather than dropping them so a
-/// `Mod: Subtitle` doesn't collapse two siblings into the same folder.
-/// Leading/trailing dots and whitespace get trimmed.
-fn sanitize_modinfo_name(name: &str) -> String {
-    let mapped: String = name
-        .chars()
-        .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c if (c as u32) < 0x20 => '_',
-            c => c,
-        })
-        .collect();
-    mapped
-        .trim()
-        .trim_end_matches('.')
-        .trim_start_matches('.')
-        .to_string()
 }
 
 /// If `folder` contains a modinfo.ini whose `name=` value differs from
@@ -430,10 +383,15 @@ fn sanitize_modinfo_name(name: &str) -> String {
 /// target already exists (a sibling mod with the same modinfo name —
 /// keep the archive-derived folder name to avoid clobber).
 ///
+/// Mod managers (Fluffy and friends) display the modinfo `name=` value,
+/// and resolve `addonfor=Parent` against parent mods' `name=Parent`.
+/// Aligning the folder name to the modinfo name keeps disk layout and
+/// display name in sync. See [`super::modinfo`] for the parser.
+///
 /// Returns `Some(new_name)` on rename, `None` for any no-op path, and
 /// an `Err` only on filesystem failure during the rename itself.
 fn rename_to_modinfo_name(folder: &Path) -> Result<Option<String>> {
-    let mod_name = match read_modinfo_name(folder) {
+    let mod_name = match super::modinfo::parse(folder).and_then(|mi| mi.name) {
         Some(n) => n,
         None => return Ok(None),
     };
@@ -452,10 +410,6 @@ fn rename_to_modinfo_name(folder: &Path) -> Result<Option<String>> {
     };
     let target = parent.join(&mod_name);
     if target.exists() {
-        // Don't clobber an existing sibling. The archive-derived name
-        // stays — modinfo display still works because mod managers
-        // read modinfo.ini contents, the folder name is just disk
-        // layout.
         tracing::debug!(
             "[flatten] modinfo rename target {:?} already exists; keeping archive-derived name",
             target

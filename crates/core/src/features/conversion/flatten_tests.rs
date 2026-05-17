@@ -525,3 +525,51 @@ fn test_recursive_flatten_hard_safety_cap_iterations() {
         FLATTEN_MAX_ITERATIONS
     );
 }
+
+// ---- Diagnostics integration ----
+
+#[test]
+fn test_flatten_report_includes_warnings() {
+    // A mod whose modinfo references a missing screenshot file should
+    // produce a MissingScreenshot warning attached to the report.
+    use crate::features::conversion::WarningKind;
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("source.rar"), b"").unwrap();
+
+    let report = flatten_nested_archives(tmp.path(), false, |_archive, dest| {
+        std::fs::write(
+            dest.join("modinfo.ini"),
+            "name=ModWithMissingPreview\nscreenshot=ghost.png\n",
+        )?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert_eq!(report.warnings.len(), 1, "expected 1 warning, got {:?}", report.warnings);
+    assert_eq!(report.warnings[0].mod_folder, "ModWithMissingPreview");
+    assert!(matches!(
+        report.warnings[0].kind,
+        WarningKind::MissingScreenshot { ref referenced } if referenced == "ghost.png"
+    ));
+}
+
+#[test]
+fn test_flatten_no_warnings_when_clean() {
+    // Happy-path mod with present screenshot and no orphan addonfor
+    // produces no warnings.
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("source.rar"), b"").unwrap();
+
+    let report = flatten_nested_archives(tmp.path(), false, |_archive, dest| {
+        std::fs::write(
+            dest.join("modinfo.ini"),
+            "name=CleanMod\nscreenshot=preview.png\n",
+        )?;
+        std::fs::write(dest.join("preview.png"), b"\x89PNG fake bytes")?;
+        Ok(())
+    })
+    .unwrap();
+
+    assert!(report.warnings.is_empty(), "expected no warnings, got {:?}", report.warnings);
+}

@@ -75,6 +75,11 @@ pub fn spawn_run(
                         PipelineProgress::FileFailed { .. } => {
                             s.files_failed += 1;
                         }
+                        PipelineProgress::StepWarnings { warnings } => {
+                            for w in warnings {
+                                s.warnings.push(format!("{}: {}", w.mod_folder, w.kind.human()));
+                            }
+                        }
                         PipelineProgress::AllComplete { succeeded, skipped, failed } => {
                             s.is_running = false;
                             s.completed = true;
