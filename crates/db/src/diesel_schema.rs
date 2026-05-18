@@ -206,6 +206,7 @@ diesel::table! {
         hotkey_bindings -> Nullable<Text>,
         gameta_server_enabled -> Bool,
         gameta_server_url -> Nullable<Text>,
+        drop_behavior -> Nullable<Text>,
         created_at -> Text,
         modified_at -> Nullable<Text>,
     }

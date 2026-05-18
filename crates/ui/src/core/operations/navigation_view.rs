@@ -3,13 +3,31 @@
 //! Helper functions for updating view state after navigation changes.
 
 use crate::core::signals::AppSignals;
+use crate::core::tabs::{TabId, TabState};
 use crate::core::utils::convert_to_file_entry;
+use std::sync::Arc;
 use tracing::info;
 
-/// Re-filter view_entries based on the current navigation path.
-/// Call this after updating navigation.current_path to sync the file list.
+/// Re-filter the active tab's `view_entries` based on its navigation
+/// path. Call after updating `tab.navigation.current_path` so the file
+/// list matches.
 pub fn refresh_view_entries(signals: &AppSignals) {
     let tab = signals.tabs.get().active().clone();
+    refresh_view_entries_for(&tab);
+}
+
+/// Refresh `view_entries` for a specific tab. Used when an archive is
+/// loaded into a non-active tab (e.g. multi-file drop opens several
+/// tabs but only the last is active; each must populate its own
+/// view_entries so a future switch shows the file list immediately).
+pub fn refresh_view_entries_for_tab(signals: &AppSignals, tab_id: TabId) {
+    let Some(tab) = signals.tabs.get().get(tab_id).cloned() else {
+        return;
+    };
+    refresh_view_entries_for(&tab);
+}
+
+fn refresh_view_entries_for(tab: &Arc<TabState>) {
     let all_entries = tab.entries.get();
     let nav = tab.navigation.get();
     let current_path = nav.current_path.clone();
@@ -20,8 +38,6 @@ pub fn refresh_view_entries(signals: &AppSignals) {
         all_entries.len()
     );
 
-    // Use the NavigationState's filter logic to ensure consistency with tree view
-    // This handles path normalization, folder rollup, and size calculation correctly.
     let filtered_arch_entries = nav.filter_entries(&all_entries);
 
     info!(

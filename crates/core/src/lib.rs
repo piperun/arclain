@@ -21,7 +21,7 @@ pub use archive::{
     CancellationToken, EntryRef, ExtractionProgress, NavigationState, ProgressCallback,
 };
 pub use config::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};
-pub use config::{Config, ConfigStore, PassRule};
+pub use config::{Config, ConfigStore, DropBehavior, PassRule};
 pub use features::conversion::{
     CompressionLevel, ConvertFormat, ConvertOptions, ModWarning, WarningKind,
 };

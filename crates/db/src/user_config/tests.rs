@@ -33,6 +33,7 @@ fn setup_diesel_conn() -> diesel::SqliteConnection {
             hotkey_bindings TEXT,
             gameta_server_enabled INTEGER NOT NULL DEFAULT 0,
             gameta_server_url TEXT,
+            drop_behavior TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             modified_at TEXT
         )

@@ -204,6 +204,64 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         }
     }
 
+    // === Tab Navigation Shortcuts ===
+    // Ctrl+Shift+Tab first — must precede Ctrl+Tab so the more-specific
+    // modifier combo is consumed before the less-specific one.
+    ctx.input_mut(|i| {
+        if i.consume_key(
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            egui::Key::Tab,
+        ) {
+            let mut col = app.shared_state.signals().tabs.get();
+            let tabs_list = col.tabs().to_vec();
+            if tabs_list.len() > 1 {
+                if let Some(active_idx) = tabs_list.iter().position(|t| t.id == col.active_id()) {
+                    let prev_idx = if active_idx == 0 {
+                        tabs_list.len() - 1
+                    } else {
+                        active_idx - 1
+                    };
+                    col.switch_to(tabs_list[prev_idx].id);
+                    app.shared_state.signals().tabs.set(col);
+                }
+            }
+        } else if i.consume_key(egui::Modifiers::CTRL, egui::Key::Tab) {
+            let mut col = app.shared_state.signals().tabs.get();
+            let tabs_list = col.tabs().to_vec();
+            if tabs_list.len() > 1 {
+                if let Some(active_idx) = tabs_list.iter().position(|t| t.id == col.active_id()) {
+                    let next_idx = (active_idx + 1) % tabs_list.len();
+                    col.switch_to(tabs_list[next_idx].id);
+                    app.shared_state.signals().tabs.set(col);
+                }
+            }
+        }
+        // Ctrl+1..9 — jump to the nth tab (1-indexed, capped at tabs.len()).
+        for n in 1u32..=9 {
+            let key = match n {
+                1 => egui::Key::Num1,
+                2 => egui::Key::Num2,
+                3 => egui::Key::Num3,
+                4 => egui::Key::Num4,
+                5 => egui::Key::Num5,
+                6 => egui::Key::Num6,
+                7 => egui::Key::Num7,
+                8 => egui::Key::Num8,
+                9 => egui::Key::Num9,
+                _ => unreachable!(),
+            };
+            if i.consume_key(egui::Modifiers::CTRL, key) {
+                let mut col = app.shared_state.signals().tabs.get();
+                let idx = (n as usize) - 1;
+                if let Some(tab) = col.tabs().get(idx) {
+                    let id = tab.id;
+                    col.switch_to(id);
+                    app.shared_state.signals().tabs.set(col);
+                }
+            }
+        }
+    });
+
     // === Lifecycle: Process metadata signal updates from plugins ===
     app_lifecycle::process_metadata_signal(&app.shared_state, &mut app.organization_feature);
 
@@ -373,6 +431,72 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 .set(dialog_state);
         }
         app_rendering::TabBarAction::None => {}
+    }
+
+    // === Render Multi-Archive Tab Bar ===
+    // Shown above the toolbar so users can switch between open archives.
+    // Gated to the Archive context on the Main page — plugin pages
+    // (e.g. DLSite) have their own surface and shouldn't show archive tabs.
+    let should_show_archive_tab_bar = app.page_navigator.is_on_main()
+        && matches!(
+            app.shared_state.signals().tabs.get().active().active_toolbar.get(),
+            crate::core::signals::ToolbarContext::Archive
+        );
+    if should_show_archive_tab_bar {
+        let theme = app.shared_state.theme.clone();
+        let mut tab_bar_action: Option<crate::shared::components::tab_bar::TabBarAction> = None;
+        let col_snapshot = app.shared_state.signals().tabs.get();
+        egui::TopBottomPanel::top("multi_archive_tab_bar")
+            // Pin the panel height. Without this, nested ui.vertical /
+            // with_layout inherit the parent's available_size — which
+            // for an auto-sizing TopBottomPanel is the full remaining
+            // window height — and grab it all, exploding the strip
+            // to fill the screen.
+            //
+            // 26px chip + 2px gap + 5px position pill + 4px top + 4px bottom = 41px.
+            // Plus 2px buffer for pixel rounding / antialiasing.
+            .exact_height(43.0)
+            .frame(egui::Frame::NONE.fill(theme.colors.surface).inner_margin(egui::Margin::symmetric(6, 4)))
+            .show(ctx, |ui| {
+                tab_bar_action = crate::shared::components::tab_bar::render_tab_bar(
+                    ui,
+                    &col_snapshot,
+                    &theme.colors,
+                );
+            });
+        if let Some(action) = tab_bar_action {
+            let mut col = app.shared_state.signals().tabs.get();
+            use crate::shared::components::tab_bar::TabBarAction;
+            match action {
+                TabBarAction::Switch(id) => col.switch_to(id),
+                TabBarAction::Close(id) => {
+                    use crate::core::tabs::CloseResult;
+                    match col.close(id) {
+                        CloseResult::Closed | CloseResult::NotFound => {}
+                        CloseResult::BlockedByInFlight { count } => {
+                            let title = col
+                                .get(id)
+                                .map(|t| t.display_title())
+                                .unwrap_or_default();
+                            let mut confirm =
+                                app.shared_state.signals().close_tab_confirm.get();
+                            confirm.show = true;
+                            confirm.tab_id = Some(id);
+                            confirm.tab_title = title;
+                            confirm.in_flight_count = count;
+                            app.shared_state
+                                .signals()
+                                .close_tab_confirm
+                                .set(confirm);
+                        }
+                    }
+                }
+                TabBarAction::OpenEmpty => {
+                    col.open(None);
+                }
+            }
+            app.shared_state.signals().tabs.set(col);
+        }
     }
 
     // Render Toolbar (only on Main page AND when Archive context is active)

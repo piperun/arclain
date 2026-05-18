@@ -208,6 +208,27 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         .file_edit_dialog
         .set_if_changed(edit_dialog);
 
+    // Render Close-Tab Confirmation Modal
+    {
+        let mut confirm = app.shared_state.signals().close_tab_confirm.get();
+        let result = crate::shared::dialogs::close_tab_confirm::render_close_tab_confirm(
+            ctx,
+            &app.shared_state.theme,
+            &mut confirm,
+        );
+        app.shared_state
+            .signals()
+            .close_tab_confirm
+            .set_if_changed(confirm);
+        use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmResult;
+        if let CloseTabConfirmResult::Confirmed(id) = result {
+            let mut col = app.shared_state.signals().tabs.get();
+            col.force_close(id);
+            app.shared_state.signals().tabs.set(col);
+            // TODO(phase 2c): fire per-tab cancellation token for in-flight ops.
+        }
+    }
+
     // Render Merge Dialog
     let mut merge_dialog = app.shared_state.signals().merge_dialog.get();
     match dialogs::render_merge_dialog(ctx, &app.shared_state.theme, &mut merge_dialog) {
@@ -312,6 +333,118 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
 }
 
 pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
+    // === Render Drop Overlay ===
+    // Displayed when files are being dragged over the window. When files
+    // land, routes them to tabs (new or replace) and triggers async loads.
+    {
+        let hovered = ctx.input(|i| !i.raw.hovered_files.is_empty());
+        let dropped: Vec<egui::DroppedFile> = ctx.input(|i| i.raw.dropped_files.clone());
+        if hovered || !dropped.is_empty() {
+            egui::Area::new(egui::Id::new("drop_overlay"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(egui::pos2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.allocate_ui(ctx.viewport_rect().size(), |ui| {
+                        let drop_pos = ctx.input(|i| i.pointer.hover_pos());
+                        let col_snapshot = app.shared_state.signals().tabs.get();
+                        let zone = crate::shared::components::drop_overlay::render_drop_overlay(
+                            ui,
+                            &col_snapshot,
+                            drop_pos,
+                        );
+
+                        if !dropped.is_empty() {
+                            use crate::shared::components::drop_overlay::DropZone;
+                            let mut col = app.shared_state.signals().tabs.get();
+                            let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
+                            let mut tabs_to_load: Vec<(
+                                crate::core::tabs::TabId,
+                                std::path::PathBuf,
+                            )> = Vec::new();
+                            for (idx, file) in dropped.iter().enumerate() {
+                                let Some(path) = file.path.clone() else {
+                                    continue;
+                                };
+                                // First file honors zone/Ctrl; subsequent files always open new tabs.
+                                let effective_zone = if ctrl_held && idx == 0 {
+                                    DropZone::ReplaceCurrent
+                                } else if idx == 0 {
+                                    match zone {
+                                        Some(z) => z,
+                                        None => {
+                                            // No zone aim — honor the user's default preference.
+                                            let user_config =
+                                                app.shared_state.signals().user_config.get();
+                                            match arclain_core::DropBehavior::from_str(
+                                                user_config
+                                                    .drop_behavior
+                                                    .as_deref()
+                                                    .unwrap_or("new_tab"),
+                                            ) {
+                                                arclain_core::DropBehavior::NewTab => {
+                                                    DropZone::NewTab
+                                                }
+                                                arclain_core::DropBehavior::Replace => {
+                                                    DropZone::ReplaceCurrent
+                                                }
+                                                arclain_core::DropBehavior::AskEachTime => {
+                                                    // TODO(phase 2b polish): show AskEachTime modal.
+                                                    // v1 stub: default to NewTab.
+                                                    tracing::info!(
+                                                        "[tabs] AskEachTime selected but modal \
+                                                         not yet wired; defaulting to NewTab"
+                                                    );
+                                                    DropZone::NewTab
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    DropZone::NewTab
+                                };
+                                match effective_zone {
+                                    DropZone::NewTab => {
+                                        // Smart routing: if the active tab is an empty
+                                        // placeholder (no archive_path), reuse it
+                                        // instead of appending. This keeps a single
+                                        // initial "New tab" from accumulating on the
+                                        // left when the user drops their first archive.
+                                        if col.active().archive_path.get().is_none() {
+                                            col.replace_active(path.clone());
+                                            tabs_to_load.push((col.active_id(), path));
+                                        } else {
+                                            let id = col.open(Some(path.clone()));
+                                            tabs_to_load.push((id, path));
+                                        }
+                                    }
+                                    DropZone::ReplaceCurrent => {
+                                        if col.active().archive_path.get().is_some() {
+                                            col.replace_active(path.clone());
+                                            tabs_to_load.push((col.active_id(), path));
+                                        } else {
+                                            let id = col.open(Some(path.clone()));
+                                            tabs_to_load.push((id, path));
+                                        }
+                                    }
+                                }
+                            }
+                            app.shared_state.signals().tabs.set(col);
+                            let state = app.shared_state.app_state.clone();
+                            let signals = app.shared_state.signals().clone();
+                            for (tab_id, path) in tabs_to_load {
+                                crate::core::operations::archive::load_archive_into_tab(
+                                    state.clone(),
+                                    signals.clone(),
+                                    tab_id,
+                                    &path,
+                                );
+                            }
+                        }
+                    });
+                });
+        }
+    }
+
     // Render toast notifications (always on top)
     app.shared_state.toaster.lock().show(ctx);
 

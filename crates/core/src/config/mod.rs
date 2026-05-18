@@ -14,4 +14,4 @@ pub mod sync;
 
 pub use arclain_db::DbTitleReplacement;
 pub use database::{open_databases, ConfigDb, ConfigDbs, DbPaths, SecretsDb, SecretsKey};
-pub use settings::{Config, ConfigStore, PassRule};
+pub use settings::{Config, ConfigStore, DropBehavior, PassRule};

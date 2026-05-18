@@ -70,7 +70,10 @@ pub enum SettingsAction {
     /// Fix/migrate cache entries (update cache_type and product_id)
     MigrateCacheEntries,
     /// Save general settings
-    SaveGeneral { open_nested_in_new_tab: bool },
+    SaveGeneral {
+        open_nested_in_new_tab: bool,
+        drop_behavior: arclain_core::DropBehavior,
+    },
     /// Save network settings
     SaveNetwork {
         socks5_enabled: bool,
@@ -158,12 +161,15 @@ pub enum ConnectionTestStatus {
 pub struct GeneralSettingsState {
     /// Whether to open nested archives in a new tab (true) or replace current view (false)
     pub open_nested_in_new_tab: Signal<bool>,
+    /// What to do when a file is dropped without aiming at a specific overlay zone.
+    pub drop_behavior: Signal<arclain_core::DropBehavior>,
 }
 
 impl Default for GeneralSettingsState {
     fn default() -> Self {
         Self {
             open_nested_in_new_tab: Signal::new(false),
+            drop_behavior: Signal::new(arclain_core::DropBehavior::default()),
         }
     }
 }

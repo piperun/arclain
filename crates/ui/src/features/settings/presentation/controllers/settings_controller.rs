@@ -213,9 +213,11 @@ pub fn handle_action(
         }
         SettingsAction::SaveGeneral {
             open_nested_in_new_tab,
+            drop_behavior,
         } => {
             let mut state = shared.app_state.lock();
             state.user_config.open_nested_in_new_tab = open_nested_in_new_tab;
+            state.user_config.drop_behavior = Some(drop_behavior.as_str().to_string());
             state.signals.user_config.set(state.user_config.clone());
             if let Some(ref config_svc) = shared.services.config_service {
                 if let Err(e) = config_svc.save_user_config(&state.user_config) {

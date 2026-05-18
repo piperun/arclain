@@ -15,6 +15,7 @@ pub fn error_label(ui: &mut egui::Ui, theme: &AppTheme, msg: &str) {
 pub mod breadcrumbs;
 pub mod carousel;
 pub mod context_menu;
+pub mod drop_overlay;
 pub mod header;
 pub mod item_table;
 pub mod layout;
@@ -28,6 +29,7 @@ pub mod settings_form;
 pub mod settings_header;
 pub mod status_bar;
 pub mod status_icon;
+pub mod tab_bar;
 pub mod toolbar;
 pub mod variables_panel;
 pub mod top_tab_bar;
