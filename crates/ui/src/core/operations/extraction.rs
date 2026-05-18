@@ -25,7 +25,8 @@ pub fn extract_selected(
     }
 
     let st = state.lock();
-    if let Some(archive) = st.signals.archive_path.get().as_ref() {
+    let tab = st.signals.tabs.get().active().clone();
+    if let Some(archive) = tab.archive_path.get().as_ref() {
         let selected_files: Vec<String> = entries
             .iter()
             .filter(|e| e.selected)
@@ -38,10 +39,11 @@ pub fn extract_selected(
         }
 
         // Build full paths using navigation prefix
-        let full_paths: Vec<String> = if !st.signals.navigation.get().current_path.is_empty() {
+        let nav = tab.navigation.get();
+        let full_paths: Vec<String> = if !nav.current_path.is_empty() {
             selected_files
                 .iter()
-                .map(|f| format!("{}/{}", st.signals.navigation.get().current_path, f))
+                .map(|f| format!("{}/{}", nav.current_path, f))
                 .collect()
         } else {
             selected_files
@@ -55,7 +57,7 @@ pub fn extract_selected(
             archive_name,
             &st.last_entries,
         );
-        let signal_pw = st.signals.current_password.get();
+        let signal_pw = tab.current_password.get();
         let pw_opt = signal_pw
             .as_deref()
             .or(auto_pw.as_deref())
@@ -109,7 +111,8 @@ pub fn extract_all(
     }
 
     let st = state.lock();
-    if let Some(archive) = st.signals.archive_path.get().as_ref() {
+    let tab = st.signals.tabs.get().active().clone();
+    if let Some(archive) = tab.archive_path.get().as_ref() {
         let archive_clone = archive.clone();
         let backend = st.fallback_backend.clone();
         let archive_name = archive.to_str();
@@ -118,7 +121,7 @@ pub fn extract_all(
             archive_name,
             &st.last_entries,
         );
-        let signal_pw = st.signals.current_password.get();
+        let signal_pw = tab.current_password.get();
         let pw_opt = signal_pw
             .as_deref()
             .or(auto_pw.as_deref())

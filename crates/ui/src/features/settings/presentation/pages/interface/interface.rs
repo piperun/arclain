@@ -225,7 +225,7 @@ pub fn render_interface_settings(
                 shared.signals().ui_preferences.set(prefs);
 
                 // Update browser view state with new panel defaults
-                shared.signals().browser_view_state.update(|state| {
+                shared.signals().tabs.get().active().browser_view_state.update(|state| {
                     state.toolbar_state.show_tree_panel = interface_state.layout_options.tree_panel_visible;
                     state.toolbar_state.show_properties_panel = interface_state.layout_options.properties_panel_visible;
                 });

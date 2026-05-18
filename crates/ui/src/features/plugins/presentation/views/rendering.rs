@@ -187,9 +187,10 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                     ds.page_needs_init = false;
                     if !actions.is_empty() {
                         let mut toaster = shared.toaster.lock();
+                        let render_tab = shared.signals().tabs.get().active().clone();
                         let ctx = crate::features::plugins::presentation::controllers::plugin_controller::ActionContext {
                             lightbox_signal: Some(&shared.signals().lightbox_state),
-                            page_display_name_signal: Some(&shared.signals().page_display_name),
+                            page_display_name_signal: Some(&render_tab.page_display_name),
                             shared_state: Some(shared),
                         };
                         for action in actions {
@@ -262,6 +263,9 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
     // Get display name from signal, fallback to page_id
     let display_name = shared
         .signals()
+        .tabs
+        .get()
+        .active()
         .page_display_name
         .get()
         .unwrap_or_else(|| page_id.clone());

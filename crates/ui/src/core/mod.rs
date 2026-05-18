@@ -11,6 +11,7 @@ pub mod operations;
 pub mod services;
 pub mod signals;
 pub mod state;
+pub mod tabs;
 pub mod utils;
 
 // Re-export main app type

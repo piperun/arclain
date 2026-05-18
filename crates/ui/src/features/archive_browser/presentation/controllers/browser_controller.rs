@@ -73,7 +73,7 @@ impl BrowserController {
                 self.file_ops.copy_path(egui_ctx, shared.signals(), &file);
             }
             Action::ShowProperties(file) => {
-                shared.signals().browser_view_state.update(|s| {
+                shared.signals().tabs.get().active().browser_view_state.update(|s| {
                     s.toolbar_state.show_properties_panel = true;
                     for entry in &mut s.view_entries {
                         entry.selected = entry.name == file;
@@ -112,7 +112,8 @@ impl BrowserController {
             // Password dialog and other state also in signals now
             let mut password_dialog = shared.signals().password_dialog.get();
             let mut status_info = shared.signals().status_bar.get();
-            let mut view_state = shared.signals().browser_view_state.get();
+            let bc_tab = shared.signals().tabs.get().active().clone();
+            let mut view_state = bc_tab.browser_view_state.get();
             // nav removed
 
             crate::core::operations::archive::open_archive_by_path(
@@ -128,8 +129,8 @@ impl BrowserController {
             // navigation set removed
             shared.signals().password_dialog.set(password_dialog);
             shared.signals().status_bar.set(status_info);
-            shared.signals().browser_view_state.set(view_state);
-            shared.signals().archive_info.set(archive_info);
+            bc_tab.browser_view_state.set(view_state);
+            bc_tab.archive_info.set(archive_info);
         } else {
             shared.signals().status_bar.set(status_info);
         }
@@ -141,7 +142,8 @@ impl BrowserController {
         organization_feature: &mut OrganizationFeature,
         page_navigator: &mut PageNavigator,
     ) {
-        if let Some(archive) = shared.signals().archive_path.get() {
+        let org_tab = shared.signals().tabs.get().active().clone();
+        if let Some(archive) = org_tab.archive_path.get() {
             let archive_name = archive
                 .file_name()
                 .unwrap_or_default()
@@ -150,8 +152,8 @@ impl BrowserController {
 
             let rules = self.load_org_rules(shared);
             let profiles = self.load_profiles(shared);
-            let entries = shared.signals().entries.get().as_ref().clone();
-            let metadata = shared.signals().game_metadata.get();
+            let entries = org_tab.entries.get().as_ref().clone();
+            let metadata = org_tab.game_metadata.get();
 
             organization_feature.organizer_page =
                 Some(crate::features::organization::OrganizerPage::new(
@@ -232,7 +234,7 @@ impl BrowserController {
         match serde_json::from_str::<arclain_core::features::organization::GameMetadata>(&json) {
             Ok(metadata) => {
                 tracing::info!("Received metadata from plugin: {:?}", metadata.title);
-                shared.signals().game_metadata.set(Some(metadata));
+                shared.signals().tabs.get().active().game_metadata.set(Some(metadata));
             }
             Err(e) => {
                 tracing::warn!("Failed to parse metadata JSON: {}", e);

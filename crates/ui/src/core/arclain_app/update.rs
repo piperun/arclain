@@ -66,7 +66,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // 1. If on main page with archive loaded, try archive back navigation first
                 // 2. If that fails (e.g. at root), navigate UI page back
                 let is_on_main = app.page_navigator.is_on_main();
-                let archive_loaded = app.shared_state.signals().archive_path.read().is_some();
+                let archive_loaded = app.shared_state.signals().tabs.get().active().archive_path.read().is_some();
                 let signals = app.shared_state.signals();
 
                 let mut handled = false;
@@ -89,7 +89,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // 1. If on main page with archive loaded, try archive forward navigation first
                 // 2. If that fails, navigate UI page forward
                 let is_on_main = app.page_navigator.is_on_main();
-                let archive_loaded = app.shared_state.signals().archive_path.read().is_some();
+                let archive_loaded = app.shared_state.signals().tabs.get().active().archive_path.read().is_some();
                 let signals = app.shared_state.signals();
 
                 let mut handled = false;
@@ -109,7 +109,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             }
             HotkeyAction::NavigateUp => {
                 // Navigate up one level in archive folder structure
-                let mut nav = app.shared_state.signals().navigation.get();
+                let tab = app.shared_state.signals().tabs.get().active().clone();
+                let mut nav = tab.navigation.get();
                 if !nav.current_path.is_empty() {
                     if let Some(parent) = std::path::Path::new(&nav.current_path)
                         .parent()
@@ -118,7 +119,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                         nav.path_stack.push(nav.current_path.clone());
                         nav.current_path = parent.to_string();
                         nav.forward_stack.clear();
-                        app.shared_state.signals().navigation.set(nav);
+                        tab.navigation.set(nav);
                         // Re-filter view entries to match new path
                         operations::navigation_view::refresh_view_entries(
                             app.shared_state.signals(),
@@ -128,12 +129,13 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             }
             HotkeyAction::NavigateToRoot => {
                 // Navigate to archive root
-                let mut nav = app.shared_state.signals().navigation.get();
+                let tab = app.shared_state.signals().tabs.get().active().clone();
+                let mut nav = tab.navigation.get();
                 if !nav.current_path.is_empty() {
                     nav.path_stack.push(nav.current_path.clone());
                     nav.current_path = String::new();
                     nav.forward_stack.clear();
-                    app.shared_state.signals().navigation.set(nav);
+                    tab.navigation.set(nav);
                     // Re-filter view entries to match new path
                     operations::navigation_view::refresh_view_entries(app.shared_state.signals());
                 }
@@ -152,7 +154,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                     // Open the archive directly
                     let mut password_dialog = app.shared_state.signals().password_dialog.get();
                     let mut status_info = app.shared_state.signals().status_bar.get();
-                    let mut view_state = app.shared_state.signals().browser_view_state.get();
+                    let hk_tab = app.shared_state.signals().tabs.get().active().clone();
+                    let mut view_state = hk_tab.browser_view_state.get();
                     // nav removed
                     let mut archive_info = operations::archive::ArchiveInfo::default();
 
@@ -172,11 +175,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                         .password_dialog
                         .set(password_dialog);
                     app.shared_state.signals().status_bar.set(status_info);
-                    app.shared_state
-                        .signals()
-                        .browser_view_state
-                        .set(view_state);
-                    app.shared_state.signals().archive_info.set(archive_info);
+                    hk_tab.browser_view_state.set(view_state);
+                    hk_tab.archive_info.set(archive_info);
                 }
             }
             HotkeyAction::Search => {
@@ -185,14 +185,12 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             }
             HotkeyAction::SelectAll => {
                 // Select all entries in the file list
-                let mut view_state = app.shared_state.signals().browser_view_state.get();
+                let sel_tab = app.shared_state.signals().tabs.get().active().clone();
+                let mut view_state = sel_tab.browser_view_state.get();
                 for entry in &mut view_state.view_entries {
                     entry.selected = true;
                 }
-                app.shared_state
-                    .signals()
-                    .browser_view_state
-                    .set(view_state);
+                sel_tab.browser_view_state.set(view_state);
             }
             HotkeyAction::DeleteSelected => {
                 tracing::debug!(
@@ -264,7 +262,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
 
             let mut password_dialog = app.shared_state.signals().password_dialog.get();
             let mut status_info = app.shared_state.signals().status_bar.get();
-            let mut view_state = app.shared_state.signals().browser_view_state.get();
+            let nested_tab = app.shared_state.signals().tabs.get().active().clone();
+            let mut view_state = nested_tab.browser_view_state.get();
             // nav removed
 
             operations::archive::open_archive_by_path(
@@ -283,11 +282,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 .password_dialog
                 .set(password_dialog);
             app.shared_state.signals().status_bar.set(status_info);
-            app.shared_state
-                .signals()
-                .browser_view_state
-                .set(view_state);
-            app.shared_state.signals().archive_info.set(archive_info);
+            nested_tab.browser_view_state.set(view_state);
+            nested_tab.archive_info.set(archive_info);
         } else {
             app.shared_state.signals().status_bar.set(status_info);
         }
@@ -346,11 +342,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     match tab_action {
         app_rendering::TabBarAction::SelectArchiveTab => {
             // Set toolbar context to Archive
-            app.shared_state
-                .signals()
-                .active_toolbar
-                .set(crate::core::signals::ToolbarContext::Archive);
-            app.shared_state.signals().status_message.set(None);
+            {
+                let tab = app.shared_state.signals().tabs.get().active().clone();
+                tab.active_toolbar.set(crate::core::signals::ToolbarContext::Archive);
+                tab.status_message.set(None);
+            }
             // Close any open plugin pages
             {
                 let mut dialog_state = app.shared_state.signals().plugin_dialog_state.get();
@@ -364,7 +360,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         }
         app_rendering::TabBarAction::SelectPluginTab { plugin_id, tab_id } => {
             // Set toolbar context to Plugin
-            app.shared_state.signals().active_toolbar.set(
+            app.shared_state.signals().tabs.get().active().active_toolbar.set(
                 crate::core::signals::ToolbarContext::Plugin(plugin_id.clone()),
             );
             // Open plugin page

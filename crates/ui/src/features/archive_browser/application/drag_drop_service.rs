@@ -15,7 +15,8 @@ impl DragDropService {
         tracing::info!("[DragExtract] Starting with files: {:?}", files);
 
         // Get archive handle
-        let archive_guard = shared.signals().opened_archive.read();
+        let tab = shared.signals().tabs.get().active().clone();
+        let archive_guard = tab.opened_archive.read();
         let archive_arc_opt = archive_guard.as_ref().cloned();
         drop(archive_guard);
 
@@ -23,7 +24,7 @@ impl DragDropService {
             let archive = archive_arc.read();
 
             // Collect entries matching the dragged files (or directory contents)
-            let all_entries = shared.signals().entries.get();
+            let all_entries = tab.entries.get();
             tracing::info!(
                 "[DragExtract] Total entries in archive: {}",
                 all_entries.len()

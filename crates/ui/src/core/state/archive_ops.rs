@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 impl AppState {
     pub fn list_archive(&mut self, path: &Path) -> Result<Vec<arclain_core::ArchiveEntry>> {
         info!("Opening archive: {}", path.display());
-        self.signals.current_password.set(None);
+        self.signals.tabs.get().active().current_password.set(None);
 
         // Select appropriate backend based on file extension
         let backend = self.backend_selector.select(path)?;
@@ -26,7 +26,7 @@ impl AppState {
                         info!("Attempting to open encrypted archive with auto-detected password");
                         match backend.list(path, Some(password)) {
                             Ok(new_info) => {
-                                self.signals.current_password.set(Some(password.clone()));
+                                self.signals.tabs.get().active().current_password.set(Some(password.clone()));
                                 new_info
                             }
                             Err(e) => {
@@ -50,7 +50,7 @@ impl AppState {
                 if let Some(ref password) = pw {
                     info!("Attempting to open archive with auto-detected password");
                     let info = backend.list(path, Some(password))?;
-                    self.signals.current_password.set(Some(password.clone()));
+                    self.signals.tabs.get().active().current_password.set(Some(password.clone()));
                     info
                 } else {
                     debug!("No auto-password found");
@@ -60,25 +60,25 @@ impl AppState {
         };
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         let archive_path = Some(path.to_path_buf());
-        self.signals.archive_path.set(archive_path.clone());
+        let tab = self.signals.tabs.get().active().clone();
+        tab.archive_path.set(archive_path.clone());
 
         // Update archive_info signal directly
         {
-            let mut ai = self.signals.archive_info.get();
+            let mut ai = tab.archive_info.get();
             ai.archive_encrypted = info.encrypted;
             ai.headers_encrypted = info.headers_encrypted;
             ai.encryption_method = info.encryption_method.clone();
-            self.signals.archive_info.set(ai);
+            tab.archive_info.set(ai);
         }
         crate::core::operations::navigation_signals::reset_navigation(&self.signals);
 
         // Update reactive signals for async UI updates
-        self.signals
-            .entries
+        tab.entries
             .set(std::sync::Arc::new(info.entries.clone()));
 
         // Attempt password detection with correct archive context
-        if self.signals.current_password.read().is_none() {
+        if tab.current_password.read().is_none() {
             let archive_name = archive_path.as_ref().and_then(|p| p.to_str());
             debug!(
                 "Attempting auto-password detection for archive: {:?}",
@@ -87,7 +87,7 @@ impl AppState {
             let detected_pw = auto_password_for(&self.pass_rules, archive_name, &self.last_entries);
             if let Some(ref pwd) = detected_pw {
                 info!("Auto-detected password for archive (length: {})", pwd.len());
-                self.signals.current_password.set(Some(pwd.clone()));
+                tab.current_password.set(Some(pwd.clone()));
             } else if info.encrypted {
                 warn!("Archive is encrypted but no password was auto-detected from rules");
             } else {
@@ -96,8 +96,7 @@ impl AppState {
         } else {
             info!(
                 "Password already set (length: {})",
-                self.signals
-                    .current_password
+                tab.current_password
                     .get()
                     .as_ref()
                     .map(|p| p.len())
@@ -106,44 +105,43 @@ impl AppState {
         }
 
         // Store OnArchiveOpen event for deferred dispatch
-        self.signals.metadata.set(None);
+        tab.metadata.set(None);
         if self.plugin_event_sender.is_some() {
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
                 path: path.to_string_lossy().into_owned(),
                 kind: info.archive_kind,
-                password: self.signals.current_password.get(),
+                password: tab.current_password.get(),
             };
 
             self.pending_plugin_event = Some(event);
-            self.signals.ui_ready.set(false);
+            tab.ui_ready.set(false);
 
             info!(
                 "Archive opened successfully with {} entries (plugin event pending)",
-                self.signals.entries.get().len()
+                tab.entries.get().len()
             );
         }
 
         if self.plugin_event_sender.is_none() {
             info!(
                 "Archive opened successfully with {} entries",
-                self.signals.entries.get().len()
+                tab.entries.get().len()
             );
         }
 
         // Create Archive handle and store in signal for session operations
         // Re-select backend since the one from earlier was consumed
         let backend = self.backend_selector.select(path)?;
-        let archive = if let Some(pw) = self.signals.current_password.get() {
+        let archive = if let Some(pw) = tab.current_password.get() {
             arclain_core::Archive::with_password(backend, path.to_path_buf(), pw)
         } else {
             arclain_core::Archive::new(backend, path.to_path_buf())
         };
-        self.signals
-            .opened_archive
+        tab.opened_archive
             .set(Some(Arc::new(RwLock::new(archive))));
 
-        Ok(self.signals.entries.get().as_ref().clone())
+        Ok(tab.entries.get().as_ref().clone())
     }
 
     pub fn list_with_password(
@@ -155,20 +153,19 @@ impl AppState {
         let backend = self.backend_selector.select(path)?;
         let info = backend.list(path, Some(password))?;
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
-        let archive_path = Some(path.to_path_buf());
-        self.signals.archive_path.set(archive_path);
+        let tab = self.signals.tabs.get().active().clone();
+        tab.archive_path.set(Some(path.to_path_buf()));
 
         // Update archive_info signal directly
         {
-            let mut ai = self.signals.archive_info.get();
+            let mut ai = tab.archive_info.get();
             ai.archive_encrypted = info.encrypted;
             ai.headers_encrypted = info.headers_encrypted;
             ai.encryption_method = info.encryption_method.clone();
-            self.signals.archive_info.set(ai);
+            tab.archive_info.set(ai);
         }
         crate::core::operations::navigation_signals::reset_navigation(&self.signals);
-        self.signals
-            .current_password
+        tab.current_password
             .set(Some(password.to_string()));
 
         // Store OnArchiveOpen event for deferred dispatch
@@ -181,17 +178,16 @@ impl AppState {
             };
 
             self.pending_plugin_event = Some(event);
-            self.signals.ui_ready.set(false);
+            tab.ui_ready.set(false);
         }
 
         // Create Archive handle with password and store in signal for session operations
         let archive =
             arclain_core::Archive::with_password(backend, path.to_path_buf(), password.to_string());
-        self.signals
-            .opened_archive
+        tab.opened_archive
             .set(Some(Arc::new(RwLock::new(archive))));
 
-        Ok(self.signals.entries.get().as_ref().clone())
+        Ok(tab.entries.get().as_ref().clone())
     }
 
     /// Dispatch any pending plugin event after UI has rendered.
@@ -205,15 +201,15 @@ impl AppState {
                 }
             }
 
-            self.signals.ui_ready.set(true);
+            self.signals.tabs.get().active().ui_ready.set(true);
         }
     }
 
     pub fn get_current_entries(&self) -> Vec<arclain_core::ArchiveEntry> {
-        self.signals
-            .navigation
+        let tab = self.signals.tabs.get().active().clone();
+        tab.navigation
             .get()
-            .filter_entries(&self.signals.entries.get())
+            .filter_entries(&tab.entries.get())
     }
 
     pub fn add_files_to_archive(&self, archive: &Path, files: Vec<PathBuf>) -> Result<()> {
@@ -224,7 +220,7 @@ impl AppState {
     pub fn read_text_file(&self, archive: &Path, path_in_archive: &str) -> Result<String> {
         let archive_name = archive.to_str();
         let auto_pw = auto_password_for(&self.pass_rules, archive_name, &self.last_entries);
-        let signal_pw = self.signals.current_password.get();
+        let signal_pw = self.signals.tabs.get().active().current_password.get();
         let pw = signal_pw.as_deref().or(auto_pw.as_deref());
         let backend = self.backend_selector.select(archive)?;
         backend.read_text_file(archive, path_in_archive, pw)

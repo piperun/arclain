@@ -9,7 +9,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render Toolbar (only on Main page AND when Archive context is active)
     let should_show_archive_toolbar = if app.page_navigator.is_on_main() {
         matches!(
-            app.shared_state.signals().active_toolbar.get(),
+            app.shared_state.signals().tabs.get().active().active_toolbar.get(),
             ToolbarContext::Archive
         )
     } else {
@@ -20,20 +20,21 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
         egui::TopBottomPanel::top("toolbar_panel")
             .frame(egui::Frame::NONE.fill(app.shared_state.theme.colors.surface_variant))
             .show(ctx, |ui| {
-                let nav = app.shared_state.signals().navigation.get();
+                let tab = app.shared_state.signals().tabs.get().active().clone();
+                let nav = tab.navigation.get();
                 let can_go_back = nav.can_go_back();
                 let can_go_forward = nav.can_go_forward();
                 let can_go_up = nav.can_go_up();
-                let archive_loaded = app.shared_state.signals().archive_path.read().is_some();
+                let archive_loaded = tab.archive_path.read().is_some();
                 // Use selection_count signal for decoupled toolbar state
-                let has_selection = app.shared_state.signals().selection_count.get() > 0;
-                let has_metadata = app.shared_state.signals().metadata.read().is_some();
+                let has_selection = tab.selection_count.get() > 0;
+                let has_metadata = tab.metadata.read().is_some();
                 let toolbar_config = components::toolbar::ToolbarConfig::new(
                     app.shared_state.signals().toolbar_items.get(),
                 );
                 let plugin_manager = app.shared_state.services.plugin_manager.clone();
 
-                let mut view_state = app.shared_state.signals().browser_view_state.get();
+                let mut view_state = tab.browser_view_state.get();
                 let actions = components::toolbar::render(
                     ui,
                     &app.shared_state.theme,
@@ -48,10 +49,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     plugin_manager.as_ref(),
                     Some(&app.shared_state),
                 );
-                app.shared_state
-                    .signals()
-                    .browser_view_state
-                    .set(view_state);
+                tab.browser_view_state.set(view_state);
 
                 // Handle toolbar actions
                 let shared_state = app.shared_state.clone();
@@ -90,7 +88,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 if actions.open {
                     let mut archive_info = operations::archive::ArchiveInfo::default();
                     // Sync from signals
-                    let mut view_state = shared_state.signals().browser_view_state.get();
+                    let open_tab = shared_state.signals().tabs.get().active().clone();
+                    let mut view_state = open_tab.browser_view_state.get();
                     let mut password_dialog = shared_state.signals().password_dialog.get();
                     let mut status_info = shared_state.signals().status_bar.get();
                     let mut merge_dialog = shared_state.signals().merge_dialog.get();
@@ -109,14 +108,14 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
 
                     // Sync back to signals
                     // navigation set removed
-                    shared_state.signals().browser_view_state.set(view_state);
+                    open_tab.browser_view_state.set(view_state);
+                    open_tab.archive_info.set(archive_info);
                     shared_state.signals().password_dialog.set(password_dialog);
                     shared_state.signals().status_bar.set(status_info);
-                    shared_state.signals().archive_info.set(archive_info);
                     shared_state.signals().merge_dialog.set(merge_dialog);
                 }
                 if actions.extract {
-                    let view_state = shared_state.signals().browser_view_state.get();
+                    let view_state = shared_state.signals().tabs.get().active().browser_view_state.get();
                     let ops_state = app.archive_operations.state_mut();
                     let mut status_info = shared_state.signals().status_bar.get();
                     let mut dialog = shared_state.signals().extraction_dialog.get();
@@ -158,7 +157,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 }
                 if actions.delete_selected {
                     let mut archive_info = operations::archive::ArchiveInfo::default();
-                    let mut view_state = shared_state.signals().browser_view_state.get();
+                    let t = shared_state.signals().tabs.get().active().clone();
+                    let mut view_state = t.browser_view_state.get();
                     let mut status_info = shared_state.signals().status_bar.get();
                     let entries_clone = view_state.view_entries.clone();
 
@@ -170,9 +170,9 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut archive_info,
                     );
 
-                    shared_state.signals().browser_view_state.set(view_state);
+                    t.browser_view_state.set(view_state);
+                    t.archive_info.set(archive_info);
                     shared_state.signals().status_bar.set(status_info);
-                    shared_state.signals().archive_info.set(archive_info);
                 }
                 if actions.convert_to_7z {
                     // Navigate to Process page pre-populated with a Convert step.
@@ -185,7 +185,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         compression: CompressionLevel::Normal,
                         password: None,
                     });
-                    if let Some(ap) = shared_state.signals().archive_path.get() {
+                    if let Some(ap) = shared_state.signals().tabs.get().active().archive_path.get() {
                         app.process_state.pipeline.input =
                             Some(PipelineInput::Files(vec![ap]));
                     }

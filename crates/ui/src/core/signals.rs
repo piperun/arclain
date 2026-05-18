@@ -3,15 +3,11 @@
 //! This module provides reactive signals for async-updated state
 //! that needs to trigger UI updates when changed from background threads.
 
-use crate::core::operations::archive::ArchiveInfo;
 use crate::core::state::UiPreferences;
-use arclain_core::archive::NavigationState;
-use arclain_core::features::organization::GameMetadata;
+use crate::core::tabs::TabsCollection;
 use arclain_core::utilities::PassRule;
-use arclain_core::ArchiveEntry;
 use arclain_core::UiItem;
 use arclain_signals::{Signal, SignalContext};
-use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -86,32 +82,12 @@ pub enum ToolbarContext {
 /// These signals are used for state that updates asynchronously
 /// (e.g., from plugin background threads) and needs to trigger
 /// UI repaints when changed.
+///
+/// Per-tab archive-context signals (archive_path, entries, navigation, etc.)
+/// have been moved into `TabState` and are accessed via
+/// `signals.tabs.get().active().<signal>.<op>()`.
 #[derive(Clone)]
 pub struct AppSignals {
-    /// Archive entries - set when archive is listed
-    pub entries: Signal<Arc<Vec<ArchiveEntry>>>,
-
-    /// Plugin metadata - set when plugin emits metadata
-    pub metadata: Signal<Option<serde_json::Value>>,
-
-    /// Whether archive is currently loading
-    pub loading: Signal<bool>,
-
-    /// Current archive path
-    pub archive_path: Signal<Option<PathBuf>>,
-
-    /// Whether the UI has rendered after an archive was opened.
-    /// This is set to `false` when an archive opens and to `true` after
-    /// the UI has rendered the file list. Used to defer plugin events
-    /// until the UI is ready.
-    pub ui_ready: Signal<bool>,
-
-    /// Active toolbar context - determines which toolbar to show
-    pub active_toolbar: Signal<ToolbarContext>,
-
-    /// Status bar message from plugins (e.g., "Entry selected: RJ01234567")
-    pub status_message: Signal<Option<String>>,
-
     /// Extraction progress for native backends
     pub extraction_progress: Signal<Option<ExtractionProgressState>>,
 
@@ -127,32 +103,14 @@ pub struct AppSignals {
     /// Info panel items from DB - reactive for layout editor changes
     pub info_panel_items: Signal<Vec<UiItem>>,
 
-    /// Archive info (format, size, encryption status) - reactive
-    pub archive_info: Signal<ArchiveInfo>,
-
-    /// Game metadata from plugins (DLSite, etc.) - reactive
-    pub game_metadata: Signal<Option<GameMetadata>>,
-
     /// UI display preferences - reactive for settings changes
     pub ui_preferences: Signal<UiPreferences>,
 
     /// User preferences from config DB - reactive
     pub user_config: Signal<arclain_core::UserConfig>,
 
-    /// Navigation state - reactive
-    pub navigation: Signal<NavigationState>,
-
-    /// Current password for the open archive
-    pub current_password: Signal<Option<String>>,
-
     /// Password rules for auto-unlock (from secrets DB)
     pub pass_rules: Signal<Vec<PassRule>>,
-
-    /// Number of selected entries in file list (for toolbar button state)
-    pub selection_count: Signal<usize>,
-
-    /// Opened archive session - holds Archive handle with password for session lifetime
-    pub opened_archive: Signal<Option<Arc<RwLock<arclain_core::Archive>>>>,
 
     /// [NEW] Status Bar State
     pub status_bar: Signal<crate::shared::components::status_bar::StatusBarInfo>,
@@ -163,10 +121,6 @@ pub struct AppSignals {
 
     /// [NEW] Archive Operations context
     pub pending_open_file: Signal<Option<String>>,
-
-    /// [NEW] UI View State for Archive Browser
-    pub browser_view_state:
-        Signal<crate::features::archive_browser::domain::types::BrowserViewState>,
 
     /// [NEW] Operation Dialogs (Phase 2)
     pub extraction_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
@@ -179,9 +133,6 @@ pub struct AppSignals {
     /// [NEW] Plugin Dialog State (Phase 3)
     pub plugin_dialog_state: Signal<crate::features::plugins::domain::state::PluginDialogState>,
 
-    /// [NEW] Plugin page display name - for breadcrumb title (overrides internal page ID)
-    pub page_display_name: Signal<Option<String>>,
-
     /// [NEW] Signal to reload hotkeys when settings change
     pub hotkeys_updated: Signal<bool>,
 
@@ -193,33 +144,25 @@ pub struct AppSignals {
 
     /// Gameta server connection status — drives the header indicator.
     pub server_status: Signal<ServerConnectionStatus>,
+
+    /// Multi-tab archive state. Per-tab signals (archive_path, entries,
+    /// navigation, etc.) live inside each TabState — read via
+    /// `signals.tabs.get().active().<signal>.get()`.
+    pub tabs: Signal<TabsCollection>,
 }
 
 impl AppSignals {
     /// Create new signals with default values.
     pub fn new() -> Self {
         Self {
-            entries: Signal::new(Arc::new(Vec::new())).with_name("entries"),
-            metadata: Signal::new(None).with_name("metadata"),
-            loading: Signal::new(false).with_name("loading"),
-            archive_path: Signal::new(None).with_name("archive_path"),
-            ui_ready: Signal::new(true).with_name("ui_ready"),
-            active_toolbar: Signal::new(ToolbarContext::Archive).with_name("active_toolbar"),
-            status_message: Signal::new(None).with_name("status_message"),
             extraction_progress: Signal::new(None).with_name("extraction_progress"),
             extraction_cancel: Arc::new(AtomicBool::new(false)),
             search_text: Signal::new(String::new()).with_name("search_text"),
             toolbar_items: Signal::new(Vec::new()).with_name("toolbar_items"),
             info_panel_items: Signal::new(Vec::new()).with_name("info_panel_items"),
-            archive_info: Signal::new(ArchiveInfo::default()).with_name("archive_info"),
-            game_metadata: Signal::new(None).with_name("game_metadata"),
             ui_preferences: Signal::new(UiPreferences::default()).with_name("ui_preferences"),
             user_config: Signal::new(arclain_core::UserConfig::default()).with_name("user_config"),
-            navigation: Signal::new(NavigationState::new()).with_name("navigation"),
-            current_password: Signal::new(None).with_name("current_password"),
             pass_rules: Signal::new(Vec::new()).with_name("pass_rules"),
-            selection_count: Signal::new(0).with_name("selection_count"),
-            opened_archive: Signal::new(None).with_name("opened_archive"),
             status_bar: Signal::new(
                 crate::shared::components::status_bar::StatusBarInfo::default(),
             )
@@ -232,10 +175,6 @@ impl AppSignals {
                 .with_name("file_edit_dialog"),
 
             pending_open_file: Signal::new(None).with_name("pending_open_file"),
-            browser_view_state: Signal::new(
-                crate::features::archive_browser::domain::types::BrowserViewState::default(),
-            )
-            .with_name("browser_view_state"),
             extraction_dialog: Signal::new(
                 crate::shared::dialogs::ExtractionProgressDialog::default(),
             )
@@ -252,7 +191,6 @@ impl AppSignals {
                 crate::features::plugins::domain::state::PluginDialogState::default(),
             )
             .with_name("plugin_dialog_state"),
-            page_display_name: Signal::new(None).with_name("page_display_name"),
             hotkeys_updated: Signal::new(false).with_name("hotkeys_updated"),
             merge_dialog: Signal::new(crate::shared::dialogs::MergeDialogState::default())
                 .with_name("merge_dialog"),
@@ -260,81 +198,55 @@ impl AppSignals {
                 .with_name("lightbox_state"),
             server_status: Signal::new(ServerConnectionStatus::default())
                 .with_name("server_status"),
+            tabs: Signal::new(TabsCollection::new()).with_name("tabs"),
         }
     }
 
     /// Bind all signals to egui context for automatic repaint.
     pub fn bind_to_context(&self, ctx: &egui::Context) {
         let signal_ctx = SignalContext::new(ctx.clone());
-        signal_ctx.bind_named(&self.entries, "entries");
-        signal_ctx.bind_named(&self.metadata, "metadata");
-        signal_ctx.bind_named(&self.loading, "loading");
-        signal_ctx.bind_named(&self.archive_path, "archive_path");
-        signal_ctx.bind_named(&self.active_toolbar, "active_toolbar");
-        signal_ctx.bind_named(&self.status_message, "status_message");
         signal_ctx.bind_named(&self.extraction_progress, "extraction_progress");
         signal_ctx.bind_named(&self.search_text, "search_text");
         signal_ctx.bind_named(&self.toolbar_items, "toolbar_items");
         signal_ctx.bind_named(&self.info_panel_items, "info_panel_items");
-        signal_ctx.bind_named(&self.archive_info, "archive_info");
-        signal_ctx.bind_named(&self.game_metadata, "game_metadata");
         signal_ctx.bind_named(&self.ui_preferences, "ui_preferences");
-        signal_ctx.bind_named(&self.navigation, "navigation");
-        signal_ctx.bind_named(&self.current_password, "current_password");
         signal_ctx.bind_named(&self.pass_rules, "pass_rules");
-        signal_ctx.bind_named(&self.selection_count, "selection_count");
         signal_ctx.bind_named(&self.status_bar, "status_bar");
         signal_ctx.bind_named(&self.password_dialog, "password_dialog");
         signal_ctx.bind_named(&self.file_edit_dialog, "file_edit_dialog");
         signal_ctx.bind_named(&self.pending_open_file, "pending_open_file");
-        // Note: browser_view_state is not bound - it's mutated during render so would cause repaint loops
+        // Note: per-tab browser_view_state is not bound here — it lives in TabState and
+        // is mutated during render, so binding it would cause repaint loops
         signal_ctx.bind_named(&self.extraction_dialog, "extraction_dialog");
         signal_ctx.bind_named(&self.conversion_dialog, "conversion_dialog");
         signal_ctx.bind_named(&self.process_run, "process_run");
         signal_ctx.bind_named(&self.drag_dialog, "drag_dialog");
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
-        // Note: ui_ready is not bound to repaint - it's a control signal, not display
-        signal_ctx.bind_named(&self.page_display_name, "page_display_name");
+        // Note: per-tab ui_ready is not bound to repaint — it's a control signal, not display
         signal_ctx.bind_named(&self.merge_dialog, "merge_dialog");
         signal_ctx.bind_named(&self.lightbox_state, "lightbox_state");
         signal_ctx.bind_named(&self.server_status, "server_status");
+        signal_ctx.bind_named(&self.tabs, "tabs");
     }
 
     /// Reset all signals to default state.
     #[allow(dead_code)]
     pub fn reset(&self) {
-        self.entries.set(Arc::new(Vec::new()));
-        self.metadata.set(None);
-        self.loading.set(false);
-        self.archive_path.set(None);
-        self.ui_ready.set(true);
-        self.active_toolbar.set(ToolbarContext::Archive);
-        self.status_message.set(None);
         self.extraction_progress.set(None);
         self.extraction_cancel
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.search_text.set(String::new());
         self.toolbar_items.set(Vec::new());
         self.info_panel_items.set(Vec::new());
-        self.archive_info.set(ArchiveInfo::default());
-        self.game_metadata.set(None);
         self.ui_preferences.set(UiPreferences::default());
-        self.navigation.set(NavigationState::new());
-        self.current_password.set(None);
         self.pass_rules.set(Vec::new());
-        self.selection_count.set(0);
-        self.opened_archive.set(None);
         self.status_bar
             .set(crate::shared::components::status_bar::StatusBarInfo::default());
         self.password_dialog
             .set(crate::features::password_management::dialogs::PasswordDialog::default());
-        self.file_edit_dialog
-            .set(crate::features::file_editing::FileEditDialog::default());
-
+        self.file_edit_dialog.set(crate::features::file_editing::FileEditDialog::default());
         self.pending_open_file.set(None);
-        self.browser_view_state
-            .set(crate::features::archive_browser::domain::types::BrowserViewState::default());
         self.extraction_dialog
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.conversion_dialog
@@ -344,12 +256,12 @@ impl AppSignals {
             .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.plugin_dialog_state
             .set(crate::features::plugins::domain::state::PluginDialogState::default());
-        self.page_display_name.set(None);
         self.merge_dialog
             .set(crate::shared::dialogs::MergeDialogState::default());
         self.lightbox_state
             .set(crate::shared::dialogs::LightboxState::default());
         self.server_status.set(ServerConnectionStatus::default());
+        self.tabs.set(TabsCollection::new());
     }
 }
 
@@ -362,74 +274,81 @@ impl Default for AppSignals {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn test_signals_initialize_with_default_values() {
         let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
 
-        // Verify default values
-        assert!(signals.entries.get().is_empty());
-        assert!(signals.metadata.get().is_none());
-        assert!(!signals.loading.get());
-        assert!(signals.archive_path.get().is_none());
-        assert!(signals.ui_ready.get()); // Starts true
-        assert_eq!(signals.active_toolbar.get(), ToolbarContext::Archive);
-        assert!(signals.status_message.get().is_none());
+        // Per-tab signals start at defaults
+        assert!(tab.entries.get().is_empty());
+        assert!(tab.metadata.get().is_none());
+        assert!(!tab.loading.get());
+        assert!(tab.archive_path.get().is_none());
+        assert!(tab.ui_ready.get()); // Starts true
+        assert_eq!(tab.active_toolbar.get(), ToolbarContext::Archive);
+        assert!(tab.status_message.get().is_none());
+        assert!(tab.game_metadata.get().is_none());
+        assert!(tab.current_password.get().is_none());
+
+        // Global signals
         assert!(signals.extraction_progress.get().is_none());
         assert!(signals.search_text.get().is_empty());
         assert!(signals.toolbar_items.get().is_empty());
         assert!(signals.info_panel_items.get().is_empty());
-        assert!(signals.game_metadata.get().is_none());
-        assert!(signals.current_password.get().is_none());
     }
 
     #[test]
     fn test_signals_reset_clears_all_values() {
         let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
 
-        // Set some values
-        signals.loading.set(true);
+        // Set some per-tab values
+        tab.loading.set(true);
+        tab.archive_path.set(Some(PathBuf::from("/test")));
+        tab.status_message.set(Some("message".to_string()));
+        tab.current_password.set(Some("secret".to_string()));
+        // Set a global value
         signals.search_text.set("test".to_string());
-        signals.archive_path.set(Some(PathBuf::from("/test")));
-        signals.status_message.set(Some("message".to_string()));
-        signals.current_password.set(Some("secret".to_string()));
 
         // Verify values are set
-        assert!(signals.loading.get());
+        assert!(tab.loading.get());
+        assert!(tab.archive_path.get().is_some());
         assert_eq!(signals.search_text.get(), "test");
-        assert!(signals.archive_path.get().is_some());
 
-        // Reset
+        // Reset replaces tabs collection (new TabState = defaults)
         signals.reset();
+        let tab2 = signals.tabs.get().active().clone();
 
-        // Verify all values are back to defaults
-        assert!(!signals.loading.get());
+        // Per-tab signals reset via new TabState
+        assert!(!tab2.loading.get());
+        assert!(tab2.archive_path.get().is_none());
+        assert!(tab2.status_message.get().is_none());
+        assert!(tab2.current_password.get().is_none());
+        // Global signal reset
         assert!(signals.search_text.get().is_empty());
-        assert!(signals.archive_path.get().is_none());
-        assert!(signals.status_message.get().is_none());
-        assert!(signals.current_password.get().is_none());
     }
 
     #[test]
     fn test_signal_set_get_roundtrip() {
         let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
 
-        // Test set/get for various signal types
-        signals.loading.set(true);
-        assert!(signals.loading.get());
+        // Per-tab signals
+        tab.loading.set(true);
+        assert!(tab.loading.get());
 
         signals.search_text.set("query".to_string());
         assert_eq!(signals.search_text.get(), "query");
 
         let path = PathBuf::from("/archive.zip");
-        signals.archive_path.set(Some(path.clone()));
-        assert_eq!(signals.archive_path.get(), Some(path));
+        tab.archive_path.set(Some(path.clone()));
+        assert_eq!(tab.archive_path.get(), Some(path));
 
-        signals
-            .current_password
-            .set(Some("password123".to_string()));
+        tab.current_password.set(Some("password123".to_string()));
         assert_eq!(
-            signals.current_password.get(),
+            tab.current_password.get(),
             Some("password123".to_string())
         );
     }
@@ -439,13 +358,16 @@ mod tests {
         let signals1 = AppSignals::new();
         let signals2 = signals1.clone();
 
-        // Modify through clone
-        signals2.loading.set(true);
+        // Global signals are Arc-shared
         signals2.search_text.set("shared".to_string());
-
-        // Original should see the changes (signals are Arc-wrapped)
-        assert!(signals1.loading.get());
         assert_eq!(signals1.search_text.get(), "shared");
+
+        // Per-tab signals: both signals views share the same TabsCollection signal,
+        // so active() returns the same Arc<TabState>
+        let tab1 = signals1.tabs.get().active().clone();
+        let tab2 = signals2.tabs.get().active().clone();
+        tab2.loading.set(true);
+        assert!(tab1.loading.get());
     }
 
     #[test]
@@ -453,6 +375,7 @@ mod tests {
         use arclain_core::ArchiveEntry;
 
         let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
 
         // Create test entries
         let entries = vec![
@@ -476,9 +399,9 @@ mod tests {
             },
         ];
 
-        signals.entries.set(Arc::new(entries));
+        tab.entries.set(Arc::new(entries));
 
-        let result = signals.entries.get();
+        let result = tab.entries.get();
         assert_eq!(result.len(), 2);
         assert_eq!(result[0].path, "file1.txt");
         assert_eq!(result[1].path, "file2.txt");
