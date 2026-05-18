@@ -23,7 +23,7 @@ pub fn execute_organization_plan(
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
     drop(state);
-    let password = shared.signals().current_password.get();
+    let password = shared.signals().tabs.get().active().current_password.get();
 
     info!(
         "Executing organization plan for archive: {}",
@@ -78,7 +78,7 @@ pub fn try_with_auto_password(
     let pass_rules = state.pass_rules.clone();
     drop(state);
 
-    let entries_arc = shared.signals().entries.get();
+    let entries_arc = shared.signals().tabs.get().active().entries.get();
     let entries = entries_arc
         .iter()
         .map(|e| e.path.clone())
@@ -107,6 +107,9 @@ pub fn try_with_auto_password(
                 // Success! Save the password for future use
                 shared
                     .signals()
+                    .tabs
+                    .get()
+                    .active()
                     .current_password
                     .set(Some(password.clone()));
                 Ok(())

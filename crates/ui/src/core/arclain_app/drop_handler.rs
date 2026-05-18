@@ -28,7 +28,8 @@ pub fn handle_drop_events(app: &mut ArclainApp, ctx: &egui::Context) {
         }
 
         let mut archive_info = operations::archive::ArchiveInfo::default();
-        let mut view_state = app.shared_state.signals().browser_view_state.get();
+        let t = app.shared_state.signals().tabs.get().active().clone();
+        let mut view_state = t.browser_view_state.get();
         // nav removed
         let mut pass_dialog = app.shared_state.signals().password_dialog.get();
         let mut status_bar = app.shared_state.signals().status_bar.get();
@@ -43,10 +44,7 @@ pub fn handle_drop_events(app: &mut ArclainApp, ctx: &egui::Context) {
             &mut archive_info,
         );
         // navigation set removed
-        app.shared_state
-            .signals()
-            .browser_view_state
-            .set(view_state);
+        t.browser_view_state.set(view_state);
         app.shared_state.signals().password_dialog.set(pass_dialog);
         app.shared_state.signals().status_bar.set(status_bar);
         // Switch to main page if not already there

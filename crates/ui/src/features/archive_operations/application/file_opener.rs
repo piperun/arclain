@@ -68,8 +68,9 @@ pub fn open_file_from_archive(
 
     let st = state.lock();
     let signals = st.signals.clone();
+    let tab = signals.tabs.get().active().clone();
 
-    let archive = match signals.archive_path.get() {
+    let archive = match tab.archive_path.get() {
         Some(a) => a,
         None => {
             drop(st);
@@ -79,7 +80,7 @@ pub fn open_file_from_archive(
     };
 
     // Get all entry paths for dependency resolution
-    let entries_arc = signals.entries.get();
+    let entries_arc = tab.entries.get();
     let all_entries: Vec<String> = entries_arc.iter().map(|e| e.path.clone()).collect();
 
     // Use the backend selector to get the proper backend for this archive type
@@ -93,7 +94,7 @@ pub fn open_file_from_archive(
         }
     };
 
-    let password = signals.current_password.get();
+    let password = tab.current_password.get();
     drop(st);
 
     // Create FileOpener

@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub fn add_files(state: &Arc<Mutex<AppState>>, status_info: &mut status_bar::StatusBarInfo) {
     let archive_path = {
         let st = state.lock();
-        st.signals.archive_path.get() // Use signal
+        st.signals.tabs.get().active().archive_path.get()
     };
 
     if let Some(archive) = archive_path {
@@ -38,7 +38,8 @@ pub fn delete_selected(
     // Build full paths using current navigation prefix; skip folders for delete
     let (full_paths, archive_opt) = {
         let st = state.lock();
-        let prefix = st.signals.navigation.get().current_path.clone();
+        let tab = st.signals.tabs.get().active().clone();
+        let prefix = tab.navigation.get().current_path.clone();
         let fulls: Vec<String> = entries
             .iter()
             .filter(|e| e.selected && !e.is_folder)
@@ -50,7 +51,7 @@ pub fn delete_selected(
                 }
             })
             .collect();
-        (fulls, st.signals.archive_path.get()) // Use signal
+        (fulls, tab.archive_path.get())
     };
 
     if full_paths.is_empty() {
@@ -66,9 +67,9 @@ pub fn delete_selected(
         }
         // Refresh listing
         let mut st = state.lock();
-        if let Some(a) = st.signals.archive_path.get() {
+        if let Some(a) = st.signals.tabs.get().active().archive_path.get() {
             if let Ok(entries) = st.list_archive(&a) {
-                let current_archive = st.signals.archive_path.get();
+                let current_archive = st.signals.tabs.get().active().archive_path.get();
                 drop(st);
 
                 // We need to reload archive data - call the archive_operations module

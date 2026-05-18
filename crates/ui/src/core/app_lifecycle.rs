@@ -58,9 +58,10 @@ pub fn process_metadata_signal(
     organization_feature: &mut organization::OrganizationFeature,
 ) {
     let new_metadata = {
-        let val = shared_state.signals().metadata.get();
+        let tab = shared_state.signals().tabs.get().active().clone();
+        let val = tab.metadata.get();
         if val.is_some() {
-            shared_state.signals().metadata.set(None); // Consume
+            tab.metadata.set(None); // Consume
             val
         } else {
             None
@@ -77,8 +78,8 @@ pub fn process_metadata_signal(
                     meta.product_id
                 );
 
-                // Update global state via signals
-                shared_state.signals().game_metadata.set(Some(meta.clone()));
+                // Update per-tab game_metadata signal
+                shared_state.signals().tabs.get().active().game_metadata.set(Some(meta.clone()));
                 // Note: metadata already consumed (set to None) on line 63
 
                 // Update active organizer panel
@@ -209,7 +210,7 @@ pub fn update_window_title(
     ctx: &egui::Context,
 ) {
     let title = {
-        if let Some(path) = shared_state.signals().archive_path.get() {
+        if let Some(path) = shared_state.signals().tabs.get().active().archive_path.get() {
             path.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Arclain".to_string())

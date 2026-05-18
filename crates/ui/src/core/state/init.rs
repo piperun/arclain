@@ -242,7 +242,7 @@ impl AppState {
                 if let Some(ref gc) = services.gameta_client {
                     manager.set_gameta_client(gc.clone());
                 }
-                manager.set_metadata_signal(me.signals.metadata.clone());
+                manager.set_metadata_signal(me.signals.tabs.get().active().metadata.clone());
                 me.plugin_event_sender = Some(manager.get_event_sender());
                 plugin_manager = Some(Arc::new(Mutex::new(manager)));
 
@@ -346,10 +346,11 @@ impl AppState {
                 .map(|v| v == "true")
                 .unwrap_or(true);
 
-            let mut view_state = me.signals.browser_view_state.get();
+            let tab = me.signals.tabs.get().active().clone();
+            let mut view_state = tab.browser_view_state.get();
             view_state.toolbar_state.show_tree_panel = tree_visible;
             view_state.toolbar_state.show_properties_panel = properties_visible;
-            me.signals.browser_view_state.set(view_state);
+            tab.browser_view_state.set(view_state);
         }
 
         Ok((me, services))

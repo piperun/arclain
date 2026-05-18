@@ -234,7 +234,7 @@ pub fn create_page_callback(
     plugin_id: String,
 ) -> Box<dyn FnMut(&str, Option<String>)> {
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
-    let page_display_name_signal = shared.signals().page_display_name.clone();
+    let page_display_name_signal = shared.signals().tabs.get().active().page_display_name.clone();
     let shared_owned = shared.clone();
     let pid = plugin_id;
 
@@ -290,7 +290,7 @@ fn spawn_background_fetch(
     };
 
     let plugin_id_owned = plugin_id.to_string();
-    let metadata_signal = shared.signals().metadata.clone();
+    let metadata_signal = shared.signals().tabs.get().active().metadata.clone();
 
     // Send fetch-completion event back to the plugin. Called when the gameta
     // server succeeds; the plugin clears its in_progress flag in response.

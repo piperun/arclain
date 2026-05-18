@@ -11,7 +11,8 @@ use eframe::egui;
 pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Action {
     let mut action = Action::None;
 
-    let archive_loaded = shared.signals().archive_path.read().is_some();
+    let tab = shared.signals().tabs.get().active().clone();
+    let archive_loaded = tab.archive_path.read().is_some();
 
     if !archive_loaded {
         render_empty_state(ctx, shared);
@@ -19,7 +20,7 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
     }
 
     // Get view state once for synchronization
-    let mut view_state = shared.signals().browser_view_state.get();
+    let mut view_state = tab.browser_view_state.get();
 
     // Render tree panel if enabled
     if view_state.toolbar_state.show_tree_panel {
@@ -42,18 +43,15 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
         .iter()
         .filter(|e| e.selected)
         .count();
-    if shared.signals().selection_count.get() != selection_count {
-        shared.signals().selection_count.set(selection_count);
+    if tab.selection_count.get() != selection_count {
+        tab.selection_count.set(selection_count);
     }
 
     // Sync back updated state (like expanded folders or selection)
-    shared
-        .signals()
-        .browser_view_state
-        .set_if_changed(view_state);
+    tab.browser_view_state.set_if_changed(view_state);
 
     // After UI has rendered, dispatch any pending plugin events.
-    if !shared.signals().ui_ready.get() {
+    if !tab.ui_ready.get() {
         let mut app_state = shared.app_state.lock();
         app_state.dispatch_pending_plugin_event();
     }
@@ -95,8 +93,8 @@ fn render_tree_panel(
         .exact_width(240.0)
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface_variant))
         .show(ctx, |ui| {
-            let archive_name = shared
-                .signals()
+            let tree_tab = shared.signals().tabs.get().active().clone();
+            let archive_name = tree_tab
                 .archive_path
                 .get()
                 .as_ref()
@@ -104,9 +102,10 @@ fn render_tree_panel(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "archive".to_string());
 
-            let entries = shared.signals().entries.get();
-            let folders = shared.signals().navigation.get().get_all_folders(&entries);
-            let current_path = shared.signals().navigation.get().current_path.clone();
+            let entries = tree_tab.entries.get();
+            let nav = tree_tab.navigation.get();
+            let folders = nav.get_all_folders(&entries);
+            let current_path = nav.current_path.clone();
 
             if let Some(path) = tree_panel::render(
                 ui,
@@ -140,9 +139,10 @@ fn render_properties_panel(
         )
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let archive_info = shared.signals().archive_info.get();
+                let prop_tab = shared.signals().tabs.get().active().clone();
+                let archive_info = prop_tab.archive_info.get();
                 let items = shared.signals().info_panel_items.get();
-                let plugin_metadata = shared.signals().metadata.get();
+                let plugin_metadata = prop_tab.metadata.get();
 
                 let mut sections: Vec<properties_panel::PanelSection> = Vec::new();
 

@@ -30,7 +30,7 @@ impl<'a> ActionContext<'a> {
                         // We need to clone shared state for the async operation
                         let shared_state = self.shared.clone();
 
-                        let archive_path = self.shared.signals().archive_path.get();
+                        let archive_path = self.shared.signals().tabs.get().active().archive_path.get();
 
                         if let Some(path) = archive_path {
                             // Get selected profile from organizer page UI state

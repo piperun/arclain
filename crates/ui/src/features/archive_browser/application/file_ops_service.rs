@@ -10,7 +10,8 @@ pub struct FileOpsService;
 
 impl FileOpsService {
     pub fn delete_file(&self, shared: &SharedState, file: &str) {
-        let archive_path = shared.signals().archive_path.get();
+        let tab = shared.signals().tabs.get().active().clone();
+        let archive_path = tab.archive_path.get();
         if let Some(archive) = archive_path {
             let state = shared.app_state.lock();
             match state.backend_selector.select(&archive) {
@@ -24,20 +25,17 @@ impl FileOpsService {
                             });
                             // Refresh entries after deletion
                             if let Ok(info) = backend.list(&archive, None) {
-                                shared
-                                    .signals()
-                                    .entries
+                                tab.entries
                                     .set(std::sync::Arc::new(info.entries));
                                 // Update browser view state entries via signals
-                                let entries = shared
-                                    .signals()
+                                let entries = tab
                                     .entries
                                     .get()
                                     .iter()
                                     .map(convert_to_file_entry)
                                     .collect::<Vec<_>>();
 
-                                shared.signals().browser_view_state.update(|s| {
+                                tab.browser_view_state.update(|s| {
                                     s.view_entries = entries;
                                 });
                             }
@@ -116,7 +114,7 @@ impl FileOpsService {
             d.name_input = file.to_string();
         });
 
-        if let Some(archive) = shared.signals().archive_path.get() {
+        if let Some(archive) = shared.signals().tabs.get().active().archive_path.get() {
             let state = shared.app_state.lock();
             match state.read_text_file(&archive, file) {
                 Ok(content) => {
@@ -142,7 +140,7 @@ impl FileOpsService {
         signals: &crate::core::signals::AppSignals,
         file: &str,
     ) {
-        let nav = signals.navigation.get();
+        let nav = signals.tabs.get().active().navigation.get();
         let full_path = if nav.current_path.is_empty() {
             file.to_string()
         } else {

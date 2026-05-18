@@ -185,18 +185,19 @@ pub fn render_status_bar_panel(
             // over `get()` (full clone) when we only need a flag —
             // metadata in particular is `Option<serde_json::Value>`
             // and can be KBs.
-            let archive_loaded = shared_state.signals().archive_path.read().is_some();
+            let tab = shared_state.signals().tabs.get().active().clone();
+            let archive_loaded = tab.archive_path.read().is_some();
 
             // Update status info from state
             if archive_loaded {
-                let archive_info = shared_state.signals().archive_info.get();
+                let archive_info = tab.archive_info.get();
                 status_info.file_count = archive_info.file_count;
                 status_info.total_size = crate::core::utils::format_size(archive_info.total_size);
                 status_info.compressed_size =
                     crate::core::utils::format_size(archive_info.compressed_size);
                 status_info.archive_format = archive_info.archive_format;
             }
-            let has_metadata = shared_state.signals().metadata.read().is_some();
+            let has_metadata = tab.metadata.read().is_some();
 
             // Status bar only needs counts. Use the cheap status_summary
             // path so we don't clone every plugin's manifest per frame
@@ -216,7 +217,7 @@ pub fn render_status_bar_panel(
             // host has stored from the most recent emit_metadata call.
             // The chip in the status bar surfaces it to the user so
             // they know both Organizer and Process will use this entry.
-            let selected_item = shared_state.signals().game_metadata.get();
+            let selected_item = tab.game_metadata.get();
 
             components::status_bar::render(
                 ui,
@@ -243,9 +244,10 @@ pub fn render_path_bar_panel(
     page_navigator: &PageNavigator,
 ) -> PathBarAction {
     // Only show when Archive tab is active and archive is loaded
-    let archive_loaded = shared_state.signals().archive_path.read().is_some();
+    let tab = shared_state.signals().tabs.get().active().clone();
+    let archive_loaded = tab.archive_path.read().is_some();
     let is_archive_context = matches!(
-        shared_state.signals().active_toolbar.get(),
+        tab.active_toolbar.get(),
         crate::core::signals::ToolbarContext::Archive
     );
 
@@ -265,15 +267,15 @@ pub fn render_path_bar_panel(
                 .stroke(egui::Stroke::new(1.0, shared_state.theme.colors.outline)),
         )
         .show(ctx, |ui| {
-            let archive_name = shared_state
-                .signals()
+            let tab = shared_state.signals().tabs.get().active().clone();
+            let archive_name = tab
                 .archive_path
                 .get()
                 .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            let current_path = shared_state.signals().navigation.get().current_path.clone();
+            let current_path = tab.navigation.get().current_path.clone();
 
             if let Some(path) = crate::features::archive_browser::presentation::components::file_list::render_breadcrumb(
                 ui,

@@ -9,8 +9,9 @@ use tracing::info;
 /// Re-filter view_entries based on the current navigation path.
 /// Call this after updating navigation.current_path to sync the file list.
 pub fn refresh_view_entries(signals: &AppSignals) {
-    let all_entries = signals.entries.get();
-    let nav = signals.navigation.get();
+    let tab = signals.tabs.get().active().clone();
+    let all_entries = tab.entries.get();
+    let nav = tab.navigation.get();
     let current_path = nav.current_path.clone();
 
     info!(
@@ -34,7 +35,7 @@ pub fn refresh_view_entries(signals: &AppSignals) {
         .map(convert_to_file_entry)
         .collect::<Vec<_>>();
 
-    signals.browser_view_state.update(|s| {
+    tab.browser_view_state.update(|s| {
         s.view_entries = entries;
     });
 }

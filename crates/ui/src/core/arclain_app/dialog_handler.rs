@@ -12,7 +12,8 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     match password_management::handle_password_dialogs(ctx, &shared_state) {
         password_management::PasswordFeatureAction::PasswordUnlocked { path, password } => {
             let mut archive_info = operations::archive::ArchiveInfo::default();
-            let mut view_state = app.shared_state.signals().browser_view_state.get();
+            let t = app.shared_state.signals().tabs.get().active().clone();
+            let mut view_state = t.browser_view_state.get();
             let mut pass_dialog = app.shared_state.signals().password_dialog.get();
             let mut status_bar = app.shared_state.signals().status_bar.get();
 
@@ -26,10 +27,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 &mut view_state.view_entries,
                 &mut archive_info,
             ) {
-                app.shared_state
-                    .signals()
-                    .browser_view_state
-                    .set(view_state);
+                t.browser_view_state.set(view_state);
                 pass_dialog.show = false;
                 // app.shared_state.signals().password_dialog.set(pass_dialog); // Updated below
                 app._pending_archive_path = None;
@@ -154,7 +152,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     ) {
         match result {
             crate::features::file_editing::FileEditResult::Save { new_name, content } => {
-                if let Some(archive) = app.shared_state.signals().archive_path.get() {
+                if let Some(archive) = app.shared_state.signals().tabs.get().active().archive_path.get() {
                     let mut status = app.shared_state.signals().status_bar.get();
 
                     // Save the file to archive
