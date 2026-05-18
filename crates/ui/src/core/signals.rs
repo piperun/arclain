@@ -5,6 +5,7 @@
 
 use crate::core::state::UiPreferences;
 use crate::core::tabs::TabsCollection;
+use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmState;
 use arclain_core::utilities::PassRule;
 use arclain_core::UiItem;
 use arclain_signals::{Signal, SignalContext};
@@ -149,6 +150,10 @@ pub struct AppSignals {
     /// navigation, etc.) live inside each TabState — read via
     /// `signals.tabs.get().active().<signal>.get()`.
     pub tabs: Signal<TabsCollection>,
+
+    /// Close-tab confirmation modal — shown when a tab with in-flight ops
+    /// is closed. The user must confirm before the tab is force-closed.
+    pub close_tab_confirm: Signal<CloseTabConfirmState>,
 }
 
 impl AppSignals {
@@ -199,6 +204,8 @@ impl AppSignals {
             server_status: Signal::new(ServerConnectionStatus::default())
                 .with_name("server_status"),
             tabs: Signal::new(TabsCollection::new()).with_name("tabs"),
+            close_tab_confirm: Signal::new(CloseTabConfirmState::default())
+                .with_name("close_tab_confirm"),
         }
     }
 
@@ -228,6 +235,7 @@ impl AppSignals {
         signal_ctx.bind_named(&self.lightbox_state, "lightbox_state");
         signal_ctx.bind_named(&self.server_status, "server_status");
         signal_ctx.bind_named(&self.tabs, "tabs");
+        signal_ctx.bind_named(&self.close_tab_confirm, "close_tab_confirm");
     }
 
     /// Reset all signals to default state.
@@ -262,6 +270,7 @@ impl AppSignals {
             .set(crate::shared::dialogs::LightboxState::default());
         self.server_status.set(ServerConnectionStatus::default());
         self.tabs.set(TabsCollection::new());
+        self.close_tab_confirm.set(CloseTabConfirmState::default());
     }
 }
 

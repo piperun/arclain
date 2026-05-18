@@ -84,6 +84,11 @@ pub struct UserConfig {
 
     /// Gameta server URL (e.g., "https://gameta.example.com")
     pub gameta_server_url: Option<String>,
+
+    /// Default behavior when a file is dropped without aiming at an overlay zone.
+    /// Stored as a string token: "new_tab" | "replace" | "ask_each_time".
+    /// `None` is treated as "new_tab" (default).
+    pub drop_behavior: Option<String>,
 }
 
 // rusqlite-side CRUD — replaces the four methods the old
@@ -117,7 +122,8 @@ impl UserConfig {
         plugin_proxy_settings TEXT,\n    \
         hotkey_bindings TEXT,\n    \
         gameta_server_enabled INTEGER DEFAULT 0 NOT NULL,\n    \
-        gameta_server_url TEXT\n\
+        gameta_server_url TEXT,\n    \
+        drop_behavior TEXT\n\
     )";
 
     /// Load the singleton row 1; returns `None` if the table is empty.
@@ -128,7 +134,7 @@ impl UserConfig {
                     enabled_plugins, plugin_order, plugin_visibility, plugin_settings, \
                     toolbar_order, info_panel_order, socks5_address, socks5_enabled, \
                     socks5_username, plugin_proxy_settings, hotkey_bindings, \
-                    gameta_server_enabled, gameta_server_url \
+                    gameta_server_enabled, gameta_server_url, drop_behavior \
              FROM user_config WHERE id = 1",
         )?;
         let mut rows = stmt.query([])?;
@@ -156,6 +162,7 @@ impl UserConfig {
                 hotkey_bindings: row.get(19).ok(),
                 gameta_server_enabled: row.get(20)?,
                 gameta_server_url: row.get(21).ok(),
+                drop_behavior: row.get(22).ok(),
             }))
         } else {
             Ok(None)
@@ -169,9 +176,10 @@ impl UserConfig {
                 temp_dir, sevenzip_path, transfer_dir, backend_mode, open_nested_in_new_tab, \
                 enabled_plugins, plugin_order, plugin_visibility, plugin_settings, toolbar_order, \
                 info_panel_order, socks5_address, socks5_enabled, socks5_username, \
-                plugin_proxy_settings, hotkey_bindings, gameta_server_enabled, gameta_server_url) \
+                plugin_proxy_settings, hotkey_bindings, gameta_server_enabled, gameta_server_url, \
+                drop_behavior) \
              VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-                ?17, ?18, ?19, ?20, ?21) \
+                ?17, ?18, ?19, ?20, ?21, ?22) \
              ON CONFLICT(id) DO UPDATE SET \
                 vault_path = ?1, cache_directory = ?2, last_opened_archive = ?3, temp_dir = ?4, \
                 sevenzip_path = ?5, transfer_dir = ?6, backend_mode = ?7, \
@@ -179,7 +187,7 @@ impl UserConfig {
                 plugin_visibility = ?11, plugin_settings = ?12, toolbar_order = ?13, \
                 info_panel_order = ?14, socks5_address = ?15, socks5_enabled = ?16, \
                 socks5_username = ?17, plugin_proxy_settings = ?18, hotkey_bindings = ?19, \
-                gameta_server_enabled = ?20, gameta_server_url = ?21",
+                gameta_server_enabled = ?20, gameta_server_url = ?21, drop_behavior = ?22",
             rusqlite::params![
                 self.vault_path,
                 self.cache_directory,
@@ -202,6 +210,7 @@ impl UserConfig {
                 self.hotkey_bindings,
                 self.gameta_server_enabled,
                 self.gameta_server_url,
+                self.drop_behavior,
             ],
         )?;
         Ok(())
@@ -239,6 +248,7 @@ impl UserConfig {
             "ALTER TABLE user_config ADD COLUMN hotkey_bindings TEXT",
             "ALTER TABLE user_config ADD COLUMN gameta_server_enabled INTEGER DEFAULT 0 NOT NULL",
             "ALTER TABLE user_config ADD COLUMN gameta_server_url TEXT",
+            "ALTER TABLE user_config ADD COLUMN drop_behavior TEXT",
         ] {
             let _ = conn.execute(alter, []);
         }
@@ -452,6 +462,7 @@ impl UserConfig {
                 hotkey_bindings,
                 gameta_server_enabled,
                 gameta_server_url,
+                drop_behavior,
             ))
             .first::<(
                 i32,
@@ -475,6 +486,7 @@ impl UserConfig {
                 Option<String>,
                 Option<String>,
                 bool,
+                Option<String>,
                 Option<String>,
             )>(conn);
 
@@ -502,6 +514,7 @@ impl UserConfig {
                 hotkey_bindings: tuple.19,
                 gameta_server_enabled: tuple.20,
                 gameta_server_url: tuple.21,
+                drop_behavior: tuple.22,
             }),
             Err(diesel::result::Error::NotFound) => {
                 // If not found, create default and insert it manually (providing all non-nullable fields)
@@ -532,10 +545,11 @@ impl UserConfig {
                 enabled_plugins, plugin_order, plugin_visibility, plugin_settings,
                 toolbar_order, info_panel_order, socks5_address, socks5_enabled,
                 socks5_username, plugin_proxy_settings, hotkey_bindings,
-                gameta_server_enabled, gameta_server_url, created_at, modified_at
+                gameta_server_enabled, gameta_server_url, drop_behavior,
+                created_at, modified_at
             ) VALUES (
                 1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                ?20, ?21, ?22, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             ON CONFLICT(id) DO UPDATE SET
                 vault_path = excluded.vault_path,
@@ -559,6 +573,7 @@ impl UserConfig {
                 hotkey_bindings = excluded.hotkey_bindings,
                 gameta_server_enabled = excluded.gameta_server_enabled,
                 gameta_server_url = excluded.gameta_server_url,
+                drop_behavior = excluded.drop_behavior,
                 modified_at = CURRENT_TIMESTAMP
         "#;
 
@@ -592,6 +607,7 @@ impl UserConfig {
             .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
                 &self.gameta_server_url,
             )
+            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.drop_behavior)
             .execute(conn)
             .map_err(|e| {
                 tracing::error!("[UserConfig] save_diesel UPSERT failed: {}", e);

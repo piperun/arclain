@@ -40,6 +40,9 @@ impl SettingsFeature {
         // Load saved settings from config signal
         let user_config = shared.signals().user_config.get();
         let open_nested_in_new_tab = user_config.open_nested_in_new_tab;
+        let drop_behavior = arclain_core::DropBehavior::from_str(
+            user_config.drop_behavior.as_deref().unwrap_or("new_tab"),
+        );
 
         let rules = {
             let state = shared.app_state.lock();
@@ -115,6 +118,7 @@ impl SettingsFeature {
         Self {
             general_state: GeneralSettingsState {
                 open_nested_in_new_tab: Signal::new(open_nested_in_new_tab),
+                drop_behavior: Signal::new(drop_behavior),
             },
             network_state,
             server_state,
@@ -156,8 +160,12 @@ impl SettingsFeature {
 
         match page {
             SettingsPage::General => {
+                let stored_drop = arclain_core::DropBehavior::from_str(
+                    state.user_config.drop_behavior.as_deref().unwrap_or("new_tab"),
+                );
                 *self.general_state.open_nested_in_new_tab.read()
                     != state.user_config.open_nested_in_new_tab
+                    || *self.general_state.drop_behavior.read() != stored_drop
             }
             SettingsPage::Archives => {
                 let current_val = if self.archives_state.temp_dir.read().trim().is_empty() {

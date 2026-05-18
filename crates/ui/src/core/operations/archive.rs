@@ -1,3 +1,5 @@
+use crate::core::signals::AppSignals;
+use crate::core::tabs::TabId;
 use crate::core::utils::{convert_to_file_entry, format_size};
 use crate::core::AppState;
 use crate::features::password_management::dialogs;
@@ -575,4 +577,74 @@ pub fn convert_archive(
             }
         }
     }
+}
+
+/// Async archive loader for a specific tab.
+///
+/// Spawns a background thread that lists the archive and writes results
+/// into `tab_id`'s signals. This is the preferred entry point for drop /
+/// multi-tab loads — it targets a known TabId regardless of which tab is
+/// active at completion time.
+pub fn load_archive_into_tab(
+    state: Arc<Mutex<AppState>>,
+    signals: AppSignals,
+    tab_id: TabId,
+    path: &std::path::Path,
+) {
+    let Some(tab) = signals.tabs.get().get(tab_id).cloned() else {
+        tracing::warn!("[tabs] load_archive_into_tab: tab {:?} not found", tab_id);
+        return;
+    };
+
+    let path_owned = path.to_path_buf();
+    std::thread::spawn(move || {
+        tab.loading.set(true);
+        let mut st = state.lock();
+        match st.list_archive(&path_owned) {
+            Ok(archive_entries) => {
+                drop(st);
+                tab.entries.set(std::sync::Arc::new(archive_entries));
+                tab.archive_path.set(Some(path_owned.clone()));
+                tab.navigation.set(arclain_core::archive::NavigationState::new());
+                // Populate this tab's view_entries so the file list
+                // renders immediately. Without this, the UI shows an
+                // empty list at root until the user navigates into
+                // a folder (which triggers refresh elsewhere).
+                crate::core::operations::navigation_view::refresh_view_entries_for_tab(
+                    &signals, tab_id,
+                );
+                tab.loading.set(false);
+            }
+            Err(e) => {
+                drop(st);
+                let err_msg = e.to_string();
+                tab.loading.set(false);
+                if is_password_error(&err_msg) {
+                    let mut pwd = signals.password_dialog.get();
+                    pwd.show = true;
+                    pwd.password.clear();
+                    pwd.error.clear();
+                    signals.password_dialog.set(pwd);
+                    // TODO(phase 2c): wire pending_tab_id so the password retry
+                    // lands in the originating tab rather than the active tab.
+                    // For now, retry goes to whichever tab is active when the
+                    // user confirms the password dialog.
+                } else {
+                    tracing::error!("[tabs] load_archive_into_tab failed: {}", err_msg);
+                    let mut bar = signals.status_bar.get();
+                    bar.message = format!("Failed to load archive: {}", err_msg);
+                    signals.status_bar.set(bar);
+                }
+            }
+        }
+    });
+}
+
+fn is_password_error(err_msg: &str) -> bool {
+    err_msg.contains("Wrong password")
+        || err_msg.contains("Cannot open encrypted")
+        || err_msg.contains("Can not open encrypted")
+        || err_msg.contains("Enter password")
+        || err_msg.contains("code Some(2)")
+        || err_msg.contains("code Some(255)")
 }

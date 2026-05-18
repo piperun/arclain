@@ -2,7 +2,7 @@
 //!
 //! Contains the general settings page with appearance and behavior options.
 
-use arclain_widgets::ToggleSwitch;
+use arclain_widgets::{ThemedDropdown, ToggleSwitch};
 use crate::features::settings::types::{GeneralSettingsState, SettingsAction};
 use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
@@ -59,6 +59,50 @@ pub fn render(
                         );
                     })
                     .show(ui, colors);
+
+                ui.add_space(8.0);
+
+                // Drop behavior selector
+                ui.label(
+                    egui::RichText::new("When dropping an archive:")
+                        .size(12.0)
+                        .color(colors.on_surface),
+                );
+                ui.add_space(4.0);
+
+                let current = *state.drop_behavior.read();
+                let mut next = current;
+                ThemedDropdown::new("settings_drop_behavior", current.display_name())
+                    .with_theme_colors(colors)
+                    .width(220.0)
+                    .show_ui(ui, |ui| {
+                        for opt in [
+                            arclain_core::DropBehavior::NewTab,
+                            arclain_core::DropBehavior::Replace,
+                            arclain_core::DropBehavior::AskEachTime,
+                        ] {
+                            if ui
+                                .selectable_label(current == opt, opt.display_name())
+                                .clicked()
+                            {
+                                next = opt;
+                            }
+                        }
+                    });
+                if next != current {
+                    *state.drop_behavior.write() = next;
+                }
+
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Applies when a file is dropped without aiming at a specific zone. \
+                         Ctrl+drop always replaces the active tab.",
+                    )
+                    .size(11.0)
+                    .italics()
+                    .color(colors.on_surface_variant),
+                );
             })
             .show(ui, &theme.colors);
     });

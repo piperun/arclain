@@ -148,6 +148,7 @@ SettingsHeaderConfig::new(page.display_name())
             SettingsPage::General => {
                 action = Some(SettingsAction::SaveGeneral {
                     open_nested_in_new_tab: *feature.general_state.open_nested_in_new_tab.read(),
+                    drop_behavior: *feature.general_state.drop_behavior.read(),
                 });
             }
             SettingsPage::Archives => {
