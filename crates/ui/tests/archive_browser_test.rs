@@ -99,24 +99,24 @@ fn test_navigate_to_folder_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
 
-    signals.archive_path.set(Some(PathBuf::from("test.zip")));
+    signals.tabs.get().active().archive_path.set(Some(PathBuf::from("test.zip")));
 
     let target = "subfolder".to_string();
     ctx.handle_action(Action::NavigateToFolder(target.clone()));
 
-    assert_eq!(signals.navigation.get().current_path, target);
+    assert_eq!(signals.tabs.get().active().navigation.get().current_path, target);
 }
 
 #[test]
 fn test_navigate_to_path_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
-    signals.archive_path.set(Some(PathBuf::from("test.zip")));
+    signals.tabs.get().active().archive_path.set(Some(PathBuf::from("test.zip")));
 
     let target = "direct/path/folder".to_string();
     ctx.handle_action(Action::NavigateToPath(target.clone()));
 
-    assert_eq!(signals.navigation.get().current_path, target);
+    assert_eq!(signals.tabs.get().active().navigation.get().current_path, target);
 }
 
 #[test]
@@ -125,7 +125,8 @@ fn test_show_properties_action() {
     let signals = ctx.shared.app_state.lock().signals.clone();
 
     // Setup entries via signal
-    let mut view_state = signals.browser_view_state.get();
+    let tab = signals.tabs.get().active().clone();
+    let mut view_state = tab.browser_view_state.get();
     view_state.view_entries.push(FileEntry {
         name: "test.txt".to_string(),
         path: "test.txt".to_string(),
@@ -138,11 +139,11 @@ fn test_show_properties_action() {
         encrypted: false,
         is_folder: false,
     });
-    signals.browser_view_state.set(view_state);
+    tab.browser_view_state.set(view_state);
 
     ctx.handle_action(Action::ShowProperties("test.txt".to_string()));
 
-    let view_state = signals.browser_view_state.get();
+    let view_state = tab.browser_view_state.get();
     assert!(view_state.toolbar_state.show_properties_panel);
     assert!(view_state.view_entries[0].selected);
 }
@@ -152,12 +153,12 @@ fn test_copy_path_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
 
-    signals.navigation.get().set_current_path("root/folder");
+    signals.tabs.get().active().navigation.get().set_current_path("root/folder");
 
     let filename = "file.txt".to_string();
     ctx.handle_action(Action::CopyPath(filename.clone()));
 
-    signals.navigation.get().set_current_path("");
+    signals.tabs.get().active().navigation.get().set_current_path("");
     ctx.handle_action(Action::CopyPath(filename));
 }
 
@@ -201,7 +202,7 @@ fn test_metadata_action() {
     let json = r#"{"product_id": "RJ1", "source": "dlsite", "title": "Test Game", "tags": [], "metadata_json": "{}", "screenshots": []}"#.to_string();
     ctx.handle_action(Action::Metadata(json));
 
-    let metadata = signals.game_metadata.get();
+    let metadata = signals.tabs.get().active().game_metadata.get();
     assert!(metadata.is_some());
     let meta = metadata.unwrap();
     assert_eq!(meta.title, "Test Game");
@@ -213,7 +214,7 @@ fn test_organize_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
 
-    signals.archive_path.set(Some(PathBuf::from("test.zip")));
+    signals.tabs.get().active().archive_path.set(Some(PathBuf::from("test.zip")));
 
     ctx.handle_action(Action::Organize);
 
@@ -244,13 +245,15 @@ fn test_ui_render_sanity() {
 
     // Setup state
     shared
-        .app_state
-        .lock()
-        .signals
+        .signals()
+        .tabs
+        .get()
+        .active()
         .archive_path
         .set(Some(PathBuf::from("test.zip")));
 
-    let mut view_state = shared.signals().browser_view_state.get();
+    let tab = shared.signals().tabs.get().active().clone();
+    let mut view_state = tab.browser_view_state.get();
     view_state.view_entries.push(FileEntry {
         name: "test_ui_file.txt".to_string(),
         path: "test_ui_file.txt".to_string(),
@@ -263,7 +266,7 @@ fn test_ui_render_sanity() {
         encrypted: false,
         is_folder: false,
     });
-    shared.signals().browser_view_state.set(view_state);
+    tab.browser_view_state.set(view_state);
 
     // egui_kittest harness
     let mut harness = Harness::new(move |ctx| {
