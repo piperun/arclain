@@ -122,16 +122,16 @@ impl Drop for NativeProgressDialog {
 
 /// Extract files with a native Windows progress dialog
 ///
-/// This shows a native Windows progress dialog (IProgressDialog) during extraction.
-/// The dialog is managed by Windows and updates properly even during blocking operations.
-/// 
-/// Note: Since IProgressDialog is not Send/Sync (COM objects are thread-bound),
-/// we don't use the `extract_files_with_progress` method. Instead, we fall back to
-/// the simple extraction for now. The dialog at least shows "Extracting X files..."
-/// 
-/// TODO: To get per-file progress updates, we would need to:
-/// 1. Extract files one-by-one in a loop with dialog.update() calls, OR
-/// 2. Use a different threading model (spawn extraction in a thread, poll from main)
+/// Shows a native Windows progress dialog (IProgressDialog) during extraction.
+/// Per-file progress is delivered by running the extraction on a worker thread
+/// and streaming `ExtractionProgress` events back through a channel; the main
+/// thread (which owns the COM-bound dialog) drains the channel and forwards
+/// updates to the dialog. Cancellation is wired both directions: the dialog's
+/// own cancel button flips an `Arc<AtomicBool>` that the worker honors via the
+/// backend's `CancellationToken`.
+///
+/// If creating the dialog fails (e.g. headless / RDP weirdness) we fall back
+/// to the plain `extract_files` call without progress UI.
 pub fn extract_with_native_progress(
     backend: std::sync::Arc<dyn arclain_core::ArchiveBackend>,
     archive_path: &std::path::Path,
@@ -140,18 +140,20 @@ pub fn extract_with_native_progress(
     password: Option<&str>,
 ) -> Result<(), String> {
     let file_count = file_paths.len();
-    
-    // For very small file counts, skip the dialog
+
+    // For very small file counts, skip the dialog entirely — the COM
+    // round-trip + worker-thread setup costs more than the extraction itself.
     if file_count <= 2 {
         debug!("[native_progress] Small file count ({}), extracting without dialog", file_count);
         return backend
             .extract_files(archive_path, dest_dir, file_paths, password)
             .map_err(|e| format!("Extraction failed: {}", e));
     }
-    
+
     info!("[native_progress] Starting extraction of {} files with native dialog", file_count);
-    
-    // Create and show the progress dialog
+
+    // Create the progress dialog (apartment-threaded COM, lives on this
+    // thread). If creation fails we still want the extraction to run.
     let dialog = match NativeProgressDialog::new(
         &format!("Extracting {} files", file_count),
         file_count as u32,
@@ -162,26 +164,88 @@ pub fn extract_with_native_progress(
             None
         }
     };
-    
-    // Set initial progress
+
     if let Some(ref d) = dialog {
         d.update(0, file_count as u32, "Starting extraction...");
     }
-    
-    // Do the extraction (simple method - no per-file progress callback)
-    // The dialog will at least show that extraction is in progress
-    let result = backend.extract_files(archive_path, dest_dir, file_paths, password)
-        .map_err(|e| format!("Extraction failed: {}", e));
-    
-    // Update dialog to show completion
-    if let Some(ref d) = dialog {
+
+    // No dialog → no point spinning up a worker thread to feed nothing.
+    // Just run synchronously.
+    let Some(ref d) = dialog else {
+        return backend
+            .extract_files(archive_path, dest_dir, file_paths, password)
+            .map_err(|e| format!("Extraction failed: {}", e));
+    };
+
+    let cancel_token: arclain_core::CancellationToken = d.cancel_token();
+
+    // The ProgressCallback trait requires `Send + Sync`, but mpsc::Sender
+    // is `!Sync`. Wrap it in a Mutex so the closure satisfies the bounds.
+    // Only one thread (the worker) ever calls it, so contention is nil.
+    let (tx, rx) = std::sync::mpsc::channel::<arclain_core::ExtractionProgress>();
+    let tx_for_worker = std::sync::Mutex::new(tx);
+
+    // Move owned copies of the borrowed args into the worker. `backend`
+    // is already an Arc; clone it for the thread.
+    let archive_path_owned = archive_path.to_path_buf();
+    let dest_dir_owned = dest_dir.to_path_buf();
+    let file_paths_owned: Vec<String> = file_paths.to_vec();
+    let password_owned: Option<String> = password.map(|s| s.to_string());
+    let backend_for_worker = std::sync::Arc::clone(&backend);
+    let cancel_for_worker = std::sync::Arc::clone(&cancel_token);
+
+    let handle = std::thread::spawn(move || {
+        let cb = move |p: arclain_core::ExtractionProgress| {
+            // Silent on send failure — main thread will have stopped
+            // listening only if it bailed out (e.g. cancel), and the
+            // worker already sees that via `cancel_for_worker`.
+            let _ = tx_for_worker.lock().unwrap().send(p);
+        };
+        backend_for_worker.extract_files_with_progress(
+            &archive_path_owned,
+            &dest_dir_owned,
+            &file_paths_owned,
+            password_owned.as_deref(),
+            Some(&cb),
+            Some(&cancel_for_worker),
+        )
+    });
+
+    // Main thread drains progress events and forwards them to the dialog.
+    // 50ms timeout keeps cancellation responsive (HasUserCancelled is
+    // touched every loop iteration via `d.is_cancelled()`).
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(50)) {
+            Ok(p) => {
+                d.update(p.current as u32, p.total as u32, &p.current_file);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Touch the dialog to pick up cancel-button presses. The
+                // call updates `cancel_token` which the worker checks
+                // between files.
+                if d.is_cancelled() {
+                    debug!("[native_progress] User cancelled — signalling worker");
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                break;
+            }
+        }
+    }
+
+    let worker_result = match handle.join() {
+        Ok(r) => r,
+        Err(_) => return Err("Extraction worker thread panicked".to_string()),
+    };
+    let result = worker_result.map_err(|e| format!("Extraction failed: {}", e));
+
+    if result.is_ok() {
         d.update(file_count as u32, file_count as u32, "Complete!");
     }
-    
-    // Close the dialog
+
     if let Some(d) = dialog {
         d.close();
     }
-    
+
     result
 }
