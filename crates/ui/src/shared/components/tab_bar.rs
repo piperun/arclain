@@ -9,7 +9,7 @@
 //!
 //! Layout:
 //!
-//! ```
+//! ```text
 //! +-----------------------------------------------+
 //! | [tab1] [tab2 active] [tab3] ...   | [+]      |
 //! | ----------------                              |  <- position pill
@@ -39,6 +39,19 @@ pub enum TabBarAction {
     Switch(TabId),
     Close(TabId),
     OpenEmpty,
+    /// User dropped a tab at a new position. Indices are into the current
+    /// `TabsCollection::tabs()` slice; the caller forwards to
+    /// `TabsCollection::reorder`.
+    Reorder { from_idx: usize, to_idx: usize },
+}
+
+/// Payload stashed in `egui::DragAndDrop` while a tab chip is being
+/// dragged. Kept private so other UI components don't accidentally
+/// pick it up.
+#[derive(Debug, Clone, Copy)]
+struct TabDragPayload {
+    from_idx: usize,
+    from_id: TabId,
 }
 
 const TAB_HEIGHT: f32 = 26.0;
@@ -142,19 +155,75 @@ pub fn render_tab_bar(
                         // vertically centered relative to that height.
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = TAB_GAP;
-                            for tab in col.tabs() {
+
+                            // Peek at the in-flight drag payload so chips
+                            // can render themselves dimmed when they're
+                            // the drag source. Peek (not take) keeps the
+                            // payload alive across frames until release.
+                            let dragged_source_id: Option<TabId> =
+                                egui::DragAndDrop::payload::<TabDragPayload>(ui.ctx())
+                                    .map(|p| p.from_id);
+                            let pointer_pos = ui.ctx().pointer_interact_pos();
+
+                            // Drop target tracking — set by whichever chip
+                            // the cursor sits over during an active drag.
+                            let mut drop_target_idx: Option<usize> = None;
+
+                            for (idx, tab) in col.tabs().iter().enumerate() {
                                 let is_active = tab.id == col.active_id();
                                 let title = tab.display_title();
                                 let in_flight =
                                     tab.in_flight_ops.load(Ordering::SeqCst) > 0;
+                                let is_drag_source = dragged_source_id == Some(tab.id);
                                 let (chip_action, chip_response) = render_tab_chip(
-                                    ui, theme, tab.id, &title, is_active, in_flight,
+                                    ui,
+                                    theme,
+                                    tab.id,
+                                    &title,
+                                    is_active,
+                                    in_flight,
+                                    is_drag_source,
                                 );
                                 if let Some(a) = chip_action {
                                     action = Some(a);
                                 }
                                 if is_active && active_changed {
                                     chip_response.scroll_to_me(Some(egui::Align::Center));
+                                }
+                                // Did this chip just start being dragged?
+                                if chip_response.drag_started_by(egui::PointerButton::Primary) {
+                                    egui::DragAndDrop::set_payload(
+                                        ui.ctx(),
+                                        TabDragPayload { from_idx: idx, from_id: tab.id },
+                                    );
+                                }
+                                // Is the cursor (during an active drag)
+                                // over this chip's rect?
+                                if dragged_source_id.is_some() {
+                                    if let Some(pos) = pointer_pos {
+                                        if chip_response.rect.contains(pos) {
+                                            drop_target_idx = Some(idx);
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Pointer released this frame → commit the drop.
+                            // `any_released` covers all buttons; we filter
+                            // by checking that a drag payload exists.
+                            let released = ui.input(|i| i.pointer.any_released());
+                            if released {
+                                if let Some(payload) =
+                                    egui::DragAndDrop::take_payload::<TabDragPayload>(ui.ctx())
+                                {
+                                    if let Some(to_idx) = drop_target_idx {
+                                        if payload.from_idx != to_idx {
+                                            action = Some(TabBarAction::Reorder {
+                                                from_idx: payload.from_idx,
+                                                to_idx,
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         });
@@ -296,6 +365,9 @@ fn scale_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
 }
 
+// `is_drag_source` = true if this chip is currently the source of an
+// in-flight drag. Renders with reduced opacity so the user can tell
+// which tab they grabbed when the cursor moves over another chip.
 fn render_tab_chip(
     ui: &mut egui::Ui,
     theme: &ThemeColors,
@@ -303,6 +375,7 @@ fn render_tab_chip(
     title: &str,
     is_active: bool,
     in_flight: bool,
+    is_drag_source: bool,
 ) -> (Option<TabBarAction>, egui::Response) {
     let font_id = egui::FontId::proportional(FONT_SIZE);
     let text_color = if is_active {
@@ -360,7 +433,10 @@ fn render_tab_chip(
     let chip_width =
         (probe.size().x + TAB_H_PAD * 2.0 + TAB_CLOSE_GAP + TAB_CLOSE_HIT_SIZE).ceil();
     let chip_size = egui::vec2(chip_width, TAB_HEIGHT);
-    let (rect, response) = ui.allocate_exact_size(chip_size, egui::Sense::click());
+    // Sense both click and drag — clicks dispatch Switch/Close, drags
+    // reorder. egui's built-in drag threshold keeps a stationary click
+    // from being misread as a drag.
+    let (rect, response) = ui.allocate_exact_size(chip_size, egui::Sense::click_and_drag());
 
     let (bg_fill, stroke_color) = if is_active {
         (theme.primary_container, theme.primary)
@@ -369,6 +445,12 @@ fn render_tab_chip(
     } else {
         (theme.surface, theme.outline_variant)
     };
+    // Drag-source dim: 45% opacity on the fill so the user can see
+    // which chip they grabbed even when the cursor moves over another.
+    let drag_alpha = if is_drag_source { 0.45 } else { 1.0 };
+    let bg_fill = scale_alpha(bg_fill, drag_alpha);
+    let stroke_color = scale_alpha(stroke_color, drag_alpha);
+    let chip_text_color = scale_alpha(text_color, drag_alpha);
 
     let painter = ui.painter();
     painter.rect(
@@ -383,7 +465,7 @@ fn render_tab_chip(
         painter,
         label_text,
         font_id.clone(),
-        text_color,
+        chip_text_color,
         rect,
         TAB_H_PAD,
     );
@@ -400,11 +482,17 @@ fn render_tab_chip(
         painter,
         egui_phosphor::regular::X,
         font_id,
-        text_color,
+        chip_text_color,
         close_center,
     );
 
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    // Switch cursor to the grabbing hand while a drag is in flight on
+    // this chip; otherwise the regular pointing hand on hover.
+    let response = if response.dragged() {
+        response.on_hover_cursor(egui::CursorIcon::Grabbing)
+    } else {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    };
     // Full title on hover when truncated. Always-on tooltip with the
     // archive's full filename is also useful for quickly distinguishing
     // tabs whose visible prefixes look similar.
@@ -424,6 +512,12 @@ fn render_tab_chip(
                     TabBarAction::Switch(id)
                 }
             })
+    } else if response.clicked_by(egui::PointerButton::Middle) {
+        // Middle-click anywhere on the chip closes it — matches the
+        // standard browser tab convention. The close hit-rect handles
+        // primary-click closes; middle-click is the bigger-target
+        // alternative for users who don't want to aim at the X.
+        Some(TabBarAction::Close(id))
     } else {
         None
     };

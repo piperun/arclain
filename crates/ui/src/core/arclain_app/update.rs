@@ -205,6 +205,38 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     }
 
     // === Tab Navigation Shortcuts ===
+    // Ctrl+Shift+T — reopen most recently closed tab (browser-style).
+    // Checked separately from the input_mut block below because it
+    // dispatches a background load (mutable borrow on app fields).
+    let reopen_request: Option<(crate::core::tabs::TabId, std::path::PathBuf)> = ctx.input_mut(|i| {
+        if i.consume_key(
+            egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
+            egui::Key::T,
+        ) {
+            let mut col = app.shared_state.signals().tabs.get();
+            let outcome = col.reopen_last_closed();
+            if outcome.is_some() {
+                app.shared_state.signals().tabs.set(col);
+            }
+            outcome
+        } else {
+            None
+        }
+    });
+    if let Some((new_tab_id, path)) = reopen_request {
+        tracing::info!(
+            "[tabs] reopened recently-closed tab {:?} → {}",
+            new_tab_id,
+            path.display()
+        );
+        crate::core::operations::archive::load_archive_into_tab(
+            app.shared_state.app_state.clone(),
+            app.shared_state.signals().clone(),
+            new_tab_id,
+            &path,
+        );
+    }
+
     // Ctrl+Shift+Tab first — must precede Ctrl+Tab so the more-specific
     // modifier combo is consumed before the less-specific one.
     ctx.input_mut(|i| {
@@ -493,6 +525,9 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 }
                 TabBarAction::OpenEmpty => {
                     col.open(None);
+                }
+                TabBarAction::Reorder { from_idx, to_idx } => {
+                    col.reorder(from_idx, to_idx);
                 }
             }
             app.shared_state.signals().tabs.set(col);

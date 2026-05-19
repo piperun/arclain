@@ -165,3 +165,72 @@ fn next_id_is_monotonic_no_reuse() {
     let b = col.open(None);
     assert_ne!(a, b, "TabId must never be reused within a session");
 }
+
+#[test]
+fn reopen_last_closed_resurrects_archive_path() {
+    let mut col = TabsCollection::new();
+    let path = PathBuf::from("/tmp/closed.zip");
+    let id = col.open(Some(path.clone()));
+    col.close(id);
+    assert!(col.has_recently_closed());
+
+    let (new_id, restored_path) = col.reopen_last_closed().expect("buffer has entry");
+    assert_eq!(restored_path, path);
+    assert_eq!(col.get(new_id).unwrap().archive_path.get(), Some(path));
+    assert!(!col.has_recently_closed(), "buffer drained after reopen");
+}
+
+#[test]
+fn reopen_last_closed_returns_none_when_empty() {
+    let mut col = TabsCollection::new();
+    assert!(col.reopen_last_closed().is_none());
+}
+
+#[test]
+fn close_empty_tab_does_not_populate_recently_closed() {
+    let mut col = TabsCollection::new();
+    let empty_id = col.open(None);
+    col.close(empty_id);
+    assert!(!col.has_recently_closed(), "empty tab should not be remembered");
+}
+
+#[test]
+fn recently_closed_is_lifo() {
+    let mut col = TabsCollection::new();
+    let a = col.open(Some(PathBuf::from("/tmp/a.zip")));
+    let b = col.open(Some(PathBuf::from("/tmp/b.zip")));
+    col.close(a);
+    col.close(b);
+    let (_, restored) = col.reopen_last_closed().unwrap();
+    assert_eq!(restored, PathBuf::from("/tmp/b.zip"), "most recent first");
+    let (_, restored) = col.reopen_last_closed().unwrap();
+    assert_eq!(restored, PathBuf::from("/tmp/a.zip"));
+}
+
+#[test]
+fn recently_closed_ring_buffer_drops_oldest() {
+    let mut col = TabsCollection::new();
+    // Open and close 12 archives; only the last 10 should be reachable.
+    for n in 0..12 {
+        let id = col.open(Some(PathBuf::from(format!("/tmp/{}.zip", n))));
+        col.close(id);
+    }
+    // 10 entries kept (0 and 1 dropped).
+    let mut restored = Vec::new();
+    while let Some((_, p)) = col.reopen_last_closed() {
+        restored.push(p);
+    }
+    assert_eq!(restored.len(), 10);
+    // Most recent first: 11, 10, ..., 2
+    assert_eq!(restored.first().unwrap(), &PathBuf::from("/tmp/11.zip"));
+    assert_eq!(restored.last().unwrap(), &PathBuf::from("/tmp/2.zip"));
+}
+
+#[test]
+fn force_close_also_populates_recently_closed() {
+    let mut col = TabsCollection::new();
+    let id = col.open(Some(PathBuf::from("/tmp/forced.zip")));
+    col.force_close(id);
+    let (_, p) = col.reopen_last_closed().unwrap();
+    assert_eq!(p, PathBuf::from("/tmp/forced.zip"));
+}
