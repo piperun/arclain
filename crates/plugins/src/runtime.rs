@@ -373,6 +373,27 @@ impl PluginInstance {
         data.gameta_client.clone()
     }
 
+    /// Cache `url`'s bytes under `key` using this plugin's data service.
+    /// Mirrors the WIT `fetch-to-cache` host import but is callable from
+    /// host code (e.g. when responding to a `PluginAction::CacheContent`
+    /// event). The body never crosses the WASM boundary — the network
+    /// resolver writes straight into ContentCache as a side-effect.
+    ///
+    /// Returns true on Ready/Cached. The call blocks for the full
+    /// duration of the fetch; run it on a tokio blocking thread when
+    /// invoking from the UI.
+    pub fn cache_content_blocking(&mut self, key: String, url: String) -> bool {
+        use arclain_data::{DataRequest, DataStatus, ResourceType};
+        let plugin_id = self.store.data().plugin_id.clone();
+        let req = DataRequest::new(&key)
+            .with_type(ResourceType::Binary)
+            .with_plugin_id(&plugin_id)
+            .with_url(url);
+        let host = self.store.data_mut();
+        let result = host.data_service.resolve(&req);
+        matches!(result.status, DataStatus::Ready | DataStatus::Cached)
+    }
+
     /// Get metadata signal reference (if set)
     pub fn get_metadata_signal(&self) -> Option<arclain_signals::Signal<Option<serde_json::Value>>> {
         let data = self.store.data();
