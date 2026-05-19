@@ -266,6 +266,77 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         }
     }
 
+    // Render Ask-Each-Time Drop Modal
+    {
+        let mut ask_state = app.shared_state.signals().ask_each_time_drop.get();
+        let result = crate::shared::dialogs::ask_each_time_drop::render_ask_each_time_drop_dialog(
+            ctx,
+            &app.shared_state.theme,
+            &mut ask_state,
+        );
+        use crate::shared::dialogs::ask_each_time_drop::AskEachTimeDropResult;
+        // Snapshot pending_paths before we possibly clear them so we can
+        // route after setting the cleared state back.
+        let pending = std::mem::take(&mut ask_state.pending_paths);
+        app.shared_state
+            .signals()
+            .ask_each_time_drop
+            .set_if_changed(ask_state);
+
+        let chosen_zone = match result {
+            AskEachTimeDropResult::NewTab => {
+                Some(crate::shared::components::drop_overlay::DropZone::NewTab)
+            }
+            AskEachTimeDropResult::Replace => {
+                Some(crate::shared::components::drop_overlay::DropZone::ReplaceCurrent)
+            }
+            AskEachTimeDropResult::Cancel | AskEachTimeDropResult::None => None,
+        };
+        if let Some(zone) = chosen_zone {
+            use crate::shared::components::drop_overlay::DropZone;
+            let mut col = app.shared_state.signals().tabs.get();
+            let mut tabs_to_load: Vec<(
+                crate::core::tabs::TabId,
+                std::path::PathBuf,
+            )> = Vec::new();
+            // First file honors the user's choice; subsequent files
+            // always open as new tabs (matching the overlay routing
+            // semantics in the drop handler).
+            for (idx, path) in pending.iter().enumerate() {
+                let effective = if idx == 0 { zone } else { DropZone::NewTab };
+                match effective {
+                    DropZone::NewTab => {
+                        if col.active().archive_path.get().is_none() {
+                            col.replace_active(path.clone());
+                            tabs_to_load.push((col.active_id(), path.clone()));
+                        } else {
+                            let id = col.open(Some(path.clone()));
+                            tabs_to_load.push((id, path.clone()));
+                        }
+                    }
+                    DropZone::ReplaceCurrent => {
+                        if col.active().archive_path.get().is_some() {
+                            col.replace_active(path.clone());
+                            tabs_to_load.push((col.active_id(), path.clone()));
+                        } else {
+                            let id = col.open(Some(path.clone()));
+                            tabs_to_load.push((id, path.clone()));
+                        }
+                    }
+                }
+            }
+            app.shared_state.signals().tabs.set(col);
+            for (tab_id, path) in tabs_to_load {
+                crate::core::operations::archive::load_archive_into_tab(
+                    app.shared_state.app_state.clone(),
+                    app.shared_state.signals().clone(),
+                    tab_id,
+                    &path,
+                );
+            }
+        }
+    }
+
     // Render Merge Dialog
     let mut merge_dialog = app.shared_state.signals().merge_dialog.get();
     match dialogs::render_merge_dialog(ctx, &app.shared_state.theme, &mut merge_dialog) {
@@ -425,13 +496,25 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                                                     DropZone::ReplaceCurrent
                                                 }
                                                 arclain_core::DropBehavior::AskEachTime => {
-                                                    // TODO(phase 2b polish): show AskEachTime modal.
-                                                    // v1 stub: default to NewTab.
-                                                    tracing::info!(
-                                                        "[tabs] AskEachTime selected but modal \
-                                                         not yet wired; defaulting to NewTab"
-                                                    );
-                                                    DropZone::NewTab
+                                                    // Defer routing. Stash all dropped paths in
+                                                    // the ask_each_time_drop signal and skip the
+                                                    // immediate path-routing for this drop. The
+                                                    // modal will render in the dialog pass and
+                                                    // route on user click.
+                                                    let mut state =
+                                                        app.shared_state.signals().ask_each_time_drop.get();
+                                                    state.show = true;
+                                                    state.pending_paths = dropped
+                                                        .iter()
+                                                        .filter_map(|f| f.path.clone())
+                                                        .collect();
+                                                    app.shared_state
+                                                        .signals()
+                                                        .ask_each_time_drop
+                                                        .set(state);
+                                                    // Bail out of the per-file loop entirely —
+                                                    // the modal handles all paths together.
+                                                    return;
                                                 }
                                             }
                                         }
