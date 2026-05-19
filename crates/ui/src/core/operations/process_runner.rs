@@ -1,6 +1,7 @@
 //! UI-side wrapper that spawns the core pipeline executor on the tokio
 //! runtime and routes progress events to the `process_run` signal.
 
+use crate::core::tabs::{OpGuard, TabState};
 use crate::core::signals::ProcessRunState;
 use arclain_core::{
     execute_pipeline, OutputCollisionPolicy, Pipeline, PipelineContext, PipelineProgress,
@@ -8,6 +9,7 @@ use arclain_core::{
 };
 use arclain_signals::Signal;
 use parking_lot::Mutex;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
@@ -17,6 +19,7 @@ pub fn spawn_run(
     services: Arc<crate::core::services::Services>,
     signal: Signal<ProcessRunState>,
     runtime: &Runtime,
+    origin_tab: Arc<TabState>,
 ) {
     let temp_root = std::env::temp_dir();
 
@@ -25,9 +28,32 @@ pub fn spawn_run(
     initial.is_running = true;
     signal.set(initial);
 
+    // Increment in_flight_ops for the originating tab. The guard is moved
+    // into the spawned task and dropped when the task completes (success,
+    // error, or tab-cancel abort).
+    let guard = OpGuard::new(&origin_tab);
+
     runtime.spawn(async move {
+        // Guard held for the lifetime of the entire async task (including
+        // the spawn_blocking call below). Drops when this async block exits.
+        let _guard = guard;
         let signal_for_blocking = signal.clone();
+        let origin_tab_for_blocking = origin_tab.clone();
         let _ = tokio::task::spawn_blocking(move || {
+            // Cooperative cancellation: check before starting any work.
+            // If the originating tab was force-closed while this task was
+            // queued, abort immediately. Mid-execution cancellation is not
+            // possible with the current blocking executor (callback returns
+            // `()`) — the task runs to completion if it gets past this check.
+            if origin_tab_for_blocking.tab_cancel.load(Ordering::SeqCst) {
+                let mut s = signal_for_blocking.get();
+                s.is_running = false;
+                s.completed = true;
+                s.summary = Some("Cancelled: originating tab was closed".to_string());
+                signal_for_blocking.set(s);
+                return;
+            }
+
             let state_clone = state_arc.clone();
             let backend_for = move |p: &std::path::Path| state_clone.lock().backend_selector.select(p);
 

@@ -22,6 +22,14 @@ use std::sync::Arc;
 /// Returns immediately. Actions land in `shared.pending_plugin_actions`
 /// on a future frame; settings auto-save to disk if the plugin marked
 /// them dirty.
+///
+/// v1 intentional omission: plugin calls do NOT increment `in_flight_ops`
+/// on the originating tab. Plugin events are typically short-lived (ms to
+/// low seconds) and the overhead of OpGuard wiring through every dispatch
+/// call site outweighs the benefit at this stage. If a tab is force-closed
+/// while a plugin call is in flight, the call runs to completion against the
+/// captured `Arc<TabState>` but the user can't observe the result. A future
+/// audit pass can add OpGuard here if plugin calls become long-running.
 pub fn dispatch_plugin_event(
     shared: &SharedState,
     plugin_id: String,

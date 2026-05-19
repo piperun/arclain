@@ -128,6 +128,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut ops_state.extraction_child,
                         &mut ops_state.extraction_minimized,
                         &mut ops_state.extraction_started,
+                        &mut ops_state.extraction_op_guard,
+                        &mut ops_state.extraction_origin_tab,
                         &mut status_info,
                     );
                     shared_state.signals().status_bar.set(status_info);
@@ -145,6 +147,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut ops_state.extraction_child,
                         &mut ops_state.extraction_minimized,
                         &mut ops_state.extraction_started,
+                        &mut ops_state.extraction_op_guard,
+                        &mut ops_state.extraction_origin_tab,
                         &mut status_info,
                     );
                     shared_state.signals().status_bar.set(status_info);

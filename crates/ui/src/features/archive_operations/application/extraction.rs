@@ -3,6 +3,7 @@ use crate::features::archive_operations::domain::state::ArchiveOperationsState;
 use crate::platform::{resume_process, suspend_process};
 use crate::shared::dialogs;
 use eframe::egui;
+use std::sync::atomic::Ordering;
 
 pub fn pause_extraction(state: &mut ArchiveOperationsState, shared: &crate::shared::SharedState) {
     if let Some(child) = &state.extraction_child {
@@ -41,6 +42,9 @@ pub fn cancel_extraction(state: &mut ArchiveOperationsState, shared: &crate::sha
 
         state.extraction_rx = None;
         state.extraction_started = None;
+        // Drop guard and origin tab: decrements in_flight_ops.
+        state.extraction_op_guard = None;
+        state.extraction_origin_tab = None;
     }
 }
 
@@ -49,6 +53,24 @@ pub fn update_extraction_progress(
     shared: &crate::shared::SharedState,
     ctx: &egui::Context,
 ) {
+    // Cooperative cancellation: if the originating tab was force-closed, kill
+    // the subprocess and clean up so the op counter drops to zero promptly.
+    if let Some(origin_tab) = &state.extraction_origin_tab {
+        if origin_tab.tab_cancel.load(Ordering::SeqCst) {
+            if let Some(mut child) = state.extraction_child.take() {
+                let _ = child.kill();
+            }
+            state.extraction_rx = None;
+            state.extraction_started = None;
+            state.extraction_op_guard = None;
+            state.extraction_origin_tab = None;
+            let mut dialog = shared.signals().extraction_dialog.get();
+            dialog.show = false;
+            shared.signals().extraction_dialog.set(dialog);
+            return;
+        }
+    }
+
     let mut dialog = shared.signals().extraction_dialog.get();
     let mut changed = false;
 
@@ -96,6 +118,9 @@ pub fn update_extraction_progress(
             state.extraction_child = None;
             state.extraction_rx = None;
             state.extraction_started = None;
+            // Drop guard and origin tab: decrements in_flight_ops.
+            state.extraction_op_guard = None;
+            state.extraction_origin_tab = None;
         }
     }
 

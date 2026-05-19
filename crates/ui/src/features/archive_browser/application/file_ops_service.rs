@@ -101,6 +101,8 @@ impl FileOpsService {
             &mut ops_state.extraction_child,
             &mut ops_state.extraction_minimized,
             &mut ops_state.extraction_started,
+            &mut ops_state.extraction_op_guard,
+            &mut ops_state.extraction_origin_tab,
             &mut temp_status,
         );
         shared.signals().status_bar.set(temp_status);

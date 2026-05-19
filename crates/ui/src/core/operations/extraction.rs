@@ -1,3 +1,4 @@
+use crate::core::tabs::{OpGuard, TabState};
 use crate::core::AppState;
 use crate::shared::components::status_bar;
 use crate::shared::dialogs;
@@ -17,6 +18,8 @@ pub fn extract_selected(
     extraction_child_mut: &mut Option<std::process::Child>,
     extraction_minimized: &mut bool,
     extraction_started: &mut Option<Instant>,
+    extraction_op_guard: &mut Option<OpGuard>,
+    extraction_origin_tab: &mut Option<Arc<TabState>>,
     status_info: &mut status_bar::StatusBarInfo,
 ) {
     if extraction_child_mut.is_some() {
@@ -85,6 +88,9 @@ pub fn extract_selected(
                     *extraction_minimized = false;
                     *extraction_started = Some(Instant::now());
                     extraction_dialog.dest_path = Some(dest.clone());
+                    // Wire per-tab in_flight_ops counter and cancel origin.
+                    *extraction_op_guard = Some(OpGuard::new(&tab));
+                    *extraction_origin_tab = Some(tab.clone());
                     status_info.message = "Extraction started".to_string();
                 }
                 Err(e) => {
@@ -103,6 +109,8 @@ pub fn extract_all(
     extraction_child_mut: &mut Option<std::process::Child>,
     extraction_minimized: &mut bool,
     extraction_started: &mut Option<Instant>,
+    extraction_op_guard: &mut Option<OpGuard>,
+    extraction_origin_tab: &mut Option<Arc<TabState>>,
     status_info: &mut status_bar::StatusBarInfo,
 ) {
     if extraction_child_mut.is_some() {
@@ -145,6 +153,9 @@ pub fn extract_all(
                     *extraction_minimized = false;
                     *extraction_started = Some(Instant::now());
                     extraction_dialog.dest_path = Some(dest.clone());
+                    // Wire per-tab in_flight_ops counter and cancel origin.
+                    *extraction_op_guard = Some(OpGuard::new(&tab));
+                    *extraction_origin_tab = Some(tab.clone());
                     status_info.message = "Extraction started".to_string();
                 }
                 Err(e) => {
