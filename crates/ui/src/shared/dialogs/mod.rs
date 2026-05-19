@@ -9,6 +9,9 @@ pub mod merge_dialog;
 pub mod progress;
 
 // Re-export dialog types
+pub use close_tab_confirm::{
+    render_close_tab_confirm, CloseTabConfirmResult, CloseTabConfirmState,
+};
 pub use form_dialog::{DialogMode, FormDialog, FormDialogConfig, FormDialogResult};
 pub use lightbox::{render_lightbox, LightboxResult, LightboxState};
 pub use merge_dialog::{render_merge_dialog, MergeDialogResult, MergeDialogState};

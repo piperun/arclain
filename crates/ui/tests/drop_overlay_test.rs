@@ -59,6 +59,45 @@ fn overlay_renders_one_zone_when_active_tab_is_empty() {
 }
 
 #[test]
+fn overlay_shows_ctrl_hint_in_replace_zone() {
+    // Ctrl-held drops always route to Replace regardless of cursor
+    // zone. The hint surfaces the keybinding so users don't need to
+    // discover it from docs.
+    let col = TabsCollection::new();
+    col.active().archive_path.set(Some(PathBuf::from("/tmp/x.zip")));
+    let mut harness = Harness::new_ui_state(
+        |ui, state: &mut (TabsCollection, Option<DropZone>)| {
+            let action = render_drop_overlay(ui, &state.0, Some(egui::pos2(100.0, 100.0)));
+            state.1 = action;
+        },
+        (col, None::<DropZone>),
+    );
+    harness.run();
+    assert!(
+        harness.query_all_by_label("Hold Ctrl").next().is_some(),
+        "Replace zone should display the 'Hold Ctrl' keybinding hint"
+    );
+}
+
+#[test]
+fn overlay_omits_ctrl_hint_when_no_replace_zone() {
+    // No archive in the active tab → no Replace zone → no Ctrl hint.
+    let col = TabsCollection::new();
+    let mut harness = Harness::new_ui_state(
+        |ui, state: &mut (TabsCollection, Option<DropZone>)| {
+            let action = render_drop_overlay(ui, &state.0, Some(egui::pos2(100.0, 100.0)));
+            state.1 = action;
+        },
+        (col, None::<DropZone>),
+    );
+    harness.run();
+    assert!(
+        harness.query_all_by_label("Hold Ctrl").next().is_none(),
+        "Ctrl hint should be absent when Replace zone isn't rendered"
+    );
+}
+
+#[test]
 fn overlay_returns_none_when_drop_pos_is_none() {
     let col = TabsCollection::new();
     let mut harness = Harness::new_ui_state(

@@ -48,14 +48,16 @@ pub fn render_drop_overlay(
         egui::pos2(start_x, zone_y),
         egui::vec2(zone_width, zone_height),
     );
-    draw_zone(ui, new_tab_rect, "Open as new tab", true);
+    draw_zone(ui, new_tab_rect, "Open as new tab", true, None);
 
     if active_has_archive {
         let replace_rect = egui::Rect::from_min_size(
             egui::pos2(start_x + zone_width + gap, zone_y),
             egui::vec2(zone_width, zone_height),
         );
-        draw_zone(ui, replace_rect, "Replace current tab", false);
+        // Ctrl-held drops always route to Replace regardless of cursor
+        // zone — surface that here so users don't need to discover it.
+        draw_zone(ui, replace_rect, "Replace current tab", false, Some("Hold Ctrl"));
 
         if let Some(pos) = drop_pos {
             if new_tab_rect.contains(pos) {
@@ -73,22 +75,54 @@ pub fn render_drop_overlay(
     routed
 }
 
-fn draw_zone(ui: &mut egui::Ui, rect: egui::Rect, label: &str, primary: bool) {
+fn draw_zone(
+    ui: &mut egui::Ui,
+    rect: egui::Rect,
+    label: &str,
+    primary: bool,
+    hotkey_hint: Option<&str>,
+) {
     let fill = if primary {
         egui::Color32::from_rgba_unmultiplied(0, 120, 215, 200)
     } else {
         egui::Color32::from_rgba_unmultiplied(60, 60, 60, 200)
     };
     ui.painter().rect_filled(rect, 12.0, fill);
-    // ALSO render the label as a widget so egui_kittest can query it.
-    // Place the widget over the zone via ui.put() with a slightly inset rect.
-    let inset = rect.shrink(20.0);
+
+    // Main label — render as a widget so egui_kittest can query it.
+    // When a hotkey hint is present, shift the label slightly up so the
+    // hint can sit centered below it without overlapping.
+    let label_inset = if hotkey_hint.is_some() {
+        let mut r = rect.shrink(20.0);
+        r.max.y -= 36.0;
+        r
+    } else {
+        rect.shrink(20.0)
+    };
     ui.put(
-        inset,
+        label_inset,
         egui::Label::new(
             egui::RichText::new(label)
                 .size(20.0)
                 .color(egui::Color32::WHITE),
         ),
     );
+
+    // Hotkey hint pill — small, dimmer, sits below the main label.
+    // Rendered as a widget (not just painter text) so kittest can
+    // verify the "Hold Ctrl" affordance is actually wired.
+    if let Some(hint) = hotkey_hint {
+        let hint_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.min.x + 20.0, rect.max.y - 56.0),
+            egui::vec2(rect.width() - 40.0, 28.0),
+        );
+        ui.put(
+            hint_rect,
+            egui::Label::new(
+                egui::RichText::new(hint)
+                    .size(13.0)
+                    .color(egui::Color32::from_rgba_unmultiplied(255, 255, 255, 200)),
+            ),
+        );
+    }
 }

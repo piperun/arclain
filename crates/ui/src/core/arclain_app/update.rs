@@ -461,6 +461,12 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 .signals()
                 .plugin_dialog_state
                 .set(dialog_state);
+            // Navigate to main so the plugin page can take over rendering.
+            // `content_handler::render_content` only delegates to plugin
+            // page rendering when `current_page == AppPage::Main`; without
+            // this, clicking a plugin tab from Settings / Logs / etc.
+            // updated state silently but the UI stayed on the prior page.
+            app.page_navigator.navigate_to_main();
         }
         app_rendering::TabBarAction::None => {}
     }
