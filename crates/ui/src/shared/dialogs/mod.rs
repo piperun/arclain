@@ -1,5 +1,6 @@
 // Shared dialog utilities module
 
+pub mod ask_each_time_drop;
 pub mod close_tab_confirm;
 pub mod form_dialog;
 pub mod helpers;

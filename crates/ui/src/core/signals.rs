@@ -5,6 +5,7 @@
 
 use crate::core::state::UiPreferences;
 use crate::core::tabs::TabsCollection;
+use crate::shared::dialogs::ask_each_time_drop::AskEachTimeDropState;
 use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmState;
 use arclain_core::utilities::PassRule;
 use arclain_core::UiItem;
@@ -154,6 +155,12 @@ pub struct AppSignals {
     /// Close-tab confirmation modal — shown when a tab with in-flight ops
     /// is closed. The user must confirm before the tab is force-closed.
     pub close_tab_confirm: Signal<CloseTabConfirmState>,
+
+    /// "Ask each time" drop modal — shown when `drop_behavior` is
+    /// `AskEachTime` and the user drops a file without aiming at an
+    /// overlay zone. Holds the pending paths until the user picks
+    /// New tab / Replace / Cancel.
+    pub ask_each_time_drop: Signal<AskEachTimeDropState>,
 }
 
 impl AppSignals {
@@ -206,6 +213,8 @@ impl AppSignals {
             tabs: Signal::new(TabsCollection::new()).with_name("tabs"),
             close_tab_confirm: Signal::new(CloseTabConfirmState::default())
                 .with_name("close_tab_confirm"),
+            ask_each_time_drop: Signal::new(AskEachTimeDropState::default())
+                .with_name("ask_each_time_drop"),
         }
     }
 
@@ -236,6 +245,7 @@ impl AppSignals {
         signal_ctx.bind_named(&self.server_status, "server_status");
         signal_ctx.bind_named(&self.tabs, "tabs");
         signal_ctx.bind_named(&self.close_tab_confirm, "close_tab_confirm");
+        signal_ctx.bind_named(&self.ask_each_time_drop, "ask_each_time_drop");
     }
 
     /// Reset all signals to default state.
@@ -271,6 +281,7 @@ impl AppSignals {
         self.server_status.set(ServerConnectionStatus::default());
         self.tabs.set(TabsCollection::new());
         self.close_tab_confirm.set(CloseTabConfirmState::default());
+        self.ask_each_time_drop.set(AskEachTimeDropState::default());
     }
 }
 
