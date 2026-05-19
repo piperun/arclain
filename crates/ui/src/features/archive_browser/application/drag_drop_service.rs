@@ -12,7 +12,7 @@ impl DragDropService {
         ops_state: &mut ArchiveOperationsState,
         files: Vec<String>,
     ) {
-        tracing::info!("[DragExtract] Starting with files: {:?}", files);
+        tracing::info!("[DragExtract] Starting with files: {}", files.join(", "));
 
         // Get archive handle
         let tab = shared.signals().tabs.get().active().clone();
@@ -87,7 +87,7 @@ impl DragDropService {
                     ops_state.drag_started = Some(std::time::Instant::now());
                 }
                 Err(e) => {
-                    tracing::warn!("[DragExtract] Drag failed: {:?}", e);
+                    tracing::warn!("[DragExtract] Drag failed: {}", e);
                     shared.signals().status_bar.update(|s| {
                         s.message = format!("Drag failed: {}", e);
                     });

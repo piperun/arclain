@@ -159,7 +159,7 @@ impl ArchiveBackend for SevenZipCli {
             if let Ok(entries) = std::fs::read_dir(dest) {
                 for entry in entries.take(5) {
                     if let Ok(e) = entry {
-                        error!("  Found in dest: {:?}", e.path());
+                        error!("  Found in dest: {}", e.path().display());
                     }
                 }
             }
@@ -507,7 +507,11 @@ impl ArchiveBackend for SevenZipCli {
         let status = cmd.status().context("spawning 7z for conversion")?;
 
         if !status.success() {
-            error!("7-Zip conversion failed with code {:?}", status.code());
+            let code_str = match status.code() {
+                Some(c) => format!("exit code {}", c),
+                None => "no exit code (signal)".to_string(),
+            };
+            error!("7-Zip conversion failed with {}", code_str);
             return Err(anyhow!("7z conversion failed (code {:?})", status.code()));
         }
 
@@ -709,8 +713,12 @@ impl ArchiveBackend for SevenZipCli {
         // Use wait() instead of wait_with_output() since we already consumed stdout
         let status = child.wait().context("waiting for 7z")?;
         if !status.success() {
+            let code_str = match status.code() {
+                Some(c) => format!("exit code {}", c),
+                None => "no exit code (signal)".to_string(),
+            };
             // Try to read stderr if still available
-            error!("7-Zip streaming failed with code {:?}", status.code());
+            error!("7-Zip streaming failed with {}", code_str);
             return Err(anyhow!("7z streaming failed (code {:?})", status.code()));
         }
 

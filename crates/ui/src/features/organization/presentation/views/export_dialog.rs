@@ -181,7 +181,7 @@ impl ExportTreeDialog {
             if let Err(e) = std::fs::write(&path, content) {
                 tracing::error!("Failed to save export file: {}", e);
             } else {
-                tracing::info!("Exported tree structure to {:?}", path);
+                tracing::info!("Exported tree structure to {}", path.display());
                 if let Err(e) = open::that(path) {
                     tracing::warn!("Failed to open exported file: {}", e);
                 }

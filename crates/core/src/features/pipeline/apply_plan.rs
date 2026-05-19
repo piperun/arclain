@@ -26,7 +26,7 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
         let src = work_dir.join(src_rel);
         let dest = staging.join(dest_rel);
         if !src.exists() {
-            tracing::warn!("[apply_plan] source missing: {:?}", src);
+            tracing::warn!("[apply_plan] source missing: {}", src.display());
             continue;
         }
         if let Some(parent) = dest.parent() {

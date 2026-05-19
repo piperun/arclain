@@ -95,7 +95,11 @@ impl UnrarCli {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            error!("UnRAR failed with code {:?}", output.status.code());
+            let code_str = match output.status.code() {
+                Some(c) => format!("exit code {}", c),
+                None => "no exit code (signal)".to_string(),
+            };
+            error!("UnRAR failed with {}", code_str);
             error!("stderr: {}", stderr.trim());
             error!("stdout: {}", stdout.trim());
             return Err(anyhow!(
@@ -147,7 +151,11 @@ impl UnrarCli {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            error!("UnRAR failed with code {:?}", output.status.code());
+            let code_str = match output.status.code() {
+                Some(c) => format!("exit code {}", c),
+                None => "no exit code (signal)".to_string(),
+            };
+            error!("UnRAR failed with {}", code_str);
             error!("stderr: {}", stderr.trim());
             error!("stdout: {}", stdout.trim());
             return Err(anyhow!(

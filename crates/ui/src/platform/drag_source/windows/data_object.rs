@@ -151,7 +151,7 @@ impl LazyArchiveDataObject {
         progress_tx: Option<Sender<ProgressUpdate>>,
     ) -> Self {
         let common_prefix = Self::compute_common_prefix(&entries);
-        info!("[drag] Computed common prefix: {:?}", common_prefix);
+        info!("[drag] Computed common prefix: {}", common_prefix.as_deref().unwrap_or("<none>"));
 
         let drag_entries: Vec<DragEntry> = entries
             .iter()
@@ -249,7 +249,7 @@ impl LazyArchiveDataObject {
 
         let temp_dir =
             tempfile::tempdir().map_err(|e| format!("Failed to create temp dir: {}", e))?;
-        info!("[drag] Temp dir created at: {:?}", temp_dir.path());
+        info!("[drag] Temp dir created at: {}", temp_dir.path().display());
 
         let file_paths: Vec<String> = self
             .entries

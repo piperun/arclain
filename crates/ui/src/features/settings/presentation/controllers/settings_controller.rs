@@ -157,7 +157,7 @@ pub fn handle_action(
             drop(state);
 
             std::thread::spawn(move || {
-                tracing::info!("Clearing cache content at {:?}", cache_dir);
+                tracing::info!("Clearing cache content at {}", cache_dir.display());
                 if cache_dir.exists() {
                     if let Err(e) = std::fs::remove_dir_all(&cache_dir) {
                         tracing::error!("Failed to remove cache dir: {}", e);
@@ -257,8 +257,8 @@ pub fn handle_action(
             if let Some(ref config_svc) = shared.services.config_service {
                 match config_svc.save_user_config(&state.user_config) {
                     Ok(_) => {
-                        tracing::info!("[SaveNetwork] Network settings saved successfully: enabled={}, address={:?}", 
-                            socks5_enabled, clean_address);
+                        tracing::info!("[SaveNetwork] Network settings saved successfully: enabled={}, address={}",
+                            socks5_enabled, clean_address.as_deref().unwrap_or("<unset>"));
                     }
                     Err(e) => {
                         tracing::error!("[SaveNetwork] Failed to save network settings: {}", e);
