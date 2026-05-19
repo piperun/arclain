@@ -443,10 +443,12 @@ impl AsyncHttpClient {
     ///
     /// `start_byte`: if `Some(n)`, sends `Range: bytes=n-`. The server's
     /// response status tells us whether the range was honored:
+    ///
     /// - 206 Partial Content → server gave us bytes from `n` onward,
     ///   caller appends.
     /// - 200 OK → server returned the full body; caller must truncate
     ///   the partial file and rewrite from byte 0.
+    ///
     /// The status is reported via `StreamingDownload::was_partial`.
     ///
     /// `if_match`: if `Some(etag)`, sends `If-Match: <etag>` so the
