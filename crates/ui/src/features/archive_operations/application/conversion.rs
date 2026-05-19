@@ -2,12 +2,31 @@ use crate::core::utils;
 use crate::features::archive_operations::domain::state::ArchiveOperationsState;
 use crate::shared::dialogs;
 use eframe::egui;
+use std::sync::atomic::Ordering;
 
 pub fn update_conversion_progress(
     state: &mut ArchiveOperationsState,
     shared: &crate::shared::SharedState,
     ctx: &egui::Context,
 ) {
+    // Cooperative cancellation: if the originating tab was force-closed, kill
+    // the subprocess and clean up so the op counter drops to zero promptly.
+    if let Some(origin_tab) = &state.conversion_origin_tab {
+        if origin_tab.tab_cancel.load(Ordering::SeqCst) {
+            if let Some(mut child) = state.conversion_child.take() {
+                let _ = child.kill();
+            }
+            state.conversion_rx = None;
+            state.conversion_started = None;
+            state.conversion_op_guard = None;
+            state.conversion_origin_tab = None;
+            let mut dialog = shared.signals().conversion_dialog.get();
+            dialog.show = false;
+            shared.signals().conversion_dialog.set(dialog);
+            return;
+        }
+    }
+
     let mut dialog = shared.signals().conversion_dialog.get();
     let mut changed = false;
 
@@ -55,6 +74,9 @@ pub fn update_conversion_progress(
             state.conversion_child = None;
             state.conversion_rx = None;
             state.conversion_started = None;
+            // Drop guard and origin tab: decrements in_flight_ops.
+            state.conversion_op_guard = None;
+            state.conversion_origin_tab = None;
         }
     }
 

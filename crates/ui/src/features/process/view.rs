@@ -465,12 +465,14 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
         )
         .clicked()
     {
+        let origin_tab = shared.signals().tabs.get().active().clone();
         crate::core::operations::process_runner::spawn_run(
             state.pipeline.clone(),
             shared.app_state.clone(),
             shared.services.clone(),
             shared.signals().process_run.clone(),
             &shared.services.tokio_runtime,
+            origin_tab,
         );
     }
 

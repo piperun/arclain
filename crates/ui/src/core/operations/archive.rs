@@ -1,5 +1,5 @@
 use crate::core::signals::AppSignals;
-use crate::core::tabs::TabId;
+use crate::core::tabs::{OpGuard, TabId, TabState};
 use crate::core::utils::{convert_to_file_entry, format_size};
 use crate::core::AppState;
 use crate::features::password_management::dialogs;
@@ -416,6 +416,8 @@ pub fn convert_archive(
     >,
     conversion_child: &mut Option<std::process::Child>,
     conversion_started: &mut Option<std::time::Instant>,
+    conversion_op_guard: &mut Option<OpGuard>,
+    conversion_origin_tab: &mut Option<Arc<TabState>>,
     options: arclain_core::ConvertOptions,
 ) {
     let signals = state.lock().signals.clone();
@@ -568,6 +570,9 @@ pub fn convert_archive(
                 *conversion_rx = Some(handle.rx);
                 *conversion_child = Some(handle.child);
                 *conversion_started = Some(std::time::Instant::now());
+                // Wire per-tab in_flight_ops counter and cancel origin.
+                *conversion_op_guard = Some(OpGuard::new(&tab));
+                *conversion_origin_tab = Some(tab.clone());
                 status_info.message = "Converting archive...".to_string();
             }
             Err(e) => {

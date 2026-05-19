@@ -227,11 +227,42 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             app.shared_state.signals().tabs.set(col);
             // ACID best-effort cancellation: force_close fires the tab's
             // `tab_cancel` flag before removing the tab. Background ops that
-            // captured Arc<TabState> at spawn can observe the cancellation on
-            // their next periodic check. v1 enforcement is best-effort — ops
-            // that don't check the flag yet continue to completion against
-            // the captured Arc. Follow-up audit covers each op type
-            // (extraction, conversion, pipeline, plugin call).
+            // captured Arc<TabState> at spawn observe the flag on their next
+            // periodic check and kill their subprocess.
+            //
+            // In addition, if this tab is the origin of the active extraction
+            // or conversion, immediately kill the subprocess here so the
+            // process dies promptly without waiting for the next update tick.
+            {
+                let ops = app.archive_operations.state_mut();
+                let origin_matches_id = |tab: &Option<std::sync::Arc<crate::core::tabs::TabState>>| {
+                    tab.as_ref().map(|t| t.id == id).unwrap_or(false)
+                };
+                if origin_matches_id(&ops.extraction_origin_tab) {
+                    if let Some(mut child) = ops.extraction_child.take() {
+                        let _ = child.kill();
+                    }
+                    ops.extraction_rx = None;
+                    ops.extraction_started = None;
+                    ops.extraction_op_guard = None;
+                    ops.extraction_origin_tab = None;
+                    let mut dialog = app.shared_state.signals().extraction_dialog.get();
+                    dialog.show = false;
+                    app.shared_state.signals().extraction_dialog.set(dialog);
+                }
+                if origin_matches_id(&ops.conversion_origin_tab) {
+                    if let Some(mut child) = ops.conversion_child.take() {
+                        let _ = child.kill();
+                    }
+                    ops.conversion_rx = None;
+                    ops.conversion_started = None;
+                    ops.conversion_op_guard = None;
+                    ops.conversion_origin_tab = None;
+                    let mut dialog = app.shared_state.signals().conversion_dialog.get();
+                    dialog.show = false;
+                    app.shared_state.signals().conversion_dialog.set(dialog);
+                }
+            }
         }
     }
 
