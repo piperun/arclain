@@ -278,69 +278,68 @@ fn render_file_list(
                 let search_lower = search_text.to_lowercase();
                 let is_searching = !search_text.trim().is_empty();
 
-                egui::ScrollArea::vertical()
-                    .id_salt("file_list_scroll")
-                    .show(ui, |ui| {
-                        if is_searching {
-                            let matching_indices: Vec<usize> = state
-                                .view_entries
-                                .iter()
-                                .enumerate()
-                                .filter(|(_, e)| e.name.to_lowercase().contains(&search_lower))
-                                .map(|(i, _)| i)
-                                .collect();
+                // No outer ScrollArea here — both render_list_view (egui_extras
+                // TableBuilder with body.rows virtualization) and render_grid_view
+                // (ScrollArea::show_rows virtualization) own their own scrolling.
+                // Wrapping them in an outer ScrollArea gives the virtualized
+                // children infinite vertical room, which breaks the visible-row
+                // computation and renders nothing.
+                if is_searching {
+                    let matching_indices: Vec<usize> = state
+                        .view_entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, e)| e.name.to_lowercase().contains(&search_lower))
+                        .map(|(i, _)| i)
+                        .collect();
 
-                            let mut filtered: Vec<_> = matching_indices
-                                .iter()
-                                .filter_map(|&i| state.view_entries.get(i).cloned())
-                                .collect();
+                    let mut filtered: Vec<_> = matching_indices
+                        .iter()
+                        .filter_map(|&i| state.view_entries.get(i).cloned())
+                        .collect();
 
-                            if state.toolbar_state.grid_view {
-                                if let Some(file_action) =
-                                    file_list::render_grid_view(ui, &shared.theme, &mut filtered)
-                                {
-                                    *action = map_file_list_action(file_action);
-                                }
-                            } else if let Some(file_action) = file_list::render_list_view(
-                                ui,
-                                &shared.theme,
-                                &mut filtered,
-                                state.toolbar_state.columns_locked,
-                                &mut state.sort_state,
-                            ) {
-                                *action = map_file_list_action(file_action);
-                            }
+                    if state.toolbar_state.grid_view {
+                        if let Some(file_action) =
+                            file_list::render_grid_view(ui, &shared.theme, &mut filtered)
+                        {
+                            *action = map_file_list_action(file_action);
+                        }
+                    } else if let Some(file_action) = file_list::render_list_view(
+                        ui,
+                        &shared.theme,
+                        &mut filtered,
+                        state.toolbar_state.columns_locked,
+                        &mut state.sort_state,
+                    ) {
+                        *action = map_file_list_action(file_action);
+                    }
 
-                            for (filtered_idx, &original_idx) in matching_indices.iter().enumerate()
+                    for (filtered_idx, &original_idx) in matching_indices.iter().enumerate() {
+                        if let Some(filtered_entry) = filtered.get(filtered_idx) {
+                            if let Some(original_entry) =
+                                state.view_entries.get_mut(original_idx)
                             {
-                                if let Some(filtered_entry) = filtered.get(filtered_idx) {
-                                    if let Some(original_entry) =
-                                        state.view_entries.get_mut(original_idx)
-                                    {
-                                        original_entry.selected = filtered_entry.selected;
-                                    }
-                                }
-                            }
-                        } else {
-                            if state.toolbar_state.grid_view {
-                                if let Some(file_action) = file_list::render_grid_view(
-                                    ui,
-                                    &shared.theme,
-                                    &mut state.view_entries,
-                                ) {
-                                    *action = map_file_list_action(file_action);
-                                }
-                            } else if let Some(file_action) = file_list::render_list_view(
-                                ui,
-                                &shared.theme,
-                                &mut state.view_entries,
-                                state.toolbar_state.columns_locked,
-                                &mut state.sort_state,
-                            ) {
-                                *action = map_file_list_action(file_action);
+                                original_entry.selected = filtered_entry.selected;
                             }
                         }
-                    });
+                    }
+                } else if state.toolbar_state.grid_view {
+                    if let Some(file_action) = file_list::render_grid_view(
+                        ui,
+                        &shared.theme,
+                        &mut state.view_entries,
+                    ) {
+                        *action = map_file_list_action(file_action);
+                    }
+                } else if let Some(file_action) = file_list::render_list_view(
+                    ui,
+                    &shared.theme,
+                    &mut state.view_entries,
+                    state.toolbar_state.columns_locked,
+                    &mut state.sort_state,
+                ) {
+                    *action = map_file_list_action(file_action);
+                }
             });
         });
 }
