@@ -29,6 +29,13 @@ pub struct UserConfig {
     pub cache_directory: Option<String>,
 
     /// Last opened archive path
+    ///
+    /// Audit 2026-05-19 found this field has zero readers outside
+    /// this CRUD module — tab persistence (`tabs.json`) covers the
+    /// "remember what was open" responsibility now. Kept here as a
+    /// stable schema field because retiring a SQLite column under
+    /// the flat schema-version model is risky against existing user
+    /// DBs; a proper migration is queued as Tier A follow-up.
     pub last_opened_archive: Option<String>,
 
     /// Temporary directory for extraction operations

@@ -20,9 +20,12 @@ pub mod header;
 pub mod item_table;
 pub mod layout;
 pub mod network_log;
-pub mod panel;
+// `panel` and `properties_panel` moved to
+// `features/archive_browser/presentation/components/` in the
+// 2026-05-19 audit — they're archive_browser-specific (render
+// archive properties + plugin extensions) and their `features/plugins`
+// imports violated the shared/ boundary.
 pub mod preview_tree;
-pub mod properties_panel;
 pub mod search_bar;
 pub mod settings_card;
 pub mod settings_form;
@@ -46,7 +49,6 @@ pub use variables_panel::{TemplateVariable, VariableGroup, VariablePicker};
 // Re-export commonly used types and states
 // pub use file_list::{FileEntry, FileListAction, SortState};
 pub use header::HeaderState;
-pub use properties_panel::PropertiesPanelAction;
 pub use status_bar::StatusBarInfo;
 // pub use status_bar::PluginStatusInfo;
 // pub use toolbar::ToolbarState;

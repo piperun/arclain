@@ -45,18 +45,34 @@ pub fn dispatch_plugin_event(
     let sink = shared.pending_plugin_actions.clone();
 
     let work = move || {
-        let (settings_to_save, actions) = {
+        // Audit finding R8: do NOT hold the `PluginManager` mutex across
+        // `instance.send_ui_event(...)`. That call can run for seconds
+        // (synchronous HTTP polling inside DLsite metadata fetch), during
+        // which every other plugin-event dispatch app-wide would queue
+        // on `pm_arc.lock()` and serialize. The manager's `plugins` /
+        // `enabled_plugins` are themselves `RwLock`s designed to allow
+        // concurrent reads; holding the outer `Mutex<PluginManager>`
+        // defeated that. The background `event_worker` in
+        // `crates/plugins/src/manager/dispatch.rs` follows the same
+        // snapshot-then-drop pattern we adopt here.
+        let instance_arc = {
             let mgr = pm_arc.lock();
-            if let Some(instance_arc) = mgr.get_plugin_instance(&plugin_id) {
-                let mut instance = instance_arc.lock();
-                let actions = instance.send_ui_event(&event_id, value).ok();
-                drop(instance);
-                let snapshot = mgr.get_settings_for(&plugin_id);
-                (snapshot, actions)
-            } else {
-                (None, None)
-            }
+            mgr.get_plugin_instance(&plugin_id)
         };
+        let Some(instance_arc) = instance_arc else {
+            return;
+        };
+
+        // Run the WASM call holding ONLY the per-instance mutex.
+        let actions = {
+            let mut instance = instance_arc.lock();
+            instance.send_ui_event(&event_id, value).ok()
+        };
+
+        // Re-acquire the manager briefly to snapshot settings. This is
+        // a cheap RwLock-read internally; the manager mutex is no
+        // longer the contention point.
+        let settings_to_save = pm_arc.lock().get_settings_for(&plugin_id);
 
         if let Some(actions) = actions {
             let mut s = sink.lock();

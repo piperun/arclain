@@ -126,7 +126,9 @@ fn render_properties_panel(
     shared: &SharedState,
 ) -> Option<Action> {
     use crate::core::utils::format_size;
-    use crate::shared::components::{properties_panel, PropertiesPanelAction};
+    use crate::features::archive_browser::presentation::components::properties_panel::{
+        self, PropertiesPanelAction,
+    };
 
     let action = None;
 

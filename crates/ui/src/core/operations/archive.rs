@@ -204,62 +204,60 @@ pub fn load_archive_data(
     entries: &mut Vec<FileEntry>,
     archive_info: &mut ArchiveInfo,
 ) {
-    // Optionally compute missing CRC-32 for encrypted entries
-    let signals = state.lock().signals.clone();
+    // Audit finding R3: the previous version opened `state.lock()` 6-7
+    // times within this single logical operation, with the gaps in
+    // between holding none of the values it had just read. Concurrent
+    // renders could observe a half-updated AppState. Snapshot everything
+    // we need from `AppState` up front, drop the lock, then do all the
+    // work (CRC computation, signal writes, status updates) lock-free.
+    let snapshot = {
+        let st = state.lock();
+        ArchiveSnapshot {
+            signals: st.signals.clone(),
+            policy: st.encrypted_crc_policy.clone(),
+            pass_rules: st.pass_rules.clone(),
+            last_entries: st.last_entries.clone(),
+            fallback_backend: st.fallback_backend.clone(),
+            ui_entries: st
+                .get_current_entries()
+                .iter()
+                .map(convert_to_file_entry)
+                .collect(),
+        }
+    };
+    let signals = snapshot.signals;
     let tab = signals.tabs.get().active().clone();
 
-    let (policy, have_pw, pending_archive) = {
-        let st = state.lock();
-        (
-            st.encrypted_crc_policy.clone(),
-            {
-                let archive_name = tab
-                    .archive_path
-                    .get()
-                    .as_ref()
-                    .and_then(|p| p.to_str())
-                    .map(|s| s.to_string());
-                tab.current_password.read().is_some()
-                    || arclain_core::utilities::auto_password_for(
-                        &st.pass_rules,
-                        archive_name.as_deref(),
-                        &st.last_entries,
-                    )
-                    .is_some()
-            },
-            tab.archive_path.get(),
-        )
-    };
+    let policy = snapshot.policy;
+    let pending_archive = tab.archive_path.get();
+    let archive_name_owned = pending_archive
+        .as_ref()
+        .and_then(|p| p.to_str())
+        .map(|s| s.to_string());
+
+    let auto_pw = arclain_core::utilities::auto_password_for(
+        &snapshot.pass_rules,
+        archive_name_owned.as_deref(),
+        &snapshot.last_entries,
+    );
+    let have_pw = tab.current_password.read().is_some() || auto_pw.is_some();
 
     if have_pw && policy != "on_access" {
-        let (backend, archive_path, password, paths_to_compute) = {
-            let st = state.lock();
-            let pw_opt = tab.current_password.get().or_else(|| {
-                let archive_name = tab
-                    .archive_path
-                    .get()
-                    .as_ref()
-                    .and_then(|p| p.to_str())
-                    .map(|s| s.to_string());
-                arclain_core::utilities::auto_password_for(
-                    &st.pass_rules,
-                    archive_name.as_deref(),
-                    &st.last_entries,
-                )
-            });
-            let arc = tab.archive_path.get();
+        let password = tab.current_password.get().or_else(|| auto_pw.clone());
+        let archive_path = pending_archive.clone();
+        let backend = snapshot.fallback_backend.clone();
+        let paths_to_compute: Vec<String> = {
             let entries_arc = tab.entries.get();
-            let paths: Vec<String> = entries_arc
+            let headers_encrypted = tab.archive_info.get().headers_encrypted;
+            entries_arc
                 .iter()
                 .filter(|e| {
                     !e.is_dir
-                        && (e.encrypted || tab.archive_info.get().headers_encrypted)
+                        && (e.encrypted || headers_encrypted)
                         && e.crc32.is_none()
                 })
                 .map(|e| e.path.clone())
-                .collect();
-
-            (st.fallback_backend.clone(), arc, pw_opt, paths)
+                .collect()
         };
 
         if let (Some(pw), Some(arc_path)) = (password, archive_path) {
@@ -282,7 +280,6 @@ pub fn load_archive_data(
             }
             if !computed.is_empty() {
                 let mut entries_arc = tab.entries.get();
-                let _st = state.lock();
                 for (p, sum) in computed {
                     if let Some(e) = Arc::make_mut(&mut entries_arc)
                         .iter_mut()
@@ -297,22 +294,17 @@ pub fn load_archive_data(
         }
     }
 
-    // Build UI rows from potentially updated entries
-    {
-        let st = state.lock();
-        *entries = st
-            .get_current_entries()
-            .iter()
-            .map(convert_to_file_entry)
-            .collect();
+    // Build UI rows from the snapshot we took up front. The previous
+    // version re-locked `state` here to call `get_current_entries`,
+    // which by this point could have changed beneath us. Using the
+    // snapshot is correct: callers compute against the entry list as
+    // it existed when load_archive_data was invoked.
+    *entries = snapshot.ui_entries;
 
-        // Read encryption info from signal
-        let current_ai = tab.archive_info.get();
-        archive_info.archive_encrypted = current_ai.archive_encrypted;
-        archive_info.headers_encrypted = current_ai.headers_encrypted;
-        archive_info.encryption_method = current_ai.encryption_method.clone();
-        // Note: archive_info will be synced to signal at the end of this function
-    }
+    let current_ai = tab.archive_info.get();
+    archive_info.archive_encrypted = current_ai.archive_encrypted;
+    archive_info.headers_encrypted = current_ai.headers_encrypted;
+    archive_info.encryption_method = current_ai.encryption_method.clone();
 
     // Use the latest state entries for totals/CRC aggregation
     let ents: Arc<Vec<ArchiveEntry>> = tab.entries.get();
@@ -374,23 +366,33 @@ pub fn load_archive_data(
     status_info.compressed_size = format_size(archive_info.compressed_size);
     status_info.archive_format = archive_info.archive_format.clone();
 
-    // Sync to signal only (archive_info removed from AppState)
-    {
-        let st = state.lock();
-        let tab = st.signals.tabs.get().active().clone();
-        let mut ai = tab.archive_info.get();
-        ai.total_size = archive_info.total_size;
-        ai.compressed_size = archive_info.compressed_size;
-        ai.file_count = archive_info.file_count;
-        ai.archive_format = archive_info.archive_format.clone();
-        ai.total_crc32 = archive_info.total_crc32.clone();
-        ai.plugin_metadata = archive_info.plugin_metadata.clone();
-        ai.archive_loaded = true;
-        tab.archive_info.set(ai);
+    // Sync to signal — no AppState lock needed. The Arc<AppSignals>
+    // snapshot taken at function entry is a cheap reference; signal
+    // writes go through their own internal mutexes.
+    let mut ai = tab.archive_info.get();
+    ai.total_size = archive_info.total_size;
+    ai.compressed_size = archive_info.compressed_size;
+    ai.file_count = archive_info.file_count;
+    ai.archive_format = archive_info.archive_format.clone();
+    ai.total_crc32 = archive_info.total_crc32.clone();
+    ai.plugin_metadata = archive_info.plugin_metadata.clone();
+    ai.archive_loaded = true;
+    tab.archive_info.set(ai);
 
-        // Populate view entries for the initial file list display
-        crate::core::operations::navigation_view::refresh_view_entries(&st.signals);
-    }
+    // Populate view entries for the initial file list display
+    crate::core::operations::navigation_view::refresh_view_entries(&signals);
+}
+
+/// Snapshot of AppState fields needed by `load_archive_data`. Built
+/// once under a single `state.lock()` to avoid the relock-window
+/// pattern flagged by audit finding R3.
+struct ArchiveSnapshot {
+    signals: crate::core::signals::AppSignals,
+    policy: String,
+    pass_rules: Vec<arclain_core::utilities::PassRule>,
+    last_entries: Vec<String>,
+    fallback_backend: arclain_core::backends::sevenz_cli::SevenZipCli,
+    ui_entries: Vec<FileEntry>,
 }
 
 /// Archive information state
