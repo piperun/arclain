@@ -1,3 +1,4 @@
+use crate::core::tabs::TabId;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -7,6 +8,14 @@ pub struct PasswordDialog {
     pub save_password: bool,
     pub error: String,
     pub target_path: Option<PathBuf>,
+    /// Tab that originally triggered this password prompt. Set by
+    /// `load_archive_into_tab` when the encrypted-header detection
+    /// fires. The retry path in `dialog_handler.rs` switches to this
+    /// tab before retrying, so the archive opens in the tab that
+    /// triggered the prompt — even if the user switched tabs while
+    /// the modal was up (e.g. during multi-drop where each encrypted
+    /// archive queues a prompt in sequence).
+    pub pending_tab_id: Option<TabId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

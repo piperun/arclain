@@ -629,11 +629,14 @@ pub fn load_archive_into_tab(
                     pwd.show = true;
                     pwd.password.clear();
                     pwd.error.clear();
+                    // Record which tab triggered this prompt so the retry
+                    // path can switch to it before re-opening, in case the
+                    // user changed tabs while the modal was up (common in
+                    // multi-drop scenarios where each encrypted archive
+                    // queues its own prompt).
+                    pwd.pending_tab_id = Some(tab_id);
+                    pwd.target_path = Some(path_owned.clone());
                     signals.password_dialog.set(pwd);
-                    // TODO(phase 2c): wire pending_tab_id so the password retry
-                    // lands in the originating tab rather than the active tab.
-                    // For now, retry goes to whichever tab is active when the
-                    // user confirms the password dialog.
                 } else {
                     tracing::error!("[tabs] load_archive_into_tab failed: {}", err_msg);
                     let mut bar = signals.status_bar.get();
