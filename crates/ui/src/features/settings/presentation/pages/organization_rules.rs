@@ -155,7 +155,7 @@ impl RulesPage {
                             row.col(|ui| {
                                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                     if ui
-                                        .add(TextButton::new(format!("{}", egui_phosphor::regular::PENCIL), ButtonSize::Small).with_theme_colors(&theme.colors))
+                                        .add(TextButton::new(egui_phosphor::regular::PENCIL, ButtonSize::Small).with_theme_colors(&theme.colors))
                                         .on_hover_text("Edit rule")
                                         .clicked()
                                     {

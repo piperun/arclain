@@ -172,7 +172,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .extract_files(path, dest, files, password)
-                    .with_context(|| format!("Both backends failed to extract files"))
+                    .with_context(|| "Both backends failed to extract files")
             }
         }
     }
@@ -215,7 +215,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .extract_files_with_progress(path, dest, files, password, progress, cancel)
-                    .with_context(|| format!("Both backends failed to extract files"))
+                    .with_context(|| "Both backends failed to extract files")
             }
         }
     }
@@ -239,7 +239,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .extract_directory(path, dest, dir_path, password)
-                    .with_context(|| format!("Both backends failed to extract directory"))
+                    .with_context(|| "Both backends failed to extract directory")
             }
         }
     }
@@ -278,7 +278,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .extract(archive, dest, entries, password, progress, cancel)
-                    .with_context(|| format!("Both backends failed to extract"))
+                    .with_context(|| "Both backends failed to extract")
             }
         }
     }
@@ -352,7 +352,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .read_text_file(archive, path_in_archive, password)
-                    .with_context(|| format!("Both backends failed to read file"))
+                    .with_context(|| "Both backends failed to read file")
             }
         }
     }
@@ -406,7 +406,7 @@ impl ArchiveBackend for FallbackBackend {
                 );
                 self.fallback
                     .crc32_of_entry(archive, path_in_archive, password)
-                    .with_context(|| format!("Both backends failed to get CRC"))
+                    .with_context(|| "Both backends failed to get CRC")
             }
         }
     }

@@ -92,7 +92,7 @@ pub fn render_list(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
             row.col(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button(format!("{}", egui_phosphor::regular::TRASH))
+                        .button(egui_phosphor::regular::TRASH)
                         .on_hover_text("Delete rule")
                         .clicked()
                     {
@@ -104,7 +104,7 @@ pub fn render_list(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
                     if ui
                         .add_enabled(
                             !is_editing_this,
-                            egui::Button::new(format!("{}", egui_phosphor::regular::PENCIL)),
+                            egui::Button::new(egui_phosphor::regular::PENCIL),
                         )
                         .on_hover_text("Edit rule")
                         .clicked()

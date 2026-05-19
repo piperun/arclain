@@ -241,7 +241,7 @@ impl ProfilesPage {
                                     // Delete button (only for non-system profiles)
                                     if !profile.is_system {
                                         if ui
-                                            .add(TextButton::new(format!("{}", egui_phosphor::regular::TRASH), ButtonSize::Small).with_theme_colors(&theme.colors))
+                                            .add(TextButton::new(egui_phosphor::regular::TRASH, ButtonSize::Small).with_theme_colors(&theme.colors))
                                             .on_hover_text("Delete profile")
                                             .clicked()
                                         {
@@ -252,7 +252,7 @@ impl ProfilesPage {
 
                                     // Edit button
                                     if ui
-                                        .add(TextButton::new(format!("{}", egui_phosphor::regular::PENCIL), ButtonSize::Small).with_theme_colors(&theme.colors))
+                                        .add(TextButton::new(egui_phosphor::regular::PENCIL, ButtonSize::Small).with_theme_colors(&theme.colors))
                                         .on_hover_text("Edit profile")
                                         .clicked()
                                     {
@@ -264,7 +264,7 @@ impl ProfilesPage {
                                     // Set default button (only if not already default)
                                     if !profile.is_default {
                                         if ui
-                                            .add(TextButton::new(format!("{}", egui_phosphor::regular::STAR), ButtonSize::Small).with_theme_colors(&theme.colors))
+                                            .add(TextButton::new(egui_phosphor::regular::STAR, ButtonSize::Small).with_theme_colors(&theme.colors))
                                             .on_hover_text("Set as default")
                                             .clicked()
                                         {

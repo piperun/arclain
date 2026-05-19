@@ -248,7 +248,7 @@ impl ContentCache {
                 product_id,
                 sri,
                 source_url,
-                cache_type.clone(),
+                cache_type,
                 Some(bytes as i64),
             ) {
                 Ok(_) => {
