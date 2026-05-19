@@ -16,7 +16,8 @@ pub use traits::{CacheIndex, MetadataReader};
 pub use features::api::{
     DataRequest, DataResult, DataService, DataSource, DataStatus, SourceChain,
 };
-pub use features::content_cache::ContentCache;
+pub use features::content_cache::{ContentCache, StreamingWriter};
+pub use features::streaming_download::fetch_url_to_cache;
 pub use features::resolver::{
     ContentCacheResolver, DataSourceResolver, MemoryResolver, MetadataStoreResolver,
     NetworkResolver, ResolveError, ServerResolver,

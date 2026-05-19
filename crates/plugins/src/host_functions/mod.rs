@@ -369,14 +369,67 @@ impl Host for HostFunctions {
     }
 
     fn fetch_to_cache(&mut self, request: crate::arclain::plugin::host::DataRequest) -> bool {
-        // Build the request the same way `request_data` does, then run
-        // it through `data_service.resolve` directly. The Network
-        // resolver's `try_resolve` writes the bytes into ContentCache
-        // as a side effect (see `DataService::resolve` →
-        // `store_to_caches`); we discard the returned `data` so the
-        // body never crosses back over the WASM ABI. Used for big
-        // blobs (chobit videos, etc.) where the round-trip would burn
-        // through plugin heap.
+        // Fast path: when we have a URL and both ContentCache and
+        // AsyncHttpClient wired up, use the streaming download
+        // pipeline. Bytes flow HTTP → .partial → cacache without ever
+        // landing in a host-resident Vec<u8>, and a failed transfer
+        // leaves the .partial file behind for the next call to resume
+        // from. This is the path the chobit-video pipeline depends on
+        // for 1 GB+ blobs — see the project_dlsite_video memory.
+        //
+        // The slow path (data_service.resolve) is kept for the case
+        // where one of the dependencies is missing (early init, tests
+        // without a network client, etc.) or the request has no URL
+        // (cache-only check). It still buffers in memory, but those
+        // paths only see small JSON / image bodies.
+        if let (Some(url), Some(cache), Some(http_client)) = (
+            request.url.as_deref(),
+            self.content_cache.as_ref(),
+            self.async_http_client.as_ref(),
+        ) {
+            let key = request.key.clone();
+            let use_proxy = http_client.should_use_proxy_for_plugin(&self.plugin_id);
+            let cache_type = match request.resource_type {
+                crate::arclain::plugin::host::ResourceType::Binary => {
+                    arclain_db::CacheType::Other
+                }
+                crate::arclain::plugin::host::ResourceType::Image => {
+                    arclain_db::CacheType::Cover
+                }
+                crate::arclain::plugin::host::ResourceType::Json => {
+                    arclain_db::CacheType::Other
+                }
+            };
+            let product_id = request.product_id.as_deref();
+            match arclain_data::fetch_url_to_cache(
+                cache,
+                http_client,
+                &key,
+                url,
+                cache_type,
+                product_id,
+                use_proxy,
+            ) {
+                Ok(bytes) => {
+                    tracing::debug!(
+                        "[HostFunctions::fetch_to_cache] streamed {} bytes for key='{}'",
+                        bytes,
+                        key
+                    );
+                    return true;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "[HostFunctions::fetch_to_cache] streaming path failed for key='{}': {}",
+                        key,
+                        e
+                    );
+                    // Fall through to the buffered path as a fallback.
+                }
+            }
+        }
+
+        // Fallback: buffered resolve through the DataService chain.
         let req = self.build_data_request(request);
         let key = req.key.clone();
         let result = self.data_service.resolve(&req);
@@ -386,7 +439,7 @@ impl Host for HostFunctions {
         );
         if ok {
             tracing::debug!(
-                "[HostFunctions::fetch_to_cache] key='{}' stored, dropping {} bytes from WASM path",
+                "[HostFunctions::fetch_to_cache] key='{}' (buffered) stored, dropping {} bytes from WASM path",
                 key,
                 result.data.as_ref().map(|d| d.len()).unwrap_or(0),
             );

@@ -1,7 +1,27 @@
 use crate::features::proxy::ProxyConfig;
+use crate::features::request::client::parse_content_range_total;
 use crate::features::whitelist::DomainWhitelist;
 use crate::AsyncHttpClient;
 use crate::{HttpRequest, RequestStatus};
+
+#[test]
+fn parse_content_range_total_handles_normal_response() {
+    assert_eq!(parse_content_range_total("bytes 0-999/1000"), Some(1000));
+    assert_eq!(parse_content_range_total("bytes 500-999/1000"), Some(1000));
+}
+
+#[test]
+fn parse_content_range_total_handles_unknown_total() {
+    // RFC 7233 §4.2: `*` means total length is unknown.
+    assert_eq!(parse_content_range_total("bytes 0-999/*"), None);
+}
+
+#[test]
+fn parse_content_range_total_rejects_garbage() {
+    assert_eq!(parse_content_range_total("not a range header"), None);
+    assert_eq!(parse_content_range_total(""), None);
+    assert_eq!(parse_content_range_total("bytes 0-999/abc"), None);
+}
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::runtime::Handle;
@@ -329,4 +349,94 @@ async fn p19_cancel_removes_entry_from_pending_map() {
     // Subsequent reads on a cancelled id return None.
     assert!(client.status(&ids[0]).is_none());
     assert!(client.take_response(&ids[0]).is_none());
+}
+
+/// Streaming GET writes the body chunk-by-chunk into the caller's
+/// writer and never holds the full body in memory. The
+/// `StreamingDownload` result reports the bytes-written count and
+/// captures ETag / Last-Modified for resume validation.
+#[tokio::test]
+async fn streaming_get_writes_body_to_writer() {
+    let mock_server = MockServer::start().await;
+    let body = vec![0xab_u8; 12_345]; // arbitrary mid-size buffer
+    Mock::given(method("GET"))
+        .and(path("/blob"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"abc-v1\"")
+                .insert_header("last-modified", "Wed, 21 Oct 2026 07:28:00 GMT")
+                .set_body_bytes(body.clone()),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let url = format!("{}/blob", mock_server.uri());
+
+    // Run the blocking streaming call from a spawn_blocking task — the
+    // outer #[tokio::test] runtime is multi-threaded so `block_on`
+    // inside the client is safe here.
+    let result = tokio::task::spawn_blocking(move || {
+        let mut buf: Vec<u8> = Vec::new();
+        let result = client.blocking_get_streaming(&url, false, &mut buf, None, None);
+        (result, buf)
+    })
+    .await
+    .unwrap();
+
+    let (info, buf) = result;
+    let info = info.expect("streaming download succeeded");
+    assert_eq!(info.bytes_written, body.len() as u64);
+    assert_eq!(buf.len(), body.len());
+    assert!(!info.was_partial, "200 response → was_partial = false");
+    assert_eq!(info.etag.as_deref(), Some("\"abc-v1\""));
+    assert_eq!(
+        info.last_modified.as_deref(),
+        Some("Wed, 21 Oct 2026 07:28:00 GMT")
+    );
+    assert_eq!(info.total_size, Some(body.len() as u64));
+}
+
+/// Range request with start_byte returns 206 Partial Content; the
+/// `was_partial` flag flips so the caller knows to append (not
+/// truncate) the prior partial bytes.
+#[tokio::test]
+async fn streaming_range_request_reports_partial() {
+    let mock_server = MockServer::start().await;
+    let body = vec![0x42_u8; 1000];
+    let tail = body[500..].to_vec();
+    Mock::given(method("GET"))
+        .and(path("/range"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .insert_header("content-range", format!("bytes 500-999/{}", body.len()))
+                .insert_header("etag", "\"resume-tag\"")
+                .set_body_bytes(tail.clone()),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let url = format!("{}/range", mock_server.uri());
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut buf: Vec<u8> = Vec::new();
+        let info = client
+            .blocking_get_streaming(&url, false, &mut buf, Some(500), Some("\"resume-tag\""))
+            .expect("range request succeeded");
+        (info, buf)
+    })
+    .await
+    .unwrap();
+
+    let (info, buf) = result;
+    assert!(info.was_partial, "206 response → was_partial = true");
+    assert_eq!(info.bytes_written, 500);
+    assert_eq!(buf.len(), 500);
+    // total_size comes from Content-Range, not Content-Length, on 206.
+    assert_eq!(info.total_size, Some(1000));
 }

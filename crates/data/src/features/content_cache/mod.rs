@@ -4,4 +4,4 @@
 
 mod cache;
 
-pub use cache::ContentCache;
+pub use cache::{ContentCache, StreamingWriter};
