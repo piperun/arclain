@@ -29,32 +29,40 @@ pub fn render_grid_view(
         .floor()
         .max(1.0) as usize;
 
+    // Virtualized grid: ScrollArea::show_rows only invokes the row
+    // closure for visually-visible rows. The previous implementation
+    // iterated all entries.len() cards per frame (with an internal
+    // `is_rect_visible` paint-cull that skipped painting off-screen
+    // cards but still allocated their rects). show_rows skips the
+    // allocation entirely for off-screen rows, dropping per-frame
+    // work from O(entries) to O(visible-rows × columns).
+    let row_height = CARD_HEIGHT + GRID_SPACING;
+    let num_rows = entries.len().div_ceil(columns);
+
     egui::ScrollArea::vertical()
         .id_salt("grid_scroll")
         .auto_shrink([false, false])
-        .show(ui, |ui| {
+        .show_rows(ui, row_height, num_rows, |ui, row_range| {
             // Inset so cards don't clip into toolbar or panel edges
             egui::Frame::NONE
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(GRID_SPACING, GRID_SPACING);
-
-            egui::Grid::new("file_grid")
-                .num_columns(columns)
-                .spacing([GRID_SPACING, GRID_SPACING])
-                .show(ui, |ui| {
-                    for idx in 0..entries.len() {
-                        if idx > 0 && idx % columns == 0 {
-                            ui.end_row();
-                        }
-
-                        let card_action = render_card(ui, theme, &mut entries[idx]);
-                        if action.is_none() {
-                            action = card_action;
-                        }
+                    for row in row_range {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = GRID_SPACING;
+                            for col in 0..columns {
+                                let idx = row * columns + col;
+                                if idx >= entries.len() {
+                                    break;
+                                }
+                                let card_action = render_card(ui, theme, &mut entries[idx]);
+                                if action.is_none() {
+                                    action = card_action;
+                                }
+                            }
+                        });
                     }
                 });
-            }); // Frame
         });
 
     action

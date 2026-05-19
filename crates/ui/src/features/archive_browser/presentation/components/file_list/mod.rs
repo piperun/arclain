@@ -404,7 +404,7 @@ pub fn render_list_view(
                         );
                     });
                 })
-                .body(|mut body| {
+                .body(|body| {
                     // Apply select-all toggle if requested
                     if let Some(v) = apply_select_all.take() {
                         for e in entries.iter_mut() {
@@ -426,12 +426,21 @@ pub fn render_list_view(
                         .map(|e| e.path.clone())
                         .collect();
 
-                    for (row_index, entry) in entries.iter_mut().enumerate() {
+                    // Virtualized row rendering: body.rows() only invokes
+                        // the closure for rows currently in the scroll viewport
+                        // (typically 20-40 rows on screen), not all `entries.len()`
+                        // rows. Critical for large archives — 1000s of entries
+                        // were O(n) per frame before this. Cursor-move repaints
+                        // now scale with visible rows instead of total entries.
+                    let entries_len = entries.len();
+                    body.rows(32.0, entries_len, |mut row| {
+                        let row_index = row.index();
+                        let entry = &mut entries[row_index];
                         let entry_name = entry.name.clone();
                         let entry_path = entry.path.clone();
                         let is_folder = entry.is_folder;
 
-                        body.row(32.0, |mut row| {
+                        {
                             let mut checkbox_clicked = false;
                             let mut action_clicked = false;
                             let text_color = theme.colors.on_surface;
@@ -584,8 +593,8 @@ pub fn render_list_view(
                                     action = Some(a);
                                 }
                             }
-                        });
-                    }
+                        }
+                    });
                 });
         });
 
