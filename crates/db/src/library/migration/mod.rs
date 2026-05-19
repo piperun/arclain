@@ -71,7 +71,7 @@ pub fn migrate_to_gameta_schema(
                 backup_path,
             )
         })?;
-        tracing::info!("[Migration] Backup created at {:?}", backup_path);
+        tracing::info!("[Migration] Backup created at {}", backup_path.display());
     }
 
     // Read all rows from old table

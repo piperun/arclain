@@ -96,7 +96,7 @@ pub fn export_issues_report(
             if let Err(e) = file.write_all(content.as_bytes()) {
                 tracing::error!("Failed to write issues report: {}", e);
             } else {
-                tracing::info!("Issues report exported to {:?}", path);
+                tracing::info!("Issues report exported to {}", path.display());
                 // Try to open the file
                 if let Err(e) = open::that(&path) {
                     tracing::warn!("Failed to open exported file: {}", e);

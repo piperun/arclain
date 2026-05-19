@@ -233,7 +233,7 @@ impl BrowserController {
     fn handle_metadata(&self, shared: &SharedState, json: String) {
         match serde_json::from_str::<arclain_core::features::organization::GameMetadata>(&json) {
             Ok(metadata) => {
-                tracing::info!("Received metadata from plugin: {:?}", metadata.title);
+                tracing::info!("Received metadata from plugin: {}", metadata.title);
                 shared.signals().tabs.get().active().game_metadata.set(Some(metadata));
             }
             Err(e) => {

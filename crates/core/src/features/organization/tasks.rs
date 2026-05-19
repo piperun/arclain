@@ -34,7 +34,7 @@ pub fn create_work_directory(temp_dir: &Path, prefix: &str) -> Result<(PathBuf, 
     let work_dir = temp_dir.join(format!("{}_{}", prefix, timestamp));
     std::fs::create_dir_all(&work_dir).context("creating work directory")?;
 
-    info!("Created work directory: {:?}", work_dir);
+    info!("Created work directory: {}", work_dir.display());
 
     let guard = TempDirGuard {
         path: work_dir.clone(),

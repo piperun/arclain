@@ -55,7 +55,7 @@ impl PluginManager {
                         match instance.send_ui_event(&id, value) {
                             Ok(actions) => actions,
                             Err(e) => {
-                                error!("Event worker error for {}: {:?}", plugin_id, e);
+                                error!("Event worker error for {}: {}", plugin_id, e);
                                 continue;
                             }
                         }

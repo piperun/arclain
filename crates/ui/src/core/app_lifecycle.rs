@@ -251,12 +251,12 @@ pub fn restore_tabs_on_launch(
                 );
             }
 
-            tracing::info!("[tabs] session restored from {:?}", tabs_path);
+            tracing::info!("[tabs] session restored from {}", tabs_path.display());
         }
         Err(e) => {
             tracing::warn!(
-                "[tabs] failed to restore from {:?}: {}; starting with default tabs",
-                tabs_path,
+                "[tabs] failed to restore from {}: {}; starting with default tabs",
+                tabs_path.display(),
                 e
             );
         }
@@ -278,9 +278,9 @@ pub fn save_tabs_on_exit(signals: &AppSignals) {
 
     let col = signals.tabs.get();
     if let Err(e) = crate::core::tabs::save_collection(&col, &tabs_path) {
-        tracing::warn!("[tabs] failed to save {:?}: {}", tabs_path, e);
+        tracing::warn!("[tabs] failed to save {}: {}", tabs_path.display(), e);
     } else {
-        tracing::info!("[tabs] session saved to {:?}", tabs_path);
+        tracing::info!("[tabs] session saved to {}", tabs_path.display());
     }
 }
 

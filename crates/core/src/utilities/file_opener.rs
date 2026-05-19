@@ -182,7 +182,7 @@ impl FileOpener {
                 .arg(&file_path)
                 .spawn()
                 .context("Failed to spawn explorer")?;
-            info!("Launched explorer with PID: {:?}", status.id());
+            info!("Launched explorer with PID: {}", status.id());
         }
 
         #[cfg(target_os = "macos")]
