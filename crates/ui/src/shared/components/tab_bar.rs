@@ -43,6 +43,18 @@ pub enum TabBarAction {
     /// `TabsCollection::tabs()` slice; the caller forwards to
     /// `TabsCollection::reorder`.
     Reorder { from_idx: usize, to_idx: usize },
+    /// Close every tab except the given one. Tabs with in-flight ops
+    /// are skipped silently — user can close those individually.
+    CloseOthers(TabId),
+    /// Close every tab to the right of the given one. Same in-flight
+    /// skip semantics as `CloseOthers`.
+    CloseToRight(TabId),
+    /// Open a new tab loading the same archive_path as the given tab.
+    /// No-op if the source tab has no archive loaded.
+    Duplicate(TabId),
+    /// Pin or unpin the given tab. Pinned tabs sort to the front and
+    /// are excluded from bulk-close actions.
+    SetPinned(TabId, bool),
 }
 
 /// Payload stashed in `egui::DragAndDrop` while a tab chip is being
@@ -113,11 +125,64 @@ pub fn render_tab_bar(
         // this, ui.vertical's default item_spacing.y (~4px) eats into
         // the panel's fixed height and clips the pill out.
         ui.spacing_mut().item_spacing.y = 0.0;
-        // Row: scroll area on the left taking remaining width, + on the right.
+        // Row: scroll area on the left taking remaining width, then
+        // chevron (overflow menu), then + button on the right edge.
+        // right_to_left places items starting from the right, so plus
+        // goes first and chevron sits immediately to its left.
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if render_plus_button(ui, theme).clicked() {
                 action = Some(TabBarAction::OpenEmpty);
             }
+            let chevron_resp = render_chevron_button(ui, theme);
+            let popup_id = ui.make_persistent_id("tab_bar/overflow_popup");
+            if chevron_resp.clicked() {
+                egui::Popup::toggle_id(ui.ctx(), popup_id);
+            }
+            // Popup lists every tab — click to switch, X to close.
+            // Renders as a stacked menu below the chevron. The Switch /
+            // Close actions emitted here flow back through the same
+            // `action` channel used by the chip strip.
+            #[allow(deprecated)]
+            egui::popup_below_widget(
+                ui,
+                popup_id,
+                &chevron_resp,
+                egui::PopupCloseBehavior::CloseOnClickOutside,
+                |ui| {
+                    ui.set_min_width(220.0);
+                    for tab in col.tabs() {
+                        let title = tab.display_title();
+                        let is_active = tab.id == col.active_id();
+                        ui.horizontal(|ui| {
+                            // Selectable label is the row body — Chrome-style
+                            // it's the click target for Switch.
+                            if ui
+                                .selectable_label(is_active, &title)
+                                .clicked()
+                            {
+                                action = Some(TabBarAction::Switch(tab.id));
+                                egui::Popup::close_id(ui.ctx(), popup_id);
+                            }
+                            // Right-aligned close button. Tap-and-hold the
+                            // popup open: closing one tab doesn't dismiss
+                            // the menu, so users can prune multiple in a
+                            // row.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .small_button(egui_phosphor::regular::X)
+                                        .on_hover_text("Close tab")
+                                        .clicked()
+                                    {
+                                        action = Some(TabBarAction::Close(tab.id));
+                                    }
+                                },
+                            );
+                        });
+                    }
+                },
+            );
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 let scroll_out = egui::ScrollArea::horizontal()
                     .auto_shrink([false, true])
@@ -174,6 +239,7 @@ pub fn render_tab_bar(
                                 let title = tab.display_title();
                                 let in_flight =
                                     tab.in_flight_ops.load(Ordering::SeqCst) > 0;
+                                let pinned = tab.pinned.load(Ordering::SeqCst);
                                 let is_drag_source = dragged_source_id == Some(tab.id);
                                 let (chip_action, chip_response) = render_tab_chip(
                                     ui,
@@ -183,6 +249,7 @@ pub fn render_tab_bar(
                                     is_active,
                                     in_flight,
                                     is_drag_source,
+                                    pinned,
                                 );
                                 if let Some(a) = chip_action {
                                     action = Some(a);
@@ -368,6 +435,8 @@ fn scale_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
 // `is_drag_source` = true if this chip is currently the source of an
 // in-flight drag. Renders with reduced opacity so the user can tell
 // which tab they grabbed when the cursor moves over another chip.
+// `pinned` toggles a leading pin glyph and the Pin/Unpin context-menu
+// label.
 fn render_tab_chip(
     ui: &mut egui::Ui,
     theme: &ThemeColors,
@@ -376,6 +445,7 @@ fn render_tab_chip(
     is_active: bool,
     in_flight: bool,
     is_drag_source: bool,
+    pinned: bool,
 ) -> (Option<TabBarAction>, egui::Response) {
     let font_id = egui::FontId::proportional(FONT_SIZE);
     let text_color = if is_active {
@@ -384,10 +454,24 @@ fn render_tab_chip(
         theme.on_surface_variant
     };
 
-    let raw_label = if in_flight {
-        format!("{} {}", egui_phosphor::regular::CIRCLE, title)
-    } else {
-        title.to_string()
+    // Pin glyph (when pinned) precedes the in-flight glyph (when busy)
+    // which precedes the title. Format: `[📌] [○] title`. Both glyphs
+    // are inline so the truncation cache treats label changes
+    // (pin/unpin, in-flight start/stop) as cache invalidations.
+    let raw_label = match (pinned, in_flight) {
+        (true, true) => format!(
+            "{} {} {}",
+            egui_phosphor::regular::PUSH_PIN,
+            egui_phosphor::regular::CIRCLE,
+            title
+        ),
+        (true, false) => {
+            format!("{} {}", egui_phosphor::regular::PUSH_PIN, title)
+        }
+        (false, true) => {
+            format!("{} {}", egui_phosphor::regular::CIRCLE, title)
+        }
+        (false, false) => title.to_string(),
     };
 
     // Active tab gets a wider title cap (Chrome-style adaptive width).
@@ -502,7 +586,7 @@ fn render_tab_chip(
         response
     };
 
-    let action = if response.clicked() {
+    let mut action = if response.clicked() {
         response
             .interact_pointer_pos()
             .map(|click_pos| {
@@ -521,6 +605,33 @@ fn render_tab_chip(
     } else {
         None
     };
+    // Right-click context menu — matches browser tab conventions.
+    // egui takes care of dismissal on click-outside and on entry click.
+    response.context_menu(|ui| {
+        let pin_label = if pinned { "Unpin tab" } else { "Pin tab" };
+        if ui.button(pin_label).clicked() {
+            action = Some(TabBarAction::SetPinned(id, !pinned));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Close tab").clicked() {
+            action = Some(TabBarAction::Close(id));
+            ui.close();
+        }
+        if ui.button("Close other tabs").clicked() {
+            action = Some(TabBarAction::CloseOthers(id));
+            ui.close();
+        }
+        if ui.button("Close tabs to the right").clicked() {
+            action = Some(TabBarAction::CloseToRight(id));
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Duplicate tab").clicked() {
+            action = Some(TabBarAction::Duplicate(id));
+            ui.close();
+        }
+    });
     (action, response)
 }
 
@@ -561,6 +672,44 @@ fn truncate_to_width(
         chars[..lo].iter().collect::<String>() + "\u{2026}"
     };
     (truncated, true)
+}
+
+/// Chevron-down button that opens the overflow popup listing every
+/// open tab. Visually mirrors `render_plus_button` so the two sit
+/// flush against each other at the right edge of the strip.
+fn render_chevron_button(ui: &mut egui::Ui, theme: &ThemeColors) -> egui::Response {
+    let font_id = egui::FontId::proportional(FONT_SIZE);
+    let icon = egui_phosphor::regular::CARET_DOWN;
+    let probe = ui.painter().layout_no_wrap(
+        icon.to_string(),
+        font_id.clone(),
+        theme.on_surface_variant,
+    );
+    let size = egui::vec2((probe.size().x + TAB_H_PAD * 2.0).ceil(), TAB_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let (bg_fill, stroke_color) = if response.hovered() {
+        (theme.surface_variant, theme.outline)
+    } else {
+        (theme.surface, theme.outline_variant)
+    };
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        egui::CornerRadius::same(TAB_CORNER_RADIUS),
+        bg_fill,
+        egui::Stroke::new(1.0, stroke_color),
+        egui::StrokeKind::Middle,
+    );
+    paint_text_visually_centered(
+        painter,
+        icon,
+        font_id,
+        theme.on_surface_variant,
+        rect.center(),
+    );
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("List all tabs")
 }
 
 fn render_plus_button(ui: &mut egui::Ui, theme: &ThemeColors) -> egui::Response {

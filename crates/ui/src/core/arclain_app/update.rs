@@ -529,6 +529,48 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 TabBarAction::Reorder { from_idx, to_idx } => {
                     col.reorder(from_idx, to_idx);
                 }
+                TabBarAction::CloseOthers(id) => {
+                    let skipped = col.close_others(id);
+                    if skipped > 0 {
+                        tracing::info!(
+                            "[tabs] close-others left {} tab(s) open due to in-flight ops",
+                            skipped
+                        );
+                    }
+                }
+                TabBarAction::CloseToRight(id) => {
+                    let skipped = col.close_to_right(id);
+                    if skipped > 0 {
+                        tracing::info!(
+                            "[tabs] close-to-right left {} tab(s) open due to in-flight ops",
+                            skipped
+                        );
+                    }
+                }
+                TabBarAction::Duplicate(id) => {
+                    if let Some((new_tab_id, path)) = col.duplicate(id) {
+                        tracing::info!(
+                            "[tabs] duplicated tab {:?} → new tab {:?} ({})",
+                            id,
+                            new_tab_id,
+                            path.display()
+                        );
+                        // Trigger the archive load on the new tab. The
+                        // `tabs` signal must be set *first* so
+                        // `load_archive_into_tab` finds the new tab via
+                        // `signals.tabs.get().get(tab_id)`.
+                        app.shared_state.signals().tabs.set(col.clone());
+                        crate::core::operations::archive::load_archive_into_tab(
+                            app.shared_state.app_state.clone(),
+                            app.shared_state.signals().clone(),
+                            new_tab_id,
+                            &path,
+                        );
+                    }
+                }
+                TabBarAction::SetPinned(id, pinned) => {
+                    col.set_pinned(id, pinned);
+                }
             }
             app.shared_state.signals().tabs.set(col);
         }

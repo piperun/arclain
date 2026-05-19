@@ -160,6 +160,117 @@ impl TabsCollection {
         !self.recently_closed.is_empty()
     }
 
+    /// Close every tab except the given one. Tabs with in-flight ops
+    /// or that are pinned are silently skipped — they keep running and
+    /// the user can close them individually. Returns the number of
+    /// tabs that were skipped.
+    pub fn close_others(&mut self, keep: TabId) -> usize {
+        let ids: Vec<TabId> = self
+            .tabs
+            .iter()
+            .filter(|t| t.id != keep)
+            .map(|t| t.id)
+            .collect();
+        let mut skipped = 0;
+        for id in ids {
+            // Re-fetch each loop because close() mutates self.
+            let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
+                continue;
+            };
+            if tab.in_flight_ops.load(Ordering::SeqCst) > 0
+                || tab.pinned.load(Ordering::SeqCst)
+            {
+                skipped += 1;
+                continue;
+            }
+            self.close(id);
+        }
+        skipped
+    }
+
+    /// Close every tab to the right of the given one. Tabs with
+    /// in-flight ops or that are pinned are silently skipped. Returns
+    /// the number of tabs that were skipped.
+    pub fn close_to_right(&mut self, anchor: TabId) -> usize {
+        let Some(anchor_idx) = self.tabs.iter().position(|t| t.id == anchor) else {
+            return 0;
+        };
+        let ids: Vec<TabId> = self
+            .tabs
+            .iter()
+            .skip(anchor_idx + 1)
+            .map(|t| t.id)
+            .collect();
+        let mut skipped = 0;
+        for id in ids {
+            let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
+                continue;
+            };
+            if tab.in_flight_ops.load(Ordering::SeqCst) > 0
+                || tab.pinned.load(Ordering::SeqCst)
+            {
+                skipped += 1;
+                continue;
+            }
+            self.close(id);
+        }
+        skipped
+    }
+
+    /// Number of pinned tabs at the front of the collection. The
+    /// storage invariant guarantees they're contiguous starting from
+    /// index 0.
+    pub fn pinned_count(&self) -> usize {
+        self.tabs
+            .iter()
+            .take_while(|t| t.pinned.load(Ordering::SeqCst))
+            .count()
+    }
+
+    /// Toggle a tab's pinned state. When pinning, the tab is moved to
+    /// the end of the pinned section (so the order within the section
+    /// reflects pin-order). When unpinning, it's moved to the start of
+    /// the unpinned section. This keeps the storage invariant: pinned
+    /// tabs always occupy a contiguous prefix.
+    ///
+    /// No-op if the requested state matches the current state, or if
+    /// the tab id isn't present.
+    pub fn set_pinned(&mut self, id: TabId, pinned: bool) {
+        let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
+            return;
+        };
+        let tab = self.tabs[idx].clone();
+        let current = tab.pinned.load(Ordering::SeqCst);
+        if current == pinned {
+            return;
+        }
+        tab.pinned.store(pinned, Ordering::SeqCst);
+        // Remove first, then insert at the new position.
+        self.tabs.remove(idx);
+        if pinned {
+            // Insert at end of pinned section — one past the last
+            // currently-pinned tab.
+            let dest = self.pinned_count();
+            self.tabs.insert(dest, tab);
+        } else {
+            // Insert at start of unpinned section — right after the
+            // pinned prefix.
+            let dest = self.pinned_count();
+            self.tabs.insert(dest, tab);
+        }
+    }
+
+    /// Open a new tab with the same archive path as `source`. Returns
+    /// `Some((new_id, path))` so the caller can trigger the archive
+    /// load. None if the source tab has no archive loaded or doesn't
+    /// exist.
+    pub fn duplicate(&mut self, source: TabId) -> Option<(TabId, PathBuf)> {
+        let tab = self.tabs.iter().find(|t| t.id == source)?;
+        let path = tab.archive_path.get()?;
+        let new_id = self.open(Some(path.clone()));
+        Some((new_id, path))
+    }
+
     fn remove(&mut self, id: TabId) {
         let Some(idx) = self.tabs.iter().position(|t| t.id == id) else {
             return;
@@ -188,6 +299,16 @@ impl TabsCollection {
         if from_idx >= self.tabs.len() || to_idx >= self.tabs.len() || from_idx == to_idx {
             return;
         }
+        // Pinned/unpinned boundary must be preserved — pinned tabs
+        // can only move within the pinned prefix, unpinned within the
+        // unpinned suffix. Cross-section drops are dropped silently;
+        // the user has to pin/unpin to migrate between sections.
+        let pinned_count = self.pinned_count();
+        let from_pinned = from_idx < pinned_count;
+        let to_pinned = to_idx < pinned_count;
+        if from_pinned != to_pinned {
+            return;
+        }
         let tab = self.tabs.remove(from_idx);
         self.tabs.insert(to_idx, tab);
     }
@@ -207,7 +328,7 @@ impl TabsCollection {
     ///   TabsCollection's "never zero tabs" invariant holds.
     /// - Snapshot.active not in snapshot.tabs → fall back to first tab.
     pub fn from_snapshot(snap: super::persistence::TabsSnapshot) -> Self {
-        let tabs: Vec<Arc<TabState>> = snap
+        let mut tabs: Vec<Arc<TabState>> = snap
             .tabs
             .iter()
             .map(|tr| {
@@ -215,9 +336,21 @@ impl TabsCollection {
                 if let Some(path) = &tr.archive_path {
                     tab.archive_path.set(Some(path.clone()));
                 }
+                if tr.pinned {
+                    tab.pinned.store(true, Ordering::SeqCst);
+                }
                 Arc::new(tab)
             })
             .collect();
+        // Defensive: enforce the storage invariant (pinned first) even
+        // if the on-disk snapshot was written by a pre-pin build or
+        // hand-edited. Stable partition preserves relative order
+        // within each section.
+        let (pinned, unpinned): (Vec<_>, Vec<_>) = tabs
+            .drain(..)
+            .partition(|t| t.pinned.load(Ordering::SeqCst));
+        tabs.extend(pinned);
+        tabs.extend(unpinned);
 
         if tabs.is_empty() {
             // Empty snapshot → reset to a fresh single-tab collection.

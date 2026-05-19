@@ -54,6 +54,14 @@ pub struct TabState {
     /// see them, but they keep consuming resources until done.
     pub tab_cancel: Arc<AtomicBool>,
 
+    /// Pinned tabs render with a pin glyph and are kept at the front
+    /// of the collection. They're excluded from `Close other` and
+    /// `Close to the right` bulk actions and from middle-click close
+    /// (matches the browser-tab convention — pinned = "I want this
+    /// to stick around"). Atomic so background ops can read it
+    /// without locking the signal.
+    pub pinned: Arc<AtomicBool>,
+
     // Plugin instance pool (Phase 2c populates)
     pub plugin_pool: TabPluginPool,
 }
@@ -81,6 +89,7 @@ impl TabState {
             created_at: SystemTime::now(),
             in_flight_ops: Arc::new(AtomicUsize::new(0)),
             tab_cancel: Arc::new(AtomicBool::new(false)),
+            pinned: Arc::new(AtomicBool::new(false)),
             plugin_pool: TabPluginPool::default(),
         }
     }
