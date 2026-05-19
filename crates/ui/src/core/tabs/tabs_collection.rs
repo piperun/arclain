@@ -2,15 +2,25 @@
 
 use super::tab_state::TabState;
 use super::TabId;
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+/// Maximum number of recently-closed tab paths kept for Ctrl+Shift+T
+/// reopen. Oldest entries fall off when the buffer is full.
+const RECENTLY_CLOSED_LIMIT: usize = 10;
 
 #[derive(Clone)]
 pub struct TabsCollection {
     tabs: Vec<Arc<TabState>>,
     active: TabId,
     next_id: u64,
+    /// LIFO ring buffer of recently-closed archive paths. Only tabs
+    /// with a loaded archive are remembered — closing an empty
+    /// placeholder tab does not push anything (would just reopen
+    /// another empty placeholder, which is useless).
+    recently_closed: VecDeque<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +39,7 @@ impl TabsCollection {
             tabs: vec![first],
             active: TabId(1),
             next_id: 2,
+            recently_closed: VecDeque::new(),
         }
     }
 
@@ -93,6 +104,7 @@ impl TabsCollection {
         if in_flight > 0 {
             return CloseResult::BlockedByInFlight { count: in_flight };
         }
+        self.remember_closed(id);
         self.remove(id);
         CloseResult::Closed
     }
@@ -111,7 +123,41 @@ impl TabsCollection {
             tab.tab_cancel
                 .store(true, std::sync::atomic::Ordering::SeqCst);
         }
+        self.remember_closed(id);
         self.remove(id);
+    }
+
+    /// Push the tab's archive path onto the recently-closed buffer so
+    /// Ctrl+Shift+T can resurrect it. Empty placeholder tabs are not
+    /// remembered. Oldest entries fall off when the buffer is full.
+    fn remember_closed(&mut self, id: TabId) {
+        let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
+            return;
+        };
+        let Some(path) = tab.archive_path.get() else {
+            return;
+        };
+        self.recently_closed.push_back(path);
+        while self.recently_closed.len() > RECENTLY_CLOSED_LIMIT {
+            self.recently_closed.pop_front();
+        }
+    }
+
+    /// Reopen the most recently closed tab (LIFO). Returns the new
+    /// tab's id, or None if nothing was remembered. The reopened tab
+    /// is a fresh empty tab containing only the archive path — the
+    /// caller is responsible for triggering the actual archive load
+    /// (the open-archive flow in dialog_handler does this when it
+    /// notices an active tab has an unloaded archive_path).
+    pub fn reopen_last_closed(&mut self) -> Option<(TabId, PathBuf)> {
+        let path = self.recently_closed.pop_back()?;
+        let id = self.open(Some(path.clone()));
+        Some((id, path))
+    }
+
+    /// True if `reopen_last_closed` would return Some.
+    pub fn has_recently_closed(&self) -> bool {
+        !self.recently_closed.is_empty()
     }
 
     fn remove(&mut self, id: TabId) {
@@ -182,6 +228,7 @@ impl TabsCollection {
                 tabs: vec![fresh],
                 active: id,
                 next_id: snap.next_id.saturating_add(1).max(2),
+                recently_closed: VecDeque::new(),
             };
         }
 
@@ -195,6 +242,7 @@ impl TabsCollection {
             tabs,
             active,
             next_id: snap.next_id,
+            recently_closed: VecDeque::new(),
         }
     }
 }
