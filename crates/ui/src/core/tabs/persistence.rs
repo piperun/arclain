@@ -14,10 +14,18 @@ use std::path::{Path, PathBuf};
 /// Per-tab data that survives across app restarts. Adding fields is a
 /// schema change — bump `TabsSnapshot::version` and add a migration
 /// branch in `restore_collection`.
+///
+/// New optional fields (defaulted via `#[serde(default)]`) are
+/// backward-compatible without a version bump: older snapshots simply
+/// see the field as missing and the default kicks in.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TabRestore {
     pub id: TabId,
     pub archive_path: Option<PathBuf>,
+    /// Pinned state. Defaults to false so snapshots written before
+    /// pinned tabs landed still load cleanly.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// On-disk snapshot of `TabsCollection`. The order of `tabs` is the
@@ -45,6 +53,7 @@ pub fn snapshot(col: &TabsCollection) -> TabsSnapshot {
             .map(|t| TabRestore {
                 id: t.id,
                 archive_path: t.archive_path.get(),
+                pinned: t.pinned.load(std::sync::atomic::Ordering::SeqCst),
             })
             .collect(),
         active: col.active_id(),
