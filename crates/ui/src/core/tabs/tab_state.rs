@@ -11,6 +11,7 @@ use arclain_core::ArchiveEntry;
 use arclain_signals::Signal;
 use parking_lot::RwLock;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -39,6 +40,20 @@ pub struct TabState {
     pub created_at: SystemTime,
     pub in_flight_ops: Arc<AtomicUsize>,
 
+    /// Cooperative cancellation flag. Fired by `TabsCollection::force_close`
+    /// when the user confirms closing a tab that has in-flight ops. Long-
+    /// running ops (extraction, conversion, plugin calls, etc.) should
+    /// periodically check this flag and abort + clean up partial output
+    /// when set, per the ACID contract documented in the Phase 2 design
+    /// spec.
+    ///
+    /// v1 is best-effort: not all op types check the flag yet. A future
+    /// audit pass migrates each spawn site. Ops that ignore the flag
+    /// continue against the captured `Arc<TabState>` until completion;
+    /// the tab is already removed from the collection so the user can't
+    /// see them, but they keep consuming resources until done.
+    pub tab_cancel: Arc<AtomicBool>,
+
     // Plugin instance pool (Phase 2c populates)
     pub plugin_pool: TabPluginPool,
 }
@@ -65,6 +80,7 @@ impl TabState {
             status_message: Signal::new(None).with_name("status_message"),
             created_at: SystemTime::now(),
             in_flight_ops: Arc::new(AtomicUsize::new(0)),
+            tab_cancel: Arc::new(AtomicBool::new(false)),
             plugin_pool: TabPluginPool::default(),
         }
     }

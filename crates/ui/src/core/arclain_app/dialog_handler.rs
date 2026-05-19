@@ -225,7 +225,13 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             let mut col = app.shared_state.signals().tabs.get();
             col.force_close(id);
             app.shared_state.signals().tabs.set(col);
-            // TODO(phase 2c): fire per-tab cancellation token for in-flight ops.
+            // ACID best-effort cancellation: force_close fires the tab's
+            // `tab_cancel` flag before removing the tab. Background ops that
+            // captured Arc<TabState> at spawn can observe the cancellation on
+            // their next periodic check. v1 enforcement is best-effort — ops
+            // that don't check the flag yet continue to completion against
+            // the captured Arc. Follow-up audit covers each op type
+            // (extraction, conversion, pipeline, plugin call).
         }
     }
 

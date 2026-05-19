@@ -73,6 +73,7 @@ pub enum SettingsAction {
     SaveGeneral {
         open_nested_in_new_tab: bool,
         drop_behavior: arclain_core::DropBehavior,
+        restore_tabs_on_launch: bool,
     },
     /// Save network settings
     SaveNetwork {
@@ -163,6 +164,8 @@ pub struct GeneralSettingsState {
     pub open_nested_in_new_tab: Signal<bool>,
     /// What to do when a file is dropped without aiming at a specific overlay zone.
     pub drop_behavior: Signal<arclain_core::DropBehavior>,
+    /// Whether to restore the previous tab session on launch.
+    pub restore_tabs_on_launch: Signal<bool>,
 }
 
 impl Default for GeneralSettingsState {
@@ -170,6 +173,7 @@ impl Default for GeneralSettingsState {
         Self {
             open_nested_in_new_tab: Signal::new(false),
             drop_behavior: Signal::new(arclain_core::DropBehavior::default()),
+            restore_tabs_on_launch: Signal::new(true),
         }
     }
 }

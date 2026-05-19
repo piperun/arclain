@@ -103,6 +103,25 @@ pub fn render(
                     .italics()
                     .color(colors.on_surface_variant),
                 );
+
+                ui.add_space(12.0);
+
+                // Restore tabs on launch toggle
+                {
+                    let mut restore = *state.restore_tabs_on_launch.read();
+                    if ui.checkbox(&mut restore, "Restore tabs on launch").changed() {
+                        *state.restore_tabs_on_launch.write() = restore;
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Re-open the previous session's tabs when the app starts.",
+                    )
+                    .size(11.0)
+                    .italics()
+                    .color(colors.on_surface_variant),
+                );
             })
             .show(ui, &theme.colors);
     });

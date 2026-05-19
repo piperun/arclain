@@ -43,6 +43,7 @@ impl SettingsFeature {
         let drop_behavior = arclain_core::DropBehavior::from_str(
             user_config.drop_behavior.as_deref().unwrap_or("new_tab"),
         );
+        let restore_tabs_on_launch = user_config.restore_tabs_on_launch;
 
         let rules = {
             let state = shared.app_state.lock();
@@ -119,6 +120,7 @@ impl SettingsFeature {
             general_state: GeneralSettingsState {
                 open_nested_in_new_tab: Signal::new(open_nested_in_new_tab),
                 drop_behavior: Signal::new(drop_behavior),
+                restore_tabs_on_launch: Signal::new(restore_tabs_on_launch),
             },
             network_state,
             server_state,
@@ -166,6 +168,8 @@ impl SettingsFeature {
                 *self.general_state.open_nested_in_new_tab.read()
                     != state.user_config.open_nested_in_new_tab
                     || *self.general_state.drop_behavior.read() != stored_drop
+                    || *self.general_state.restore_tabs_on_launch.read()
+                        != state.user_config.restore_tabs_on_launch
             }
             SettingsPage::Archives => {
                 let current_val = if self.archives_state.temp_dir.read().trim().is_empty() {

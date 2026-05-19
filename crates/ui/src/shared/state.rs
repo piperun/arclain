@@ -43,15 +43,20 @@ impl SharedState {
         let app_state = Arc::new(Mutex::new(app_state_inner));
         let services = Arc::new(services);
 
-        Self {
-            app_state,
+        let shared = Self {
+            app_state: app_state.clone(),
             services,
             theme,
             toaster: Arc::new(Mutex::new(Toaster::new())),
             refresh_requests: Arc::new(Mutex::new(Vec::new())),
             pending_plugin_actions: Arc::new(Mutex::new(Vec::new())),
-            signals,
-        }
+            signals: signals.clone(),
+        };
+
+        // Restore previous tab session if the setting is enabled.
+        crate::core::app_lifecycle::restore_tabs_on_launch(&app_state, &signals);
+
+        shared
     }
 
     /// Get signals without locking AppState
