@@ -15,6 +15,43 @@ use tokio::runtime::Handle;
 use tokio::sync::Notify;
 use tracing::{debug, info, warn};
 
+/// Result of a streaming download.
+///
+/// `bytes_written` is the count of bytes successfully written to the
+/// caller's `Write` sink — for a 206 Partial Content response that's
+/// the *remaining* bytes from `start_byte`, not the total resource
+/// size. `total_size` carries the full resource length when known
+/// (from `Content-Range` on 206 or `Content-Length` on 200), so the
+/// caller can detect "fully written" without tracking it themselves.
+///
+/// `was_partial` distinguishes:
+/// - `true`: server returned 206; the writer holds bytes from
+///   `start_byte` onward and the caller should append.
+/// - `false`: server returned 200 (full body); if the caller had
+///   prior `.partial` bytes they MUST be discarded — the new body
+///   replaces them from byte 0.
+#[derive(Debug, Clone)]
+pub struct StreamingDownload {
+    pub bytes_written: u64,
+    pub was_partial: bool,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub total_size: Option<u64>,
+}
+
+/// Parse the total-size component of an HTTP `Content-Range` header.
+/// Format is `bytes <start>-<end>/<total>` or `bytes <start>-<end>/*`
+/// when the total is unknown. Returns `None` for unknown / unparsable.
+pub(super) fn parse_content_range_total(header: &str) -> Option<u64> {
+    // Strip optional "bytes " prefix, then split on "/".
+    let trimmed = header.trim_start_matches("bytes ").trim();
+    let total_part = trimmed.rsplit('/').next()?;
+    if total_part == "*" {
+        return None;
+    }
+    total_part.parse::<u64>().ok()
+}
+
 /// One row of the pending-requests map.
 ///
 /// `notify` is fired exactly once when the request transitions into a
@@ -397,6 +434,120 @@ impl AsyncHttpClient {
         self.rate_limiter
             .write()
             .set_limit(domain, requests_per_minute);
+    }
+
+    /// Streaming GET — fetch a URL into the given writer chunk by chunk,
+    /// never holding the full body in host RAM. Returns the number of
+    /// bytes written plus the response's ETag and Last-Modified headers
+    /// (for resume validation).
+    ///
+    /// `start_byte`: if `Some(n)`, sends `Range: bytes=n-`. The server's
+    /// response status tells us whether the range was honored:
+    /// - 206 Partial Content → server gave us bytes from `n` onward,
+    ///   caller appends.
+    /// - 200 OK → server returned the full body; caller must truncate
+    ///   the partial file and rewrite from byte 0.
+    /// The status is reported via `StreamingDownload::was_partial`.
+    ///
+    /// `if_match`: if `Some(etag)`, sends `If-Match: <etag>` so the
+    /// server returns 412 Precondition Failed when the resource has
+    /// changed since the partial download started.
+    ///
+    /// For use from background threads only (uses `block_on`).
+    pub fn blocking_get_streaming<W: std::io::Write>(
+        &self,
+        url: &str,
+        use_proxy: bool,
+        writer: &mut W,
+        start_byte: Option<u64>,
+        if_match: Option<&str>,
+    ) -> Result<StreamingDownload, String> {
+        let client = if use_proxy {
+            self.client_proxied.read().clone()
+        } else {
+            self.client_direct.read().clone()
+        };
+        let url_owned = url.to_string();
+        let start = start_byte;
+        let if_match_owned: Option<String> = if_match.map(|s| s.to_string());
+
+        self.runtime.block_on(async move {
+            let mut req = client.get(&url_owned);
+            if is_dlsite_url(&url_owned) {
+                info!("Injecting DLSite headers (streaming) for {}", url_owned);
+                req = inject_dlsite_browser_headers(req);
+            }
+            if let Some(byte) = start {
+                req = req.header("Range", format!("bytes={}-", byte));
+            }
+            if let Some(etag) = if_match_owned.as_deref() {
+                req = req.header("If-Match", etag);
+            }
+
+            let mut response = req
+                .timeout(crate::DEFAULT_REQUEST_TIMEOUT)
+                .send()
+                .await
+                .map_err(|e| format!("Request failed: {}", e))?;
+
+            let status = response.status();
+            if !status.is_success() {
+                return Err(format!("HTTP error: {}", status));
+            }
+            // 206 → server honored the range. 200 → server returned full
+            // body; caller has to discard any prior partial bytes.
+            let was_partial = status.as_u16() == 206;
+
+            let etag = response
+                .headers()
+                .get("etag")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            let last_modified = response
+                .headers()
+                .get("last-modified")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+            // Content-Length is the length of THIS response; for 206 it's
+            // the remaining bytes from start_byte, not the resource size.
+            // Total size comes from Content-Range when present.
+            let total_size = if was_partial {
+                response
+                    .headers()
+                    .get("content-range")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(parse_content_range_total)
+            } else {
+                response
+                    .headers()
+                    .get("content-length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+            };
+
+            let mut total_written: u64 = 0;
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|e| format!("Failed to read body chunk: {}", e))?
+            {
+                writer
+                    .write_all(&chunk)
+                    .map_err(|e| format!("Writer failed: {}", e))?;
+                total_written += chunk.len() as u64;
+            }
+            writer
+                .flush()
+                .map_err(|e| format!("Writer flush failed: {}", e))?;
+
+            Ok(StreamingDownload {
+                bytes_written: total_written,
+                was_partial,
+                etag,
+                last_modified,
+                total_size,
+            })
+        })
     }
 
     /// Blocking GET request (for use from background threads, NOT main thread)

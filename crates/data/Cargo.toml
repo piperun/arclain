@@ -12,7 +12,11 @@ tracing.workspace = true
 parking_lot.workspace = true
 cacache = "13"
 ssri = "9"
+sha2 = "0.10"
 
 arclain_db = { path = "../db" }
 arclain-network = { path = "../network" }
 indexmap = { version = "2.12.1", features = ["serde"] }
+
+[dev-dependencies]
+tempfile.workspace = true

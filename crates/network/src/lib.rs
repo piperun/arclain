@@ -45,7 +45,9 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Re-export main types at crate root
 pub use features::rate_limiting::RateLimiter;
-pub use features::request::{AsyncHttpClient, HttpRequest, RequestId, RequestStatus};
+pub use features::request::{
+    AsyncHttpClient, HttpRequest, RequestId, RequestStatus, StreamingDownload,
+};
 pub use features::security::{analyze_url, DomainInfo, DomainWarning};
 pub use features::whitelist::{AccessCheck, DomainWhitelist, WhitelistEntry};
 pub use shared::{HttpError, HttpMethod, HttpResponse};

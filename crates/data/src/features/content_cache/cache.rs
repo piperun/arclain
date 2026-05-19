@@ -1,11 +1,52 @@
 use crate::traits::CacheIndex;
 use anyhow::Result;
 use arclain_db::CacheType;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread;
 use tracing::{debug, warn};
+
+/// Streaming write handle into `ContentCache`. Created via
+/// `ContentCache::open_streaming_writer`; bytes flow through `Write`,
+/// `commit` finalizes the content (returning the SRI) and the caller
+/// then upserts the key → SRI mapping via `ContentCache::upsert_sri`.
+///
+/// Dropping without committing leaves the cacache temp file orphaned;
+/// cacache's `NamedTempFile` cleans that up on drop, so no manual
+/// cleanup is required on the abort path.
+pub struct StreamingWriter {
+    inner: cacache::SyncWriter,
+    bytes_written: u64,
+}
+
+impl Write for StreamingWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.bytes_written += n as u64;
+        Ok(n)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl StreamingWriter {
+    /// Number of bytes successfully written so far.
+    pub fn bytes_written(&self) -> u64 {
+        self.bytes_written
+    }
+
+    /// Finalize the content-addressed write and return `(sri, bytes)`.
+    /// The caller pairs this with `ContentCache::upsert_sri` to commit
+    /// the key → SRI mapping.
+    pub fn commit(self) -> Result<(String, u64)> {
+        let bytes = self.bytes_written;
+        let sri = self.inner.commit()?;
+        Ok((sri.to_string(), bytes))
+    }
+}
 
 /// Request to write to cache (sent via channel for serialization)
 struct CacheWriteRequest {
@@ -160,6 +201,72 @@ impl ContentCache {
             anyhow::anyhow!(
                 "content cache upsert failed for key {} after 3 attempts \
                  (with no recorded error — likely a control-flow bug)",
+                key
+            )
+        }))
+    }
+
+    /// Open a streaming write into the cache. The returned writer
+    /// hashes bytes as they flow through and stores the content in
+    /// cacache's content-addressed store; on `commit` the writer
+    /// returns the SRI and the caller upserts it into our SQLite
+    /// index via [`Self::upsert_sri`]. Bytes never need to be held
+    /// in memory as a single `Vec<u8>` — the host-RAM spike that bit
+    /// the chobit-video pipeline goes away.
+    ///
+    /// Drop without `commit` cleans up the temp file via cacache's
+    /// `NamedTempFile`; no index entry is written.
+    pub fn open_streaming_writer(&self) -> Result<StreamingWriter> {
+        // open_hash_sync(cache) keeps `key: None` so commit() returns
+        // the SRI without touching cacache's native key index — we
+        // manage the key → SRI mapping in our own SQLite index.
+        let inner = cacache::WriteOpts::new()
+            .algorithm(cacache::Algorithm::Sha256)
+            .open_hash_sync(&self.base_dir)?;
+        Ok(StreamingWriter {
+            inner,
+            bytes_written: 0,
+        })
+    }
+
+    /// Companion to `open_streaming_writer`: writes the `key → SRI`
+    /// row to the SQLite index. Same 3-attempt retry as `put` so
+    /// concurrent DB-lock contention recovers gracefully.
+    pub fn upsert_sri(
+        &self,
+        key: &str,
+        sri: &str,
+        bytes: u64,
+        cache_type: CacheType,
+        product_id: Option<&str>,
+        source_url: Option<&str>,
+    ) -> Result<()> {
+        let mut last_error: Option<anyhow::Error> = None;
+        for attempt in 1..=3 {
+            match self.service.upsert(
+                key,
+                product_id,
+                sri,
+                source_url,
+                cache_type.clone(),
+                Some(bytes as i64),
+            ) {
+                Ok(_) => {
+                    debug!("Streamed {} bytes for key {} → {}", bytes, key, sri);
+                    return Ok(());
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    if attempt < 3 {
+                        thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+                    }
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            anyhow::anyhow!(
+                "content cache upsert failed for key {} after 3 attempts \
+                 (streaming path)",
                 key
             )
         }))

@@ -10,3 +10,4 @@ pub mod api;
 pub mod content_cache;
 pub mod resolver;
 pub mod resource_manager;
+pub mod streaming_download;

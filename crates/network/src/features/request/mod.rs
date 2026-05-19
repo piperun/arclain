@@ -8,5 +8,5 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use client::AsyncHttpClient;
+pub use client::{AsyncHttpClient, StreamingDownload};
 pub use types::{HttpRequest, RequestId, RequestStatus};
