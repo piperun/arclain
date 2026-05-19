@@ -960,17 +960,14 @@ pub(crate) fn dispatch(
                     empty_message: Some("Enter a search term".to_string()),
                 }));
             } else {
-                // Use cached entries to avoid DB queries on every frame
-                let entries = STATE.with(|s| {
-                    let mut state = s.borrow_mut();
-                    if state.cached_entries.is_none() {
-                        // Only fetch when cache is empty
-                        state.cached_entries = Some(list_cached_entries().unwrap_or_else(|e| {
-                            info(&format!("Failed to list cache: {}", e));
-                            vec![]
-                        }));
-                    }
-                    state.cached_entries.clone().unwrap_or_default()
+                // `list_cached_entries` is host-cached now (Path D step 1)
+                // — calling it every frame is fine, no plugin-side memo
+                // needed. This used to be a `STATE.with(...)` block that
+                // memoized into `state.cached_entries`; that field was
+                // removed when the host cache landed.
+                let entries = list_cached_entries().unwrap_or_else(|e| {
+                    info(&format!("Failed to list cache: {}", e));
+                    vec![]
                 });
 
                 // Filter and limit entries first

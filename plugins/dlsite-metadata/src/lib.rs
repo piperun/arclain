@@ -23,7 +23,13 @@ pub(crate) struct PluginState {
     pub(crate) video_quality: String,
     pub(crate) dump_html_debug: bool, // Debug: dump HTML to file when geo-blocked detected
     pub(crate) fetch_in_progress: bool, // Prevent double-fetch when spamming buttons
-    pub(crate) cached_entries: Option<Vec<String>>, // Cache of checking the cache (UI spam prevention)
+    // Note: there used to be a `cached_entries: Option<Vec<String>>`
+    // memo here for `list_cached_entries()` results. It was removed as
+    // part of Path D — the host (arclain_core::LibraryService) now
+    // caches that result internally and invalidates on writes, so
+    // calling `list_cached_entries()` directly each frame is cheap.
+    // Removing the WASM-side memo means per-tab plugin instances (if
+    // ever enabled) all see consistent "known entries" data.
     pub(crate) selected_cache_entry: Option<String>, // For cache viewer details
     pub(crate) last_archive_path: Option<String>, // Track current archive to reset state on change
     // Browser UI state
@@ -56,7 +62,6 @@ thread_local! {
         dump_html_debug: true, // Default to enabled for debugging
         fetch_in_progress: false,
         last_archive_path: None,
-        cached_entries: None,
         selected_cache_entry: None,
         browser_tab: "cached".to_string(),
         browser_loading: false,
@@ -211,13 +216,15 @@ impl archust_plugin_sdk::Guest for Component {
 
     fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
         use archust_plugin_sdk::arclain::plugin::ui::{TopTabConfig, BadgeConfig};
-        
-        // Check if we have cached entries to show a badge
-        let cache_count = STATE.with(|s| {
-            let state = s.borrow();
-            state.cached_entries.as_ref().map(|v| v.len() as u32)
-        });
-        
+
+        // Cache count for the badge. `list_cached_entries` is now
+        // host-cached (LibraryService caches the SQLite result and
+        // invalidates on writes), so calling it per get_top_tabs is
+        // cheap — no need for a WASM-side memo.
+        let cache_count: Option<u32> = archust_plugin_sdk::list_cached_entries()
+            .ok()
+            .map(|v| v.len() as u32);
+
         vec![TopTabConfig {
             id: "dlsite_browser".to_string(),
             label: "DLSite".to_string(),

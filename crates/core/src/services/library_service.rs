@@ -2,10 +2,20 @@ use anyhow::Result;
 use arclain_db::library::metadata::CompletenessScore;
 use gameta_core::{MetadataSource, ProductMetadata};
 use gameta_database::DieselBackend;
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::path::Path;
 
 pub struct LibraryService {
     backend: DieselBackend,
+    /// Per-source cache of `list_by_source` results so the dlsite-metadata
+    /// plugin (and any future caller) can poll it every frame without
+    /// hitting SQLite. Invalidated on every write through `save_metadata` /
+    /// `delete_metadata` — coarse but correct, and arclain's write rate
+    /// is low enough that we don't need anything fancier. Path D step 1:
+    /// pulls the WASM-side `cached_entries` memo out of the plugin so
+    /// per-tab instances would all see consistent data.
+    list_cache: RwLock<HashMap<MetadataSource, Vec<String>>>,
 }
 
 impl LibraryService {
@@ -42,7 +52,18 @@ impl LibraryService {
             .sync_init_schema()
             .map_err(|e| anyhow::anyhow!("Failed to initialize metadata schema: {}", e))?;
 
-        Ok(Self { backend })
+        Ok(Self {
+            backend,
+            list_cache: RwLock::new(HashMap::new()),
+        })
+    }
+
+    /// Invalidate the `list_by_source` cache. Called from every write
+    /// path so the next `list_by_source` query rebuilds from SQLite.
+    /// Public so external callers that bypass `save_metadata` (rare)
+    /// can flag a stale view; internal write paths call it automatically.
+    pub fn invalidate_list_cache(&self) {
+        self.list_cache.write().clear();
     }
 
     /// Save metadata with quality guards:
@@ -79,9 +100,14 @@ impl LibraryService {
             );
         }
 
-        self.backend
+        let result = self
+            .backend
             .sync_save_metadata(meta)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("{}", e));
+        if result.is_ok() {
+            self.invalidate_list_cache();
+        }
+        result
     }
 
     pub fn get_metadata(&self, id: &str) -> Result<Option<ProductMetadata>> {
@@ -107,9 +133,14 @@ impl LibraryService {
     }
 
     pub fn delete_metadata(&self, id: &str) -> Result<()> {
-        self.backend
+        let result = self
+            .backend
             .sync_delete_metadata(id)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("{}", e));
+        if result.is_ok() {
+            self.invalidate_list_cache();
+        }
+        result
     }
 
     pub fn exists(&self, id: &str) -> Result<bool> {
@@ -119,9 +150,22 @@ impl LibraryService {
     }
 
     pub fn list_by_source(&self, source: MetadataSource) -> Result<Vec<String>> {
-        self.backend
+        // Fast path: cached result. The dlsite-metadata plugin polls
+        // this every frame while the DLsite browser is open; without
+        // the cache we'd hit SQLite at 60 Hz for hundreds of rows.
+        {
+            let cache = self.list_cache.read();
+            if let Some(cached) = cache.get(&source) {
+                return Ok(cached.clone());
+            }
+        }
+        // Slow path: rebuild from SQLite and populate the cache.
+        let fresh = self
+            .backend
             .sync_list_ids_by_source(source)
-            .map_err(|e| anyhow::anyhow!("{}", e))
+            .map_err(|e| anyhow::anyhow!("{}", e))?;
+        self.list_cache.write().insert(source, fresh.clone());
+        Ok(fresh)
     }
 
     pub fn get_by_external_id(
@@ -511,6 +555,98 @@ mod tests {
         assert!(!loaded.geo_blocked);
         assert_eq!(loaded.cached_at, 1704067200);
         assert_eq!(loaded.updated_at, Some(1704153600));
+    }
+
+    // =========================================================================
+    // list_by_source cache (Path D step 1)
+    // =========================================================================
+
+    /// Second `list_by_source` call returns the same data without
+    /// re-querying SQLite (the cache services it). We can't directly
+    /// observe SQL round-trips here, but the contract is "data
+    /// matches what was just saved" and "subsequent calls see no
+    /// change until a write happens" — verified below.
+    #[test]
+    fn list_by_source_cache_returns_consistent_data() {
+        let (_dir, svc) = temp_service();
+        svc.save_metadata(&make_meta("RJ100")).unwrap();
+        svc.save_metadata(&make_meta("RJ200")).unwrap();
+
+        let first = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        let second = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 2);
+    }
+
+    /// `save_metadata` invalidates the cache so the next list sees
+    /// the new row. Without the invalidation hook the cache would
+    /// return stale data and the DLsite browser would miss new
+    /// entries.
+    #[test]
+    fn list_by_source_cache_invalidated_on_save() {
+        let (_dir, svc) = temp_service();
+        svc.save_metadata(&make_meta("RJ100")).unwrap();
+        let before = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(before.len(), 1);
+
+        svc.save_metadata(&make_meta("RJ200")).unwrap();
+        let after = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(after.len(), 2, "cache must rebuild after save");
+    }
+
+    /// Same for delete.
+    #[test]
+    fn list_by_source_cache_invalidated_on_delete() {
+        let (_dir, svc) = temp_service();
+        svc.save_metadata(&make_meta("RJ100")).unwrap();
+        svc.save_metadata(&make_meta("RJ200")).unwrap();
+        let before = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(before.len(), 2);
+
+        svc.delete_metadata("dlsite:RJ100").unwrap();
+        let after = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(after.len(), 1, "cache must rebuild after delete");
+    }
+
+    /// Manual `invalidate_list_cache` works too — exposed publicly
+    /// for callers that mutate the DB via a path the service doesn't
+    /// own (legacy import scripts, future bulk operations).
+    #[test]
+    fn list_by_source_explicit_invalidation_drops_cache() {
+        let (_dir, svc) = temp_service();
+        svc.save_metadata(&make_meta("RJ100")).unwrap();
+        let _ = svc.list_by_source(MetadataSource::DLSite).unwrap(); // warm cache
+        svc.invalidate_list_cache();
+        // After invalidation the next read goes back to SQLite. We
+        // can't observe that directly here, but verify the result
+        // matches the underlying state.
+        let after = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(after.len(), 1);
+    }
+
+    /// Skipped saves (geo-block guard, completeness guard) don't
+    /// touch the DB; the cache should stay intact so subsequent
+    /// reads don't pay a rebuild cost.
+    #[test]
+    fn list_by_source_cache_not_invalidated_on_skipped_save() {
+        let (_dir, svc) = temp_service();
+        let mut good = make_meta("RJ100");
+        good.title = Some("Real".into());
+        good.geo_blocked = false;
+        svc.save_metadata(&good).unwrap();
+        let _ = svc.list_by_source(MetadataSource::DLSite).unwrap();
+
+        // Geo-blocked save is rejected internally; the function still
+        // returns Ok, but the cache should NOT have been invalidated.
+        // (Verifying this without instrumentation is hard; we at least
+        // verify the data state is unchanged, which is the visible
+        // contract.)
+        let mut blocked = make_meta("RJ100");
+        blocked.title = Some("Blocked".into());
+        blocked.geo_blocked = true;
+        svc.save_metadata(&blocked).unwrap();
+        let after = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(after.len(), 1);
     }
 
     #[test]

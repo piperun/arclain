@@ -152,10 +152,12 @@ pub(crate) fn dispatch(
                     let mut state = s.borrow_mut();
                     state.found_metadata = Some((code.clone(), json, scraped));
                     state.fetch_in_progress = false;
-                    // Drop the browser-list caches so the newly cached
-                    // entry shows up on the DLSite tab without a manual
-                    // refresh.
-                    state.cached_entries = None;
+                    // Drop the per-filter summary memo so the newly
+                    // cached entry shows up on the DLSite tab without
+                    // a manual refresh. The "known entries" list is
+                    // now host-cached and invalidated automatically
+                    // (LibraryService::save_metadata clears its cache),
+                    // so we no longer need a plugin-side drop here.
                     state.cached_summaries = None;
                 });
             }
@@ -608,10 +610,13 @@ pub(crate) fn dispatch(
             });
         }
         "refresh_cache" => {
+            // The per-filter summary memo stays in WASM heap (it's
+            // user-filter-specific, not cross-tab state). The "known
+            // entries" list lives in LibraryService's cache now and
+            // is invalidated automatically on writes — no plugin-side
+            // drop needed here.
             STATE.with(|state| {
-                let mut s = state.borrow_mut();
-                s.cached_entries = None; // clear to force refetch
-                s.cached_summaries = None;
+                state.borrow_mut().cached_summaries = None;
             });
         }
         "back_to_cache_list" => {
