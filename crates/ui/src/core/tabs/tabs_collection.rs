@@ -98,9 +98,19 @@ impl TabsCollection {
     }
 
     /// Force-close without the in-flight check. Used after the user
-    /// confirms the close-tab modal — they have explicitly accepted
-    /// that in-flight ops will be cancelled.
+    /// confirms the close-tab modal — they have explicitly accepted that
+    /// in-flight ops will be cancelled.
+    ///
+    /// Fires the tab's `tab_cancel` flag BEFORE removing it from the
+    /// collection so any background op still holding an `Arc<TabState>`
+    /// clone can observe the cancellation on its next periodic check.
+    /// Per the v1 contract this is best-effort: ops that don't yet check
+    /// the flag continue against the captured Arc until completion.
     pub fn force_close(&mut self, id: TabId) {
+        if let Some(tab) = self.tabs.iter().find(|t| t.id == id) {
+            tab.tab_cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
         self.remove(id);
     }
 
@@ -134,6 +144,58 @@ impl TabsCollection {
         }
         let tab = self.tabs.remove(from_idx);
         self.tabs.insert(to_idx, tab);
+    }
+}
+
+impl TabsCollection {
+    /// Expose `next_id` for persistence snapshots so restored sessions
+    /// keep generating monotonically without colliding with restored
+    /// TabIds.
+    pub fn peek_next_id(&self) -> u64 {
+        self.next_id
+    }
+
+    /// Rebuild a TabsCollection from a persistence snapshot. Handles
+    /// edge cases:
+    /// - Empty snapshot.tabs → seed a single empty placeholder so
+    ///   TabsCollection's "never zero tabs" invariant holds.
+    /// - Snapshot.active not in snapshot.tabs → fall back to first tab.
+    pub fn from_snapshot(snap: super::persistence::TabsSnapshot) -> Self {
+        let tabs: Vec<Arc<TabState>> = snap
+            .tabs
+            .iter()
+            .map(|tr| {
+                let tab = TabState::new(tr.id);
+                if let Some(path) = &tr.archive_path {
+                    tab.archive_path.set(Some(path.clone()));
+                }
+                Arc::new(tab)
+            })
+            .collect();
+
+        if tabs.is_empty() {
+            // Empty snapshot → reset to a fresh single-tab collection.
+            // Use snap.next_id to keep id sequencing monotonic.
+            let id = TabId(snap.next_id.max(1));
+            let fresh = Arc::new(TabState::new(id));
+            return Self {
+                tabs: vec![fresh],
+                active: id,
+                next_id: snap.next_id.saturating_add(1).max(2),
+            };
+        }
+
+        let active = if tabs.iter().any(|t| t.id == snap.active) {
+            snap.active
+        } else {
+            tabs[0].id
+        };
+
+        Self {
+            tabs,
+            active,
+            next_id: snap.next_id,
+        }
     }
 }
 

@@ -83,4 +83,8 @@ impl eframe::App for ArclainApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         crate::core::arclain_app::update::update_app(self, ctx, frame);
     }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        crate::core::app_lifecycle::save_tabs_on_exit(self.shared_state.signals());
+    }
 }

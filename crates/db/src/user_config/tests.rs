@@ -34,6 +34,7 @@ fn setup_diesel_conn() -> diesel::SqliteConnection {
             gameta_server_enabled INTEGER NOT NULL DEFAULT 0,
             gameta_server_url TEXT,
             drop_behavior TEXT,
+            restore_tabs_on_launch INTEGER NOT NULL DEFAULT 1,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             modified_at TEXT
         )

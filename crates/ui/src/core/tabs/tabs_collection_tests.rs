@@ -139,6 +139,25 @@ fn reorder_moves_tab_to_new_position() {
 }
 
 #[test]
+fn force_close_fires_tab_cancel_flag() {
+    let mut col = TabsCollection::new();
+    let new_id = col.open(Some(PathBuf::from("/tmp/x.zip")));
+    // Capture an Arc<TabState> clone before close — simulates a
+    // background op that captured the Arc at spawn.
+    let tab_arc = col.get(new_id).unwrap().clone();
+    assert!(!tab_arc.tab_cancel.load(Ordering::SeqCst));
+
+    col.force_close(new_id);
+
+    // Tab removed from collection but the cancel flag is observable
+    // on the captured Arc clone (matches the ACID isolation contract:
+    // background ops can see the cancel even after the collection
+    // removed the tab).
+    assert!(tab_arc.tab_cancel.load(Ordering::SeqCst));
+    assert!(col.get(new_id).is_none());
+}
+
+#[test]
 fn next_id_is_monotonic_no_reuse() {
     let mut col = TabsCollection::new();
     let a = col.open(None);

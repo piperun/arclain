@@ -3,6 +3,7 @@
 //! Handles per-frame lifecycle tasks like signal binding, theme application,
 //! metadata updates, and extraction progress handling.
 
+use crate::core::signals::AppSignals;
 use crate::core::state::AppState;
 use crate::features::organization;
 use crate::shared::{dialogs, SharedState};
@@ -199,6 +200,87 @@ fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String)
                 file_path.file_name().unwrap_or_default().to_string_lossy()
             );
         }
+    }
+}
+
+/// Restore the previous tab session from `tabs.json` in the config dir.
+///
+/// Called once during `SharedState::new()`. Reads `restore_tabs_on_launch`
+/// from the already-loaded `user_config` signal. If enabled and the file
+/// exists, replaces the default single-tab collection and spawns background
+/// loads for every tab that had an archive open. Missing files surface
+/// through the existing status-bar error path — no special toast in v1.
+pub fn restore_tabs_on_launch(
+    app_state: &Arc<Mutex<AppState>>,
+    signals: &AppSignals,
+) {
+    let user_config = signals.user_config.get();
+    if !user_config.restore_tabs_on_launch {
+        return;
+    }
+
+    let tabs_path = match arclain_core::dirs::AppDirectories::init("arclain", None) {
+        Ok(dirs) => dirs.config_dir.join("tabs.json"),
+        Err(e) => {
+            tracing::warn!("[tabs] restore: could not resolve config dir: {}", e);
+            return;
+        }
+    };
+
+    if !tabs_path.exists() {
+        return;
+    }
+
+    match crate::core::tabs::load_collection(&tabs_path) {
+        Ok(restored) => {
+            // Collect (tab_id, archive_path) pairs before moving the collection.
+            let tab_ids_to_load: Vec<(crate::core::tabs::TabId, std::path::PathBuf)> = restored
+                .tabs()
+                .iter()
+                .filter_map(|t| t.archive_path.get().map(|p| (t.id, p)))
+                .collect();
+
+            signals.tabs.set(restored);
+
+            for (tab_id, path) in tab_ids_to_load {
+                crate::core::operations::archive::load_archive_into_tab(
+                    app_state.clone(),
+                    signals.clone(),
+                    tab_id,
+                    &path,
+                );
+            }
+
+            tracing::info!("[tabs] session restored from {:?}", tabs_path);
+        }
+        Err(e) => {
+            tracing::warn!(
+                "[tabs] failed to restore from {:?}: {}; starting with default tabs",
+                tabs_path,
+                e
+            );
+        }
+    }
+}
+
+/// Save the current tab session to `tabs.json` in the config dir.
+///
+/// Called from `ArclainApp::on_exit`. Failures are logged as warnings
+/// — a quit-time save failure should not block the shutdown.
+pub fn save_tabs_on_exit(signals: &AppSignals) {
+    let tabs_path = match arclain_core::dirs::AppDirectories::init("arclain", None) {
+        Ok(dirs) => dirs.config_dir.join("tabs.json"),
+        Err(e) => {
+            tracing::warn!("[tabs] on_exit: could not resolve config dir: {}", e);
+            return;
+        }
+    };
+
+    let col = signals.tabs.get();
+    if let Err(e) = crate::core::tabs::save_collection(&col, &tabs_path) {
+        tracing::warn!("[tabs] failed to save {:?}: {}", tabs_path, e);
+    } else {
+        tracing::info!("[tabs] session saved to {:?}", tabs_path);
     }
 }
 

@@ -14,6 +14,7 @@ fn default_state_signals_are_initialized() {
     assert!(tab.ui_ready.get()); // Starts true
     assert!(tab.opened_archive.get().is_none());
     assert_eq!(tab.in_flight_ops.load(Ordering::SeqCst), 0);
+    assert!(!tab.tab_cancel.load(Ordering::SeqCst));
 }
 
 #[test]

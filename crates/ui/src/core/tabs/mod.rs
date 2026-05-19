@@ -9,10 +9,12 @@
 //! (not resolve `tabs.active()` lazily at completion) so results land
 //! in the originating tab even after the user switches.
 
+pub mod persistence;
 pub mod plugin_instances;
 pub mod tab_state;
 pub mod tabs_collection;
 
+pub use persistence::{load_collection, save_collection, snapshot, TabRestore, TabsSnapshot};
 pub use plugin_instances::TabPluginPool;
 pub use tab_state::TabState;
 pub use tabs_collection::{CloseResult, TabsCollection};

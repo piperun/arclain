@@ -207,6 +207,7 @@ diesel::table! {
         gameta_server_enabled -> Bool,
         gameta_server_url -> Nullable<Text>,
         drop_behavior -> Nullable<Text>,
+        restore_tabs_on_launch -> Bool,
         created_at -> Text,
         modified_at -> Nullable<Text>,
     }
