@@ -23,7 +23,10 @@ pub struct TabState {
     pub archive_path: Signal<Option<PathBuf>>,
     pub entries: Signal<Arc<Vec<ArchiveEntry>>>,
     pub metadata: Signal<Option<serde_json::Value>>,
-    pub loading: Signal<bool>,
+    // Note: `loading` and `status_message` signals were removed in the
+    // 2026-05-19 audit. Both were write-only — set by archive load /
+    // tab switch but never read by any production code path. The
+    // status bar carries the user-visible state instead.
     pub ui_ready: Signal<bool>,
     pub archive_info: Signal<ArchiveInfo>,
     pub game_metadata: Signal<Option<GameMetadata>>,
@@ -34,7 +37,6 @@ pub struct TabState {
     pub browser_view_state: Signal<BrowserViewState>,
     pub page_display_name: Signal<Option<String>>,
     pub active_toolbar: Signal<ToolbarContext>,
-    pub status_message: Signal<Option<String>>,
 
     // Tab metadata (not signals — read on render)
     pub created_at: SystemTime,
@@ -73,7 +75,6 @@ impl TabState {
             archive_path: Signal::new(None).with_name("archive_path"),
             entries: Signal::new(Arc::new(Vec::new())).with_name("entries"),
             metadata: Signal::new(None).with_name("metadata"),
-            loading: Signal::new(false).with_name("loading"),
             ui_ready: Signal::new(true).with_name("ui_ready"),
             archive_info: Signal::new(ArchiveInfo::default()).with_name("archive_info"),
             game_metadata: Signal::new(None).with_name("game_metadata"),
@@ -85,7 +86,6 @@ impl TabState {
                 .with_name("browser_view_state"),
             page_display_name: Signal::new(None).with_name("page_display_name"),
             active_toolbar: Signal::new(ToolbarContext::Archive).with_name("active_toolbar"),
-            status_message: Signal::new(None).with_name("status_message"),
             created_at: SystemTime::now(),
             in_flight_ops: Arc::new(AtomicUsize::new(0)),
             tab_cancel: Arc::new(AtomicBool::new(false)),

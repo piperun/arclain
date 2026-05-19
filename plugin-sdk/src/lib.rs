@@ -56,11 +56,6 @@ pub fn show_message(title: &str, message: &str) {
     arclain::plugin::host::show_message(title, message);
 }
 
-/// Copy text to the system clipboard
-pub fn copy_to_clipboard(text: &str) -> bool {
-    arclain::plugin::host::copy_to_clipboard(text)
-}
-
 pub fn log_network_activity(msg: &str) {
     arclain::plugin::host::log_network_activity(msg);
 }

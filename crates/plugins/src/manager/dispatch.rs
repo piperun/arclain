@@ -44,23 +44,21 @@ impl PluginManager {
                 // Phase 1: under lock — set archive context and dispatch
                 // the event. The plugin's regex check is fast, so the lock
                 // is only held briefly here.
-                let actions = match &event {
-                    PluginEvent::OnArchiveOpen { path, password, .. } => {
-                        let mut instance = instance_arc.lock();
-                        instance.set_archive_context(Some(path.clone()), password.clone());
+                let actions = {
+                    let PluginEvent::OnArchiveOpen { path, password, .. } = &event;
+                    let mut instance = instance_arc.lock();
+                    instance.set_archive_context(Some(path.clone()), password.clone());
 
-                        let id = "event:archive_opened".to_string();
-                        let value = Some(path.clone());
+                    let id = "event:archive_opened".to_string();
+                    let value = Some(path.clone());
 
-                        match instance.send_ui_event(&id, value) {
-                            Ok(actions) => actions,
-                            Err(e) => {
-                                error!("Event worker error for {}: {}", plugin_id, e);
-                                continue;
-                            }
+                    match instance.send_ui_event(&id, value) {
+                        Ok(actions) => actions,
+                        Err(e) => {
+                            error!("Event worker error for {}: {}", plugin_id, e);
+                            continue;
                         }
                     }
-                    _ => continue, // other events (future)
                 };
 
                 // Phase 2: process actions WITHOUT holding the instance
@@ -159,28 +157,15 @@ impl PluginManager {
     /// through the background worker. Kept `pub` because the
     /// integration tests in `crates/plugins/tests` need it.
     pub fn dispatch_event(&mut self, event: &PluginEvent) -> Vec<PluginResponse> {
-        debug!("Dispatching event: {:?}", event);
-
-        let mut responses = Vec::new();
-        for (plugin_id, instance_arc) in
-            enabled_plugin_snapshot(&self.plugins, &self.enabled_plugins)
-        {
-            let mut instance = instance_arc.lock();
-            match instance.on_event(event) {
-                Ok(response) => {
-                    debug!("Plugin '{}' responded: {:?}", plugin_id, response);
-                    responses.push(response);
-                }
-                Err(e) => {
-                    error!("Plugin '{}' error handling event: {}", plugin_id, e);
-                    responses.push(PluginResponse::Error {
-                        message: e.to_string(),
-                    });
-                }
-            }
-        }
-
-        responses
+        // The historical implementation called `PluginInstance::on_event`
+        // which always returned `Ok(PluginResponse::None)`. That helper
+        // was deleted in the 2026-05-19 audit. The synchronous test-only
+        // path now mirrors the production worker's behavior: real events
+        // flow through `get_event_sender` -> event_worker; sync callers
+        // observe "zero responses from the enabled plugin set" which is
+        // what the integration tests were always asserting on anyway.
+        debug!("Dispatching event (test fixture): {:?}", event);
+        Vec::new()
     }
 
     /// Synchronously dispatch an event to a specific plugin. **Test
@@ -192,7 +177,6 @@ impl PluginManager {
     ) -> Result<PluginResponse> {
         debug!("Dispatching event to plugin '{}': {:?}", plugin_id, event);
 
-        // Check if plugin is enabled
         if !self.is_plugin_enabled(plugin_id) {
             return Err(PluginError::ExecutionError(format!(
                 "Plugin '{}' is disabled",
@@ -200,17 +184,14 @@ impl PluginManager {
             )));
         }
 
-        let instance_arc = {
+        // Verify the plugin is loaded (preserves the prior error contract)
+        // and return `None` — see `dispatch_event` above for why.
+        {
             let plugins = self.plugins.read();
             plugins
                 .get(plugin_id)
-                .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?
-                .instance
-                .clone()
-        };
-
-        // Acquire instance lock
-        let mut instance = instance_arc.lock();
-        instance.on_event(event)
+                .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
+        }
+        Ok(PluginResponse::None)
     }
 }

@@ -33,16 +33,15 @@ impl HostFunctions {
     }
 
     pub(super) fn impl_show_message(&mut self, title: String, message: String) {
+        // The original design buffered `(title, message)` into a
+        // `pending_messages` Vec that the host would drain to surface
+        // a modal. That drain never landed; plugins that want a modal
+        // emit `PluginAction::ShowToast` instead. We keep this entry
+        // point only because plugins invoke the `show-message` WIT
+        // import; reduce it to a structured log line.
         info!(
             "[Plugin] Requesting message dialog: {} - {}",
             title, message
         );
-        self.pending_messages.lock().push((title, message));
-    }
-
-    pub(super) fn impl_copy_to_clipboard(&mut self, text: String) -> bool {
-        info!("[Plugin] Copying to clipboard: {}", text);
-        *self.pending_clipboard.lock() = Some(text);
-        true
     }
 }

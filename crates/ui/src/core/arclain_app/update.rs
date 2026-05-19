@@ -435,7 +435,6 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             {
                 let tab = app.shared_state.signals().tabs.get().active().clone();
                 tab.active_toolbar.set(crate::core::signals::ToolbarContext::Archive);
-                tab.status_message.set(None);
             }
             // Close any open plugin pages
             {

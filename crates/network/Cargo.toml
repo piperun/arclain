@@ -27,7 +27,6 @@ tracing.workspace = true
 
 # Error handling
 thiserror = "1"
-anyhow.workspace = true
 
 # Serialization (for whitelist entries and API responses)
 serde.workspace = true

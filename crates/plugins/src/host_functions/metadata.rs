@@ -6,10 +6,7 @@ use tracing::{debug, error, warn};
 
 impl HostFunctions {
     pub(super) fn impl_emit_metadata(&mut self, metadata_json: String) {
-        // Store metadata for the host to process
         debug!("[Plugin] Emitting metadata");
-
-        *self.emitted_metadata.lock() = Some(metadata_json.clone());
 
         // Auto-persist to MetadataStore
         // Flatten the JSON to get the ID
@@ -652,73 +649,6 @@ impl HostFunctions {
         })
     }
 
-    pub(super) fn impl_export_cache(&mut self) -> Result<String, String> {
-        if let Some(lib_svc) = &self.library_service {
-            use arclain_core::MetadataSource;
-            match lib_svc.list_by_source(MetadataSource::DLSite) {
-                Ok(entries) => {
-                    if let Some(path) = rfd::FileDialog::new()
-                        .set_file_name("arclain_metadata_export.json")
-                        .add_filter("JSON", &["json"])
-                        .save_file()
-                    {
-                        let json = serde_json::to_string_pretty(&entries)
-                            .map_err(|e| format!("Serialization failed: {}", e))?;
-
-                        std::fs::write(&path, json)
-                            .map_err(|e| format!("Failed to write file: {}", e))?;
-
-                        Ok(format!("Exported {} entries to {:?}", entries.len(), path))
-                    } else {
-                        Err("Export cancelled".to_string())
-                    }
-                }
-                Err(e) => Err(format!("Failed to list entries: {}", e)),
-            }
-        } else {
-            Err("LibraryService not initialized".to_string())
-        }
-    }
-
-    pub(super) fn impl_import_cache(&mut self) -> Result<String, String> {
-        if let Some(lib_svc) = &self.library_service {
-            if let Some(path) = rfd::FileDialog::new()
-                .add_filter("JSON", &["json"])
-                .pick_file()
-            {
-                let content = std::fs::read_to_string(&path)
-                    .map_err(|e| format!("Failed to read file: {}", e))?;
-
-                // Try to parse as list of ProductMetadata
-                let entries: Vec<arclain_core::ProductMetadata> = serde_json::from_str(&content)
-                    .map_err(|e| {
-                        format!(
-                            "Invalid JSON format (expected ProductMetadata array): {}",
-                            e
-                        )
-                    })?;
-
-                let count = entries.len();
-                let mut imported = 0;
-                for meta in entries {
-                    if let Err(e) = lib_svc.save_metadata(&meta) {
-                        error!("Failed to import entry {}: {}", meta.id, e);
-                    } else {
-                        imported += 1;
-                    }
-                }
-
-                Ok(format!(
-                    "Imported {}/{} entries from {:?}",
-                    imported, count, path
-                ))
-            } else {
-                Err("Import cancelled".to_string())
-            }
-        } else {
-            Err("LibraryService not initialized".to_string())
-        }
-    }
 }
 
 /// Copy every non-null entry from `source` into `target`, overwriting

@@ -51,25 +51,16 @@ fn test_plugin_error_types() {
 
 #[test]
 fn test_plugin_event_types() {
-    let events = vec![
-        PluginEvent::OnArchiveOpen {
-            path: "test.zip".to_string(),
-            kind: arclain_core::ArchiveKind::Zip,
-            password: None,
-        },
-        PluginEvent::OnArchiveClose {
-            path: "test.zip".to_string(),
-        },
-        PluginEvent::OnFileExtract {
-            archive: "test.zip".to_string(),
-            file_path: "file.txt".to_string(),
-        },
-        PluginEvent::OnMetadataDisplay {
-            archive: "test.zip".to_string(),
-        },
-    ];
+    // Only `OnArchiveOpen` is wired through the dispatch worker today;
+    // other lifecycle variants were dropped in the 2026-05-19 audit
+    // because the worker silently ignored them. See PluginEvent docs.
+    let events = vec![PluginEvent::OnArchiveOpen {
+        path: "test.zip".to_string(),
+        kind: arclain_core::ArchiveKind::Zip,
+        password: None,
+    }];
 
-    assert_eq!(events.len(), 4, "Should have 4 event types");
+    assert_eq!(events.len(), 1, "Only OnArchiveOpen is currently supported");
 }
 
 #[test]

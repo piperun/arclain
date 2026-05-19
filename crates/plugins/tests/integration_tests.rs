@@ -189,31 +189,18 @@ fn test_multiple_event_types() {
     let mut manager = PluginManager::new(temp_dir.path().to_path_buf(), HashMap::new()).unwrap();
     manager.init().unwrap();
 
-    // Test various event types
-    let events = vec![
-        PluginEvent::OnArchiveOpen {
-            path: "test.zip".to_string(),
-            kind: arclain_core::ArchiveKind::Zip,
-            password: None,
-        },
-        PluginEvent::OnArchiveClose {
-            path: "test.zip".to_string(),
-        },
-        PluginEvent::OnFileExtract {
-            archive: "test.zip".to_string(),
-            file_path: "file.txt".to_string(),
-        },
-        PluginEvent::OnMetadataDisplay {
-            archive: "test.zip".to_string(),
-        },
-    ];
-
-    for event in events {
-        let responses = manager.dispatch_event(&event);
-        assert_eq!(
-            responses.len(),
-            0,
-            "Should have no responses from empty plugin set"
-        );
-    }
+    // Only `OnArchiveOpen` exists today; the dispatch_event call still
+    // returns zero responses against an empty plugin set, which is the
+    // invariant this test was guarding.
+    let event = PluginEvent::OnArchiveOpen {
+        path: "test.zip".to_string(),
+        kind: arclain_core::ArchiveKind::Zip,
+        password: None,
+    };
+    let responses = manager.dispatch_event(&event);
+    assert_eq!(
+        responses.len(),
+        0,
+        "Should have no responses from empty plugin set"
+    );
 }

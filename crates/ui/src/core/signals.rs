@@ -304,11 +304,9 @@ mod tests {
         // Per-tab signals start at defaults
         assert!(tab.entries.get().is_empty());
         assert!(tab.metadata.get().is_none());
-        assert!(!tab.loading.get());
         assert!(tab.archive_path.get().is_none());
         assert!(tab.ui_ready.get()); // Starts true
         assert_eq!(tab.active_toolbar.get(), ToolbarContext::Archive);
-        assert!(tab.status_message.get().is_none());
         assert!(tab.game_metadata.get().is_none());
         assert!(tab.current_password.get().is_none());
 
@@ -325,15 +323,12 @@ mod tests {
         let tab = signals.tabs.get().active().clone();
 
         // Set some per-tab values
-        tab.loading.set(true);
         tab.archive_path.set(Some(PathBuf::from("/test")));
-        tab.status_message.set(Some("message".to_string()));
         tab.current_password.set(Some("secret".to_string()));
         // Set a global value
         signals.search_text.set("test".to_string());
 
         // Verify values are set
-        assert!(tab.loading.get());
         assert!(tab.archive_path.get().is_some());
         assert_eq!(signals.search_text.get(), "test");
 
@@ -342,9 +337,7 @@ mod tests {
         let tab2 = signals.tabs.get().active().clone();
 
         // Per-tab signals reset via new TabState
-        assert!(!tab2.loading.get());
         assert!(tab2.archive_path.get().is_none());
-        assert!(tab2.status_message.get().is_none());
         assert!(tab2.current_password.get().is_none());
         // Global signal reset
         assert!(signals.search_text.get().is_empty());
@@ -354,10 +347,6 @@ mod tests {
     fn test_signal_set_get_roundtrip() {
         let signals = AppSignals::new();
         let tab = signals.tabs.get().active().clone();
-
-        // Per-tab signals
-        tab.loading.set(true);
-        assert!(tab.loading.get());
 
         signals.search_text.set("query".to_string());
         assert_eq!(signals.search_text.get(), "query");
@@ -386,8 +375,8 @@ mod tests {
         // so active() returns the same Arc<TabState>
         let tab1 = signals1.tabs.get().active().clone();
         let tab2 = signals2.tabs.get().active().clone();
-        tab2.loading.set(true);
-        assert!(tab1.loading.get());
+        tab2.archive_path.set(Some(PathBuf::from("/shared.zip")));
+        assert_eq!(tab1.archive_path.get(), Some(PathBuf::from("/shared.zip")));
     }
 
     #[test]

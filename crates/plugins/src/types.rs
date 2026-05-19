@@ -1,6 +1,6 @@
 //! Core types for the plugin system
 
-use arclain_core::{ArchiveEntry, ArchiveKind};
+use arclain_core::ArchiveKind;
 use serde::{Deserialize, Serialize};
 
 /// Plugin metadata describing the plugin's identity and capabilities
@@ -30,7 +30,13 @@ pub enum PluginCapability {
     ArchiveModify,
 }
 
-/// Events that plugins can subscribe to
+/// Events that plugins can subscribe to.
+///
+/// Only `OnArchiveOpen` is wired through the dispatch worker today;
+/// the other lifecycle variants (close, list, extract, etc.) were
+/// dropped in the 2026-05-19 audit because the worker silently
+/// ignored them and no plugin handler had ever observed them. Add a
+/// new variant only when the dispatch path is ready to forward it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PluginEvent {
@@ -41,23 +47,6 @@ pub enum PluginEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         password: Option<String>,
     },
-    /// Archive was closed
-    OnArchiveClose { path: String },
-    /// Archive contents were listed
-    OnArchiveList {
-        path: String,
-        entries: Vec<ArchiveEntry>,
-    },
-    /// File was extracted from archive
-    OnFileExtract { archive: String, file_path: String },
-    /// File was opened from archive
-    OnFileOpen { archive: String, file_path: String },
-    /// File was added to archive
-    OnFileAdd { archive: String, file_path: String },
-    /// File was deleted from archive
-    OnFileDelete { archive: String, file_path: String },
-    /// Metadata display requested
-    OnMetadataDisplay { archive: String },
 }
 
 /// Response from a plugin after handling an event

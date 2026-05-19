@@ -603,7 +603,6 @@ pub fn load_archive_into_tab(
 
     let path_owned = path.to_path_buf();
     std::thread::spawn(move || {
-        tab.loading.set(true);
         let mut st = state.lock();
         match st.list_archive(&path_owned) {
             Ok(archive_entries) => {
@@ -618,12 +617,10 @@ pub fn load_archive_into_tab(
                 crate::core::operations::navigation_view::refresh_view_entries_for_tab(
                     &signals, tab_id,
                 );
-                tab.loading.set(false);
             }
             Err(e) => {
                 drop(st);
                 let err_msg = e.to_string();
-                tab.loading.set(false);
                 if is_password_error(&err_msg) {
                     let mut pwd = signals.password_dialog.get();
                     pwd.show = true;

@@ -123,9 +123,6 @@ interface host {
     // Status bar message (for plugin to display selected entry, etc.)
     set-status-message: func(message: string);
 
-    // Copy text to system clipboard
-    copy-to-clipboard: func(text: string) -> bool;
-
     // Metadata Cache Management (for UI, not plugin data access)
     list-cached-entries: func() -> list<string>;
     
@@ -141,10 +138,7 @@ interface host {
     // Priority: metadata.sqlite -> JSON cache -> HTML cache (host parses)
     // Returns ProductMetadata as JSON string, or None if not found anywhere
     get-product-metadata: func(product-id: string, source: string) -> option<string>;
-    
-    export-cache: func() -> result<string, string>;
-    import-cache: func() -> result<string, string>;
-    
+
     // File operations
     // Create a file in the host's temp directory
     // Returns the full path to the created file, or an error message

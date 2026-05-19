@@ -40,8 +40,6 @@ pub struct HostFunctions {
     /// untouched plugins (audit P14). Initialized to `true` so the very
     /// first snapshot populates the manager-side cache.
     pub settings_dirty: Arc<AtomicBool>,
-    pub pending_messages: Arc<Mutex<Vec<(String, String)>>>,
-    pub emitted_metadata: Arc<Mutex<Option<String>>>,
     pub network_log: Arc<Mutex<Vec<(std::time::SystemTime, String)>>>,
     pub library_service: Option<Arc<arclain_core::LibraryService>>,
     pub content_cache: Option<Arc<arclain_data::ContentCache>>,
@@ -59,9 +57,6 @@ pub struct HostFunctions {
 
     // Pending status message from plugin (to be displayed in status bar)
     pub pending_status_message: Arc<Mutex<Option<String>>>,
-
-    // Pending clipboard text from plugin (to be copied by UI)
-    pub pending_clipboard: Arc<Mutex<Option<String>>>,
 
     /// Per-plugin log file with rate limit + size cap. ERROR/WARN
     /// lines also escalate to arclain.log; INFO/DEBUG/TRACE go here
@@ -103,8 +98,6 @@ impl HostFunctions {
             current_password: Arc::new(Mutex::new(None)),
             settings: Arc::new(Mutex::new(initial_settings)),
             settings_dirty: Arc::new(AtomicBool::new(true)),
-            pending_messages: Arc::new(Mutex::new(Vec::new())),
-            emitted_metadata: Arc::new(Mutex::new(None)),
             network_log: Arc::new(Mutex::new(Vec::new())),
             library_service: None,
             content_cache: None,
@@ -117,7 +110,6 @@ impl HostFunctions {
             ctx,
             metadata_signal: None,
             pending_status_message: Arc::new(Mutex::new(None)),
-            pending_clipboard: Arc::new(Mutex::new(None)),
             plugin_logger,
         }
     }
@@ -335,10 +327,6 @@ impl Host for HostFunctions {
         *self.pending_status_message.lock() = Some(message);
     }
 
-    fn copy_to_clipboard(&mut self, text: String) -> bool {
-        self.impl_copy_to_clipboard(text)
-    }
-
     fn list_cached_entries(&mut self) -> Vec<String> {
         self.impl_list_cached_entries()
     }
@@ -352,14 +340,6 @@ impl Host for HostFunctions {
 
     fn get_product_metadata(&mut self, product_id: String, source: String) -> Option<String> {
         self.impl_get_product_metadata(product_id, source)
-    }
-
-    fn export_cache(&mut self) -> Result<String, String> {
-        self.impl_export_cache()
-    }
-
-    fn import_cache(&mut self) -> Result<String, String> {
-        self.impl_import_cache()
     }
 
     // === Data API (unified) ===

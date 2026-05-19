@@ -231,6 +231,7 @@ impl LazyArchiveDataObject {
     }
 
     fn ensure_extracted(&self) -> std::result::Result<(), String> {
+        // Fast path: already extracted? Just a read lock.
         {
             let cache = self.cache.read();
             if cache.as_ref().map(|c| c.extracted).unwrap_or(false) {
@@ -239,12 +240,18 @@ impl LazyArchiveDataObject {
             }
         }
 
-        let mut cache = self.cache.write();
-        if cache.as_ref().map(|c| c.extracted).unwrap_or(false) {
-            debug!("[drag] Already extracted (after lock), skipping");
-            return Ok(());
-        }
-
+        // Slow path: extract WITHOUT holding the lock. Audit finding R1 —
+        // the previous version held `cache.write()` across `backend.extract_*`,
+        // blocking every other COM caller (Explorer asking for additional
+        // FileContents items, sibling GetData() calls) for the full
+        // extraction window. Mirrors the pattern HDropDataObject already
+        // uses: do work locally, write-lock briefly only to publish.
+        //
+        // Race: two concurrent callers can both pass the fast-path check,
+        // both create temp dirs, and both extract in parallel. That's wasted
+        // work but correct — the second writer drops its temp dir on cache
+        // install (see "loser drops temp" below) and TempDir's Drop handles
+        // filesystem cleanup. Acceptable given how rare concurrent drags are.
         let start = Instant::now();
 
         let temp_dir =
@@ -346,6 +353,15 @@ impl LazyArchiveDataObject {
             elapsed.as_secs_f64()
         );
 
+        // Publish. Brief write lock — only held for the swap, not extraction.
+        let mut cache = self.cache.write();
+        if cache.as_ref().map(|c| c.extracted).unwrap_or(false) {
+            // Loser drops temp: another caller raced us to extraction. Our
+            // temp_dir falls out of scope here and TempDir::drop cleans up
+            // the filesystem. The cache stays pointing at the winner's dir.
+            debug!("[drag] Race detected — other caller already published; discarding our temp dir");
+            return Ok(());
+        }
         *cache = Some(ExtractionCache {
             temp_dir,
             extracted: true,

@@ -310,7 +310,6 @@ dependencies = [
 name = "arclain-network"
 version = "2.0.0"
 dependencies = [
- "anyhow",
  "parking_lot",
  "reqwest",
  "serde",
