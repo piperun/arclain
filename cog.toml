@@ -1,10 +1,29 @@
 from_latest_tag = true
 ignore_merge_commits = true
 branch_whitelist = ["master", "main"]
-generate_mono_repository_global_tag = false
+
+# v2 versioning model: the 10 arclain workspace crates share a single
+# unified version published as the global tag `v{version}`. Per-package
+# tags stay enabled only so `dlsite-metadata` (excluded from the
+# workspace) can still bump independently — it ships as WASM out-of-band
+# from the desktop app.
+generate_mono_repository_global_tag = true
 generate_mono_repository_package_tags = true
 
+# Root-level pre/post hooks run on the global workspace bump. The sed
+# fan-out keeps every arclain crate's Cargo.toml version aligned with
+# the workspace version, then cargo check refreshes Cargo.lock.
 pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/core/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/db/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/data/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/plugins/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/ui/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/checksum/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/widgets/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/theme/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/network/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/signals/Cargo.toml",
     "cargo check --workspace",
 ]
 post_bump_hooks = [
@@ -21,6 +40,16 @@ authors = []
 # Named hook profile for full release validation
 [bump_profiles.release]
 pre_bump_hooks = [
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/core/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/db/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/data/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/plugins/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/ui/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/checksum/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/widgets/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/theme/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/network/Cargo.toml",
+    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' crates/signals/Cargo.toml",
     "cargo test --workspace",
     "cargo check --workspace",
 ]
@@ -28,109 +57,17 @@ post_bump_hooks = [
     "cargo check --workspace",
 ]
 
-# ─── VERSIONING RULES ────────────────────────────────────────────────────────
+# ─── VERSIONING RULES (post-v2) ───────────────────────────────────────────────
 # Use: cog bump --auto
 #
-# This bumps all packages that have relevant commits since their last tag.
-# Scoped commits route to the right package:
-#   feat(ui): ...   fix(core): ...   refactor(db): ...
+# The 10 arclain workspace crates bump together as a single unified version
+# (tag format: `v{version}`). Any feat/fix/refactor commit on the workspace
+# drives the next bump.
 #
-# arclain_ui is the main deliverable (public_api = true).
-# All other workspace crates are internal.
-#
-# Plugins (dlsite-metadata, etc.) are versioned independently since they
-# build as WASM and ship separately.
+# Plugins (dlsite-metadata, etc.) stay versioned independently because they
+# build as WASM and ship out-of-band from the desktop app. Bump those via
+# `cog bump --package dlsite-metadata` explicitly.
 # ─────────────────────────────────────────────────────────────────────────────
-
-[monorepo.packages.arclain_ui]
-path = "crates/ui"
-public_api = true
-changelog_path = "crates/ui/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain_core]
-path = "crates/core"
-public_api = false
-changelog_path = "crates/core/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain_db]
-path = "crates/db"
-public_api = false
-changelog_path = "crates/db/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain_data]
-path = "crates/data"
-public_api = false
-changelog_path = "crates/data/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain_plugins]
-path = "crates/plugins"
-public_api = false
-changelog_path = "crates/plugins/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain_checksum]
-path = "crates/checksum"
-public_api = false
-changelog_path = "crates/checksum/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain_widgets]
-path = "crates/widgets"
-public_api = false
-changelog_path = "crates/widgets/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain_theme]
-path = "crates/theme"
-public_api = false
-changelog_path = "crates/theme/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain-network]
-path = "crates/network"
-public_api = false
-changelog_path = "crates/network/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
-
-[monorepo.packages.arclain_signals]
-path = "crates/signals"
-public_api = false
-changelog_path = "crates/signals/CHANGELOG.md"
-pre_bump_hooks = [
-    "sed -i 's/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
-]
-post_bump_hooks = []
 
 [monorepo.packages.dlsite-metadata]
 path = "plugins/dlsite-metadata"
