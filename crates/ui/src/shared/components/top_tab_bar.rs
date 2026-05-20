@@ -134,12 +134,40 @@ fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
 
     if let Some(count) = badge.count {
         if count > 0 {
-            // Numeric badge
-            ui.label(
-                RichText::new(format!("{}", count))
-                    .size(10.0)
-                    .color(Color32::WHITE)
-                    .background_color(color),
+            // Numeric pill badge. `RichText::background_color` paints only
+            // behind the glyphs (not a real pill) and Color32::WHITE-on-
+            // primary is unreadable against light primary tokens. Use
+            // colors.on_primary for guaranteed contrast and paint a real
+            // rounded-rect with the count centered inside.
+            let text = format!("{}", count);
+            let font_id = egui::FontId::proportional(10.0);
+            let text_color = colors.on_primary;
+
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text.clone(), font_id.clone(), text_color);
+
+            let h_pad = 5.0_f32;
+            let pill_height = 14.0_f32;
+            let pill_size = egui::vec2(
+                (galley.size().x + h_pad * 2.0)
+                    .max(pill_height)
+                    .ceil(),
+                pill_height,
+            );
+            let (rect, _) = ui.allocate_exact_size(pill_size, egui::Sense::hover());
+
+            ui.painter().rect_filled(
+                rect,
+                egui::CornerRadius::same((pill_height / 2.0) as u8),
+                color,
+            );
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                text,
+                font_id,
+                text_color,
             );
         }
     } else if badge.dot {
