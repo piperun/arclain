@@ -334,6 +334,38 @@ impl AppSignals {
         signal_ctx.bind_named(&self.tabs, "tabs");
         signal_ctx.bind_named(&self.close_tab_confirm, "close_tab_confirm");
         signal_ctx.bind_named(&self.ask_each_time_drop, "ask_each_time_drop");
+
+        // Per-tab signal auto-binding.
+        //
+        // Per-tab signals (entries, archive_path, browser_view_state,
+        // password_dialog, progress_dialogs, …) live on each TabState
+        // and are NOT bound by the explicit bind_named calls above.
+        // Without this hook, background-thread writes to those signals
+        // (drop-zip archive list, password-error dialog show,
+        // extraction progress writes, …) would land silently and the
+        // UI would render the pre-write state until the next input
+        // event woke it up. Symptom: "drop a zip and nothing shows
+        // until I click somewhere."
+        //
+        // Bind any tabs that already exist (the default initial tab
+        // from TabsCollection::new and any tabs restored by
+        // app_lifecycle::restore_tabs_on_launch before bind_to_context
+        // fires on the first frame).
+        for tab in self.tabs.get().tabs() {
+            tab.bind_to_context_once(ctx);
+        }
+
+        // Subscribe to future tabs.set() so every newly-added tab
+        // (drop overlay, Ctrl+T, reopen-closed) gets bound the moment
+        // it joins the collection. Idempotent via the per-tab
+        // AtomicBool flag — re-firing on every mutation is cheap.
+        let ctx_for_future = ctx.clone();
+        let tabs_signal = self.tabs.clone();
+        self.tabs.subscribe(move || {
+            for tab in tabs_signal.get().tabs() {
+                tab.bind_to_context_once(&ctx_for_future);
+            }
+        });
     }
 
     /// Reset all signals to default state.

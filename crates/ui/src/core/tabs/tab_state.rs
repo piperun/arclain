@@ -138,6 +138,13 @@ pub struct TabState {
     /// without locking the signal.
     pub pinned: Arc<AtomicBool>,
 
+    /// Set true once this tab's signals have been subscribed to the
+    /// egui ctx-repaint. Guards `bind_to_context_once` against
+    /// installing duplicate listeners. Without this, every per-frame
+    /// sweep / every `signals.tabs.set` would stack another listener
+    /// onto every signal and the same write would notify 2x, 3x, …
+    pub signals_bound: AtomicBool,
+
     // Plugin instance pool (Phase 2c populates)
     pub plugin_pool: TabPluginPool,
 }
@@ -201,8 +208,57 @@ impl TabState {
             in_flight_ops: Arc::new(AtomicUsize::new(0)),
             tab_cancel: Arc::new(AtomicBool::new(false)),
             pinned: Arc::new(AtomicBool::new(false)),
+            signals_bound: AtomicBool::new(false),
             plugin_pool: TabPluginPool::default(),
         }
+    }
+
+    /// Subscribe every per-tab Signal to egui ctx-repaint. Idempotent
+    /// via the `signals_bound` AtomicBool flag — calling this more
+    /// than once on the same TabState early-returns on the second
+    /// call so we don't stack duplicate listeners.
+    ///
+    /// The full repaint-binding story: `AppSignals::bind_to_context`
+    /// (called once from `bind_signals_once` on the first frame)
+    /// binds the outer `tabs` collection signal AND subscribes a
+    /// "bind any newly-added tabs" sweep to it. That sweep iterates
+    /// the post-set collection and calls this method on each tab.
+    /// New tabs (drop overlay, Ctrl+T, reopen-closed, persistence
+    /// restore) therefore get their per-tab signals bound the moment
+    /// they join the collection. Background writes to per-tab signals
+    /// from worker threads (archive list, extraction progress, etc.)
+    /// then trigger UI repaints automatically, no manual
+    /// `ctx.request_repaint()` needed at the write sites.
+    ///
+    /// Note: `ui_ready` is intentionally NOT bound (control signal,
+    /// not display). `archive_loaded` / `archive_info` are `Computed`,
+    /// not `Signal`, and recompute lazily on `.get()` — readers pick
+    /// up the new value the next frame because the renderer always
+    /// polls each frame.
+    pub fn bind_to_context_once(&self, ctx: &egui::Context) {
+        use std::sync::atomic::Ordering;
+        if self.signals_bound.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let sig_ctx = arclain_signals::SignalContext::new(ctx.clone());
+        sig_ctx.bind_named(&self.archive_path, "tab.archive_path");
+        sig_ctx.bind_named(&self.entries, "tab.entries");
+        sig_ctx.bind_named(&self.metadata, "tab.metadata");
+        sig_ctx.bind_named(&self.archive_extras, "tab.archive_extras");
+        sig_ctx.bind_named(&self.game_metadata, "tab.game_metadata");
+        sig_ctx.bind_named(&self.navigation, "tab.navigation");
+        sig_ctx.bind_named(&self.current_password, "tab.current_password");
+        sig_ctx.bind_named(&self.selection_count, "tab.selection_count");
+        sig_ctx.bind_named(&self.opened_archive, "tab.opened_archive");
+        sig_ctx.bind_named(&self.browser_view_state, "tab.browser_view_state");
+        sig_ctx.bind_named(&self.page_display_name, "tab.page_display_name");
+        sig_ctx.bind_named(&self.active_toolbar, "tab.active_toolbar");
+        sig_ctx.bind_named(&self.pending_open_file, "tab.pending_open_file");
+        sig_ctx.bind_named(&self.file_edit_dialog, "tab.file_edit_dialog");
+        sig_ctx.bind_named(&self.merge_dialog, "tab.merge_dialog");
+        sig_ctx.bind_named(&self.lightbox_state, "tab.lightbox_state");
+        sig_ctx.bind_named(&self.password_dialog, "tab.password_dialog");
+        sig_ctx.bind_named(&self.progress_dialogs, "tab.progress_dialogs");
     }
 
     /// Display title derived from the current archive_path. Recomputed

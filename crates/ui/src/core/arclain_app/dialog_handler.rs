@@ -364,7 +364,6 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     app.shared_state.signals().clone(),
                     tab_id,
                     &path,
-                    ctx.clone(),
                 );
             }
         }
@@ -591,14 +590,12 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                             app.shared_state.signals().tabs.set(col);
                             let state = app.shared_state.app_state.clone();
                             let signals = app.shared_state.signals().clone();
-                            let ctx_clone = ctx.clone();
                             for (tab_id, path) in tabs_to_load {
                                 crate::core::operations::archive::load_archive_into_tab(
                                     state.clone(),
                                     signals.clone(),
                                     tab_id,
                                     &path,
-                                    ctx_clone.clone(),
                                 );
                             }
                         }

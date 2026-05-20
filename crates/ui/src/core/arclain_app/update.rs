@@ -230,7 +230,6 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             app.shared_state.signals().clone(),
             new_tab_id,
             &path,
-            ctx.clone(),
         );
     }
 
@@ -580,7 +579,6 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                             app.shared_state.signals().clone(),
                             new_tab_id,
                             &path,
-                            ctx.clone(),
                         );
                     }
                 }

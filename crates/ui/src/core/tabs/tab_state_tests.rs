@@ -14,6 +14,74 @@ fn default_state_signals_are_initialized() {
     assert!(tab.opened_archive.get().is_none());
     assert_eq!(tab.in_flight_ops.load(Ordering::SeqCst), 0);
     assert!(!tab.tab_cancel.load(Ordering::SeqCst));
+    // Auto-binding flag must start false so the first bind sweep
+    // actually subscribes listeners. See `bind_to_context_once`.
+    assert!(!tab.signals_bound.load(Ordering::SeqCst));
+}
+
+#[test]
+fn bind_to_context_is_idempotent() {
+    // Regression test for the "drop-zip shows empty list until
+    // I click somewhere" bug class. The design flaw was that
+    // per-tab signals had no ctx-repaint listeners — background
+    // writes landed silently. Fix: TabState::bind_to_context_once
+    // subscribes every per-tab signal. Guarded by signals_bound
+    // (AtomicBool) so re-firing the sweep on every tabs.set
+    // doesn't stack duplicate listeners (which would multiply
+    // repaint requests on every write).
+    let tab = TabState::new(TabId(1));
+    let ctx = egui::Context::default();
+
+    assert!(!tab.signals_bound.load(Ordering::SeqCst));
+
+    tab.bind_to_context_once(&ctx);
+    assert!(
+        tab.signals_bound.load(Ordering::SeqCst),
+        "first bind must flip the flag"
+    );
+
+    // Second call MUST early-return — if it stacked another
+    // round of bind_named on every signal, every signal write
+    // would notify 2x, 3x, … on subsequent calls. Verify the
+    // flag stays true (i.e. swap returned the previous value
+    // and the bind body was skipped).
+    tab.bind_to_context_once(&ctx);
+    assert!(tab.signals_bound.load(Ordering::SeqCst));
+
+    // And third, just to nail the contract.
+    tab.bind_to_context_once(&ctx);
+    assert!(tab.signals_bound.load(Ordering::SeqCst));
+}
+
+#[test]
+fn bind_to_context_subscribes_repaint_on_signal_write() {
+    // Behavioural half of the regression test. After binding,
+    // writing a per-tab signal must trigger an egui repaint
+    // request — without this, drop-zip and password-dialog show
+    // would land silently.
+    //
+    // egui's `Context::has_requested_repaint` reflects whether
+    // any subscriber called `request_repaint()` since the last
+    // frame. We bind, write a signal, then check the flag.
+    let tab = TabState::new(TabId(1));
+    let ctx = egui::Context::default();
+    tab.bind_to_context_once(&ctx);
+
+    // Drive a frame so any pre-bind repaint requests are cleared
+    // (Context::default starts with an implicit first-frame
+    // repaint pending). The closure returns the test value we
+    // care about — egui's `run` handles the frame lifecycle.
+    let _ = ctx.run(Default::default(), |_| {});
+
+    // Now perform the write that should trigger a repaint.
+    tab.archive_path
+        .set(Some(PathBuf::from("/test/archive.zip")));
+
+    assert!(
+        ctx.has_requested_repaint(),
+        "writing tab.archive_path after bind_to_context_once must \
+         request a UI repaint (drop-zip regression class)"
+    );
 }
 
 #[test]

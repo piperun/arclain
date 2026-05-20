@@ -615,19 +615,17 @@ pub fn convert_archive(
 /// multi-tab loads — it targets a known TabId regardless of which tab is
 /// active at completion time.
 ///
-/// Per-tab signals (`entries`, `archive_path`, `browser_view_state`, …)
-/// are NOT bound to the egui context (see `AppSignals::bind_to_context`
-/// — only the outer `tabs` collection signal is bound). The background
-/// writes below would therefore land silently and the UI would keep
-/// rendering the pre-drop empty state until the next input event woke
-/// it up. `ctx.request_repaint()` after the writes is what makes the
-/// drop path feel instant.
+/// Per-tab signals (`entries`, `archive_path`, `browser_view_state`,
+/// `password_dialog`, …) are auto-bound to the egui ctx-repaint via
+/// `TabState::bind_to_context_once`, which `AppSignals::bind_to_context`
+/// sweeps over every tab on creation. Background writes here therefore
+/// automatically trigger a UI repaint — no manual `ctx.request_repaint()`
+/// needed.
 pub fn load_archive_into_tab(
     state: Arc<Mutex<AppState>>,
     signals: AppSignals,
     tab_id: TabId,
     path: &std::path::Path,
-    ctx: egui::Context,
 ) {
     let Some(tab) = signals.tabs.get().get(tab_id).cloned() else {
         tracing::warn!("[tabs] load_archive_into_tab: tab {:?} not found", tab_id);
@@ -650,7 +648,6 @@ pub fn load_archive_into_tab(
                 crate::core::operations::navigation_view::refresh_view_entries_for_tab(
                     &signals, tab_id,
                 );
-                ctx.request_repaint();
             }
             Err(e) => {
                 drop(st);
@@ -673,7 +670,6 @@ pub fn load_archive_into_tab(
                     bar.message = format!("Failed to load archive: {}", err_msg);
                     signals.status_bar.set(bar);
                 }
-                ctx.request_repaint();
             }
         }
     });
