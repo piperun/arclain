@@ -1,18 +1,27 @@
+use crate::core::operations::archive::ArchiveInfo;
 use crate::core::operations::window::format_duration;
+use crate::core::utils::format_size;
 use crate::shared::theme::AppTheme;
 use arclain_core::features::organization::GameMetadata;
 use eframe::egui;
 use egui::Widget;
 use std::time::Duration;
 
+/// Status-bar UI state.
+///
+/// Pre 2026-05-20 Tier 2 item 7 this struct also carried mirrored
+/// `file_count` / `total_size` / `compressed_size` / `archive_format`
+/// fields. They got written into the struct during render
+/// (`render_status_bar_panel`) and were the reason the
+/// `// REMOVED: prevents infinite loop` workaround existed at
+/// `update.rs:319` — persisting them back to the signal triggered a
+/// listener cascade. Item 7 drops the mirror; the renderer now pulls
+/// the counts/sizes/format from the per-tab `Computed<ArchiveInfo>`
+/// directly. See audit §4.2.
 #[derive(Clone, Debug, PartialEq)]
 pub struct StatusBarInfo {
     pub message: String,
-    pub file_count: usize,
     pub folder_count: usize,
-    pub total_size: String,
-    pub compressed_size: String,
-    pub archive_format: String,
     pub active_operation: Option<String>,
     pub operation_time: Option<Duration>,
 }
@@ -28,11 +37,7 @@ impl Default for StatusBarInfo {
     fn default() -> Self {
         Self {
             message: "Ready".to_string(),
-            file_count: 0,
             folder_count: 0,
-            total_size: String::new(),
-            compressed_size: String::new(),
-            archive_format: String::new(),
             active_operation: None,
             operation_time: None,
         }
@@ -43,7 +48,7 @@ pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     info: &StatusBarInfo,
-    archive_loaded: bool,
+    archive_info: Option<&ArchiveInfo>,
     plugin_info: Option<&PluginStatusInfo>,
     selected_item: Option<&GameMetadata>,
 ) {
@@ -87,7 +92,12 @@ pub fn render(
                 .ui(ui);
         }
 
-        if archive_loaded {
+        // The right-side archive-info chips only show when an archive
+        // is loaded. `archive_info` is the per-tab Computed pulled
+        // fresh each frame; pre-Tier-2 the 4 fields lived on
+        // StatusBarInfo and got copied here during render (see struct
+        // doc).
+        if let Some(ai) = archive_info {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(12.0);
 
@@ -99,7 +109,7 @@ pub fn render(
 
                 arclain_widgets::Text::new("|").size(12.0).muted().show(ui);
 
-                arclain_widgets::Text::new(&info.archive_format)
+                arclain_widgets::Text::new(&ai.archive_format)
                     .size(12.0)
                     .muted()
                     .show(ui);
@@ -108,7 +118,8 @@ pub fn render(
 
                 arclain_widgets::Text::new(&format!(
                     "{} ({} compressed)",
-                    info.total_size, info.compressed_size
+                    format_size(ai.total_size),
+                    format_size(ai.compressed_size)
                 ))
                 .size(12.0)
                 .muted()
@@ -123,7 +134,7 @@ pub fn render(
 
                 arclain_widgets::Text::new("|").size(12.0).muted().show(ui);
 
-                arclain_widgets::Text::new(&format!("{} files", info.file_count))
+                arclain_widgets::Text::new(&format!("{} files", ai.file_count))
                     .size(12.0)
                     .muted()
                     .show(ui);

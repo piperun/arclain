@@ -1,6 +1,6 @@
 use crate::core::signals::AppSignals;
 use crate::core::tabs::{OpGuard, TabId, TabState};
-use crate::core::utils::{convert_to_file_entry, format_size};
+use crate::core::utils::convert_to_file_entry;
 use crate::core::AppState;
 use crate::features::password_management::dialogs;
 use crate::shared::components::status_bar;
@@ -325,14 +325,9 @@ pub fn load_archive_data(
     }
 
     // Status bar pulls counts/sizes/format from the Computed archive_info
-    // — no manual mirror needed. Item 7 of the same audit will drop
-    // the StatusBarInfo mirror fields entirely.
-    let ai = tab.archive_info.get();
+    // each render — no manual mirror writes (the mirror fields are gone
+    // from StatusBarInfo as of Tier 2 item 7).
     status_info.message = "Archive loaded successfully".to_string();
-    status_info.file_count = ai.file_count;
-    status_info.total_size = format_size(ai.total_size);
-    status_info.compressed_size = format_size(ai.compressed_size);
-    status_info.archive_format = ai.archive_format.clone();
 
     // Populate view entries for the initial file list display
     crate::core::operations::navigation_view::refresh_view_entries(&signals);

@@ -165,10 +165,17 @@ pub fn render_tab_bar_panel(
 }
 
 /// Render the status bar panel
+///
+/// Post 2026-05-20 Tier 2 item 7 this no longer mutates `status_info`
+/// — the archive count/size/format fields it used to copy into the
+/// struct now live on the per-tab `Computed<ArchiveInfo>` and the
+/// child render() reads them directly. The signature stays `&` (no
+/// mut) so callers can drop their pre-render-clone / post-render-set
+/// dance.
 pub fn render_status_bar_panel(
     ctx: &egui::Context,
     shared_state: &SharedState,
-    status_info: &mut components::StatusBarInfo,
+    status_info: &components::StatusBarInfo,
 ) {
     egui::TopBottomPanel::bottom("status_bar")
         // Tall enough to fit a pill-style chip (Chips widget renders
@@ -188,15 +195,15 @@ pub fn render_status_bar_panel(
             let tab = shared_state.signals().tabs.get().active().clone();
             let archive_loaded = tab.archive_loaded.get();
 
-            // Update status info from state
-            if archive_loaded {
-                let archive_info = tab.archive_info.get();
-                status_info.file_count = archive_info.file_count;
-                status_info.total_size = crate::core::utils::format_size(archive_info.total_size);
-                status_info.compressed_size =
-                    crate::core::utils::format_size(archive_info.compressed_size);
-                status_info.archive_format = archive_info.archive_format;
-            }
+            // Post 2026-05-20 Tier 2 item 7 the count/size/format
+            // fields live on the per-tab Computed<ArchiveInfo>, no
+            // longer mirrored into status_info. Pull a fresh derived
+            // value only when an archive is loaded.
+            let archive_info = if archive_loaded {
+                Some(tab.archive_info.get())
+            } else {
+                None
+            };
             let has_metadata = tab.metadata.read().is_some();
 
             // Status bar only needs counts. Use the cheap status_summary
@@ -223,7 +230,7 @@ pub fn render_status_bar_panel(
                 ui,
                 &shared_state.theme,
                 status_info,
-                archive_loaded,
+                archive_info.as_ref(),
                 plugin_info.as_ref(),
                 selected_item.as_ref(),
             );

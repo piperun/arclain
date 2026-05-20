@@ -315,7 +315,16 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             &mut status.message,
             ctx,
         );
-        // app.shared_state.signals().status_bar.set_if_changed(status); // REMOVED: prevents infinite loop
+        // Post 2026-05-20 Tier 2 item 7: this write is back. The
+        // pre-Tier-2 status_bar had file_count/total_size/etc.
+        // mirrored from archive_info, and the render pass kept
+        // writing those mirrors every frame — persisting that to
+        // the signal triggered a listener -> repaint -> render -> ...
+        // cycle. With the mirror fields gone, the only field this
+        // pass mutates is `status.message`, and only when an
+        // extraction is actually progressing (so set_if_changed is
+        // a no-op on idle frames). The cycle is structurally broken.
+        app.shared_state.signals().status_bar.set_if_changed(status);
         active_tab
             .extraction_dialog()
             .set_if_changed(dialog);
@@ -600,12 +609,16 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     }
 
     // === Render Status Bar ===
-    // === Render Status Bar ===
-    let mut status_info = app.shared_state.signals().status_bar.get();
-    app_rendering::render_status_bar_panel(ctx, &app.shared_state, &mut status_info);
-    // Note: We do NOT save status_info back to the signal here using set_if_changed.
-    // render_status_bar_panel updates the struct with archive_info stats for display,
-    // but persisting it causes an infinite repaint loop if the signal notifies.
+    // Post 2026-05-20 Tier 2 item 7: the renderer no longer mutates
+    // `status_info` — the count/size/format fields used to live on
+    // StatusBarInfo and were copied in during render, which is what
+    // produced the original `// REMOVED: prevents infinite loop`
+    // workaround. The count/size/format fields are now read from
+    // the per-tab `Computed<ArchiveInfo>` directly inside the
+    // render() body, no struct mutation happens, no write-back is
+    // needed.
+    let status_info = app.shared_state.signals().status_bar.get();
+    app_rendering::render_status_bar_panel(ctx, &app.shared_state, &status_info);
 
     // Render Password Dialog & Rules & Extraction & Edit
     crate::core::arclain_app::dialog_handler::render_dialogs(app, ctx);
