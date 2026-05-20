@@ -74,25 +74,9 @@ pub use ui::{
 
 mod domain_whitelist;
 pub use domain_whitelist::{
-    approve_domain,
-    approve_domain_diesel,
-    delete_plugin_whitelist,
-    delete_whitelist_entry,
-    delete_whitelist_entry_diesel,
-    domain_exists,
-    ensure_whitelist_table,
-    is_domain_approved,
-    is_domain_approved_diesel,
-    list_pending_approvals,
-    list_plugin_domains,
-    list_plugin_domains_diesel,
-    list_whitelist_entries,
-    // Diesel DSL versions
-    list_whitelist_entries_diesel,
-    revoke_domain,
-    revoke_domain_diesel,
-    upsert_whitelist_entry,
-    DbWhitelistEntry,
+    approve_domain, delete_plugin_whitelist, delete_whitelist_entry, domain_exists,
+    ensure_whitelist_table, is_domain_approved, list_pending_approvals, list_plugin_domains,
+    list_whitelist_entries, revoke_domain, upsert_whitelist_entry, DbWhitelistEntry,
     DbWhitelistRow,
 };
 

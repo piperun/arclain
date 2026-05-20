@@ -4,6 +4,7 @@
 
 use crate::diesel_err;
 use anyhow::Result;
+use diesel::prelude::*;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +21,7 @@ pub struct DbWhitelistEntry {
     pub approved: bool,
 }
 
-/// Diesel-compatible query result for whitelist entries
+/// Diesel-compatible query row for whitelist entries
 #[derive(Debug, Clone, diesel::Queryable, diesel::Selectable)]
 #[diesel(table_name = crate::diesel_schema::domain_whitelist)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -54,7 +55,20 @@ impl DbWhitelistEntry {
     }
 }
 
-/// Ensure the domain_whitelist table exists
+fn row_to_entry(r: DbWhitelistRow) -> DbWhitelistEntry {
+    DbWhitelistEntry {
+        id: Some(r.id as i64),
+        plugin_id: r.plugin_id,
+        domain: r.domain,
+        approved: r.approved,
+    }
+}
+
+/// Ensure the domain_whitelist table exists.
+///
+/// Rusqlite-flavoured because it's called from
+/// [`ConfigDb::create_tables`] during startup, before any Diesel pool
+/// exists. All CRUD on this table uses Diesel.
 pub fn ensure_whitelist_table(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS domain_whitelist (
@@ -78,227 +92,76 @@ pub fn ensure_whitelist_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ============================================================================
+// Diesel DSL CRUD
+// ============================================================================
+
 /// List all whitelist entries
-pub fn list_whitelist_entries(conn: &Connection) -> Result<Vec<DbWhitelistEntry>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, plugin_id, domain, approved FROM domain_whitelist ORDER BY plugin_id, domain",
-    )?;
-
-    let entries = stmt
-        .query_map([], |row| {
-            Ok(DbWhitelistEntry {
-                id: Some(row.get(0)?),
-                plugin_id: row.get(1)?,
-                domain: row.get(2)?,
-                approved: row.get::<_, i32>(3)? != 0,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(entries)
-}
-
-/// List whitelist entries for a specific plugin
-pub fn list_plugin_domains(conn: &Connection, plugin_id: &str) -> Result<Vec<DbWhitelistEntry>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, plugin_id, domain, approved 
-         FROM domain_whitelist 
-         WHERE plugin_id = ?1
-         ORDER BY domain",
-    )?;
-
-    let entries = stmt
-        .query_map([plugin_id], |row| {
-            Ok(DbWhitelistEntry {
-                id: Some(row.get(0)?),
-                plugin_id: row.get(1)?,
-                domain: row.get(2)?,
-                approved: row.get::<_, i32>(3)? != 0,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(entries)
-}
-
-/// Add or update a whitelist entry (upsert)
-pub fn upsert_whitelist_entry(conn: &Connection, entry: &DbWhitelistEntry) -> Result<i64> {
-    let approved_at = if entry.approved {
-        "CURRENT_TIMESTAMP"
-    } else {
-        "NULL"
-    };
-
-    conn.execute(
-        &format!(
-            "INSERT INTO domain_whitelist (plugin_id, domain, approved, approved_at)
-             VALUES (?1, ?2, ?3, {})
-             ON CONFLICT(plugin_id, domain) DO UPDATE SET
-                approved = excluded.approved,
-                approved_at = CASE WHEN excluded.approved = 1 THEN CURRENT_TIMESTAMP ELSE approved_at END",
-            approved_at
-        ),
-        rusqlite::params![entry.plugin_id, entry.domain, entry.approved as i32],
-    )?;
-
-    Ok(conn.last_insert_rowid())
-}
-
-/// Approve a domain for a plugin
-pub fn approve_domain(conn: &Connection, plugin_id: &str, domain: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE domain_whitelist 
-         SET approved = 1, approved_at = CURRENT_TIMESTAMP
-         WHERE plugin_id = ?1 AND domain = ?2",
-        [plugin_id, domain],
-    )?;
-
-    // If no rows updated, insert new approved entry
-    if conn.changes() == 0 {
-        conn.execute(
-            "INSERT INTO domain_whitelist (plugin_id, domain, approved, approved_at)
-             VALUES (?1, ?2, 1, CURRENT_TIMESTAMP)",
-            [plugin_id, domain],
-        )?;
-    }
-
-    Ok(())
-}
-
-/// Revoke a domain for a plugin
-pub fn revoke_domain(conn: &Connection, plugin_id: &str, domain: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE domain_whitelist SET approved = 0 WHERE plugin_id = ?1 AND domain = ?2",
-        [plugin_id, domain],
-    )?;
-    Ok(())
-}
-
-/// Delete a whitelist entry entirely
-pub fn delete_whitelist_entry(conn: &Connection, plugin_id: &str, domain: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM domain_whitelist WHERE plugin_id = ?1 AND domain = ?2",
-        [plugin_id, domain],
-    )?;
-    Ok(())
-}
-
-/// Delete all entries for a plugin
-pub fn delete_plugin_whitelist(conn: &Connection, plugin_id: &str) -> Result<()> {
-    conn.execute(
-        "DELETE FROM domain_whitelist WHERE plugin_id = ?1",
-        [plugin_id],
-    )?;
-    Ok(())
-}
-
-/// Check if a domain is approved for a plugin
-pub fn is_domain_approved(conn: &Connection, plugin_id: &str, domain: &str) -> Result<bool> {
-    let result: Option<i32> = conn
-        .query_row(
-            "SELECT approved FROM domain_whitelist WHERE plugin_id = ?1 AND domain = ?2",
-            [plugin_id, domain],
-            |row| row.get(0),
-        )
-        .ok();
-
-    Ok(result == Some(1))
-}
-
-/// Check if a domain exists (approved or pending) for a plugin
-pub fn domain_exists(conn: &Connection, plugin_id: &str, domain: &str) -> Result<bool> {
-    let result: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM domain_whitelist WHERE plugin_id = ?1 AND domain = ?2",
-            [plugin_id, domain],
-            |row| row.get(0),
-        )
-        .ok();
-
-    Ok(result.is_some())
-}
-
-/// Get pending (unapproved) entries across all plugins
-pub fn list_pending_approvals(conn: &Connection) -> Result<Vec<DbWhitelistEntry>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, plugin_id, domain, approved 
-         FROM domain_whitelist 
-         WHERE approved = 0
-         ORDER BY plugin_id, domain",
-    )?;
-
-    let entries = stmt
-        .query_map([], |row| {
-            Ok(DbWhitelistEntry {
-                id: Some(row.get(0)?),
-                plugin_id: row.get(1)?,
-                domain: row.get(2)?,
-                approved: row.get::<_, i32>(3)? != 0,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(entries)
-}
-
-// ============================================================================
-// Diesel DSL versions
-// ============================================================================
-
-use diesel::prelude::*;
-use diesel::result::OptionalExtension as DieselOptionalExt;
-
-/// List all whitelist entries using Diesel DSL
-pub fn list_whitelist_entries_diesel(
+pub fn list_whitelist_entries(
     conn: &mut diesel::SqliteConnection,
-) -> Result<Vec<DbWhitelistRow>> {
+) -> Result<Vec<DbWhitelistEntry>> {
     use crate::diesel_schema::domain_whitelist::dsl::*;
 
-    let results = domain_whitelist
+    let rows = domain_whitelist
         .order((plugin_id.asc(), domain.asc()))
         .load::<DbWhitelistRow>(conn)
         .map_err(diesel_err("query"))?;
 
-    Ok(results)
+    Ok(rows.into_iter().map(row_to_entry).collect())
 }
 
-/// List whitelist entries for a specific plugin using Diesel DSL
-pub fn list_plugin_domains_diesel(
+/// List whitelist entries for a specific plugin
+pub fn list_plugin_domains(
     conn: &mut diesel::SqliteConnection,
     pid: &str,
-) -> Result<Vec<DbWhitelistRow>> {
+) -> Result<Vec<DbWhitelistEntry>> {
     use crate::diesel_schema::domain_whitelist::dsl::*;
 
-    let results = domain_whitelist
+    let rows = domain_whitelist
         .filter(plugin_id.eq(pid))
         .order(domain.asc())
         .load::<DbWhitelistRow>(conn)
         .map_err(diesel_err("query"))?;
 
-    Ok(results)
+    Ok(rows.into_iter().map(row_to_entry).collect())
 }
 
-/// Check if a domain is approved using Diesel DSL
-pub fn is_domain_approved_diesel(
+/// Add or update a whitelist entry (upsert)
+pub fn upsert_whitelist_entry(
     conn: &mut diesel::SqliteConnection,
-    pid: &str,
-    dom: &str,
-) -> Result<bool> {
+    entry: &DbWhitelistEntry,
+) -> Result<()> {
     use crate::diesel_schema::domain_whitelist::dsl::*;
 
-    let result = domain_whitelist
-        .filter(plugin_id.eq(pid).and(domain.eq(dom)))
-        .select(approved)
-        .first::<bool>(conn)
-        .optional()
-        .map_err(diesel_err("query"))?;
+    diesel::insert_into(domain_whitelist)
+        .values((
+            plugin_id.eq(&entry.plugin_id),
+            domain.eq(&entry.domain),
+            approved.eq(entry.approved),
+            approved_at.eq(if entry.approved {
+                Some(chrono::Utc::now().to_rfc3339())
+            } else {
+                None
+            }),
+        ))
+        .on_conflict((plugin_id, domain))
+        .do_update()
+        .set((
+            approved.eq(entry.approved),
+            approved_at.eq(if entry.approved {
+                Some(chrono::Utc::now().to_rfc3339())
+            } else {
+                None
+            }),
+        ))
+        .execute(conn)
+        .map_err(diesel_err("upsert"))?;
 
-    Ok(result == Some(true))
+    Ok(())
 }
 
-/// Approve a domain using Diesel DSL
-/// Approve a domain using Diesel DSL
-pub fn approve_domain_diesel(
+/// Approve a domain for a plugin (insert-or-update)
+pub fn approve_domain(
     conn: &mut diesel::SqliteConnection,
     pid: &str,
     dom: &str,
@@ -310,15 +173,13 @@ pub fn approve_domain_diesel(
             plugin_id.eq(pid),
             domain.eq(dom),
             approved.eq(true),
-            approved_at.eq(diesel::dsl::sql::<
-                diesel::sql_types::Nullable<diesel::sql_types::Text>,
-            >("CURRENT_TIMESTAMP")),
+            approved_at.eq(Some(chrono::Utc::now().to_rfc3339())),
         ))
         .on_conflict((plugin_id, domain))
         .do_update()
         .set((
             approved.eq(true),
-            approved_at.eq(diesel::dsl::sql("CURRENT_TIMESTAMP")),
+            approved_at.eq(Some(chrono::Utc::now().to_rfc3339())),
         ))
         .execute(conn)
         .map_err(diesel_err("approve"))?;
@@ -326,8 +187,8 @@ pub fn approve_domain_diesel(
     Ok(())
 }
 
-/// Revoke a domain using Diesel DSL
-pub fn revoke_domain_diesel(
+/// Revoke a domain for a plugin
+pub fn revoke_domain(
     conn: &mut diesel::SqliteConnection,
     pid: &str,
     dom: &str,
@@ -342,8 +203,8 @@ pub fn revoke_domain_diesel(
     Ok(())
 }
 
-/// Delete a whitelist entry using Diesel DSL  
-pub fn delete_whitelist_entry_diesel(
+/// Delete a whitelist entry entirely
+pub fn delete_whitelist_entry(
     conn: &mut diesel::SqliteConnection,
     pid: &str,
     dom: &str,
@@ -355,4 +216,71 @@ pub fn delete_whitelist_entry_diesel(
         .map_err(diesel_err("delete"))?;
 
     Ok(())
+}
+
+/// Delete all entries for a plugin
+pub fn delete_plugin_whitelist(
+    conn: &mut diesel::SqliteConnection,
+    pid: &str,
+) -> Result<()> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
+
+    diesel::delete(domain_whitelist.filter(plugin_id.eq(pid)))
+        .execute(conn)
+        .map_err(diesel_err("delete"))?;
+
+    Ok(())
+}
+
+/// Check if a domain is approved for a plugin
+pub fn is_domain_approved(
+    conn: &mut diesel::SqliteConnection,
+    pid: &str,
+    dom: &str,
+) -> Result<bool> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
+    use diesel::result::OptionalExtension;
+
+    let result = domain_whitelist
+        .filter(plugin_id.eq(pid).and(domain.eq(dom)))
+        .select(approved)
+        .first::<bool>(conn)
+        .optional()
+        .map_err(diesel_err("query"))?;
+
+    Ok(result == Some(true))
+}
+
+/// Check if a domain exists (approved or pending) for a plugin
+pub fn domain_exists(
+    conn: &mut diesel::SqliteConnection,
+    pid: &str,
+    dom: &str,
+) -> Result<bool> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
+    use diesel::result::OptionalExtension;
+
+    let result = domain_whitelist
+        .filter(plugin_id.eq(pid).and(domain.eq(dom)))
+        .select(id)
+        .first::<i32>(conn)
+        .optional()
+        .map_err(diesel_err("query"))?;
+
+    Ok(result.is_some())
+}
+
+/// Get pending (unapproved) entries across all plugins
+pub fn list_pending_approvals(
+    conn: &mut diesel::SqliteConnection,
+) -> Result<Vec<DbWhitelistEntry>> {
+    use crate::diesel_schema::domain_whitelist::dsl::*;
+
+    let rows = domain_whitelist
+        .filter(approved.eq(false))
+        .order((plugin_id.asc(), domain.asc()))
+        .load::<DbWhitelistRow>(conn)
+        .map_err(diesel_err("query"))?;
+
+    Ok(rows.into_iter().map(row_to_entry).collect())
 }

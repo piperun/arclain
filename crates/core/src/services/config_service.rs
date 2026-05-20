@@ -77,13 +77,13 @@ impl ConfigService {
     /// Approve a domain for a plugin
     pub fn approve_plugin_domain(&self, plugin_id: &str, domain: &str) -> Result<()> {
         self.pool
-            .with_conn(|conn| arclain_db::approve_domain_diesel(conn, plugin_id, domain))
+            .with_conn(|conn| arclain_db::approve_domain(conn, plugin_id, domain))
     }
 
     /// Revoke a domain for a plugin
     pub fn revoke_plugin_domain(&self, plugin_id: &str, domain: &str) -> Result<()> {
         self.pool
-            .with_conn(|conn| arclain_db::revoke_domain_diesel(conn, plugin_id, domain))
+            .with_conn(|conn| arclain_db::revoke_domain(conn, plugin_id, domain))
     }
     // =========================================================================
     // Startup Config Helpers
