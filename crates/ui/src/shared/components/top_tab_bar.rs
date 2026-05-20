@@ -105,6 +105,21 @@ pub fn render(
 
             let response = frame_response.response;
 
+            // Debug overlay: tab's allocated frame rect + center cross
+            // + label with position + size. Lights up when
+            // EGUI_UI_DEBUG_GUIDELINES=1 (or the per-call enable bool
+            // is true). Use to verify each tab is sitting where the
+            // layout puts it — useful for diagnosing
+            // "tabs look off-center in the bar" by comparing the rect
+            // heights / Y positions across tabs.
+            #[cfg(debug_assertions)]
+            arclain_widgets::debug::paint_widget_rect_debug(
+                ui.painter(),
+                response.rect,
+                &format!("tab:{}", tab.id),
+                arclain_widgets::ui_debug_guidelines_enabled(),
+            );
+
             // Handle click
             if response.interact(egui::Sense::click()).clicked() {
                 state.selected_tab = tab.id.clone();
