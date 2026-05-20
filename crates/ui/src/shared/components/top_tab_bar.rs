@@ -135,26 +135,27 @@ fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
     if let Some(count) = badge.count {
         if count > 0 {
             // Compact numeric badge. Uses mesh_bounds-based visual centering
-            // (via arclain_widgets::paint_text_visually_centered) — egui's
-            // Align2::CENTER_CENTER centers the line-box, which includes
-            // ascender/descender slack and makes digits look top-heavy in
-            // small containers. Sized from mesh_bounds (the actual painted
-            // glyph extent) rather than galley.size() (which includes that
-            // same slack) so the horizontal padding is even.
+            // — egui's Align2::CENTER_CENTER centers the line-box (incl.
+            // ascender/descender slack), making digits look top-heavy in
+            // small containers. We do the layout + paint by hand so the
+            // debug overlay below can show the actual painted mesh rect.
             let text = format!("{}", count);
             let font_id = egui::FontId::proportional(10.0);
             let text_color = colors.on_primary;
 
-            let probe = ui.painter().layout_no_wrap(
-                text.clone(),
+            let h_pad = 4.0_f32;
+            let badge_height = 16.0_f32;
+
+            // Layout first to learn the mesh extent (needed both for
+            // sizing the rect and for visual-centering on its center).
+            let galley = ui.painter().layout_no_wrap(
+                text,
                 font_id.clone(),
                 text_color,
             );
 
-            let h_pad = 4.0_f32;
-            let badge_height = 16.0_f32;
             let badge_size = egui::vec2(
-                (probe.mesh_bounds.width() + h_pad * 2.0)
+                (galley.mesh_bounds.width() + h_pad * 2.0)
                     .max(badge_height)
                     .ceil(),
                 badge_height,
@@ -166,13 +167,30 @@ fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
                 egui::CornerRadius::same((badge_height / 2.0) as u8),
                 color,
             );
-            arclain_widgets::paint_text_visually_centered(
-                ui.painter(),
-                text,
-                font_id,
-                text_color,
-                rect.center(),
-            );
+
+            // Paint at the offset that lands mesh_bounds.center on rect.center.
+            // Equivalent to what arclain_widgets::layout_text_visually_centered
+            // returns when given the real target_center.
+            let paint_origin =
+                rect.center() - galley.mesh_bounds.center().to_vec2();
+            ui.painter().galley(paint_origin, galley.clone(), text_color);
+
+            // Debug overlay: gated by env var ARCLAIN_DEBUG_BADGE=1 so the
+            // overlay is opt-in. Set the var before launching to see
+            // container rect + mesh-bounds rect + Δ between their centers.
+            #[cfg(debug_assertions)]
+            {
+                if std::env::var("ARCLAIN_DEBUG_BADGE").is_ok() {
+                    arclain_widgets::debug::paint_text_centering_debug(
+                        ui.painter(),
+                        rect,
+                        paint_origin,
+                        &galley,
+                        "badge",
+                        true,
+                    );
+                }
+            }
         }
     } else if badge.dot {
         // Dot badge
