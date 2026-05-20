@@ -8,7 +8,6 @@ use eframe::egui;
 /// Configuration for a status icon
 pub struct StatusIcon<'a> {
     icon: &'a str,
-    label: Option<&'a str>,
     count: Option<(usize, usize)>, // current / total
     color: Option<egui::Color32>,
     tooltip: Option<&'a str>,
@@ -19,18 +18,10 @@ impl<'a> StatusIcon<'a> {
     pub fn new(icon: &'a str) -> Self {
         Self {
             icon,
-            label: None,
             count: None,
             color: None,
             tooltip: None,
         }
-    }
-
-    /// Add a text label next to the icon
-    #[allow(dead_code)]
-    pub fn label(mut self, label: &'a str) -> Self {
-        self.label = Some(label);
-        self
     }
 
     /// Add a count display (e.g., "3/5")
@@ -64,14 +55,6 @@ impl<'a> StatusIcon<'a> {
             // Count (if provided)
             if let Some((current, total)) = self.count {
                 arclain_widgets::Text::new(&format!("{}/{}", current, total))
-                    .size(12.0)
-                    .muted()
-                    .show(ui);
-            }
-
-            // Label (if provided)
-            if let Some(label) = self.label {
-                arclain_widgets::Text::new(label)
                     .size(12.0)
                     .muted()
                     .show(ui);

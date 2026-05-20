@@ -205,19 +205,6 @@ impl OrganizePanel {
         }
     }
 
-    #[allow(dead_code)]
-    fn filename(path: &str) -> &str {
-        path.rsplit('/').next().unwrap_or(path)
-    }
-
-    #[allow(dead_code)]
-    fn directory(path: &str) -> &str {
-        match path.rsplit_once('/') {
-            Some((dir, _)) => dir,
-            None => "",
-        }
-    }
-
     /// True when the selected rule wants DLsite metadata but the
     /// session has none — used both to gate Apply and to pick between
     /// the empty-state view and the tabbed view.

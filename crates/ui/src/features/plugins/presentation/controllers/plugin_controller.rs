@@ -57,11 +57,6 @@ pub fn process_action(
     match action {
         PluginAction::None => {}
 
-        PluginAction::EmitMetadata { json: _ } => {
-            // Metadata emission is handled separately in the plugin event flow
-            tracing::debug!("Plugin {} emitted metadata via action", plugin_id);
-        }
-
         PluginAction::CacheContent { key, url } => {
             tracing::info!(
                 "Plugin {} requested caching key='{}' from url='{}'",

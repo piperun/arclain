@@ -425,8 +425,6 @@ pub enum ToastLevel {
 pub enum PluginAction {
     /// No action
     None,
-    /// Emit metadata to the host
-    EmitMetadata { json: String },
     /// Request host to cache content from URL
     CacheContent { key: String, url: String },
     /// Show a toast notification

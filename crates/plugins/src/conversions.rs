@@ -236,7 +236,6 @@ pub(crate) fn convert_plugin_action(
 
     match action {
         WitAction::None => InternalAction::None,
-        WitAction::EmitMetadata(json) => InternalAction::EmitMetadata { json },
         WitAction::CacheContent(req) => InternalAction::CacheContent {
             key: req.key,
             url: req.url,

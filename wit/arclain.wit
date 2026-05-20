@@ -416,7 +416,6 @@ interface ui {
     variant plugin-action {
         none,
         // Data actions
-        emit-metadata(string),
         cache-content(cache-request),
         // Notification actions
         show-toast(toast-config),
