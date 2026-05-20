@@ -19,12 +19,19 @@ pub fn extract_navigation(action: &SettingsAction) -> Option<SettingsPage> {
     }
 }
 
-/// Handle a settings action, mutating the appropriate state
+/// Handle a settings action, mutating the appropriate state.
+///
+/// `plugins_state` is optional because most call sites don't carry the
+/// PluginsFeature borrow (e.g. `dialog_handler.rs` invokes this only for
+/// `SavePasswordRules`). Plugin-touching actions like `InstallPlugin`
+/// degrade gracefully when the borrow isn't supplied — the install
+/// still happens, the on-screen list just won't refresh until the
+/// page is re-entered.
 pub fn handle_action(
     action: SettingsAction,
     security_state: &mut SecuritySettingsState,
     archives_state: &mut ArchivesSettingsState,
-    plugins_state: &mut PluginsListState,
+    plugins_state: Option<&mut PluginsListState>,
     network_state: &mut crate::features::settings::domain::types::NetworkSettingsState,
     server_state: &mut ServerSettingsState,
 
@@ -122,9 +129,15 @@ pub fn handle_action(
                 match mgr.install_plugin(std::path::Path::new(&wasm_path)) {
                     Ok(id) => {
                         tracing::info!("Successfully installed plugin: {}", id);
-                        // Refresh list
-                        let state = shared.app_state.lock();
-                        plugins_state.update_from_manager(&mgr, &state.user_config);
+                        // Refresh list — only when the caller supplied a
+                        // PluginsFeature borrow. If absent (e.g. action
+                        // dispatched from a path that doesn't carry it),
+                        // skip the refresh; the page will reload from the
+                        // manager next time it's entered.
+                        if let Some(plugins_state) = plugins_state {
+                            let state = shared.app_state.lock();
+                            plugins_state.update_from_manager(&mgr, &state.user_config);
+                        }
                     }
                     Err(e) => {
                         tracing::error!("Failed to install plugin: {}", e);

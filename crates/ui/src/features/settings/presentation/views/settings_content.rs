@@ -87,7 +87,7 @@ pub fn render_settings_content(
     archives_state: &mut ArchivesSettingsState,
     password_rules_dialog: Option<&mut PasswordRulesDialog>,
     plugin_manager: Option<&PluginManager>,
-    plugins_state: &mut PluginsListState,
+    plugins_state: Option<&mut PluginsListState>,
     rules_page: Option<&mut crate::features::organization::presentation::views::RulesPage>,
     profiles_page: Option<&mut crate::features::organization::presentation::views::ProfilesPage>,
 
@@ -153,7 +153,19 @@ pub fn render_settings_content(
             None
         }
         SettingsPage::Plugins => {
-            render_plugins_settings(ui, theme, plugin_manager, plugins_state, app_state, shared)
+            if let Some(plugins_state) = plugins_state {
+                render_plugins_settings(
+                    ui,
+                    theme,
+                    plugin_manager,
+                    plugins_state,
+                    app_state,
+                    shared,
+                )
+            } else {
+                ui.label("Plugins feature not available.");
+                None
+            }
         }
         SettingsPage::ToolbarLayout => {
             let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());

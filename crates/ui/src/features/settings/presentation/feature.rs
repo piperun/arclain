@@ -12,13 +12,34 @@ use arclain_signals::Signal;
 use eframe::egui;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Mutable borrows from sibling features that the settings router needs
+/// at render time. Bundled into one parameter to keep
+/// `SettingsFeature::render` from drowning in positional args — each
+/// field is borrowed from its owning feature on `ArclainApp`.
+pub struct SettingsFeatureBorrows<'a> {
+    pub rules_page: Option<&'a mut crate::features::organization::presentation::views::RulesPage>,
+    pub profiles_page:
+        Option<&'a mut crate::features::organization::presentation::views::ProfilesPage>,
+    pub hotkeys: Option<&'a mut crate::features::hotkeys::HotkeysFeature>,
+    pub password_management:
+        Option<&'a mut crate::features::password_management::PasswordManagementFeature>,
+    pub plugins: Option<&'a mut crate::features::plugins::PluginsFeature>,
+}
+
+/// Immutable counterpart of [`SettingsFeatureBorrows`] used by
+/// [`SettingsFeature::check_changes`]. Mirrors the same shape so call
+/// sites can build it inline without juggling Option<&_> manually.
+pub struct SettingsFeatureRefs<'a> {
+    pub password_management:
+        Option<&'a crate::features::password_management::PasswordManagementFeature>,
+}
+
 pub struct SettingsFeature {
     pub general_state: GeneralSettingsState,
     pub network_state: NetworkSettingsState,
     pub server_state: ServerSettingsState,
     pub security_state: SecuritySettingsState,
     pub archives_state: ArchivesSettingsState,
-    pub plugins_state: crate::features::plugins::domain::types::PluginsListState,
 
     pub interface_state: InterfaceSettingsState,
     pub toolbar_layout_state: ToolbarLayoutState,
@@ -104,7 +125,6 @@ impl SettingsFeature {
             server_state,
             security_state: SecuritySettingsState::default(),
             archives_state: ArchivesSettingsState::default(),
-            plugins_state: crate::features::plugins::domain::types::PluginsListState::default(),
 
             interface_state: InterfaceSettingsState::default(),
             toolbar_layout_state: ToolbarLayoutState::default(),
@@ -133,12 +153,13 @@ impl SettingsFeature {
         &self,
         shared: &SharedState,
         page: &SettingsPage,
-        password_management: Option<&crate::features::password_management::PasswordManagementFeature>,
+        refs: SettingsFeatureRefs<'_>,
     ) -> bool {
         // PasswordRules dirty-detection is owned by PasswordManagementFeature
         // — short-circuit before locking app_state for the other arms.
         if matches!(page, SettingsPage::PasswordRules) {
-            return password_management
+            return refs
+                .password_management
                 .map(|pm| pm.is_dirty(shared))
                 .unwrap_or(false);
         }
@@ -200,13 +221,17 @@ impl SettingsFeature {
         shared: &SharedState,
         page: &SettingsPage,
         breadcrumb: Vec<(String, crate::core::AppPage)>,
-        rules_page: Option<&mut crate::features::organization::presentation::views::RulesPage>,
-        profiles_page: Option<&mut crate::features::organization::presentation::views::ProfilesPage>,
-        hotkeys_feature: Option<&mut crate::features::hotkeys::HotkeysFeature>,
-        password_management: Option<&mut crate::features::password_management::PasswordManagementFeature>,
-
+        borrows: SettingsFeatureBorrows<'_>,
         search_text: &str,
     ) -> Option<crate::core::AppPage> {
+        let SettingsFeatureBorrows {
+            mut rules_page,
+            profiles_page,
+            mut hotkeys,
+            mut password_management,
+            mut plugins,
+        } = borrows;
+
         // Bind signals to egui context (once)
         self.bind_signals(ui.ctx());
 
@@ -215,7 +240,6 @@ impl SettingsFeature {
             .map(|rp| rp.is_editor_dirty())
             .unwrap_or(false);
 
-        let mut password_management = password_management;
         if let Some(pm) = password_management.as_deref_mut() {
             pm.sync_on_page_change(shared, page);
         }
@@ -226,8 +250,6 @@ impl SettingsFeature {
         let mut nav_target = None;
         let mut content_nav_target = None;
         let mut content_action = None;
-
-        let mut hotkeys_feature = hotkeys_feature;
 
         layout::render_settings_layout(
             ui,
@@ -246,19 +268,21 @@ impl SettingsFeature {
                 }
                 ui.add_space(8.0);
 
-                // Header — needs read-only hotkeys for SaveKeyboardMouse action
-                // and password_management for SavePasswordRules / dirty check.
+                // Header — needs read-only hotkeys for SaveKeyboardMouse action,
+                // password_management for SavePasswordRules / dirty check, and
+                // mutable plugins (settings page list_state) for the Plugins
+                // page header dispatch.
                 let header_action = header::render_header(
                     ui,
                     self,
-                    hotkeys_feature.as_deref(),
+                    hotkeys.as_deref(),
                     password_management.as_deref(),
+                    plugins.as_deref_mut().map(|p| &mut p.settings_list_state),
                     shared,
                     page,
                 );
 
                 // Handle SaveEditedRule immediately (before content rendering consumes rules_page)
-                let mut rules_page = rules_page;
                 if let Some(SettingsAction::SaveEditedRule) = &header_action {
                     if let Some(rp) = rules_page.as_mut() {
                         if let Some(org_service) = shared.services.organization_service.as_ref() {
@@ -303,6 +327,8 @@ impl SettingsFeature {
                             let pm_arc_opt = shared.services.plugin_manager.clone();
                             let pm_guard = pm_arc_opt.as_ref().map(|m| m.lock());
 
+                            let plugins_settings_state =
+                                plugins.as_deref_mut().map(|p| &mut p.settings_list_state);
                             let act = render_settings_content(
                                 ui,
                                 &shared.theme,
@@ -314,13 +340,13 @@ impl SettingsFeature {
                                     .as_deref_mut()
                                     .map(|pm| &mut pm.password_rules_dialog),
                                 pm_guard.as_deref(),
-                                &mut self.plugins_state,
+                                plugins_settings_state,
                                 rules_page,
                                 profiles_page,
                                 &mut self.interface_state,
                                 &mut self.toolbar_layout_state,
                                 &mut self.info_panel_layout_state,
-                                hotkeys_feature.as_deref_mut().map(|h| &mut h.keyboard_mouse_state),
+                                hotkeys.as_deref_mut().map(|h| &mut h.keyboard_mouse_state),
                                 &mut self.network_state,
                                 &mut self.server_state,
                                 &shared.app_state,
@@ -353,19 +379,30 @@ impl SettingsFeature {
             {
                 navigate_to = Some(crate::core::AppPage::Settings(target_page));
             } else {
-                self.handle_action(action, shared);
+                self.handle_action(
+                    action,
+                    shared,
+                    plugins.as_mut().map(|p| &mut p.settings_list_state),
+                );
             }
         }
 
         navigate_to
     }
 
-    pub fn handle_action(&mut self, action: SettingsAction, shared: &SharedState) {
+    pub fn handle_action(
+        &mut self,
+        action: SettingsAction,
+        shared: &SharedState,
+        plugins_state: Option<
+            &mut crate::features::plugins::domain::types::PluginsListState,
+        >,
+    ) {
         crate::features::settings::presentation::controllers::settings_controller::handle_action(
             action,
             &mut self.security_state,
             &mut self.archives_state,
-            &mut self.plugins_state,
+            plugins_state,
             &mut self.network_state,
             &mut self.server_state,
             shared,

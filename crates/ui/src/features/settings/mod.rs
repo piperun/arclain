@@ -2,7 +2,7 @@ pub mod application;
 pub mod domain;
 pub mod presentation;
 
-pub use presentation::SettingsFeature;
+pub use presentation::{SettingsFeature, SettingsFeatureBorrows, SettingsFeatureRefs};
 
 // Re-exports for compatibility and internal convenience
 pub use domain::types;

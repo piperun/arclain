@@ -14,6 +14,9 @@ pub fn render_header(
     feature: &mut SettingsFeature,
     hotkeys_feature: Option<&crate::features::hotkeys::HotkeysFeature>,
     password_management: Option<&crate::features::password_management::PasswordManagementFeature>,
+    plugins_settings_state: Option<
+        &mut crate::features::plugins::domain::types::PluginsListState,
+    >,
     shared: &SharedState,
     page: &SettingsPage,
 ) -> Option<SettingsAction> {
@@ -28,11 +31,20 @@ pub fn render_header(
     let rule_cancel_clicked = Cell::new(false);
     let rule_save_clicked = Cell::new(false);
 
+    // Fallback used when no PluginsFeature borrow is available — keeps
+    // get_header_config callable without panicking. The fallback state
+    // is throwaway: the Plugins page won't be reachable without
+    // PluginsFeature wired in.
+    let mut plugins_fallback =
+        crate::features::plugins::domain::types::PluginsListState::default();
+    let plugins_state_ref: &mut crate::features::plugins::domain::types::PluginsListState =
+        plugins_settings_state.unwrap_or(&mut plugins_fallback);
+
     let header_config =
         if *page == SettingsPage::Plugins {
             // Delegate to Plugins Page
             crate::features::plugins::presentation::pages::plugins_page::get_header_config(
-                &mut feature.plugins_state,
+                plugins_state_ref,
                 page,
                 &install_clicked,
             )
@@ -114,7 +126,13 @@ SettingsHeaderConfig::new(title)
 SettingsHeaderConfig::new(page.display_name())
             .icon(page.icon())
             .description(page.description())
-            .has_changes(feature.check_changes(shared, page, password_management))
+            .has_changes(feature.check_changes(
+                shared,
+                page,
+                crate::features::settings::SettingsFeatureRefs {
+                    password_management,
+                },
+            ))
         };
 
     let mut header = crate::shared::components::SettingsHeader::new(header_config.title)

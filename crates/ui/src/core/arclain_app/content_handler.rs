@@ -41,15 +41,19 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                 // Get search_text from signal
                 let search_text = app.shared_state.signals().search_text.get();
                 egui::CentralPanel::default().show(ctx, |ui| {
+                    let borrows = crate::features::settings::SettingsFeatureBorrows {
+                        rules_page: Some(&mut app.organization_feature.rules_page),
+                        profiles_page: Some(&mut app.organization_feature.profiles_page),
+                        hotkeys: Some(&mut app.hotkeys_feature),
+                        password_management: Some(&mut app.password_management_feature),
+                        plugins: Some(&mut app.plugins_feature),
+                    };
                     if let Some(target) = app.settings_feature.render(
                         ui,
                         &app.shared_state,
                         &page,
                         breadcrumb,
-                        Some(&mut app.organization_feature.rules_page),
-                        Some(&mut app.organization_feature.profiles_page),
-                        Some(&mut app.hotkeys_feature),
-                        Some(&mut app.password_management_feature),
+                        borrows,
                         &search_text,
                     ) {
                         app.page_navigator.navigate_to(target);

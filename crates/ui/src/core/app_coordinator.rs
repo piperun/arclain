@@ -127,15 +127,19 @@ impl eframe::App for AppCoordinator {
                 ];
                 let settings_page = settings_page.clone(); // Clone to avoid borrow conflict
                 egui::CentralPanel::default().show(ctx, |ui| {
+                    let borrows = crate::features::settings::SettingsFeatureBorrows {
+                        rules_page: Some(&mut self.organization.rules_page),
+                        profiles_page: Some(&mut self.organization.profiles_page),
+                        hotkeys: Some(&mut self.hotkeys),
+                        password_management: Some(&mut self.password_management),
+                        plugins: Some(&mut self.plugins),
+                    };
                     if let Some(target) = self.settings.render(
                         ui,
                         &self.shared,
                         &settings_page,
                         breadcrumb,
-                        Some(&mut self.organization.rules_page),
-                        Some(&mut self.organization.profiles_page),
-                        Some(&mut self.hotkeys),
-                        Some(&mut self.password_management),
+                        borrows,
                         "", // No search context in AppCoordinator yet
                     ) {
                         // Convert crate::core::AppPage to local AppPage
