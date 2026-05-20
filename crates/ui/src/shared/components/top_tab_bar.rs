@@ -175,22 +175,19 @@ fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
                 rect.center() - galley.mesh_bounds.center().to_vec2();
             ui.painter().galley(paint_origin, galley.clone(), text_color);
 
-            // Debug overlay: gated by env var ARCLAIN_DEBUG_BADGE=1 so the
-            // overlay is opt-in. Set the var before launching to see
-            // container rect + mesh-bounds rect + Δ between their centers.
+            // Debug overlay: gated by the project-wide
+            // EGUI_UI_DEBUG_GUIDELINES env var. Set it before launching
+            // to see container rect + mesh-bounds rect + Δ between
+            // their centers.
             #[cfg(debug_assertions)]
-            {
-                if std::env::var("ARCLAIN_DEBUG_BADGE").is_ok() {
-                    arclain_widgets::debug::paint_text_centering_debug(
-                        ui.painter(),
-                        rect,
-                        paint_origin,
-                        &galley,
-                        "badge",
-                        true,
-                    );
-                }
-            }
+            arclain_widgets::debug::paint_text_centering_debug(
+                ui.painter(),
+                rect,
+                paint_origin,
+                &galley,
+                "badge",
+                arclain_widgets::ui_debug_guidelines_enabled(),
+            );
         }
     } else if badge.dot {
         // Dot badge

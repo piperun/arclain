@@ -23,9 +23,16 @@
 //!    rects with arrows for the gap on each side, so you can
 //!    confirm a child is centered, padded, etc.
 //!
-//! All helpers are gated by a caller-passed `enabled` bool so widgets
-//! can expose a `.debug(true)` builder method, or you can wrap calls
-//! behind a `cfg!(debug_assertions)` / env-var check at the call site.
+//! # Toggling overlays
+//!
+//! All helpers take an `enabled: bool` so callers can route the
+//! decision however they want. The canonical project-wide toggle is
+//! the `EGUI_UI_DEBUG_GUIDELINES` env var, exposed via
+//! `ui_debug_guidelines_enabled()`. Setting it to "1" / "true" /
+//! "yes" / "on" before launch turns on every overlay that opts in.
+//! Per-widget builder switches (`Chips::debug_lines(true)`, …) still
+//! work and OR with the env flag, so you can pin one widget on for a
+//! local debug session without turning on the rest of the UI.
 //!
 //! Future widgets that hit a "where exactly does this thing land"
 //! question should reach for these instead of inventing their own
@@ -33,7 +40,32 @@
 //! compare debug overlays across widgets in screenshots.
 
 use egui::{Align2, Color32, FontId, Galley, Painter, Pos2, Rect, Stroke, Vec2};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+
+/// Project-wide debug-overlay toggle, gated by the
+/// `EGUI_UI_DEBUG_GUIDELINES` env var.
+///
+/// Reads the env var once on first call and caches the result via
+/// `OnceLock` — subsequent calls are a single atomic load. Recognised
+/// truthy values (case-insensitive): `1`, `true`, `yes`, `on`.
+/// Anything else (including unset) is false.
+///
+/// Widgets that paint debug guidelines should OR this against any
+/// per-widget builder switch they expose, so a global toggle lights
+/// up every widget while local switches still work for focused
+/// sessions.
+pub fn ui_debug_guidelines_enabled() -> bool {
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("EGUI_UI_DEBUG_GUIDELINES")
+            .ok()
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                matches!(v.as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false)
+    })
+}
 
 /// Color palette used by every debug helper. Pick one role per
 /// channel so a screenshot is unambiguous regardless of which

@@ -41,7 +41,7 @@ pub use collapsible_section::CollapsibleSection;
 #[cfg(debug_assertions)]
 pub use debug::{
     paint_centering_debug, paint_child_in_parent_debug, paint_text_centering_debug,
-    paint_widget_rect_debug,
+    paint_widget_rect_debug, ui_debug_guidelines_enabled,
 };
 pub use dropdown::ThemedDropdown;
 pub use icon_button::{IconButton, IconButtonSize};
