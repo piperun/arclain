@@ -110,9 +110,17 @@ mod secrets_key;
 pub use bootstrap::{open_databases, ConfigDbs, DbPaths};
 pub use secrets_key::SecretsKey;
 
-/// Simple K/V config helpers (stored in plain config.sqlite).
-/// Used by the rusqlite startup path — Diesel mirrors live as
-/// `get_config_diesel` / `set_config_diesel` below.
+/// Simple K/V config helpers (stored in plain `app_config` table).
+///
+/// Strategy (b) survival of the dual-CRUD collapse (see
+/// `docs/audits/2026-05-19-dependencies.md` §5 #6): both
+/// `get_config` (rusqlite) and `get_config_diesel` below are kept
+/// because each has live callers that cannot easily switch sides.
+/// Rusqlite path is used by the early-boot vault/secrets bootstrap
+/// (see `core::services::secrets_service` and
+/// `ui::core::state::vault_ops`), which runs before the Diesel pool
+/// exists. The Diesel mirror is used by `core::services::config_service`
+/// and `crate::config::get_title_filter_settings` once the pool is up.
 pub fn get_config(conn: &Connection, key: &str) -> Result<Option<String>> {
     let mut stmt = conn.prepare("SELECT value FROM app_config WHERE key = ?1")?;
     let val = stmt
