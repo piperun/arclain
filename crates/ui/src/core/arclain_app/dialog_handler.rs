@@ -1,4 +1,30 @@
 //! Dialog handler for ArclainApp
+//!
+//! ## On the `set_if_changed` pattern (audit B3, kept-as-correct)
+//!
+//! Every dialog renderer here follows the same shape: `signal.get()` →
+//! pass `&mut` into the egui widget call → if user interacted, mutate
+//! the local copy as a side-effect → write back via `set_if_changed`.
+//!
+//! That round-trip is intrinsic to egui's immediate-mode idiom — widgets
+//! (`TextEdit::singleline(&mut s)`, `ComboBox`, sliders) mutate the
+//! reference they're given THIS frame as the user types/clicks. The
+//! audit (`docs/audits/2026-05-19-state-signals.md` §4.5) flagged 13
+//! `set_if_changed` sites as a structural smell, but trying to extract
+//! mutation out of render would mean wrapping every interactive egui
+//! widget in an event-emitting variant — ~400-600 LOC of widget shims
+//! across 10 dialogs, fighting egui rather than working with it.
+//!
+//! The B3 reframing instead moved the dialog *state ownership* off
+//! AppSignals onto per-tab `TabState` (slices 1-2 / commits `0f667e6`
+//! + `bd30a4c`). The `set_if_changed` calls stay because they're the
+//! correct pattern for TabState signals; what changed is *where* the
+//! signal lives. Closing a tab now cleanly drops its in-flight dialog
+//! state with the tab.
+//!
+//! The 3 `status_bar.set_if_changed` calls in this file fire *after*
+//! an action handler runs (post-action mutation), not during render —
+//! those are also correct controller-pattern uses.
 
 use super::ArclainApp;
 use crate::core::operations;

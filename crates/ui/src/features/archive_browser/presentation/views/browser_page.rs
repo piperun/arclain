@@ -47,7 +47,13 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
         tab.selection_count.set(selection_count);
     }
 
-    // Sync back updated state (like expanded folders or selection)
+    // Sync back updated state (like expanded folders or selection).
+    // This is the canonical egui immediate-mode pattern: render widgets
+    // mutate `view_state` (sort clicks, selection, expand/collapse) as
+    // a side-effect of being drawn. `set_if_changed` only notifies
+    // listeners when the struct actually changed, preventing repaint
+    // cascades. See dialog_handler.rs module docs for the architectural
+    // rationale (audit B3 reframing, kept-as-correct).
     tab.browser_view_state.set_if_changed(view_state);
 
     // After UI has rendered, dispatch any pending plugin events.
