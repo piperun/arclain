@@ -69,18 +69,18 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     if let Some(result) = password_management::dialogs::zip_pass_rules::render_password_rules_dialog(
         ctx,
         &app.shared_state.theme,
-        &mut app.settings_feature.password_rules_dialog,
+        &mut app.password_management_feature.password_rules_dialog,
     ) {
         match result {
             password_management::dialogs::zip_pass_rules::PasswordRulesResult::Cancel => {
-                app.settings_feature.password_rules_dialog.show = false;
+                app.password_management_feature.password_rules_dialog.show = false;
             }
             password_management::dialogs::zip_pass_rules::PasswordRulesResult::Save { rules } => {
                 app.settings_feature.handle_action(
                     crate::features::settings::settings_content::SettingsAction::SavePasswordRules { rules },
                     &app.shared_state,
                 );
-                app.settings_feature.password_rules_dialog.show = false;
+                app.password_management_feature.password_rules_dialog.show = false;
             }
         }
     }

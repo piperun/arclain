@@ -13,6 +13,7 @@ pub fn render_header(
     ui: &mut egui::Ui,
     feature: &mut SettingsFeature,
     hotkeys_feature: Option<&crate::features::hotkeys::HotkeysFeature>,
+    password_management: Option<&crate::features::password_management::PasswordManagementFeature>,
     shared: &SharedState,
     page: &SettingsPage,
 ) -> Option<SettingsAction> {
@@ -113,7 +114,7 @@ SettingsHeaderConfig::new(title)
 SettingsHeaderConfig::new(page.display_name())
             .icon(page.icon())
             .description(page.description())
-            .has_changes(feature.check_changes(shared, page))
+            .has_changes(feature.check_changes(shared, page, password_management))
         };
 
     let mut header = crate::shared::components::SettingsHeader::new(header_config.title)
@@ -216,9 +217,11 @@ SettingsHeaderConfig::new(page.display_name())
                 });
             }
             SettingsPage::PasswordRules => {
-                action = Some(SettingsAction::SavePasswordRules {
-                    rules: feature.password_rules_dialog.rules.clone(),
-                });
+                if let Some(pm) = password_management {
+                    action = Some(SettingsAction::SavePasswordRules {
+                        rules: pm.password_rules_dialog.rules.clone(),
+                    });
+                }
             }
             SettingsPage::Network => {
                 let address_opt = if feature

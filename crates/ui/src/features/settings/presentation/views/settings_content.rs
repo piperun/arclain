@@ -85,7 +85,7 @@ pub fn render_settings_content(
     general_state: &mut GeneralSettingsState,
     security_state: &mut SecuritySettingsState,
     archives_state: &mut ArchivesSettingsState,
-    password_rules_dialog: &mut PasswordRulesDialog,
+    password_rules_dialog: Option<&mut PasswordRulesDialog>,
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
     rules_page: Option<&mut crate::features::organization::presentation::views::RulesPage>,
@@ -129,7 +129,12 @@ pub fn render_settings_content(
         }
         SettingsPage::Security => render_security_settings(ui, theme, security_state),
         SettingsPage::PasswordRules => {
-            render_password_rules_settings(ui, theme, password_rules_dialog)
+            if let Some(dialog) = password_rules_dialog {
+                render_password_rules_settings(ui, theme, dialog)
+            } else {
+                ui.label("Password management feature not available.");
+                None
+            }
         }
         SettingsPage::OrganizationRules => {
             if let Some(rp) = rules_page {

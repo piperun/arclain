@@ -23,6 +23,7 @@ pub struct AppCoordinator {
     plugins: plugins::PluginsFeature,
     organization: organization::OrganizationFeature,
     hotkeys: hotkeys::HotkeysFeature,
+    password_management: password_management::PasswordManagementFeature,
     browser: archive_browser::ArchiveBrowser,
     operations: archive_operations::ArchiveOperations,
 
@@ -39,6 +40,7 @@ impl AppCoordinator {
         let plugins = plugins::PluginsFeature::new(&shared);
         let organization = organization::OrganizationFeature::new(&shared);
         let hotkeys = hotkeys::HotkeysFeature::new(&shared);
+        let password_management = password_management::PasswordManagementFeature::new(&shared);
         let browser = archive_browser::ArchiveBrowser::new(&shared);
         let operations = archive_operations::ArchiveOperations::new(&shared);
 
@@ -48,6 +50,7 @@ impl AppCoordinator {
             plugins,
             organization,
             hotkeys,
+            password_management,
             browser,
             operations,
             current_page: AppPage::Main,
@@ -132,6 +135,7 @@ impl eframe::App for AppCoordinator {
                         Some(&mut self.organization.rules_page),
                         Some(&mut self.organization.profiles_page),
                         Some(&mut self.hotkeys),
+                        Some(&mut self.password_management),
                         "", // No search context in AppCoordinator yet
                     ) {
                         // Convert crate::core::AppPage to local AppPage

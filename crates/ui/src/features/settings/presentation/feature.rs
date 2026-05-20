@@ -1,5 +1,4 @@
 use crate::core::SettingsPage;
-use crate::features::password_management::dialogs::PasswordRulesDialog;
 use crate::features::settings::pages::interface::InterfaceSettingsState;
 use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
 use crate::features::settings::presentation::views::settings_content::{
@@ -19,13 +18,11 @@ pub struct SettingsFeature {
     pub server_state: ServerSettingsState,
     pub security_state: SecuritySettingsState,
     pub archives_state: ArchivesSettingsState,
-    pub password_rules_dialog: PasswordRulesDialog,
     pub plugins_state: crate::features::plugins::domain::types::PluginsListState,
 
     pub interface_state: InterfaceSettingsState,
     pub toolbar_layout_state: ToolbarLayoutState,
     pub info_panel_layout_state: InfoPanelLayoutState,
-    pub last_visited_page: Option<SettingsPage>,
 
     /// Cached dirty state for rule editor (synced from RulesPage each frame)
     pub rule_editor_dirty: bool,
@@ -42,23 +39,6 @@ impl SettingsFeature {
             user_config.drop_behavior.as_deref().unwrap_or("new_tab"),
         );
         let restore_tabs_on_launch = user_config.restore_tabs_on_launch;
-
-        let rules = {
-            let state = shared.app_state.lock();
-            state
-                .pass_rules
-                .iter()
-                .map(|r| {
-                    crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
-                        name: r.name.clone(),
-                        pattern: r.pattern.clone(),
-                        password: r.password.clone(),
-                        priority: r.priority,
-                        enabled: r.enabled,
-                    }
-                })
-                .collect()
-        };
 
         let network_state = {
             let state = shared.app_state.lock();
@@ -124,16 +104,11 @@ impl SettingsFeature {
             server_state,
             security_state: SecuritySettingsState::default(),
             archives_state: ArchivesSettingsState::default(),
-            password_rules_dialog: PasswordRulesDialog {
-                rules,
-                ..Default::default()
-            },
             plugins_state: crate::features::plugins::domain::types::PluginsListState::default(),
 
             interface_state: InterfaceSettingsState::default(),
             toolbar_layout_state: ToolbarLayoutState::default(),
             info_panel_layout_state: InfoPanelLayoutState::default(),
-            last_visited_page: None,
             rule_editor_dirty: false,
             signals_bound: AtomicBool::new(false),
         }
@@ -154,7 +129,20 @@ impl SettingsFeature {
         });
     }
 
-    pub fn check_changes(&self, shared: &SharedState, page: &SettingsPage) -> bool {
+    pub fn check_changes(
+        &self,
+        shared: &SharedState,
+        page: &SettingsPage,
+        password_management: Option<&crate::features::password_management::PasswordManagementFeature>,
+    ) -> bool {
+        // PasswordRules dirty-detection is owned by PasswordManagementFeature
+        // — short-circuit before locking app_state for the other arms.
+        if matches!(page, SettingsPage::PasswordRules) {
+            return password_management
+                .map(|pm| pm.is_dirty(shared))
+                .unwrap_or(false);
+        }
+
         let state = shared.app_state.lock();
 
         match page {
@@ -202,23 +190,6 @@ impl SettingsFeature {
                     || *self.security_state.encrypted_crc_policy.read()
                         != crate::features::settings::domain::types::EncryptedCrcPolicy::default()
             }
-            SettingsPage::PasswordRules => {
-                if self.password_rules_dialog.rules.len() != state.pass_rules.len() {
-                    return true;
-                }
-                for (i, rule) in self.password_rules_dialog.rules.iter().enumerate() {
-                    let other = &state.pass_rules[i];
-                    if rule.name != other.name
-                        || rule.pattern != other.pattern
-                        || rule.password != other.password
-                        || rule.priority != other.priority
-                        || rule.enabled != other.enabled
-                    {
-                        return true;
-                    }
-                }
-                false
-            }
             _ => false,
         }
     }
@@ -232,6 +203,7 @@ impl SettingsFeature {
         rules_page: Option<&mut crate::features::organization::presentation::views::RulesPage>,
         profiles_page: Option<&mut crate::features::organization::presentation::views::ProfilesPage>,
         hotkeys_feature: Option<&mut crate::features::hotkeys::HotkeysFeature>,
+        password_management: Option<&mut crate::features::password_management::PasswordManagementFeature>,
 
         search_text: &str,
     ) -> Option<crate::core::AppPage> {
@@ -243,28 +215,10 @@ impl SettingsFeature {
             .map(|rp| rp.is_editor_dirty())
             .unwrap_or(false);
 
-        // Sync rules if entering PasswordRules page
-        if *page == SettingsPage::PasswordRules && self.last_visited_page.as_ref() != Some(page) {
-            let state = shared.app_state.lock();
-            self.password_rules_dialog.rules = state
-                .pass_rules
-                .iter()
-                .map(|r| {
-                    crate::features::password_management::dialogs::zip_pass_rules::PasswordRule {
-                        name: r.name.clone(),
-                        pattern: r.pattern.clone(),
-                        password: r.password.clone(),
-                        priority: r.priority,
-                        enabled: r.enabled,
-                    }
-                })
-                .collect();
-            tracing::debug!(
-                "Reloaded {} password rules from app state",
-                self.password_rules_dialog.rules.len()
-            );
+        let mut password_management = password_management;
+        if let Some(pm) = password_management.as_deref_mut() {
+            pm.sync_on_page_change(shared, page);
         }
-        self.last_visited_page = Some(page.clone());
 
         let mut action = None;
         let mut navigate_to = None;
@@ -293,10 +247,12 @@ impl SettingsFeature {
                 ui.add_space(8.0);
 
                 // Header — needs read-only hotkeys for SaveKeyboardMouse action
+                // and password_management for SavePasswordRules / dirty check.
                 let header_action = header::render_header(
                     ui,
                     self,
                     hotkeys_feature.as_deref(),
+                    password_management.as_deref(),
                     shared,
                     page,
                 );
@@ -354,7 +310,9 @@ impl SettingsFeature {
                                 &mut self.general_state,
                                 &mut self.security_state,
                                 &mut self.archives_state,
-                                &mut self.password_rules_dialog,
+                                password_management
+                                    .as_deref_mut()
+                                    .map(|pm| &mut pm.password_rules_dialog),
                                 pm_guard.as_deref(),
                                 &mut self.plugins_state,
                                 rules_page,
