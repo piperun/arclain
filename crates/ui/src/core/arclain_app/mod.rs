@@ -33,6 +33,7 @@ pub struct ArclainApp {
     pub(crate) settings_feature: settings::SettingsFeature,
     pub(crate) plugins_feature: plugins::PluginsFeature,
     pub(crate) organization_feature: organization::OrganizationFeature,
+    pub(crate) hotkeys_feature: crate::features::hotkeys::HotkeysFeature,
 
     // Hotkey management
     pub(crate) hotkey_manager: crate::features::hotkeys::HotkeyManager,
@@ -66,6 +67,7 @@ impl ArclainApp {
             settings_feature: settings::SettingsFeature::new(&shared_state),
             plugins_feature: plugins::PluginsFeature::new(&shared_state),
             organization_feature: organization::OrganizationFeature::new(&shared_state),
+            hotkeys_feature: crate::features::hotkeys::HotkeysFeature::new(&shared_state),
             hotkey_manager: crate::features::hotkeys::HotkeyManager::new(),
             top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
             network_log_state: crate::shared::components::network_log::NetworkLogState::new(),

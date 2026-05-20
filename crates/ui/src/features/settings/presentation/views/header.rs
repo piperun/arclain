@@ -12,6 +12,7 @@ use std::cell::Cell;
 pub fn render_header(
     ui: &mut egui::Ui,
     feature: &mut SettingsFeature,
+    hotkeys_feature: Option<&crate::features::hotkeys::HotkeysFeature>,
     shared: &SharedState,
     page: &SettingsPage,
 ) -> Option<SettingsAction> {
@@ -270,9 +271,11 @@ SettingsHeaderConfig::new(page.display_name())
                 });
             }
             SettingsPage::KeyboardMouse => {
-                action = Some(SettingsAction::SaveKeyboardMouse {
-                    bindings: feature.keyboard_mouse_state.to_config(),
-                });
+                if let Some(hf) = hotkeys_feature {
+                    action = Some(SettingsAction::SaveKeyboardMouse {
+                        bindings: hf.keyboard_mouse_state.to_config(),
+                    });
+                }
             }
             SettingsPage::Server => {
                 let url_opt = if feature.server_state.url.read().trim().is_empty() {

@@ -1,7 +1,8 @@
 #![allow(dead_code)]
 use crate::core::navigation::SettingsPage;
 use crate::features::{
-    archive_browser, archive_operations, organization, password_management, plugins, settings,
+    archive_browser, archive_operations, hotkeys, organization, password_management, plugins,
+    settings,
 };
 use crate::shared::SharedState;
 use eframe::egui;
@@ -21,6 +22,7 @@ pub struct AppCoordinator {
     settings: settings::SettingsFeature,
     plugins: plugins::PluginsFeature,
     organization: organization::OrganizationFeature,
+    hotkeys: hotkeys::HotkeysFeature,
     browser: archive_browser::ArchiveBrowser,
     operations: archive_operations::ArchiveOperations,
 
@@ -36,6 +38,7 @@ impl AppCoordinator {
         let settings = settings::SettingsFeature::new(&shared);
         let plugins = plugins::PluginsFeature::new(&shared);
         let organization = organization::OrganizationFeature::new(&shared);
+        let hotkeys = hotkeys::HotkeysFeature::new(&shared);
         let browser = archive_browser::ArchiveBrowser::new(&shared);
         let operations = archive_operations::ArchiveOperations::new(&shared);
 
@@ -44,6 +47,7 @@ impl AppCoordinator {
             settings,
             plugins,
             organization,
+            hotkeys,
             browser,
             operations,
             current_page: AppPage::Main,
@@ -127,6 +131,7 @@ impl eframe::App for AppCoordinator {
                         breadcrumb,
                         Some(&mut self.organization.rules_page),
                         Some(&mut self.organization.profiles_page),
+                        Some(&mut self.hotkeys),
                         "", // No search context in AppCoordinator yet
                     ) {
                         // Convert crate::core::AppPage to local AppPage

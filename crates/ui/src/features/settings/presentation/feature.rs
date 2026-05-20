@@ -1,6 +1,5 @@
 use crate::core::SettingsPage;
 use crate::features::password_management::dialogs::PasswordRulesDialog;
-use crate::features::hotkeys::presentation::KeyboardMouseSettingsState;
 use crate::features::settings::pages::interface::InterfaceSettingsState;
 use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
 use crate::features::settings::presentation::views::settings_content::{
@@ -26,7 +25,6 @@ pub struct SettingsFeature {
     pub interface_state: InterfaceSettingsState,
     pub toolbar_layout_state: ToolbarLayoutState,
     pub info_panel_layout_state: InfoPanelLayoutState,
-    pub keyboard_mouse_state: KeyboardMouseSettingsState,
     pub last_visited_page: Option<SettingsPage>,
 
     /// Cached dirty state for rule editor (synced from RulesPage each frame)
@@ -135,7 +133,6 @@ impl SettingsFeature {
             interface_state: InterfaceSettingsState::default(),
             toolbar_layout_state: ToolbarLayoutState::default(),
             info_panel_layout_state: InfoPanelLayoutState::default(),
-            keyboard_mouse_state: KeyboardMouseSettingsState::new(),
             last_visited_page: None,
             rule_editor_dirty: false,
             signals_bound: AtomicBool::new(false),
@@ -234,6 +231,7 @@ impl SettingsFeature {
         breadcrumb: Vec<(String, crate::core::AppPage)>,
         rules_page: Option<&mut crate::features::organization::presentation::views::RulesPage>,
         profiles_page: Option<&mut crate::features::organization::presentation::views::ProfilesPage>,
+        hotkeys_feature: Option<&mut crate::features::hotkeys::HotkeysFeature>,
 
         search_text: &str,
     ) -> Option<crate::core::AppPage> {
@@ -275,6 +273,8 @@ impl SettingsFeature {
         let mut content_nav_target = None;
         let mut content_action = None;
 
+        let mut hotkeys_feature = hotkeys_feature;
+
         layout::render_settings_layout(
             ui,
             &shared.theme,
@@ -292,8 +292,14 @@ impl SettingsFeature {
                 }
                 ui.add_space(8.0);
 
-                // Header
-                let header_action = header::render_header(ui, self, shared, page);
+                // Header — needs read-only hotkeys for SaveKeyboardMouse action
+                let header_action = header::render_header(
+                    ui,
+                    self,
+                    hotkeys_feature.as_deref(),
+                    shared,
+                    page,
+                );
 
                 // Handle SaveEditedRule immediately (before content rendering consumes rules_page)
                 let mut rules_page = rules_page;
@@ -356,7 +362,7 @@ impl SettingsFeature {
                                 &mut self.interface_state,
                                 &mut self.toolbar_layout_state,
                                 &mut self.info_panel_layout_state,
-                                &mut self.keyboard_mouse_state,
+                                hotkeys_feature.as_deref_mut().map(|h| &mut h.keyboard_mouse_state),
                                 &mut self.network_state,
                                 &mut self.server_state,
                                 &shared.app_state,
