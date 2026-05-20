@@ -54,7 +54,10 @@ impl SqliteDb {
     where
         F: FnOnce(&Connection) -> Result<()>,
     {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SQLite connection lock poisoned"))?;
         init_fn(&*conn)
     }
 
@@ -63,7 +66,10 @@ impl SqliteDb {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
-        let conn = self.conn.lock().unwrap();
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SQLite connection lock poisoned"))?;
         f(&*conn)
     }
 }

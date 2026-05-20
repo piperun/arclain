@@ -89,7 +89,7 @@ pub struct GametaClient {
     client: reqwest::blocking::Client,
     /// Server version string captured from the most recent successful health
     /// check. `None` if a health check has not yet succeeded.
-    server_version: std::sync::RwLock<Option<String>>,
+    server_version: parking_lot::RwLock<Option<String>>,
 }
 
 impl GametaClient {
@@ -103,17 +103,14 @@ impl GametaClient {
         Self {
             config,
             client,
-            server_version: std::sync::RwLock::new(None),
+            server_version: parking_lot::RwLock::new(None),
         }
     }
 
     /// Return the server version captured from the last successful health
     /// check, if any.
     pub fn last_known_version(&self) -> Option<String> {
-        self.server_version
-            .read()
-            .ok()
-            .and_then(|v| v.clone())
+        self.server_version.read().clone()
     }
 
     /// Join the server's base URL (trailing slash stripped) with `path`.
@@ -155,9 +152,7 @@ impl GametaClient {
             .map_err(|e| format!("Failed to parse health response: {}", e))?;
 
         // Cache the version for callers that don't have access to this response.
-        if let Ok(mut v) = self.server_version.write() {
-            *v = Some(health.version.clone());
-        }
+        *self.server_version.write() = Some(health.version.clone());
 
         Ok(health)
     }
