@@ -54,7 +54,7 @@ impl SharedState {
         };
 
         // Restore previous tab session if the setting is enabled.
-        crate::core::app_lifecycle::restore_tabs_on_launch(&app_state, &signals);
+        crate::core::app_lifecycle::restore_tabs_on_launch(&app_state, &signals, &cc.egui_ctx);
 
         shared
     }

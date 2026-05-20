@@ -614,11 +614,20 @@ pub fn convert_archive(
 /// into `tab_id`'s signals. This is the preferred entry point for drop /
 /// multi-tab loads — it targets a known TabId regardless of which tab is
 /// active at completion time.
+///
+/// Per-tab signals (`entries`, `archive_path`, `browser_view_state`, …)
+/// are NOT bound to the egui context (see `AppSignals::bind_to_context`
+/// — only the outer `tabs` collection signal is bound). The background
+/// writes below would therefore land silently and the UI would keep
+/// rendering the pre-drop empty state until the next input event woke
+/// it up. `ctx.request_repaint()` after the writes is what makes the
+/// drop path feel instant.
 pub fn load_archive_into_tab(
     state: Arc<Mutex<AppState>>,
     signals: AppSignals,
     tab_id: TabId,
     path: &std::path::Path,
+    ctx: egui::Context,
 ) {
     let Some(tab) = signals.tabs.get().get(tab_id).cloned() else {
         tracing::warn!("[tabs] load_archive_into_tab: tab {:?} not found", tab_id);
@@ -641,6 +650,7 @@ pub fn load_archive_into_tab(
                 crate::core::operations::navigation_view::refresh_view_entries_for_tab(
                     &signals, tab_id,
                 );
+                ctx.request_repaint();
             }
             Err(e) => {
                 drop(st);
@@ -663,6 +673,7 @@ pub fn load_archive_into_tab(
                     bar.message = format!("Failed to load archive: {}", err_msg);
                     signals.status_bar.set(bar);
                 }
+                ctx.request_repaint();
             }
         }
     });

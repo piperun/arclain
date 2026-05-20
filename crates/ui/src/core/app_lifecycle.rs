@@ -213,6 +213,7 @@ fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String)
 pub fn restore_tabs_on_launch(
     app_state: &Arc<Mutex<AppState>>,
     signals: &AppSignals,
+    ctx: &egui::Context,
 ) {
     let user_config = signals.user_config.get();
     if !user_config.restore_tabs_on_launch {
@@ -248,6 +249,7 @@ pub fn restore_tabs_on_launch(
                     signals.clone(),
                     tab_id,
                     &path,
+                    ctx.clone(),
                 );
             }
 
