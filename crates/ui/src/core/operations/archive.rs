@@ -15,6 +15,11 @@ use std::sync::Arc;
 use tracing::{error, info};
 
 /// Handle opening an archive file via file dialog
+///
+/// Post 2026-05-20 Tier 2 (item 6) audit: dropped the `archive_info`
+/// mutable parameter — `tab.archive_info` is now a `Computed<ArchiveInfo>`
+/// derived from `entries` + `archive_path` + `archive_extras`, so the
+/// caller no longer needs to maintain a local mirror.
 pub fn open_archive(
     state: &Arc<Mutex<AppState>>,
     // current_path removed
@@ -22,7 +27,6 @@ pub fn open_archive(
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
     entries: &mut Vec<FileEntry>,
-    archive_info: &mut ArchiveInfo,
     merge_dialog: Option<&mut MergeDialogState>,
 ) {
     if let Some(file) = rfd::FileDialog::new()
@@ -57,7 +61,6 @@ pub fn open_archive(
                     pending_archive_path,
                     status_info,
                     entries,
-                    archive_info,
                 );
             }
             Err(e) => {
@@ -84,6 +87,8 @@ pub fn open_archive(
 }
 
 /// Handle opening an archive file from a specific path (for nested archives)
+///
+/// See [`open_archive`] for the post-Tier-2 (item 6) parameter trim.
 pub fn open_archive_by_path(
     state: &Arc<Mutex<AppState>>,
     path: &std::path::Path,
@@ -91,7 +96,6 @@ pub fn open_archive_by_path(
     password_dialog: &mut dialogs::PasswordDialog,
     status_info: &mut status_bar::StatusBarInfo,
     entries: &mut Vec<FileEntry>,
-    archive_info: &mut ArchiveInfo,
 ) {
     info!("Opening archive from path: {}", path.display());
     // Reset navigation state entirely for new archive
@@ -110,7 +114,6 @@ pub fn open_archive_by_path(
                 &mut None,
                 status_info,
                 entries,
-                archive_info,
             );
         }
         Err(e) => {
@@ -135,6 +138,8 @@ pub fn open_archive_by_path(
 }
 
 /// Try to open an archive with a password
+///
+/// See [`open_archive`] for the post-Tier-2 (item 6) parameter trim.
 pub fn try_open_with_password(
     state: &Arc<Mutex<AppState>>,
     path: &PathBuf,
@@ -143,7 +148,6 @@ pub fn try_open_with_password(
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
     entries: &mut Vec<FileEntry>,
-    archive_info: &mut ArchiveInfo,
 ) -> bool {
     let mut st = state.lock();
     // Save the current navigation state before re-listing
@@ -185,7 +189,6 @@ pub fn try_open_with_password(
                 pending_archive_path,
                 status_info,
                 entries,
-                archive_info,
             );
             true
         }
@@ -194,15 +197,21 @@ pub fn try_open_with_password(
 }
 
 /// Load archive data and update UI state
+///
+/// Post 2026-05-20 Tier 2 (item 6) audit: no longer takes / mutates a
+/// local `ArchiveInfo` — that struct is now a `Computed<ArchiveInfo>`
+/// derived from `entries` + `archive_path` + `archive_extras`. The CRC
+/// recompute below still mutates `tab.entries` (since per-entry CRC
+/// values get filled in from a backend subprocess); the derivation
+/// picks up the new values on the next `archive_info.get()`.
 pub fn load_archive_data(
     state: &Arc<Mutex<AppState>>,
     _archive_entries: Vec<ArchiveEntry>,
-    current_archive: Option<PathBuf>,
+    _current_archive: Option<PathBuf>,
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
     entries: &mut Vec<FileEntry>,
-    archive_info: &mut ArchiveInfo,
 ) {
     // Audit finding R3: the previous version opened `state.lock()` 6-7
     // times within this single logical operation, with the gaps in
@@ -248,7 +257,7 @@ pub fn load_archive_data(
         let backend = snapshot.fallback_backend.clone();
         let paths_to_compute: Vec<String> = {
             let entries_arc = tab.entries.get();
-            let headers_encrypted = tab.archive_info.get().headers_encrypted;
+            let headers_encrypted = tab.archive_extras.get().headers_encrypted;
             entries_arc
                 .iter()
                 .filter(|e| {
@@ -288,7 +297,9 @@ pub fn load_archive_data(
                         e.crc32 = Some(sum);
                     }
                 }
-                // Update signal with modified entries
+                // Update signal with modified entries. The
+                // archive_info Computed picks up the new CRC values
+                // automatically next time anyone calls .get().
                 tab.entries.set(entries_arc.clone());
             }
         }
@@ -301,55 +312,9 @@ pub fn load_archive_data(
     // it existed when load_archive_data was invoked.
     *entries = snapshot.ui_entries;
 
-    let current_ai = tab.archive_info.get();
-    archive_info.archive_encrypted = current_ai.archive_encrypted;
-    archive_info.headers_encrypted = current_ai.headers_encrypted;
-    archive_info.encryption_method = current_ai.encryption_method.clone();
-
-    // Use the latest state entries for totals/CRC aggregation
-    let ents: Arc<Vec<ArchiveEntry>> = tab.entries.get();
-
-    archive_info.total_size = ents.iter().map(|e| e.size).sum();
-    archive_info.compressed_size = ents.iter().map(|e| e.packed_size).sum();
-    archive_info.file_count = ents.len();
-
-    if let Some(archive_path) = &current_archive {
-        archive_info.archive_format = archive_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|s| s.to_uppercase())
-            .unwrap_or_else(|| "Archive".to_string());
-    }
-
-    // Compute archive total CRC-32
-    let mut pairs: Vec<(String, String)> = ents
-        .iter()
-        .filter(|e| !e.is_dir)
-        .filter_map(|e| {
-            e.crc32
-                .as_ref()
-                .map(|c| (e.path.replace('\\', "/"), c.to_uppercase()))
-        })
-        .collect();
-
-    if pairs.is_empty() {
-        archive_info.total_crc32 = None;
-    } else {
-        pairs.sort_by(|a, b| a.0.cmp(&b.0));
-        let mut hasher = Hasher::new();
-        for (p, c) in pairs {
-            hasher.update(p.as_bytes());
-            hasher.update(b":");
-            hasher.update(c.as_bytes());
-            hasher.update(b"\n");
-        }
-        let sum = hasher.finalize();
-        archive_info.total_crc32 = Some(format!("{:08X}", sum));
-    }
-
     // Auto-prompt if requested
     if policy == "prompt_on_open" && !have_pw {
-        let any_encrypted = ents.iter().any(|e| e.encrypted);
+        let any_encrypted = tab.entries.get().iter().any(|e| e.encrypted);
         if any_encrypted {
             password_dialog.show = true;
             password_dialog.password.clear();
@@ -359,25 +324,15 @@ pub fn load_archive_data(
         }
     }
 
-    archive_info.archive_loaded = true;
+    // Status bar pulls counts/sizes/format from the Computed archive_info
+    // — no manual mirror needed. Item 7 of the same audit will drop
+    // the StatusBarInfo mirror fields entirely.
+    let ai = tab.archive_info.get();
     status_info.message = "Archive loaded successfully".to_string();
-    status_info.file_count = archive_info.file_count;
-    status_info.total_size = format_size(archive_info.total_size);
-    status_info.compressed_size = format_size(archive_info.compressed_size);
-    status_info.archive_format = archive_info.archive_format.clone();
-
-    // Sync to signal — no AppState lock needed. The Arc<AppSignals>
-    // snapshot taken at function entry is a cheap reference; signal
-    // writes go through their own internal mutexes.
-    let mut ai = tab.archive_info.get();
-    ai.total_size = archive_info.total_size;
-    ai.compressed_size = archive_info.compressed_size;
-    ai.file_count = archive_info.file_count;
-    ai.archive_format = archive_info.archive_format.clone();
-    ai.total_crc32 = archive_info.total_crc32.clone();
-    ai.plugin_metadata = archive_info.plugin_metadata.clone();
-    ai.archive_loaded = true;
-    tab.archive_info.set(ai);
+    status_info.file_count = ai.file_count;
+    status_info.total_size = format_size(ai.total_size);
+    status_info.compressed_size = format_size(ai.compressed_size);
+    status_info.archive_format = ai.archive_format.clone();
 
     // Populate view entries for the initial file list display
     crate::core::operations::navigation_view::refresh_view_entries(&signals);
@@ -395,7 +350,17 @@ struct ArchiveSnapshot {
     ui_entries: Vec<FileEntry>,
 }
 
-/// Archive information state
+/// Archive information state — output shape of the per-tab
+/// `Computed<ArchiveInfo>` (see `TabState::archive_info`).
+///
+/// Post 2026-05-20 Tier 2 (item 6): this struct is derived data, no
+/// longer a `Signal<T>`. The derivation reads `entries` + `archive_path`
+/// (for counts / sizes / format / total_crc32) and `archive_extras`
+/// (for the encryption fields the backend reports on `list`). The
+/// `archive_loaded` field is gone — callers use `TabState::archive_loaded`
+/// directly. `plugin_metadata` is retained for the properties-panel
+/// reader but is never written today (plugin metadata flows through
+/// `TabState::metadata` instead); it's emitted as `None`.
 #[derive(Default, Clone)]
 pub struct ArchiveInfo {
     pub archive_format: String,
@@ -406,8 +371,76 @@ pub struct ArchiveInfo {
     pub headers_encrypted: bool,
     pub encryption_method: Option<String>,
     pub total_crc32: Option<String>,
-    pub archive_loaded: bool,
     pub plugin_metadata: Option<serde_json::Value>,
+}
+
+/// Non-derivable inputs to `ArchiveInfo` — fields the backend's `list`
+/// call surfaces that can't be re-computed from `entries`/`archive_path`.
+/// Written by `AppState::list_archive` / `list_with_password` and read
+/// by the `Computed<ArchiveInfo>` derivation on `TabState`.
+#[derive(Default, Clone)]
+pub struct ArchiveExtras {
+    pub archive_encrypted: bool,
+    pub headers_encrypted: bool,
+    pub encryption_method: Option<String>,
+}
+
+/// Derive an [`ArchiveInfo`] from the given inputs. Pure function — the
+/// Computed closure on `TabState` is this with the signals' `.get()`
+/// results plugged in.
+pub fn derive_archive_info(
+    entries: &[arclain_core::ArchiveEntry],
+    archive_path: Option<&std::path::Path>,
+    extras: &ArchiveExtras,
+) -> ArchiveInfo {
+    let archive_format = archive_path
+        .and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_uppercase())
+        .unwrap_or_default();
+
+    let total_size = entries.iter().map(|e| e.size).sum();
+    let compressed_size = entries.iter().map(|e| e.packed_size).sum();
+    let file_count = entries.len();
+
+    // Aggregate per-entry CRC-32 into a single archive checksum.
+    // Sorted path:crc pairs keep the result order-independent across
+    // backends that list entries in different orders. Skipped for
+    // empty / fully-encrypted archives (no entry CRCs available yet).
+    let mut pairs: Vec<(String, String)> = entries
+        .iter()
+        .filter(|e| !e.is_dir)
+        .filter_map(|e| {
+            e.crc32
+                .as_ref()
+                .map(|c| (e.path.replace('\\', "/"), c.to_uppercase()))
+        })
+        .collect();
+    let total_crc32 = if pairs.is_empty() {
+        None
+    } else {
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut hasher = Hasher::new();
+        for (p, c) in pairs {
+            hasher.update(p.as_bytes());
+            hasher.update(b":");
+            hasher.update(c.as_bytes());
+            hasher.update(b"\n");
+        }
+        Some(format!("{:08X}", hasher.finalize()))
+    };
+
+    ArchiveInfo {
+        archive_format,
+        total_size,
+        compressed_size,
+        file_count,
+        archive_encrypted: extras.archive_encrypted,
+        headers_encrypted: extras.headers_encrypted,
+        encryption_method: extras.encryption_method.clone(),
+        total_crc32,
+        plugin_metadata: None,
+    }
 }
 pub fn convert_archive(
     state: &Arc<Mutex<AppState>>,

@@ -2,7 +2,7 @@
 
 use super::plugin_instances::TabPluginPool;
 use super::TabId;
-use crate::core::operations::archive::ArchiveInfo;
+use crate::core::operations::archive::{derive_archive_info, ArchiveExtras, ArchiveInfo};
 use crate::core::signals::ToolbarContext;
 use crate::features::archive_browser::domain::types::BrowserViewState;
 use arclain_core::archive::NavigationState;
@@ -37,7 +37,28 @@ pub struct TabState {
     // tab switch but never read by any production code path. The
     // status bar carries the user-visible state instead.
     pub ui_ready: Signal<bool>,
-    pub archive_info: Signal<ArchiveInfo>,
+    /// Backend-reported non-derivable archive metadata (encryption flags
+    /// + encryption method). Source of truth for the encryption fields
+    /// of `archive_info`; written once by
+    /// `AppState::list_archive`/`list_with_password` after the backend
+    /// `list` call returns.
+    ///
+    /// Split out from the old `archive_info: Signal<ArchiveInfo>` in
+    /// the 2026-05-20 Tier 2 (item 6) audit: the other ArchiveInfo
+    /// fields (counts, sizes, format, total_crc32) are derived from
+    /// `entries` + `archive_path` by the `archive_info` Computed.
+    pub archive_extras: Signal<ArchiveExtras>,
+    /// Derived archive metadata — counts, sizes, format, total_crc32
+    /// (from `entries` + `archive_path`) plus the encryption fields
+    /// from `archive_extras`. Lazy on-read via `Computed<T>::get`.
+    ///
+    /// Pre 2026-05-20 Tier 2 item 6 this was a `Signal<ArchiveInfo>`
+    /// written manually at 5 call sites (archive.rs, archive_ops.rs,
+    /// toolbar_handler.rs, update.rs, browser_controller.rs). Making
+    /// it Computed eliminates those writes; the derivation runs when
+    /// any consumer (status bar render, properties panel) calls
+    /// `.get()`. See audit §4.2 for why this was the right shape.
+    pub archive_info: Computed<ArchiveInfo>,
     pub game_metadata: Signal<Option<GameMetadata>>,
     pub navigation: Signal<NavigationState>,
     pub current_password: Signal<Option<String>>,
@@ -124,18 +145,34 @@ pub struct TabState {
 impl TabState {
     pub fn new(id: TabId) -> Self {
         let archive_path: Signal<Option<PathBuf>> = Signal::new(None).with_name("archive_path");
+        let entries: Signal<Arc<Vec<ArchiveEntry>>> =
+            Signal::new(Arc::new(Vec::new())).with_name("entries");
+        let archive_extras: Signal<ArchiveExtras> =
+            Signal::new(ArchiveExtras::default()).with_name("archive_extras");
         let archive_loaded = {
             let archive_path = archive_path.clone();
             Computed::new(move || archive_path.read().is_some())
+        };
+        let archive_info = {
+            let entries = entries.clone();
+            let archive_path = archive_path.clone();
+            let archive_extras = archive_extras.clone();
+            Computed::new(move || {
+                let ents = entries.get();
+                let path = archive_path.get();
+                let extras = archive_extras.get();
+                derive_archive_info(ents.as_slice(), path.as_deref(), &extras)
+            })
         };
         Self {
             id,
             archive_path,
             archive_loaded,
-            entries: Signal::new(Arc::new(Vec::new())).with_name("entries"),
+            entries,
             metadata: Signal::new(None).with_name("metadata"),
             ui_ready: Signal::new(true).with_name("ui_ready"),
-            archive_info: Signal::new(ArchiveInfo::default()).with_name("archive_info"),
+            archive_extras,
+            archive_info,
             game_metadata: Signal::new(None).with_name("game_metadata"),
             navigation: Signal::new(NavigationState::new()).with_name("navigation"),
             current_password: Signal::new(None).with_name("current_password"),

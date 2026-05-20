@@ -162,10 +162,15 @@ fn render_properties_panel(
                     None
                 };
 
+                // archive_loaded is its own Computed on TabState post
+                // 2026-05-20 Tier 2 — `archive_info` (Computed<ArchiveInfo>)
+                // no longer carries the flag.
+                let archive_loaded = prop_tab.archive_loaded.get();
+
                 for item in items.iter().filter(|i| i.visible) {
                     match item.id.as_str() {
                         "info.archive" => {
-                            if archive_info.archive_loaded {
+                            if archive_loaded {
                                 sections.push(properties_panel::PanelSection::Group(
                                     properties_panel::create_archive_info_group(
                                         &archive_info.archive_format,

@@ -157,8 +157,9 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                     let mut status_info = app.shared_state.signals().status_bar.get();
                     let mut view_state = hk_tab.browser_view_state.get();
                     // nav removed
-                    let mut archive_info = operations::archive::ArchiveInfo::default();
 
+                    // archive_info parameter dropped post 2026-05-20 Tier 2
+                    // item 6 — Computed derives the value automatically.
                     operations::archive::open_archive_by_path(
                         &app.shared_state.app_state,
                         &file,
@@ -166,14 +167,12 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                         &mut password_dialog,
                         &mut status_info,
                         &mut view_state.view_entries,
-                        &mut archive_info,
                     );
 
                     // navigation set removed
                     hk_tab.password_dialog.set(password_dialog);
                     app.shared_state.signals().status_bar.set(status_info);
                     hk_tab.browser_view_state.set(view_state);
-                    hk_tab.archive_info.set(archive_info);
                 }
             }
             HotkeyAction::Search => {
@@ -353,7 +352,6 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         {
             app.shared_state.signals().status_bar.set(status_info);
             // It's a nested archive - open it as the current archive
-            let mut archive_info = operations::archive::ArchiveInfo::default();
 
             let nested_tab = app.shared_state.signals().tabs.get().active().clone();
             let mut password_dialog = nested_tab.password_dialog.get();
@@ -361,6 +359,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             let mut view_state = nested_tab.browser_view_state.get();
             // nav removed
 
+            // archive_info parameter dropped post 2026-05-20 Tier 2
+            // item 6 — Computed derives the value automatically.
             operations::archive::open_archive_by_path(
                 &app.shared_state.app_state,
                 &nested_archive_path,
@@ -368,14 +368,12 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 &mut password_dialog,
                 &mut status_info,
                 &mut view_state.view_entries,
-                &mut archive_info,
             );
 
             // navigation set removed
             nested_tab.password_dialog.set(password_dialog);
             app.shared_state.signals().status_bar.set(status_info);
             nested_tab.browser_view_state.set(view_state);
-            nested_tab.archive_info.set(archive_info);
         } else {
             app.shared_state.signals().status_bar.set(status_info);
         }

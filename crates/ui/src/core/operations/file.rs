@@ -1,4 +1,3 @@
-use crate::core::operations::archive::ArchiveInfo;
 use crate::core::AppState;
 use crate::shared::components::status_bar;
 use crate::shared::models::file_entry::FileEntry;
@@ -28,12 +27,15 @@ pub fn add_files(state: &Arc<Mutex<AppState>>, status_info: &mut status_bar::Sta
 }
 
 /// Delete selected files from the archive
+///
+/// Post 2026-05-20 Tier 2 (item 6) audit: dropped the `archive_info`
+/// mutable parameter — the per-tab `Computed<ArchiveInfo>` re-derives
+/// from the refreshed `entries` signal after `list_archive` runs.
 pub fn delete_selected(
     state: &Arc<Mutex<AppState>>,
     entries: &[FileEntry],
     status_info: &mut status_bar::StatusBarInfo,
     ui_entries: &mut Vec<FileEntry>,
-    archive_info: &mut ArchiveInfo,
 ) {
     // Build full paths using current navigation prefix; skip folders for delete
     let (full_paths, archive_opt) = {
@@ -82,7 +84,6 @@ pub fn delete_selected(
                     &mut None,               // pending_archive_path placeholder
                     status_info,
                     ui_entries,
-                    archive_info,
                 );
             }
         }

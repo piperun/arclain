@@ -63,14 +63,16 @@ impl AppState {
         let tab = self.signals.tabs.get().active().clone();
         tab.archive_path.set(archive_path.clone());
 
-        // Update archive_info signal directly
-        {
-            let mut ai = tab.archive_info.get();
-            ai.archive_encrypted = info.encrypted;
-            ai.headers_encrypted = info.headers_encrypted;
-            ai.encryption_method = info.encryption_method.clone();
-            tab.archive_info.set(ai);
-        }
+        // Update archive_extras signal — the encryption fields are
+        // backend-reported, not derivable from entries+path, so they
+        // live on the dedicated extras signal. The full ArchiveInfo
+        // is now a Computed that reads entries + archive_path +
+        // archive_extras (post 2026-05-20 Tier 2 item 6 audit).
+        tab.archive_extras.set(crate::core::operations::archive::ArchiveExtras {
+            archive_encrypted: info.encrypted,
+            headers_encrypted: info.headers_encrypted,
+            encryption_method: info.encryption_method.clone(),
+        });
         crate::core::operations::navigation_signals::reset_navigation(&self.signals);
 
         // Update reactive signals for async UI updates
@@ -156,14 +158,13 @@ impl AppState {
         let tab = self.signals.tabs.get().active().clone();
         tab.archive_path.set(Some(path.to_path_buf()));
 
-        // Update archive_info signal directly
-        {
-            let mut ai = tab.archive_info.get();
-            ai.archive_encrypted = info.encrypted;
-            ai.headers_encrypted = info.headers_encrypted;
-            ai.encryption_method = info.encryption_method.clone();
-            tab.archive_info.set(ai);
-        }
+        // Update archive_extras — see `list_archive` above for the
+        // post-Tier 2 (item 6) rationale.
+        tab.archive_extras.set(crate::core::operations::archive::ArchiveExtras {
+            archive_encrypted: info.encrypted,
+            headers_encrypted: info.headers_encrypted,
+            encryption_method: info.encryption_method.clone(),
+        });
         crate::core::operations::navigation_signals::reset_navigation(&self.signals);
         tab.current_password
             .set(Some(password.to_string()));

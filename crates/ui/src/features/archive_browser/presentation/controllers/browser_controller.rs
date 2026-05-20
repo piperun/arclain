@@ -114,7 +114,6 @@ impl BrowserController {
             &mut status_info,
         ) {
             shared.signals().status_bar.set(status_info);
-            let mut archive_info = crate::core::operations::archive::ArchiveInfo::default();
 
             // password_dialog is per-tab now (post 2026-05-20 B3 reframed slice)
             let bc_tab = shared.signals().tabs.get().active().clone();
@@ -123,6 +122,10 @@ impl BrowserController {
             let mut view_state = bc_tab.browser_view_state.get();
             // nav removed
 
+            // archive_info is per-tab Computed<ArchiveInfo> (post 2026-05-20
+            // Tier 2 item 6) — no manual sync needed; the derivation
+            // updates automatically once list_archive populates entries
+            // and archive_extras inside open_archive_by_path.
             crate::core::operations::archive::open_archive_by_path(
                 &shared.app_state,
                 &extracted_path,
@@ -130,14 +133,12 @@ impl BrowserController {
                 &mut password_dialog,
                 &mut status_info,
                 &mut view_state.view_entries,
-                &mut archive_info,
             );
 
             // navigation set removed
             bc_tab.password_dialog.set(password_dialog);
             shared.signals().status_bar.set(status_info);
             bc_tab.browser_view_state.set(view_state);
-            bc_tab.archive_info.set(archive_info);
         } else {
             shared.signals().status_bar.set(status_info);
         }

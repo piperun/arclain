@@ -86,7 +86,6 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     );
                 }
                 if actions.open {
-                    let mut archive_info = operations::archive::ArchiveInfo::default();
                     // Sync from signals
                     let open_tab = shared_state.signals().tabs.get().active().clone();
                     let mut view_state = open_tab.browser_view_state.get();
@@ -97,6 +96,9 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     let mut merge_dialog = open_tab.merge_dialog.get();
                     // nav removed
 
+                    // archive_info parameter dropped post 2026-05-20 Tier 2
+                    // item 6 — the Computed derives the value from
+                    // entries + archive_path + archive_extras.
                     operations::archive::open_archive(
                         &app.shared_state.app_state,
                         // current_path removed
@@ -104,14 +106,12 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut app._pending_archive_path,
                         &mut status_info,
                         &mut view_state.view_entries,
-                        &mut archive_info,
                         Some(&mut merge_dialog),
                     );
 
                     // Sync back to signals
                     // navigation set removed
                     open_tab.browser_view_state.set(view_state);
-                    open_tab.archive_info.set(archive_info);
                     open_tab.password_dialog.set(password_dialog);
                     shared_state.signals().status_bar.set(status_info);
                     open_tab.merge_dialog.set(merge_dialog);
@@ -167,22 +167,22 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     shared_state.signals().status_bar.set(status_info);
                 }
                 if actions.delete_selected {
-                    let mut archive_info = operations::archive::ArchiveInfo::default();
                     let t = shared_state.signals().tabs.get().active().clone();
                     let mut view_state = t.browser_view_state.get();
                     let mut status_info = shared_state.signals().status_bar.get();
                     let entries_clone = view_state.view_entries.clone();
 
+                    // archive_info parameter dropped post 2026-05-20 Tier 2
+                    // item 6 — Computed derives it from the underlying
+                    // signals after list_archive refreshes them.
                     operations::file::delete_selected(
                         &app.shared_state.app_state,
                         &entries_clone,
                         &mut status_info,
                         &mut view_state.view_entries,
-                        &mut archive_info,
                     );
 
                     t.browser_view_state.set(view_state);
-                    t.archive_info.set(archive_info);
                     shared_state.signals().status_bar.set(status_info);
                 }
                 if actions.convert_to_7z {

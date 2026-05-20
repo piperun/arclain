@@ -41,12 +41,13 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     let shared_state = app.shared_state.clone();
     match password_management::handle_password_dialogs(ctx, &shared_state) {
         password_management::PasswordFeatureAction::PasswordUnlocked { path, password } => {
-            let mut archive_info = operations::archive::ArchiveInfo::default();
             let t = app.shared_state.signals().tabs.get().active().clone();
             let mut view_state = t.browser_view_state.get();
             let mut pass_dialog = t.password_dialog.get();
             let mut status_bar = app.shared_state.signals().status_bar.get();
 
+            // archive_info parameter dropped post 2026-05-20 Tier 2 item 6
+            // — Computed<ArchiveInfo> derives from entries/path/extras.
             if operations::archive::try_open_with_password(
                 &app.shared_state.app_state,
                 &path,
@@ -55,7 +56,6 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 &mut app._pending_archive_path,
                 &mut status_bar,
                 &mut view_state.view_entries,
-                &mut archive_info,
             ) {
                 t.browser_view_state.set(view_state);
                 pass_dialog.show = false;
