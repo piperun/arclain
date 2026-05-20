@@ -12,7 +12,7 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
     let mut action = Action::None;
 
     let tab = shared.signals().tabs.get().active().clone();
-    let archive_loaded = tab.archive_path.read().is_some();
+    let archive_loaded = tab.archive_loaded.get();
 
     if !archive_loaded {
         render_empty_state(ctx, shared);

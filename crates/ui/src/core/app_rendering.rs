@@ -186,7 +186,7 @@ pub fn render_status_bar_panel(
             // metadata in particular is `Option<serde_json::Value>`
             // and can be KBs.
             let tab = shared_state.signals().tabs.get().active().clone();
-            let archive_loaded = tab.archive_path.read().is_some();
+            let archive_loaded = tab.archive_loaded.get();
 
             // Update status info from state
             if archive_loaded {
@@ -245,7 +245,7 @@ pub fn render_path_bar_panel(
 ) -> PathBarAction {
     // Only show when Archive tab is active and archive is loaded
     let tab = shared_state.signals().tabs.get().active().clone();
-    let archive_loaded = tab.archive_path.read().is_some();
+    let archive_loaded = tab.archive_loaded.get();
     let is_archive_context = matches!(
         tab.active_toolbar.get(),
         crate::core::signals::ToolbarContext::Archive

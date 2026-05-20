@@ -25,7 +25,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 let can_go_back = nav.can_go_back();
                 let can_go_forward = nav.can_go_forward();
                 let can_go_up = nav.can_go_up();
-                let archive_loaded = tab.archive_path.read().is_some();
+                let archive_loaded = tab.archive_loaded.get();
                 // Use selection_count signal for decoupled toolbar state
                 let has_selection = tab.selection_count.get() > 0;
                 let has_metadata = tab.metadata.read().is_some();

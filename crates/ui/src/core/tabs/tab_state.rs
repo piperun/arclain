@@ -8,7 +8,7 @@ use crate::features::archive_browser::domain::types::BrowserViewState;
 use arclain_core::archive::NavigationState;
 use arclain_core::features::organization::GameMetadata;
 use arclain_core::ArchiveEntry;
-use arclain_signals::Signal;
+use arclain_signals::{Computed, Signal};
 use parking_lot::RwLock;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -21,6 +21,15 @@ pub struct TabState {
 
     // Per-tab archive-context signals (moved from AppSignals)
     pub archive_path: Signal<Option<PathBuf>>,
+    /// Derived `archive_path.is_some()` — centralises the
+    /// "is an archive loaded in this tab?" predicate that previously
+    /// appeared as 6 duplicate `tab.archive_path.read().is_some()`
+    /// checks across browser_page / app_rendering / toolbar_handler /
+    /// update.rs (per the 2026-05-19 state-signals audit §3.9).
+    /// Lazy on-read recompute via `Computed<T>::get` (no listener
+    /// notifies — readers naturally pick up the new value the next
+    /// frame because the renderer always polls each frame).
+    pub archive_loaded: Computed<bool>,
     pub entries: Signal<Arc<Vec<ArchiveEntry>>>,
     pub metadata: Signal<Option<serde_json::Value>>,
     // Note: `loading` and `status_message` signals were removed in the
@@ -114,9 +123,15 @@ pub struct TabState {
 
 impl TabState {
     pub fn new(id: TabId) -> Self {
+        let archive_path: Signal<Option<PathBuf>> = Signal::new(None).with_name("archive_path");
+        let archive_loaded = {
+            let archive_path = archive_path.clone();
+            Computed::new(move || archive_path.read().is_some())
+        };
         Self {
             id,
-            archive_path: Signal::new(None).with_name("archive_path"),
+            archive_path,
+            archive_loaded,
             entries: Signal::new(Arc::new(Vec::new())).with_name("entries"),
             metadata: Signal::new(None).with_name("metadata"),
             ui_ready: Signal::new(true).with_name("ui_ready"),
