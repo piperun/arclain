@@ -99,6 +99,16 @@ pub struct TabState {
     /// The pre-migration `pending_tab_id` cross-tab routing field
     /// is gone — the dialog living on a tab is the implicit routing.
     pub password_dialog: Signal<crate::features::password_management::dialogs::PasswordDialog>,
+    /// Auto-retry token for "click file → extract → password failure
+    /// → user enters password → re-fire the same file open".
+    /// `process_extraction_progress` sets this from
+    /// `progress.requested_file_path` when an extraction fails with
+    /// a password error. `dialog_handler` reads + clears it on the
+    /// successful-unlock branch and writes `pending_open_file` to
+    /// re-trigger the file-open flow with `current_password` now
+    /// populated. None on success or non-password failures, so the
+    /// signal stays empty for routes that don't need it.
+    pub pending_open_after_unlock: Signal<Option<String>>,
     /// Progress-dialog state for the three long-running op flavours
     /// (extraction / conversion / drag-out). Migrated from the global
     /// `AppSignals.progress_dialogs` in the 2026-05-20 B3 reframed
@@ -202,6 +212,7 @@ impl TabState {
                 crate::features::password_management::dialogs::PasswordDialog::default(),
             )
             .with_name("password_dialog"),
+            pending_open_after_unlock: Signal::new(None).with_name("pending_open_after_unlock"),
             progress_dialogs: Signal::new(crate::shared::dialogs::ProgressDialogs::default())
                 .with_name("progress_dialogs"),
             created_at: SystemTime::now(),
@@ -258,6 +269,7 @@ impl TabState {
         sig_ctx.bind_named(&self.merge_dialog, "tab.merge_dialog");
         sig_ctx.bind_named(&self.lightbox_state, "tab.lightbox_state");
         sig_ctx.bind_named(&self.password_dialog, "tab.password_dialog");
+        sig_ctx.bind_named(&self.pending_open_after_unlock, "tab.pending_open_after_unlock");
         sig_ctx.bind_named(&self.progress_dialogs, "tab.progress_dialogs");
     }
 

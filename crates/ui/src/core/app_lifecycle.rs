@@ -148,10 +148,11 @@ pub fn process_extraction_progress(
                     // encrypted contents and no password has been
                     // provided yet. Surface the password dialog on
                     // the active tab — the existing unlock flow
-                    // (dialog_handler → try_open_with_password)
-                    // will set tab.current_password on success, and
-                    // the next click on the same file will re-extract
-                    // using that password.
+                    // (dialog_handler → try_open_with_password) sets
+                    // tab.current_password on success, and the unlock
+                    // handler re-fires `pending_open_file` from
+                    // `pending_open_after_unlock` so the same click
+                    // succeeds automatically.
                     let active = shared_state.signals().tabs.get().active().clone();
                     if let Some(archive_path) = active.archive_path.get() {
                         let mut pwd = active.password_dialog.get();
@@ -160,6 +161,14 @@ pub fn process_extraction_progress(
                         pwd.error = "Archive contents are password-protected".to_string();
                         pwd.target_path = Some(archive_path);
                         active.password_dialog.set(pwd);
+
+                        // Stash the originally-requested file path so
+                        // the unlock handler can auto-retry the open
+                        // without making the user click again.
+                        active
+                            .pending_open_after_unlock
+                            .set(progress.requested_file_path.clone());
+
                         *status_message =
                             "Archive contents are password-protected".to_string();
                     } else {

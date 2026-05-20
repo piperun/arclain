@@ -145,6 +145,7 @@ pub fn open_file_from_archive(
             complete: false,
             error: None,
             file_to_open: None,
+            requested_file_path: Some(file_path_str.clone()),
         }));
 
     // Clone data for thread
@@ -160,6 +161,7 @@ pub fn open_file_from_archive(
     std::thread::spawn(move || {
         // Clone again for the progress callback
         let signals_for_callback = signals_clone.clone();
+        let file_path_for_callback = file_path_clone.clone();
 
         let result = backend_clone.extract_files_with_progress(
             &archive_clone,
@@ -183,6 +185,7 @@ pub fn open_file_from_archive(
                         complete: false,
                         error: None,
                         file_to_open: None,
+                        requested_file_path: Some(file_path_for_callback.clone()),
                     },
                 ));
             }),
@@ -210,6 +213,7 @@ pub fn open_file_from_archive(
                         complete: true,
                         error: None,
                         file_to_open: Some(actual_file),
+                        requested_file_path: Some(file_path_clone.clone()),
                     },
                 ));
             }
@@ -230,6 +234,7 @@ pub fn open_file_from_archive(
                         complete: true,
                         error: Some(format!("{:#}", e)),
                         file_to_open: None,
+                        requested_file_path: Some(file_path_clone.clone()),
                     },
                 ));
             }

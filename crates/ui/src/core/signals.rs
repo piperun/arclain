@@ -67,6 +67,13 @@ pub struct ExtractionProgressState {
     pub error: Option<String>,
     /// Path to open after extraction completes (for open_file_from_archive)
     pub file_to_open: Option<PathBuf>,
+    /// The in-archive file path the user originally clicked to trigger
+    /// this extraction (passed by `open_file_from_archive`). Set only
+    /// on the file-opener path — `None` for batch organization
+    /// extractions. `process_extraction_progress` reads this on
+    /// password-error completion so the unlock handler can auto-retry
+    /// the same file after the user enters a password.
+    pub requested_file_path: Option<String>,
 }
 
 /// Context for which toolbar should be displayed

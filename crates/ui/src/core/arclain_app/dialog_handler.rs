@@ -61,6 +61,18 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 pass_dialog.show = false;
                 pass_dialog.target_path = None;
                 app._pending_archive_path = None;
+
+                // Auto-retry: if the unlock was triggered by a file-
+                // extraction password failure, re-fire `pending_open_file`
+                // with the stashed file path so the user's original
+                // click succeeds without them having to click again.
+                // tab.current_password is now set (via list_with_password
+                // inside try_open_with_password), so the next
+                // file_opener spawn will pick it up.
+                if let Some(retry_path) = t.pending_open_after_unlock.get() {
+                    t.pending_open_after_unlock.set(None);
+                    t.pending_open_file.set(Some(retry_path));
+                }
             } else {
                 pass_dialog.error = "Invalid password".to_string();
             }
