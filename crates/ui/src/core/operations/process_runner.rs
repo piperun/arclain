@@ -33,6 +33,12 @@ pub fn spawn_run(
     // error, or tab-cancel abort).
     let guard = OpGuard::new(&origin_tab);
 
+    // R4: hoist backend_selector out of the per-file closure. Pre-fix the
+    // closure acquired the AppState mutex once per file (1000 files = 1000
+    // unnecessary lock acquisitions for a value that's immutable for the
+    // duration). Clone the selector once before spawning.
+    let backend_selector = state_arc.lock().backend_selector.clone();
+
     runtime.spawn(async move {
         // Guard held for the lifetime of the entire async task (including
         // the spawn_blocking call below). Drops when this async block exits.
@@ -54,8 +60,7 @@ pub fn spawn_run(
                 return;
             }
 
-            let state_clone = state_arc.clone();
-            let backend_for = move |p: &std::path::Path| state_clone.lock().backend_selector.select(p);
+            let backend_for = move |p: &std::path::Path| backend_selector.select(p);
 
             let default_policy = services
                 .config_service

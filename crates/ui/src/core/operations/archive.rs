@@ -545,12 +545,15 @@ pub fn convert_archive(
         // Flatten nested archives if requested
         if options.flatten_nested {
             info!("Flattening nested archives in extract dir...");
-            let state_clone = state.clone();
+            // R4: hoist backend_selector clone out of per-file closure so we
+            // don't relock AppState once per nested archive. BackendSelector
+            // is a single-String clone — cheap.
+            let backend_selector = state.lock().backend_selector.clone();
             let report = arclain_core::features::conversion::flatten::flatten_nested_archives(
                 &extract_dir,
                 options.strip_common_prefix,
                 |archive_path, dest_dir| {
-                    let backend = state_clone.lock().backend_selector.select(archive_path)?;
+                    let backend = backend_selector.select(archive_path)?;
                     backend.extract_all(archive_path, dest_dir, None)
                 },
             );
