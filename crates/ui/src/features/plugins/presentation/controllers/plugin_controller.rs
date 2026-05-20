@@ -84,11 +84,6 @@ pub fn process_action(
             toaster.add(Toast::new(toast_level, message));
         }
 
-        PluginAction::ShowMessage { title, message } => {
-            // For now, show as a toast; could be upgraded to a modal dialog
-            toaster.info(format!("{}: {}", title, message));
-        }
-
         PluginAction::RefreshPanel { extension_point } => {
             // Queue panel for refresh - UI components check this list
             tracing::debug!(
@@ -115,16 +110,6 @@ pub fn process_action(
                 id,
                 value
             );
-        }
-
-        PluginAction::OpenPage { page } => {
-            // Navigate to the plugin page
-            tracing::info!(
-                "Plugin {} requested navigation to page '{}'",
-                plugin_id,
-                page
-            );
-            _dialog_state.open_page(plugin_id, &page);
         }
 
         PluginAction::CloseDialog => {

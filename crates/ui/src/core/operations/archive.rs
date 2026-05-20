@@ -7,7 +7,7 @@ use crate::shared::components::status_bar;
 use crate::shared::dialogs::MergeDialogState;
 use crate::shared::models::file_entry::FileEntry;
 use arclain_core::archive::{MultiPartArchive, NavigationState};
-use arclain_core::{ArchiveBackend, ArchiveEntry};
+use arclain_core::ArchiveBackend;
 use crc32fast::Hasher;
 use parking_lot::Mutex;
 use std::path::PathBuf;
@@ -50,13 +50,13 @@ pub fn open_archive(
 
         let mut st = state.lock();
         match st.list_archive(&file) {
-            Ok(archive_entries) => {
-                let current_archive = st.signals.tabs.get().active().archive_path.get();
+            Ok(_) => {
+                // list_archive writes its return value into tab signals;
+                // load_archive_data reads from those signals directly,
+                // so we don't need to thread the entries Vec through.
                 drop(st);
                 load_archive_data(
                     state,
-                    archive_entries,
-                    current_archive,
                     password_dialog,
                     pending_archive_path,
                     status_info,
@@ -103,13 +103,10 @@ pub fn open_archive_by_path(
 
     let mut st = state.lock();
     match st.list_archive(path) {
-        Ok(archive_entries) => {
-            let current_archive = st.signals.tabs.get().active().archive_path.get();
+        Ok(_) => {
             drop(st);
             load_archive_data(
                 state,
-                archive_entries,
-                current_archive,
                 password_dialog,
                 &mut None,
                 status_info,
@@ -155,7 +152,7 @@ pub fn try_open_with_password(
     let saved_path_stack = st.signals.tabs.get().active().navigation.get().path_stack.clone();
 
     match st.list_with_password(path, password) {
-        Ok(archive_entries) => {
+        Ok(_) => {
             // Restore navigation state after re-listing
             {
                 let tab = st.signals.tabs.get().active().clone();
@@ -179,12 +176,9 @@ pub fn try_open_with_password(
                 );
             }
 
-            let current_archive = st.signals.tabs.get().active().archive_path.get();
             drop(st);
             load_archive_data(
                 state,
-                archive_entries,
-                current_archive,
                 password_dialog,
                 pending_archive_path,
                 status_info,
@@ -206,8 +200,6 @@ pub fn try_open_with_password(
 /// picks up the new values on the next `archive_info.get()`.
 pub fn load_archive_data(
     state: &Arc<Mutex<AppState>>,
-    _archive_entries: Vec<ArchiveEntry>,
-    _current_archive: Option<PathBuf>,
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
@@ -353,9 +345,10 @@ struct ArchiveSnapshot {
 /// (for counts / sizes / format / total_crc32) and `archive_extras`
 /// (for the encryption fields the backend reports on `list`). The
 /// `archive_loaded` field is gone — callers use `TabState::archive_loaded`
-/// directly. `plugin_metadata` is retained for the properties-panel
-/// reader but is never written today (plugin metadata flows through
-/// `TabState::metadata` instead); it's emitted as `None`.
+/// directly. The dead `plugin_metadata: Option<serde_json::Value>` field
+/// (always `None`, never written) was dropped in the 2026-05-20 Tier 2
+/// cleanup; the properties-panel reader uses `TabState::metadata`
+/// directly.
 #[derive(Default, Clone)]
 pub struct ArchiveInfo {
     pub archive_format: String,
@@ -366,7 +359,6 @@ pub struct ArchiveInfo {
     pub headers_encrypted: bool,
     pub encryption_method: Option<String>,
     pub total_crc32: Option<String>,
-    pub plugin_metadata: Option<serde_json::Value>,
 }
 
 /// Non-derivable inputs to `ArchiveInfo` — fields the backend's `list`
@@ -434,7 +426,6 @@ pub fn derive_archive_info(
         headers_encrypted: extras.headers_encrypted,
         encryption_method: extras.encryption_method.clone(),
         total_crc32,
-        plugin_metadata: None,
     }
 }
 pub fn convert_archive(

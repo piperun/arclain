@@ -157,15 +157,13 @@ pub enum PluginExtensionPoint {
     MainPage,
     /// Toolbar button slot
     PluginButton,
-    /// Context menu items
-    ContextMenu,
-    /// Sidebar panel section (renamed from InfoPanel)
+    /// Sidebar panel section (renamed from InfoPanel — the legacy
+    /// `Sidebar` variant + its `serde(alias = "Sidebar")` migration
+    /// crutch were dropped in the 2026-05-20 audit Tier 2 cleanup;
+    /// nothing was constructing `Sidebar` anymore. Plugins still
+    /// match on the WIT string `"Sidebar"` defensively, but the host
+    /// never emits it.)
     Panel,
-    /// Deprecated - use Panel
-    #[serde(alias = "Sidebar")]
-    Sidebar,
-    /// Plugin settings page
-    Settings,
     /// Modal dialog (parameterized by ID)
     Dialog(String),
     /// Full page view (parameterized by ID)
@@ -429,14 +427,10 @@ pub enum PluginAction {
     CacheContent { key: String, url: String },
     /// Show a toast notification
     ShowToast { message: String, level: ToastLevel },
-    /// Show a message dialog
-    ShowMessage { title: String, message: String },
     /// Request UI refresh for an extension point
     RefreshPanel { extension_point: String },
     /// Update a specific element's value
     UpdateElement { id: String, value: String },
-    /// Navigate to a plugin page
-    OpenPage { page: String },
     /// Close the current dialog
     CloseDialog,
     /// Copy text to system clipboard

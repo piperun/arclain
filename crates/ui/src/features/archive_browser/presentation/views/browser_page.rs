@@ -210,11 +210,11 @@ fn render_properties_panel(
                             }
                         }
                         "info.plugin_metadata" => {
-                            let metadata = plugin_metadata
-                                .clone()
-                                .or_else(|| archive_info.plugin_metadata.clone());
-
-                            if let Some(metadata) = metadata {
+                            // Sourced from TabState::metadata (signal); the
+                            // `archive_info.plugin_metadata` fallback was
+                            // dropped in the 2026-05-20 Tier 2 cleanup
+                            // (the field was always None).
+                            if let Some(metadata) = plugin_metadata.clone() {
                                 if let Some(group) =
                                     properties_panel::create_plugin_metadata_group(&metadata)
                                 {

@@ -70,16 +70,13 @@ pub fn delete_selected(
         // Refresh listing
         let mut st = state.lock();
         if let Some(a) = st.signals.tabs.get().active().archive_path.get() {
-            if let Ok(entries) = st.list_archive(&a) {
-                let current_archive = st.signals.tabs.get().active().archive_path.get();
+            if st.list_archive(&a).is_ok() {
                 drop(st);
 
                 // We need to reload archive data - call the archive_operations module
                 use crate::core::operations::archive;
                 archive::load_archive_data(
                     state,
-                    entries,
-                    current_archive,
                     &mut Default::default(), // password_dialog placeholder
                     &mut None,               // pending_archive_path placeholder
                     status_info,

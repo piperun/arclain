@@ -391,11 +391,6 @@ interface ui {
         level: toast-level,
     }
 
-    record message-config {
-        title: string,
-        message: string,
-    }
-
     record cache-request {
         key: string,
         url: string,
@@ -419,12 +414,10 @@ interface ui {
         cache-content(cache-request),
         // Notification actions
         show-toast(toast-config),
-        show-message(message-config),
         // UI update actions
         refresh-panel(string),
         update-element(element-update),
         // Navigation actions
-        open-page(string),
         close-dialog,
         // Clipboard actions
         copy-to-clipboard(string),

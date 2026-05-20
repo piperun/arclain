@@ -249,10 +249,6 @@ pub(crate) fn convert_plugin_action(
                 crate::arclain::plugin::ui::ToastLevel::Error => ToastLevel::Error,
             },
         },
-        WitAction::ShowMessage(config) => InternalAction::ShowMessage {
-            title: config.title,
-            message: config.message,
-        },
         WitAction::RefreshPanel(ep) => InternalAction::RefreshPanel {
             extension_point: ep,
         },
@@ -260,7 +256,6 @@ pub(crate) fn convert_plugin_action(
             id: update.id,
             value: update.value,
         },
-        WitAction::OpenPage(page) => InternalAction::OpenPage { page },
         WitAction::CloseDialog => InternalAction::CloseDialog,
         WitAction::CopyToClipboard(text) => InternalAction::CopyToClipboard { text },
         WitAction::OpenLightbox(config) => InternalAction::OpenLightbox {

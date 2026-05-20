@@ -206,11 +206,8 @@ impl PluginInstance {
     ) -> Result<crate::types::PluginLayout> {
         let ep_str = match extension_point {
             PluginExtensionPoint::MainPage => "MainPage".to_string(),
-            PluginExtensionPoint::Sidebar => "Sidebar".to_string(), // Keep Sidebar enum for now
-            PluginExtensionPoint::ContextMenu => "ContextMenu".to_string(),
             PluginExtensionPoint::PluginButton => "PluginButton".to_string(),
             PluginExtensionPoint::Panel => "Panel".to_string(),
-            PluginExtensionPoint::Settings => "Settings".to_string(),
             PluginExtensionPoint::Dialog(ref id) => format!("Dialog:{}", id),
             PluginExtensionPoint::Page(ref id) => format!("Page:{}", id),
         };
