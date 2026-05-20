@@ -1,4 +1,4 @@
-use arclain_db::ConfigDb;
+use arclain_db::DieselPool;
 use once_cell::sync::Lazy;
 use parking_lot::RwLock;
 use serde::Deserialize;
@@ -83,19 +83,19 @@ static FILTER_CACHE: Lazy<Arc<RwLock<TitleFilterConfig>>> = Lazy::new(|| {
 
 /// Initialize the title filter service
 /// This should be called at application startup
-pub fn init(db: &ConfigDb) -> anyhow::Result<()> {
+pub fn init(pool: &DieselPool) -> anyhow::Result<()> {
     // 2. Seed system replacements if missing
-    seed_system_replacements(db)?;
+    seed_system_replacements(pool)?;
 
     // 3. Load current config from DB into cache
-    refresh_cache(db)?;
+    refresh_cache(pool)?;
 
     Ok(())
 }
 
 /// Refresh the in-memory cache from the database
-pub fn refresh_cache(db: &ConfigDb) -> anyhow::Result<()> {
-    db.with_conn(|conn| {
+pub fn refresh_cache(pool: &DieselPool) -> anyhow::Result<()> {
+    pool.with_conn(|conn| {
         // Load scalar settings
         let db_settings = arclain_db::get_title_filter_settings(conn)?;
 
@@ -143,26 +143,13 @@ pub fn refresh_cache(db: &ConfigDb) -> anyhow::Result<()> {
 }
 
 /// Ensure system replacements exist in the DB
-fn seed_system_replacements(db: &ConfigDb) -> anyhow::Result<()> {
-    db.with_conn(|conn| {
-        // We want to ensure these exist, but NOT overwrite if they already exist
-        // (save_title_replacement does upsert, which is fine for system defaults
-        // if we assume system defaults should be enforced or if we check existence first).
-        //
-        // Current save_title_replacement: ON CONFLICT(original) DO UPDATE SET replacement = excluded.replacement
-        // This would overwrite user changes to system defaults.
-        //
-        // Better strategy: Check if it exists. If not, insert.
-        // Since we don't have "insert if not exists" exposed easily, we can just rely on
-        // the fact that this runs once.
-        //
-        // Actually, let's just insert them with is_system=true.
-        // If the user changed them, they might be annoyed if we reset them.
-        // But for now, let's assume system defaults are sticky.
-
+fn seed_system_replacements(pool: &DieselPool) -> anyhow::Result<()> {
+    pool.with_conn(|conn| {
+        // save_title_replacement upserts on `original`, so re-running
+        // this on startup overwrites any user customisation that has the
+        // same source string. We accept that: system defaults are
+        // intentionally sticky for the same key.
         for (original, replacement) in DEFAULT_SYSTEM_REPLACEMENTS.iter() {
-            // We use a special flag or check?
-            // For now, just upsert them as system rules.
             arclain_db::save_title_replacement(conn, original, replacement, true)?;
         }
         Ok(())

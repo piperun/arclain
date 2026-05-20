@@ -1,6 +1,6 @@
 //! Checksum database for file integrity verification
 
-use crate::{diesel_err, SqliteDb};
+use crate::SqliteDb;
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::PathBuf;
@@ -430,76 +430,8 @@ pub fn delete_checksum_operation(conn: &Connection, op_id: &OpId) -> Result<()> 
     Ok(())
 }
 
-// ============================================================================
-// Diesel DSL versions
-// ============================================================================
-
-use diesel::prelude::*;
-
-/// Get checksum algorithm using Diesel DSL
-pub fn get_checksum_algorithm_diesel(conn: &mut diesel::SqliteConnection) -> Result<String> {
-    use crate::diesel_schema::checksum_settings::dsl::*;
-    use diesel::result::OptionalExtension;
-
-    let result = checksum_settings
-        .filter(key.eq("algorithm"))
-        .select(value)
-        .first::<String>(conn)
-        .optional()
-        .map_err(diesel_err("query"))?;
-
-    Ok(result.unwrap_or_else(|| "blake3".to_string()))
-}
-
-/// Set checksum algorithm using Diesel DSL
-pub fn set_checksum_algorithm_diesel(
-    conn: &mut diesel::SqliteConnection,
-    algo: &str,
-) -> Result<()> {
-    use crate::diesel_schema::checksum_settings::dsl::*;
-
-    diesel::insert_into(checksum_settings)
-        .values((key.eq("algorithm"), value.eq(algo)))
-        .on_conflict(key)
-        .do_update()
-        .set(value.eq(algo))
-        .execute(conn)
-        .map_err(diesel_err("insert"))?;
-
-    Ok(())
-}
-
-/// Get checksum mode using Diesel DSL
-pub fn get_checksum_mode_diesel(conn: &mut diesel::SqliteConnection) -> Result<VerifyMode> {
-    use crate::diesel_schema::checksum_settings::dsl::*;
-    use diesel::result::OptionalExtension;
-
-    let result = checksum_settings
-        .filter(key.eq("mode"))
-        .select(value)
-        .first::<String>(conn)
-        .optional()
-        .map_err(diesel_err("query"))?;
-
-    Ok(result
-        .and_then(|s| VerifyMode::from_str(&s))
-        .unwrap_or_default())
-}
-
-/// Set checksum mode using Diesel DSL
-pub fn set_checksum_mode_diesel(
-    conn: &mut diesel::SqliteConnection,
-    mode: VerifyMode,
-) -> Result<()> {
-    use crate::diesel_schema::checksum_settings::dsl::*;
-
-    diesel::insert_into(checksum_settings)
-        .values((key.eq("mode"), value.eq(mode.as_str())))
-        .on_conflict(key)
-        .do_update()
-        .set(value.eq(mode.as_str()))
-        .execute(conn)
-        .map_err(diesel_err("insert"))?;
-
-    Ok(())
-}
+// Note: there used to be `get_checksum_algorithm_diesel` /
+// `set_checksum_algorithm_diesel` (plus `_mode_*`) mirrors here, but
+// `ChecksumDb` is rusqlite-only and nothing else ever called the
+// Diesel versions. They were deleted as part of the dual-CRUD
+// collapse (see docs/audits/2026-05-19-dependencies.md §5 #6).

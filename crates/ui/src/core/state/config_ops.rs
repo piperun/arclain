@@ -11,13 +11,11 @@ impl AppState {
             if let Err(e) = arclain_core::config::sync::sync_rules(config_pool) {
                 warn!("Failed to sync organization rules: {}", e);
             }
-            // Title filters are now initialized via title_filter::init()
-            if let Some(ref db_paths) = self.db_paths {
-                if let Ok(cfg_db) = arclain_core::config::ConfigDb::open(&db_paths.config_db) {
-                    if let Err(e) = arclain_core::utilities::title_filter::init(&cfg_db) {
-                        warn!("Failed to initialize title filters: {}", e);
-                    }
-                }
+            // Title filters: init() seeds system replacements and
+            // primes the in-memory cache. Goes through the shared
+            // Diesel pool, not a fresh ConfigDb handle.
+            if let Err(e) = arclain_core::utilities::title_filter::init(config_pool) {
+                warn!("Failed to initialize title filters: {}", e);
             }
         }
     }

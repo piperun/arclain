@@ -17,9 +17,8 @@ pub use pool::{DbConn, DbPool, DieselPool};
 
 mod config;
 pub use config::{
-    delete_title_replacement, delete_title_replacement_diesel, get_title_filter_settings,
-    list_title_replacements, list_title_replacements_diesel, save_title_filter_settings,
-    save_title_replacement, save_title_replacement_diesel, ConfigDb, DbTitleFilterSettings,
+    delete_title_replacement, get_title_filter_settings, list_title_replacements,
+    save_title_filter_settings, save_title_replacement, ConfigDb, DbTitleFilterSettings,
     DbTitleReplacement, NewTitleReplacement,
 };
 
@@ -52,11 +51,10 @@ pub use archive_profiles::{
 mod checksum;
 pub use checksum::{
     begin_checksum_operation, delete_checksum_operation, get_checksum_algorithm,
-    get_checksum_algorithm_diesel, get_checksum_mode, get_checksum_mode_diesel, get_file_checksum,
-    get_merkle_root, get_pending_checksum_operations, set_checksum_algorithm,
-    set_checksum_algorithm_diesel, set_checksum_mode, set_checksum_mode_diesel,
-    store_file_checksum, store_merkle_root, update_checksum_operation, ChecksumDb, DbFileChecksum,
-    DbOperation, OpId, OpState, OpType, VerifyMode,
+    get_checksum_mode, get_file_checksum, get_merkle_root, get_pending_checksum_operations,
+    set_checksum_algorithm, set_checksum_mode, store_file_checksum, store_merkle_root,
+    update_checksum_operation, ChecksumDb, DbFileChecksum, DbOperation, OpId, OpState, OpType,
+    VerifyMode,
 };
 
 mod user_config;

@@ -42,8 +42,8 @@ pub fn replace_pass_rules(db: &arclain_db::SecretsDb, rules: &[PassRule]) -> Res
 
 use crate::features::organization::OrganizationRule;
 use arclain_db::{
-    delete_rule, delete_title_replacement_diesel, list_rules, list_title_replacements_diesel,
-    save_rule, save_title_replacement_diesel, DbOrganizationRule,
+    delete_rule, delete_title_replacement, list_rules, list_title_replacements, save_rule,
+    save_title_replacement, DbOrganizationRule,
 };
 
 pub fn list_org_rules(pool: &DieselPool) -> Result<Vec<OrganizationRule>> {
@@ -100,7 +100,7 @@ pub fn delete_org_rule(pool: &DieselPool, id: i64) -> Result<()> {
 pub use arclain_db::DbTitleReplacement;
 
 pub fn list_replacements(pool: &DieselPool) -> Result<Vec<DbTitleReplacement>> {
-    pool.with_conn(|conn| list_title_replacements_diesel(conn))
+    pool.with_conn(|conn| list_title_replacements(conn))
 }
 
 pub fn save_replacement(
@@ -109,11 +109,11 @@ pub fn save_replacement(
     replacement: &str,
     is_system: bool,
 ) -> Result<()> {
-    pool.with_conn(|conn| save_title_replacement_diesel(conn, original, replacement, is_system))
+    pool.with_conn(|conn| save_title_replacement(conn, original, replacement, is_system))
 }
 
 pub fn delete_replacement(pool: &DieselPool, id: i64) -> Result<()> {
-    pool.with_conn(|conn| delete_title_replacement_diesel(conn, id as i32))
+    pool.with_conn(|conn| delete_title_replacement(conn, id as i32))
 }
 
 /// Ensure default rules exist in the database

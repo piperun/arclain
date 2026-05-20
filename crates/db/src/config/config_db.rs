@@ -242,46 +242,6 @@ pub struct NewTitleReplacement<'a> {
     pub is_system: bool,
 }
 
-// DB Operations for Title Replacements
-pub fn list_title_replacements(conn: &Connection) -> Result<Vec<DbTitleReplacement>> {
-    // Still using rusqlite for existing code paths
-    // Use list_title_replacements_diesel() for Diesel DSL version
-
-    // For now, we still use rusqlite connection
-    // Full migration would convert to diesel::SqliteConnection
-    let mut stmt = conn.prepare(
-        "SELECT id, original, replacement, is_system FROM title_replacements ORDER BY original",
-    )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(DbTitleReplacement {
-            id: row.get(0)?,
-            original: row.get(1)?,
-            replacement: row.get(2)?,
-            is_system: row.get(3)?,
-        })
-    })?;
-
-    let mut replacements = Vec::new();
-    for row in rows {
-        replacements.push(row?);
-    }
-    Ok(replacements)
-}
-
-pub fn save_title_replacement(
-    conn: &Connection,
-    original: &str,
-    replacement: &str,
-    is_system: bool,
-) -> Result<()> {
-    conn.execute(
-        "INSERT INTO title_replacements (original, replacement, is_system) VALUES (?1, ?2, ?3)
-         ON CONFLICT(original) DO UPDATE SET replacement = excluded.replacement",
-        (original, replacement, is_system),
-    )?;
-    Ok(())
-}
-
 /// Title Filter Settings Model
 #[derive(Debug, Clone)]
 pub struct DbTitleFilterSettings {
@@ -291,58 +251,14 @@ pub struct DbTitleFilterSettings {
     pub trim_whitespace: Option<bool>,
 }
 
-// DB Operations for Title Filter Settings
-pub fn get_title_filter_settings(conn: &Connection) -> Result<DbTitleFilterSettings> {
-    let invalid_chars = crate::get_config(conn, "title_filter.invalid_chars")?;
-    let replacement = crate::get_config(conn, "title_filter.replacement")?;
-    let max_length =
-        crate::get_config(conn, "title_filter.max_length")?.and_then(|s| s.parse().ok());
-    let trim_whitespace =
-        crate::get_config(conn, "title_filter.trim_whitespace")?.and_then(|s| s.parse().ok());
-
-    Ok(DbTitleFilterSettings {
-        invalid_chars,
-        replacement,
-        max_length,
-        trim_whitespace,
-    })
-}
-
-pub fn save_title_filter_settings(
-    conn: &Connection,
-    settings: &DbTitleFilterSettings,
-) -> Result<()> {
-    if let Some(val) = &settings.invalid_chars {
-        crate::set_config(conn, "title_filter.invalid_chars", val)?;
-    }
-    if let Some(val) = &settings.replacement {
-        crate::set_config(conn, "title_filter.replacement", val)?;
-    }
-    if let Some(val) = settings.max_length {
-        crate::set_config(conn, "title_filter.max_length", &val.to_string())?;
-    }
-    if let Some(val) = settings.trim_whitespace {
-        crate::set_config(conn, "title_filter.trim_whitespace", &val.to_string())?;
-    }
-    Ok(())
-}
-
-pub fn delete_title_replacement(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute(
-        "DELETE FROM title_replacements WHERE id = ?1 AND is_system = 0",
-        [id],
-    )?;
-    Ok(())
-}
-
 // ============================================================================
-// Diesel DSL versions (use these when migrating to diesel::SqliteConnection)
+// Diesel DSL CRUD
 // ============================================================================
 
 use diesel::prelude::*;
 
-/// List all title replacements using Diesel DSL
-pub fn list_title_replacements_diesel(
+/// List all title replacements
+pub fn list_title_replacements(
     conn: &mut diesel::SqliteConnection,
 ) -> Result<Vec<DbTitleReplacement>> {
     use crate::diesel_schema::title_replacements::dsl::*;
@@ -364,8 +280,8 @@ pub fn list_title_replacements_diesel(
         .collect())
 }
 
-/// Save a title replacement using Diesel DSL
-pub fn save_title_replacement_diesel(
+/// Save a title replacement (upsert by original)
+pub fn save_title_replacement(
     conn: &mut diesel::SqliteConnection,
     orig: &str,
     repl: &str,
@@ -384,8 +300,8 @@ pub fn save_title_replacement_diesel(
     Ok(())
 }
 
-/// Delete a title replacement using Diesel DSL
-pub fn delete_title_replacement_diesel(
+/// Delete a title replacement (system replacements are immune)
+pub fn delete_title_replacement(
     conn: &mut diesel::SqliteConnection,
     rule_id: i32,
 ) -> Result<()> {
@@ -395,5 +311,45 @@ pub fn delete_title_replacement_diesel(
         .execute(conn)
         .map_err(diesel_err("delete"))?;
 
+    Ok(())
+}
+
+/// Read title-filter scalar settings (invalid_chars, replacement, etc.)
+/// from the `app_config` key-value table.
+pub fn get_title_filter_settings(
+    conn: &mut diesel::SqliteConnection,
+) -> Result<DbTitleFilterSettings> {
+    let invalid_chars = crate::get_config_diesel(conn, "title_filter.invalid_chars")?;
+    let replacement = crate::get_config_diesel(conn, "title_filter.replacement")?;
+    let max_length = crate::get_config_diesel(conn, "title_filter.max_length")?
+        .and_then(|s| s.parse().ok());
+    let trim_whitespace = crate::get_config_diesel(conn, "title_filter.trim_whitespace")?
+        .and_then(|s| s.parse().ok());
+
+    Ok(DbTitleFilterSettings {
+        invalid_chars,
+        replacement,
+        max_length,
+        trim_whitespace,
+    })
+}
+
+/// Persist title-filter scalar settings to the `app_config` table.
+pub fn save_title_filter_settings(
+    conn: &mut diesel::SqliteConnection,
+    settings: &DbTitleFilterSettings,
+) -> Result<()> {
+    if let Some(val) = &settings.invalid_chars {
+        crate::set_config_diesel(conn, "title_filter.invalid_chars", val)?;
+    }
+    if let Some(val) = &settings.replacement {
+        crate::set_config_diesel(conn, "title_filter.replacement", val)?;
+    }
+    if let Some(val) = settings.max_length {
+        crate::set_config_diesel(conn, "title_filter.max_length", &val.to_string())?;
+    }
+    if let Some(val) = settings.trim_whitespace {
+        crate::set_config_diesel(conn, "title_filter.trim_whitespace", &val.to_string())?;
+    }
     Ok(())
 }
