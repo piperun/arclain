@@ -143,6 +143,28 @@ pub fn process_extraction_progress(
                 tracing::error!("Extraction failed: {}", error);
                 if error.contains("cancelled") {
                     *status_message = "Extraction cancelled".to_string();
+                } else if crate::core::operations::archive::is_password_error(error) {
+                    // The archive the user is extracting from has
+                    // encrypted contents and no password has been
+                    // provided yet. Surface the password dialog on
+                    // the active tab — the existing unlock flow
+                    // (dialog_handler → try_open_with_password)
+                    // will set tab.current_password on success, and
+                    // the next click on the same file will re-extract
+                    // using that password.
+                    let active = shared_state.signals().tabs.get().active().clone();
+                    if let Some(archive_path) = active.archive_path.get() {
+                        let mut pwd = active.password_dialog.get();
+                        pwd.show = true;
+                        pwd.password.clear();
+                        pwd.error = "Archive contents are password-protected".to_string();
+                        pwd.target_path = Some(archive_path);
+                        active.password_dialog.set(pwd);
+                        *status_message =
+                            "Archive contents are password-protected".to_string();
+                    } else {
+                        *status_message = format!("Extraction failed: {}", error);
+                    }
                 } else {
                     *status_message = format!("Extraction failed: {}", error);
                 }

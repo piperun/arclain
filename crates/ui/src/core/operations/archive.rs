@@ -675,11 +675,27 @@ pub fn load_archive_into_tab(
     });
 }
 
-fn is_password_error(err_msg: &str) -> bool {
+/// Detect whether a backend error message indicates a password
+/// failure. Patterns cover the three backends arclain shells out to:
+///
+/// - 7-Zip CLI / native:  `Wrong password`, `code Some(2)`
+/// - UnRAR CLI:           `Incorrect password`, `code Some(11)`
+/// - UnRAR native:        `Password for encrypted archive not specified`
+/// - Various:             `Cannot/Can not open encrypted`, `Enter password`,
+///                        `code Some(255)`
+///
+/// Pub(crate) so the extraction-progress handler in
+/// `app_lifecycle::process_extraction_progress` can reuse it for the
+/// "show password dialog on extract failure" path. Keep this list
+/// growing as new backends surface new patterns.
+pub(crate) fn is_password_error(err_msg: &str) -> bool {
     err_msg.contains("Wrong password")
+        || err_msg.contains("Incorrect password")
+        || err_msg.contains("Password for encrypted archive not specified")
         || err_msg.contains("Cannot open encrypted")
         || err_msg.contains("Can not open encrypted")
         || err_msg.contains("Enter password")
         || err_msg.contains("code Some(2)")
+        || err_msg.contains("code Some(11)")
         || err_msg.contains("code Some(255)")
 }

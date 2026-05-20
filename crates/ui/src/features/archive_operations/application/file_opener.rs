@@ -214,6 +214,13 @@ pub fn open_file_from_archive(
                 ));
             }
             Err(e) => {
+                // Use `{:#}` to flatten the anyhow context chain into
+                // the error string. The outer wrappers (e.g. the
+                // fallback_backend's "Both backends failed to extract
+                // files") would otherwise hide the underlying
+                // "Incorrect password" / "Wrong password" / etc. that
+                // process_extraction_progress needs to see to route
+                // the password dialog.
                 signals_clone.extraction_progress.set(Some(
                     crate::core::signals::ExtractionProgressState {
                         current_file: "Extraction failed".to_string(),
@@ -221,7 +228,7 @@ pub fn open_file_from_archive(
                         current: 0,
                         total: total_files,
                         complete: true,
-                        error: Some(format!("{}", e)),
+                        error: Some(format!("{:#}", e)),
                         file_to_open: None,
                     },
                 ));
