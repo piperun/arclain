@@ -3,6 +3,7 @@
 pub mod async_image;
 pub mod components;
 pub mod dialogs;
+pub mod image_fetcher;
 pub mod models;
 pub mod state;
 pub mod theme;

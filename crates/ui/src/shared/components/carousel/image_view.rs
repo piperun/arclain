@@ -167,7 +167,7 @@ impl<'a> ImageView<'a> {
             };
             if should_fetch {
                 ctx.data_mut(|d| d.insert_temp(fetch_id, now));
-                crate::features::plugins::presentation::rendering::image::trigger_image_fetch(
+                crate::shared::image_fetcher::trigger_image_fetch(
                     shared,
                     self.plugin_id.map(|s| s.to_string()),
                     url.to_string(),

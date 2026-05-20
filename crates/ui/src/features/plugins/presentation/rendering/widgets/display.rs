@@ -3,7 +3,8 @@
 //! event for selection, but the cell values themselves aren't editable.
 
 use super::super::context::{RenderContext, UiEventHandler};
-use super::super::image::{trigger_image_fetch, try_render_image};
+use super::super::image::try_render_image;
+use crate::shared::image_fetcher::trigger_image_fetch;
 use crate::shared::components::settings_form::SectionHeader;
 use arclain_plugins::types::WarningIcon;
 use arclain_widgets::Chips;
