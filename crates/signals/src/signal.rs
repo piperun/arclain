@@ -5,7 +5,7 @@
 use parking_lot::RwLock;
 use std::sync::Arc;
 
-type Listener = Box<dyn Fn() + Send + Sync>;
+type Listener = Arc<dyn Fn() + Send + Sync>;
 
 /// A reactive signal that holds a value and notifies listeners on change.
 ///
@@ -76,29 +76,38 @@ impl<T> Signal<T> {
     where
         F: Fn() + Send + Sync + 'static,
     {
-        self.inner.listeners.write().push(Box::new(callback));
+        self.inner.listeners.write().push(Arc::new(callback));
     }
 
     /// Notify all listeners that the value has changed.
+    ///
+    /// Listeners are snapshotted into a `Vec<Arc<_>>` under a brief read guard;
+    /// the guard is released before any callback is invoked. This avoids
+    /// self-deadlock if a callback re-enters via `subscribe` (which takes the
+    /// write lock on the same RwLock).
     fn notify(&self) {
-        let listeners = self.inner.listeners.read();
-        let count = listeners.len();
+        let listeners: Vec<Listener> = {
+            let guard = self.inner.listeners.read();
+            let count = guard.len();
 
-        // Tracing logic: Only trace if explicitly enabled for this signal
-        if self.inner.tracing && count > 0 {
-            let name = self.inner.name.as_deref().unwrap_or("unnamed");
-            let loc = self.inner.location;
+            // Tracing logic: Only trace if explicitly enabled for this signal
+            if self.inner.tracing && count > 0 {
+                let name = self.inner.name.as_deref().unwrap_or("unnamed");
+                let loc = self.inner.location;
 
-            tracing::trace!(
-                "[SIGNAL] notify [{}] at {}:{} - listeners: {}",
-                name,
-                loc.file(),
-                loc.line(),
-                count
-            );
-        }
+                tracing::trace!(
+                    "[SIGNAL] notify [{}] at {}:{} - listeners: {}",
+                    name,
+                    loc.file(),
+                    loc.line(),
+                    count
+                );
+            }
 
-        for listener in listeners.iter() {
+            guard.iter().cloned().collect()
+        };
+
+        for listener in &listeners {
             listener();
         }
     }
@@ -139,9 +148,14 @@ impl<'a, T> std::ops::DerefMut for SignalWriteGuard<'a, T> {
 
 impl<'a, T> Drop for SignalWriteGuard<'a, T> {
     fn drop(&mut self) {
-        // Notify listeners on drop
-        let listeners = self.signal_inner.listeners.read();
-        for listener in listeners.iter() {
+        // Notify listeners on drop.
+        // Snapshot the listener Vec under a brief read guard, then release
+        // before invoking callbacks (same self-deadlock avoidance as Signal::notify).
+        let listeners: Vec<Listener> = {
+            let guard = self.signal_inner.listeners.read();
+            guard.iter().cloned().collect()
+        };
+        for listener in &listeners {
             listener();
         }
     }
@@ -266,5 +280,44 @@ mod tests {
 
         signal1.set(20);
         assert_eq!(signal2.get(), 20);
+    }
+
+    /// Regression test for R7: a callback invoked during notify must be able
+    /// to call `subscribe` on the same signal without self-deadlocking.
+    ///
+    /// Before R7, both `Signal::notify` and `SignalWriteGuard::drop` held the
+    /// listeners read guard while invoking callbacks. A callback that called
+    /// `subscribe` (write on same RwLock) would deadlock the thread.
+    ///
+    /// The snapshot-then-iterate fix releases the read guard before any
+    /// callback runs, so re-entry is safe.
+    #[test]
+    fn test_subscribe_during_notify_does_not_deadlock() {
+        let signal: Signal<i32> = Signal::new(0);
+        let added = Arc::new(AtomicUsize::new(0));
+
+        // First callback subscribes a second one when fired.
+        let signal_inner = signal.clone();
+        let added_inner = added.clone();
+        signal.subscribe(move || {
+            // This write previously deadlocked under the held read guard.
+            let added_for_new = added_inner.clone();
+            signal_inner.subscribe(move || {
+                added_for_new.fetch_add(1, Ordering::SeqCst);
+            });
+        });
+
+        // Trigger notify. Without the R7 fix this hangs forever.
+        signal.set(1);
+
+        // The newly-added callback should not have fired for THIS notify
+        // (it was registered after the snapshot was taken), but should fire next.
+        assert_eq!(added.load(Ordering::SeqCst), 0);
+
+        signal.set(2);
+        // Now the subscribed-during-callback listener should have fired.
+        // Note: the outer callback also fires again on each set, adding more
+        // listeners — we just need to confirm at least one new listener ran.
+        assert!(added.load(Ordering::SeqCst) >= 1);
     }
 }
