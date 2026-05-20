@@ -1,8 +1,32 @@
 use crate::shared::theme::AppTheme;
-use crate::shared::SharedState;
 use arclain_core::{UiItem, UiRegion};
 use arclain_plugins::types::PluginUiElement;
+use eframe::egui;
 use std::collections::HashMap;
+
+/// Callback for rendering a plugin's UI elements (legacy multi-button
+/// branch). Invoked by toolbar code in `shared/` when it encounters a
+/// plugin action without a specific button id. The closure is built in
+/// `core/arclain_app/toolbar_handler.rs`, where it's allowed to reach
+/// into `features::plugins::presentation::rendering` — `shared/` itself
+/// stays plugin-agnostic.
+///
+/// Inputs: ui, plugin_id, plugin's flattened ui elements.
+/// Returns: events to append to `ToolbarActions::plugin_events` —
+///   (plugin_id, element_id, optional value).
+pub type PluginToolbarRenderer<'a> = &'a mut dyn FnMut(
+    &mut egui::Ui,
+    &str,
+    &[PluginUiElement],
+) -> Vec<(String, String, Option<String>)>;
+
+/// Callback for dispatching a plugin event (async dispatcher in
+/// features/plugins). Same injection rationale as `PluginToolbarRenderer`:
+/// shared/ produces events, features/plugins routes them.
+///
+/// Args: plugin_id, event_id, optional value.
+pub type PluginEventDispatcher<'a> =
+    &'a mut dyn FnMut(String, String, Option<String>);
 
 /// Configuration for toolbar items loaded from database
 pub struct ToolbarConfig {
@@ -81,7 +105,6 @@ pub struct ToolbarActions {
 /// Context for button rendering
 pub struct ButtonContext<'a> {
     pub theme: &'a AppTheme,
-    pub shared: Option<&'a SharedState>,
     pub can_go_back: bool,
     pub can_go_forward: bool,
     pub can_go_up: bool,

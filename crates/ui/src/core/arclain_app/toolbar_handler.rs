@@ -35,6 +35,55 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 let plugin_manager = app.shared_state.services.plugin_manager.clone();
 
                 let mut view_state = tab.browser_view_state.get();
+
+                // Plugin-rendering bridge: shared/ doesn't know about
+                // features/plugins, so we hand it closures that do the
+                // feature-layer work here in core/. Renderer returns
+                // events; dispatcher routes them through the async
+                // worker.
+                let dispatch_shared = app.shared_state.clone();
+                let theme_colors_ref = &app.shared_state.theme.colors;
+                let shared_ref = &app.shared_state;
+                let mut plugin_renderer = move |ui: &mut egui::Ui,
+                                                pid: &str,
+                                                elements: &[arclain_plugins::types::PluginUiElement]|
+                      -> Vec<(String, String, Option<String>)> {
+                    let collected: std::cell::RefCell<
+                        Vec<(String, String, Option<String>)>,
+                    > = std::cell::RefCell::new(Vec::new());
+                    let pid_owned = pid.to_string();
+                    {
+                        let mut callback: crate::features::plugins::presentation::rendering::UiEventCallback =
+                            Box::new(|element_id: &str, value: Option<String>| {
+                                collected.borrow_mut().push((
+                                    pid_owned.clone(),
+                                    element_id.to_string(),
+                                    value,
+                                ));
+                            });
+                        crate::features::plugins::presentation::rendering::render_ui_elements(
+                            ui,
+                            elements,
+                            &mut callback,
+                            theme_colors_ref,
+                            None,
+                            Some(shared_ref),
+                            Some(pid),
+                        );
+                    }
+                    collected.into_inner()
+                };
+                let mut plugin_dispatcher = move |plugin_id: String,
+                                                  event_id: String,
+                                                  value: Option<String>| {
+                    crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+                        &dispatch_shared,
+                        plugin_id,
+                        event_id,
+                        value,
+                    );
+                };
+
                 let actions = components::toolbar::render(
                     ui,
                     &app.shared_state.theme,
@@ -48,6 +97,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     Some(&toolbar_config),
                     plugin_manager.as_ref(),
                     Some(&app.shared_state),
+                    &mut plugin_renderer,
+                    &mut plugin_dispatcher,
                 );
                 tab.browser_view_state.set(view_state);
 

@@ -1,17 +1,24 @@
-use super::types::{ButtonContext, ToolbarActions, ToolbarState};
+use super::types::{ButtonContext, PluginToolbarRenderer, ToolbarActions, ToolbarState};
 use arclain_core::{ActionType, UiItem};
 use arclain_plugins::types::PluginUiElement;
 use arclain_theme::ButtonVariant;
 use eframe::egui;
 use egui::Widget;
 
-/// Render a single toolbar button by ID, returns true if action triggered
+/// Render a single toolbar button by ID, returns true if action triggered.
+///
+/// `plugin_renderer` is called when the item dispatches an
+/// `ActionType::Plugin` without a specific button id (legacy multi-button
+/// branch). The closure is constructed in `core/arclain_app/` where it
+/// can reach into `features::plugins::presentation::rendering` — keeping
+/// this `shared/` module free of feature-layer dependencies.
 pub fn render_button(
     ui: &mut egui::Ui,
     item: &UiItem,
     ctx: &ButtonContext,
     state: &mut ToolbarState,
     actions: &mut ToolbarActions,
+    plugin_renderer: PluginToolbarRenderer<'_>,
 ) {
     if item.action_type == ActionType::Plugin {
         if let Some(action_data) = &item.action_data {
@@ -46,30 +53,13 @@ pub fn render_button(
                     }
                 }
             } else {
-                // Legacy: render all buttons for plugin
-                let plugin_id = action_data;
+                // Legacy: delegate full plugin UI rendering to the injected
+                // callback (lives in features/plugins). shared/ never names
+                // the plugin renderer directly.
+                let plugin_id = action_data.as_str();
                 if let Some(elements) = ctx.plugin_elements.get(plugin_id) {
-                    let pid = plugin_id.clone();
-                    use crate::features::plugins::presentation::rendering::UiEventCallback;
-
-                    let mut callback: UiEventCallback =
-                        Box::new(move |element_id: &str, value: Option<String>| {
-                            actions.plugin_events.push((
-                                pid.clone(),
-                                element_id.to_string(),
-                                value,
-                            ));
-                        });
-
-                    crate::features::plugins::presentation::rendering::render_ui_elements(
-                        ui,
-                        elements,
-                        &mut callback,
-                        &ctx.theme.colors,
-                        None,
-                        ctx.shared,
-                        Some(plugin_id.as_str()),
-                    );
+                    let events = (plugin_renderer)(ui, plugin_id, elements);
+                    actions.plugin_events.extend(events);
                 }
             }
         }

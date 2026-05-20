@@ -11,7 +11,9 @@ mod buttons;
 mod types;
 
 use types::ButtonContext;
-pub use types::{ToolbarActions, ToolbarConfig, ToolbarState};
+pub use types::{
+    PluginEventDispatcher, PluginToolbarRenderer, ToolbarActions, ToolbarConfig, ToolbarState,
+};
 
 pub fn render(
     ui: &mut egui::Ui,
@@ -26,6 +28,8 @@ pub fn render(
     config: Option<&ToolbarConfig>,
     plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
     shared: Option<&SharedState>,
+    plugin_renderer: PluginToolbarRenderer<'_>,
+    plugin_dispatcher: PluginEventDispatcher<'_>,
 ) -> ToolbarActions {
     let mut actions = ToolbarActions::default();
 
@@ -62,7 +66,6 @@ pub fn render(
 
     let ctx = ButtonContext {
         theme,
-        shared,
         can_go_back,
         can_go_forward,
         can_go_up,
@@ -96,7 +99,14 @@ pub fn render(
                 ui.spacing_mut().item_spacing = egui::vec2(2.0, 0.0);
                 ui.horizontal_centered(|ui| {
                     for item in items {
-                        buttons::render_button(ui, item, &ctx, state, &mut actions);
+                        buttons::render_button(
+                            ui,
+                            item,
+                            &ctx,
+                            state,
+                            &mut actions,
+                            plugin_renderer,
+                        );
                     }
                 });
             });
@@ -117,7 +127,14 @@ pub fn render(
                         for (group_id, items) in groups.iter().rev() {
                             if group_id.as_deref() == Some("panels") {
                                 for item in items.iter().rev() {
-                                    buttons::render_button(ui, item, &ctx, state, &mut actions);
+                                    buttons::render_button(
+                                        ui,
+                                        item,
+                                        &ctx,
+                                        state,
+                                        &mut actions,
+                                        plugin_renderer,
+                                    );
                                 }
                             }
                         }
@@ -143,11 +160,9 @@ pub fn render(
             continue;
         }
 
-        if let Some(shared) = shared {
-            crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
-                shared, plugin_id, event_id, value,
-            );
-        }
+        // Delegate dispatch to the injected callback (constructed in
+        // core/, where reaching into features/plugins is allowed).
+        (plugin_dispatcher)(plugin_id, event_id, value);
     }
 
     // Process dialog signals (synchronous — pure signal mutation).
