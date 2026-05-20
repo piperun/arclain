@@ -6,18 +6,29 @@
 //!
 //! - [`types`]      — `DisplayMode`, `ActionType`, `UiRegion`, `UiItem`,
 //!                    `UiRegionConfig`. Pure data, no DB dependency.
-//! - [`config`]     — schema constants + rusqlite CRUD. Owned by callers
-//!                    that hold a `rusqlite::Connection`.
-//! - [`diesel_ops`] — Diesel DSL mirror of the rusqlite functions.
+//! - [`config`]     — schema constants + the two rusqlite seed helpers
+//!                    (`upsert_item`, `set_display_option`) called from
+//!                    `ConfigDb::create_tables` before the Diesel pool
+//!                    exists. Everything else uses the Diesel mirror.
+//! - [`diesel_ops`] — Diesel DSL CRUD. Used by
+//!                    `core::services::ui_service` over a `DieselPool`.
 //! - [`seed`]       — canonical default toolbar / context-menu / panel
-//!                    items and display options.
+//!                    items and display options. Uses `config`.
 
 pub mod config;
 pub mod diesel_ops;
 pub mod seed;
 pub mod types;
 
-pub use config::*;
-pub use diesel_ops::*;
-pub use seed::*;
+// Startup-path API (rusqlite). The Diesel mirrors of `upsert_item` and
+// `set_display_option` are reached via `crate::ui::diesel_ops::*` (and
+// re-exported from `crate` as the bare names).
+pub use config::ensure_ui_tables;
+
+// Diesel DSL CRUD — the canonical API for all post-startup callers.
+pub use diesel_ops::{
+    delete_item, get_display_option, list_items_by_region, set_display_option, upsert_item,
+};
+
+pub use seed::seed_defaults_if_empty;
 pub use types::*;

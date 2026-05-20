@@ -64,12 +64,9 @@ pub use user_config::UserConfig;
 
 mod ui;
 pub use ui::{
-    delete_item, delete_item_diesel, ensure_ui_tables, get_display_option,
-    get_display_option_diesel, get_item, get_item_diesel, get_region_config, list_items_by_region,
-    list_items_by_region_diesel, seed_defaults_if_empty, set_display_option,
-    set_display_option_diesel, set_item_display_mode, set_item_order, set_item_visibility,
-    set_item_visibility_diesel, upsert_item, upsert_item_diesel, upsert_region_config, ActionType,
-    DisplayMode, UiItem, UiRegion, UiRegionConfig,
+    delete_item, ensure_ui_tables, get_display_option, list_items_by_region,
+    seed_defaults_if_empty, set_display_option, upsert_item, ActionType, DisplayMode, UiItem,
+    UiRegion, UiRegionConfig,
 };
 
 mod domain_whitelist;

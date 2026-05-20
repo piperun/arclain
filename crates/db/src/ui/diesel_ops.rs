@@ -1,9 +1,10 @@
 //! Diesel-DSL accessors for the UI configuration tables.
 //!
-//! Mirror of the rusqlite functions in `config.rs` but operating
-//! through the diesel connection pool. Used by callers that already
-//! hold a `DieselPool` and don't want to roundtrip through a separate
-//! rusqlite connection.
+//! Used by callers that hold a `DieselPool` (i.e.
+//! `core::services::ui_service`). The startup-path API
+//! (`ensure_ui_tables`, `upsert_item`, `set_display_option`) lives in
+//! `config.rs` — see that module for why those two CRUD helpers stay
+//! rusqlite-flavoured.
 
 use super::types::{ActionType, DisplayMode, UiItem, UiRegion};
 use crate::diesel_err;
@@ -44,8 +45,8 @@ impl DbUiItemRow {
     }
 }
 
-/// List items by region using Diesel DSL
-pub fn list_items_by_region_diesel(
+/// List items by region
+pub fn list_items_by_region(
     conn: &mut diesel::SqliteConnection,
     reg: UiRegion,
 ) -> Result<Vec<UiItem>> {
@@ -60,25 +61,8 @@ pub fn list_items_by_region_diesel(
     Ok(rows.iter().map(|r| r.to_ui_item()).collect())
 }
 
-/// Get item by ID using Diesel DSL
-pub fn get_item_diesel(
-    conn: &mut diesel::SqliteConnection,
-    item_id: &str,
-) -> Result<Option<UiItem>> {
-    use crate::diesel_schema::ui_items::dsl::*;
-    use diesel::result::OptionalExtension;
-
-    let row = ui_items
-        .filter(id.eq(item_id))
-        .first::<DbUiItemRow>(conn)
-        .optional()
-        .map_err(diesel_err("query"))?;
-
-    Ok(row.map(|r| r.to_ui_item()))
-}
-
-/// Upsert item using Diesel DSL
-pub fn upsert_item_diesel(conn: &mut diesel::SqliteConnection, item: &UiItem) -> Result<()> {
+/// Upsert item (Diesel mirror of [`super::config::upsert_item`])
+pub fn upsert_item(conn: &mut diesel::SqliteConnection, item: &UiItem) -> Result<()> {
     use crate::diesel_schema::ui_items::dsl::*;
 
     diesel::insert_into(ui_items)
@@ -113,8 +97,8 @@ pub fn upsert_item_diesel(conn: &mut diesel::SqliteConnection, item: &UiItem) ->
     Ok(())
 }
 
-/// Delete item using Diesel DSL
-pub fn delete_item_diesel(conn: &mut diesel::SqliteConnection, item_id: &str) -> Result<()> {
+/// Delete item
+pub fn delete_item(conn: &mut diesel::SqliteConnection, item_id: &str) -> Result<()> {
     use crate::diesel_schema::ui_items::dsl::*;
 
     diesel::delete(ui_items.filter(id.eq(item_id)))
@@ -124,24 +108,8 @@ pub fn delete_item_diesel(conn: &mut diesel::SqliteConnection, item_id: &str) ->
     Ok(())
 }
 
-/// Set item visibility using Diesel DSL
-pub fn set_item_visibility_diesel(
-    conn: &mut diesel::SqliteConnection,
-    item_id: &str,
-    is_visible: bool,
-) -> Result<()> {
-    use crate::diesel_schema::ui_items::dsl::*;
-
-    diesel::update(ui_items.filter(id.eq(item_id)))
-        .set(visible.eq(is_visible))
-        .execute(conn)
-        .map_err(diesel_err("update"))?;
-
-    Ok(())
-}
-
-/// Get display option using Diesel DSL
-pub fn get_display_option_diesel(
+/// Get display option
+pub fn get_display_option(
     conn: &mut diesel::SqliteConnection,
     opt_key: &str,
 ) -> Result<Option<String>> {
@@ -158,8 +126,9 @@ pub fn get_display_option_diesel(
     Ok(result)
 }
 
-/// Set display option using Diesel DSL
-pub fn set_display_option_diesel(
+/// Set display option (Diesel mirror of
+/// [`super::config::set_display_option`])
+pub fn set_display_option(
     conn: &mut diesel::SqliteConnection,
     opt_key: &str,
     opt_value: &str,
@@ -175,4 +144,85 @@ pub fn set_display_option_diesel(
         .map_err(diesel_err("insert"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::types::ActionType;
+    use super::*;
+    use diesel::Connection;
+    use diesel::RunQueryDsl;
+
+    fn setup_db() -> diesel::SqliteConnection {
+        let mut conn =
+            diesel::SqliteConnection::establish(":memory:").expect("in-memory SQLite");
+        diesel::sql_query(
+            "CREATE TABLE ui_items (
+                id TEXT PRIMARY KEY,
+                region TEXT NOT NULL,
+                group_id TEXT,
+                label TEXT NOT NULL,
+                icon TEXT,
+                visible INTEGER DEFAULT 1,
+                sort_order INTEGER DEFAULT 0,
+                display_mode TEXT DEFAULT 'icon_and_text',
+                action_type TEXT DEFAULT 'builtin',
+                action_data TEXT
+            )",
+        )
+        .execute(&mut conn)
+        .unwrap();
+        diesel::sql_query(
+            "CREATE TABLE ui_display_options (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+        )
+        .execute(&mut conn)
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn test_item_crud() {
+        let mut conn = setup_db();
+
+        let item = UiItem {
+            id: "test.item".to_string(),
+            region: UiRegion::ToolsDialog,
+            group_id: None,
+            label: "Test Item".to_string(),
+            icon: Some("STAR".to_string()),
+            visible: true,
+            sort_order: 0,
+            display_mode: DisplayMode::IconAndText,
+            action_type: ActionType::Custom,
+            action_data: Some("echo hello".to_string()),
+        };
+
+        upsert_item(&mut conn, &item).unwrap();
+
+        // list_items_by_region returns it
+        let items = list_items_by_region(&mut conn, UiRegion::ToolsDialog).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].label, "Test Item");
+        assert_eq!(items[0].action_type, ActionType::Custom);
+
+        delete_item(&mut conn, "test.item").unwrap();
+        let items = list_items_by_region(&mut conn, UiRegion::ToolsDialog).unwrap();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_display_options() {
+        let mut conn = setup_db();
+
+        set_display_option(&mut conn, "test_key", "test_value").unwrap();
+        let val = get_display_option(&mut conn, "test_key").unwrap();
+        assert_eq!(val, Some("test_value".to_string()));
+
+        set_display_option(&mut conn, "test_key", "new_value").unwrap();
+        let val = get_display_option(&mut conn, "test_key").unwrap();
+        assert_eq!(val, Some("new_value".to_string()));
+    }
 }

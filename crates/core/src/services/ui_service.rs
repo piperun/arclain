@@ -5,8 +5,8 @@
 
 use anyhow::Result;
 use arclain_db::{
-    delete_item_diesel, get_display_option_diesel, list_items_by_region_diesel,
-    set_display_option_diesel, upsert_item_diesel, DieselPool, UiItem, UiRegion,
+    delete_item, get_display_option, list_items_by_region, set_display_option, upsert_item,
+    DieselPool, UiItem, UiRegion,
 };
 
 /// Service for managing UI configuration items
@@ -33,7 +33,7 @@ impl UiService {
     /// List all UI items for a specific region (Toolbar, InfoPanel, etc.)
     pub fn list_items(&self, region: UiRegion) -> Result<Vec<UiItem>> {
         self.pool
-            .with_conn(|conn| list_items_by_region_diesel(conn, region))
+            .with_conn(|conn| list_items_by_region(conn, region))
     }
 
     /// List toolbar items
@@ -48,20 +48,19 @@ impl UiService {
 
     /// Upsert (insert or update) a UI item
     pub fn upsert_item(&self, item: &UiItem) -> Result<()> {
-        self.pool.with_conn(|conn| upsert_item_diesel(conn, item))
+        self.pool.with_conn(|conn| upsert_item(conn, item))
     }
 
     /// Delete a UI item by ID
     pub fn delete_item(&self, item_id: &str) -> Result<()> {
-        self.pool
-            .with_conn(|conn| delete_item_diesel(conn, item_id))
+        self.pool.with_conn(|conn| delete_item(conn, item_id))
     }
 
     /// Batch upsert multiple items (more efficient than individual calls)
     pub fn upsert_items(&self, items: &[UiItem]) -> Result<()> {
         self.pool.with_conn(|conn| {
             for item in items {
-                upsert_item_diesel(conn, item)?;
+                upsert_item(conn, item)?;
             }
             Ok(())
         })
@@ -73,14 +72,13 @@ impl UiService {
 
     /// Get a display option value by key
     pub fn get_display_option(&self, key: &str) -> Result<Option<String>> {
-        self.pool
-            .with_conn(|conn| get_display_option_diesel(conn, key))
+        self.pool.with_conn(|conn| get_display_option(conn, key))
     }
 
     /// Set a display option value
     pub fn set_display_option(&self, key: &str, value: &str) -> Result<()> {
         self.pool
-            .with_conn(|conn| set_display_option_diesel(conn, key, value))
+            .with_conn(|conn| set_display_option(conn, key, value))
     }
 }
 
