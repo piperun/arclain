@@ -171,7 +171,10 @@ impl<'a> Widget for Chips<'a> {
         // Standardized debug overlay (widgets::paint_centering_debug) —
         // shows pill rect, painted-text rect, and the (dx, dy) offset
         // between their centers. Use any time a widget visibly
-        // misaligns its inner content.
+        // misaligns its inner content. Debug-only — stripped in
+        // release so neither the overlay nor `painted_rect`'s consumer
+        // stays in the release binary.
+        #[cfg(debug_assertions)]
         crate::debug::paint_centering_debug(
             ui.painter(),
             rect,
@@ -179,6 +182,8 @@ impl<'a> Widget for Chips<'a> {
             "chip",
             self.debug_lines,
         );
+        #[cfg(not(debug_assertions))]
+        let _ = painted_rect;
 
         if self.clickable {
             response.on_hover_cursor(egui::CursorIcon::PointingHand)

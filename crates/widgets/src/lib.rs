@@ -18,6 +18,10 @@
 pub mod button;
 pub mod chips;
 pub mod collapsible_section;
+// `debug` module is dev-only — the paint_*_debug overlays are
+// instrumentation helpers with no external consumers and shouldn't
+// stay in release binaries.
+#[cfg(debug_assertions)]
 pub mod debug;
 pub mod dropdown;
 pub mod icon_button;
@@ -34,6 +38,7 @@ pub mod toggle_switch;
 pub use button::{ButtonSize, TextButton};
 pub use chips::Chips;
 pub use collapsible_section::CollapsibleSection;
+#[cfg(debug_assertions)]
 pub use debug::{
     paint_centering_debug, paint_child_in_parent_debug, paint_text_centering_debug,
     paint_widget_rect_debug,

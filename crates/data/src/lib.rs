@@ -19,9 +19,11 @@ pub use features::api::{
 pub use features::content_cache::{ContentCache, StreamingWriter};
 pub use features::streaming_download::fetch_url_to_cache;
 pub use features::resolver::{
-    ContentCacheResolver, DataSourceResolver, MemoryResolver, MetadataStoreResolver,
-    NetworkResolver, ResolveError, ServerResolver,
+    ContentCacheResolver, DataSourceResolver, MetadataStoreResolver, NetworkResolver,
+    ResolveError, ServerResolver,
 };
+// MemoryResolver is intentionally not re-exported — it's only used by
+// resolver-internal tests inside `features/resolver/memory.rs`.
 pub use features::resource_manager::ResourceManager;
 pub use shared::{
     ResourceConfig, ResourceData, ResourceRequest, ResourceSource, ResourceStatus, ResourceType,

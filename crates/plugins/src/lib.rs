@@ -50,7 +50,11 @@ pub mod bindings {
 }
 
 pub use bindings::arclain;
-pub use bindings::PluginWorld;
+// `bindings::PluginWorld` is the bindgen-generated trampoline used
+// only by `runtime.rs` inside this crate — exposed via `crate::`
+// path for runtime.rs's `use crate::PluginWorld`, but kept crate-
+// private so it doesn't leak into the public API.
+pub(crate) use bindings::PluginWorld;
 
 // Re-export main types
 pub use host_functions::HostFunctions;
@@ -59,11 +63,19 @@ pub use manager::{PluginListItem, PluginManager};
 pub use runtime::{LoadedPlugin, PluginInstance, WasmRuntime};
 pub use types::{
     BadgeConfig, PluginCapability, PluginError, PluginEvent, PluginInfo, PluginManifest,
-    PluginMetadata, PluginResponse, Result, TopTabConfig,
+    PluginMetadata, PluginResponse, Result,
 };
+// `types::TopTabConfig` is intentionally not re-exported — all
+// internal users access it via `crate::types::TopTabConfig` and no
+// external consumer references it.
 
-/// Get the default plugins directory path
-pub fn default_plugins_dir() -> std::path::PathBuf {
+/// Get the default plugins directory path.
+///
+/// Crate-private — external callers configure their own paths or go
+/// through `PluginManager`. Only consumed by this crate's own
+/// `tests` module, so `dead_code` is allowed for non-test builds.
+#[allow(dead_code)]
+pub(crate) fn default_plugins_dir() -> std::path::PathBuf {
     if let Some(data_dir) = dirs::data_local_dir() {
         data_dir.join("archust").join("plugins")
     } else {

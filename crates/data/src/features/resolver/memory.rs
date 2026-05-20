@@ -1,19 +1,27 @@
 //! Memory resolver
 //!
 //! In-memory ephemeral storage for temporary data.
+//!
+//! This resolver is intentionally not re-exported from `arclain_data`
+//! — it's only exercised by the tests in this module, which validate
+//! that the `DataSourceResolver` trait works correctly with a minimal
+//! in-memory backing store. Production code uses the disk- and
+//! cache-backed resolvers instead.
 
 use super::{DataSourceResolver, ResolveError};
 use crate::features::api::DataRequest;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 
-/// Resolver for in-memory ephemeral data
-pub struct MemoryResolver {
+/// Resolver for in-memory ephemeral data. Test-only — see module docs.
+#[allow(dead_code)]
+pub(crate) struct MemoryResolver {
     store: RwLock<HashMap<String, Vec<u8>>>,
 }
 
+#[allow(dead_code)]
 impl MemoryResolver {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             store: RwLock::new(HashMap::new()),
         }
