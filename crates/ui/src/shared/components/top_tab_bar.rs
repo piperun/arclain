@@ -134,40 +134,44 @@ fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
 
     if let Some(count) = badge.count {
         if count > 0 {
-            // Numeric pill badge. `RichText::background_color` paints only
-            // behind the glyphs (not a real pill) and Color32::WHITE-on-
-            // primary is unreadable against light primary tokens. Use
-            // colors.on_primary for guaranteed contrast and paint a real
-            // rounded-rect with the count centered inside.
+            // Compact numeric badge. Uses mesh_bounds-based visual centering
+            // (via arclain_widgets::paint_text_visually_centered) — egui's
+            // Align2::CENTER_CENTER centers the line-box, which includes
+            // ascender/descender slack and makes digits look top-heavy in
+            // small containers. Sized from mesh_bounds (the actual painted
+            // glyph extent) rather than galley.size() (which includes that
+            // same slack) so the horizontal padding is even.
             let text = format!("{}", count);
             let font_id = egui::FontId::proportional(10.0);
             let text_color = colors.on_primary;
 
-            let galley = ui
-                .painter()
-                .layout_no_wrap(text.clone(), font_id.clone(), text_color);
-
-            let h_pad = 5.0_f32;
-            let pill_height = 14.0_f32;
-            let pill_size = egui::vec2(
-                (galley.size().x + h_pad * 2.0)
-                    .max(pill_height)
-                    .ceil(),
-                pill_height,
+            let probe = ui.painter().layout_no_wrap(
+                text.clone(),
+                font_id.clone(),
+                text_color,
             );
-            let (rect, _) = ui.allocate_exact_size(pill_size, egui::Sense::hover());
+
+            let h_pad = 4.0_f32;
+            let badge_height = 16.0_f32;
+            let badge_size = egui::vec2(
+                (probe.mesh_bounds.width() + h_pad * 2.0)
+                    .max(badge_height)
+                    .ceil(),
+                badge_height,
+            );
+            let (rect, _) = ui.allocate_exact_size(badge_size, egui::Sense::hover());
 
             ui.painter().rect_filled(
                 rect,
-                egui::CornerRadius::same((pill_height / 2.0) as u8),
+                egui::CornerRadius::same((badge_height / 2.0) as u8),
                 color,
             );
-            ui.painter().text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
+            arclain_widgets::paint_text_visually_centered(
+                ui.painter(),
                 text,
                 font_id,
                 text_color,
+                rect.center(),
             );
         }
     } else if badge.dot {
