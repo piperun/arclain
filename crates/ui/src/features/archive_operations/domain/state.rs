@@ -30,6 +30,13 @@ pub struct ArchiveOperationsState {
     // Drag-out progress state
     pub drag_rx: Option<Receiver<ProgressUpdate>>,
     pub drag_started: Option<Instant>,
+    /// The tab that originated this drag-out op. Captured at spawn time
+    /// so `update_drag_progress` can route progress events to the
+    /// originating tab's `drag_dialog` slot after the dialog migrated
+    /// from `AppSignals.progress_dialogs` to `TabState.progress_dialogs`
+    /// in the 2026-05-20 B3 reframed slice 2. Mirrors
+    /// `extraction_origin_tab` / `conversion_origin_tab`.
+    pub drag_origin_tab: Option<Arc<TabState>>,
 }
 
 impl Default for ArchiveOperationsState {
@@ -49,6 +56,7 @@ impl Default for ArchiveOperationsState {
             conversion_origin_tab: None,
             drag_rx: None,
             drag_started: None,
+            drag_origin_tab: None,
         }
     }
 }

@@ -117,10 +117,14 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     open_tab.merge_dialog.set(merge_dialog);
                 }
                 if actions.extract {
-                    let view_state = shared_state.signals().tabs.get().active().browser_view_state.get();
+                    // extraction_dialog is per-tab now (post 2026-05-20 B3
+                    // reframed slice 2). The button is on the active tab's
+                    // toolbar, so the dialog lives on the active tab.
+                    let active_tab = shared_state.signals().tabs.get().active().clone();
+                    let view_state = active_tab.browser_view_state.get();
                     let ops_state = app.archive_operations.state_mut();
                     let mut status_info = shared_state.signals().status_bar.get();
-                    let mut dialog = shared_state.signals().extraction_dialog().get();
+                    let mut dialog = active_tab.extraction_dialog().get();
 
                     operations::extraction::extract_selected(
                         &app.shared_state.app_state,
@@ -135,12 +139,13 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut status_info,
                     );
                     shared_state.signals().status_bar.set(status_info);
-                    shared_state.signals().extraction_dialog().set(dialog);
+                    active_tab.extraction_dialog().set(dialog);
                 }
                 if actions.extract_all {
+                    let active_tab = shared_state.signals().tabs.get().active().clone();
                     let ops_state = app.archive_operations.state_mut();
                     let mut status_info = shared_state.signals().status_bar.get();
-                    let mut dialog = shared_state.signals().extraction_dialog().get();
+                    let mut dialog = active_tab.extraction_dialog().get();
 
                     operations::extraction::extract_all(
                         &app.shared_state.app_state,
@@ -154,7 +159,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut status_info,
                     );
                     shared_state.signals().status_bar.set(status_info);
-                    shared_state.signals().extraction_dialog().set(dialog);
+                    active_tab.extraction_dialog().set(dialog);
                 }
                 if actions.add {
                     let mut status_info = shared_state.signals().status_bar.get();

@@ -6,28 +6,31 @@ use std::sync::atomic::Ordering;
 
 pub fn update_conversion_progress(
     state: &mut ArchiveOperationsState,
-    shared: &crate::shared::SharedState,
+    _shared: &crate::shared::SharedState,
     ctx: &egui::Context,
 ) {
+    // Without an origin tab there's no dialog to update — bail out
+    // early. Post 2026-05-20 B3 reframed slice 2 the conversion
+    // dialog lives on the originating tab; no origin = no target.
+    let Some(origin_tab) = state.conversion_origin_tab.clone() else {
+        return;
+    };
+
     // Cooperative cancellation: if the originating tab was force-closed, kill
     // the subprocess and clean up so the op counter drops to zero promptly.
-    if let Some(origin_tab) = &state.conversion_origin_tab {
-        if origin_tab.tab_cancel.load(Ordering::SeqCst) {
-            if let Some(mut child) = state.conversion_child.take() {
-                let _ = child.kill();
-            }
-            state.conversion_rx = None;
-            state.conversion_started = None;
-            state.conversion_op_guard = None;
-            state.conversion_origin_tab = None;
-            let mut dialog = shared.signals().conversion_dialog().get();
-            dialog.show = false;
-            shared.signals().conversion_dialog().set(dialog);
-            return;
+    if origin_tab.tab_cancel.load(Ordering::SeqCst) {
+        if let Some(mut child) = state.conversion_child.take() {
+            let _ = child.kill();
         }
+        state.conversion_rx = None;
+        state.conversion_started = None;
+        state.conversion_op_guard = None;
+        state.conversion_origin_tab = None;
+        // The tab is being force-closed — its dialog will die with it.
+        return;
     }
 
-    let mut dialog = shared.signals().conversion_dialog().get();
+    let mut dialog = origin_tab.conversion_dialog().get();
     let mut changed = false;
 
     if let Some(rx) = &state.conversion_rx {
@@ -81,6 +84,6 @@ pub fn update_conversion_progress(
     }
 
     if changed {
-        shared.signals().conversion_dialog().set(dialog);
+        origin_tab.conversion_dialog().set(dialog);
     }
 }

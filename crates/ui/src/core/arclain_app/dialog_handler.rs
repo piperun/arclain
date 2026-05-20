@@ -71,8 +71,12 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         }
     }
 
-    // Render Extraction Progress Dialog
-    let mut ext_dialog = app.shared_state.signals().extraction_dialog().get();
+    // Render Extraction Progress Dialog (now per-tab — render from active tab).
+    // The dialog visualises an op that always originates on a specific tab; the
+    // active tab is by definition the one the user is looking at, and only
+    // the active tab's dialog can be visible (`show = true`) at render time.
+    let active_tab_for_progress = app.shared_state.signals().tabs.get().active().clone();
+    let mut ext_dialog = active_tab_for_progress.extraction_dialog().get();
     if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
         ctx,
         &app.shared_state.theme,
@@ -103,13 +107,12 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             dialogs::progress::ExtractionDialogResult::None => {}
         }
     }
-    app.shared_state
-        .signals()
+    active_tab_for_progress
         .extraction_dialog()
         .set_if_changed(ext_dialog);
 
-    // Render Conversion Progress Dialog
-    let mut conv_dialog = app.shared_state.signals().conversion_dialog().get();
+    // Render Conversion Progress Dialog (now per-tab — read from active tab)
+    let mut conv_dialog = active_tab_for_progress.conversion_dialog().get();
     if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
         ctx,
         &app.shared_state.theme,
@@ -127,13 +130,12 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             _ => {}
         }
     }
-    app.shared_state
-        .signals()
+    active_tab_for_progress
         .conversion_dialog()
         .set_if_changed(conv_dialog);
 
-    // Render Drag Progress Dialog
-    let mut drag_dialog = app.shared_state.signals().drag_dialog().get();
+    // Render Drag Progress Dialog (now per-tab — read from active tab)
+    let mut drag_dialog = active_tab_for_progress.drag_dialog().get();
     if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
         ctx,
         &app.shared_state.theme,
@@ -143,8 +145,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             drag_dialog.show = false;
         }
     }
-    app.shared_state
-        .signals()
+    active_tab_for_progress
         .drag_dialog()
         .set_if_changed(drag_dialog);
 
@@ -238,6 +239,12 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             // In addition, if this tab is the origin of the active extraction
             // or conversion, immediately kill the subprocess here so the
             // process dies promptly without waiting for the next update tick.
+            //
+            // Post 2026-05-20 B3 reframed slice 2: dialogs live on the tab,
+            // so they die naturally when `force_close` drops the TabState
+            // Arc. We still kill the subprocess + clear the ops bookkeeping
+            // here for prompt cleanup — but no longer need to reach for the
+            // (now-gone) tab's dialog signal to set `show = false`.
             {
                 let ops = app.archive_operations.state_mut();
                 let origin_matches_id = |tab: &Option<std::sync::Arc<crate::core::tabs::TabState>>| {
@@ -251,9 +258,6 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     ops.extraction_started = None;
                     ops.extraction_op_guard = None;
                     ops.extraction_origin_tab = None;
-                    let mut dialog = app.shared_state.signals().extraction_dialog().get();
-                    dialog.show = false;
-                    app.shared_state.signals().extraction_dialog().set(dialog);
                 }
                 if origin_matches_id(&ops.conversion_origin_tab) {
                     if let Some(mut child) = ops.conversion_child.take() {
@@ -263,9 +267,6 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     ops.conversion_started = None;
                     ops.conversion_op_guard = None;
                     ops.conversion_origin_tab = None;
-                    let mut dialog = app.shared_state.signals().conversion_dialog().get();
-                    dialog.show = false;
-                    app.shared_state.signals().conversion_dialog().set(dialog);
                 }
             }
         }
@@ -380,6 +381,13 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 // Use tokio runtime from services
                 let runtime = app.shared_state.services.tokio_runtime.clone();
 
+                // Capture the tab Arc so the spawned future writes back to
+                // the originating tab's extraction-dialog slot. Post 2026-05-20
+                // B3 reframed slice 2, the dialog lives on TabState — the
+                // worker reaches it through this Arc rather than a global
+                // AppSignals accessor.
+                let merge_origin_tab = active_tab_for_merge.clone();
+
                 runtime.spawn(async move {
                     use arclain_core::services::{MergeOptions, MergeService};
 
@@ -395,7 +403,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     };
 
                     // Update status to show merge in progress
-                    let mut extraction_dialog = signals.extraction_dialog().get();
+                    let mut extraction_dialog = merge_origin_tab.extraction_dialog().get();
                     extraction_dialog.show = true;
                     extraction_dialog.title = "Merging Archive".to_string();
                     extraction_dialog.file_action = format!("Merging {} parts...", mp.all_parts.len());
@@ -403,13 +411,13 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     extraction_dialog.can_pause = false;
                     extraction_dialog.can_minimize = false;
                     extraction_dialog.can_cancel = false;
-                    signals.extraction_dialog().set(extraction_dialog);
+                    merge_origin_tab.extraction_dialog().set(extraction_dialog);
 
                     match merge_service.merge(&mut mp, options, None, None) {
                         Ok(result_path) => {
-                            let mut extraction_dialog = signals.extraction_dialog().get();
+                            let mut extraction_dialog = merge_origin_tab.extraction_dialog().get();
                             extraction_dialog.show = false;
-                            signals.extraction_dialog().set(extraction_dialog);
+                            merge_origin_tab.extraction_dialog().set(extraction_dialog);
 
                             let mut sb = signals.status_bar.get();
                             sb.message = format!(
@@ -419,9 +427,9 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                             signals.status_bar.set(sb);
                         }
                         Err(e) => {
-                            let mut extraction_dialog = signals.extraction_dialog().get();
+                            let mut extraction_dialog = merge_origin_tab.extraction_dialog().get();
                             extraction_dialog.show = false;
-                            signals.extraction_dialog().set(extraction_dialog);
+                            merge_origin_tab.extraction_dialog().set(extraction_dialog);
 
                             let mut sb = signals.status_bar.get();
                             sb.message = format!("Merge failed: {}", e);

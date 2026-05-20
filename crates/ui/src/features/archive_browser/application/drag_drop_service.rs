@@ -14,7 +14,9 @@ impl DragDropService {
     ) {
         tracing::info!("[DragExtract] Starting with files: {}", files.join(", "));
 
-        // Get archive handle
+        // Get archive handle. The drag dialog (per-tab post 2026-05-20 B3
+        // reframed slice 2) also lives on this same tab — the drag op is
+        // initiated by selecting rows in the active tab's archive list.
         let tab = shared.signals().tabs.get().active().clone();
         let archive_guard = tab.opened_archive.read();
         let archive_arc_opt = archive_guard.as_ref().cloned();
@@ -77,12 +79,16 @@ impl DragDropService {
                     });
 
                     ops_state.drag_rx = Some(rx);
+                    // Capture the origin tab so the background drag updater
+                    // can route progress writes back to this tab's dialog
+                    // slot (post 2026-05-20 B3 reframed slice 2).
+                    ops_state.drag_origin_tab = Some(tab.clone());
 
-                    let mut dialog = shared.signals().drag_dialog().get();
+                    let mut dialog = tab.drag_dialog().get();
                     dialog.show = false;
                     dialog.percent = 0;
                     dialog.file_action = "Preparing drag...".to_string();
-                    shared.signals().drag_dialog().set(dialog);
+                    tab.drag_dialog().set(dialog);
 
                     ops_state.drag_started = Some(std::time::Instant::now());
                 }

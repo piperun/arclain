@@ -90,8 +90,13 @@ impl FileOpsService {
         // to signal, OR better, I'll update operations::extraction in Phase 4.
         // For now, I'll use a local Default and write it back.
 
+        // extraction_dialog is per-tab now (post 2026-05-20 B3 reframed
+        // slice 2). The extract call here originates from a row in the
+        // active tab's archive list, so the dialog lives on the active
+        // tab.
+        let active_tab = shared.signals().tabs.get().active().clone();
         let mut temp_status = shared.signals().status_bar.get();
-        let mut dialog = shared.signals().extraction_dialog().get();
+        let mut dialog = active_tab.extraction_dialog().get();
 
         operations::extraction::extract_selected(
             &shared.app_state,
@@ -106,7 +111,7 @@ impl FileOpsService {
             &mut temp_status,
         );
         shared.signals().status_bar.set(temp_status);
-        shared.signals().extraction_dialog().set(dialog);
+        active_tab.extraction_dialog().set(dialog);
     }
 
     pub fn edit_file(&self, shared: &SharedState, file: &str) {

@@ -4,10 +4,17 @@ use eframe::egui;
 
 pub fn update_drag_progress(
     state: &mut ArchiveOperationsState,
-    shared: &crate::shared::SharedState,
+    _shared: &crate::shared::SharedState,
     ctx: &egui::Context,
 ) {
-    let mut dialog = shared.signals().drag_dialog().get();
+    // Drag dialog lives on the originating tab now (post 2026-05-20 B3
+    // reframed slice 2). Without an origin tab there's no dialog to
+    // update — bail out early.
+    let Some(origin_tab) = state.drag_origin_tab.clone() else {
+        return;
+    };
+
+    let mut dialog = origin_tab.drag_dialog().get();
     let mut changed = false;
     let mut finished = false;
 
@@ -57,10 +64,14 @@ pub fn update_drag_progress(
         dialog.show = false;
         state.drag_rx = None;
         state.drag_started = None;
+        // Origin tab handle is dropped on completion — mirrors
+        // extraction/conversion cleanup. Holds the Arc until the
+        // updater observes "rx disconnected".
+        state.drag_origin_tab = None;
         changed = true;
     }
 
     if changed {
-        shared.signals().drag_dialog().set(dialog);
+        origin_tab.drag_dialog().set(dialog);
     }
 }

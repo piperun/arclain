@@ -130,13 +130,14 @@ pub struct AppSignals {
     // queued for opening" is inherently per-tab — closing the tab cleanly
     // drops the request.
 
-    /// Single signal carrying all three progress-dialog kinds
-    /// (extraction / conversion / drag). Pre-2026-05-20 these lived
-    /// as three top-level `Signal<ExtractionProgressDialog>` fields
-    /// with copy-paste render paths; collapsed via the
-    /// `ProgressDialogs` slot-struct to reduce subscriber fanout
-    /// while preserving per-kind independent state.
-    pub progress_dialogs: Signal<crate::shared::dialogs::ProgressDialogs>,
+    // `progress_dialogs` migrated to `TabState` in the 2026-05-20 B3
+    // reframed slice 2. Read via `signals.tabs.get().active().extraction_dialog()`
+    // (or `.conversion_dialog()` / `.drag_dialog()`). The A3 slot-struct
+    // + proxy pattern (commit 9975481) is preserved — only the
+    // location changes. Background-thread workers reach the right
+    // dialog through the `extraction_origin_tab` / `conversion_origin_tab`
+    // handles captured at spawn time in ArchiveOperationsState.
+
     /// Live state of a Process page pipeline run
     pub process_run: Signal<ProcessRunState>,
     pub search_focus_requested: Signal<bool>,
@@ -177,10 +178,17 @@ pub struct AppSignals {
 /// Proxy that lets callers keep the old `signals.extraction_dialog
 /// .get()/.set()/.set_if_changed()` shape after the 3 progress
 /// dialog signals were merged into one `progress_dialogs` slot
-/// signal. The proxy reads/writes the slot inside `ProgressDialogs`
-/// without exposing the container struct to every callsite. Call
-/// the accessor (`signals.extraction_dialog()`) to get a proxy;
-/// chain `.get()` / `.set(d)` / `.set_if_changed(d)` as before.
+/// signal in audit A3 (commit 9975481). The proxy reads/writes the
+/// slot inside `ProgressDialogs` without exposing the container
+/// struct to every callsite. Call the accessor on a `TabState`
+/// (`tab.extraction_dialog()`) to get a proxy; chain `.get()` /
+/// `.set(d)` / `.set_if_changed(d)` as before.
+///
+/// Post 2026-05-20 B3 reframed slice 2: the proxy now points at a
+/// `TabState`-owned signal rather than `AppSignals`. Callers
+/// determine which tab to address (active for UI-thread paths,
+/// `extraction_origin_tab` / `conversion_origin_tab` for background
+/// workers). The proxy struct itself is unchanged.
 pub struct ProgressDialogProxy<'a> {
     parent: &'a Signal<crate::shared::dialogs::ProgressDialogs>,
     kind: ProgressKind,
@@ -194,6 +202,34 @@ enum ProgressKind {
 }
 
 impl<'a> ProgressDialogProxy<'a> {
+    /// Build a proxy targeting the `extraction` slot of the given
+    /// progress-dialog signal. Constructor lives here (rather than on
+    /// `TabState`) so the kind-tag enum can stay private.
+    pub fn extraction(parent: &'a Signal<crate::shared::dialogs::ProgressDialogs>) -> Self {
+        Self {
+            parent,
+            kind: ProgressKind::Extraction,
+        }
+    }
+
+    /// Build a proxy targeting the `conversion` slot. See
+    /// [`Self::extraction`].
+    pub fn conversion(parent: &'a Signal<crate::shared::dialogs::ProgressDialogs>) -> Self {
+        Self {
+            parent,
+            kind: ProgressKind::Conversion,
+        }
+    }
+
+    /// Build a proxy targeting the `drag` slot. See
+    /// [`Self::extraction`].
+    pub fn drag(parent: &'a Signal<crate::shared::dialogs::ProgressDialogs>) -> Self {
+        Self {
+            parent,
+            kind: ProgressKind::Drag,
+        }
+    }
+
     fn read(&self, dlgs: &crate::shared::dialogs::ProgressDialogs)
         -> crate::shared::dialogs::ExtractionProgressDialog
     {
@@ -239,29 +275,6 @@ impl<'a> ProgressDialogProxy<'a> {
 }
 
 impl AppSignals {
-    pub fn extraction_dialog(&self) -> ProgressDialogProxy<'_> {
-        ProgressDialogProxy {
-            parent: &self.progress_dialogs,
-            kind: ProgressKind::Extraction,
-        }
-    }
-
-    pub fn conversion_dialog(&self) -> ProgressDialogProxy<'_> {
-        ProgressDialogProxy {
-            parent: &self.progress_dialogs,
-            kind: ProgressKind::Conversion,
-        }
-    }
-
-    pub fn drag_dialog(&self) -> ProgressDialogProxy<'_> {
-        ProgressDialogProxy {
-            parent: &self.progress_dialogs,
-            kind: ProgressKind::Drag,
-        }
-    }
-}
-
-impl AppSignals {
     /// Create new signals with default values.
     pub fn new() -> Self {
         Self {
@@ -278,8 +291,6 @@ impl AppSignals {
             )
             .with_name("status_bar"),
 
-            progress_dialogs: Signal::new(crate::shared::dialogs::ProgressDialogs::default())
-                .with_name("progress_dialogs"),
             process_run: Signal::new(ProcessRunState::default()).with_name("process_run"),
             search_focus_requested: Signal::new(false).with_name("search_focus_requested"),
             plugin_dialog_state: Signal::new(
@@ -311,7 +322,8 @@ impl AppSignals {
         // (post 2026-05-20 B3 reframed slice)
         // Note: per-tab browser_view_state is not bound here — it lives in TabState and
         // is mutated during render, so binding it would cause repaint loops
-        signal_ctx.bind_named(&self.progress_dialogs, "progress_dialogs");
+        // Note: per-tab progress_dialogs is not bound here — it lives in TabState
+        // (post 2026-05-20 B3 reframed slice 2)
         signal_ctx.bind_named(&self.process_run, "process_run");
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
@@ -337,8 +349,6 @@ impl AppSignals {
         self.pass_rules.set(Vec::new());
         self.status_bar
             .set(crate::shared::components::status_bar::StatusBarInfo::default());
-        self.progress_dialogs
-            .set(crate::shared::dialogs::ProgressDialogs::default());
         self.process_run.set(ProcessRunState::default());
         self.plugin_dialog_state
             .set(crate::features::plugins::domain::state::PluginDialogState::default());

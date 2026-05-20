@@ -296,9 +296,16 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
 
     // === Lifecycle: Handle extraction progress from native backends ===
     {
-        // Use a block to limit scope of extracted signals
+        // Use a block to limit scope of extracted signals.
+        // Post 2026-05-20 B3 reframed slice 2 the extraction dialog lives
+        // on the active tab — the native-backend path drives a singleton
+        // `extraction_progress` signal, and only the active tab's dialog
+        // can be visible. The path that originates an extraction is the
+        // same path that owns the visible dialog, so address-by-active
+        // is the right choice here.
+        let active_tab = app.shared_state.signals().tabs.get().active().clone();
         let mut status = app.shared_state.signals().status_bar.get();
-        let mut dialog = app.shared_state.signals().extraction_dialog().get();
+        let mut dialog = active_tab.extraction_dialog().get();
         // Skip processing if minimized to avoid UI updates when invisible?
         // Actually, process_extraction_progress updates the signal state from the channel,
         // so it should run regardless of visibility, but maybe minimize update frequency?
@@ -310,8 +317,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             ctx,
         );
         // app.shared_state.signals().status_bar.set_if_changed(status); // REMOVED: prevents infinite loop
-        app.shared_state
-            .signals()
+        active_tab
             .extraction_dialog()
             .set_if_changed(dialog);
     }
