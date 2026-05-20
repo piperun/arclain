@@ -67,7 +67,14 @@ pub fn render_plugins_settings(
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
-    pages::plugins::render(ui, theme, plugin_manager, plugins_state, app_state, shared)
+    crate::features::plugins::presentation::views::render_plugins_settings(
+        ui,
+        theme,
+        plugin_manager,
+        plugins_state,
+        app_state,
+        shared,
+    )
 }
 
 /// Render the appropriate settings content based on the current page
