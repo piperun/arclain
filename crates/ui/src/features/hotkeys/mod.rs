@@ -4,6 +4,7 @@
 
 pub mod application;
 pub mod domain;
+pub mod presentation;
 
 pub use application::hotkey_manager::HotkeyManager;
 pub use domain::types::*;

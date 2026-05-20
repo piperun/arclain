@@ -87,7 +87,7 @@ pub fn render_settings_content(
     interface_state: &mut crate::features::settings::presentation::pages::interface::InterfaceSettingsState,
     toolbar_layout_state: &mut crate::features::settings::presentation::pages::ToolbarLayoutState,
     info_panel_layout_state: &mut crate::features::settings::presentation::pages::InfoPanelLayoutState,
-    keyboard_mouse_state: &mut crate::features::settings::presentation::pages::keyboard_mouse::KeyboardMouseSettingsState,
+    keyboard_mouse_state: &mut crate::features::hotkeys::presentation::KeyboardMouseSettingsState,
 
     network_state: &mut NetworkSettingsState,
     server_state: &mut ServerSettingsState,
@@ -166,7 +166,11 @@ pub fn render_settings_content(
             None
         }
         SettingsPage::KeyboardMouse => {
-            pages::keyboard_mouse::render(ui, theme, keyboard_mouse_state)
+            crate::features::hotkeys::presentation::render_keyboard_mouse(
+                ui,
+                theme,
+                keyboard_mouse_state,
+            )
         }
         SettingsPage::ArchiveProfiles => {
             if let Some(pp) = profiles_page {

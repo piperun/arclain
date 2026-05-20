@@ -1,7 +1,7 @@
 use crate::core::SettingsPage;
 use crate::features::password_management::dialogs::PasswordRulesDialog;
+use crate::features::hotkeys::presentation::KeyboardMouseSettingsState;
 use crate::features::settings::pages::interface::InterfaceSettingsState;
-use crate::features::settings::pages::keyboard_mouse::KeyboardMouseSettingsState;
 use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
 use crate::features::settings::presentation::views::settings_content::{
     render_settings_content, ArchivesSettingsState, GeneralSettingsState, NetworkSettingsState,
