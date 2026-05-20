@@ -110,7 +110,7 @@ impl FileOpsService {
     }
 
     pub fn edit_file(&self, shared: &SharedState, file: &str) {
-        shared.signals().file_edit_dialog.update(|d| {
+        shared.signals().tabs.get().active().file_edit_dialog.update(|d| {
             d.show = true;
             d.full_path_in_archive = file.to_string();
             d.name_input = file.to_string();
@@ -120,7 +120,7 @@ impl FileOpsService {
             let state = shared.app_state.lock();
             match state.read_text_file(&archive, file) {
                 Ok(content) => {
-                    shared.signals().file_edit_dialog.update(|d| {
+                    shared.signals().tabs.get().active().file_edit_dialog.update(|d| {
                         d.content = content.clone();
                         d.original_content = content;
                     });

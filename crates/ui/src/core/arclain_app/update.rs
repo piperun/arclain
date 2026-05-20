@@ -332,9 +332,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     app.archive_operations.update_conversion_progress(ctx);
     app.archive_operations.update_drag_progress(ctx);
 
-    // Process pending file opens (double-click on file in archive)
-    if let Some(file_path) = app.shared_state.signals().pending_open_file.get() {
-        app.shared_state.signals().pending_open_file.set(None);
+    // Process pending file opens (double-click on file in archive).
+    // `pending_open_file` is per-tab now — read from the active tab.
+    let active_tab_for_open = app.shared_state.signals().tabs.get().active().clone();
+    if let Some(file_path) = active_tab_for_open.pending_open_file.get() {
+        active_tab_for_open.pending_open_file.set(None);
 
         // Use a local StatusBarInfo for the extraction call, then sync to signal
         let mut status_info = app.shared_state.signals().status_bar.get();

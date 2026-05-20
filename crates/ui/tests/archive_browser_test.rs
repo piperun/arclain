@@ -170,7 +170,11 @@ fn test_open_file_action() {
 
     ctx.handle_action(Action::OpenFile(filename.clone()));
 
-    assert_eq!(signals.pending_open_file.get(), Some(filename));
+    // pending_open_file is per-tab now (2026-05-19 audit)
+    assert_eq!(
+        signals.tabs.get().active().pending_open_file.get(),
+        Some(filename)
+    );
 }
 
 #[test]
@@ -180,7 +184,8 @@ fn test_edit_file_action() {
     let filename = "config.json".to_string();
     ctx.handle_action(Action::EditFile(filename.clone()));
 
-    let dialog = signals.file_edit_dialog.get();
+    // file_edit_dialog is per-tab now (2026-05-19 audit)
+    let dialog = signals.tabs.get().active().file_edit_dialog.get();
     assert!(dialog.show);
     assert_eq!(dialog.full_path_in_archive, filename);
     assert_eq!(dialog.name_input, filename);

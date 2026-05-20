@@ -44,7 +44,14 @@ impl BrowserController {
                 self.nav_service.navigate_to_path(shared.signals(), &path);
             }
             Action::OpenFile(file) => {
-                shared.signals().pending_open_file.set(Some(file));
+                // pending_open_file lives on the active tab now (post 2026-05-19 audit)
+                shared
+                    .signals()
+                    .tabs
+                    .get()
+                    .active()
+                    .pending_open_file
+                    .set(Some(file));
             }
             Action::OpenArchiveInTab(archive_path) => {
                 self.handle_open_archive_in_tab(shared, archive_path);

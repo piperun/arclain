@@ -37,6 +37,17 @@ pub struct TabState {
     pub browser_view_state: Signal<BrowserViewState>,
     pub page_display_name: Signal<Option<String>>,
     pub active_toolbar: Signal<ToolbarContext>,
+    /// When a file is double-clicked in this tab's archive list, the
+    /// path lands here for the main loop to pick up and process.
+    /// Migrated from a global `AppSignals.pending_open_file` in the
+    /// 2026-05-19 audit: the "file to open next" is inherently
+    /// per-tab — closing the tab cleanly drops the pending request.
+    pub pending_open_file: Signal<Option<String>>,
+    /// File-edit dialog state for this tab. Migrated from the global
+    /// `AppSignals.file_edit_dialog` in the 2026-05-19 audit — the
+    /// edit operation is bound to a specific archive (and therefore
+    /// tab); closing the tab during an edit should close the dialog.
+    pub file_edit_dialog: Signal<crate::features::file_editing::FileEditDialog>,
 
     // Tab metadata (not signals — read on render)
     pub created_at: SystemTime,
@@ -86,6 +97,11 @@ impl TabState {
                 .with_name("browser_view_state"),
             page_display_name: Signal::new(None).with_name("page_display_name"),
             active_toolbar: Signal::new(ToolbarContext::Archive).with_name("active_toolbar"),
+            pending_open_file: Signal::new(None).with_name("pending_open_file"),
+            file_edit_dialog: Signal::new(
+                crate::features::file_editing::FileEditDialog::default(),
+            )
+            .with_name("file_edit_dialog"),
             created_at: SystemTime::now(),
             in_flight_ops: Arc::new(AtomicUsize::new(0)),
             tab_cancel: Arc::new(AtomicBool::new(false)),

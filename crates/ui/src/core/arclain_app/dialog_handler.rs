@@ -162,8 +162,9 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         .drag_dialog()
         .set_if_changed(drag_dialog);
 
-    // Render File Edit Dialog
-    let mut edit_dialog = app.shared_state.signals().file_edit_dialog.get();
+    // Render File Edit Dialog (now per-tab — read from active tab)
+    let active_tab_for_edit = app.shared_state.signals().tabs.get().active().clone();
+    let mut edit_dialog = active_tab_for_edit.file_edit_dialog.get();
     if let Some(result) = crate::features::file_editing::render_file_edit_dialog(
         ctx,
         &app.shared_state.theme,
@@ -222,8 +223,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             }
         }
     }
-    app.shared_state
-        .signals()
+    active_tab_for_edit
         .file_edit_dialog
         .set_if_changed(edit_dialog);
 

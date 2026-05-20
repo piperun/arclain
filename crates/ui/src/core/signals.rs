@@ -119,10 +119,14 @@ pub struct AppSignals {
 
     /// [NEW] Dialog States
     pub password_dialog: Signal<crate::features::password_management::dialogs::PasswordDialog>,
-    pub file_edit_dialog: Signal<crate::features::file_editing::FileEditDialog>,
+    // `file_edit_dialog` migrated to `TabState` in the 2026-05-19 audit.
+    // Read via `signals.tabs.get().active().file_edit_dialog`.
 
     /// [NEW] Archive Operations context
-    pub pending_open_file: Signal<Option<String>>,
+    // `pending_open_file` migrated to `TabState` in the 2026-05-19 audit.
+    // Read via `signals.tabs.get().active().pending_open_file`. The "file
+    // queued for opening" is inherently per-tab — closing the tab cleanly
+    // drops the request.
 
     /// Single signal carrying all three progress-dialog kinds
     /// (extraction / conversion / drag). Pre-2026-05-20 these lived
@@ -273,10 +277,7 @@ impl AppSignals {
                 crate::features::password_management::dialogs::PasswordDialog::default(),
             )
             .with_name("password_dialog"),
-            file_edit_dialog: Signal::new(crate::features::file_editing::FileEditDialog::default())
-                .with_name("file_edit_dialog"),
 
-            pending_open_file: Signal::new(None).with_name("pending_open_file"),
             progress_dialogs: Signal::new(crate::shared::dialogs::ProgressDialogs::default())
                 .with_name("progress_dialogs"),
             process_run: Signal::new(ProcessRunState::default()).with_name("process_run"),
@@ -311,8 +312,6 @@ impl AppSignals {
         signal_ctx.bind_named(&self.pass_rules, "pass_rules");
         signal_ctx.bind_named(&self.status_bar, "status_bar");
         signal_ctx.bind_named(&self.password_dialog, "password_dialog");
-        signal_ctx.bind_named(&self.file_edit_dialog, "file_edit_dialog");
-        signal_ctx.bind_named(&self.pending_open_file, "pending_open_file");
         // Note: per-tab browser_view_state is not bound here — it lives in TabState and
         // is mutated during render, so binding it would cause repaint loops
         signal_ctx.bind_named(&self.progress_dialogs, "progress_dialogs");
@@ -343,8 +342,6 @@ impl AppSignals {
             .set(crate::shared::components::status_bar::StatusBarInfo::default());
         self.password_dialog
             .set(crate::features::password_management::dialogs::PasswordDialog::default());
-        self.file_edit_dialog.set(crate::features::file_editing::FileEditDialog::default());
-        self.pending_open_file.set(None);
         self.progress_dialogs
             .set(crate::shared::dialogs::ProgressDialogs::default());
         self.process_run.set(ProcessRunState::default());
