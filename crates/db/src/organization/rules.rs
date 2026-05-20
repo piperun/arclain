@@ -1,6 +1,6 @@
 use crate::diesel_err;
-use anyhow::{Context, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use anyhow::Result;
+use diesel::prelude::*;
 
 #[derive(Debug, Clone)]
 pub struct DbOrganizationRule {
@@ -33,117 +33,12 @@ pub struct DbOrganizationRuleRow {
     pub modified_at: Option<String>,
 }
 
-pub fn list_rules(conn: &Connection) -> Result<Vec<DbOrganizationRule>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, description, category, trigger_json, actions_json, priority, is_enabled, is_system 
-         FROM organization_rules 
-         ORDER BY priority DESC, name ASC"
-    )?;
-
-    let rules = stmt
-        .query_map([], |row| {
-            Ok(DbOrganizationRule {
-                id: Some(row.get(0)?),
-                name: row.get(1)?,
-                description: row.get(2)?,
-                category: row.get(3)?,
-                trigger_json: row.get(4)?,
-                actions_json: row.get(5)?,
-                priority: row.get(6)?,
-                is_enabled: row.get(7)?,
-                is_system: row.get(8)?,
-            })
-        })?
-        .collect::<Result<Vec<_>, _>>()?;
-
-    Ok(rules)
-}
-
-pub fn get_rule(conn: &Connection, id: i64) -> Result<Option<DbOrganizationRule>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, name, description, category, trigger_json, actions_json, priority, is_enabled, is_system 
-         FROM organization_rules 
-         WHERE id = ?1"
-    )?;
-
-    let rule = stmt
-        .query_row([id], |row| {
-            Ok(DbOrganizationRule {
-                id: Some(row.get(0)?),
-                name: row.get(1)?,
-                description: row.get(2)?,
-                category: row.get(3)?,
-                trigger_json: row.get(4)?,
-                actions_json: row.get(5)?,
-                priority: row.get(6)?,
-                is_enabled: row.get(7)?,
-                is_system: row.get(8)?,
-            })
-        })
-        .optional()?;
-
-    Ok(rule)
-}
-
-pub fn save_rule(conn: &Connection, rule: &DbOrganizationRule) -> Result<i64> {
-    if let Some(id) = rule.id {
-        // Update
-        conn.execute(
-            "UPDATE organization_rules 
-             SET name = ?1, description = ?2, category = ?3, trigger_json = ?4, actions_json = ?5, 
-                 priority = ?6, is_enabled = ?7, is_system = ?8
-             WHERE id = ?9",
-            params![
-                rule.name,
-                rule.description,
-                rule.category,
-                rule.trigger_json,
-                rule.actions_json,
-                rule.priority,
-                rule.is_enabled,
-                rule.is_system,
-                id
-            ],
-        )
-        .context("Failed to update rule")?;
-        Ok(id)
-    } else {
-        // Insert
-        conn.execute(
-            "INSERT INTO organization_rules 
-             (name, description, category, trigger_json, actions_json, priority, is_enabled, is_system)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                rule.name,
-                rule.description,
-                rule.category,
-                rule.trigger_json,
-                rule.actions_json,
-                rule.priority,
-                rule.is_enabled,
-                rule.is_system
-            ],
-        ).context("Failed to insert rule")?;
-        Ok(conn.last_insert_rowid())
-    }
-}
-
-pub fn delete_rule(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute(
-        "DELETE FROM organization_rules WHERE id = ?1 AND is_system = 0",
-        [id],
-    )?;
-    Ok(())
-}
-
 // ============================================================================
-// Diesel DSL versions
+// Diesel DSL CRUD
 // ============================================================================
 
-use diesel::prelude::*;
-
-/// List all rules using Diesel DSL
-pub fn list_rules_diesel(conn: &mut diesel::SqliteConnection) -> Result<Vec<DbOrganizationRule>> {
+/// List all rules
+pub fn list_rules(conn: &mut diesel::SqliteConnection) -> Result<Vec<DbOrganizationRule>> {
     use crate::diesel_schema::organization_rules::dsl::*;
 
     let results = organization_rules
@@ -151,24 +46,11 @@ pub fn list_rules_diesel(conn: &mut diesel::SqliteConnection) -> Result<Vec<DbOr
         .load::<DbOrganizationRuleRow>(conn)
         .map_err(diesel_err("query"))?;
 
-    Ok(results
-        .into_iter()
-        .map(|r| DbOrganizationRule {
-            id: Some(r.id as i64),
-            name: r.name,
-            description: r.description,
-            category: r.category,
-            trigger_json: r.trigger_json,
-            actions_json: r.actions_json,
-            priority: r.priority,
-            is_enabled: r.is_enabled,
-            is_system: r.is_system,
-        })
-        .collect())
+    Ok(results.into_iter().map(row_to_rule).collect())
 }
 
-/// Get a single rule by ID using Diesel DSL
-pub fn get_rule_diesel(
+/// Get a single rule by ID
+pub fn get_rule(
     conn: &mut diesel::SqliteConnection,
     rule_id: i32,
 ) -> Result<Option<DbOrganizationRule>> {
@@ -181,21 +63,11 @@ pub fn get_rule_diesel(
         .optional()
         .map_err(diesel_err("query"))?;
 
-    Ok(result.map(|r| DbOrganizationRule {
-        id: Some(r.id as i64),
-        name: r.name,
-        description: r.description,
-        category: r.category,
-        trigger_json: r.trigger_json,
-        actions_json: r.actions_json,
-        priority: r.priority,
-        is_enabled: r.is_enabled,
-        is_system: r.is_system,
-    }))
+    Ok(result.map(row_to_rule))
 }
 
-/// Delete a rule using Diesel DSL
-pub fn delete_rule_diesel(conn: &mut diesel::SqliteConnection, rule_id: i32) -> Result<()> {
+/// Delete a rule (system rules are immune to delete)
+pub fn delete_rule(conn: &mut diesel::SqliteConnection, rule_id: i32) -> Result<()> {
     use crate::diesel_schema::organization_rules::dsl::*;
 
     diesel::delete(organization_rules.filter(id.eq(rule_id).and(is_system.eq(false))))
@@ -205,8 +77,8 @@ pub fn delete_rule_diesel(conn: &mut diesel::SqliteConnection, rule_id: i32) -> 
     Ok(())
 }
 
-/// Save a rule (Insert or Update) using Diesel DSL
-pub fn save_rule_diesel(
+/// Save a rule (Insert or Update)
+pub fn save_rule(
     conn: &mut diesel::SqliteConnection,
     rule: &DbOrganizationRule,
 ) -> Result<i64> {
@@ -224,7 +96,7 @@ pub fn save_rule_diesel(
                 priority.eq(rule.priority),
                 is_enabled.eq(rule.is_enabled),
                 is_system.eq(rule.is_system),
-                modified_at.eq(chrono::Utc::now().to_rfc3339()), // Use formatted string for Text column
+                modified_at.eq(chrono::Utc::now().to_rfc3339()),
             ))
             .execute(conn)
             .map_err(diesel_err("update"))?;
@@ -242,10 +114,24 @@ pub fn save_rule_diesel(
                 is_enabled.eq(rule.is_enabled),
                 is_system.eq(rule.is_system),
             ))
-            // .returning(id) -- requires feature
             .returning(id)
             .get_result(conn)
             .map_err(diesel_err("insert"))?;
         Ok(new_id as i64)
+    }
+}
+
+// Helper to convert Diesel row to domain model
+fn row_to_rule(r: DbOrganizationRuleRow) -> DbOrganizationRule {
+    DbOrganizationRule {
+        id: Some(r.id as i64),
+        name: r.name,
+        description: r.description,
+        category: r.category,
+        trigger_json: r.trigger_json,
+        actions_json: r.actions_json,
+        priority: r.priority,
+        is_enabled: r.is_enabled,
+        is_system: r.is_system,
     }
 }

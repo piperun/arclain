@@ -47,9 +47,8 @@ pub use arclain_db::{CacheEntry, CompletenessScore, MetadataSource, ProductConte
 // (audit: crate-boundary smell). Surfacing them through `arclain_core`
 // gives the binary one entry point for persistence types.
 pub use arclain_db::{
-    delete_profile_diesel, get_config, list_interrupted_since, list_profiles_diesel,
-    save_profile_diesel, set_config, set_default_profile_diesel, DbConnection, DbPassRule,
-    SqliteDb,
+    delete_profile, get_config, list_interrupted_since, list_profiles, save_profile, set_config,
+    set_default_profile, DbConnection, DbPassRule, SqliteDb,
 };
 
 // Cache + resource surface lives in `arclain_data`. The data crate

@@ -40,16 +40,13 @@ pub use metadata_store::MetadataStore;
 
 mod organization;
 pub use organization::{
-    delete_rule, delete_rule_diesel, get_rule, get_rule_diesel, list_rules, list_rules_diesel,
-    save_rule, save_rule_diesel, DbOrganizationRule, DbOrganizationRuleRow,
+    delete_rule, get_rule, list_rules, save_rule, DbOrganizationRule, DbOrganizationRuleRow,
 };
 
 mod archive_profiles;
 pub use archive_profiles::{
-    delete_profile, delete_profile_diesel, get_default_profile, get_default_profile_diesel,
-    get_profile, get_profile_diesel, list_profiles, list_profiles_diesel, save_profile,
-    save_profile_diesel, set_default_profile, set_default_profile_diesel, DbArchiveProfile,
-    DbArchiveProfileRow,
+    delete_profile, get_default_profile, get_profile, list_profiles, save_profile,
+    set_default_profile, DbArchiveProfile, DbArchiveProfileRow,
 };
 
 mod checksum;

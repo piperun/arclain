@@ -42,14 +42,13 @@ pub fn replace_pass_rules(db: &arclain_db::SecretsDb, rules: &[PassRule]) -> Res
 
 use crate::features::organization::OrganizationRule;
 use arclain_db::{
-    delete_rule_diesel, delete_title_replacement_diesel, list_rules_diesel,
-    list_title_replacements_diesel, save_rule_diesel, save_title_replacement_diesel,
-    DbOrganizationRule,
+    delete_rule, delete_title_replacement_diesel, list_rules, list_title_replacements_diesel,
+    save_rule, save_title_replacement_diesel, DbOrganizationRule,
 };
 
 pub fn list_org_rules(pool: &DieselPool) -> Result<Vec<OrganizationRule>> {
     pool.with_conn(|conn| {
-        let db_rules = list_rules_diesel(conn)?;
+        let db_rules = list_rules(conn)?;
         let mut rules = Vec::new();
 
         for r in db_rules {
@@ -71,7 +70,7 @@ pub fn save_org_rule(pool: &DieselPool, rule: &OrganizationRule) -> Result<i64> 
     pool.with_conn(|conn| {
         // Retrieve existing rule by name to get ID if possible
         // This is a bit inefficient but safe for this refactor scope.
-        let existing_rules = list_rules_diesel(conn)?;
+        let existing_rules = list_rules(conn)?;
         let existing_id = existing_rules
             .iter()
             .find(|r| r.name == rule.name)
@@ -88,12 +87,12 @@ pub fn save_org_rule(pool: &DieselPool, rule: &OrganizationRule) -> Result<i64> 
             trigger_json: serde_json::to_string(&rule.trigger).unwrap_or_default(),
             actions_json: serde_json::to_string(&rule.actions).unwrap_or_default(),
         };
-        save_rule_diesel(conn, &db_rule)
+        save_rule(conn, &db_rule)
     })
 }
 
 pub fn delete_org_rule(pool: &DieselPool, id: i64) -> Result<()> {
-    pool.with_conn(|conn| delete_rule_diesel(conn, id as i32))
+    pool.with_conn(|conn| delete_rule(conn, id as i32))
 }
 
 // Title Replacements

@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use arclain_db::{
-    delete_rule_diesel, get_rule_diesel, list_rules_diesel, save_rule_diesel, DbOrganizationRule,
+    delete_rule, get_rule, list_rules, save_rule, DbOrganizationRule,
     DieselPool,
 };
 
@@ -30,23 +30,23 @@ impl OrganizationService {
 
     /// List all organization rules (raw DB type)
     pub fn list_rules(&self) -> Result<Vec<DbOrganizationRule>> {
-        self.pool.with_conn(|conn| list_rules_diesel(conn))
+        self.pool.with_conn(|conn| list_rules(conn))
     }
 
     /// Get a specific rule by ID (raw DB type)
     pub fn get_rule(&self, rule_id: i32) -> Result<Option<DbOrganizationRule>> {
-        self.pool.with_conn(|conn| get_rule_diesel(conn, rule_id))
+        self.pool.with_conn(|conn| get_rule(conn, rule_id))
     }
 
     /// Save a rule (raw DB type, insert or update)
     pub fn save_rule(&self, rule: &DbOrganizationRule) -> Result<i64> {
-        self.pool.with_conn(|conn| save_rule_diesel(conn, rule))
+        self.pool.with_conn(|conn| save_rule(conn, rule))
     }
 
     /// Delete a rule by ID (only non-system rules)
     pub fn delete_rule(&self, rule_id: i32) -> Result<()> {
         self.pool
-            .with_conn(|conn| delete_rule_diesel(conn, rule_id))
+            .with_conn(|conn| delete_rule(conn, rule_id))
     }
 
     /// List enabled rules only (raw DB type)
@@ -62,7 +62,7 @@ impl OrganizationService {
     /// List all rules as domain type (OrganizationRule)
     pub fn list_domain_rules(&self) -> Result<Vec<OrganizationRule>> {
         self.pool.with_conn(|conn| {
-            let db_rules = list_rules_diesel(conn)?;
+            let db_rules = list_rules(conn)?;
             let mut rules = Vec::new();
 
             for r in db_rules {
@@ -83,7 +83,7 @@ impl OrganizationService {
     /// Get a domain rule by ID
     pub fn get_domain_rule(&self, rule_id: i64) -> Result<Option<OrganizationRule>> {
         self.pool.with_conn(|conn| {
-            match get_rule_diesel(conn, rule_id as i32)? {
+            match get_rule(conn, rule_id as i32)? {
                 Some(r) => Ok(Some(OrganizationRule {
                     id: r.id.unwrap_or(0) as i64,
                     name: r.name,
@@ -104,7 +104,7 @@ impl OrganizationService {
             let rule_id: Option<i64> = if rule.id > 0 {
                 Some(rule.id)
             } else {
-                let existing_rules = list_rules_diesel(conn)?;
+                let existing_rules = list_rules(conn)?;
                 existing_rules
                     .iter()
                     .find(|r| r.name == rule.name)
@@ -122,14 +122,14 @@ impl OrganizationService {
                 trigger_json: serde_json::to_string(&rule.trigger).unwrap_or_default(),
                 actions_json: serde_json::to_string(&rule.actions).unwrap_or_default(),
             };
-            save_rule_diesel(conn, &db_rule)
+            save_rule(conn, &db_rule)
         })
     }
 
     /// Delete a domain rule by ID
     pub fn delete_domain_rule(&self, rule_id: i64) -> Result<()> {
         self.pool
-            .with_conn(|conn| delete_rule_diesel(conn, rule_id as i32))
+            .with_conn(|conn| delete_rule(conn, rule_id as i32))
     }
 }
 
