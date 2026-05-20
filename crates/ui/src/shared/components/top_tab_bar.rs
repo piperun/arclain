@@ -105,20 +105,48 @@ pub fn render(
 
             let response = frame_response.response;
 
-            // Debug overlay: tab's allocated frame rect + center cross
-            // + label with position + size. Lights up when
-            // EGUI_UI_DEBUG_GUIDELINES=1 (or the per-call enable bool
-            // is true). Use to verify each tab is sitting where the
-            // layout puts it — useful for diagnosing
-            // "tabs look off-center in the bar" by comparing the rect
-            // heights / Y positions across tabs.
+            // Debug overlay (EGUI_UI_DEBUG_GUIDELINES=1):
+            //   1. Outer tab rect + center cross + tag with position+size.
+            //   2. Inner content rect (after the Frame's inner_margin)
+            //      vs the outer rect — gap arrows on each side. If the
+            //      gaps are top=bottom and left=right, the content
+            //      block is centered inside the tab's padding box.
+            //      If top≠bottom, content is vertically off-center.
+            //   3. Inner-rect center vs outer-rect center as a Δ — if
+            //      Δy is non-zero, the visual centering is biased.
             #[cfg(debug_assertions)]
-            arclain_widgets::debug::paint_widget_rect_debug(
-                ui.painter(),
-                response.rect,
-                &format!("tab:{}", tab.id),
-                arclain_widgets::ui_debug_guidelines_enabled(),
-            );
+            {
+                let enabled = arclain_widgets::ui_debug_guidelines_enabled();
+                let outer = response.rect;
+                // Same inner_margin numbers as the Frame above (left/right=12,
+                // top/bottom=8). Could be derived from the Frame but
+                // explicit is simpler.
+                let inner = egui::Rect::from_min_max(
+                    egui::pos2(outer.left() + 12.0, outer.top() + 8.0),
+                    egui::pos2(outer.right() - 12.0, outer.bottom() - 8.0),
+                );
+
+                arclain_widgets::debug::paint_widget_rect_debug(
+                    ui.painter(),
+                    outer,
+                    &format!("tab:{}", tab.id),
+                    enabled,
+                );
+                arclain_widgets::debug::paint_child_in_parent_debug(
+                    ui.painter(),
+                    outer,
+                    inner,
+                    &format!("tab:{}.pad", tab.id),
+                    enabled,
+                );
+                arclain_widgets::debug::paint_centering_debug(
+                    ui.painter(),
+                    outer,
+                    inner,
+                    &format!("tab:{}.Δ", tab.id),
+                    enabled,
+                );
+            }
 
             // Handle click
             if response.interact(egui::Sense::click()).clicked() {
