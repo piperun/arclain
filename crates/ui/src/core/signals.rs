@@ -117,8 +117,10 @@ pub struct AppSignals {
     /// [NEW] Status Bar State
     pub status_bar: Signal<crate::shared::components::status_bar::StatusBarInfo>,
 
-    /// [NEW] Dialog States
-    pub password_dialog: Signal<crate::features::password_management::dialogs::PasswordDialog>,
+    // `password_dialog` migrated to `TabState` in the 2026-05-20 B3
+    // reframed slice. Read via `signals.tabs.get().active().password_dialog`.
+    // Two encrypted archives in two tabs no longer overwrite each
+    // other's prompt — the dialog lives on the tab that triggered it.
     // `file_edit_dialog` migrated to `TabState` in the 2026-05-19 audit.
     // Read via `signals.tabs.get().active().file_edit_dialog`.
 
@@ -275,10 +277,6 @@ impl AppSignals {
                 crate::shared::components::status_bar::StatusBarInfo::default(),
             )
             .with_name("status_bar"),
-            password_dialog: Signal::new(
-                crate::features::password_management::dialogs::PasswordDialog::default(),
-            )
-            .with_name("password_dialog"),
 
             progress_dialogs: Signal::new(crate::shared::dialogs::ProgressDialogs::default())
                 .with_name("progress_dialogs"),
@@ -309,7 +307,8 @@ impl AppSignals {
         signal_ctx.bind_named(&self.ui_preferences, "ui_preferences");
         signal_ctx.bind_named(&self.pass_rules, "pass_rules");
         signal_ctx.bind_named(&self.status_bar, "status_bar");
-        signal_ctx.bind_named(&self.password_dialog, "password_dialog");
+        // Note: per-tab password_dialog is not bound here — it lives in TabState
+        // (post 2026-05-20 B3 reframed slice)
         // Note: per-tab browser_view_state is not bound here — it lives in TabState and
         // is mutated during render, so binding it would cause repaint loops
         signal_ctx.bind_named(&self.progress_dialogs, "progress_dialogs");
@@ -338,8 +337,6 @@ impl AppSignals {
         self.pass_rules.set(Vec::new());
         self.status_bar
             .set(crate::shared::components::status_bar::StatusBarInfo::default());
-        self.password_dialog
-            .set(crate::features::password_management::dialogs::PasswordDialog::default());
         self.progress_dialogs
             .set(crate::shared::dialogs::ProgressDialogs::default());
         self.process_run.set(ProcessRunState::default());

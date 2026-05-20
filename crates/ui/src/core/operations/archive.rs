@@ -624,18 +624,17 @@ pub fn load_archive_into_tab(
                 drop(st);
                 let err_msg = e.to_string();
                 if is_password_error(&err_msg) {
-                    let mut pwd = signals.password_dialog.get();
+                    // password_dialog is per-tab now (post 2026-05-20 B3
+                    // reframed slice). Write to the originating tab's
+                    // signal — multi-drop scenarios where each encrypted
+                    // archive queues a prompt now each land on the
+                    // correct tab without overwriting each other.
+                    let mut pwd = tab.password_dialog.get();
                     pwd.show = true;
                     pwd.password.clear();
                     pwd.error.clear();
-                    // Record which tab triggered this prompt so the retry
-                    // path can switch to it before re-opening, in case the
-                    // user changed tabs while the modal was up (common in
-                    // multi-drop scenarios where each encrypted archive
-                    // queues its own prompt).
-                    pwd.pending_tab_id = Some(tab_id);
                     pwd.target_path = Some(path_owned.clone());
-                    signals.password_dialog.set(pwd);
+                    tab.password_dialog.set(pwd);
                 } else {
                     tracing::error!("[tabs] load_archive_into_tab failed: {}", err_msg);
                     let mut bar = signals.status_bar.get();

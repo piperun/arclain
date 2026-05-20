@@ -60,6 +60,15 @@ pub struct TabState {
     /// plugin is tied to a tab. Switching tabs hides the lightbox
     /// naturally; switching back restores it.
     pub lightbox_state: Signal<crate::shared::dialogs::LightboxState>,
+    /// Password-dialog state for unlocking encrypted archives.
+    /// Migrated from the global `AppSignals.password_dialog` in the
+    /// 2026-05-20 B3 reframed slice — the prompt is bound to the
+    /// archive being opened (and therefore the tab loading it).
+    /// Two encrypted archives in two tabs no longer overwrite each
+    /// other's prompt; closing a tab drops its pending request.
+    /// The pre-migration `pending_tab_id` cross-tab routing field
+    /// is gone — the dialog living on a tab is the implicit routing.
+    pub password_dialog: Signal<crate::features::password_management::dialogs::PasswordDialog>,
 
     // Tab metadata (not signals — read on render)
     pub created_at: SystemTime,
@@ -118,6 +127,10 @@ impl TabState {
                 .with_name("merge_dialog"),
             lightbox_state: Signal::new(crate::shared::dialogs::LightboxState::default())
                 .with_name("lightbox_state"),
+            password_dialog: Signal::new(
+                crate::features::password_management::dialogs::PasswordDialog::default(),
+            )
+            .with_name("password_dialog"),
             created_at: SystemTime::now(),
             in_flight_ops: Arc::new(AtomicUsize::new(0)),
             tab_cancel: Arc::new(AtomicBool::new(false)),

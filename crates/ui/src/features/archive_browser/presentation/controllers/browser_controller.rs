@@ -116,10 +116,10 @@ impl BrowserController {
             shared.signals().status_bar.set(status_info);
             let mut archive_info = crate::core::operations::archive::ArchiveInfo::default();
 
-            // Password dialog and other state also in signals now
-            let mut password_dialog = shared.signals().password_dialog.get();
-            let mut status_info = shared.signals().status_bar.get();
+            // password_dialog is per-tab now (post 2026-05-20 B3 reframed slice)
             let bc_tab = shared.signals().tabs.get().active().clone();
+            let mut password_dialog = bc_tab.password_dialog.get();
+            let mut status_info = shared.signals().status_bar.get();
             let mut view_state = bc_tab.browser_view_state.get();
             // nav removed
 
@@ -134,7 +134,7 @@ impl BrowserController {
             );
 
             // navigation set removed
-            shared.signals().password_dialog.set(password_dialog);
+            bc_tab.password_dialog.set(password_dialog);
             shared.signals().status_bar.set(status_info);
             bc_tab.browser_view_state.set(view_state);
             bc_tab.archive_info.set(archive_info);

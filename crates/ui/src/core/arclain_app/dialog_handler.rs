@@ -7,32 +7,18 @@ use crate::shared::dialogs;
 use eframe::egui;
 
 pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
-    // Render Password Dialog
+    // Render Password Dialog (now per-tab — read/write to active tab).
+    // The pre-2026-05-20 cross-tab switching via `pending_tab_id` is
+    // gone: the dialog lives on the tab that triggered the prompt, so
+    // the user interacting with the dialog is by definition on the
+    // originating tab (it's that tab's dialog they're looking at).
     let shared_state = app.shared_state.clone();
     match password_management::handle_password_dialogs(ctx, &shared_state) {
         password_management::PasswordFeatureAction::PasswordUnlocked { path, password } => {
             let mut archive_info = operations::archive::ArchiveInfo::default();
-            // If the password prompt was triggered from a specific tab
-            // (e.g. a multi-drop where each encrypted archive queues
-            // its own prompt), switch to that tab before retrying so
-            // the archive opens in the originating tab — not whichever
-            // is active at submit time. Falls through to active tab
-            // when pending_tab_id is None (e.g. legacy file-dialog
-            // open path that doesn't set it).
-            let pending_tab_id = app
-                .shared_state
-                .signals()
-                .password_dialog
-                .get()
-                .pending_tab_id;
-            if let Some(target_id) = pending_tab_id {
-                let mut col = app.shared_state.signals().tabs.get();
-                col.switch_to(target_id);
-                app.shared_state.signals().tabs.set(col);
-            }
             let t = app.shared_state.signals().tabs.get().active().clone();
             let mut view_state = t.browser_view_state.get();
-            let mut pass_dialog = app.shared_state.signals().password_dialog.get();
+            let mut pass_dialog = t.password_dialog.get();
             let mut status_bar = app.shared_state.signals().status_bar.get();
 
             if operations::archive::try_open_with_password(
@@ -47,16 +33,12 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             ) {
                 t.browser_view_state.set(view_state);
                 pass_dialog.show = false;
-                pass_dialog.pending_tab_id = None;
                 pass_dialog.target_path = None;
                 app._pending_archive_path = None;
             } else {
                 pass_dialog.error = "Invalid password".to_string();
             }
-            app.shared_state
-                .signals()
-                .password_dialog
-                .set_if_changed(pass_dialog);
+            t.password_dialog.set_if_changed(pass_dialog);
             app.shared_state
                 .signals()
                 .status_bar

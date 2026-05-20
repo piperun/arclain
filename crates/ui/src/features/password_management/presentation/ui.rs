@@ -6,7 +6,11 @@ use eframe::egui;
 
 pub fn handle_password_dialogs(ctx: &egui::Context, shared: &SharedState) -> PasswordFeatureAction {
     let mut action = PasswordFeatureAction::None;
-    let mut dialog = shared.signals().password_dialog.get();
+    // password_dialog is per-tab now (post 2026-05-20 B3 reframed slice).
+    // Render the active tab's dialog — the originating tab is implicit
+    // because each tab owns its own dialog state.
+    let active_tab = shared.signals().tabs.get().active().clone();
+    let mut dialog = active_tab.password_dialog.get();
 
     // Render password dialog if open
     if dialog.show {
@@ -29,7 +33,7 @@ pub fn handle_password_dialogs(ctx: &egui::Context, shared: &SharedState) -> Pas
         }
     }
 
-    shared.signals().password_dialog.set_if_changed(dialog);
+    active_tab.password_dialog.set_if_changed(dialog);
 
     // Render rules dialog if open (this might be modal or not, depending on implementation)
     // Assuming it's a modal for now or handled elsewhere.
