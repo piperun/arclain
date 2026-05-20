@@ -11,9 +11,9 @@ pub fn pause_extraction(state: &mut ArchiveOperationsState, shared: &crate::shar
         if let Err(e) = suspend_process(pid) {
             tracing::error!("Failed to suspend process {}: {}", pid, e);
         } else {
-            let mut dialog = shared.signals().extraction_dialog.get();
+            let mut dialog = shared.signals().extraction_dialog().get();
             dialog.status = dialogs::ExtractionStatus::Paused;
-            shared.signals().extraction_dialog.set(dialog);
+            shared.signals().extraction_dialog().set(dialog);
         }
     }
 }
@@ -24,9 +24,9 @@ pub fn resume_extraction(state: &mut ArchiveOperationsState, shared: &crate::sha
         if let Err(e) = resume_process(pid) {
             tracing::error!("Failed to resume process {}: {}", pid, e);
         } else {
-            let mut dialog = shared.signals().extraction_dialog.get();
+            let mut dialog = shared.signals().extraction_dialog().get();
             dialog.status = dialogs::ExtractionStatus::Running;
-            shared.signals().extraction_dialog.set(dialog);
+            shared.signals().extraction_dialog().set(dialog);
         }
     }
 }
@@ -36,9 +36,9 @@ pub fn cancel_extraction(state: &mut ArchiveOperationsState, shared: &crate::sha
         if let Err(e) = child.kill() {
             tracing::error!("Failed to kill process: {}", e);
         }
-        let mut dialog = shared.signals().extraction_dialog.get();
+        let mut dialog = shared.signals().extraction_dialog().get();
         dialog.status = dialogs::ExtractionStatus::Cancelled;
-        shared.signals().extraction_dialog.set(dialog);
+        shared.signals().extraction_dialog().set(dialog);
 
         state.extraction_rx = None;
         state.extraction_started = None;
@@ -64,14 +64,14 @@ pub fn update_extraction_progress(
             state.extraction_started = None;
             state.extraction_op_guard = None;
             state.extraction_origin_tab = None;
-            let mut dialog = shared.signals().extraction_dialog.get();
+            let mut dialog = shared.signals().extraction_dialog().get();
             dialog.show = false;
-            shared.signals().extraction_dialog.set(dialog);
+            shared.signals().extraction_dialog().set(dialog);
             return;
         }
     }
 
-    let mut dialog = shared.signals().extraction_dialog.get();
+    let mut dialog = shared.signals().extraction_dialog().get();
     let mut changed = false;
 
     if let Some(rx) = &state.extraction_rx {
@@ -125,6 +125,6 @@ pub fn update_extraction_progress(
     }
 
     if changed {
-        shared.signals().extraction_dialog.set(dialog);
+        shared.signals().extraction_dialog().set(dialog);
     }
 }

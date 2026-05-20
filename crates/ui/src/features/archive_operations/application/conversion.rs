@@ -20,14 +20,14 @@ pub fn update_conversion_progress(
             state.conversion_started = None;
             state.conversion_op_guard = None;
             state.conversion_origin_tab = None;
-            let mut dialog = shared.signals().conversion_dialog.get();
+            let mut dialog = shared.signals().conversion_dialog().get();
             dialog.show = false;
-            shared.signals().conversion_dialog.set(dialog);
+            shared.signals().conversion_dialog().set(dialog);
             return;
         }
     }
 
-    let mut dialog = shared.signals().conversion_dialog.get();
+    let mut dialog = shared.signals().conversion_dialog().get();
     let mut changed = false;
 
     if let Some(rx) = &state.conversion_rx {
@@ -81,6 +81,6 @@ pub fn update_conversion_progress(
     }
 
     if changed {
-        shared.signals().conversion_dialog.set(dialog);
+        shared.signals().conversion_dialog().set(dialog);
     }
 }

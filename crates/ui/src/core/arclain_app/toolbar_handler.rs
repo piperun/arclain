@@ -118,7 +118,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     let view_state = shared_state.signals().tabs.get().active().browser_view_state.get();
                     let ops_state = app.archive_operations.state_mut();
                     let mut status_info = shared_state.signals().status_bar.get();
-                    let mut dialog = shared_state.signals().extraction_dialog.get();
+                    let mut dialog = shared_state.signals().extraction_dialog().get();
 
                     operations::extraction::extract_selected(
                         &app.shared_state.app_state,
@@ -133,12 +133,12 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut status_info,
                     );
                     shared_state.signals().status_bar.set(status_info);
-                    shared_state.signals().extraction_dialog.set(dialog);
+                    shared_state.signals().extraction_dialog().set(dialog);
                 }
                 if actions.extract_all {
                     let ops_state = app.archive_operations.state_mut();
                     let mut status_info = shared_state.signals().status_bar.get();
-                    let mut dialog = shared_state.signals().extraction_dialog.get();
+                    let mut dialog = shared_state.signals().extraction_dialog().get();
 
                     operations::extraction::extract_all(
                         &app.shared_state.app_state,
@@ -152,7 +152,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut status_info,
                     );
                     shared_state.signals().status_bar.set(status_info);
-                    shared_state.signals().extraction_dialog.set(dialog);
+                    shared_state.signals().extraction_dialog().set(dialog);
                 }
                 if actions.add {
                     let mut status_info = shared_state.signals().status_bar.get();

@@ -15,4 +15,4 @@ pub use close_tab_confirm::{
 pub use form_dialog::{DialogMode, FormDialog, FormDialogConfig, FormDialogResult};
 pub use lightbox::{render_lightbox, LightboxResult, LightboxState};
 pub use merge_dialog::{render_merge_dialog, MergeDialogResult, MergeDialogState};
-pub use progress::{ExtractionProgressDialog, ExtractionStatus};
+pub use progress::{ExtractionProgressDialog, ExtractionStatus, ProgressDialogs};

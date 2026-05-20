@@ -124,12 +124,15 @@ pub struct AppSignals {
     /// [NEW] Archive Operations context
     pub pending_open_file: Signal<Option<String>>,
 
-    /// [NEW] Operation Dialogs (Phase 2)
-    pub extraction_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
-    pub conversion_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
+    /// Single signal carrying all three progress-dialog kinds
+    /// (extraction / conversion / drag). Pre-2026-05-20 these lived
+    /// as three top-level `Signal<ExtractionProgressDialog>` fields
+    /// with copy-paste render paths; collapsed via the
+    /// `ProgressDialogs` slot-struct to reduce subscriber fanout
+    /// while preserving per-kind independent state.
+    pub progress_dialogs: Signal<crate::shared::dialogs::ProgressDialogs>,
     /// Live state of a Process page pipeline run
     pub process_run: Signal<ProcessRunState>,
-    pub drag_dialog: Signal<crate::shared::dialogs::ExtractionProgressDialog>,
     pub search_focus_requested: Signal<bool>,
 
     /// [NEW] Plugin Dialog State (Phase 3)
@@ -163,6 +166,93 @@ pub struct AppSignals {
     pub ask_each_time_drop: Signal<AskEachTimeDropState>,
 }
 
+/// Proxy that lets callers keep the old `signals.extraction_dialog
+/// .get()/.set()/.set_if_changed()` shape after the 3 progress
+/// dialog signals were merged into one `progress_dialogs` slot
+/// signal. The proxy reads/writes the slot inside `ProgressDialogs`
+/// without exposing the container struct to every callsite. Call
+/// the accessor (`signals.extraction_dialog()`) to get a proxy;
+/// chain `.get()` / `.set(d)` / `.set_if_changed(d)` as before.
+pub struct ProgressDialogProxy<'a> {
+    parent: &'a Signal<crate::shared::dialogs::ProgressDialogs>,
+    kind: ProgressKind,
+}
+
+#[derive(Copy, Clone)]
+enum ProgressKind {
+    Extraction,
+    Conversion,
+    Drag,
+}
+
+impl<'a> ProgressDialogProxy<'a> {
+    fn read(&self, dlgs: &crate::shared::dialogs::ProgressDialogs)
+        -> crate::shared::dialogs::ExtractionProgressDialog
+    {
+        match self.kind {
+            ProgressKind::Extraction => dlgs.extraction.clone(),
+            ProgressKind::Conversion => dlgs.conversion.clone(),
+            ProgressKind::Drag => dlgs.drag.clone(),
+        }
+    }
+
+    fn write(&self, dlgs: &mut crate::shared::dialogs::ProgressDialogs,
+             new: crate::shared::dialogs::ExtractionProgressDialog) {
+        match self.kind {
+            ProgressKind::Extraction => dlgs.extraction = new,
+            ProgressKind::Conversion => dlgs.conversion = new,
+            ProgressKind::Drag => dlgs.drag = new,
+        }
+    }
+
+    pub fn get(&self) -> crate::shared::dialogs::ExtractionProgressDialog {
+        self.read(&self.parent.get())
+    }
+
+    pub fn set(&self, new: crate::shared::dialogs::ExtractionProgressDialog) {
+        let mut dlgs = self.parent.get();
+        self.write(&mut dlgs, new);
+        self.parent.set(dlgs);
+    }
+
+    pub fn set_if_changed(&self, new: crate::shared::dialogs::ExtractionProgressDialog) {
+        let mut dlgs = self.parent.get();
+        // Only propagate the change if THIS slot actually differs —
+        // mirrors the per-signal `set_if_changed` semantics so we
+        // don't trigger a full repaint for a no-op assignment on
+        // one slot just because another slot's state happens to
+        // also live in the same struct.
+        let current_slot = self.read(&dlgs);
+        if current_slot != new {
+            self.write(&mut dlgs, new);
+            self.parent.set(dlgs);
+        }
+    }
+}
+
+impl AppSignals {
+    pub fn extraction_dialog(&self) -> ProgressDialogProxy<'_> {
+        ProgressDialogProxy {
+            parent: &self.progress_dialogs,
+            kind: ProgressKind::Extraction,
+        }
+    }
+
+    pub fn conversion_dialog(&self) -> ProgressDialogProxy<'_> {
+        ProgressDialogProxy {
+            parent: &self.progress_dialogs,
+            kind: ProgressKind::Conversion,
+        }
+    }
+
+    pub fn drag_dialog(&self) -> ProgressDialogProxy<'_> {
+        ProgressDialogProxy {
+            parent: &self.progress_dialogs,
+            kind: ProgressKind::Drag,
+        }
+    }
+}
+
 impl AppSignals {
     /// Create new signals with default values.
     pub fn new() -> Self {
@@ -187,17 +277,9 @@ impl AppSignals {
                 .with_name("file_edit_dialog"),
 
             pending_open_file: Signal::new(None).with_name("pending_open_file"),
-            extraction_dialog: Signal::new(
-                crate::shared::dialogs::ExtractionProgressDialog::default(),
-            )
-            .with_name("extraction_dialog"),
-            conversion_dialog: Signal::new(
-                crate::shared::dialogs::ExtractionProgressDialog::default(),
-            )
-            .with_name("conversion_dialog"),
+            progress_dialogs: Signal::new(crate::shared::dialogs::ProgressDialogs::default())
+                .with_name("progress_dialogs"),
             process_run: Signal::new(ProcessRunState::default()).with_name("process_run"),
-            drag_dialog: Signal::new(crate::shared::dialogs::ExtractionProgressDialog::default())
-                .with_name("drag_dialog"),
             search_focus_requested: Signal::new(false).with_name("search_focus_requested"),
             plugin_dialog_state: Signal::new(
                 crate::features::plugins::domain::state::PluginDialogState::default(),
@@ -233,10 +315,8 @@ impl AppSignals {
         signal_ctx.bind_named(&self.pending_open_file, "pending_open_file");
         // Note: per-tab browser_view_state is not bound here — it lives in TabState and
         // is mutated during render, so binding it would cause repaint loops
-        signal_ctx.bind_named(&self.extraction_dialog, "extraction_dialog");
-        signal_ctx.bind_named(&self.conversion_dialog, "conversion_dialog");
+        signal_ctx.bind_named(&self.progress_dialogs, "progress_dialogs");
         signal_ctx.bind_named(&self.process_run, "process_run");
-        signal_ctx.bind_named(&self.drag_dialog, "drag_dialog");
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
         // Note: per-tab ui_ready is not bound to repaint — it's a control signal, not display
@@ -265,13 +345,9 @@ impl AppSignals {
             .set(crate::features::password_management::dialogs::PasswordDialog::default());
         self.file_edit_dialog.set(crate::features::file_editing::FileEditDialog::default());
         self.pending_open_file.set(None);
-        self.extraction_dialog
-            .set(crate::shared::dialogs::ExtractionProgressDialog::default());
-        self.conversion_dialog
-            .set(crate::shared::dialogs::ExtractionProgressDialog::default());
+        self.progress_dialogs
+            .set(crate::shared::dialogs::ProgressDialogs::default());
         self.process_run.set(ProcessRunState::default());
-        self.drag_dialog
-            .set(crate::shared::dialogs::ExtractionProgressDialog::default());
         self.plugin_dialog_state
             .set(crate::features::plugins::domain::state::PluginDialogState::default());
         self.merge_dialog

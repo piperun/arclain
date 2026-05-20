@@ -301,7 +301,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     {
         // Use a block to limit scope of extracted signals
         let mut status = app.shared_state.signals().status_bar.get();
-        let mut dialog = app.shared_state.signals().extraction_dialog.get();
+        let mut dialog = app.shared_state.signals().extraction_dialog().get();
         // Skip processing if minimized to avoid UI updates when invisible?
         // Actually, process_extraction_progress updates the signal state from the channel,
         // so it should run regardless of visibility, but maybe minimize update frequency?
@@ -315,7 +315,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         // app.shared_state.signals().status_bar.set_if_changed(status); // REMOVED: prevents infinite loop
         app.shared_state
             .signals()
-            .extraction_dialog
+            .extraction_dialog()
             .set_if_changed(dialog);
     }
 

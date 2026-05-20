@@ -53,6 +53,24 @@ impl Default for ExtractionProgressDialog {
     }
 }
 
+/// Single-signal container for all three progress-dialog flavours.
+///
+/// Pre-2026-05-20 each kind (`extraction`, `conversion`, `drag`) had
+/// its own top-level `Signal<ExtractionProgressDialog>` in
+/// `AppSignals`. Three signals → three independent subscriber notify
+/// fanouts per progress tick, and the audit flagged it as copy-paste
+/// duplication ("only one is ever visible at a time"). Collapse to a
+/// single signal carrying all three slots: each kind keeps independent
+/// state so a background drag can still update its dialog data while
+/// an extraction dialog is showing — just consolidates the
+/// subscription side.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProgressDialogs {
+    pub extraction: ExtractionProgressDialog,
+    pub conversion: ExtractionProgressDialog,
+    pub drag: ExtractionProgressDialog,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExtractionDialogResult {
     None,

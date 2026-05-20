@@ -86,7 +86,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     }
 
     // Render Extraction Progress Dialog
-    let mut ext_dialog = app.shared_state.signals().extraction_dialog.get();
+    let mut ext_dialog = app.shared_state.signals().extraction_dialog().get();
     if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
         ctx,
         &app.shared_state.theme,
@@ -119,11 +119,11 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     }
     app.shared_state
         .signals()
-        .extraction_dialog
+        .extraction_dialog()
         .set_if_changed(ext_dialog);
 
     // Render Conversion Progress Dialog
-    let mut conv_dialog = app.shared_state.signals().conversion_dialog.get();
+    let mut conv_dialog = app.shared_state.signals().conversion_dialog().get();
     if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
         ctx,
         &app.shared_state.theme,
@@ -143,11 +143,11 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     }
     app.shared_state
         .signals()
-        .conversion_dialog
+        .conversion_dialog()
         .set_if_changed(conv_dialog);
 
     // Render Drag Progress Dialog
-    let mut drag_dialog = app.shared_state.signals().drag_dialog.get();
+    let mut drag_dialog = app.shared_state.signals().drag_dialog().get();
     if let Some(result) = dialogs::progress::render_extraction_progress_dialog(
         ctx,
         &app.shared_state.theme,
@@ -159,7 +159,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     }
     app.shared_state
         .signals()
-        .drag_dialog
+        .drag_dialog()
         .set_if_changed(drag_dialog);
 
     // Render File Edit Dialog
@@ -265,9 +265,9 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     ops.extraction_started = None;
                     ops.extraction_op_guard = None;
                     ops.extraction_origin_tab = None;
-                    let mut dialog = app.shared_state.signals().extraction_dialog.get();
+                    let mut dialog = app.shared_state.signals().extraction_dialog().get();
                     dialog.show = false;
-                    app.shared_state.signals().extraction_dialog.set(dialog);
+                    app.shared_state.signals().extraction_dialog().set(dialog);
                 }
                 if origin_matches_id(&ops.conversion_origin_tab) {
                     if let Some(mut child) = ops.conversion_child.take() {
@@ -277,9 +277,9 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     ops.conversion_started = None;
                     ops.conversion_op_guard = None;
                     ops.conversion_origin_tab = None;
-                    let mut dialog = app.shared_state.signals().conversion_dialog.get();
+                    let mut dialog = app.shared_state.signals().conversion_dialog().get();
                     dialog.show = false;
-                    app.shared_state.signals().conversion_dialog.set(dialog);
+                    app.shared_state.signals().conversion_dialog().set(dialog);
                 }
             }
         }
@@ -408,7 +408,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     };
 
                     // Update status to show merge in progress
-                    let mut extraction_dialog = signals.extraction_dialog.get();
+                    let mut extraction_dialog = signals.extraction_dialog().get();
                     extraction_dialog.show = true;
                     extraction_dialog.title = "Merging Archive".to_string();
                     extraction_dialog.file_action = format!("Merging {} parts...", mp.all_parts.len());
@@ -416,13 +416,13 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     extraction_dialog.can_pause = false;
                     extraction_dialog.can_minimize = false;
                     extraction_dialog.can_cancel = false;
-                    signals.extraction_dialog.set(extraction_dialog);
+                    signals.extraction_dialog().set(extraction_dialog);
 
                     match merge_service.merge(&mut mp, options, None, None) {
                         Ok(result_path) => {
-                            let mut extraction_dialog = signals.extraction_dialog.get();
+                            let mut extraction_dialog = signals.extraction_dialog().get();
                             extraction_dialog.show = false;
-                            signals.extraction_dialog.set(extraction_dialog);
+                            signals.extraction_dialog().set(extraction_dialog);
 
                             let mut sb = signals.status_bar.get();
                             sb.message = format!(
@@ -432,9 +432,9 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                             signals.status_bar.set(sb);
                         }
                         Err(e) => {
-                            let mut extraction_dialog = signals.extraction_dialog.get();
+                            let mut extraction_dialog = signals.extraction_dialog().get();
                             extraction_dialog.show = false;
-                            signals.extraction_dialog.set(extraction_dialog);
+                            signals.extraction_dialog().set(extraction_dialog);
 
                             let mut sb = signals.status_bar.get();
                             sb.message = format!("Merge failed: {}", e);

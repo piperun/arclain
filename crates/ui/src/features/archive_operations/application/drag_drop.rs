@@ -7,7 +7,7 @@ pub fn update_drag_progress(
     shared: &crate::shared::SharedState,
     ctx: &egui::Context,
 ) {
-    let mut dialog = shared.signals().drag_dialog.get();
+    let mut dialog = shared.signals().drag_dialog().get();
     let mut changed = false;
     let mut finished = false;
 
@@ -61,6 +61,6 @@ pub fn update_drag_progress(
     }
 
     if changed {
-        shared.signals().drag_dialog.set(dialog);
+        shared.signals().drag_dialog().set(dialog);
     }
 }
