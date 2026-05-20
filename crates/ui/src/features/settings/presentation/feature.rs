@@ -3,7 +3,7 @@ use crate::features::settings::pages::interface::InterfaceSettingsState;
 use crate::features::settings::pages::{InfoPanelLayoutState, ToolbarLayoutState};
 use crate::features::settings::presentation::views::settings_content::{
     render_settings_content, ArchivesSettingsState, GeneralSettingsState, NetworkSettingsState,
-    SecuritySettingsState, ServerSettingsState, SettingsAction,
+    SecuritySettingsState, ServerSettingsState, SettingsAction, SettingsContentBorrows,
 };
 
 use crate::features::settings::views::{header, layout, navigation};
@@ -327,28 +327,33 @@ impl SettingsFeature {
                             let pm_arc_opt = shared.services.plugin_manager.clone();
                             let pm_guard = pm_arc_opt.as_ref().map(|m| m.lock());
 
-                            let plugins_settings_state =
-                                plugins.as_deref_mut().map(|p| &mut p.settings_list_state);
+                            let content_borrows = SettingsContentBorrows {
+                                general: &mut self.general_state,
+                                security: &mut self.security_state,
+                                archives: &mut self.archives_state,
+                                network: &mut self.network_state,
+                                server: &mut self.server_state,
+                                interface: &mut self.interface_state,
+                                toolbar_layout: &mut self.toolbar_layout_state,
+                                info_panel_layout: &mut self.info_panel_layout_state,
+                                password_rules_dialog: password_management
+                                    .as_deref_mut()
+                                    .map(|pm| &mut pm.password_rules_dialog),
+                                plugins_state: plugins
+                                    .as_deref_mut()
+                                    .map(|p| &mut p.settings_list_state),
+                                keyboard_mouse_state: hotkeys
+                                    .as_deref_mut()
+                                    .map(|h| &mut h.keyboard_mouse_state),
+                                rules_page,
+                                profiles_page,
+                                plugin_manager: pm_guard.as_deref(),
+                            };
                             let act = render_settings_content(
                                 ui,
                                 &shared.theme,
                                 page,
-                                &mut self.general_state,
-                                &mut self.security_state,
-                                &mut self.archives_state,
-                                password_management
-                                    .as_deref_mut()
-                                    .map(|pm| &mut pm.password_rules_dialog),
-                                pm_guard.as_deref(),
-                                plugins_settings_state,
-                                rules_page,
-                                profiles_page,
-                                &mut self.interface_state,
-                                &mut self.toolbar_layout_state,
-                                &mut self.info_panel_layout_state,
-                                hotkeys.as_deref_mut().map(|h| &mut h.keyboard_mouse_state),
-                                &mut self.network_state,
-                                &mut self.server_state,
+                                content_borrows,
                                 &shared.app_state,
                                 Some(shared),
                             );

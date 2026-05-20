@@ -77,30 +77,68 @@ pub fn render_plugins_settings(
     )
 }
 
+/// Bundle of borrowed state passed into [`render_settings_content`].
+///
+/// Each field is borrowed from its owning location: settings-owned page
+/// state from [`SettingsFeature`](crate::features::settings::presentation::feature::SettingsFeature)
+/// itself, and cross-feature state from sibling features via
+/// [`SettingsFeatureBorrows`](crate::features::settings::presentation::feature::SettingsFeatureBorrows).
+///
+/// Bundling these 13 references into one struct keeps
+/// `render_settings_content` from drowning in positional args
+/// (`clippy::too_many_arguments` was firing at 19/7 pre-bundle).
+pub struct SettingsContentBorrows<'a> {
+    // Settings-owned page states
+    pub general: &'a mut GeneralSettingsState,
+    pub security: &'a mut SecuritySettingsState,
+    pub archives: &'a mut ArchivesSettingsState,
+    pub network: &'a mut NetworkSettingsState,
+    pub server: &'a mut ServerSettingsState,
+    pub interface:
+        &'a mut crate::features::settings::presentation::pages::interface::InterfaceSettingsState,
+    pub toolbar_layout: &'a mut crate::features::settings::presentation::pages::ToolbarLayoutState,
+    pub info_panel_layout:
+        &'a mut crate::features::settings::presentation::pages::InfoPanelLayoutState,
+
+    // Cross-feature borrowed state (Optional because they may not exist)
+    pub password_rules_dialog: Option<&'a mut PasswordRulesDialog>,
+    pub plugins_state: Option<&'a mut PluginsListState>,
+    pub keyboard_mouse_state:
+        Option<&'a mut crate::features::hotkeys::presentation::KeyboardMouseSettingsState>,
+    pub rules_page: Option<&'a mut crate::features::organization::presentation::views::RulesPage>,
+    pub profiles_page:
+        Option<&'a mut crate::features::organization::presentation::views::ProfilesPage>,
+
+    // Plugin manager (immutable borrow from the PluginManager mutex guard)
+    pub plugin_manager: Option<&'a PluginManager>,
+}
+
 /// Render the appropriate settings content based on the current page
 pub fn render_settings_content(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     page: &SettingsPage,
-    general_state: &mut GeneralSettingsState,
-    security_state: &mut SecuritySettingsState,
-    archives_state: &mut ArchivesSettingsState,
-    password_rules_dialog: Option<&mut PasswordRulesDialog>,
-    plugin_manager: Option<&PluginManager>,
-    plugins_state: Option<&mut PluginsListState>,
-    rules_page: Option<&mut crate::features::organization::presentation::views::RulesPage>,
-    profiles_page: Option<&mut crate::features::organization::presentation::views::ProfilesPage>,
-
-    interface_state: &mut crate::features::settings::presentation::pages::interface::InterfaceSettingsState,
-    toolbar_layout_state: &mut crate::features::settings::presentation::pages::ToolbarLayoutState,
-    info_panel_layout_state: &mut crate::features::settings::presentation::pages::InfoPanelLayoutState,
-    keyboard_mouse_state: Option<&mut crate::features::hotkeys::presentation::KeyboardMouseSettingsState>,
-
-    network_state: &mut NetworkSettingsState,
-    server_state: &mut ServerSettingsState,
+    borrows: SettingsContentBorrows<'_>,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
+    let SettingsContentBorrows {
+        general: general_state,
+        security: security_state,
+        archives: archives_state,
+        network: network_state,
+        server: server_state,
+        interface: interface_state,
+        toolbar_layout: toolbar_layout_state,
+        info_panel_layout: info_panel_layout_state,
+        password_rules_dialog,
+        plugins_state,
+        keyboard_mouse_state,
+        rules_page,
+        profiles_page,
+        plugin_manager,
+    } = borrows;
+
     match page {
         SettingsPage::Overview => {
             // This shouldn't be called as overview has its own rendering
