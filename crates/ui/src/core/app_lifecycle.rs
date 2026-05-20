@@ -114,7 +114,22 @@ pub fn process_extraction_progress(
             // Handle file opening
             if let Some(file_path) = progress.file_to_open {
                 if file_path.exists() {
-                    open_extracted_file(&file_path, status_message);
+                    // If the extracted file is itself an archive, route
+                    // through arclain's archive-open flow instead of the
+                    // OS default handler. Lets us a) keep nested-archive
+                    // browsing inside the app, and b) surface the
+                    // password dialog when the inner archive is
+                    // encrypted (the file_opener's extraction succeeded
+                    // because the OUTER archive wasn't encrypted, but
+                    // listing the inner one trips the password path in
+                    // load_archive_into_tab's Err arm).
+                    if arclain_core::features::organization::flatten::is_archive_extension(
+                        &file_path,
+                    ) {
+                        open_nested_archive_in_tab(shared_state, &file_path);
+                    } else {
+                        open_extracted_file(&file_path, status_message);
+                    }
                 } else {
                     tracing::warn!("Extracted file not found: {}", file_path.display());
                     *status_message = "Extraction completed but file not found".to_string();
@@ -165,6 +180,48 @@ pub fn process_extraction_progress(
             ctx.request_repaint();
         }
     }
+}
+
+/// Open a freshly-extracted nested archive inside arclain (rather
+/// than handing it off to the OS default handler).
+///
+/// Honors the user's `open_nested_in_new_tab` setting:
+///   - `true` (default): open the nested archive in a new tab.
+///   - `false`: replace the active tab's archive with the nested one.
+///
+/// Falls through `load_archive_into_tab`, so the encryption path
+/// (password dialog show) and auto-bind ctx-repaint behave the same
+/// as a top-level archive open.
+fn open_nested_archive_in_tab(
+    shared_state: &SharedState,
+    archive_path: &std::path::Path,
+) {
+    let signals = shared_state.signals();
+    let user_config = signals.user_config.get();
+    let open_in_new_tab = user_config.open_nested_in_new_tab;
+    drop(user_config);
+
+    let mut col = signals.tabs.get();
+    let target_tab_id = if open_in_new_tab {
+        col.open(Some(archive_path.to_path_buf()))
+    } else {
+        // Replace the active tab when there's an archive in it, or
+        // reuse the empty placeholder when there isn't.
+        if col.active().archive_path.get().is_some() {
+            col.replace_active(archive_path.to_path_buf());
+            col.active_id()
+        } else {
+            col.open(Some(archive_path.to_path_buf()))
+        }
+    };
+    signals.tabs.set(col);
+
+    crate::core::operations::archive::load_archive_into_tab(
+        shared_state.app_state.clone(),
+        signals.clone(),
+        target_tab_id,
+        archive_path,
+    );
 }
 
 /// Open an extracted file with the system default handler
