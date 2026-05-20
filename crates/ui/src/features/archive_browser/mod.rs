@@ -10,8 +10,6 @@ pub mod presentation;
 mod feature;
 
 // Re-exports for easier access
-pub use domain::types::{
-    Action, Action as ArchiveBrowserAction, BrowserViewState as ArchiveBrowserState,
-};
+pub use domain::types::{Action, Action as ArchiveBrowserAction};
 pub use feature::ArchiveBrowser;
 pub use presentation::controllers::browser_controller::BrowserController;

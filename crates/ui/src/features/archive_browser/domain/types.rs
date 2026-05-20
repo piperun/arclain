@@ -42,11 +42,8 @@ pub enum Action {
 // Re-export for backwards compatibility if needed
 pub type ArchiveBrowserAction = Action;
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct BrowserViewState {
-    pub view_entries: Vec<crate::shared::models::file_entry::FileEntry>,
-    // NOTE: current_path has been moved to NavigationState signal for single source of truth
-    pub toolbar_state: crate::shared::components::toolbar::ToolbarState,
-    pub sort_state: crate::shared::models::file_entry::SortState,
-    pub tree_state: crate::shared::components::tree_panel::TreePanelState,
-}
+// `BrowserViewState` was relocated to `core/tabs/view_state.rs` per the
+// 2026-05-19 dependency audit (§2 + §5 medium #9): the type is per-tab
+// state and was being imported by `core/tabs/tab_state.rs`, violating
+// `core/ ⊥ features/`. Consumers in this feature now import from
+// `crate::core::tabs::BrowserViewState`.

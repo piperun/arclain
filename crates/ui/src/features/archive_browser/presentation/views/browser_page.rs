@@ -1,6 +1,7 @@
 //! Main view for the archive browser feature.
 
-use crate::features::archive_browser::domain::{types::BrowserViewState, Action};
+use crate::core::tabs::BrowserViewState;
+use crate::features::archive_browser::domain::Action;
 use crate::features::archive_browser::presentation::components::file_list;
 use crate::shared::components::tree_panel;
 use crate::shared::SharedState;

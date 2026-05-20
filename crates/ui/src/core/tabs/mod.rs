@@ -14,12 +14,14 @@ pub mod persistence;
 pub mod plugin_instances;
 pub mod tab_state;
 pub mod tabs_collection;
+pub mod view_state;
 
 pub use op_guard::OpGuard;
 pub use persistence::{load_collection, save_collection, snapshot, TabRestore, TabsSnapshot};
 pub use plugin_instances::TabPluginPool;
 pub use tab_state::TabState;
 pub use tabs_collection::{CloseResult, TabsCollection};
+pub use view_state::BrowserViewState;
 
 use serde::{Deserialize, Serialize};
 

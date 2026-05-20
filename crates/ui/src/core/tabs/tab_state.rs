@@ -1,10 +1,10 @@
 //! Per-tab state — owns the archive-context signals and the plugin pool.
 
 use super::plugin_instances::TabPluginPool;
+use super::view_state::BrowserViewState;
 use super::TabId;
 use crate::core::operations::archive::{derive_archive_info, ArchiveExtras, ArchiveInfo};
 use crate::core::signals::ToolbarContext;
-use crate::features::archive_browser::domain::types::BrowserViewState;
 use arclain_core::archive::NavigationState;
 use arclain_core::features::organization::GameMetadata;
 use arclain_core::ArchiveEntry;
