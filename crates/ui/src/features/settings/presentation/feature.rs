@@ -232,8 +232,8 @@ impl SettingsFeature {
         shared: &SharedState,
         page: &SettingsPage,
         breadcrumb: Vec<(String, crate::core::AppPage)>,
-        rules_page: Option<&mut crate::features::settings::presentation::pages::RulesPage>,
-        profiles_page: Option<&mut crate::features::settings::presentation::pages::ProfilesPage>,
+        rules_page: Option<&mut crate::features::organization::presentation::views::RulesPage>,
+        profiles_page: Option<&mut crate::features::organization::presentation::views::ProfilesPage>,
 
         search_text: &str,
     ) -> Option<crate::core::AppPage> {

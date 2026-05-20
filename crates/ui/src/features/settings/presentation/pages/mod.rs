@@ -2,23 +2,19 @@
 //!
 //! Contains individual settings page implementations.
 
-pub mod archive_profiles;
 pub mod archives;
 pub mod general;
 pub mod interface;
 pub mod layout_editor;
 pub mod network;
-pub mod organization_rules;
 pub mod security;
 pub mod server;
 
 // Re-export for convenience
-pub use archive_profiles::ProfilesPage;
 pub use interface::render_interface_settings;
 pub use layout_editor::{
     render_info_panel_layout, render_toolbar_layout, InfoPanelLayoutState, ToolbarLayoutState,
 };
-pub use organization_rules::{RulesPage, RuleEditorAction};
 
 use crate::shared::theme::AppTheme;
 use eframe::egui;

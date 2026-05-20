@@ -88,8 +88,8 @@ pub fn render_settings_content(
     password_rules_dialog: &mut PasswordRulesDialog,
     plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
-    rules_page: Option<&mut crate::features::settings::presentation::pages::RulesPage>,
-    profiles_page: Option<&mut crate::features::settings::presentation::pages::ProfilesPage>,
+    rules_page: Option<&mut crate::features::organization::presentation::views::RulesPage>,
+    profiles_page: Option<&mut crate::features::organization::presentation::views::ProfilesPage>,
 
     interface_state: &mut crate::features::settings::presentation::pages::interface::InterfaceSettingsState,
     toolbar_layout_state: &mut crate::features::settings::presentation::pages::ToolbarLayoutState,
@@ -198,7 +198,7 @@ pub fn render_settings_content(
                             *rule_id,
                             plugin_manager,
                         ) {
-                            use crate::features::settings::presentation::pages::RuleEditorAction;
+                            use crate::features::organization::presentation::views::RuleEditorAction;
                             match editor_action {
                                 RuleEditorAction::Saved | RuleEditorAction::Cancelled => {
                                     // Navigate back to organization rules list

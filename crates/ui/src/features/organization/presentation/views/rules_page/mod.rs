@@ -1,10 +1,12 @@
-//! Organization Rules Settings Page
+//! Organization Rules Page
 //!
-//! CRUD interface for managing organization rules. Part of the Settings feature.
+//! CRUD interface for managing organization rules. Owned by the Organization feature.
+//! Emits SettingsAction (the cross-feature contract) so the Settings feature can
+//! drive navigation and persistence.
 
 mod rule_editor;
 
-pub use rule_editor::{RuleEditorState, RuleEditorAction};
+pub use rule_editor::{RuleEditorAction, RuleEditorState};
 use arclain_core::features::organization::OrganizationRule;
 use arclain_core::OrganizationService;
 use crate::core::SettingsPage;

@@ -1,6 +1,7 @@
-//! Archive Profiles Settings Page
+//! Archive Profiles Page
 //!
-//! CRUD interface for managing archive format profiles. Part of the Settings feature.
+//! CRUD interface for managing archive format profiles. Owned by the Organization
+//! feature (profiles are organization-domain configuration).
 
 mod add_profile_dialog;
 

@@ -10,7 +10,7 @@ pub struct SettingsFeatureState {
     pub plugins_state: PluginsListState,
     pub password_rules_dialog: dialogs::PasswordRulesDialog,
     pub organization_rules_state:
-        crate::features::settings::presentation::pages::organization_rules::RulesPage,
+        crate::features::organization::presentation::views::rules_page::RulesPage,
 
     pub password_rules_loaded: bool,
 }
