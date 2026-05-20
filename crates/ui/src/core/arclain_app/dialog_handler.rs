@@ -360,8 +360,9 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         }
     }
 
-    // Render Merge Dialog
-    let mut merge_dialog = app.shared_state.signals().merge_dialog.get();
+    // Render Merge Dialog (now per-tab — read from active tab)
+    let active_tab_for_merge = app.shared_state.signals().tabs.get().active().clone();
+    let mut merge_dialog = active_tab_for_merge.merge_dialog.get();
     match dialogs::render_merge_dialog(ctx, &app.shared_state.theme, &mut merge_dialog) {
         dialogs::MergeDialogResult::StartMerge => {
             // Clone needed data before triggering merge
@@ -457,8 +458,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         }
         dialogs::MergeDialogResult::None => {}
     }
-    app.shared_state
-        .signals()
+    active_tab_for_merge
         .merge_dialog
         .set_if_changed(merge_dialog);
 }
@@ -612,8 +612,9 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
         }
     }
 
-    // Render lightbox if open
-    let mut lightbox_state = app.shared_state.signals().lightbox_state.get();
+    // Render lightbox if open (now per-tab — read from active tab)
+    let active_tab_for_lightbox = app.shared_state.signals().tabs.get().active().clone();
+    let mut lightbox_state = active_tab_for_lightbox.lightbox_state.get();
     if lightbox_state.show {
         let result = dialogs::render_lightbox(
             ctx,
@@ -630,8 +631,7 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
             }
             dialogs::LightboxResult::None => {}
         }
-        app.shared_state
-            .signals()
+        active_tab_for_lightbox
             .lightbox_state
             .set_if_changed(lightbox_state);
     }

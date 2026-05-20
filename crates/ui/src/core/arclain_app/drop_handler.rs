@@ -19,9 +19,11 @@ pub fn handle_drop_events(app: &mut ArclainApp, ctx: &egui::Context) {
         // opening directly. The drop overlay does not handle multi-part
         // archives, so this branch must stay here.
         if let Some(multipart) = MultiPartArchive::detect(&path) {
-            let mut merge_dialog = app.shared_state.signals().merge_dialog.get();
+            // merge_dialog is per-tab now (post 2026-05-20 audit B2 follow-up)
+            let active_tab = app.shared_state.signals().tabs.get().active().clone();
+            let mut merge_dialog = active_tab.merge_dialog.get();
             merge_dialog.open(multipart);
-            app.shared_state.signals().merge_dialog.set(merge_dialog);
+            active_tab.merge_dialog.set(merge_dialog);
 
             let mut status_bar = app.shared_state.signals().status_bar.get();
             status_bar.message =

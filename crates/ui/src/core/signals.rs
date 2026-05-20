@@ -145,11 +145,13 @@ pub struct AppSignals {
     /// [NEW] Signal to reload hotkeys when settings change
     pub hotkeys_updated: Signal<bool>,
 
-    /// [NEW] Merge dialog state for merging split archives
-    pub merge_dialog: Signal<crate::shared::dialogs::MergeDialogState>,
-
-    /// [NEW] Lightbox state for full-screen image viewing
-    pub lightbox_state: Signal<crate::shared::dialogs::LightboxState>,
+    // `merge_dialog` migrated to `TabState` in the 2026-05-20 audit B2 follow-up.
+    // Read via `signals.tabs.get().active().merge_dialog`. The merge operation
+    // always targets the active tab's archive — closing the tab cleanly drops
+    // the in-progress dialog state.
+    // `lightbox_state` migrated to `TabState` in the 2026-05-20 audit B2
+    // follow-up. Read via `signals.tabs.get().active().lightbox_state`. The
+    // lightbox is plugin-driven, and the plugin is tied to a tab.
 
     /// Gameta server connection status — drives the header indicator.
     pub server_status: Signal<ServerConnectionStatus>,
@@ -287,10 +289,6 @@ impl AppSignals {
             )
             .with_name("plugin_dialog_state"),
             hotkeys_updated: Signal::new(false).with_name("hotkeys_updated"),
-            merge_dialog: Signal::new(crate::shared::dialogs::MergeDialogState::default())
-                .with_name("merge_dialog"),
-            lightbox_state: Signal::new(crate::shared::dialogs::LightboxState::default())
-                .with_name("lightbox_state"),
             server_status: Signal::new(ServerConnectionStatus::default())
                 .with_name("server_status"),
             tabs: Signal::new(TabsCollection::new()).with_name("tabs"),
@@ -319,8 +317,8 @@ impl AppSignals {
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
         // Note: per-tab ui_ready is not bound to repaint — it's a control signal, not display
-        signal_ctx.bind_named(&self.merge_dialog, "merge_dialog");
-        signal_ctx.bind_named(&self.lightbox_state, "lightbox_state");
+        // Note: per-tab merge_dialog and lightbox_state are not bound here — they
+        // live in TabState (post 2026-05-20 audit B2 follow-up)
         signal_ctx.bind_named(&self.server_status, "server_status");
         signal_ctx.bind_named(&self.tabs, "tabs");
         signal_ctx.bind_named(&self.close_tab_confirm, "close_tab_confirm");
@@ -347,10 +345,6 @@ impl AppSignals {
         self.process_run.set(ProcessRunState::default());
         self.plugin_dialog_state
             .set(crate::features::plugins::domain::state::PluginDialogState::default());
-        self.merge_dialog
-            .set(crate::shared::dialogs::MergeDialogState::default());
-        self.lightbox_state
-            .set(crate::shared::dialogs::LightboxState::default());
         self.server_status.set(ServerConnectionStatus::default());
         self.tabs.set(TabsCollection::new());
         self.close_tab_confirm.set(CloseTabConfirmState::default());

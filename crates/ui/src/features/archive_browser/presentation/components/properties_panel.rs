@@ -99,6 +99,8 @@ pub fn render(
         let mut toaster = shared.toaster.lock();
         let dialog_signal = shared.signals().plugin_dialog_state.clone();
         let mut dialog_state = dialog_signal.get();
+        // lightbox_state is per-tab now (post 2026-05-20 audit B2 follow-up)
+        let active_tab = shared.signals().tabs.get().active().clone();
 
         for (plugin_id, plugin_action) in actions.iter() {
             crate::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
@@ -107,7 +109,7 @@ pub fn render(
                 &mut dialog_state,
                 &mut toaster,
                 Some(&shared.refresh_requests),
-                Some(&shared.signals().lightbox_state),
+                Some(&active_tab.lightbox_state),
                 Some(shared),
             );
         }

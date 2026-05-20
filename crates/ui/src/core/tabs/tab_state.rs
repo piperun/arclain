@@ -48,6 +48,18 @@ pub struct TabState {
     /// edit operation is bound to a specific archive (and therefore
     /// tab); closing the tab during an edit should close the dialog.
     pub file_edit_dialog: Signal<crate::features::file_editing::FileEditDialog>,
+    /// Merge-dialog state for merging split archives. Migrated from
+    /// the global `AppSignals.merge_dialog` in the 2026-05-20 audit
+    /// B2 follow-up — the merge operation always targets the tab's
+    /// active archive, so closing the tab while a merge dialog is
+    /// open should drop the dialog state.
+    pub merge_dialog: Signal<crate::shared::dialogs::MergeDialogState>,
+    /// Lightbox state for the full-screen image viewer. Migrated
+    /// from the global `AppSignals.lightbox_state` in the 2026-05-20
+    /// audit B2 follow-up — the lightbox is plugin-driven, and the
+    /// plugin is tied to a tab. Switching tabs hides the lightbox
+    /// naturally; switching back restores it.
+    pub lightbox_state: Signal<crate::shared::dialogs::LightboxState>,
 
     // Tab metadata (not signals — read on render)
     pub created_at: SystemTime,
@@ -102,6 +114,10 @@ impl TabState {
                 crate::features::file_editing::FileEditDialog::default(),
             )
             .with_name("file_edit_dialog"),
+            merge_dialog: Signal::new(crate::shared::dialogs::MergeDialogState::default())
+                .with_name("merge_dialog"),
+            lightbox_state: Signal::new(crate::shared::dialogs::LightboxState::default())
+                .with_name("lightbox_state"),
             created_at: SystemTime::now(),
             in_flight_ops: Arc::new(AtomicUsize::new(0)),
             tab_cancel: Arc::new(AtomicBool::new(false)),

@@ -92,7 +92,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     let mut view_state = open_tab.browser_view_state.get();
                     let mut password_dialog = shared_state.signals().password_dialog.get();
                     let mut status_info = shared_state.signals().status_bar.get();
-                    let mut merge_dialog = shared_state.signals().merge_dialog.get();
+                    // merge_dialog is per-tab now (post 2026-05-20 audit B2 follow-up)
+                    let mut merge_dialog = open_tab.merge_dialog.get();
                     // nav removed
 
                     operations::archive::open_archive(
@@ -112,7 +113,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     open_tab.archive_info.set(archive_info);
                     shared_state.signals().password_dialog.set(password_dialog);
                     shared_state.signals().status_bar.set(status_info);
-                    shared_state.signals().merge_dialog.set(merge_dialog);
+                    open_tab.merge_dialog.set(merge_dialog);
                 }
                 if actions.extract {
                     let view_state = shared_state.signals().tabs.get().active().browser_view_state.get();

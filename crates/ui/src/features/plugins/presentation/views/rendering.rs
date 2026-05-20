@@ -189,7 +189,8 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                         let mut toaster = shared.toaster.lock();
                         let render_tab = shared.signals().tabs.get().active().clone();
                         let ctx = crate::features::plugins::presentation::controllers::plugin_controller::ActionContext {
-                            lightbox_signal: Some(&shared.signals().lightbox_state),
+                            // lightbox_state is per-tab now (post 2026-05-20 audit B2 follow-up)
+                            lightbox_signal: Some(&render_tab.lightbox_state),
                             page_display_name_signal: Some(&render_tab.page_display_name),
                             shared_state: Some(shared),
                         };

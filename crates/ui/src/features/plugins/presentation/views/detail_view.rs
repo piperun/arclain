@@ -43,12 +43,14 @@ pub fn render(
         let mut toaster = shared.toaster.lock();
         let dialog_signal = shared.signals().plugin_dialog_state.clone();
         let mut dialog_state = dialog_signal.get();
+        // lightbox_state is per-tab now (post 2026-05-20 audit B2 follow-up)
+        let active_tab = shared.signals().tabs.get().active().clone();
         drain_pending_plugin_actions(
             &shared.pending_plugin_actions,
             &mut toaster,
             &mut dialog_state,
             Some(&shared.refresh_requests),
-            Some(&shared.signals().lightbox_state),
+            Some(&active_tab.lightbox_state),
             Some(shared),
         );
         dialog_signal.set(dialog_state);
