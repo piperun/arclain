@@ -14,7 +14,6 @@ fn setup_diesel_conn() -> diesel::SqliteConnection {
             id INTEGER PRIMARY KEY,
             vault_path TEXT,
             cache_directory TEXT,
-            last_opened_archive TEXT,
             temp_dir TEXT,
             sevenzip_path TEXT,
             transfer_dir TEXT,
@@ -171,6 +170,60 @@ fn test_gameta_server_fields_default() {
     let config = UserConfig::default();
     assert!(!config.gameta_server_enabled);
     assert!(config.gameta_server_url.is_none());
+}
+
+#[test]
+fn test_ensure_table_drops_legacy_last_opened_archive_column() {
+    // Audit 2026-05-19 retirement: legacy DBs carried a
+    // `last_opened_archive TEXT` column that's now superseded by
+    // tab persistence (tabs.json). `ensure_table` must drop the
+    // column when it finds one, and be idempotent on already-clean DBs.
+    let conn = rusqlite::Connection::open_in_memory().expect("open in-memory");
+
+    // Create a legacy-shaped table that includes the orphaned column
+    // (mirrors what a pre-2026-05 user DB looked like).
+    conn.execute(
+        "CREATE TABLE user_config (
+            id INTEGER PRIMARY KEY CHECK (id = 1) NOT NULL,
+            vault_path TEXT,
+            cache_directory TEXT,
+            last_opened_archive TEXT,
+            temp_dir TEXT,
+            sevenzip_path TEXT,
+            transfer_dir TEXT,
+            backend_mode TEXT DEFAULT 'native' NOT NULL,
+            open_nested_in_new_tab INTEGER DEFAULT 0 NOT NULL
+        )",
+        [],
+    )
+    .expect("create legacy table");
+
+    // Sanity: the column exists before migration.
+    let pre: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('user_config') \
+             WHERE name = 'last_opened_archive'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("pragma pre");
+    assert_eq!(pre, 1, "legacy column should exist before ensure_table");
+
+    UserConfig::ensure_table(&conn).expect("ensure_table on legacy DB");
+
+    let post: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('user_config') \
+             WHERE name = 'last_opened_archive'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("pragma post");
+    assert_eq!(post, 0, "last_opened_archive should be dropped");
+
+    // Idempotency: second call must not error even though the column
+    // is already gone.
+    UserConfig::ensure_table(&conn).expect("ensure_table second call");
 }
 
 #[test]

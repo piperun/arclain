@@ -187,7 +187,6 @@ diesel::table! {
         id -> Integer,
         vault_path -> Nullable<Text>,
         cache_directory -> Nullable<Text>,
-        last_opened_archive -> Nullable<Text>,
         temp_dir -> Nullable<Text>,
         sevenzip_path -> Nullable<Text>,
         transfer_dir -> Nullable<Text>,

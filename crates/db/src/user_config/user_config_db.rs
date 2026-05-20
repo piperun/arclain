@@ -28,16 +28,6 @@ pub struct UserConfig {
     /// Cache directory path
     pub cache_directory: Option<String>,
 
-    /// Last opened archive path
-    ///
-    /// Audit 2026-05-19 found this field has zero readers outside
-    /// this CRUD module — tab persistence (`tabs.json`) covers the
-    /// "remember what was open" responsibility now. Kept here as a
-    /// stable schema field because retiring a SQLite column under
-    /// the flat schema-version model is risky against existing user
-    /// DBs; a proper migration is queued as Tier A follow-up.
-    pub last_opened_archive: Option<String>,
-
     /// Temporary directory for extraction operations
     pub temp_dir: Option<String>,
 
@@ -115,7 +105,6 @@ impl UserConfig {
         id INTEGER PRIMARY KEY CHECK (id = 1) NOT NULL,\n    \
         vault_path TEXT,\n    \
         cache_directory TEXT,\n    \
-        last_opened_archive TEXT,\n    \
         temp_dir TEXT,\n    \
         sevenzip_path TEXT,\n    \
         transfer_dir TEXT,\n    \
@@ -141,7 +130,7 @@ impl UserConfig {
     /// Load the singleton row 1; returns `None` if the table is empty.
     pub fn load(conn: &rusqlite::Connection) -> rusqlite::Result<Option<Self>> {
         let mut stmt = conn.prepare(
-            "SELECT id, vault_path, cache_directory, last_opened_archive, temp_dir, \
+            "SELECT id, vault_path, cache_directory, temp_dir, \
                     sevenzip_path, transfer_dir, backend_mode, open_nested_in_new_tab, \
                     enabled_plugins, plugin_order, plugin_visibility, plugin_settings, \
                     toolbar_order, info_panel_order, socks5_address, socks5_enabled, \
@@ -156,27 +145,26 @@ impl UserConfig {
                 id: row.get(0)?,
                 vault_path: row.get(1).ok(),
                 cache_directory: row.get(2).ok(),
-                last_opened_archive: row.get(3).ok(),
-                temp_dir: row.get(4).ok(),
-                sevenzip_path: row.get(5).ok(),
-                transfer_dir: row.get(6).ok(),
-                backend_mode: row.get(7)?,
-                open_nested_in_new_tab: row.get(8)?,
-                enabled_plugins: row.get(9).ok(),
-                plugin_order: row.get(10).ok(),
-                plugin_visibility: row.get(11).ok(),
-                plugin_settings: row.get(12).ok(),
-                toolbar_order: row.get(13).ok(),
-                info_panel_order: row.get(14).ok(),
-                socks5_address: row.get(15).ok(),
-                socks5_enabled: row.get(16)?,
-                socks5_username: row.get(17).ok(),
-                plugin_proxy_settings: row.get(18).ok(),
-                hotkey_bindings: row.get(19).ok(),
-                gameta_server_enabled: row.get(20)?,
-                gameta_server_url: row.get(21).ok(),
-                drop_behavior: row.get(22).ok(),
-                restore_tabs_on_launch: row.get(23).unwrap_or(true),
+                temp_dir: row.get(3).ok(),
+                sevenzip_path: row.get(4).ok(),
+                transfer_dir: row.get(5).ok(),
+                backend_mode: row.get(6)?,
+                open_nested_in_new_tab: row.get(7)?,
+                enabled_plugins: row.get(8).ok(),
+                plugin_order: row.get(9).ok(),
+                plugin_visibility: row.get(10).ok(),
+                plugin_settings: row.get(11).ok(),
+                toolbar_order: row.get(12).ok(),
+                info_panel_order: row.get(13).ok(),
+                socks5_address: row.get(14).ok(),
+                socks5_enabled: row.get(15)?,
+                socks5_username: row.get(16).ok(),
+                plugin_proxy_settings: row.get(17).ok(),
+                hotkey_bindings: row.get(18).ok(),
+                gameta_server_enabled: row.get(19)?,
+                gameta_server_url: row.get(20).ok(),
+                drop_behavior: row.get(21).ok(),
+                restore_tabs_on_launch: row.get(22).unwrap_or(true),
             }))
         } else {
             Ok(None)
@@ -186,27 +174,26 @@ impl UserConfig {
     /// Upsert the singleton row 1.
     pub fn save(&self, conn: &rusqlite::Connection) -> rusqlite::Result<()> {
         conn.execute(
-            "INSERT INTO user_config (id, vault_path, cache_directory, last_opened_archive, \
+            "INSERT INTO user_config (id, vault_path, cache_directory, \
                 temp_dir, sevenzip_path, transfer_dir, backend_mode, open_nested_in_new_tab, \
                 enabled_plugins, plugin_order, plugin_visibility, plugin_settings, toolbar_order, \
                 info_panel_order, socks5_address, socks5_enabled, socks5_username, \
                 plugin_proxy_settings, hotkey_bindings, gameta_server_enabled, gameta_server_url, \
                 drop_behavior, restore_tabs_on_launch) \
              VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
-                ?17, ?18, ?19, ?20, ?21, ?22, ?23) \
+                ?17, ?18, ?19, ?20, ?21, ?22) \
              ON CONFLICT(id) DO UPDATE SET \
-                vault_path = ?1, cache_directory = ?2, last_opened_archive = ?3, temp_dir = ?4, \
-                sevenzip_path = ?5, transfer_dir = ?6, backend_mode = ?7, \
-                open_nested_in_new_tab = ?8, enabled_plugins = ?9, plugin_order = ?10, \
-                plugin_visibility = ?11, plugin_settings = ?12, toolbar_order = ?13, \
-                info_panel_order = ?14, socks5_address = ?15, socks5_enabled = ?16, \
-                socks5_username = ?17, plugin_proxy_settings = ?18, hotkey_bindings = ?19, \
-                gameta_server_enabled = ?20, gameta_server_url = ?21, drop_behavior = ?22, \
-                restore_tabs_on_launch = ?23",
+                vault_path = ?1, cache_directory = ?2, temp_dir = ?3, \
+                sevenzip_path = ?4, transfer_dir = ?5, backend_mode = ?6, \
+                open_nested_in_new_tab = ?7, enabled_plugins = ?8, plugin_order = ?9, \
+                plugin_visibility = ?10, plugin_settings = ?11, toolbar_order = ?12, \
+                info_panel_order = ?13, socks5_address = ?14, socks5_enabled = ?15, \
+                socks5_username = ?16, plugin_proxy_settings = ?17, hotkey_bindings = ?18, \
+                gameta_server_enabled = ?19, gameta_server_url = ?20, drop_behavior = ?21, \
+                restore_tabs_on_launch = ?22",
             rusqlite::params![
                 self.vault_path,
                 self.cache_directory,
-                self.last_opened_archive,
                 self.temp_dir,
                 self.sevenzip_path,
                 self.transfer_dir,
@@ -245,7 +232,6 @@ impl UserConfig {
         for alter in [
             "ALTER TABLE user_config ADD COLUMN vault_path TEXT",
             "ALTER TABLE user_config ADD COLUMN cache_directory TEXT",
-            "ALTER TABLE user_config ADD COLUMN last_opened_archive TEXT",
             "ALTER TABLE user_config ADD COLUMN temp_dir TEXT",
             "ALTER TABLE user_config ADD COLUMN sevenzip_path TEXT",
             "ALTER TABLE user_config ADD COLUMN transfer_dir TEXT",
@@ -268,6 +254,23 @@ impl UserConfig {
             "ALTER TABLE user_config ADD COLUMN restore_tabs_on_launch INTEGER DEFAULT 1 NOT NULL",
         ] {
             let _ = conn.execute(alter, []);
+        }
+
+        // Audit 2026-05-19 retirement: tab persistence (tabs.json) now
+        // covers "remember what was last open", so the orphaned
+        // `last_opened_archive` column is dropped. Existing user DBs
+        // get the column removed on next startup; idempotent because
+        // PRAGMA table_info is checked before the DROP fires.
+        let column_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('user_config') \
+                 WHERE name = 'last_opened_archive'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        if column_exists > 0 {
+            let _ = conn.execute("ALTER TABLE user_config DROP COLUMN last_opened_archive", []);
         }
 
         Ok(())
@@ -461,7 +464,6 @@ impl UserConfig {
                 id,
                 vault_path,
                 cache_directory,
-                last_opened_archive,
                 temp_dir,
                 sevenzip_path,
                 transfer_dir,
@@ -485,7 +487,6 @@ impl UserConfig {
             ))
             .first::<(
                 i32,
-                Option<String>,
                 Option<String>,
                 Option<String>,
                 Option<String>,
@@ -515,27 +516,26 @@ impl UserConfig {
                 id: tuple.0,
                 vault_path: tuple.1,
                 cache_directory: tuple.2,
-                last_opened_archive: tuple.3,
-                temp_dir: tuple.4,
-                sevenzip_path: tuple.5,
-                transfer_dir: tuple.6,
-                backend_mode: tuple.7,
-                open_nested_in_new_tab: tuple.8,
-                enabled_plugins: tuple.9,
-                plugin_order: tuple.10,
-                plugin_visibility: tuple.11,
-                plugin_settings: tuple.12,
-                toolbar_order: tuple.13,
-                info_panel_order: tuple.14,
-                socks5_address: tuple.15,
-                socks5_enabled: tuple.16,
-                socks5_username: tuple.17,
-                plugin_proxy_settings: tuple.18,
-                hotkey_bindings: tuple.19,
-                gameta_server_enabled: tuple.20,
-                gameta_server_url: tuple.21,
-                drop_behavior: tuple.22,
-                restore_tabs_on_launch: tuple.23,
+                temp_dir: tuple.3,
+                sevenzip_path: tuple.4,
+                transfer_dir: tuple.5,
+                backend_mode: tuple.6,
+                open_nested_in_new_tab: tuple.7,
+                enabled_plugins: tuple.8,
+                plugin_order: tuple.9,
+                plugin_visibility: tuple.10,
+                plugin_settings: tuple.11,
+                toolbar_order: tuple.12,
+                info_panel_order: tuple.13,
+                socks5_address: tuple.14,
+                socks5_enabled: tuple.15,
+                socks5_username: tuple.16,
+                plugin_proxy_settings: tuple.17,
+                hotkey_bindings: tuple.18,
+                gameta_server_enabled: tuple.19,
+                gameta_server_url: tuple.20,
+                drop_behavior: tuple.21,
+                restore_tabs_on_launch: tuple.22,
             }),
             Err(diesel::result::Error::NotFound) => {
                 // If not found, create default and insert it manually (providing all non-nullable fields)
@@ -561,7 +561,7 @@ impl UserConfig {
     pub fn save_diesel(&self, conn: &mut diesel::SqliteConnection) -> Result<()> {
         let sql = r#"
             INSERT INTO user_config (
-                id, vault_path, cache_directory, last_opened_archive, temp_dir,
+                id, vault_path, cache_directory, temp_dir,
                 sevenzip_path, transfer_dir, backend_mode, open_nested_in_new_tab,
                 enabled_plugins, plugin_order, plugin_visibility, plugin_settings,
                 toolbar_order, info_panel_order, socks5_address, socks5_enabled,
@@ -569,13 +569,12 @@ impl UserConfig {
                 gameta_server_enabled, gameta_server_url, drop_behavior,
                 restore_tabs_on_launch, created_at, modified_at
             ) VALUES (
-                1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                ?19, ?20, ?21, ?22, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             ON CONFLICT(id) DO UPDATE SET
                 vault_path = excluded.vault_path,
                 cache_directory = excluded.cache_directory,
-                last_opened_archive = excluded.last_opened_archive,
                 temp_dir = excluded.temp_dir,
                 sevenzip_path = excluded.sevenzip_path,
                 transfer_dir = excluded.transfer_dir,
@@ -602,9 +601,6 @@ impl UserConfig {
         diesel::sql_query(sql)
             .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.vault_path)
             .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.cache_directory)
-            .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(
-                &self.last_opened_archive,
-            )
             .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.temp_dir)
             .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.sevenzip_path)
             .bind::<diesel::sql_types::Nullable<diesel::sql_types::Text>, _>(&self.transfer_dir)

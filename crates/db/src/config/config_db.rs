@@ -31,7 +31,6 @@ impl ConfigDb {
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 vault_path TEXT,
                 cache_directory TEXT,
-                last_opened_archive TEXT,
                 temp_dir TEXT,
                 sevenzip_path TEXT,
                 transfer_dir TEXT,
