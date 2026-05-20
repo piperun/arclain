@@ -5,6 +5,7 @@ use gameta_database::DieselBackend;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct LibraryService {
     backend: DieselBackend,
@@ -16,6 +17,14 @@ pub struct LibraryService {
     /// pulls the WASM-side `cached_entries` memo out of the plugin so
     /// per-tab instances would all see consistent data.
     list_cache: RwLock<HashMap<MetadataSource, Vec<String>>>,
+    /// Epoch counter guarding the slow path against an invalidation race.
+    /// Per audit R2: `list_by_source` releases the read guard before
+    /// querying SQLite; a concurrent `save_metadata` + `invalidate_list_cache`
+    /// could clear the cache between the read miss and the write-insert,
+    /// causing the original caller to insert stale data the writer had
+    /// just removed. We snapshot the epoch at the read miss and only
+    /// commit the cache write if the epoch still matches.
+    cache_epoch: AtomicU64,
 }
 
 impl LibraryService {
@@ -55,6 +64,7 @@ impl LibraryService {
         Ok(Self {
             backend,
             list_cache: RwLock::new(HashMap::new()),
+            cache_epoch: AtomicU64::new(0),
         })
     }
 
@@ -62,8 +72,12 @@ impl LibraryService {
     /// path so the next `list_by_source` query rebuilds from SQLite.
     /// Public so external callers that bypass `save_metadata` (rare)
     /// can flag a stale view; internal write paths call it automatically.
+    ///
+    /// Bumps `cache_epoch` so any in-flight slow-path read in `list_by_source`
+    /// will see the epoch change and skip its stale cache insert.
     pub fn invalidate_list_cache(&self) {
         self.list_cache.write().clear();
+        self.cache_epoch.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Save metadata with quality guards:
@@ -153,18 +167,30 @@ impl LibraryService {
         // Fast path: cached result. The dlsite-metadata plugin polls
         // this every frame while the DLsite browser is open; without
         // the cache we'd hit SQLite at 60 Hz for hundreds of rows.
-        {
+        let read_epoch = {
             let cache = self.list_cache.read();
             if let Some(cached) = cache.get(&source) {
                 return Ok(cached.clone());
             }
-        }
+            // Snapshot the epoch under the read guard so we can detect
+            // any concurrent invalidation that lands while we query SQLite.
+            self.cache_epoch.load(Ordering::SeqCst)
+        };
         // Slow path: rebuild from SQLite and populate the cache.
         let fresh = self
             .backend
             .sync_list_ids_by_source(source)
             .map_err(|e| anyhow::anyhow!("{}", e))?;
-        self.list_cache.write().insert(source, fresh.clone());
+
+        // R2 guard: only commit the insert if no invalidation happened
+        // between our read miss and now. If the epoch advanced, a writer
+        // already cleared the cache (because their save landed), and our
+        // `fresh` may have been read *before* their save — inserting it
+        // here would re-pollute the cache with stale data.
+        let mut cache = self.list_cache.write();
+        if self.cache_epoch.load(Ordering::SeqCst) == read_epoch {
+            cache.insert(source, fresh.clone());
+        }
         Ok(fresh)
     }
 
@@ -622,6 +648,113 @@ mod tests {
         // matches the underlying state.
         let after = svc.list_by_source(MetadataSource::DLSite).unwrap();
         assert_eq!(after.len(), 1);
+    }
+
+    /// Regression test for R2: `list_by_source`'s slow path used to be
+    /// vulnerable to a TOCTOU race against `invalidate_list_cache`.
+    ///
+    /// Sequence (pre-fix):
+    ///   T1: list_by_source — read miss → drop read guard
+    ///   T2: save_metadata — sync_save → invalidate (clears map)
+    ///   T1: query SQLite → write-insert (stale: doesn't include T2's row)
+    ///
+    /// Post-fix the epoch counter advances on T2's invalidate; T1
+    /// observes the bump and skips the insert.
+    ///
+    /// We can't easily inject latency into the diesel call, so this
+    /// test exercises the API directly: snapshot the epoch, simulate
+    /// a concurrent save by calling invalidate, then attempt the
+    /// write — it should be a no-op.
+    #[test]
+    fn r2_list_by_source_epoch_guard_skips_stale_insert() {
+        use std::sync::atomic::Ordering;
+        let (_dir, svc) = temp_service();
+        svc.save_metadata(&make_meta("RJ100")).unwrap();
+        // Warm + drop cache to put us in a known empty state.
+        let _ = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        svc.invalidate_list_cache();
+
+        // Simulate the slow path race manually: pretend we just did
+        // the read miss and grabbed the epoch.
+        let snap = svc.cache_epoch.load(Ordering::SeqCst);
+        let stale = vec!["dlsite:RJ100".to_string()];
+
+        // A concurrent writer lands now: save + invalidate.
+        svc.save_metadata(&make_meta("RJ200")).unwrap();
+        // invalidate_list_cache ran inside save_metadata; epoch advanced.
+        assert_ne!(snap, svc.cache_epoch.load(Ordering::SeqCst));
+
+        // Now the racing reader tries to commit its stale view.
+        // The guard inside list_by_source's write block compares
+        // snap vs current epoch; mismatch ⇒ skip insert. We replay
+        // that check here:
+        {
+            let mut cache = svc.list_cache.write();
+            if svc.cache_epoch.load(Ordering::SeqCst) == snap {
+                cache.insert(MetadataSource::DLSite, stale.clone());
+            }
+        }
+
+        // The cache must NOT contain the stale single-element vec —
+        // it should be empty (post-invalidate) so the next reader
+        // rebuilds fresh.
+        let cache_state = svc.list_cache.read();
+        assert!(
+            cache_state.get(&MetadataSource::DLSite).is_none(),
+            "epoch guard must reject stale insert; got {:?}",
+            cache_state.get(&MetadataSource::DLSite),
+        );
+        drop(cache_state);
+
+        // And the next list call rebuilds with BOTH rows, not just the stale one.
+        let fresh = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(fresh.len(), 2, "next list_by_source must include the concurrent save");
+    }
+
+    /// Companion test: under a real thread interleaving (no manual
+    /// epoch ops), repeated concurrent saves + list calls never
+    /// corrupt the cache. We can't deterministically force the race,
+    /// but if the guard is wrong we'll occasionally see fewer rows
+    /// than expected on subsequent reads.
+    #[test]
+    fn r2_list_by_source_concurrent_save_no_stale_cache() {
+        use std::sync::Arc;
+        use std::thread;
+        let (_dir, svc) = temp_service();
+        let svc = Arc::new(svc);
+        svc.save_metadata(&make_meta("RJ001")).unwrap();
+
+        // Producer thread fires saves with a tiny stagger.
+        let svc_w = svc.clone();
+        let writer = thread::spawn(move || {
+            for i in 100..120 {
+                svc_w
+                    .save_metadata(&make_meta(&format!("RJ{}", i)))
+                    .unwrap();
+                thread::sleep(std::time::Duration::from_micros(50));
+            }
+        });
+
+        // Reader thread fires list calls in parallel.
+        let svc_r = svc.clone();
+        let reader = thread::spawn(move || {
+            for _ in 0..50 {
+                let _ = svc_r.list_by_source(MetadataSource::DLSite).unwrap();
+                thread::sleep(std::time::Duration::from_micros(50));
+            }
+        });
+
+        writer.join().unwrap();
+        reader.join().unwrap();
+
+        // Final list must reflect ALL 21 saves (1 + 20).
+        let final_list = svc.list_by_source(MetadataSource::DLSite).unwrap();
+        assert_eq!(
+            final_list.len(),
+            21,
+            "after concurrent saves, list_by_source must see every row, got {}",
+            final_list.len(),
+        );
     }
 
     /// Skipped saves (geo-block guard, completeness guard) don't
