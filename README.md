@@ -1,10 +1,43 @@
-# Arclain
+<pre>
+                                    ·
+                       ▒▓▓██████████▓▓▒
+                    ▓██░               ░██▓
+                  ▓█░    ▒░░░░░░░░░▒    ░█▓
+                 █░     █░  ░░░░░  ░█     ░█
+                █     ▒█  ░░ ◉ ░░  █▒     █
+                 █░    ░█░  ░░░  ░█░    ░█
+                  ▓█░    ▒░░░░░░░░░▒    ░█▓
+                    ▓██░               ░██▓
+                       ▒▓▓███░█   █░███▓▓▒
 
-Desktop app for managing game archives — inspection, batch conversion,
-pipeline-based flatten/organize/convert operations, and metadata enrichment
-via WASM plugins.
 
-Built in Rust with egui/eframe, runs on Windows / Linux / macOS.
+
+               A   R   C   L   A   I   N
+
+          [ 繋がっていたもの ]    ·    what was once connected
+</pre>
+
+File archive manager with game-mod archive support, primarily targeting
+the [Fluffy](https://www.fluffyquack.com/) mod manager layout.
+
+Uses the `7z` and `unrar` command-line executables for most operations.
+Native Rust backends for both formats exist, but the CLI paths handle
+most real-world work.
+
+Mainly used for:
+
+- Format conversion
+- Batch operations
+- Flatten / standardize archives via pre-defined rules
+
+Comes with a **DLSite metadata plugin**.
+
+Built in Rust with egui/eframe. Runs on Windows / Linux / macOS.
+
+> [!WARNING]
+> Only tested on Windows.
+> Requires `7z` and `unrar` executables on `PATH`.
+
 
 ## Quick start
 
@@ -38,32 +71,16 @@ See [`scripts/release.py --help`](scripts/release.py) for all subcommands
 | `crates/checksum` | CRC32/Blake3 helpers |
 | `plugins/*` | WASM plugins (dlsite-metadata, gstreamer-preview, …) |
 
-## Documentation
-
-### Active / shipping
-
-- [`docs/ARCZIP_FORMAT.md`](docs/ARCZIP_FORMAT.md) —
-  **ARCZIP** archive format: standard ZIP with zstd compression and an
-  appended PAR2 recovery tail. Opens in any zip tool; arclain surfaces
-  verify/repair. This is the format arclain emits when "pack with recovery"
-  is selected.
-- [`plugins/README.md`](plugins/README.md) — plugin architecture and
-  authoring guide.
-
-### Deferred / research
-
-- [`docs/future/care/`](docs/future/care/) — **CARE**, an ambitious
-  next-gen archive format. Not on the roadmap; see the folder's README for
-  why, and why ARCZIP ships instead.
-
-> Other markdown under `docs/` is local-only scratchpad (per `.gitignore`).
 
 ## Conventions
 
 - Conventional commits with package scopes (`feat(ui):`, `fix(core):`, …).
-- Monorepo versioning via cocogitto — `cog bump --auto` bumps per-package.
+- Monorepo versioning via cocogitto 7 — workspace crates share a single
+  unified version, bumped with `cog bump --auto` (or `--minor` / `--patch`).
+  The `dlsite-metadata` plugin ships out-of-band and bumps independently
+  via `cog bump --package dlsite-metadata`.
 - Rust edition 2021, stable toolchain.
 
 ## License
 
-(See `LICENSE` if present.)
+GPL-3.0-or-later. See [`LICENSE`](LICENSE) for the full text.
