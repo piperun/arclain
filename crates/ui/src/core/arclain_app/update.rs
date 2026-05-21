@@ -628,4 +628,10 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
 
     // Render toast notifications (always on top) & Plugin Dialog & Logs
     crate::core::arclain_app::dialog_handler::render_overlays(app, ctx);
+
+    // Debug HUD — frame-time + FPS, plus egui's built-in debug_on_hover.
+    // No-op when EGUI_UI_DEBUG_GUIDELINES isn't set. Painted last so it
+    // sits on top of every panel including the overlays above.
+    #[cfg(debug_assertions)]
+    arclain_widgets::paint_global_debug_hud(ctx);
 }

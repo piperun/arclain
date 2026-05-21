@@ -67,6 +67,53 @@ pub fn ui_debug_guidelines_enabled() -> bool {
     })
 }
 
+/// Paint a small frame-time / FPS HUD in the top-right corner and
+/// enable egui's built-in `debug_on_hover` (hovering any widget shows
+/// its layout rect in egui's own overlay, complementary to the
+/// per-widget guidelines this crate paints). Both effects gated by
+/// the same `EGUI_UI_DEBUG_GUIDELINES` env var.
+///
+/// Call once per frame from the top-level app update loop, **after**
+/// the main UI render so the HUD sits on top. Cheap when the env var
+/// is unset (single atomic load, early return).
+pub fn paint_global_debug_hud(ctx: &egui::Context) {
+    if !ui_debug_guidelines_enabled() {
+        return;
+    }
+
+    // egui's own debug-on-hover. Re-set every frame is fine — it's a
+    // single style-field write, and lets the env var stay the single
+    // source of truth even if other code later toggles the flag.
+    ctx.style_mut(|style| {
+        style.debug.debug_on_hover = true;
+    });
+
+    let dt = ctx.input(|i| i.unstable_dt);
+    let frame_ms = dt * 1000.0;
+    let fps = if dt > 0.0 { 1.0 / dt } else { 0.0 };
+    let text = format!("{:>5.1} ms · {:>3.0} fps", frame_ms, fps);
+
+    egui::Area::new(egui::Id::new("arclain_debug_hud"))
+        .anchor(Align2::RIGHT_TOP, Vec2::new(-8.0, 8.0))
+        .order(egui::Order::Foreground)
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(Color32::from_black_alpha(200))
+                .stroke(Stroke::new(1.0, Color32::from_rgb(80, 200, 80)))
+                .inner_margin(egui::Margin::symmetric(8, 4))
+                .corner_radius(egui::CornerRadius::same(4))
+                .show(ui, |ui| {
+                    ui.label(
+                        egui::RichText::new(text)
+                            .size(11.0)
+                            .color(Color32::from_rgb(120, 255, 160))
+                            .monospace(),
+                    );
+                });
+        });
+}
+
 /// Color palette used by every debug helper. Pick one role per
 /// channel so a screenshot is unambiguous regardless of which
 /// helper produced it.

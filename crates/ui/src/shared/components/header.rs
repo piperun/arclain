@@ -48,15 +48,10 @@ pub fn render(
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(4.0, 0.0);
 
-                if arclain_widgets::IconButton::new(egui_phosphor::regular::HOUSE)
-                    .with_theme_colors(&theme.colors)
-                    .variant(ButtonVariant::Ghost)
-                    .ui(ui)
-                    .on_hover_text("Home")
-                    .clicked()
-                {
-                    actions.navigate_home = true;
-                }
+                // Back first, then Home — follows the universal
+                // convention (browser nav, iOS/Android nav stack,
+                // every desktop app with a back+home pair). Arrow
+                // anchors the left edge; home sits just to its right.
                 if arclain_widgets::IconButton::new(egui_phosphor::regular::ARROW_LEFT)
                     .with_theme_colors(&theme.colors)
                     .variant(ButtonVariant::Ghost)
@@ -66,6 +61,15 @@ pub fn render(
                     .clicked()
                 {
                     actions.navigate_back = true;
+                }
+                if arclain_widgets::IconButton::new(egui_phosphor::regular::HOUSE)
+                    .with_theme_colors(&theme.colors)
+                    .variant(ButtonVariant::Ghost)
+                    .ui(ui)
+                    .on_hover_text("Home")
+                    .clicked()
+                {
+                    actions.navigate_home = true;
                 }
             });
         });
