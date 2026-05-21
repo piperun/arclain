@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "arclain-network"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "parking_lot",
  "reqwest",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_checksum"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_core"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_data"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_db"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_plugins"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "arclain-network",
@@ -454,7 +454,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_signals"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "egui",
  "parking_lot",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_theme"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "egui",
  "egui-phosphor",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_ui"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "arclain_widgets"
-version = "2.0.0"
+version = "2.1.0"
 dependencies = [
  "arclain_theme",
  "eframe",
