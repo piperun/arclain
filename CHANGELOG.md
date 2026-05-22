@@ -2,6 +2,18 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.2.4 - 2026-05-22
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Features
+- (**widgets**) debug overlays for TextButton + ToggleSwitch - (5631dad) - 0xdev
+#### Bug Fixes
+- (**ci**) use branch name for publish-release target_commitish - (fd9c10f) - 0xdev
+- (**ci**) serialize wasm-plugins after cargo-check/cargo-test - (6a9aba6) - 0xdev
+
+- - -
+
 ## 2.2.3 - 2026-05-22
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
