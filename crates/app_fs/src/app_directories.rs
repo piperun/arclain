@@ -1,9 +1,30 @@
+//! Cross-platform app directory layout — config/cache/data/secrets/
+//! plugins/logs/temp paths, plus the side-effect of creating them at
+//! startup with owner-only (0o700 on Unix) permissions.
+//!
+//! Wraps the [`dirs`] crate for path discovery (XDG on Linux,
+//! `%APPDATA%` / `%LOCALAPPDATA%` on Windows, `~/Library/...` on
+//! macOS) and pairs it with [`ensure_owner_dir`] from this crate so
+//! every directory arclain creates for user data is owner-only by
+//! default — not just the secrets dir.
+//!
+//! This is a behavior tightening from the pre-migration version,
+//! which only chmod'd `secrets_dir` and left `cache_dir`,
+//! `plugins_dir`, `logs_dir`, etc. on whatever the umask gave us
+//! (typically `0o755`). The other dirs hold the same kind of
+//! per-user state (cached metadata, plugin binaries, log paths
+//! that may include filenames) and deserve the same treatment.
+//!
+//! [`ensure_owner_dir`]: super::ensure_owner_dir
+
 use anyhow::{Context, Result};
-use std::fs;
 use std::path::PathBuf;
 
-/// Centralized directory management for the application.
-/// Ensures all infrastructure directories exist at startup.
+use crate::ensure_owner_dir;
+
+/// All on-disk directories arclain creates at startup. The struct
+/// itself is just paths; construction via [`AppDirectories::init`]
+/// is where the side-effect of `mkdir` + `chmod` happens.
 #[derive(Debug, Clone)]
 pub struct AppDirectories {
     pub config_dir: PathBuf,
@@ -15,7 +36,10 @@ pub struct AppDirectories {
     pub temp_dir: PathBuf,
 }
 
-/// Optional overrides for base paths (useful for testing or portable mode)
+/// Optional overrides for the three base directories that
+/// [`AppDirectories::init`] otherwise derives from the OS. Useful for
+/// portable-mode installs (point everything at a single relocatable
+/// folder) and for tests that need to redirect into a temp dir.
 #[derive(Debug, Clone, Default)]
 pub struct PathOverrides {
     pub config_home: Option<PathBuf>,
@@ -24,18 +48,19 @@ pub struct PathOverrides {
 }
 
 impl AppDirectories {
-    /// Initialize application directories.
+    /// Resolve OS-conventional paths under `app_name`, create them
+    /// (with `0o700` on Unix), and return the populated struct.
     ///
-    /// This function:
-    /// 1. Calculates standard paths based on OS conventions (or overrides).
-    /// 2. creating the directories if they don't exist.
-    /// 3. Returns the paths struct.
-    ///
-    /// This should be called ONCE at application startup.
+    /// Call once at startup. Idempotent — re-running on an existing
+    /// install is a no-op apart from re-asserting the permission
+    /// bits.
     pub fn init(app_name: &str, overrides: Option<PathOverrides>) -> Result<Self> {
         let overrides = overrides.unwrap_or_default();
 
-        // 1. Calculate Base Paths
+        // 1. Calculate base paths. Fall back to `.` if the OS can't
+        //    provide a home — better to put data in the cwd than
+        //    crash, callers can override if they need different
+        //    behavior.
         let config_home = overrides
             .config_home
             .or_else(dirs::config_dir)
@@ -49,33 +74,13 @@ impl AppDirectories {
             .or_else(dirs::data_dir)
             .unwrap_or_else(|| PathBuf::from("."));
 
-        // 2. Derive Application Paths
-        // Windows: %APPDATA%/app_name/
-        // Linux: ~/.config/app_name/
+        // 2. Derive app-specific paths.
         let config_dir = config_home.join(app_name);
         let databases_dir = config_dir.join("databases");
-
-        // Windows: %LOCALAPPDATA%/app_name/cache/ (or similar, depends on dirs crate)
-        // Linux: ~/.cache/app_name/
         let cache_dir = cache_home.join(app_name);
-
-        // Secrets: %APPDATA%/app_name/secrets/
         let secrets_dir = config_dir.join("secrets");
-
-        // Plugins: %APPDATA%/app_name/plugins/
         let plugins_dir = config_dir.join("plugins");
-
-        // Logs: %APPDATA%/app_name/logs/ (or use data dir on linux?)
-        // For simplicity and ease of access, standardizing on config/logs or data/logs.
-        // Let's use config/logs for now as it's easier for users to find on Windows,
-        // or data_home if we want to be strict XDG.
-        // Let's stick to config_dir/logs to match previous behavior if any, or separate if clean.
-        // Actually, let's use data_home/app_name/logs to be cleaner?
-        // User asked for "root" creation. Let's put logs in data_dir to keep config clean?
-        // Let's check where logs are currently... `logging.rs` uses `dirs::data_local_dir()`.
         let logs_dir = data_home.join(app_name).join("logs");
-
-        // Temp: System temp / app_name
         let temp_dir = std::env::temp_dir().join(app_name);
 
         let dirs = Self {
@@ -88,7 +93,7 @@ impl AppDirectories {
             temp_dir,
         };
 
-        // 3. Create Directories (The centralized side-effect)
+        // 3. Create + chmod each path.
         let paths_to_create = [
             (&dirs.config_dir, "config"),
             (&dirs.databases_dir, "databases"),
@@ -117,29 +122,17 @@ impl AppDirectories {
                 }
             }
 
-            fs::create_dir_all(path)
-                .with_context(|| format!("creating {} dir: {:?}", label, path))?;
+            ensure_owner_dir(path)
+                .with_context(|| format!("creating {} dir at {:?}", label, path))?;
 
-            // Validation: Ensure it is actually a directory and not a device/file
-            // On Windows, 'CON' exists but is not a directory.
+            // On Windows, names like `CON` resolve to a device, not a
+            // directory — create_dir_all might "succeed" without actually
+            // making a dir. Belt + suspenders.
             if !path.is_dir() {
                 return Err(anyhow::anyhow!(
                     "Path exists but is not a directory (reserved name?): {:?}",
                     path
                 ));
-            }
-        }
-
-        // Secure permissions for secrets on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = fs::Permissions::from_mode(0o700);
-            if let Err(e) = fs::set_permissions(&dirs.secrets_dir, perms) {
-                // Log warning but don't fail hard if not owner (e.g. shared FS)
-                // actually, for secrets, maybe we should fail?
-                // Context("setting permissions")?
-                tracing::warn!("Failed to secure secrets dir permissions: {}", e);
             }
         }
 

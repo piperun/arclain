@@ -62,6 +62,10 @@
 //! single secure default to reach for, rather than reinventing the
 //! pattern (and possibly getting the umask logic wrong).
 
+mod app_directories;
+
+pub use app_directories::{AppDirectories, PathOverrides};
+
 use anyhow::Result;
 use std::path::Path;
 

@@ -113,7 +113,7 @@ impl Services {
         let ui_svc = Arc::new(UiService::new(dbs.config_pool.clone()));
 
         // Use centralized directory logic
-        let app_dirs = crate::dirs::AppDirectories::init("arclain", None)?;
+        let app_dirs = arclain_app_fs::AppDirectories::init("arclain", None)?;
         let cache_dir = app_dirs.cache_dir;
 
         // --- Proxy Configuration ---

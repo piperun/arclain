@@ -307,7 +307,7 @@ pub fn restore_tabs_on_launch(
         return;
     }
 
-    let tabs_path = match arclain_core::dirs::AppDirectories::init("arclain", None) {
+    let tabs_path = match arclain_app_fs::AppDirectories::init("arclain", None) {
         Ok(dirs) => dirs.config_dir.join("tabs.json"),
         Err(e) => {
             tracing::warn!("[tabs] restore: could not resolve config dir: {}", e);
@@ -356,7 +356,7 @@ pub fn restore_tabs_on_launch(
 /// Called from `ArclainApp::on_exit`. Failures are logged as warnings
 /// — a quit-time save failure should not block the shutdown.
 pub fn save_tabs_on_exit(signals: &AppSignals) {
-    let tabs_path = match arclain_core::dirs::AppDirectories::init("arclain", None) {
+    let tabs_path = match arclain_app_fs::AppDirectories::init("arclain", None) {
         Ok(dirs) => dirs.config_dir.join("tabs.json"),
         Err(e) => {
             tracing::warn!("[tabs] on_exit: could not resolve config dir: {}", e);

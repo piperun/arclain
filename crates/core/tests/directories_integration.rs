@@ -1,4 +1,4 @@
-use arclain_core::dirs::{AppDirectories, PathOverrides};
+use arclain_app_fs::{AppDirectories, PathOverrides};
 use std::fs;
 use tempfile::TempDir;
 

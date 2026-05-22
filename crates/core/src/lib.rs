@@ -10,7 +10,6 @@
 pub mod archive;
 pub mod backends;
 pub mod config;
-pub mod dirs;
 pub mod features;
 pub mod services;
 pub mod utilities;

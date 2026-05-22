@@ -24,6 +24,7 @@ arboard = "3"
 egui-phosphor = "0.11.0"
 arclain_widgets = { path = "../widgets" }
 arclain_theme = { path = "../theme" }
+arclain_app_fs = { path = "../app_fs" }
 image = "0.25.9"
 arclain-network = { path = "../network" }
 arclain_signals = { path = "../signals", features = ["egui"] }

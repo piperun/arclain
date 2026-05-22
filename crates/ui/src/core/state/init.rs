@@ -37,7 +37,7 @@ impl AppState {
 
         // Load startup config using ConfigService helper
         // Initialize infrastructure (creates all dirs)
-        let app_dirs = arclain_core::dirs::AppDirectories::init("arclain", None)?;
+        let app_dirs = arclain_app_fs::AppDirectories::init("arclain", None)?;
 
         // Construct DB paths from initialized directories
         let db_paths = DbPaths {

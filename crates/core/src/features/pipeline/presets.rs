@@ -98,7 +98,7 @@ pub fn save_presets(path: &Path, presets: &[SavedPreset]) -> Result<()> {
 
 /// Resolve the default presets path (user config dir).
 pub fn default_presets_path() -> Option<PathBuf> {
-    let dir = crate::dirs::AppDirectories::init("arclain", None).ok()?;
+    let dir = arclain_app_fs::AppDirectories::init("arclain", None).ok()?;
     Some(dir.config_dir.join("pipeline_presets.json"))
 }
 

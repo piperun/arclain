@@ -6,6 +6,8 @@ description = "Filesystem helpers for arclain's on-disk app data — creates dir
 
 [dependencies]
 anyhow.workspace = true
+dirs.workspace = true
+tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

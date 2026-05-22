@@ -329,7 +329,9 @@ name = "arclain_app_fs"
 version = "2.1.0"
 dependencies = [
  "anyhow",
+ "dirs 6.0.0",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -353,6 +355,7 @@ version = "2.1.0"
 dependencies = [
  "anyhow",
  "arclain-network",
+ "arclain_app_fs",
  "arclain_checksum",
  "arclain_data",
  "arclain_db",
@@ -486,6 +489,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "arclain-network",
+ "arclain_app_fs",
  "arclain_core",
  "arclain_plugins",
  "arclain_signals",

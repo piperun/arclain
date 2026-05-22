@@ -28,6 +28,7 @@ arclain_db = { path = "../db" }
 arclain_data = { path = "../data" }
 arclain_checksum = { path = "../checksum" }
 arclain-network = { path = "../network" }
+arclain_app_fs = { path = "../app_fs" }
 
 # External gameta dependencies (https://codeberg.org/0xdev/gameta)
 gameta_core = { path = "../../../../codeberg/gameta/gameta_core" }
