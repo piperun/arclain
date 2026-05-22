@@ -1,0 +1,78 @@
+name: tests
+
+# Fast test feedback on the GitHub side, complementary to codeberg's
+# woodpecker cargo-test step. Uses cargo-nextest for parallel test
+# execution + Swatinem/rust-cache so warm runs skip dep
+# recompilation.
+#
+# Why duplicate codeberg's tests here:
+#  * PR validation — GitHub shows green/red on the PR conversation
+#    directly, easier to glance at than navigating to woodpecker.
+#  * Faster cold compile on github with rust-cache than on
+#    codeberg's uncached runner (~45s cold → ~5-10s warm).
+#  * nextest's process-per-test isolation catches a different class
+#    of test interaction bugs than cargo's threads-per-test
+#    (shared mutable global state, file-system contention, etc).
+#
+# If this ever feels like wasted CI minutes, narrow the trigger to
+# PRs only and let codeberg own the master-push pass.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout arclain
+        uses: actions/checkout@v4
+        with:
+          path: codeberg/arclain
+
+      - name: Clone gameta (path-dep sibling)
+        run: git clone --depth 1 https://codeberg.org/0xdev/gameta.git codeberg/gameta
+
+      - name: Install system dependencies
+        # Matches `.woodpecker.yml` cargo-test step. Needed by
+        # arclain_ui's egui/eframe deps and arclain-network's TLS
+        # stack. pkg-config is the glue cargo's build scripts use to
+        # find them.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -yqq \
+            libgtk-3-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codeberg/arclain
+          cache-on-failure: true
+
+      - name: Install cargo-nextest
+        # taiki-e/install-action is the fast path — downloads a
+        # prebuilt binary from cargo-bins/cargo-binstall releases
+        # rather than `cargo install`ing from source (~2 min saved
+        # on each cold run).
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Run tests via nextest
+        working-directory: codeberg/arclain
+        run: cargo nextest run --workspace --locked
+
+      - name: Run doc-tests
+        # nextest doesn't execute doctests; run them separately with
+        # plain `cargo test --doc` so the suite isn't missing
+        # documented-but-untested code.
+        working-directory: codeberg/arclain
+        run: cargo test --workspace --doc --locked

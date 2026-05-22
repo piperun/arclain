@@ -51,6 +51,19 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo artifacts
+        # Caches ~/.cargo/registry, ~/.cargo/git, and the workspace's
+        # `target/` directory keyed on Cargo.lock + Cargo.toml + rust
+        # toolchain. Warm runs skip dep recompilation entirely;
+        # arclain-specific code still compiles per change. ~30s → ~5s
+        # on the typical PR-update build.
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codeberg/arclain
+          # Save the cache even if the build fails — partial cache
+          # is still useful for the next attempt.
+          cache-on-failure: true
+
       - name: Build arclain_ui (release)
         working-directory: codeberg/arclain
         run: cargo build --release --bin arclain_ui --locked
