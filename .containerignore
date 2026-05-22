@@ -1,0 +1,26 @@
+# Build context exclusions — keeps `podman build` fast by not sending
+# the entire target/ dir (gigabytes of debug objects) to the daemon.
+# Source files are bind-mounted at runtime via compose.yaml, not baked
+# into the image, so the build context only needs the Containerfile.
+
+target/
+debug/
+release/
+logs/
+_attic/
+_real_data/
+
+# Local artifacts
+**/*.wasm
+*.zip
+*.tar.gz
+*.exe
+
+# VCS + IDE
+.git/
+.vscode/
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db

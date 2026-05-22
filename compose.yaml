@@ -1,0 +1,81 @@
+# Arclain dev/CI compose — local reproduction of every woodpecker step
+# with cached cargo registry, cargo git index, and workspace target/.
+#
+# Why named volumes (not bind-mounts) for the caches:
+#   - target/ written from inside the container would otherwise pollute
+#     the host with root-owned files (depending on userns mapping).
+#   - cargo registry is per-image, not project-specific; a named volume
+#     is reused across `arclain` and any other project sharing this
+#     pattern.
+#
+# Why bind-mount the source + sibling gameta dir:
+#   - source: edits happen on the host, we want them visible in the
+#     container without rebuilding the image.
+#   - gameta: arclain's path-deps reach four directories up
+#     (../../../../codeberg/gameta/*), so we recreate exactly the
+#     `<root>/codeberg/{arclain,gameta}/` layout the host has.
+#
+# To wipe caches (e.g. before a clean-build test):
+#   podman compose down -v
+# or selectively:
+#   podman volume rm arclain-target arclain-cargo-registry arclain-cargo-git
+
+x-base: &base
+  image: localhost/arclain-dev
+  build:
+    context: .
+    dockerfile: Containerfile
+  volumes:
+    # Source bind-mounts — match the woodpecker workspace layout:
+    #   /workspace/codeberg/arclain
+    #   /workspace/codeberg/gameta   (sibling, path-dep target)
+    - .:/workspace/codeberg/arclain
+    - ../gameta:/workspace/codeberg/gameta
+    # Persistent caches — survive across `compose run --rm`.
+    - arclain-target:/workspace/codeberg/arclain/target
+    - arclain-cargo-registry:/usr/local/cargo/registry
+    - arclain-cargo-git:/usr/local/cargo/git
+  working_dir: /workspace/codeberg/arclain
+
+services:
+
+  # Interactive shell — `podman compose run --rm dev`
+  dev:
+    <<: *base
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+  # ── CI-step mirrors. Each command is the runner-user invocation from
+  #    .woodpecker.yml. Identical args so output diff = your fix.
+
+  # Mirrors woodpecker `cargo-check` step.
+  check:
+    <<: *base
+    command: cargo check --workspace --locked
+
+  # Mirrors woodpecker `cargo-test` step (--lib + doctests, no GUI ITs).
+  test:
+    <<: *base
+    command: >
+      sh -c "cargo nextest run --workspace --lib --locked &&
+             cargo test --workspace --doc --locked"
+
+  # Mirrors woodpecker `wasm-plugins` step. Note: dlsite-metadata is
+  # excluded from the workspace and built in its own cargo context.
+  plugins:
+    <<: *base
+    command: >
+      sh -c "cd plugins/dlsite-metadata &&
+             cargo build --release --target wasm32-wasip2"
+
+  # Mirrors woodpecker `build-linux-x86_64` step. Skips tests because
+  # the `test` service is the source of truth for those.
+  build-linux:
+    <<: *base
+    command: python3 scripts/release.py release --skip-tests
+
+volumes:
+  arclain-target:
+  arclain-cargo-registry:
+  arclain-cargo-git:
