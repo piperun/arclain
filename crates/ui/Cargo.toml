@@ -29,6 +29,12 @@ arclain-network = { path = "../network" }
 arclain_signals = { path = "../signals", features = ["egui"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
 
+# Rasterize the bundled SVG app icon at startup. Already a transitive
+# dep via egui_extras' all_loaders feature, exposed here as a direct
+# dep so we can call into it from main.rs without going through the
+# image-loader registry. ~30ms one-time render on launch.
+resvg = "0.45"
+
 raw-window-handle = "0.6"
 
 [target.'cfg(target_os = "windows")'.dependencies]
