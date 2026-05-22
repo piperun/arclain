@@ -40,6 +40,7 @@ pub struct IconButton<'a> {
     enabled: bool,
     colors: Option<&'a ThemeColors>,
     variant: ButtonVariant,
+    debug_lines: bool,
 }
 
 impl<'a> IconButton<'a> {
@@ -50,6 +51,7 @@ impl<'a> IconButton<'a> {
             enabled: true,
             colors: None,
             variant: ButtonVariant::Secondary, // Default to Secondary (surface-like) to match previous behavior closer? No, user hated it. But for compat.
+            debug_lines: false,
         }
     }
 
@@ -70,6 +72,15 @@ impl<'a> IconButton<'a> {
 
     pub fn variant(mut self, variant: ButtonVariant) -> Self {
         self.variant = variant;
+        self
+    }
+
+    /// Force the debug overlay on for this button instance. ORs with
+    /// the project-wide `EGUI_UI_DEBUG_GUIDELINES` env toggle, so you
+    /// can pin a single button on for a focused session without
+    /// flooding the screen. Stripped in release builds.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
         self
     }
 }
@@ -103,6 +114,23 @@ impl<'a> Widget for IconButton<'a> {
         .corner_radius(4.0)
         .min_size(egui::vec2(size, size));
 
-        ui.add_enabled(self.enabled, button)
+        let response = ui.add_enabled(self.enabled, button);
+
+        // Debug overlay — outlines the button rect with its dimensions
+        // and a center cross. Useful to verify the size class
+        // (28/32/40 px) actually matches what's painted, and to spot
+        // clipped/oversized buttons in tight headers. ORs the
+        // per-button switch with the project-wide env flag (see
+        // `crate::debug::ui_debug_guidelines_enabled`). Stripped in
+        // release.
+        #[cfg(debug_assertions)]
+        crate::debug::paint_widget_rect_debug(
+            ui.painter(),
+            response.rect,
+            "icon-btn",
+            self.debug_lines || crate::debug::ui_debug_guidelines_enabled(),
+        );
+
+        response
     }
 }
