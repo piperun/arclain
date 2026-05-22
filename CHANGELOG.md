@@ -2,6 +2,50 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.2.0 - 2026-05-22
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Features
+- (**ui**) wired-eye app icon, rasterized from bundled SVG - (e6fce32) - 0xdev
+- (**ui**) back<-home button order + global FPS/frame-time debug HUD - (2aca69d) - 0xdev
+- (**widgets**) debug-rect overlay for IconButton - (af91cfe) - 0xdev
+#### Bug Fixes
+- (**ci**) chown CARGO_HOME/RUSTUP_HOME to runner in windows step - (b7dfa0c) - 0xdev
+- (**ci**) per-platform .sha256 sidecars, drop cross-step depends_on - (c78853e) - 0xdev
+- (**db**) chmod 0700 on secrets dir parent (Unix) - (cc034a9) - 0xdev
+- (**db**) chmod 0600 on ConfigDb + SecretsDb files (Unix) - (2e8ef28) - 0xdev
+- (**plugins**) deflake token_bucket_allows_burst_up_to_capacity - (d7f699e) - 0xdev
+#### Documentation
+- (**app_fs**) tighten the Windows caveat — inheritance is not a DACL - (f9f3469) - 0xdev
+- add GPL-3.0 LICENSE (pulled from codeberg auto-init) - (7f697e8) - 0xdev
+- rewrite README with banner, Fluffy target, GPL-3.0 license - (1f1dbda) - 0xdev
+#### Tests
+- (**core**) add end-to-end mock test for dlsite sync pipeline - (4ba9fff) - 0xdev
+#### Continuous Integration
+- (**github**) windows + experimental flatpak workflows for the mirror - (774b12f) - 0xdev
+- (**woodpecker**) disable Windows cross-compile, mark step manual-only - (226dbc0) - 0xdev
+- (**woodpecker**) run windows build on push too, temporarily - (7638c27) - 0xdev
+- (**woodpecker**) add windows x86_64 build via cargo-xwin - (1a6a48c) - 0xdev
+- (**woodpecker**) drop to runner in cargo-check + wasm-plugins too - (ea67cc5) - 0xdev
+- (**woodpecker**) cd into plugins/dlsite-metadata to build wasm - (c8c3df0) - 0xdev
+- (**woodpecker**) drop to non-root user for cargo-test - (ee3bc42) - 0xdev
+- (**xwin**) pass --xwin-include-debug-libs to pull in extra SDK headers - (3d53fb4) - 0xdev
+- add woodpecker pipeline for codeberg - (1e4559e) - 0xdev
+#### Refactoring
+- (**db**) extract perm helpers into arclain_app_fs crate - (8db40fd) - 0xdev
+- (**plugins**) make TokenBucket testable via Clock trait - (013402a) - 0xdev
+- (**workspace**) bump+centralize thiserror (1→2) and rand (0.8→0.9) - (037b5c9) - 0xdev
+- (**workspace**) centralize common deps via [workspace.dependencies] - (c2e99c7) - 0xdev
+- (**workspace**) collapse versions via [workspace.package] - (617124a) - 0xdev
+- move AppDirectories from arclain_core into arclain_app_fs - (a5f0fbd) - 0xdev
+#### Miscellaneous Chores
+- document clean up - (ed9d48c) - 0xdev
+- refresh Cargo.lock for gameta v0.5.0 - (3554565) - 0xdev
+- update Cargo.lock for gameta 0.4.3 integration - (921344f) - 0xdev
+
+- - -
+
 ## 2.1.0 - 2026-05-21
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.8.7
