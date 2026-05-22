@@ -10,7 +10,6 @@ ui_archive/*
 *.txt
 *.md
 !README.md
-!docs/ARCZIP_FORMAT.md
 # Cog-generated package changelogs — must be tracked so they survive
 # fresh clones and reach the remote. Cog rewrites these on `cog bump`
 # and stages them automatically; see cog.toml for `changelog_path`
@@ -36,6 +35,11 @@ plugin-sdk/*/target/
 # Real test data (contains personal files)
 _real_data/
 !_real_data/test_metadata.example.json
+
+# Local-only scratch: old reference docs moved out of the tracked
+# tree, plus anything else that's "keep on disk for me but don't
+# ship". Treat like _real_data — never committed.
+_attic/
 
 # Framework spikes
 crates/freya-spike/
