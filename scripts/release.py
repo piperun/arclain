@@ -3,16 +3,20 @@
 Arclain dev + release CLI.
 
 Usage:
-    python scripts/release.py release [--skip-version-update] [--skip-tests]
+    python scripts/release.py release [--skip-tests]
     python scripts/release.py debug
     python scripts/release.py plugins
     python scripts/release.py ui [-- <cargo run args>]
     python scripts/release.py clean-plugins
     python scripts/release.py deps [--update | --upgrade [--incompatible]] [--dry-run]
 
-`release` produces an optimized, version-bumped, test-gated zip under
-release/. `debug` skips all that and produces an unoptimized binary +
-plugins under debug/ for fast UI iteration; not meant for distribution.
+`release` produces an optimized, test-gated zip under release/.
+Versioning is NOT done here — run `cog bump --minor` (or similar)
+locally before tagging; this script assumes the version in
+Cargo.toml is already correct for the build.
+
+`debug` skips tests and produces an unoptimized binary + plugins
+under debug/ for fast UI iteration; not meant for distribution.
 """
 
 from __future__ import annotations
@@ -318,7 +322,12 @@ def _package_build(
 
 
 def cmd_release(args: argparse.Namespace) -> None:
-    """Full release workflow: version bump, tests, optimized build, zip."""
+    """Full release workflow: tests, optimized build, zip.
+
+    Versioning happens separately via `cog bump` (run locally before
+    tagging) — this script doesn't touch versions. CI invokes us
+    after the tag is already on the remote.
+    """
     print("=== Arclain Release Build ===")
     print(f"Repository: {REPO_ROOT}")
 
@@ -326,41 +335,20 @@ def cmd_release(args: argparse.Namespace) -> None:
     release_env = {"CARGO_TARGET_DIR": str(target_dir)}
     print(f"Using project target directory: {target_dir}\n")
 
-    if not args.skip_version_update:
-        print("Step 1: Bumping crate versions (cog)...")
-        result = subprocess.run(
-            ["cog", "bump", "--auto", "--skip-untracked"],
-            capture_output=True, text=True, cwd=REPO_ROOT,
-        )
-        if result.returncode != 0:
-            if "No conventional commit found" in (result.stdout + result.stderr):
-                print("  No version bumps needed")
-            else:
-                print(result.stdout)
-                print(result.stderr)
-                print("Error: Version bump failed")
-                sys.exit(1)
-        else:
-            if result.stdout.strip():
-                print(result.stdout.strip())
-            print("  Version bump complete")
-    else:
-        print("Step 1: Skipping version update")
-
     version = get_version_from_cargo()
     print(f"Building version: {version}\n")
 
     if not args.skip_tests:
-        print("Step 2: Running test suite...")
+        print("Step 1: Running test suite...")
         run(
             ["cargo", "test", "--workspace"],
             cwd=REPO_ROOT, env=release_env,
         )
         print("All tests passed!\n")
     else:
-        print("Step 2: Skipping tests\n")
+        print("Step 1: Skipping tests\n")
 
-    print("Step 3: Building optimized binary + plugins...")
+    print("Step 2: Building optimized binary + plugins...")
     _package_build(
         profile="release",
         out_root=REPO_ROOT / "release",
@@ -481,10 +469,6 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
 
     release_parser = sub.add_parser("release", help="Full release workflow")
-    release_parser.add_argument(
-        "-v", "--skip-version-update", action="store_true",
-        help="Skip the cocogitto version bump step",
-    )
     release_parser.add_argument(
         "-t", "--skip-tests", action="store_true",
         help="Skip the test suite (use for hotfixes only)",
