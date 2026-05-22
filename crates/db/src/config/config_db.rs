@@ -4,16 +4,40 @@ use crate::SqliteDb;
 use rusqlite::Connection;
 use std::path::Path;
 
+/// Chmod `path` to `0o600` (owner read+write only) on Unix. No-op on
+/// Windows since NTFS ACLs default to inheriting the user's profile
+/// permissions, which already restricts cross-user access for files
+/// in `%LOCALAPPDATA%`.
+#[allow(unused_variables)]
+fn restrict_to_owner(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use anyhow::Context;
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("chmod 0600 {}", path.display()))?;
+    }
+    Ok(())
+}
+
 /// Configuration database handling user preferences and organization rules
 pub struct ConfigDb {
     db: SqliteDb,
 }
 
 impl ConfigDb {
-    /// Open the configuration database, creating tables if they don't exist
+    /// Open the configuration database, creating tables if they don't exist.
+    ///
+    /// On Unix, the DB file is chmod'd to `0o600` after creation so it can't
+    /// be read by other local users — SQLite respects the process umask
+    /// when creating the file, which on most Linux distros is `0o022`
+    /// (world-readable). The config DB carries plugin proxy settings,
+    /// path overrides, and other user-private state that shouldn't leak
+    /// across accounts on a shared system.
     pub fn open(path: &Path) -> Result<Self> {
         let db = SqliteDb::open(path)?;
         db.init_schema(Self::init_schema)?;
+        restrict_to_owner(path)?;
         Ok(Self { db })
     }
 

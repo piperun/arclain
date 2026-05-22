@@ -77,6 +77,20 @@ impl SecretsDb {
             Ok(())
         })?;
 
+        // Restrict the on-disk DB file to owner-only access. ReDb (like
+        // SQLite) creates the file using the process umask, which on
+        // most Linux distros is permissive (0o022 → 0o644). The secrets
+        // DB holds AES-256-GCM ciphertext of saved passwords; even
+        // though contents are encrypted, leaking the ciphertext to
+        // other local users gives them an offline guess target if the
+        // key file is ever compromised. Belt + suspenders.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("chmod 0600 {}", path.display()))?;
+        }
+
         Ok(Self { db, cipher })
     }
 
