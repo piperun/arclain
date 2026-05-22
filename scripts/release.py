@@ -26,7 +26,6 @@ import hashlib
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -74,14 +73,29 @@ def run_passthrough(
 
 
 def get_version_from_cargo() -> str:
-    """Extract version from crates/ui/Cargo.toml."""
-    cargo_toml = REPO_ROOT / "crates" / "ui" / "Cargo.toml"
+    """Extract `[workspace.package].version` from the root Cargo.toml.
+
+    Reads the unified workspace version, not a per-crate file. After
+    the workspace.package migration, per-crate Cargo.toml files use
+    `version.workspace = true` and contain no explicit version string
+    — naively grepping them now picks up a *dependency*'s version
+    (e.g. egui_extras = { version = "0.33.0", ... }) and ships
+    binaries with completely wrong names. Use tomllib (stdlib since
+    Python 3.11) to walk the structured tree instead.
+    """
+    cargo_toml = REPO_ROOT / "Cargo.toml"
     if not cargo_toml.exists():
         return "0.0.0"
 
-    content = cargo_toml.read_text()
-    match = re.search(r'version\s*=\s*"([^"]+)"', content)
-    return match.group(1) if match else "0.0.0"
+    import tomllib
+    with open(cargo_toml, "rb") as f:
+        data = tomllib.load(f)
+
+    return (
+        data.get("workspace", {})
+        .get("package", {})
+        .get("version", "0.0.0")
+    )
 
 
 def get_platform() -> tuple[str, str]:
