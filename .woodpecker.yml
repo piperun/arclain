@@ -132,18 +132,29 @@ steps:
       # those bits, the asserts fail. cargo-test is the source of
       # truth for test gating; release.py just builds + packages.
       - python3 scripts/release.py release --skip-tests
-      - mkdir -p dist
-      # The release script writes to ./release/. Bundle that whole
-      # directory as the platform tarball.
-      - tar -czf dist/arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz
-          -C release .
-      # Per-platform sidecar checksum. Avoids a shared
-      # `checksums-sha256.txt` that the parallel windows build would
-      # have to depends_on for ordering — that depends_on can't be
-      # honored on push events where build-linux doesn't run, and
-      # woodpecker rejects the whole pipeline graph.
-      - cd dist && sha256sum arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz > arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz.sha256
-      - cat dist/arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz.sha256
+      # Package + checksum in a single multi-line script so the
+      # `cd dist && sha256sum X > X.sha256` redirect resolves in the
+      # same shell that just ran cd. Splitting these into separate
+      # `- ` lines worked locally but consistently failed in
+      # Woodpecker's runner — the `> X.sha256` file just didn't
+      # appear, and the next `cat` couldn't find it. Best guess is
+      # something about how woodpecker invokes each command (fresh
+      # shell? cd-context not carrying?) breaks the cross-line cd.
+      # Keeping it all in one `|` block sidesteps that entirely.
+      - |
+        set -e
+        mkdir -p dist
+        # The release script writes to ./release/. Bundle that
+        # whole directory as the platform tarball.
+        tar -czf dist/arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz -C release .
+        # Per-platform sidecar checksum (rationale: avoid a shared
+        # checksums-sha256.txt that the parallel windows build would
+        # have to depends_on for ordering — that depends_on can't be
+        # honored on push events where build-linux doesn't run, and
+        # woodpecker rejects the whole pipeline graph).
+        cd dist
+        sha256sum arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz > arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz.sha256
+        cat arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz.sha256
     depends_on: [cargo-check, cargo-test, wasm-plugins]
 
   # ── Windows release build (DISABLED — see GitHub Actions mirror) ────
