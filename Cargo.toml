@@ -62,6 +62,12 @@ tokio = { version = "1.48", default-features = false }
 # Text
 regex = "1.12"
 
+# Errors
+thiserror = "2.0"
+
+# Random
+rand = "0.9"
+
 [profile.release]
 opt-level = "z"
 lto = true

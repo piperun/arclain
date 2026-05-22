@@ -22,7 +22,7 @@ fn test_db_paths(temp_dir: &TempDir) -> (PathBuf, PathBuf, PathBuf) {
 fn generate_test_key() -> SecretsKey {
     use rand::RngCore;
     let mut key = vec![0u8; 32];
-    rand::thread_rng().fill_bytes(&mut key);
+    rand::rng().fill_bytes(&mut key);
     SecretsKey(zeroize::Zeroizing::new(key))
 }
 

@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-thiserror = "2.0.17"
+thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 regex.workspace = true
@@ -50,4 +50,4 @@ integration-tests = []
 
 [dev-dependencies]
 tempfile.workspace = true
-rand = "0.9.2"
+rand.workspace = true

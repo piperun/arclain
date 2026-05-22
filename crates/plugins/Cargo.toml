@@ -10,7 +10,7 @@ arclain_data = { path = "../data" }
 wasmtime = { version = "26.0.0", features = ["component-model", "cache"] }
 wasmtime-wasi = "26.0.0"
 anyhow.workspace = true
-thiserror = "2.0"
+thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
