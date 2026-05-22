@@ -10,29 +10,15 @@ branch_whitelist = ["master", "main"]
 generate_mono_repository_global_tag = true
 generate_mono_repository_package_tags = true
 
-# Root-level pre/post hooks run on the global workspace bump. The sed
-# fan-out keeps every arclain crate's Cargo.toml version aligned with
-# the workspace version, then cargo check refreshes Cargo.lock.
+# Root-level pre/post hooks run on the global workspace bump. All 10
+# crates now inherit `version` from `[workspace.package]` in the root
+# Cargo.toml, so a single sed targeting that section bumps every
+# crate at once. The address range `/^\[workspace\.package\]/,/^\[/`
+# scopes the replace between the section header and the next
+# `[section]`, so it can't accidentally rewrite a dependency-section
+# `version = ...` line.
 pre_bump_hooks = [
-    # Scope the version-replace to the [package] section only.
-    # The original `s/^version = ".*"/.../` pattern matched any line
-    # starting with `version = `, which catches dependency-section
-    # entries like `[dependencies.egui]\nversion = "0.33"` and
-    # rewrote them to the workspace version — producing a broken
-    # build because cargo tried to pull a different egui from
-    # crates.io. The `/^\[package\]/,/^\[/` address range scopes
-    # the substitution to lines between `[package]` and the next
-    # `[section]`.
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/core/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/db/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/data/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/plugins/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/ui/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/checksum/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/widgets/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/theme/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/network/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/signals/Cargo.toml",
+    "sed -i '/^\\[workspace\\.package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
     "cargo check --workspace",
 ]
 post_bump_hooks = [
@@ -49,17 +35,7 @@ authors = []
 # Named hook profile for full release validation
 [bump_profiles.release]
 pre_bump_hooks = [
-    # See main pre_bump_hooks above for the address-range rationale.
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/core/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/db/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/data/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/plugins/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/ui/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/checksum/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/widgets/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/theme/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/network/Cargo.toml",
-    "sed -i '/^\\[package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' crates/signals/Cargo.toml",
+    "sed -i '/^\\[workspace\\.package\\]/,/^\\[/ s/^version = \".*\"/version = \"{{version}}\"/' Cargo.toml",
     "cargo test --workspace",
     "cargo check --workspace",
 ]

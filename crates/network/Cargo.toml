@@ -1,7 +1,7 @@
 [package]
 name = "arclain-network"
-version = "2.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 description = "Secure async network client with domain security and rate limiting"
 
 [dependencies]

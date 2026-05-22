@@ -1,7 +1,7 @@
 [package]
 name = "arclain_db"
-version = "2.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [lib]
 name = "arclain_db"

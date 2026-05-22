@@ -23,6 +23,13 @@ exclude = [
 ]
 resolver = "2"
 
+[workspace.package]
+version = "2.1.0"
+edition = "2021"
+authors = ["0xdev"]
+license = "GPL-3.0-or-later"
+repository = "https://codeberg.org/0xdev/Arclain"
+
 [workspace.dependencies]
 anyhow = "1"
 chrono = "0.4"
