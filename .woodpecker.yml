@@ -129,15 +129,26 @@ steps:
       - cat dist/arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz.sha256
     depends_on: [cargo-check, cargo-test, wasm-plugins]
 
-  # ── Windows release build on tag (cross-compiled via cargo-xwin) ────
+  # ── Windows release build (DISABLED — see GitHub Actions mirror) ────
+  #
+  # cargo-xwin cross-compile dies on unrar_sys's unconditional
+  # `#include <PowrProf.h>` — xwin's default SDK pack prunes that
+  # header to keep the download minimal, and `--xwin-include-debug-libs`
+  # didn't bring it back. Rather than chase MSVC SDK pack manifests
+  # forever, Windows builds moved to a GitHub Actions mirror with a
+  # native `windows-latest` runner (real MSVC toolchain, no SDK
+  # gymnastics).
+  #
+  # Step kept here for reference / future re-attempt with a different
+  # approach (e.g. unrar Unix-only + UnrarCli fallback on Windows, or
+  # swapping `unrar` for a pure-Rust RAR crate). `event: manual`
+  # means it only runs if explicitly triggered from the Woodpecker
+  # UI — no automatic firing.
 
   build-windows-x86_64:
     image: rust:1.94
     when:
-      # Temporary: run on every push too so we catch xwin/MSVC-SDK
-      # breakage before tag day. Narrow back to `event: tag` once
-      # we've seen one fully-green Windows build land.
-      - event: [push, tag]
+      - event: manual
     commands:
       # llvm/clang/lld are the cross-compile toolchain cargo-xwin
       # invokes when targeting *-pc-windows-msvc from Linux.
@@ -195,7 +206,10 @@ steps:
       files:
         - dist/arclain-*-linux-x64.tar.gz
         - dist/arclain-*-linux-x64.tar.gz.sha256
-        - dist/arclain-*-windows-x64.exe
-        - dist/arclain-*-windows-x64.exe.sha256
       title: ${CI_COMMIT_TAG}
-    depends_on: [build-linux-x86_64, build-windows-x86_64]
+    # Drop build-windows-x86_64 from depends_on: it's `event: manual`
+    # now, so requiring it here would block publish-release on a step
+    # that won't fire on a tag event. Windows binaries reach the
+    # codeberg release via a GitHub Actions mirror that uploads to
+    # this same release page via the codeberg API.
+    depends_on: [build-linux-x86_64]
