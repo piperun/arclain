@@ -1,24 +1,9 @@
 use crate::diesel_err;
-use anyhow::Result;
 use crate::SqliteDb;
+use anyhow::Result;
+use arclain_app_fs::restrict_owner_file;
 use rusqlite::Connection;
 use std::path::Path;
-
-/// Chmod `path` to `0o600` (owner read+write only) on Unix. No-op on
-/// Windows since NTFS ACLs default to inheriting the user's profile
-/// permissions, which already restricts cross-user access for files
-/// in `%LOCALAPPDATA%`.
-#[allow(unused_variables)]
-fn restrict_to_owner(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use anyhow::Context;
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("chmod 0600 {}", path.display()))?;
-    }
-    Ok(())
-}
 
 /// Configuration database handling user preferences and organization rules
 pub struct ConfigDb {
@@ -37,7 +22,7 @@ impl ConfigDb {
     pub fn open(path: &Path) -> Result<Self> {
         let db = SqliteDb::open(path)?;
         db.init_schema(Self::init_schema)?;
-        restrict_to_owner(path)?;
+        restrict_owner_file(path)?;
         Ok(Self { db })
     }
 

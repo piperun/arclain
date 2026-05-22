@@ -5,12 +5,11 @@
 //! re-export bookkeeping.
 
 use anyhow::{anyhow, Context, Result};
+use arclain_app_fs::{ensure_owner_dir, restrict_owner_file};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use std::fs;
 use std::path::Path;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use zeroize::Zeroizing;
 
 /// Zeroizing in-memory holder for the 32-byte AES encryption key
@@ -37,33 +36,15 @@ impl SecretsKey {
 
     /// Save the key to a file in base64 format with secure permissions
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
-        // Validate path to prevent directory traversal
         validate_path(path)?;
 
-        // Create parent directory if it doesn't exist
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating directory {}", parent.display()))?;
-
-            // Set directory permissions to 700 (user-only) on Unix
-            #[cfg(unix)]
-            {
-                let perms = fs::Permissions::from_mode(0o700);
-                fs::set_permissions(parent, perms)
-                    .with_context(|| format!("setting permissions on {}", parent.display()))?;
-            }
+            ensure_owner_dir(parent)?;
         }
 
         let encoded = B64.encode(&*self.0);
         fs::write(path, encoded).with_context(|| format!("writing key to {}", path.display()))?;
-
-        // Set file permissions to 600 (read/write user only) on Unix
-        #[cfg(unix)]
-        {
-            let perms = fs::Permissions::from_mode(0o600);
-            fs::set_permissions(path, perms)
-                .with_context(|| format!("setting permissions on {}", path.display()))?;
-        }
+        restrict_owner_file(path)?;
 
         Ok(())
     }

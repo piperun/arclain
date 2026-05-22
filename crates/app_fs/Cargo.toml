@@ -1,0 +1,11 @@
+[package]
+name = "arclain_app_fs"
+version.workspace = true
+edition.workspace = true
+description = "Filesystem helpers for arclain's on-disk app data — creates dirs and files with owner-only permissions, so user config and secrets can't leak to other local accounts."
+
+[dependencies]
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

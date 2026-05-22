@@ -9,6 +9,7 @@ path = "src/lib.rs"
 
 [dependencies]
 anyhow.workspace = true
+arclain_app_fs = { path = "../app_fs" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 diesel.workspace = true
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }

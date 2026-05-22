@@ -325,6 +325,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arclain_app_fs"
+version = "2.1.0"
+dependencies = [
+ "anyhow",
+ "tempfile",
+]
+
+[[package]]
 name = "arclain_checksum"
 version = "2.1.0"
 dependencies = [
@@ -406,6 +414,7 @@ version = "2.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
+ "arclain_app_fs",
  "base64 0.22.1",
  "chrono",
  "diesel",

@@ -7,6 +7,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use anyhow::{anyhow, Context, Result};
+use arclain_app_fs::{ensure_owner_dir, restrict_owner_file};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -53,23 +54,9 @@ impl SecretsDb {
             return Err(anyhow!("Invalid UTF-8 path"));
         }
 
-        // Create parent directory if needed, and chmod it to 0o700 on
-        // Unix so only the owner can list/enter it. `create_dir_all`
-        // respects the process umask, which defaults to 0o022 on most
-        // Linux distros → directory ends up 0o755 (world-listable) and
-        // a passer-by can see the secrets DB file even if they can't
-        // open it. Mirrors `secrets_key.rs:48-54` for the key file's
-        // parent.
+        // Owner-only parent dir (0o700 on Unix). See arclain_app_fs.
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating directory {}", parent.display()))?;
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-                    .with_context(|| format!("chmod 0700 {}", parent.display()))?;
-            }
+            ensure_owner_dir(parent)?;
         }
 
         // Open/create database using wrapper
@@ -90,19 +77,8 @@ impl SecretsDb {
             Ok(())
         })?;
 
-        // Restrict the on-disk DB file to owner-only access. ReDb (like
-        // SQLite) creates the file using the process umask, which on
-        // most Linux distros is permissive (0o022 → 0o644). The secrets
-        // DB holds AES-256-GCM ciphertext of saved passwords; even
-        // though contents are encrypted, leaking the ciphertext to
-        // other local users gives them an offline guess target if the
-        // key file is ever compromised. Belt + suspenders.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("chmod 0600 {}", path.display()))?;
-        }
+        // Owner-only DB file (0o600 on Unix). See arclain_app_fs.
+        restrict_owner_file(path)?;
 
         Ok(Self { db, cipher })
     }
