@@ -53,10 +53,23 @@ impl SecretsDb {
             return Err(anyhow!("Invalid UTF-8 path"));
         }
 
-        // Create parent directory if needed
+        // Create parent directory if needed, and chmod it to 0o700 on
+        // Unix so only the owner can list/enter it. `create_dir_all`
+        // respects the process umask, which defaults to 0o022 on most
+        // Linux distros → directory ends up 0o755 (world-listable) and
+        // a passer-by can see the secrets DB file even if they can't
+        // open it. Mirrors `secrets_key.rs:48-54` for the key file's
+        // parent.
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("creating directory {}", parent.display()))?;
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                    .with_context(|| format!("chmod 0700 {}", parent.display()))?;
+            }
         }
 
         // Open/create database using wrapper
