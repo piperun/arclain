@@ -31,6 +31,7 @@ license = "GPL-3.0-or-later"
 repository = "https://codeberg.org/0xdev/Arclain"
 
 [workspace.dependencies]
+# Generic utilities
 anyhow = "1"
 chrono = "0.4"
 dirs = "6"
@@ -39,6 +40,27 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
 tracing = "0.1"
+
+# Storage
+diesel = { version = "2.2", features = ["sqlite", "returning_clauses_for_sqlite_3_35", "r2d2", "64-column-tables"] }
+
+# Crypto / hashing
+sha2 = "0.10"
+base64 = "0.22"
+zeroize = "1.8"
+
+# Networking. `default-features = false` so each crate opts into the
+# TLS stack + extras it actually needs (rustls vs native-tls, blocking
+# vs async, gzip/brotli/etc).
+reqwest = { version = "0.12.24", default-features = false }
+
+# Async runtime. `default-features = false` for the same reason —
+# crates compose `rt`, `rt-multi-thread`, `sync`, `time`, `macros`,
+# `fs` as needed.
+tokio = { version = "1.48", default-features = false }
+
+# Text
+regex = "1.12"
 
 [profile.release]
 opt-level = "z"

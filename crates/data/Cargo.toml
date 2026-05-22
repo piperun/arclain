@@ -12,7 +12,7 @@ tracing.workspace = true
 parking_lot.workspace = true
 cacache = "13"
 ssri = "9"
-sha2 = "0.10"
+sha2.workspace = true
 
 arclain_db = { path = "../db" }
 arclain-network = { path = "../network" }

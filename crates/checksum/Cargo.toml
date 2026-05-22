@@ -8,7 +8,7 @@ description = "File integrity verification with Merkle trees and parallel hashin
 # Hashing algorithms
 crc32fast = "1.4"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-sha2 = "0.10"
+sha2.workspace = true
 
 # Parallelism
 rayon = "1.10"
