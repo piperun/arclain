@@ -240,7 +240,15 @@ steps:
       base_url: https://codeberg.org
       api_key:
         from_secret: codeberg_token
-      target: ${CI_COMMIT_SHA}
+      # The Forgejo create-release API wants `target_commitish` as a
+      # branch name, not a SHA. We were passing `${CI_COMMIT_SHA}`
+      # which the API tried to resolve as a branch and errored with
+      # "The target couldn't be found". The bump commit is already
+      # on `master` by the time the tag is pushed (cog bump + push
+      # in one shot), so `master` is correct here — the release page
+      # gets anchored to whatever master's tip is at tag-creation
+      # time, which is the bump commit the tag itself points to.
+      target: master
       files:
         - dist/arclain-*-linux-x64.tar.gz
         - dist/arclain-*-linux-x64.tar.gz.sha256
