@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.2.3 - 2026-05-22
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Bug Fixes
+- (**ci**) collapse build-linux package+checksum steps into one shell - (523f062) - 0xdev
+#### Continuous Integration
+- nextest on woodpecker, narrow github tests workflow to PRs - (7e6bf88) - 0xdev
+
+- - -
+
 ## 2.2.2 - 2026-05-22
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
