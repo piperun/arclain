@@ -1,25 +1,18 @@
 name: tests
 
-# Fast test feedback on the GitHub side, complementary to codeberg's
-# woodpecker cargo-test step. Uses cargo-nextest for parallel test
-# execution + Swatinem/rust-cache so warm runs skip dep
-# recompilation.
+# PR validation on the GitHub side. Codeberg woodpecker owns the
+# master-push test pass (cargo-test step); this workflow only fires
+# on PRs to master and manual dispatch — running it on every master
+# push would just duplicate woodpecker's work, since the codeberg
+# push-mirror syncs every codeberg commit here within seconds.
 #
-# Why duplicate codeberg's tests here:
-#  * PR validation — GitHub shows green/red on the PR conversation
-#    directly, easier to glance at than navigating to woodpecker.
-#  * Faster cold compile on github with rust-cache than on
-#    codeberg's uncached runner (~45s cold → ~5-10s warm).
-#  * nextest's process-per-test isolation catches a different class
-#    of test interaction bugs than cargo's threads-per-test
-#    (shared mutable global state, file-system contention, etc).
-#
-# If this ever feels like wasted CI minutes, narrow the trigger to
-# PRs only and let codeberg own the master-push pass.
+# Uses cargo-nextest for parallel test execution + Swatinem/rust-cache
+# so warm runs skip dep recompilation (~45s cold → ~5-10s warm).
+# nextest's process-per-test isolation also catches a different
+# class of test interaction bugs than cargo's threads-per-test —
+# useful for verifying PRs before merge.
 
 on:
-  push:
-    branches: [master]
   pull_request:
     branches: [master]
   workflow_dispatch:

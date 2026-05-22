@@ -73,9 +73,20 @@ steps:
       # --lib only: skips integration tests that exercise the egui
       # event loop (which would need xvfb in CI). Matches the user's
       # local cargo-test workflow.
+      # Install cargo-nextest from its prebuilt binary release —
+      # `cargo install cargo-nextest` from source adds ~2 min of
+      # cold compile on every CI run. Drops straight into
+      # /usr/local/cargo/bin (root-writable here, runner can exec).
+      - curl -LsSf https://get.nexte.st/latest/linux | tar xzf - -C /usr/local/cargo/bin
       - useradd -m runner
       - chown -R runner:runner /workspace
-      - su runner -c "cd /workspace/codeberg/arclain && cargo test --workspace --lib --locked"
+      # nextest gives process-per-test isolation (vs cargo's
+      # thread-per-test) and cleaner output. --lib still skips
+      # integration tests that need an egui event loop / xvfb;
+      # doctests are excluded from nextest entirely and covered by
+      # the follow-up `cargo test --doc` step below.
+      - su runner -c "cd /workspace/codeberg/arclain && cargo nextest run --workspace --lib --locked"
+      - su runner -c "cd /workspace/codeberg/arclain && cargo test --workspace --doc --locked"
     depends_on: [fetch-gameta]
 
   wasm-plugins:
