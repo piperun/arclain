@@ -79,7 +79,13 @@ steps:
       - event: [push, tag]
     commands:
       - rustup target add wasm32-wasip2
-      - cargo build --release --target wasm32-wasip2 -p dlsite-metadata
+      # plugins/dlsite-metadata is `exclude`d from the workspace
+      # (see root Cargo.toml) — it builds in its own cargo context
+      # because the WASM target wants different profile/codegen flags
+      # than the desktop binary. So `-p dlsite-metadata` from the
+      # workspace root fails with "did not match any packages"; cd
+      # into the plugin dir instead.
+      - cd plugins/dlsite-metadata && cargo build --release --target wasm32-wasip2
     depends_on: [fetch-gameta]
 
   # ── Linux release build on tag ──────────────────────────────────────
