@@ -143,13 +143,21 @@ steps:
       # invokes when targeting *-pc-windows-msvc from Linux.
       - apt-get update -qq
       - apt-get install -yqq llvm clang lld
-      # Install cargo-xwin as root so the binary lands in
-      # /usr/local/cargo/bin (writable to root, executable for everyone)
-      # — that way the `runner` user can call it via PATH.
-      - cargo install cargo-xwin --locked
-      - rustup target add x86_64-pc-windows-msvc
       - useradd -m runner
-      - chown -R runner:runner /workspace
+      # Chown CARGO_HOME + RUSTUP_HOME too, on top of /workspace.
+      # The rust:1.94 image sets both to /usr/local/{cargo,rustup}
+      # and those are root-owned by default. If we ran `cargo install`
+      # or `rustup target add` as root then dropped to runner, the
+      # root-owned registry cache entries would block runner from
+      # updating the registry → "failed to write cache: Permission
+      # denied" when runner's later `cargo xwin build` tries to
+      # download crates. Other cargo steps (cargo-check, cargo-test,
+      # wasm-plugins) avoid this by never calling `cargo install`
+      # under root — they only READ the registry, which works for
+      # runner even when the dir is root-owned 0o755.
+      - chown -R runner:runner /workspace /usr/local/cargo /usr/local/rustup
+      - su runner -c "cargo install cargo-xwin --locked"
+      - su runner -c "rustup target add x86_64-pc-windows-msvc"
       # First run downloads ~1.5GB of MSVC SDK headers/libs into
       # ~/.cache/cargo-xwin. Cached for the rest of this container's
       # lifetime; subsequent CI runs in fresh containers will re-download.
