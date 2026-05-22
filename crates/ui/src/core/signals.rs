@@ -5,6 +5,7 @@
 
 use crate::core::state::UiPreferences;
 use crate::core::tabs::TabsCollection;
+use crate::shared::dialogs::archive_error_dialog::ArchiveErrorDialogState;
 use crate::shared::dialogs::ask_each_time_drop::AskEachTimeDropState;
 use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmState;
 use arclain_core::utilities::PassRule;
@@ -12,7 +13,7 @@ use arclain_core::UiItem;
 use arclain_signals::{Signal, SignalContext};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 /// Connection status for the gameta server.
 ///
@@ -180,6 +181,21 @@ pub struct AppSignals {
     /// overlay zone. Holds the pending paths until the user picks
     /// New tab / Replace / Cancel.
     pub ask_each_time_drop: Signal<AskEachTimeDropState>,
+
+    /// Archive-load error modal — populated by `load_archive_into_tab`
+    /// when a backend fails to open the file for a non-password reason
+    /// (EACCES is the headline case; the dialog also surfaces raw
+    /// errors for everything else so users aren't left staring at an
+    /// empty entry list).
+    pub archive_error_dialog: Signal<ArchiveErrorDialogState>,
+
+    /// Egui context, stashed at `bind_to_context` time so background
+    /// workers can call `kick_repaint()` to force a frame even when
+    /// the signal-subscriber repaint path misses a wake (XWayland-side
+    /// flake). `OnceLock` so it's set exactly once and concurrent
+    /// reads are lock-free. `Arc` so clones of `AppSignals` share the
+    /// same slot.
+    pub egui_ctx: Arc<OnceLock<egui::Context>>,
 }
 
 /// Proxy that lets callers keep the old `signals.extraction_dialog
@@ -312,11 +328,35 @@ impl AppSignals {
                 .with_name("close_tab_confirm"),
             ask_each_time_drop: Signal::new(AskEachTimeDropState::default())
                 .with_name("ask_each_time_drop"),
+            archive_error_dialog: Signal::new(ArchiveErrorDialogState::default())
+                .with_name("archive_error_dialog"),
+            egui_ctx: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Wake the event loop from a worker thread. No-op if the egui
+    /// context hasn't been bound yet (e.g. called from a tab-restore
+    /// thread that fires before `bind_to_context` lands on the first
+    /// frame).
+    ///
+    /// Backstop for the signal-subscriber repaint mechanism. The bound
+    /// subscribers each call `ctx.request_repaint()` on `.set()` already,
+    /// but on XWayland those wakes sometimes get dropped and the UI
+    /// renders the pre-write state until the next mouse event. Calling
+    /// `kick_repaint()` explicitly closes that race.
+    pub fn kick_repaint(&self) {
+        if let Some(ctx) = self.egui_ctx.get() {
+            ctx.request_repaint();
         }
     }
 
     /// Bind all signals to egui context for automatic repaint.
     pub fn bind_to_context(&self, ctx: &egui::Context) {
+        // Stash the ctx for `kick_repaint()` (the worker-thread
+        // backstop). OnceLock returns Err if it's already populated —
+        // that only happens if bind is called twice, which the
+        // `bind_signals_once` guard upstream prevents.
+        let _ = self.egui_ctx.set(ctx.clone());
         let signal_ctx = SignalContext::new(ctx.clone());
         signal_ctx.bind_named(&self.extraction_progress, "extraction_progress");
         signal_ctx.bind_named(&self.search_text, "search_text");
@@ -341,6 +381,7 @@ impl AppSignals {
         signal_ctx.bind_named(&self.tabs, "tabs");
         signal_ctx.bind_named(&self.close_tab_confirm, "close_tab_confirm");
         signal_ctx.bind_named(&self.ask_each_time_drop, "ask_each_time_drop");
+        signal_ctx.bind_named(&self.archive_error_dialog, "archive_error_dialog");
 
         // Per-tab signal auto-binding.
         //
@@ -395,6 +436,8 @@ impl AppSignals {
         self.tabs.set(TabsCollection::new());
         self.close_tab_confirm.set(CloseTabConfirmState::default());
         self.ask_each_time_drop.set(AskEachTimeDropState::default());
+        self.archive_error_dialog
+            .set(ArchiveErrorDialogState::default());
     }
 }
 

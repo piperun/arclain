@@ -38,6 +38,13 @@ resvg = "0.45"
 
 raw-window-handle = "0.6"
 
+# Unix user/group name resolution for the archive-error dialog —
+# translates uid 65534 → "nfsnobody" so EACCES diagnoses are legible
+# instead of numeric. Already a transitive dep; pulling it in directly
+# so we can call `getpwuid_r` / `getgrgid_r` without unsafe shenanigans.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target.'cfg(target_os = "windows")'.dependencies]
 winreg = "0.55.0"
 windows-sys = { version = "0.61.2", features = [

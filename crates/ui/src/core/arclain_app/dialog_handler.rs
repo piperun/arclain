@@ -310,6 +310,28 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         }
     }
 
+    // Render Archive-Load Error Modal — surfaces backend failures the
+    // user would otherwise diagnose by tail-following the log file.
+    // Permission errors get specific chown/chmod commands templated
+    // against the failing path; other errors get the raw backend
+    // output.
+    {
+        let mut err_state = app
+            .shared_state
+            .signals()
+            .archive_error_dialog
+            .get();
+        crate::shared::dialogs::render_archive_error_dialog(
+            ctx,
+            &app.shared_state.theme,
+            &mut err_state,
+        );
+        app.shared_state
+            .signals()
+            .archive_error_dialog
+            .set_if_changed(err_state);
+    }
+
     // Render Ask-Each-Time Drop Modal
     {
         let mut ask_state = app.shared_state.signals().ask_each_time_drop.get();

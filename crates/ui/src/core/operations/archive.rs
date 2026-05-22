@@ -618,9 +618,18 @@ pub fn convert_archive(
 /// Per-tab signals (`entries`, `archive_path`, `browser_view_state`,
 /// `password_dialog`, …) are auto-bound to the egui ctx-repaint via
 /// `TabState::bind_to_context_once`, which `AppSignals::bind_to_context`
-/// sweeps over every tab on creation. Background writes here therefore
-/// automatically trigger a UI repaint — no manual `ctx.request_repaint()`
-/// needed.
+/// sweeps over every tab on creation. The bound subscribers each call
+/// `ctx.request_repaint()` on `.set()`, which SHOULD wake the event
+/// loop from a worker thread.
+///
+/// In practice this is flaky depending on the egui/winit version and
+/// the windowing backend (XWayland in particular has missed wakes that
+/// leave the dialog hidden until the next mouse event — symptom: "drop
+/// an archive and nothing happens until I click somewhere"). To close
+/// that gap we also kick a repaint explicitly via `signals.kick_repaint()`
+/// at the end of the worker — cheap, idempotent, and short-circuits
+/// any backend wake-up quirks. The egui ctx is stashed in `AppSignals`
+/// at bind-time so we don't need to thread it through every caller.
 pub fn load_archive_into_tab(
     state: Arc<Mutex<AppState>>,
     signals: AppSignals,
@@ -651,8 +660,38 @@ pub fn load_archive_into_tab(
             }
             Err(e) => {
                 drop(st);
-                let err_msg = e.to_string();
-                if is_password_error(&err_msg) {
+                // {:#} renders the full anyhow chain joined with ": ".
+                // The fallback_backend wraps the underlying error with
+                // a "Both X and Y backends failed" context, which makes
+                // the top-level message lose the actual cause (the
+                // "Permission denied" / "No such file" / etc text that
+                // the classifier needs). The alternate-display form
+                // includes both the context and the chain, so the
+                // classifier sees the original kernel/CLI error.
+                let err_msg = format!("{:#}", e);
+
+                // Classify first so we can short-circuit OS-level
+                // failures (EACCES, ENOENT, EISDIR, EIO) before the
+                // password classifier runs. The password classifier
+                // matches the 7z exit code `code Some(2)` which is
+                // "fatal error" — also returned for permission
+                // denials. Without this short-circuit, every EACCES
+                // landed on the password dialog. The classifier here
+                // catches them deterministically.
+                use crate::shared::dialogs::{
+                    archive_error_dialog::gather_diagnostic, classify_archive_error,
+                    ArchiveErrorDialogState, ArchiveErrorKind,
+                };
+                let kind = classify_archive_error(&err_msg);
+                let is_os_level_failure = matches!(
+                    kind,
+                    ArchiveErrorKind::PermissionDenied
+                        | ArchiveErrorKind::FileNotFound
+                        | ArchiveErrorKind::IsADirectory
+                        | ArchiveErrorKind::IoError
+                );
+
+                if !is_os_level_failure && is_password_error(&err_msg) {
                     // password_dialog is per-tab now (post 2026-05-20 B3
                     // reframed slice). Write to the originating tab's
                     // signal — multi-drop scenarios where each encrypted
@@ -669,8 +708,38 @@ pub fn load_archive_into_tab(
                     let mut bar = signals.status_bar.get();
                     bar.message = format!("Failed to load archive: {}", err_msg);
                     signals.status_bar.set(bar);
+
+                    // Surface the failure in a modal so users don't
+                    // stare at an empty entry list wondering what's
+                    // wrong. Permission errors get a specialized
+                    // section with the exact chown/chmod commands;
+                    // everything else gets the raw backend message.
+                    // We also stat the file at error time so the
+                    // dialog can show concrete owner/mode/current-uid
+                    // (the "why") rather than just the symptom ("how").
+                    let diagnostic = if kind == ArchiveErrorKind::PermissionDenied {
+                        gather_diagnostic(&path_owned)
+                    } else {
+                        None
+                    };
+                    signals.archive_error_dialog.set(ArchiveErrorDialogState {
+                        show: true,
+                        archive_path: Some(path_owned.clone()),
+                        kind,
+                        raw_error: err_msg,
+                        diagnostic,
+                    });
                 }
             }
+        }
+        // Explicit repaint kick — see kick_repaint() docs in signals.rs.
+        // Gated behind ARCLAIN_NO_KICK=1 so we can A/B test whether the
+        // bound signal subscriber alone is enough to wake the loop, or
+        // whether this explicit redundant call is doing real work.
+        if std::env::var_os("ARCLAIN_NO_KICK").is_none() {
+            signals.kick_repaint();
+        } else {
+            tracing::debug!("[experiment] kick_repaint skipped via ARCLAIN_NO_KICK");
         }
     });
 }

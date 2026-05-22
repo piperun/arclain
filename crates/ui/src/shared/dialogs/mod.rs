@@ -1,5 +1,6 @@
 // Shared dialog utilities module
 
+pub mod archive_error_dialog;
 pub mod ask_each_time_drop;
 pub mod close_tab_confirm;
 pub mod form_dialog;
@@ -9,6 +10,10 @@ pub mod merge_dialog;
 pub mod progress;
 
 // Re-export dialog types
+pub use archive_error_dialog::{
+    classify as classify_archive_error, render_archive_error_dialog, ArchiveErrorDialogState,
+    ArchiveErrorKind,
+};
 pub use close_tab_confirm::{
     render_close_tab_confirm, CloseTabConfirmResult, CloseTabConfirmState,
 };
