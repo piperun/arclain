@@ -19,12 +19,18 @@ fn temp_log_dir() -> PathBuf {
 
 #[test]
 fn token_bucket_allows_burst_up_to_capacity() {
-    let bucket = TokenBucket::new(1000.0, 5000); // 1000 tokens/sec, capacity 5000
-    // Start with full capacity — burst of 5000 should all pass
+    // Rate 0.0 = no time-based refill. The 5000-iteration burst on a
+    // slow CI runner takes a few ms and would otherwise refill several
+    // tokens during the loop (1000/sec × 5 ms = 5 tokens), letting
+    // take #5001 sneak through and breaking the assertion. The test
+    // is specifically about *burst capacity*, not refill rate — refill
+    // is exercised by `token_bucket_refills_at_configured_rate` below —
+    // so setting rate to 0.0 isolates the property under test from
+    // wall-clock scheduling.
+    let bucket = TokenBucket::new(0.0, 5000);
     for _ in 0..5000 {
         assert!(bucket.try_take(), "expected token within capacity");
     }
-    // 5001st request in the same instant — refused
     assert!(!bucket.try_take(), "expected refusal beyond capacity");
 }
 
