@@ -98,11 +98,14 @@ steps:
       # which is owned by root in the rust:1.94 image — runner can't
       # touch it, so this has to happen as root before the drop.
       - rustup target add wasm32-wasip2
-      # Same non-root rationale as cargo-check / cargo-test: keeps
-      # target-dir ownership consistent across parallel steps that
-      # share /workspace.
+      # `useradd` only — no chown. /workspace was already chowned to
+      # runner by cargo-check / cargo-test (this step now depends on
+      # both, see `depends_on` below). Re-running chown -R while
+      # cargo-check / cargo-test is concurrently writing
+      # plugins/dlsite-metadata/target/.../rmeta intermediates causes
+      # chown to error on transient files — eliminating the race by
+      # serializing instead.
       - useradd -m runner
-      - chown -R runner:runner /workspace
       # plugins/dlsite-metadata is `exclude`d from the workspace
       # (see root Cargo.toml) — it builds in its own cargo context
       # because the WASM target wants different profile/codegen flags
@@ -110,7 +113,14 @@ steps:
       # workspace root fails with "did not match any packages"; cd
       # into the plugin dir instead.
       - su runner -c "cd /workspace/codeberg/arclain/plugins/dlsite-metadata && cargo build --release --target wasm32-wasip2"
-    depends_on: [fetch-gameta]
+    # Depends on cargo-check + cargo-test to avoid a chown race:
+    # those steps chown -R /workspace concurrently while this step
+    # would otherwise be writing rmeta intermediates under
+    # plugins/dlsite-metadata/target/wasm32-wasip2/. Serializing
+    # eliminates the race entirely (slight CI wall-clock cost,
+    # ~15-20s, but the failures are deterministic and worth
+    # paying for).
+    depends_on: [cargo-check, cargo-test]
 
   # ── Linux release build on tag ──────────────────────────────────────
 
