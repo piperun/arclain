@@ -15,10 +15,35 @@
 //!   means the file ends up world-readable as `0o644` unless we
 //!   tighten it explicitly.
 //!
-//! Both functions are no-ops on Windows: NTFS files created under
-//! `%LOCALAPPDATA%` / `%APPDATA%` inherit the user profile's ACL,
-//! which already blocks cross-user access. There's nothing
-//! equivalent to `chmod` to call there.
+//! Both functions are no-ops on Windows, with a caveat worth
+//! reading carefully: protection comes from NTFS ACL *inheritance*
+//! from the parent directory, NOT from an explicit DACL set by this
+//! crate. That covers the realistic threat when arclain's data
+//! lives under `%APPDATA%` / `%LOCALAPPDATA%` — the user profile's
+//! ACL already excludes other non-admin users. But it does *not*
+//! protect:
+//!
+//!  * **Custom data directories outside the user profile** (e.g.
+//!    user picks `D:\arclain\` in a config setting). The drive
+//!    root's default ACL on most Windows installs grants
+//!    `Authenticated Users: Read/Execute`, so other users on the
+//!    same box can read the files.
+//!  * **FAT / exFAT volumes** — no ACL system at all. Anyone with
+//!    physical or remote access reads everything.
+//!  * **Network shares** — depends entirely on the server-side
+//!    share permissions, which arclain has no visibility into.
+//!
+//! Local Administrators can read regardless of any ACL — they can
+//! elevate to SYSTEM and bypass everything — so locking them out
+//! is theatrical, not a real protection layer.
+//!
+//! If owner-only-against-other-users protection is needed in a
+//! non-default location on Windows, the fix would be an explicit
+//! `SetNamedSecurityInfo` (Win32 ACL API) call building a DACL with
+//! only the current user's SID granted access. That's ~40 LOC of
+//! `windows-sys` boilerplate per operation plus a non-trivial test
+//! harness, so it's deferred until a concrete use case shows up —
+//! file an issue rather than assuming this crate handles it.
 //!
 //! # Rationale
 //!
@@ -44,9 +69,12 @@ use std::path::Path;
 /// chmod it to `0o700` on Unix — owner read/write/execute, no group
 /// or other access.
 ///
-/// On Windows this is exactly `std::fs::create_dir_all`: NTFS ACLs
-/// inherited from the user profile already restrict cross-account
-/// access for typical app-data locations.
+/// On Windows this is exactly `std::fs::create_dir_all` (no explicit
+/// ACL set). Protection relies on inheritance from the parent
+/// directory's ACL — sufficient under `%APPDATA%` /
+/// `%LOCALAPPDATA%`, NOT sufficient for custom drive roots, FAT
+/// volumes, or network shares. See crate-level docs for the full
+/// caveat list.
 ///
 /// The directory's *contents* are not touched — if `path` already
 /// exists with looser permissions, this tightens them. If it exists
@@ -77,9 +105,11 @@ pub fn ensure_owner_dir(path: &Path) -> Result<()> {
 /// respect the process umask, so on most Linux systems the file
 /// lands at `0o644` until we tighten it.
 ///
-/// Windows: no-op. The file inherits its parent directory's ACL on
-/// NTFS, which already restricts cross-account access in `%APPDATA%`
-/// / `%LOCALAPPDATA%`.
+/// On Windows this is a no-op. The file inherits its parent's NTFS
+/// ACL, which restricts cross-user access *only if* the parent is
+/// itself protected — true under `%APPDATA%` / `%LOCALAPPDATA%`,
+/// false on custom drive roots / FAT volumes / network shares. See
+/// crate-level docs for the full caveat list.
 pub fn restrict_owner_file(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
