@@ -17,6 +17,10 @@ on:
     branches: [master]
   workflow_dispatch:
 
+# Same Node 24 opt-in as the windows workflow.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   test:
     runs-on: ubuntu-latest

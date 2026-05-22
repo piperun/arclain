@@ -27,6 +27,16 @@ on:
     # Manual fallback for re-running uploads if a previous run's
     # upload step died mid-flight.
 
+# Opt every JavaScript-based action in this workflow into Node.js
+# 24 ahead of GitHub's June 2026 hard cutover. actions/checkout@v4
+# + actions/upload-artifact@v4 still default to Node 20, which is
+# being removed from runners in September 2026. This env var is
+# the no-version-bump path documented in the deprecation notice;
+# we can drop it once we move to action @v5+ that defaults to
+# Node 24 natively.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     runs-on: windows-latest
