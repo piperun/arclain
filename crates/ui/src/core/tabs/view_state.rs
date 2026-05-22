@@ -20,7 +20,17 @@ use crate::shared::models::file_entry::{FileEntry, SortState};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BrowserViewState {
+    /// Worker-owned. Written by `refresh_view_entries` after a load
+    /// completes. Renderer must NOT write this field back — see the
+    /// data-ownership note on `FileEntry`.
     pub view_entries: Vec<FileEntry>,
+    /// Renderer-owned. Holds the `path` of every selected entry. Lives
+    /// in `BrowserViewState` (alongside `view_entries`) so click /
+    /// keyboard / drag handlers can mutate selection during render via
+    /// `&mut view_state`. Kept as a `HashSet` (not flags inside
+    /// `FileEntry`) so a worker thread replacing `view_entries`
+    /// doesn't drop selection on the floor.
+    pub selection: std::collections::HashSet<String>,
     // NOTE: current_path moved to NavigationState signal pre-relocation
     //       for single source of truth; that history is preserved here.
     pub toolbar_state: ToolbarState,

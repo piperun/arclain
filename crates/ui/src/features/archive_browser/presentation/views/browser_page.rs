@@ -38,24 +38,39 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
     // Render central file list
     render_file_list(ctx, &mut view_state, shared, &mut action);
 
-    // Update selection_count signal for toolbar button state
-    let selection_count = view_state
-        .view_entries
-        .iter()
-        .filter(|e| e.selected)
-        .count();
+    // Update selection_count signal for toolbar button state.
+    // Selection lives in a dedicated HashSet now (post-refactor for
+    // the worker-vs-renderer data race; see FileEntry docs).
+    let selection_count = view_state.selection.len();
     if tab.selection_count.get() != selection_count {
         tab.selection_count.set(selection_count);
     }
 
-    // Sync back updated state (like expanded folders or selection).
-    // This is the canonical egui immediate-mode pattern: render widgets
-    // mutate `view_state` (sort clicks, selection, expand/collapse) as
-    // a side-effect of being drawn. `set_if_changed` only notifies
-    // listeners when the struct actually changed, preventing repaint
-    // cascades. See dialog_handler.rs module docs for the architectural
-    // rationale (audit B3 reframing, kept-as-correct).
-    tab.browser_view_state.set_if_changed(view_state);
+    // Sync back state.
+    //
+    // selection / toolbar_state / sort_state / tree_state are
+    // renderer-owned and written unconditionally. view_entries is
+    // worker-owned (`refresh_view_entries` is the only producer)
+    // and we only write it back when the snapshot's length matches
+    // the live state — if they differ, a worker update landed
+    // between snapshot and writeback and we MUST NOT clobber it.
+    //
+    // The length-check is the same guard we used pre-refactor; with
+    // selection now in its own HashSet (rather than embedded as
+    // `entry.selected` inside FileEntry), there's no selection state
+    // riding along inside view_entries to be discarded by a skipped
+    // writeback — the HashSet writeback above handles that
+    // separately. Net effect: same drop-in reliability as the
+    // length-check pattern, with selection no longer racing.
+    tab.browser_view_state.update(|s| {
+        s.toolbar_state = view_state.toolbar_state;
+        s.sort_state = view_state.sort_state;
+        s.tree_state = view_state.tree_state;
+        s.selection = view_state.selection;
+        if s.view_entries.len() == view_state.view_entries.len() {
+            s.view_entries = view_state.view_entries;
+        }
+    });
 
     // After UI has rendered, dispatch any pending plugin events.
     if !tab.ui_ready.get() {
@@ -155,8 +170,11 @@ fn render_properties_panel(
 
                 let mut sections: Vec<properties_panel::PanelSection> = Vec::new();
 
-                let selected_entries: Vec<_> =
-                    state.view_entries.iter().filter(|e| e.selected).collect();
+                let selected_entries: Vec<_> = state
+                    .view_entries
+                    .iter()
+                    .filter(|e| state.selection.contains(&e.path))
+                    .collect();
                 let selected_entry = if selected_entries.len() == 1 {
                     Some(selected_entries[0])
                 } else {
@@ -313,35 +331,34 @@ fn render_file_list(
                         .collect();
 
                     if state.toolbar_state.grid_view {
-                        if let Some(file_action) =
-                            file_list::render_grid_view(ui, &shared.theme, &mut filtered)
-                        {
+                        if let Some(file_action) = file_list::render_grid_view(
+                            ui,
+                            &shared.theme,
+                            &mut filtered,
+                            &mut state.selection,
+                        ) {
                             *action = map_file_list_action(file_action);
                         }
                     } else if let Some(file_action) = file_list::render_list_view(
                         ui,
                         &shared.theme,
                         &mut filtered,
+                        &mut state.selection,
                         state.toolbar_state.columns_locked,
                         &mut state.sort_state,
                     ) {
                         *action = map_file_list_action(file_action);
                     }
-
-                    for (filtered_idx, &original_idx) in matching_indices.iter().enumerate() {
-                        if let Some(filtered_entry) = filtered.get(filtered_idx) {
-                            if let Some(original_entry) =
-                                state.view_entries.get_mut(original_idx)
-                            {
-                                original_entry.selected = filtered_entry.selected;
-                            }
-                        }
-                    }
+                    // No more filtered→original sync needed: selection
+                    // lives in a HashSet keyed by path now, shared
+                    // between filtered and original views automatically.
+                    let _ = matching_indices; // touched above; kept binding stable
                 } else if state.toolbar_state.grid_view {
                     if let Some(file_action) = file_list::render_grid_view(
                         ui,
                         &shared.theme,
                         &mut state.view_entries,
+                        &mut state.selection,
                     ) {
                         *action = map_file_list_action(file_action);
                     }
@@ -349,6 +366,7 @@ fn render_file_list(
                     ui,
                     &shared.theme,
                     &mut state.view_entries,
+                    &mut state.selection,
                     state.toolbar_state.columns_locked,
                     &mut state.sort_state,
                 ) {

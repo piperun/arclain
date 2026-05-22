@@ -2,17 +2,25 @@ use crate::core::tabs::{OpGuard, TabState};
 use crate::core::AppState;
 use crate::shared::components::status_bar;
 use crate::shared::dialogs;
-use crate::shared::models::file_entry::FileEntry;
 use arclain_core::backends::sevenz_cli::ProgressUpdate;
 use parking_lot::Mutex;
 use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Extract selected files from the archive
+/// Extract a set of files (named by their basename within the current
+/// navigation folder) from the active tab's archive.
+///
+/// Callers pre-compute the list of names — either by filtering the
+/// active tab's `view_entries` against `browser_view_state.selection`
+/// (toolbar "Extract" button), or by passing a single name from a
+/// per-row action (file_ops_service::extract). This function used to
+/// read selection itself, but coupling it to `BrowserViewState.selection`
+/// meant a single-row extract had to mutate global selection — ugly.
+/// Names-as-parameter keeps the boundary clean.
 pub fn extract_selected(
     state: &Arc<Mutex<AppState>>,
-    entries: &[FileEntry],
+    selected_files: &[String],
     extraction_dialog: &mut dialogs::ExtractionProgressDialog,
     extraction_rx: &mut Option<Receiver<ProgressUpdate>>,
     extraction_child_mut: &mut Option<std::process::Child>,
@@ -30,12 +38,6 @@ pub fn extract_selected(
     let st = state.lock();
     let tab = st.signals.tabs.get().active().clone();
     if let Some(archive) = tab.archive_path.get().as_ref() {
-        let selected_files: Vec<String> = entries
-            .iter()
-            .filter(|e| e.selected)
-            .map(|e| e.name.clone())
-            .collect();
-
         if selected_files.is_empty() {
             status_info.message = "No files selected".to_string();
             return;
@@ -49,7 +51,7 @@ pub fn extract_selected(
                 .map(|f| format!("{}/{}", nav.current_path, f))
                 .collect()
         } else {
-            selected_files
+            selected_files.to_vec()
         };
 
         let archive_clone = archive.clone();

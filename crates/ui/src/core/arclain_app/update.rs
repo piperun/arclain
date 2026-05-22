@@ -180,13 +180,18 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 app.shared_state.signals().search_focus_requested.set(true);
             }
             HotkeyAction::SelectAll => {
-                // Select all entries in the file list
+                // Select all entries in the file list. Selection lives
+                // in a path-keyed HashSet (see FileEntry docs) so we
+                // extend it with every entry's path. Two-step (collect
+                // then extend) so we don't try to borrow view_entries
+                // immutably while holding a mutable borrow on
+                // selection — both live on the same struct.
                 let sel_tab = app.shared_state.signals().tabs.get().active().clone();
-                let mut view_state = sel_tab.browser_view_state.get();
-                for entry in &mut view_state.view_entries {
-                    entry.selected = true;
-                }
-                sel_tab.browser_view_state.set(view_state);
+                sel_tab.browser_view_state.update(|s| {
+                    let paths: Vec<String> =
+                        s.view_entries.iter().map(|e| e.path.clone()).collect();
+                    s.selection.extend(paths);
+                });
             }
             HotkeyAction::DeleteSelected => {
                 tracing::debug!(

@@ -3,7 +3,6 @@
 use crate::core::operations;
 use crate::core::utils::convert_to_file_entry;
 use crate::features::archive_operations::ArchiveOperationsState;
-use crate::shared::models::file_entry::FileEntry;
 use crate::shared::SharedState;
 
 pub struct FileOpsService;
@@ -70,25 +69,11 @@ impl FileOpsService {
         ops_state: &mut ArchiveOperationsState,
         file: &str,
     ) {
-        let entries = vec![FileEntry {
-            name: file.to_string(),
-            path: file.to_string(),
-            selected: true,
-            size: String::new(),
-            compressed: String::new(),
-            ratio: String::new(),
-            modified: String::new(),
-            crc32: String::new(),
-            encrypted: false,
-            is_folder: false,
-        }];
-
-        // We still need status_bar for the extraction call, but we can get it from signal
-        // Wait, operations::extraction::extract_selected takes &mut StatusBarInfo.
-        // We'll have to use signals.status_bar.update(...) inside or wrap the call.
-        // Since extraction logic is deep, I'll temporarily pass a local mut and then write back
-        // to signal, OR better, I'll update operations::extraction in Phase 4.
-        // For now, I'll use a local Default and write it back.
+        // Per-row extract: we have the file's basename directly and
+        // bypass selection entirely. extract_selected now takes a
+        // list of names so we just hand it `[file]` — no need to
+        // synthesize a FileEntry or mutate the user's selection.
+        let selected_names = vec![file.to_string()];
 
         // extraction_dialog is per-tab now (post 2026-05-20 B3 reframed
         // slice 2). The extract call here originates from a row in the
@@ -100,7 +85,7 @@ impl FileOpsService {
 
         operations::extraction::extract_selected(
             &shared.app_state,
-            &entries,
+            &selected_names,
             &mut dialog,
             &mut ops_state.extraction_rx,
             &mut ops_state.extraction_child,

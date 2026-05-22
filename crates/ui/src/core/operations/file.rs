@@ -42,9 +42,11 @@ pub fn delete_selected(
         let st = state.lock();
         let tab = st.signals.tabs.get().active().clone();
         let prefix = tab.navigation.get().current_path.clone();
+        // Selection lives in a path-keyed HashSet now (see FileEntry).
+        let selection = tab.browser_view_state.get().selection;
         let fulls: Vec<String> = entries
             .iter()
-            .filter(|e| e.selected && !e.is_folder)
+            .filter(|e| selection.contains(&e.path) && !e.is_folder)
             .map(|e| {
                 if prefix.is_empty() {
                     e.name.clone()

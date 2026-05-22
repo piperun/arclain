@@ -130,7 +130,6 @@ fn test_show_properties_action() {
     view_state.view_entries.push(FileEntry {
         name: "test.txt".to_string(),
         path: "test.txt".to_string(),
-        selected: false,
         size: "100".to_string(),
         compressed: "50".to_string(),
         ratio: "50%".to_string(),
@@ -145,7 +144,10 @@ fn test_show_properties_action() {
 
     let view_state = tab.browser_view_state.get();
     assert!(view_state.toolbar_state.show_properties_panel);
-    assert!(view_state.view_entries[0].selected);
+    // Selection lives in a path-keyed HashSet now; assert the path is
+    // in there rather than reading `entry.selected` (which was removed
+    // from FileEntry to dodge the worker/renderer data race).
+    assert!(view_state.selection.contains("test.txt"));
 }
 
 #[test]

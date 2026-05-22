@@ -22,6 +22,7 @@ pub fn render_grid_view(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     entries: &mut [FileEntry],
+    selection: &mut std::collections::HashSet<String>,
 ) -> Option<FileListAction> {
     let mut action: Option<FileListAction> = None;
     let available_width = ui.available_width() - 16.0; // account for frame margin
@@ -55,7 +56,7 @@ pub fn render_grid_view(
                                 if idx >= entries.len() {
                                     break;
                                 }
-                                let card_action = render_card(ui, theme, &mut entries[idx]);
+                                let card_action = render_card(ui, theme, &mut entries[idx], selection);
                                 if action.is_none() {
                                     action = card_action;
                                 }
@@ -73,6 +74,7 @@ fn render_card(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     entry: &mut FileEntry,
+    selection: &mut std::collections::HashSet<String>,
 ) -> Option<FileListAction> {
     let mut action: Option<FileListAction> = None;
 
@@ -86,7 +88,7 @@ fn render_card(
     }
 
     let hovered = response.hovered();
-    let selected = entry.selected;
+    let selected = selection.contains(&entry.path);
 
     // ── Background ──────────────────────────────────────────────
     let bg = if selected {
@@ -297,7 +299,11 @@ fn render_card(
             action = Some(FileListAction::Open(entry.name.clone()));
         }
     } else if response.clicked() {
-        entry.selected = !entry.selected;
+        if selection.contains(&entry.path) {
+            selection.remove(&entry.path);
+        } else {
+            selection.insert(entry.path.clone());
+        }
     }
 
     action

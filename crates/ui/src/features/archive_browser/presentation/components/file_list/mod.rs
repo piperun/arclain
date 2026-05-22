@@ -313,6 +313,7 @@ pub fn render_list_view(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     entries: &mut [FileEntry],
+    selection: &mut std::collections::HashSet<String>,
     columns_locked: bool,
     sort: &mut SortState,
 ) -> Option<FileListAction> {
@@ -362,8 +363,8 @@ pub fn render_list_view(
                     // Select all checkbox
                     header.col(|ui| {
                         let all_selected =
-                            !entries.is_empty() && entries.iter().all(|e| e.selected);
-                        let some_selected = entries.iter().any(|e| e.selected);
+                            !entries.is_empty() && entries.iter().all(|e| selection.contains(&e.path));
+                        let some_selected = entries.iter().any(|e| selection.contains(&e.path));
                         let mut header_check = all_selected;
                         let resp = ui.checkbox(&mut header_check, "");
                         if resp.clicked() {
@@ -407,22 +408,31 @@ pub fn render_list_view(
                 .body(|body| {
                     // Apply select-all toggle if requested
                     if let Some(v) = apply_select_all.take() {
-                        for e in entries.iter_mut() {
-                            e.selected = v;
+                        if v {
+                            for e in entries.iter() {
+                                selection.insert(e.path.clone());
+                            }
+                        } else {
+                            for e in entries.iter() {
+                                selection.remove(&e.path);
+                            }
                         }
                     }
 
                     // Sort entries based on current sort state
                     sort_entries(entries, sort);
 
-                    // Capture selection flags after sorting
-                    let selection_flags: Vec<bool> = entries.iter().map(|e| e.selected).collect();
+                    // Capture selection flags after sorting (selection lives
+                    // in a separate HashSet now — see FileEntry docs for
+                    // the ownership-split rationale)
+                    let selection_flags: Vec<bool> =
+                        entries.iter().map(|e| selection.contains(&e.path)).collect();
 
                     // Pre-collect selected file paths for drag-out (needed because we can't borrow entries during iter_mut)
                     // Note: Include both files AND folders for drag
                     let selected_files: Vec<String> = entries
                         .iter()
-                        .filter(|e| e.selected)
+                        .filter(|e| selection.contains(&e.path))
                         .map(|e| e.path.clone())
                         .collect();
 
@@ -447,7 +457,18 @@ pub fn render_list_view(
                             let muted_color = theme.colors.on_surface_variant;
 
                             row.col(|ui| {
-                                let response = ui.checkbox(&mut entry.selected, "");
+                                // egui::checkbox needs a `&mut bool`; selection
+                                // lives in a HashSet keyed by path so we use
+                                // a local bool synced both ways.
+                                let mut checked = selection.contains(&entry_path);
+                                let response = ui.checkbox(&mut checked, "");
+                                if response.clicked() {
+                                    if checked {
+                                        selection.insert(entry_path.clone());
+                                    } else {
+                                        selection.remove(&entry_path);
+                                    }
+                                }
                                 checkbox_clicked = response.clicked();
                             });
 
@@ -541,7 +562,8 @@ pub fn render_list_view(
 
                             let row_response = row.response();
 
-                            if entry.selected {
+                            let is_selected = selection.contains(&entry_path);
+                            if is_selected {
                                 paint_row_selection(
                                     &row_response,
                                     list_clip_rect,
@@ -569,7 +591,7 @@ pub fn render_list_view(
 
                                 // If the dragged row isn't selected, just drag that one
                                 // Otherwise drag all selected entries (uses pre-collected list)
-                                let files_to_drag: Vec<String> = if entry.selected {
+                                let files_to_drag: Vec<String> = if is_selected {
                                     selected_files.clone()
                                 } else {
                                     vec![entry_path.clone()]
@@ -585,7 +607,12 @@ pub fn render_list_view(
                                 }
                             } else if !checkbox_clicked && !action_clicked && row_response.clicked()
                             {
-                                entry.selected = !entry.selected;
+                                // Toggle selection in the HashSet
+                                if selection.contains(&entry_path) {
+                                    selection.remove(&entry_path);
+                                } else {
+                                    selection.insert(entry_path.clone());
+                                }
                             }
 
                             if action.is_none() {

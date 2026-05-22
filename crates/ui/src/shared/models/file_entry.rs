@@ -1,6 +1,16 @@
 //! File entry data models used across features
 
-/// Represents a single file or folder entry in the file list
+/// Represents a single file or folder entry in the file list.
+///
+/// Selection state is NOT stored here — it lives in
+/// `BrowserViewState.selection: HashSet<String>` keyed by `path`.
+/// Embedding `selected: bool` inside this struct caused a data race
+/// against `refresh_view_entries` worker writes: the renderer's
+/// `get / mutate / set` writeback would clobber the worker's
+/// `view_entries` update with the renderer's stale snapshot
+/// (symptom: "drop a zip and the file list stays empty until I click
+/// the side panel"). Keeping selection in a separate set means worker
+/// and renderer never share a field on the same struct.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileEntry {
     pub name: String, // Display name (basename only)
@@ -12,7 +22,6 @@ pub struct FileEntry {
     pub crc32: String,
     pub encrypted: bool,
     pub is_folder: bool,
-    pub selected: bool,
 }
 
 /// Column identifiers for sorting

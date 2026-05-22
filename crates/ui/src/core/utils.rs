@@ -55,7 +55,6 @@ pub fn convert_to_file_entry(entry: &arclain_core::ArchiveEntry) -> FileEntry {
         crc32: entry.crc32.clone().unwrap_or_default(),
         encrypted: entry.encrypted,
         is_folder: entry.is_dir,
-        selected: false,
     }
 }
 
@@ -175,7 +174,6 @@ mod tests {
         assert_eq!(fe.crc32, "AABBCCDD");
         assert!(!fe.is_folder);
         assert!(!fe.encrypted);
-        assert!(!fe.selected);
     }
 
     #[test]

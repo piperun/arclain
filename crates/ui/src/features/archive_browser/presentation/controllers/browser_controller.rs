@@ -80,10 +80,16 @@ impl BrowserController {
                 self.file_ops.copy_path(egui_ctx, shared.signals(), &file);
             }
             Action::ShowProperties(file) => {
+                // Set selection to JUST this file. Selection is
+                // path-keyed in a HashSet now (see FileEntry docs);
+                // matching by name keeps the old semantics where the
+                // "show properties" toolbar action highlights the
+                // single entry whose name matches.
                 shared.signals().tabs.get().active().browser_view_state.update(|s| {
                     s.toolbar_state.show_properties_panel = true;
-                    for entry in &mut s.view_entries {
-                        entry.selected = entry.name == file;
+                    s.selection.clear();
+                    if let Some(entry) = s.view_entries.iter().find(|e| e.name == file) {
+                        s.selection.insert(entry.path.clone());
                     }
                 });
             }
