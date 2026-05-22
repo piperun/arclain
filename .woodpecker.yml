@@ -120,8 +120,13 @@ steps:
       # directory as the platform tarball.
       - tar -czf dist/arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz
           -C release .
-      - cd dist && sha256sum *.tar.gz > checksums-sha256.txt
-      - cat checksums-sha256.txt
+      # Per-platform sidecar checksum. Avoids a shared
+      # `checksums-sha256.txt` that the parallel windows build would
+      # have to depends_on for ordering — that depends_on can't be
+      # honored on push events where build-linux doesn't run, and
+      # woodpecker rejects the whole pipeline graph.
+      - cd dist && sha256sum arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz > arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz.sha256
+      - cat dist/arclain-${CI_COMMIT_TAG}-linux-x64.tar.gz.sha256
     depends_on: [cargo-check, cargo-test, wasm-plugins]
 
   # ── Windows release build on tag (cross-compiled via cargo-xwin) ────
@@ -156,12 +161,12 @@ steps:
       - su runner -c "cd /workspace/codeberg/arclain && cargo xwin build --release --target x86_64-pc-windows-msvc --bin arclain_ui --locked"
       - mkdir -p dist
       - cp target/x86_64-pc-windows-msvc/release/arclain_ui.exe dist/arclain-${CI_COMMIT_TAG}-windows-x64.exe
-      # Append to the same combined checksums file build-linux-x86_64
-      # wrote — the depends_on below guarantees this runs after Linux,
-      # so the file already exists.
-      - cd dist && sha256sum arclain-${CI_COMMIT_TAG}-windows-x64.exe >> checksums-sha256.txt
-      - cat checksums-sha256.txt
-    depends_on: [build-linux-x86_64]
+      # Per-platform sidecar checksum (see build-linux comment). No
+      # depends_on the linux step — that step is tag-only and would
+      # fail graph validation on push events.
+      - cd dist && sha256sum arclain-${CI_COMMIT_TAG}-windows-x64.exe > arclain-${CI_COMMIT_TAG}-windows-x64.exe.sha256
+      - cat dist/arclain-${CI_COMMIT_TAG}-windows-x64.exe.sha256
+    depends_on: [cargo-check, cargo-test]
 
   publish-release:
     image: woodpeckerci/plugin-release
@@ -174,7 +179,8 @@ steps:
       target: ${CI_COMMIT_SHA}
       files:
         - dist/arclain-*-linux-x64.tar.gz
+        - dist/arclain-*-linux-x64.tar.gz.sha256
         - dist/arclain-*-windows-x64.exe
-        - dist/checksums-sha256.txt
+        - dist/arclain-*-windows-x64.exe.sha256
       title: ${CI_COMMIT_TAG}
     depends_on: [build-linux-x86_64, build-windows-x86_64]
