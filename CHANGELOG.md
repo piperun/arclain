@@ -2,6 +2,15 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.2.1 - 2026-05-22
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Bug Fixes
+- (**ci**) pass --skip-tests to release.py to avoid duplicate test pass as root - (273dea8) - 0xdev
+
+- - -
+
 ## 2.2.0 - 2026-05-22
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
