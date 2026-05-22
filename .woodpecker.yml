@@ -129,7 +129,10 @@ steps:
   build-windows-x86_64:
     image: rust:1.94
     when:
-      - event: tag
+      # Temporary: run on every push too so we catch xwin/MSVC-SDK
+      # breakage before tag day. Narrow back to `event: tag` once
+      # we've seen one fully-green Windows build land.
+      - event: [push, tag]
     commands:
       # llvm/clang/lld are the cross-compile toolchain cargo-xwin
       # invokes when targeting *-pc-windows-msvc from Linux.
