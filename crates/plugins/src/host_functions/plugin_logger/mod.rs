@@ -185,35 +185,95 @@ impl PluginLogger {
     }
 }
 
+/// Time source for [`TokenBucket`]. Production code uses
+/// [`SystemClock`] (the default); tests can substitute a mock that
+/// advances explicitly so token-bucket assertions don't depend on
+/// real wall-clock scheduling.
+///
+/// Implementors must be `Send + Sync` because the bucket lives in
+/// `PluginLogger` which is shared across WASM call threads.
+pub(crate) trait Clock: Send + Sync {
+    /// Time elapsed since some clock-internal reference point. Only
+    /// the *difference* between two `now()` calls matters; absolute
+    /// values are arbitrary.
+    fn now(&self) -> std::time::Duration;
+}
+
+/// Real wall-clock implementation. Records `Instant::now()` at
+/// construction and returns `elapsed()` thereafter, which is the
+/// monotonic OS clock — immune to wall-clock jumps from NTP / DST.
+pub(crate) struct SystemClock {
+    start: Instant,
+}
+
+impl SystemClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            start: Instant::now(),
+        }
+    }
+}
+
+impl Clock for SystemClock {
+    fn now(&self) -> std::time::Duration {
+        self.start.elapsed()
+    }
+}
+
+/// Delegating impl so a test can pass `Arc<MockClock>` while keeping
+/// a handle to call `advance()` on. Same pattern works for any
+/// other shared clock wrapper.
+impl<C: Clock + ?Sized> Clock for std::sync::Arc<C> {
+    fn now(&self) -> std::time::Duration {
+        (**self).now()
+    }
+}
+
 /// Simple token bucket. `rate_per_sec` tokens are added per second up
 /// to `capacity`. `try_take` consumes one token if available.
-pub(crate) struct TokenBucket {
+///
+/// Generic over [`Clock`] with [`SystemClock`] as the default so
+/// production call sites (`TokenBucket::new(...)`) get monotonic
+/// real time while tests can construct with `with_clock` + an
+/// `Arc<MockClock>` for deterministic timing.
+pub(crate) struct TokenBucket<C: Clock = SystemClock> {
     rate_per_sec: f64,
     capacity: f64,
+    clock: C,
     state: Mutex<BucketState>,
 }
 
 struct BucketState {
     tokens: f64,
-    last_refill: Instant,
+    last_refill: std::time::Duration,
 }
 
-impl TokenBucket {
+impl TokenBucket<SystemClock> {
     pub(crate) fn new(rate_per_sec: f64, capacity: u32) -> Self {
+        Self::with_clock(rate_per_sec, capacity, SystemClock::new())
+    }
+}
+
+impl<C: Clock> TokenBucket<C> {
+    pub(crate) fn with_clock(rate_per_sec: f64, capacity: u32, clock: C) -> Self {
+        let initial = clock.now();
         Self {
             rate_per_sec,
             capacity: capacity as f64,
+            clock,
             state: Mutex::new(BucketState {
                 tokens: capacity as f64,
-                last_refill: Instant::now(),
+                last_refill: initial,
             }),
         }
     }
 
     pub(crate) fn try_take(&self) -> bool {
         let mut s = self.state.lock();
-        let now = Instant::now();
-        let elapsed = now.duration_since(s.last_refill).as_secs_f64();
+        let now = self.clock.now();
+        // Safe subtraction: both values come from the same monotonic
+        // clock, so `now >= s.last_refill` always holds.
+        let elapsed = (now - s.last_refill).as_secs_f64();
         s.tokens = (s.tokens + elapsed * self.rate_per_sec).min(self.capacity);
         s.last_refill = now;
         if s.tokens >= 1.0 {

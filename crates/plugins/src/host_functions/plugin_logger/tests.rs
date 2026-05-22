@@ -1,6 +1,35 @@
-use super::{PluginLogger, TokenBucket};
+use super::{Clock, PluginLogger, TokenBucket};
+use parking_lot::Mutex;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Test-only clock with explicit `advance`. The token-bucket tests
+/// pass an `Arc<MockClock>` to `TokenBucket::with_clock` and keep a
+/// second `Arc` handle for advancing time mid-test, replacing the
+/// wall-clock `Instant::now()` that made these tests flaky on slow
+/// CI runners.
+pub(crate) struct MockClock {
+    elapsed: Mutex<Duration>,
+}
+
+impl MockClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            elapsed: Mutex::new(Duration::ZERO),
+        }
+    }
+
+    pub(crate) fn advance(&self, by: Duration) {
+        *self.elapsed.lock() += by;
+    }
+}
+
+impl Clock for MockClock {
+    fn now(&self) -> Duration {
+        *self.elapsed.lock()
+    }
+}
 
 fn temp_log_dir() -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,15 +48,10 @@ fn temp_log_dir() -> PathBuf {
 
 #[test]
 fn token_bucket_allows_burst_up_to_capacity() {
-    // Rate 0.0 = no time-based refill. The 5000-iteration burst on a
-    // slow CI runner takes a few ms and would otherwise refill several
-    // tokens during the loop (1000/sec × 5 ms = 5 tokens), letting
-    // take #5001 sneak through and breaking the assertion. The test
-    // is specifically about *burst capacity*, not refill rate — refill
-    // is exercised by `token_bucket_refills_at_configured_rate` below —
-    // so setting rate to 0.0 isolates the property under test from
-    // wall-clock scheduling.
-    let bucket = TokenBucket::new(0.0, 5000);
+    let clock = Arc::new(MockClock::new());
+    let bucket = TokenBucket::with_clock(1000.0, 5000, clock);
+    // Bucket starts at capacity (5000). Time never advances, so no
+    // refill — exactly 5000 takes succeed, the 5001st is refused.
     for _ in 0..5000 {
         assert!(bucket.try_take(), "expected token within capacity");
     }
@@ -36,14 +60,19 @@ fn token_bucket_allows_burst_up_to_capacity() {
 
 #[test]
 fn token_bucket_refills_at_configured_rate() {
-    let bucket = TokenBucket::new(1000.0, 100); // 1000/sec, cap 100
-    // Drain it
+    let clock = Arc::new(MockClock::new());
+    let bucket = TokenBucket::with_clock(1000.0, 100, clock.clone());
+    // Drain.
     for _ in 0..100 {
         bucket.try_take();
     }
     assert!(!bucket.try_take(), "drained");
-    // Wait 50 ms — should refill ~50 tokens
-    std::thread::sleep(Duration::from_millis(50));
+
+    // Advance 50 ms of mock time — at 1000 tokens/sec that's exactly
+    // 50 tokens refilled. With a real Instant this would need a
+    // `thread::sleep` plus a 40..=60 slack window; the mock clock
+    // lets us assert the precise count.
+    clock.advance(Duration::from_millis(50));
     let mut taken = 0;
     while bucket.try_take() {
         taken += 1;
@@ -51,12 +80,7 @@ fn token_bucket_refills_at_configured_rate() {
             break;
         }
     }
-    // Allow some slack for scheduling jitter
-    assert!(
-        (40..=60).contains(&taken),
-        "expected ~50 refilled tokens after 50 ms, got {}",
-        taken
-    );
+    assert_eq!(taken, 50, "expected exactly 50 refilled tokens after 50 ms");
 }
 
 #[test]
