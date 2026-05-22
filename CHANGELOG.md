@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.2.2 - 2026-05-22
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Bug Fixes
+- (**scripts**) read version from [workspace.package] not crate Cargo.toml - (e313399) - 0xdev
+#### Continuous Integration
+- (**github**) rust-cache on windows-build, new tests workflow with nextest - (f05f6a0) - 0xdev
+
+- - -
+
 ## 2.2.1 - 2026-05-22
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
