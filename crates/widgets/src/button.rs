@@ -43,6 +43,7 @@ pub struct TextButton<'a> {
     size: ButtonSize,
     colors: Option<&'a ThemeColors>,
     fill: Option<Color32>,
+    debug_lines: bool,
 }
 
 impl<'a> TextButton<'a> {
@@ -55,6 +56,7 @@ impl<'a> TextButton<'a> {
             size,
             colors: None,
             fill: None,
+            debug_lines: false,
         }
     }
 
@@ -116,6 +118,14 @@ impl<'a> TextButton<'a> {
         self.fill = Some(fill);
         self
     }
+
+    /// Force the debug overlay on for this button instance. ORs with
+    /// the project-wide `EGUI_UI_DEBUG_GUIDELINES` env toggle. Same
+    /// pattern as IconButton. Stripped in release builds.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
+        self
+    }
 }
 
 impl<'a> Widget for TextButton<'a> {
@@ -140,6 +150,21 @@ impl<'a> Widget for TextButton<'a> {
             .stroke(stroke)
             .min_size(self.size.to_vec2());
 
-        ui.add(button)
+        let response = ui.add(button);
+
+        // Debug overlay — outlines the allocated rect with its
+        // dimensions + center cross. Useful for verifying the
+        // declared ButtonSize actually matches the painted size
+        // (small/medium/large/xlarge presets), and for catching
+        // tight-header layouts where the button gets clipped.
+        #[cfg(debug_assertions)]
+        crate::debug::paint_widget_rect_debug(
+            ui.painter(),
+            response.rect,
+            "text-btn",
+            self.debug_lines || crate::debug::ui_debug_guidelines_enabled(),
+        );
+
+        response
     }
 }

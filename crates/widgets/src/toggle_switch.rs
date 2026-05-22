@@ -15,6 +15,7 @@ pub struct ToggleSwitch<'a> {
     width: f32,
     height: f32,
     theme_colors: Option<&'a ThemeColors>,
+    debug_lines: bool,
 }
 
 impl<'a> ToggleSwitch<'a> {
@@ -28,6 +29,7 @@ impl<'a> ToggleSwitch<'a> {
             width: 44.0,
             height: 22.0,
             theme_colors: None,
+            debug_lines: false,
         }
     }
 
@@ -51,6 +53,18 @@ impl<'a> ToggleSwitch<'a> {
 
     pub fn with_theme_colors(mut self, colors: &'a ThemeColors) -> Self {
         self.theme_colors = Some(colors);
+        self
+    }
+
+    /// Force the debug overlay on for this switch. ORs with the
+    /// project-wide `EGUI_UI_DEBUG_GUIDELINES` env toggle. Painted
+    /// helpers show the track rect, the actual thumb center, and
+    /// the min_x..max_x travel bounds — useful when the knob feels
+    /// "off" relative to the track because the animation midpoint
+    /// or padding doesn't match what you expected. Stripped in
+    /// release.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
         self
     }
 }
@@ -192,6 +206,42 @@ impl<'a> Widget for ToggleSwitch<'a> {
                     .layout_no_wrap(icon_str.to_string(), font_id, icon_color);
                 let text_pos = thumb_center - galley.rect.size() / 2.0;
                 ui.painter().galley(text_pos, galley, Color32::PLACEHOLDER);
+            }
+
+            // Debug overlay — track rect outline + thumb-center
+            // marker + travel-bounds (min_x, max_x) verticals. The
+            // standard `paint_widget_rect_debug` covers the track;
+            // the rest is custom because the question for a switch
+            // is rarely "is the rect right" but "is the thumb where
+            // I expect, and what's its travel range?"
+            #[cfg(debug_assertions)]
+            {
+                use crate::debug::{debug_colors, paint_widget_rect_debug, ui_debug_guidelines_enabled};
+                let enabled = self.debug_lines || ui_debug_guidelines_enabled();
+                if enabled {
+                    paint_widget_rect_debug(ui.painter(), rect, "toggle", true);
+                    // Thumb center: small outlined circle in TEXT_CENTER
+                    // (cyan) so it's distinguishable from the magenta
+                    // rect outline.
+                    ui.painter().circle_stroke(
+                        thumb_center,
+                        thumb_radius + 1.0,
+                        Stroke::new(1.0, debug_colors::TEXT_CENTER),
+                    );
+                    // Travel bounds: vertical line segments at min_x
+                    // and max_x, full track height. Tells you the
+                    // thumb's allowed range at a glance — easy to
+                    // see if padding is wrong.
+                    let bounds_stroke = Stroke::new(1.0, debug_colors::GAP_LINE);
+                    ui.painter().line_segment(
+                        [pos2(min_x, rect.top()), pos2(min_x, rect.bottom())],
+                        bounds_stroke,
+                    );
+                    ui.painter().line_segment(
+                        [pos2(max_x, rect.top()), pos2(max_x, rect.bottom())],
+                        bounds_stroke,
+                    );
+                }
             }
         }
 
