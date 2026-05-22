@@ -1,0 +1,77 @@
+# EXPERIMENTAL — Flatpak manifest for arclain. Not Flathub-ready yet.
+#
+# Known gaps before this can ship:
+#   * No vendored cargo deps. Flatpak builds run network-isolated;
+#     the `cargo build` step below will fail without internet unless
+#     a `generated-cargo-sources.json` is produced via
+#     `flatpak-cargo-generator.py` and listed under `sources` (the
+#     standard pattern for Rust apps on Flathub).
+#   * No bundled 7z / unrar. arclain shells out to these via
+#     `arclain-network`-style PATH lookup. Inside the Flatpak
+#     sandbox they need to be either bundled as additional modules
+#     in this manifest or excluded with a clear "host tools needed"
+#     warning to users.
+#   * No AppStream metadata (`*.metainfo.xml`) or `.desktop` file.
+#     Flathub requires both.
+#   * Icon is the rasterized SVG that lives at `assets/icon.svg`;
+#     Flathub wants PNG sizes at 16/32/48/64/128/256.
+#
+# This manifest is enough to validate the build CI plumbing
+# (`.github/workflows/flatpak-build.yml`) and prove eframe + winit +
+# wgpu work inside the sandbox with the chosen `finish-args`. Treat
+# everything below as a scaffold to iterate on.
+
+app-id: org.codeberg.0xdev.Arclain
+
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+
+command: arclain
+
+finish-args:
+  # Wayland + X11 fallback so winit picks whichever the host runs.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+
+  # GPU access for wgpu / glow. Without this eframe falls back to
+  # software rendering and the UI is unusably slow.
+  - --device=dri
+
+  # Network for the dlsite plugin and any other future HTTP plugin.
+  - --share=network
+
+  # User's home so they can open archives anywhere they store them.
+  # Tighter scopes (e.g. only `~/Downloads` + a configured archive
+  # root) are possible later but break drag-and-drop from arbitrary
+  # file managers.
+  - --filesystem=home
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/arclain/cargo
+
+modules:
+  - name: arclain
+    buildsystem: simple
+    build-commands:
+      # `--offline` once vendored deps are wired in. For now the
+      # `cargo build` will fail on Flathub's network-isolated build
+      # — fine, we're validating manifest plumbing first.
+      - cargo build --release --bin arclain_ui --locked
+      - install -Dm755 target/release/arclain_ui /app/bin/arclain
+    sources:
+      # Pull arclain source from the checkout directory the CI
+      # places at $GITHUB_WORKSPACE/codeberg/arclain.
+      - type: dir
+        path: ..  # relative to this manifest's directory
+      # Pull gameta from its codeberg sibling (cloned by CI into
+      # codeberg/gameta, sibling of codeberg/arclain).
+      - type: dir
+        path: ../../gameta
+        dest: ../gameta

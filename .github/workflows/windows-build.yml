@@ -1,0 +1,127 @@
+name: windows-build
+
+# Builds the desktop binary for x86_64-pc-windows-msvc on a native
+# windows-latest runner and uploads it to the matching codeberg
+# release page via the forgejo API.
+#
+# Why this lives on GitHub at all: the woodpecker pipeline on
+# codeberg can't cross-compile Windows binaries without chasing
+# MSVC SDK pruning (unrar_sys's unconditional `#include <PowrProf.h>`
+# is the trigger). Native windows-latest skips all of that — real
+# MSVC, real link.exe, no xwin.
+#
+# This workflow ships in arclain's repo and rides along to the
+# GitHub mirror via push/sync. The codeberg woodpecker pipeline
+# still owns the Linux release; both providers upload to the same
+# codeberg release page.
+
+on:
+  push:
+    tags:
+      # Mirror of the `.woodpecker.yml` tag matcher: cog-7 unified
+      # workspace tag (`2.1.0`, etc) plus per-package plugin tag
+      # (`dlsite-metadata-0.12.0`).
+      - '[0-9]*'
+      - 'dlsite-metadata-[0-9]*'
+  workflow_dispatch:
+    # Manual fallback for re-running uploads if a previous run's
+    # upload step died mid-flight.
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout arclain
+        uses: actions/checkout@v4
+        with:
+          # arclain's path-deps reach gameta via
+          # `../../../../codeberg/gameta/<crate>`, so we recreate
+          # `<root>/codeberg/{arclain,gameta}/` exactly.
+          path: codeberg/arclain
+
+      - name: Clone gameta (path-dep sibling, from codeberg)
+        # gameta isn't mirrored to GitHub, so we always fetch it
+        # from its codeberg origin. Tracks master rather than a
+        # pinned ref because the cargo path-dep doesn't record a
+        # version — if/when arclain starts pinning a specific
+        # gameta commit (e.g. via git-dep), mirror that here.
+        run: git clone --depth 1 https://codeberg.org/0xdev/gameta.git codeberg/gameta
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build arclain_ui (release)
+        working-directory: codeberg/arclain
+        run: cargo build --release --bin arclain_ui --locked
+
+      - name: Package + checksum
+        working-directory: codeberg/arclain
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $out = "dist/arclain-$tag-windows-x64.exe"
+          Copy-Item target/release/arclain_ui.exe $out
+          $hash = (Get-FileHash -Algorithm SHA256 $out).Hash.ToLower()
+          "$hash  $(Split-Path -Leaf $out)" | Out-File -FilePath "$out.sha256" -Encoding ascii
+          Get-Content "$out.sha256"
+
+      - name: Upload to codeberg release
+        # Only on tag pushes — for workflow_dispatch runs on master
+        # there's no release to upload to. Manual dispatch still
+        # builds + checksums and keeps the artifact attached to the
+        # workflow run (next step).
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        working-directory: codeberg/arclain
+        shell: pwsh
+        env:
+          CODEBERG_TOKEN: ${{ secrets.CODEBERG_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $repo = "0xdev/Arclain"
+          $headers = @{ Authorization = "token $env:CODEBERG_TOKEN" }
+
+          # Poll for the codeberg release to exist — Woodpecker's
+          # publish-release step creates it on the same tag, in
+          # parallel with this workflow. If GitHub finishes first,
+          # wait up to ~10 min.
+          $release = $null
+          for ($i = 0; $i -lt 60; $i++) {
+            try {
+              $release = Invoke-RestMethod -Uri "https://codeberg.org/api/v1/repos/$repo/releases/tags/$tag" -Headers $headers
+              Write-Host "Found release id=$($release.id) for tag $tag"
+              break
+            } catch {
+              Write-Host "Release $tag not yet on codeberg, retrying in 10s ($i/60)…"
+              Start-Sleep -Seconds 10
+            }
+          }
+          if (-not $release) {
+            throw "Codeberg release for tag $tag never appeared after 10 min. Did the Woodpecker publish-release step fail?"
+          }
+
+          $assetsUrl = "https://codeberg.org/api/v1/repos/$repo/releases/$($release.id)/assets"
+          foreach ($f in @("arclain-$tag-windows-x64.exe", "arclain-$tag-windows-x64.exe.sha256")) {
+            $path = "dist/$f"
+            Write-Host "Uploading $f…"
+            Invoke-RestMethod `
+              -Uri "${assetsUrl}?name=$f" `
+              -Method Post `
+              -Headers $headers `
+              -InFile $path `
+              -ContentType "application/octet-stream"
+          }
+
+      - name: Upload .exe as GitHub artifact (always)
+        # Belt-and-suspenders: keep a copy on the workflow run even
+        # if the codeberg upload step skipped (dispatch run) or
+        # failed (token expired, etc).
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arclain-windows-x64
+          path: |
+            codeberg/arclain/dist/arclain-*-windows-x64.exe
+            codeberg/arclain/dist/arclain-*-windows-x64.exe.sha256
+          retention-days: 30

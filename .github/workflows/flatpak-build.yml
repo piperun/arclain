@@ -1,0 +1,62 @@
+name: flatpak-build
+
+# EXPERIMENTAL — first-pass Flatpak build CI for arclain.
+#
+# Validates that the Flatpak manifest at
+# `flatpak/org.codeberg.0xdev.Arclain.yml` parses and that arclain's
+# source can build inside the Flatpak sandbox. Does NOT yet produce
+# a Flathub-ready bundle — see the manifest header for the gap list
+# (vendored cargo deps, AppStream metadata, .desktop file, icon
+# sizes, bundled 7z/unrar).
+#
+# Triggered manually via workflow_dispatch while the manifest is
+# still iterating — firing on every tag would just produce broken
+# artifacts and noise. Once the manifest is Flathub-ready, switch
+# to `on: push: tags:` like windows-build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'arclain ref to build (tag or branch; defaults to master)'
+        required: false
+        default: 'master'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # The bilelmoussaoui action wraps flatpak-builder in a container
+    # that already has everything wired up. `--privileged` is needed
+    # for the nested bubblewrap sandbox.
+    container:
+      image: bilelmoussaoui/flatpak-github-actions:gnome-46
+      options: --privileged
+
+    steps:
+      - name: Checkout arclain
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: codeberg/arclain
+
+      - name: Clone gameta (path-dep sibling)
+        run: git clone --depth 1 https://codeberg.org/0xdev/gameta.git codeberg/gameta
+
+      - name: Build Flatpak
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: arclain.flatpak
+          manifest-path: codeberg/arclain/flatpak/org.codeberg.0xdev.Arclain.yml
+          # No caching while the manifest is still iterating —
+          # stale caches across runs would just confuse debugging.
+          cache: false
+
+      - name: Upload .flatpak artifact
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: arclain-flatpak
+          path: arclain.flatpak
+          retention-days: 14
