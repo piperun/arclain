@@ -2,6 +2,56 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.2.5 - 2026-05-27
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Features
+- (**ui**) backend-error dialog + worker repaint backstop - (e3463ee) - 0xdev
+- (**ui**) force XWayland on Linux to enable drag-and-drop - (eb5807e) - 0xdev
+- (**ui**) round black icon background centered on design - (f7941ab) - 0xdev
+- (**widgets**) debug overlays on the remaining 8 widgets - (325aaa8) - 0xdev
+#### Bug Fixes
+- (**password**) broaden auto-saved rule patterns to actually match siblings - (cdbd6d3) - 0xdev
+- (**plugins**) queue archive-open events + pin each to its originating tab - (06fa6d7) - 0xdev
+- (**scripts**) drop -A flag from just bump recipes (cog 7 convention) - (04e8f1c) - 0xdev
+- (**ui**) list_archive writes to the target tab, not the active one - (251f56e) - 0xdev
+- (**ui**) pump metadata signal for every tab, not just the active one - (5ea8461) - 0xdev
+- (**ui**) sync plugin archive context to active tab every frame - (f31054a) - 0xdev
+#### Performance Improvements
+- (**plugins**) list_archive_files reads bridge cache instead of re-listing - (01a8bb5) - 0xdev
+#### Documentation
+- (**mvu**) document the lock-free plugin-runtime poll exception - (3bb7887) - 0xdev
+#### Tests
+- (**ui**) render-emit tests for the MVU-converted features - (ab69e32) - 0xdev
+- (**ui**) ToggleItemVisibility symmetry coverage for Toolbar + ContextMenu - (d8f0c9d) - 0xdev
+- (**ui**) happy-path dispatcher tests against real temp-file DBs - (45d89ba) - 0xdev
+- (**ui**) dispatcher tests for the MVU-converted features - (928fb1b) - 0xdev
+- (**ui**) drop stale FileEntry.selected init from browser test - (000a36c) - 0xdev
+#### Build system
+- (**scripts**) split release.py into focused modules + justfile entry - (2875625) - 0xdev
+#### Continuous Integration
+- (**github**) bump codeberg-release poll budget from 10 to 30 min - (bdd4417) - 0xdev
+- (**github**) opt all workflows into Node.js 24 for JS actions - (45249b2) - 0xdev
+#### Refactoring
+- (**archive_browser**) route post-render plugin dispatch via Action - (afc32cc) - 0xdev
+- (**organization**) convert RulesPage to action-emitting views - (f3ff0f3) - 0xdev
+- (**organization**) convert ProfilesPage to action-emitting view - (9e5f9bb) - 0xdev
+- (**plugins**) ActiveTabBridge replaces held per-tab signal handles - (f6f4e45) - 0xdev
+- (**plugins**) drop dead PluginAction/UiElement variants + scaffolds - (4bae967) - 0xdev
+- (**process**) convert Process page to action-emitting views - (0b91d22) - 0xdev
+- (**settings**) LayoutEditor consumes from canonical signals - (b7593bc) - 0xdev
+- (**settings**) dedup Interface page item cache via signals - (2faf532) - 0xdev
+- (**settings**) cache security-page default paths at state construction - (cceece8) - 0xdev
+- (**settings**) convert Interface page to action-emitting view - (9d1b0c0) - 0xdev
+- (**settings**) extract LayoutEditor<R> abstraction + MVU convert - (4cf6e6e) - 0xdev
+- (**ui**) split selection into HashSet on BrowserViewState - (95a2eec) - 0xdev
+#### Miscellaneous Chores
+- (**ci**) dev Containerfile + compose with CI-step mirrors - (d8361f8) - 0xdev
+- (**deps**) refresh Cargo.lock — registry version bumps from CI test runs - (72a6a1c) - 0xdev
+
+- - -
+
 ## 2.2.4 - 2026-05-22
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
