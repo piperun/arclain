@@ -106,6 +106,9 @@ impl BrowserController {
             Action::NavigateUp => {
                 self.nav_service.navigate_up(shared.signals());
             }
+            Action::DispatchPendingPluginEvent => {
+                shared.app_state.lock().dispatch_pending_plugin_event();
+            }
             Action::None => {}
         }
     }

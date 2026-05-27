@@ -73,9 +73,12 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
     });
 
     // After UI has rendered, dispatch any pending plugin events.
-    if !tab.ui_ready.get() {
-        let mut app_state = shared.app_state.lock();
-        app_state.dispatch_pending_plugin_event();
+    // Emit as an Action so the controller is the single chokepoint
+    // for app_state mutation — render shouldn't lock + mutate. If a
+    // user action is already in flight this frame, it wins; the
+    // plugin dispatch fires next frame (ui_ready stays false).
+    if matches!(action, Action::None) && !tab.ui_ready.get() {
+        action = Action::DispatchPendingPluginEvent;
     }
 
     action
