@@ -238,7 +238,13 @@ pub fn render_settings_content(
         SettingsPage::ArchiveProfiles => {
             if let Some(pp) = profiles_page {
                 if let Some(shared_state) = shared {
-                    pp.render(ui, theme, shared_state);
+                    if let Some(action) = pp.render(ui, theme) {
+                        crate::features::organization::presentation::views::profiles_page::handle_profiles_action(
+                            pp,
+                            action,
+                            shared_state,
+                        );
+                    }
                 }
             }
             None

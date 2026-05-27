@@ -2,6 +2,11 @@
 //!
 //! CRUD interface for managing archive format profiles. Owned by the Organization
 //! feature (profiles are organization-domain configuration).
+//!
+//! Architecture: render emits `Option<ProfilesAction>` and never
+//! touches the DB. The sibling `handle_profiles_action` function
+//! owns all persistence side effects, so adding logging, retry, or
+//! audit-trail concerns only requires editing one place.
 
 mod add_profile_dialog;
 
@@ -13,6 +18,23 @@ use crate::shared::SharedState;
 use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use std::cell::Cell;
+
+/// Intents emitted by `ProfilesPage::render`. The dispatcher
+/// (`handle_profiles_action`) owns all DB work; render is pure
+/// intent-emission.
+#[derive(Debug, Clone)]
+pub enum ProfilesAction {
+    /// First-time load or refresh after a mutation. Fired automatically
+    /// from render when `page.profiles` is `None`.
+    LoadProfiles,
+    /// Persist a new or edited profile. The dispatcher upserts and
+    /// re-fetches the list.
+    SaveProfile(ArchiveProfile),
+    /// Delete the profile with the given DB id.
+    DeleteProfile(i64),
+    /// Mark the profile with the given DB id as default.
+    SetDefaultProfile(i64),
+}
 
 pub struct ProfilesPage {
     profiles: Option<Vec<ArchiveProfile>>,
@@ -35,98 +57,25 @@ impl ProfilesPage {
         Self::default()
     }
 
-    fn refresh_profiles(&mut self, shared: &SharedState) {
-        // Load profiles from database via config pool
-        let state = shared.app_state.lock();
-        if let Some(dbs) = &state.dbs {
-            let pool = &dbs.config_pool;
-            match pool.get() {
-                Ok(mut conn) => {
-                    match arclain_core::list_profiles(&mut conn) {
-                        Ok(db_profiles) => {
-                            self.profiles = Some(
-                                db_profiles
-                                    .iter()
-                                    .map(ArchiveProfile::from_db)
-                                    .collect(),
-                            );
-                            self.error = None;
-                        }
-                        Err(e) => {
-                            self.error = Some(format!("Failed to load profiles: {}", e));
-                        }
-                    }
-                }
-                Err(e) => {
-                    self.error = Some(format!("Database connection error: {}", e));
-                }
-            }
-        } else {
-            self.error = Some("Database not available".to_string());
-        }
-    }
-
-    fn save_profile(&mut self, profile: &ArchiveProfile, shared: &SharedState) -> Result<(), String> {
-        let state = shared.app_state.lock();
-        if let Some(dbs) = &state.dbs {
-            let pool = &dbs.config_pool;
-            match pool.get() {
-                Ok(mut conn) => {
-                    let db_profile = profile.to_db();
-                    arclain_core::save_profile(&mut conn, &db_profile)
-                        .map_err(|e| format!("Failed to save profile: {}", e))?;
-                    Ok(())
-                }
-                Err(e) => Err(format!("Database connection error: {}", e)),
-            }
-        } else {
-            Err("Database not available".to_string())
-        }
-    }
-
-    fn delete_profile(&mut self, id: i64, shared: &SharedState) -> Result<(), String> {
-        let state = shared.app_state.lock();
-        if let Some(dbs) = &state.dbs {
-            let pool = &dbs.config_pool;
-            match pool.get() {
-                Ok(mut conn) => {
-                    arclain_core::delete_profile(&mut conn, id as i32)
-                        .map_err(|e| format!("Failed to delete profile: {}", e))?;
-                    Ok(())
-                }
-                Err(e) => Err(format!("Database connection error: {}", e)),
-            }
-        } else {
-            Err("Database not available".to_string())
-        }
-    }
-
-    fn set_default_profile(&mut self, id: i64, shared: &SharedState) -> Result<(), String> {
-        let state = shared.app_state.lock();
-        if let Some(dbs) = &state.dbs {
-            let pool = &dbs.config_pool;
-            match pool.get() {
-                Ok(mut conn) => {
-                    arclain_core::set_default_profile(&mut conn, id as i32)
-                        .map_err(|e| format!("Failed to set default: {}", e))?;
-                    Ok(())
-                }
-                Err(e) => Err(format!("Database connection error: {}", e)),
-            }
-        } else {
-            Err("Database not available".to_string())
-        }
-    }
-
     pub fn render(
         &mut self,
         ui: &mut egui::Ui,
         theme: &crate::shared::theme::AppTheme,
-        shared: &SharedState,
-    ) {
+    ) -> Option<ProfilesAction> {
+        // First render (or after a mutation that invalidated the cache):
+        // emit a Load action and show a placeholder. The dispatcher
+        // populates `self.profiles` synchronously after render returns;
+        // the next frame shows real data.
         if self.profiles.is_none() {
-            self.refresh_profiles(shared);
+            ui.label(
+                egui::RichText::new("Loading profiles…")
+                    .size(12.0)
+                    .color(theme.colors.on_surface_variant),
+            );
+            return Some(ProfilesAction::LoadProfiles);
         }
+
+        let mut emitted: Option<ProfilesAction> = None;
 
         // Use Cell to track "set default" clicks from inside the closure
         let set_default_idx: Cell<Option<usize>> = Cell::new(None);
@@ -280,7 +229,8 @@ impl ProfilesPage {
                     ItemTable::new().show(ui, theme, &[], &empty_profiles, |_, _, _, _| {})
                 };
 
-                // Handle deferred actions
+                // Handle edit click → open dialog locally; no action emitted
+                // until the user saves.
                 if let Some(edit_idx) = actions.get_edit() {
                     if let Some(profiles) = &self.profiles {
                         if let Some(profile) = profiles.get(*edit_idx) {
@@ -289,44 +239,99 @@ impl ProfilesPage {
                     }
                 }
 
-                // Handle delete action
+                // Handle delete click → emit DeleteProfile action.
                 if let Some(delete_idx) = actions.get_delete() {
                     if let Some(profiles) = &self.profiles {
                         if let Some(profile) = profiles.get(*delete_idx) {
                             if !profile.is_system {
-                                if let Err(e) = self.delete_profile(profile.id, shared) {
-                                    self.error = Some(e);
-                                } else {
-                                    self.profiles = None; // Trigger refresh
-                                }
+                                emitted = Some(ProfilesAction::DeleteProfile(profile.id));
                             }
                         }
                     }
                 }
             });
 
-        // Handle set default action (deferred from closure)
-        if let Some(idx) = set_default_idx.get() {
-            if let Some(profiles) = &self.profiles {
-                if let Some(profile) = profiles.get(idx) {
-                    if let Err(e) = self.set_default_profile(profile.id, shared) {
-                        self.error = Some(e);
-                    } else {
-                        self.profiles = None; // Trigger refresh
+        // Handle set-default click (deferred out of the table closure).
+        if emitted.is_none() {
+            if let Some(idx) = set_default_idx.get() {
+                if let Some(profiles) = &self.profiles {
+                    if let Some(profile) = profiles.get(idx) {
+                        emitted = Some(ProfilesAction::SetDefaultProfile(profile.id));
                     }
                 }
             }
         }
 
-        // Handle Dialog
+        // Dialog: open dialog runs its own local rendering loop; if the
+        // user saves, we emit a SaveProfile action.
         if self.dialog.is_open() {
             if let Some(new_profile) = self.dialog.show(ui.ctx(), theme) {
-                if let Err(e) = self.save_profile(&new_profile, shared) {
-                    self.error = Some(e);
-                } else {
-                    self.profiles = None; // Trigger refresh
+                if emitted.is_none() {
+                    emitted = Some(ProfilesAction::SaveProfile(new_profile));
                 }
             }
+        }
+
+        emitted
+    }
+}
+
+/// Dispatch a `ProfilesAction` against the DB and update the page's
+/// cached state. Called by the parent view (`settings_content.rs`)
+/// after `render` returns an action. All side effects on the DB live
+/// here, so `ProfilesPage::render` itself stays a pure intent-emitter.
+///
+/// Every mutation re-fetches the full profile list, so the page is
+/// up-to-date on the next frame.
+pub fn handle_profiles_action(
+    page: &mut ProfilesPage,
+    action: ProfilesAction,
+    shared: &SharedState,
+) {
+    let state = shared.app_state.lock();
+    let Some(dbs) = &state.dbs else {
+        page.error = Some("Database not available".to_string());
+        return;
+    };
+    let mut conn = match dbs.config_pool.get() {
+        Ok(c) => c,
+        Err(e) => {
+            page.error = Some(format!("Database connection error: {}", e));
+            return;
+        }
+    };
+
+    // Run the mutation (if any), then always re-list so the page
+    // shows current data on the next frame.
+    let mutation_result: Result<(), String> = match action {
+        ProfilesAction::LoadProfiles => Ok(()),
+        ProfilesAction::SaveProfile(profile) => arclain_core::save_profile(&mut conn, &profile.to_db())
+            .map(|_| ())
+            .map_err(|e| format!("Failed to save profile: {}", e)),
+        ProfilesAction::DeleteProfile(id) => arclain_core::delete_profile(&mut conn, id as i32)
+            .map(|_| ())
+            .map_err(|e| format!("Failed to delete profile: {}", e)),
+        ProfilesAction::SetDefaultProfile(id) => {
+            arclain_core::set_default_profile(&mut conn, id as i32)
+                .map(|_| ())
+                .map_err(|e| format!("Failed to set default: {}", e))
+        }
+    };
+
+    if let Err(e) = mutation_result {
+        page.error = Some(e);
+        return;
+    }
+
+    // Refresh the cache. A failure here surfaces in the error banner;
+    // a successful load also clears any prior error.
+    match arclain_core::list_profiles(&mut conn) {
+        Ok(db_profiles) => {
+            page.profiles = Some(db_profiles.iter().map(ArchiveProfile::from_db).collect());
+            page.error = None;
+        }
+        Err(e) => {
+            page.error = Some(format!("Failed to load profiles: {}", e));
         }
     }
 }
