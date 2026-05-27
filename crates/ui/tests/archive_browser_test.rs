@@ -264,7 +264,6 @@ fn test_ui_render_sanity() {
     view_state.view_entries.push(FileEntry {
         name: "test_ui_file.txt".to_string(),
         path: "test_ui_file.txt".to_string(),
-        selected: false,
         size: "100".to_string(),
         compressed: "50".to_string(),
         ratio: "50%".to_string(),
