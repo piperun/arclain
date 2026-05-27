@@ -192,26 +192,6 @@ impl Default for ButtonAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PluginUiElement {
-    /// Vertical layout container
-    Column {
-        #[serde(default)]
-        children: Vec<PluginUiElement>,
-        #[serde(default)]
-        spacing: Option<f32>,
-    },
-    /// Horizontal layout container
-    Row {
-        #[serde(default)]
-        children: Vec<PluginUiElement>,
-        #[serde(default)]
-        spacing: Option<f32>,
-    },
-    /// Grid layout container
-    Grid {
-        columns: u32,
-        #[serde(default)]
-        children: Vec<PluginUiElement>,
-    },
     /// Text label
     Label {
         text: String,
@@ -423,14 +403,10 @@ pub enum ToastLevel {
 pub enum PluginAction {
     /// No action
     None,
-    /// Request host to cache content from URL
-    CacheContent { key: String, url: String },
     /// Show a toast notification
     ShowToast { message: String, level: ToastLevel },
     /// Request UI refresh for an extension point
     RefreshPanel { extension_point: String },
-    /// Update a specific element's value
-    UpdateElement { id: String, value: String },
     /// Close the current dialog
     CloseDialog,
     /// Copy text to system clipboard

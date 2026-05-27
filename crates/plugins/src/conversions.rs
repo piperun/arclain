@@ -236,10 +236,6 @@ pub(crate) fn convert_plugin_action(
 
     match action {
         WitAction::None => InternalAction::None,
-        WitAction::CacheContent(req) => InternalAction::CacheContent {
-            key: req.key,
-            url: req.url,
-        },
         WitAction::ShowToast(config) => InternalAction::ShowToast {
             message: config.message,
             level: match config.level {
@@ -251,10 +247,6 @@ pub(crate) fn convert_plugin_action(
         },
         WitAction::RefreshPanel(ep) => InternalAction::RefreshPanel {
             extension_point: ep,
-        },
-        WitAction::UpdateElement(update) => InternalAction::UpdateElement {
-            id: update.id,
-            value: update.value,
         },
         WitAction::CloseDialog => InternalAction::CloseDialog,
         WitAction::CopyToClipboard(text) => InternalAction::CopyToClipboard { text },

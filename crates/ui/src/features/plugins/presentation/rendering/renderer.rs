@@ -36,15 +36,6 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
     ctx: &mut RenderContext<'_, H>,
 ) {
     match element {
-        PluginUiElement::Column { children, spacing } => {
-            layout::render_column(ui, ctx, children, *spacing, render_recursive);
-        }
-        PluginUiElement::Row { children, spacing } => {
-            layout::render_row(ui, ctx, children, *spacing, render_recursive);
-        }
-        PluginUiElement::Grid { columns, children } => {
-            layout::render_grid(ui, ctx, *columns, children, render_recursive);
-        }
         PluginUiElement::ListContainer {
             id: _,
             items,

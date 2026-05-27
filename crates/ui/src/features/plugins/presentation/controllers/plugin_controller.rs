@@ -22,10 +22,10 @@ pub struct ActionContext<'a> {
 /// Process a list of plugin actions.
 ///
 /// Pass `shared_state` so that actions which need to spawn background work
-/// (notably `RequestFetch` and `CacheContent`) can reach the tokio runtime,
-/// the gameta client, and the plugin manager. Without it, those actions are
-/// silently no-op'd — the historic toolbar default for years, which is why
-/// "Fetch DLSite" looked like it ran but never actually fetched anything.
+/// (notably `RequestFetch`) can reach the tokio runtime, the gameta client,
+/// and the plugin manager. Without it, those actions are silently no-op'd —
+/// the historic toolbar default for years, which is why "Fetch DLSite"
+/// looked like it ran but never actually fetched anything.
 pub fn process_plugin_actions(
     actions: Vec<PluginAction>,
     plugin_id: &str,
@@ -57,22 +57,6 @@ pub fn process_action(
     match action {
         PluginAction::None => {}
 
-        PluginAction::CacheContent { key, url } => {
-            tracing::info!(
-                "Plugin {} requested caching key='{}' from url='{}'",
-                plugin_id,
-                key,
-                url
-            );
-            if let Some(shared) = ctx.shared_state {
-                spawn_cache_content(shared, plugin_id, key, url);
-            } else {
-                tracing::warn!(
-                    "CacheContent dropped — no shared_state, can't dispatch background fetch"
-                );
-            }
-        }
-
         PluginAction::ShowToast { message, level } => {
             let toast_level = match level {
                 PluginToastLevel::Info => ToastLevel::Info,
@@ -94,22 +78,6 @@ pub fn process_action(
             if let Some(requests) = refresh_requests {
                 requests.lock().push(extension_point);
             }
-        }
-
-        PluginAction::UpdateElement { id, value } => {
-            // No-op by design. Plugins drive their UI through the
-            // `get-ui-layout` poll cycle plus `RefreshPanel` invalidation;
-            // pushing per-element state changes from the host would
-            // require a parallel reconciliation tree we deliberately
-            // don't maintain. Kept as a WIT variant for forward-compat
-            // with future server-driven flows; logged at debug so we
-            // can spot unexpected emissions.
-            tracing::debug!(
-                "Plugin {} emitted UpdateElement (no-op) id='{}' value='{}'",
-                plugin_id,
-                id,
-                value
-            );
         }
 
         PluginAction::CloseDialog => {
@@ -256,45 +224,6 @@ pub fn create_page_callback(
         ds.invalidate_page_layout();
         dialog_signal.set(ds);
     })
-}
-
-/// Spawn a background fire-and-forget cache fetch for
-/// `PluginAction::CacheContent`. Hands the work to the plugin's own
-/// `DataService` via `PluginInstance::cache_content_blocking`, run inside
-/// `tokio::task::spawn_blocking` so the plugin mutex + sync HTTP call
-/// don't block the UI thread.
-///
-/// Result is logged at debug; we don't notify the plugin on completion
-/// because CacheContent is fire-and-forget by design (use `RequestFetch`
-/// when you need a completion event).
-fn spawn_cache_content(
-    shared: &crate::shared::SharedState,
-    plugin_id: &str,
-    key: String,
-    url: String,
-) {
-    let Some(pm) = shared.services.plugin_manager.clone() else {
-        tracing::warn!("CacheContent dropped — plugin manager unavailable");
-        return;
-    };
-    let plugin_id_owned = plugin_id.to_string();
-    shared.services.tokio_runtime.spawn(async move {
-        let key_for_log = key.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let manager = pm.lock();
-            manager
-                .with_plugin_instance(&plugin_id_owned, |instance| {
-                    instance.cache_content_blocking(key, url)
-                })
-                .unwrap_or(false)
-        })
-        .await;
-        match result {
-            Ok(true) => tracing::debug!("CacheContent ok key='{}'", key_for_log),
-            Ok(false) => tracing::warn!("CacheContent failed key='{}'", key_for_log),
-            Err(e) => tracing::error!("CacheContent task panicked key='{}': {}", key_for_log, e),
-        }
-    });
 }
 
 /// Spawn a background metadata fetch on the tokio runtime.

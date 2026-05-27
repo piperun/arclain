@@ -4,68 +4,6 @@ use super::context::{RenderContext, UiEventHandler};
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 
-pub fn render_column<'a, H, F>(
-    ui: &mut egui::Ui,
-    ctx: &mut RenderContext<'a, H>,
-    children: &[PluginUiElement],
-    spacing: Option<f32>,
-    mut render_child: F,
-) where
-    H: UiEventHandler + ?Sized,
-    F: FnMut(&mut egui::Ui, &PluginUiElement, &mut RenderContext<'a, H>),
-{
-    ui.vertical(|ui| {
-        if let Some(sp) = spacing {
-            ui.spacing_mut().item_spacing.y = sp;
-        }
-        for child in children {
-            render_child(ui, child, ctx);
-        }
-    });
-}
-
-pub fn render_row<'a, H, F>(
-    ui: &mut egui::Ui,
-    ctx: &mut RenderContext<'a, H>,
-    children: &[PluginUiElement],
-    spacing: Option<f32>,
-    mut render_child: F,
-) where
-    H: UiEventHandler + ?Sized,
-    F: FnMut(&mut egui::Ui, &PluginUiElement, &mut RenderContext<'a, H>),
-{
-    ui.horizontal(|ui| {
-        if let Some(sp) = spacing {
-            ui.spacing_mut().item_spacing.x = sp;
-        }
-        for child in children {
-            render_child(ui, child, ctx);
-        }
-    });
-}
-
-pub fn render_grid<'a, H, F>(
-    ui: &mut egui::Ui,
-    ctx: &mut RenderContext<'a, H>,
-    columns: u32,
-    children: &[PluginUiElement],
-    mut render_child: F,
-) where
-    H: UiEventHandler + ?Sized,
-    F: FnMut(&mut egui::Ui, &PluginUiElement, &mut RenderContext<'a, H>),
-{
-    egui::Grid::new(ui.auto_id_with("plugin_grid"))
-        .num_columns(columns as usize)
-        .show(ui, |ui| {
-            for (i, child) in children.iter().enumerate() {
-                render_child(ui, child, ctx);
-                if (i + 1) % (columns as usize) == 0 {
-                    ui.end_row();
-                }
-            }
-        });
-}
-
 pub fn render_list_container<'a, H, F>(
     ui: &mut egui::Ui,
     ctx: &mut RenderContext<'a, H>,

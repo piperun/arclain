@@ -14,7 +14,6 @@ pub fn error_label(ui: &mut egui::Ui, theme: &AppTheme, msg: &str) {
 
 pub mod breadcrumbs;
 pub mod carousel;
-pub mod context_menu;
 pub mod drop_overlay;
 pub mod header;
 pub mod item_table;

@@ -1,6 +1,5 @@
 // Core application infrastructure module
 
-pub mod app_dialogs;
 pub mod app_lifecycle;
 pub mod app_rendering;
 pub mod arclain_app;
