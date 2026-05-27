@@ -26,6 +26,34 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // === Handle files dropped from Explorer ===
     crate::core::arclain_app::drop_handler::handle_drop_events(app, ctx);
 
+    // === Plugin archive-context sync (per-frame) ===
+    //
+    // Push the currently-active tab's archive_path + current_password
+    // down to the plugin manager. Without this, plugins only see
+    // whatever archive was last *opened* via the OnArchiveOpen event —
+    // tab switches weren't propagating context, so once a second
+    // archive was opened the plugin's `current_archive_info()` would
+    // permanently return that archive even after the user switched
+    // back to a different tab. dlsite-metadata in particular needs
+    // the active tab's filename to detect the RJ code; without this
+    // sync, switching tabs left the plugin convinced the "current"
+    // archive was the last-opened one and code detection ran against
+    // the wrong filename.
+    //
+    // The lock + write are cheap (two Mutex stores per call), so we
+    // unconditionally re-push every frame instead of tracking
+    // last-synced state. Idempotent when the active tab hasn't
+    // changed.
+    if let Some(plugin_manager) = &app.shared_state.services.plugin_manager {
+        let active_tab = app.shared_state.signals().tabs.get().active().clone();
+        let archive_path = active_tab
+            .archive_path
+            .get()
+            .map(|p| p.to_string_lossy().to_string());
+        let password = active_tab.current_password.get();
+        plugin_manager.lock().set_archive_context(archive_path, password);
+    }
+
     // === Lifecycle: Refresh requests, signals, theme ===
     app_lifecycle::process_refresh_requests(&app.shared_state, ctx);
     app_lifecycle::bind_signals_once(&app.shared_state.app_state, ctx, &mut app._signals_bound);
