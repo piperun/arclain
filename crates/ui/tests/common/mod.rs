@@ -131,7 +131,8 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
     services.core.config_db = Some(Arc::new(dbs.config.clone()));
     services.core.organization_service =
         Some(Arc::new(OrganizationService::new(dbs.config_pool.clone())));
-    services.core.ui_service = Some(Arc::new(UiService::new(dbs.config_pool.clone())));
+    let ui_svc = Arc::new(UiService::new(dbs.config_pool.clone()));
+    services.core.ui_service = Some(ui_svc.clone());
     let services = Arc::new(services);
 
     let app_state = AppState {
@@ -148,6 +149,21 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         signals: arclain_ui::core::signals::AppSignals::new(),
     };
     let signals = app_state.signals.clone();
+
+    // Mirror state/init.rs's signal-population step so tests behave
+    // like a freshly-started app: the canonical item signals are
+    // seeded from the (just-initialized) DB. The LayoutEditor
+    // dispatcher reads these signals; without this priming, tests
+    // would see empty signals and never populate state.items.
+    if let Ok(items) = ui_svc.list_toolbar_items() {
+        signals.toolbar_items.set(items);
+    }
+    if let Ok(items) = ui_svc.list_info_panel_items() {
+        signals.info_panel_items.set(items);
+    }
+    if let Ok(items) = ui_svc.list_items(arclain_core::UiRegion::ContextMenu) {
+        signals.context_menu_items.set(items);
+    }
 
     let shared = SharedState {
         app_state: Arc::new(Mutex::new(app_state)),

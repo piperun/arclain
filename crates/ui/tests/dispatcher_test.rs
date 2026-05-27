@@ -274,54 +274,65 @@ mod process_page {
 // ============================================================================
 
 mod layout_editor {
+    use super::*;
     use arclain_ui::features::settings::presentation::pages::{
         handle_info_panel_layout_action, handle_toolbar_layout_action, InfoPanelLayoutState,
         LayoutEditorAction, ToolbarLayoutState,
     };
 
+    // Post-refactor (2faf532 → follow-up): the dispatcher reads
+    // canonical item signals instead of hitting the UiService
+    // directly. `create_test_shared_state()` starts with empty
+    // signals, so these tests assert the "signal exists but empty"
+    // branch.
+
     #[test]
-    fn toolbar_sync_with_no_service_leaves_state_unloaded() {
+    fn toolbar_sync_against_empty_signal_loads_empty_items() {
+        let shared = create_test_shared_state();
         let mut state = ToolbarLayoutState::default();
 
         handle_toolbar_layout_action(
             &mut state,
             LayoutEditorAction::SyncItems,
-            None, // no UiService
-            None, // no PluginManager
+            &shared,
+            None,
         );
 
         assert!(
-            !state.loaded,
-            "without a UiService the loader branch must not flip loaded=true"
+            state.loaded,
+            "sync always flips loaded=true once it consults the signal"
         );
-        assert!(state.items.is_empty());
+        assert!(state.items.is_empty(), "empty signal → empty state.items");
     }
 
     #[test]
-    fn info_panel_sync_with_no_service_leaves_state_unloaded() {
+    fn info_panel_sync_against_empty_signal_loads_empty_items() {
+        let shared = create_test_shared_state();
         let mut state = InfoPanelLayoutState::default();
 
         handle_info_panel_layout_action(
             &mut state,
             LayoutEditorAction::SyncItems,
-            None,
+            &shared,
             None,
         );
 
-        assert!(!state.loaded);
+        assert!(state.loaded);
         assert!(state.items.is_empty());
     }
 
     #[test]
     fn sync_with_no_plugin_manager_skips_plugin_walk_cleanly() {
+        let shared = create_test_shared_state();
         let mut state = ToolbarLayoutState::default();
 
-        // Sync with neither service nor plugin manager should be a
-        // graceful no-op. Specifically, dirty stays false.
+        // Sync with empty signal and no plugin manager should be a
+        // graceful no-op for dirty (loaded=true, items=empty, dirty
+        // stays false).
         handle_toolbar_layout_action(
             &mut state,
             LayoutEditorAction::SyncItems,
-            None,
+            &shared,
             None,
         );
 
@@ -744,26 +755,27 @@ mod layout_editor_happy {
     };
 
     #[test]
-    fn toolbar_sync_with_real_service_loads_seeded_defaults() {
-        // ConfigDb's ui::seed module ships canonical toolbar entries
-        // (navigation group, file-actions, view, etc.) on first init.
-        // We assert "non-empty" rather than a hardcoded count so the
-        // test doesn't break every time defaults are tweaked.
+    fn toolbar_sync_against_populated_signal_loads_seeded_defaults() {
+        // The `with_dbs` helper primes signals from the freshly-init'd
+        // DB the same way `state/init.rs` does in production, so
+        // `signals.toolbar_items` carries the canonical seeded entries
+        // (navigation group, file-actions, view, etc.). Assert
+        // non-empty rather than a hardcoded count so the test
+        // doesn't break every time defaults are tweaked.
         let (_tmp, shared) = create_test_shared_state_with_dbs();
-        let ui_service = shared.services.ui_service.as_deref();
         let mut state = ToolbarLayoutState::default();
 
         handle_toolbar_layout_action(
             &mut state,
             LayoutEditorAction::SyncItems,
-            ui_service,
+            &shared,
             None,
         );
 
-        assert!(state.loaded, "real UiService must flip loaded=true");
+        assert!(state.loaded, "sync flips loaded=true");
         assert!(
             !state.items.is_empty(),
-            "fresh DB ships with seeded toolbar defaults"
+            "primed signal carries seeded toolbar defaults"
         );
         assert!(
             !state.dirty,
@@ -772,22 +784,98 @@ mod layout_editor_happy {
     }
 
     #[test]
-    fn info_panel_sync_with_real_service_loads_seeded_defaults() {
+    fn info_panel_sync_against_populated_signal_loads_seeded_defaults() {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
-        let ui_service = shared.services.ui_service.as_deref();
         let mut state = InfoPanelLayoutState::default();
 
         handle_info_panel_layout_action(
             &mut state,
             LayoutEditorAction::SyncItems,
-            ui_service,
+            &shared,
             None,
         );
 
         assert!(state.loaded);
         assert!(
             !state.items.is_empty(),
-            "fresh DB ships with seeded info-panel sections"
+            "primed signal carries seeded info-panel sections"
+        );
+    }
+
+    #[test]
+    fn sync_when_dirty_does_not_clobber_user_edits() {
+        // Once state.dirty=true (typical: user moved an item or
+        // toggled visibility in the editor), a later SyncItems must
+        // NOT pull a fresh signal value over state.items — that
+        // would silently throw away the in-flight edit.
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut state = ToolbarLayoutState::default();
+
+        // First sync to populate from signal.
+        handle_toolbar_layout_action(
+            &mut state,
+            LayoutEditorAction::SyncItems,
+            &shared,
+            None,
+        );
+        let baseline_len = state.items.len();
+        assert!(baseline_len > 0);
+
+        // Simulate a user edit: pop one item AND mark dirty.
+        state.items.pop();
+        state.dirty = true;
+        let edited_len = state.items.len();
+
+        // Sync again. With dirty=true, signal-side data must NOT be
+        // re-applied; user's local edit survives.
+        handle_toolbar_layout_action(
+            &mut state,
+            LayoutEditorAction::SyncItems,
+            &shared,
+            None,
+        );
+
+        assert_eq!(state.items.len(), edited_len, "dirty edit preserved");
+        assert!(state.dirty, "dirty flag persists across syncs");
+    }
+
+    #[test]
+    fn sync_when_clean_picks_up_signal_changes() {
+        // Mirror of the prior test for the not-dirty branch: if the
+        // signal changes (e.g. via the Interface page's per-toggle
+        // dispatcher), a SyncItems with dirty=false must reflect the
+        // new value. This is the bug the refactor fixes — Interface
+        // edits now propagate into a stale LayoutEditor cache.
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut state = ToolbarLayoutState::default();
+
+        handle_toolbar_layout_action(
+            &mut state,
+            LayoutEditorAction::SyncItems,
+            &shared,
+            None,
+        );
+        let baseline_len = state.items.len();
+        assert!(baseline_len > 0);
+
+        // Externally remove one item from the signal (mimics an
+        // Interface-page-driven ToggleItemVisibility OR an external
+        // toolbar layout edit that landed via reload_ui_config).
+        let mut updated = shared.signals().toolbar_items.get();
+        updated.pop();
+        shared.signals().toolbar_items.set(updated);
+
+        handle_toolbar_layout_action(
+            &mut state,
+            LayoutEditorAction::SyncItems,
+            &shared,
+            None,
+        );
+
+        assert_eq!(
+            state.items.len(),
+            baseline_len - 1,
+            "clean sync picks up signal-side changes"
         );
     }
 }

@@ -243,13 +243,14 @@ pub fn render_settings_content(
                     toolbar_layout_state,
                 )
             {
-                let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
-                crate::features::settings::presentation::pages::handle_toolbar_layout_action(
-                    toolbar_layout_state,
-                    action,
-                    ui_service,
-                    plugin_manager,
-                );
+                if let Some(shared_state) = shared {
+                    crate::features::settings::presentation::pages::handle_toolbar_layout_action(
+                        toolbar_layout_state,
+                        action,
+                        shared_state,
+                        plugin_manager,
+                    );
+                }
             }
             None
         }
@@ -261,13 +262,14 @@ pub fn render_settings_content(
                     info_panel_layout_state,
                 )
             {
-                let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
-                crate::features::settings::presentation::pages::handle_info_panel_layout_action(
-                    info_panel_layout_state,
-                    action,
-                    ui_service,
-                    plugin_manager,
-                );
+                if let Some(shared_state) = shared {
+                    crate::features::settings::presentation::pages::handle_info_panel_layout_action(
+                        info_panel_layout_state,
+                        action,
+                        shared_state,
+                        plugin_manager,
+                    );
+                }
             }
             None
         }

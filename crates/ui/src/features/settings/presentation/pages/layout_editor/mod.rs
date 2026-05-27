@@ -16,7 +16,8 @@ mod editor;
 mod render;
 
 use crate::shared::theme::AppTheme;
-use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UiService};
+use crate::shared::SharedState;
+use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
 use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::{PluginExtensionPoint, PluginUiElement};
 use eframe::egui;
@@ -246,17 +247,17 @@ pub fn render_info_panel_layout(
 pub fn handle_toolbar_layout_action(
     state: &mut ToolbarLayoutState,
     action: LayoutEditorAction,
-    ui_service: Option<&UiService>,
+    shared: &SharedState,
     plugin_manager: Option<&PluginManager>,
 ) {
-    handle_layout_editor_action::<ToolbarRegion>(state, action, ui_service, plugin_manager)
+    handle_layout_editor_action::<ToolbarRegion>(state, action, shared, plugin_manager)
 }
 
 pub fn handle_info_panel_layout_action(
     state: &mut InfoPanelLayoutState,
     action: LayoutEditorAction,
-    ui_service: Option<&UiService>,
+    shared: &SharedState,
     plugin_manager: Option<&PluginManager>,
 ) {
-    handle_layout_editor_action::<InfoPanelRegion>(state, action, ui_service, plugin_manager)
+    handle_layout_editor_action::<InfoPanelRegion>(state, action, shared, plugin_manager)
 }

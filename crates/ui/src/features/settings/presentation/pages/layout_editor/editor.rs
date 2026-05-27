@@ -10,8 +10,10 @@
 //! to render the picker) lives behind the trait so the editor itself
 //! is generic over both toolbar and info panel.
 
+use crate::shared::SharedState;
 use arclain_core::{UiItem, UiRegion, UiService};
 use arclain_plugins::manager::PluginManager;
+use arclain_signals::Signal;
 use std::marker::PhantomData;
 
 /// Orientation of the preview + selection-area arrow buttons.
@@ -122,42 +124,59 @@ impl<R: Region> LayoutEditorState<R> {
 /// region-driven side effects without changing the public interface.
 #[derive(Debug, Clone)]
 pub enum LayoutEditorAction {
-    /// Load items from the `UiService` if not yet loaded, then walk
-    /// enabled plugins and merge in any new contributions. Auto-fired
-    /// every frame from render; the load is no-op after first success
-    /// and the plugin sync is the same per-frame cost the pre-MVU
-    /// code already paid.
+    /// Sync items from the canonical `AppSignals` (toolbar_items,
+    /// info_panel_items, etc.) into `state.items`, then walk enabled
+    /// plugins and merge in any new contributions.
+    ///
+    /// Signal-sync only runs when `state.dirty == false` so user edits
+    /// in the editor aren't clobbered mid-session. If the user has
+    /// pending unsaved changes, the signal-side updates queue until
+    /// Save commits or Reset discards them.
+    ///
+    /// Auto-fired every frame from render; the load is cheap (signal
+    /// clone) and the plugin sync is the same per-frame cost the
+    /// pre-MVU code already paid.
     SyncItems,
 }
 
-/// Dispatch a `LayoutEditorAction` against the services + plugin
-/// manager. Called by the parent view after `render_layout_editor`
-/// returns an action.
+/// Dispatch a `LayoutEditorAction` against the canonical signals +
+/// plugin manager. Called by the parent view after
+/// `render_layout_editor` returns an action.
 ///
-/// All side effects on the `UiService` and `PluginManager` live here,
+/// All side effects (signal reads, plugin runtime calls) live here,
 /// so the render path itself stays a pure intent-emitter.
 pub fn handle_layout_editor_action<R: Region>(
     state: &mut LayoutEditorState<R>,
     action: LayoutEditorAction,
-    ui_service: Option<&UiService>,
+    shared: &SharedState,
     plugin_manager: Option<&PluginManager>,
 ) {
     match action {
         LayoutEditorAction::SyncItems => {
-            if !state.loaded {
-                if let Some(service) = ui_service {
-                    if let Ok(items) = service.list_items(R::REGION) {
-                        state.items = items
-                            .into_iter()
-                            .filter(|i| R::user_visible(i))
-                            .collect();
-                        state.items.sort_by_key(|i| i.sort_order);
-                        state.loaded = true;
-                        state.dirty = false;
-                        state.selected_item_id = None;
+            // Refresh from signal when not dirty (or on first load).
+            // Dirty-with-pending-edits paths skip this so the user's
+            // local changes survive until Save / Reset.
+            if !state.loaded || !state.dirty {
+                if let Some(signal_items) = signal_for_region::<R>(shared) {
+                    let mut filtered: Vec<UiItem> = signal_items
+                        .into_iter()
+                        .filter(|i| R::user_visible(i))
+                        .collect();
+                    filtered.sort_by_key(|i| i.sort_order);
+                    state.items = filtered;
+                    // Clear selection if the previously-selected item
+                    // is no longer present (e.g. a sibling editor
+                    // removed it via Save). Cheap O(n) scan; the item
+                    // list is small.
+                    if let Some(sel) = &state.selected_item_id {
+                        if !state.items.iter().any(|i| &i.id == sel) {
+                            state.selected_item_id = None;
+                        }
                     }
                 }
+                state.loaded = true;
             }
+
             if let Some(manager) = plugin_manager {
                 if R::sync_plugin_items(state, manager) {
                     state.dirty = true;
@@ -165,4 +184,17 @@ pub fn handle_layout_editor_action<R: Region>(
             }
         }
     }
+}
+
+/// Read the canonical signal value for `R::REGION`. Returns `None` if
+/// the region doesn't have a dedicated signal — caller falls back to
+/// whatever items the state already holds.
+fn signal_for_region<R: Region>(shared: &SharedState) -> Option<Vec<UiItem>> {
+    let signal: &Signal<Vec<UiItem>> = match R::REGION {
+        UiRegion::Toolbar => &shared.signals().toolbar_items,
+        UiRegion::InfoPanel => &shared.signals().info_panel_items,
+        UiRegion::ContextMenu => &shared.signals().context_menu_items,
+        _ => return None,
+    };
+    Some(signal.get())
 }
