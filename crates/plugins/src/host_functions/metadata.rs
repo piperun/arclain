@@ -196,12 +196,23 @@ impl HostFunctions {
 
                 // Always trigger the signal so the UI receives metadata even if
                 // persistence failed (e.g. corrupt database with stale triggers).
-                // Resolves through the bridge so the write lands on the
-                // currently-active tab's per-tab `metadata` signal — see
-                // `crate::active_tab` for why this isn't a held handle.
-                if let Some(ref bridge) = self.active_tab {
+                //
+                // Per-event context wins: if the dispatch worker installed
+                // one, this emit is happening inside a plugin event handler
+                // that was queued for a specific tab — the metadata must
+                // land on *that* tab's signal, never on whichever tab the
+                // user is currently looking at.
+                //
+                // Without the context (panel render, manual UI emit), fall
+                // through to the bridge → currently active tab. That's the
+                // right semantic for user-initiated emits, where "this is
+                // for the tab I'm looking at" is what the user expects.
+                if let Some(ref ctx) = self.event_context {
+                    ctx.metadata_signal.set(Some(parsed.clone()));
+                    debug!("[Cache SAVE] Triggered metadata signal for {} via event ctx", id);
+                } else if let Some(ref bridge) = self.active_tab {
                     bridge.metadata_signal().set(Some(parsed.clone()));
-                    debug!("[Cache SAVE] Triggered metadata signal for {}", id);
+                    debug!("[Cache SAVE] Triggered metadata signal for {} via bridge", id);
                 }
             }
             Err(e) => error!("Failed to serialize ProductMetadata: {}", e),

@@ -106,7 +106,16 @@ impl AppState {
             );
         }
 
-        // Store OnArchiveOpen event for deferred dispatch
+        // Queue OnArchiveOpen for deferred dispatch.
+        //
+        // The event carries per-tab snapshots (entries list,
+        // metadata signal handle) captured RIGHT NOW from this
+        // tab, so the worker can route the plugin handler's host-
+        // function reads (`current_archive_info`,
+        // `list_archive_files`) and emit_metadata writes to *this*
+        // tab even if subsequent archive opens push more events
+        // onto the queue and the user switches tabs by the time
+        // the worker processes us.
         tab.metadata.set(None);
         if self.plugin_event_sender.is_some() {
             use arclain_plugins::PluginEvent;
@@ -114,14 +123,17 @@ impl AppState {
                 path: path.to_string_lossy().into_owned(),
                 kind: info.archive_kind,
                 password: tab.current_password.get(),
+                entries: tab.entries.get(),
+                metadata_signal: tab.metadata.clone(),
             };
 
-            self.pending_plugin_event = Some(event);
+            self.pending_plugin_events.push(event);
             tab.ui_ready.set(false);
 
             info!(
-                "Archive opened successfully with {} entries (plugin event pending)",
-                tab.entries.get().len()
+                "Archive opened successfully with {} entries (plugin event pending, queue depth {})",
+                tab.entries.get().len(),
+                self.pending_plugin_events.len()
             );
         }
 
@@ -169,16 +181,21 @@ impl AppState {
         tab.current_password
             .set(Some(password.to_string()));
 
-        // Store OnArchiveOpen event for deferred dispatch
+        // Queue OnArchiveOpen for deferred dispatch — see the
+        // sibling `list_archive` site above for why the payload
+        // carries per-tab snapshots of entries + the metadata
+        // signal handle.
         if self.plugin_event_sender.is_some() {
             use arclain_plugins::PluginEvent;
             let event = PluginEvent::OnArchiveOpen {
                 path: path.to_string_lossy().into_owned(),
                 kind: info.archive_kind.clone(),
                 password: Some(password.to_string()),
+                entries: tab.entries.get(),
+                metadata_signal: tab.metadata.clone(),
             };
 
-            self.pending_plugin_event = Some(event);
+            self.pending_plugin_events.push(event);
             tab.ui_ready.set(false);
         }
 
@@ -191,19 +208,34 @@ impl AppState {
         Ok(tab.entries.get().as_ref().clone())
     }
 
-    /// Dispatch any pending plugin event after UI has rendered.
+    /// Drain queued plugin events into the worker channel.
+    ///
+    /// Pre-queue this took a single `Option<PluginEvent>` and sent
+    /// at most one event per call — multi-archive drag-drops lost
+    /// all but the last open silently. Now we drain the whole Vec
+    /// each call so every queued open reaches the worker.
     pub fn dispatch_pending_plugin_event(&mut self) {
-        if let Some(event) = self.pending_plugin_event.take() {
-            debug!("Dispatching deferred plugin event after UI render");
+        if self.pending_plugin_events.is_empty() {
+            return;
+        }
+        debug!(
+            "Dispatching {} deferred plugin event(s) after UI render",
+            self.pending_plugin_events.len()
+        );
 
-            if let Some(ref sender) = self.plugin_event_sender {
+        if let Some(ref sender) = self.plugin_event_sender {
+            for event in self.pending_plugin_events.drain(..) {
                 if let Err(e) = sender.send(event) {
                     warn!("Failed to send deferred event to plugin worker: {}", e);
                 }
             }
-
-            self.signals.tabs.get().active().ui_ready.set(true);
+        } else {
+            // No sender wired up — drop the events rather than
+            // accumulating them indefinitely.
+            self.pending_plugin_events.clear();
         }
+
+        self.signals.tabs.get().active().ui_ready.set(true);
     }
 
     pub fn get_current_entries(&self) -> Vec<arclain_core::ArchiveEntry> {

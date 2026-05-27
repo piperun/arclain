@@ -26,6 +26,20 @@ use std::sync::Arc;
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
+/// Per-event context the dispatch worker installs while a plugin's
+/// event handler runs. Carries snapshots of the *originating tab's*
+/// state (archive path, password, entries list, metadata signal),
+/// so host-function calls inside the handler resolve to the tab the
+/// event was fired for — never to whatever tab is currently active
+/// when the worker processes the event.
+#[derive(Clone)]
+pub struct EventContext {
+    pub archive_path: String,
+    pub password: Option<String>,
+    pub entries: Arc<Vec<arclain_core::ArchiveEntry>>,
+    pub metadata_signal: arclain_signals::Signal<Option<serde_json::Value>>,
+}
+
 /// State for host functions
 pub struct HostFunctions {
     pub plugin_id: String,
@@ -56,6 +70,18 @@ pub struct HostFunctions {
     /// `metadata_signal` fields. See `crate::active_tab` for why
     /// this is a bridge instead of stored state.
     pub active_tab: Option<Arc<dyn ActiveTabBridge>>,
+
+    /// Per-event override of the bridge. Set by the dispatch worker
+    /// before calling a plugin's event handler, cleared after.
+    /// While set, `current_archive_info` / `list_archive_files` /
+    /// `emit_metadata` resolve through this context instead of the
+    /// bridge, so the handler sees the tab the event was *fired
+    /// for* even if events queued up and the user has switched tabs
+    /// before the worker got around to processing. Non-event-time
+    /// host calls (e.g. panel-render emits) still go through the
+    /// bridge, which gives them the currently active tab — the
+    /// correct semantic for plugin-UI-driven reads.
+    pub event_context: Option<EventContext>,
 
     // Pending status message from plugin (to be displayed in status bar)
     pub pending_status_message: Arc<Mutex<Option<String>>>,
@@ -109,6 +135,7 @@ impl HostFunctions {
             table: ResourceTable::new(),
             ctx,
             active_tab: None,
+            event_context: None,
             pending_status_message: Arc::new(Mutex::new(None)),
             plugin_logger,
         }
@@ -158,6 +185,14 @@ impl HostFunctions {
     /// pair — see `crate::active_tab` for the rationale.
     pub fn set_active_tab_bridge(&mut self, bridge: Arc<dyn ActiveTabBridge>) {
         self.active_tab = Some(bridge);
+    }
+
+    /// Install (or clear) the per-event context. Called by the
+    /// dispatch worker around a plugin event handler so all
+    /// host-function reads inside the handler resolve to the
+    /// originating tab's snapshot, not to the bridge.
+    pub fn set_event_context(&mut self, ctx: Option<EventContext>) {
+        self.event_context = ctx;
     }
 
     pub fn check_capability(&self, cap: PluginCapability) -> bool {

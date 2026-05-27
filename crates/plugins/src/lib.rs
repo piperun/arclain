@@ -16,6 +16,7 @@
 //! ```no_run
 //! use arclain_plugins::{PluginManager, PluginEvent};
 //! use std::path::PathBuf;
+//! use std::sync::Arc;
 //! use std::collections::HashMap;
 //!
 //! let plugins_dir = PathBuf::from("plugins");
@@ -27,10 +28,16 @@
 //! // background worker without locking the manager.
 //! let tx = manager.get_event_sender();
 //!
+//! // The per-tab handles (`entries`, `metadata_signal`) pin the
+//! // event to a specific tab so the worker can route the plugin
+//! // handler's reads/writes to that tab even if events queue up
+//! // and the user has switched tabs by the time processing happens.
 //! tx.send(PluginEvent::OnArchiveOpen {
 //!     path: "test.zip".to_string(),
 //!     kind: arclain_core::ArchiveKind::Zip,
 //!     password: None,
+//!     entries: Arc::new(Vec::new()),
+//!     metadata_signal: arclain_signals::Signal::new(None),
 //! }).unwrap();
 //! ```
 

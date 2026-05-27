@@ -106,6 +106,8 @@ fn test_event_dispatch_empty() {
         path: "test.zip".to_string(),
         kind: arclain_core::ArchiveKind::Zip,
         password: None,
+        entries: std::sync::Arc::new(Vec::new()),
+        metadata_signal: arclain_signals::Signal::new(None),
     };
 
     let responses = manager.dispatch_event(&event);
@@ -167,6 +169,8 @@ fn test_dispatch_to_specific_plugin() {
         path: "test.zip".to_string(),
         kind: arclain_core::ArchiveKind::Zip,
         password: None,
+        entries: std::sync::Arc::new(Vec::new()),
+        metadata_signal: arclain_signals::Signal::new(None),
     };
 
     // Should fail for nonexistent plugin
@@ -196,6 +200,8 @@ fn test_multiple_event_types() {
         path: "test.zip".to_string(),
         kind: arclain_core::ArchiveKind::Zip,
         password: None,
+        entries: std::sync::Arc::new(Vec::new()),
+        metadata_signal: arclain_signals::Signal::new(None),
     };
     let responses = manager.dispatch_event(&event);
     assert_eq!(

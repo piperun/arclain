@@ -284,6 +284,17 @@ impl PluginInstance {
         self.store.data_mut().set_active_tab_bridge(bridge);
     }
 
+    /// Install (or clear) the per-event context for this instance.
+    /// The dispatch worker wraps `send_ui_event` with set / clear
+    /// calls so host-function reads inside the handler resolve to
+    /// the originating tab.
+    pub fn set_event_context(
+        &mut self,
+        ctx: Option<crate::host_functions::EventContext>,
+    ) {
+        self.store.data_mut().set_event_context(ctx);
+    }
+
     /// Set the async HTTP client for host functions
     pub fn set_async_http_client(&mut self, client: Option<Arc<arclain_network::AsyncHttpClient>>) {
         let host = self.store.data_mut();

@@ -37,16 +37,58 @@ pub enum PluginCapability {
 /// dropped in the 2026-05-19 audit because the worker silently
 /// ignored them and no plugin handler had ever observed them. Add a
 /// new variant only when the dispatch path is ready to forward it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
+///
+/// The Signal + Arc fields below pin the event to a *specific* tab
+/// at fire time, so the worker can route the plugin handler's
+/// host-function reads (`current_archive_info`, `list_archive_files`)
+/// and metadata writes (`emit_metadata`) to that tab even if events
+/// queue up and the user switches tabs in the meantime. The
+/// pre-existing serde derives were dead (no production caller) and
+/// have been dropped — Signal isn't Serialize, and there was no
+/// reader to satisfy anyway.
+#[derive(Clone)]
 pub enum PluginEvent {
     /// Archive was opened
     OnArchiveOpen {
         path: String,
         kind: ArchiveKind,
-        #[serde(skip_serializing_if = "Option::is_none")]
         password: Option<String>,
+        /// Listed entries for the originating tab's archive, captured
+        /// at fire time. Lets `list_archive_files` in the plugin
+        /// handler return the originating tab's entries instead of
+        /// whatever's active in the bridge when the worker gets
+        /// around to processing this event.
+        entries: std::sync::Arc<Vec<arclain_core::ArchiveEntry>>,
+        /// The originating tab's per-tab `metadata` signal,
+        /// captured at fire time. Writes from `emit_metadata` (sync
+        /// in the handler, async in the RequestFetch fallback) land
+        /// here, never on a now-active different tab's signal.
+        metadata_signal: arclain_signals::Signal<Option<serde_json::Value>>,
     },
+}
+
+// Custom Debug — `arclain_signals::Signal<T>` doesn't impl Debug
+// (it's a reactive primitive holding an `Arc<RwLock<T>>` with no
+// useful debug projection). Skip the signal field and show the rest
+// so dispatch worker `debug!(...)` logs stay readable.
+impl std::fmt::Debug for PluginEvent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PluginEvent::OnArchiveOpen {
+                path,
+                kind,
+                password,
+                entries,
+                metadata_signal: _,
+            } => f
+                .debug_struct("OnArchiveOpen")
+                .field("path", path)
+                .field("kind", kind)
+                .field("password", &password.as_ref().map(|_| "[REDACTED]"))
+                .field("entries_len", &entries.len())
+                .finish(),
+        }
+    }
 }
 
 /// Response from a plugin after handling an event

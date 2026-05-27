@@ -87,7 +87,7 @@ impl AppState {
             db_paths: Some(db_paths.clone()),
             dbs: None,
             plugin_event_sender: None,
-            pending_plugin_event: None,
+            pending_plugin_events: Vec::new(),
             signals: AppSignals::new(),
         };
 

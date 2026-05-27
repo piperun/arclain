@@ -40,24 +40,50 @@ impl PluginManager {
         while let Ok(event) = receiver.recv() {
             debug!("Event worker processing: {:?}", event);
 
+            // Build the per-event context once per event — the same
+            // context goes into every enabled plugin's instance for
+            // the duration of THIS event's handler. Pre-payload-
+            // change this used to live in a held `current_archive`
+            // Mutex on the host functions; now the event carries
+            // the originating tab's snapshots directly.
+            let event_ctx = {
+                let PluginEvent::OnArchiveOpen {
+                    path,
+                    password,
+                    entries,
+                    metadata_signal,
+                    ..
+                } = &event;
+                crate::host_functions::EventContext {
+                    archive_path: path.clone(),
+                    password: password.clone(),
+                    entries: entries.clone(),
+                    metadata_signal: metadata_signal.clone(),
+                }
+            };
+
             for (plugin_id, instance_arc) in enabled_plugin_snapshot(&plugins, &enabled_plugins) {
-                // Phase 1: under lock — dispatch the event. The plugin's
-                // regex check is fast, so the lock is only held briefly.
-                // Pre-bridge this path also did `set_archive_context` to
-                // hand the event's archive into the held `current_archive`
-                // mutex; with the bridge the plugin's `current_archive_info`
-                // call resolves through the host's per-tab signals, so the
-                // explicit push is unnecessary — events fire synchronously
-                // after the open on the active tab, so the bridge returns
-                // the same archive the event carries.
+                // Phase 1: under lock — install the event context on
+                // this instance, dispatch the event, then clear the
+                // context. While the context is set, every
+                // host-function call the plugin makes inside its
+                // handler resolves to the *originating tab*, not to
+                // whatever tab the user is currently looking at.
+                // This is what makes queued events (5 archives drag-
+                // dropped at once) each land their metadata on the
+                // right tab instead of all stomping the active tab.
                 let actions = {
                     let PluginEvent::OnArchiveOpen { path, .. } = &event;
                     let mut instance = instance_arc.lock();
+                    instance.set_event_context(Some(event_ctx.clone()));
 
                     let id = "event:archive_opened".to_string();
                     let value = Some(path.clone());
 
-                    match instance.send_ui_event(&id, value) {
+                    let result = instance.send_ui_event(&id, value);
+                    instance.set_event_context(None);
+
+                    match result {
                         Ok(actions) => actions,
                         Err(e) => {
                             error!("Event worker error for {}: {}", plugin_id, e);
@@ -69,15 +95,13 @@ impl PluginManager {
                 // Phase 2: process actions WITHOUT holding the instance
                 // lock, so concurrent UI renders and other operations on
                 // the same plugin can proceed during the gameta HTTP
-                // round-trip. Snapshot the client + the metadata signal
-                // (resolved via the bridge) under a brief lock, drop it,
-                // then run the blocking HTTP outside.
-                //
-                // Snapshotting the `Signal<T>` here pins the write to
-                // whichever tab is active right now — if the user
+                // round-trip. We already have the event's metadata
+                // signal in `event_ctx` — the snapshot from event-fire
+                // time, pinned to the originating tab. If the user
                 // switches tabs while the HTTP is in flight, the
                 // metadata still lands on the originally-targeted tab
-                // because the snapshot captured that tab's `Arc`.
+                // because we never went through the bridge for this
+                // write.
                 for action in actions {
                     let crate::types::PluginAction::RequestFetch { key } = action else {
                         continue;
@@ -91,13 +115,11 @@ impl PluginManager {
                         ("dlsite", key.as_str())
                     };
 
-                    let (gameta_client, metadata_signal) = {
+                    let gameta_client = {
                         let instance = instance_arc.lock();
-                        let signal = instance
-                            .get_active_tab_bridge()
-                            .map(|b| b.metadata_signal());
-                        (instance.get_gameta_client(), signal)
+                        instance.get_gameta_client()
                     };
+                    let metadata_signal = Some(event_ctx.metadata_signal.clone());
 
                     let mut handled_by_server = false;
                     if let Some(client) = gameta_client {
@@ -137,10 +159,20 @@ impl PluginManager {
                         // require plugin-host architecture changes.
                         // This auto-fetch path only fires once per
                         // archive open.
+                        //
+                        // Re-install the event context for this nested
+                        // dispatch so the native-fetch handler also sees
+                        // the originating tab. Without it, host-fn calls
+                        // inside the fetch handler would fall through to
+                        // the bridge and resolve to the currently active
+                        // tab.
                         let event_name = format!("do_native_fetch:{}", key);
                         info!("[EventWorker] Dispatching native fetch: {}", event_name);
                         let mut instance = instance_arc.lock();
-                        if let Err(e) = instance.send_ui_event(&event_name, None) {
+                        instance.set_event_context(Some(event_ctx.clone()));
+                        let result = instance.send_ui_event(&event_name, None);
+                        instance.set_event_context(None);
+                        if let Err(e) = result {
                             error!(
                                 "[EventWorker] Native fetch dispatch failed for {}: {:?}",
                                 key, e

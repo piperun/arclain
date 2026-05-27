@@ -9,9 +9,16 @@ impl HostFunctions {
     pub(super) fn impl_current_archive_info(
         &mut self,
     ) -> Option<crate::arclain::plugin::host::ArchiveInfo> {
-        // Resolve through the bridge so the answer always reflects
-        // the currently active tab — see `crate::active_tab`.
-        let archive = self.active_tab.as_ref()?.archive_path()?;
+        // Prefer the per-event context: if the dispatch worker
+        // installed one, the handler is running for a specific
+        // event's archive, not necessarily the currently active
+        // tab. Falls back to the bridge for non-event paths (panel
+        // render, UI actions outside event dispatch).
+        let archive = if let Some(ref ctx) = self.event_context {
+            ctx.archive_path.clone()
+        } else {
+            self.active_tab.as_ref()?.archive_path()?
+        };
         let path_buf = std::path::PathBuf::from(&archive);
         let filename: String = path_buf.file_name()?.to_str()?.to_string();
 
@@ -25,25 +32,24 @@ impl HostFunctions {
         if !self.check_capability(PluginCapability::ArchiveMetadataRead) {
             return Err("ArchiveMetadataRead capability not granted".to_string());
         }
+
+        // Per-event context wins (see `impl_current_archive_info`).
+        // The event payload carries the originating tab's entries
+        // snapshotted at fire time, so a plugin handler processing
+        // a queued event sees that tab's files even when the user
+        // has switched tabs in the meantime.
+        if let Some(ref ctx) = self.event_context {
+            return Ok(ctx.entries.iter().map(|e| e.path.clone()).collect());
+        }
+
+        // Non-event path (panel render, etc.): read the host's
+        // authoritative per-tab entries cache via the bridge —
+        // populated by `list_archive` at open time so we pay only
+        // an `Arc` clone + per-entry `String` clone.
         let bridge = self
             .active_tab
             .as_ref()
             .ok_or("Active-tab bridge not configured")?;
-
-        // Read the host's authoritative per-tab entries cache via
-        // the bridge. The host populates this when `list_archive`
-        // runs at open time, so we pay only an `Arc` clone + per-
-        // entry `String` clone — never the multi-second cost of
-        // re-listing through the archive backend (7z in particular
-        // spawns a subprocess each call).
-        //
-        // An empty result with no archive_path means the plugin is
-        // asking outside of an archive context — return the same
-        // error the pre-bridge code did. Empty + an open archive
-        // means the archive really has zero entries, or it's
-        // encrypted and not yet unlocked; both produce an empty Vec
-        // and the plugin's downstream "no codes detected" path
-        // handles it gracefully.
         let entries = bridge.archive_entries();
         if entries.is_empty() && bridge.archive_path().is_none() {
             return Err("No archive currently open".to_string());

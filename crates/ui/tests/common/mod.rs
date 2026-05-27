@@ -54,7 +54,7 @@ pub fn create_test_shared_state() -> SharedState {
         db_paths: None,
         dbs: None,
         plugin_event_sender: None,
-        pending_plugin_event: None,
+        pending_plugin_events: Vec::new(),
         signals: arclain_ui::core::signals::AppSignals::new(),
     };
 
@@ -145,7 +145,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         db_paths: Some(paths),
         dbs: Some(dbs),
         plugin_event_sender: None,
-        pending_plugin_event: None,
+        pending_plugin_events: Vec::new(),
         signals: arclain_ui::core::signals::AppSignals::new(),
     };
     let signals = app_state.signals.clone();
