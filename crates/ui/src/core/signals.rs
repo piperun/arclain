@@ -113,6 +113,11 @@ pub struct AppSignals {
     /// Info panel items from DB - reactive for layout editor changes
     pub info_panel_items: Signal<Vec<UiItem>>,
 
+    /// Context menu items from DB - reactive for interface visibility
+    /// toggles (the Interface settings page mutates these and they
+    /// drive what appears in the right-click menus around the app).
+    pub context_menu_items: Signal<Vec<UiItem>>,
+
     /// UI display preferences - reactive for settings changes
     pub ui_preferences: Signal<UiPreferences>,
 
@@ -306,6 +311,7 @@ impl AppSignals {
             search_text: Signal::new(String::new()).with_name("search_text"),
             toolbar_items: Signal::new(Vec::new()).with_name("toolbar_items"),
             info_panel_items: Signal::new(Vec::new()).with_name("info_panel_items"),
+            context_menu_items: Signal::new(Vec::new()).with_name("context_menu_items"),
             ui_preferences: Signal::new(UiPreferences::default()).with_name("ui_preferences"),
             user_config: Signal::new(arclain_core::UserConfig::default()).with_name("user_config"),
             pass_rules: Signal::new(Vec::new()).with_name("pass_rules"),
@@ -362,6 +368,7 @@ impl AppSignals {
         signal_ctx.bind_named(&self.search_text, "search_text");
         signal_ctx.bind_named(&self.toolbar_items, "toolbar_items");
         signal_ctx.bind_named(&self.info_panel_items, "info_panel_items");
+        signal_ctx.bind_named(&self.context_menu_items, "context_menu_items");
         signal_ctx.bind_named(&self.ui_preferences, "ui_preferences");
         signal_ctx.bind_named(&self.pass_rules, "pass_rules");
         signal_ctx.bind_named(&self.status_bar, "status_bar");
@@ -425,6 +432,7 @@ impl AppSignals {
         self.search_text.set(String::new());
         self.toolbar_items.set(Vec::new());
         self.info_panel_items.set(Vec::new());
+        self.context_menu_items.set(Vec::new());
         self.ui_preferences.set(UiPreferences::default());
         self.pass_rules.set(Vec::new());
         self.status_bar

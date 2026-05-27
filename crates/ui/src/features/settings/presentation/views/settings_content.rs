@@ -153,6 +153,7 @@ pub fn render_settings_content(
                     crate::features::settings::presentation::pages::render_interface_settings(
                         ui,
                         theme,
+                        shared_state,
                         interface_state,
                     )
                 {

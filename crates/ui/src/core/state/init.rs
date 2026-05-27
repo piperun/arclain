@@ -323,6 +323,9 @@ impl AppState {
             if let Ok(items) = svc.list_info_panel_items() {
                 me.signals.info_panel_items.set(items);
             }
+            if let Ok(items) = svc.list_items(arclain_core::UiRegion::ContextMenu) {
+                me.signals.context_menu_items.set(items);
+            }
 
             // Load UI preferences from database
             if let Ok(Some(show_labels_str)) = svc.get_display_option("show_button_labels") {

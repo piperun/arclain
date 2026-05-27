@@ -20,13 +20,18 @@ impl AppState {
         }
     }
 
-    /// Refresh UI configuration (toolbar/info panel items) from UiService
+    /// Refresh UI configuration (toolbar/info panel/context menu items)
+    /// from UiService. Called from the settings header save handlers
+    /// after a layout-editor save lands.
     pub fn reload_ui_config(&mut self, ui_service: &arclain_core::UiService) {
         if let Ok(items) = ui_service.list_toolbar_items() {
             self.signals.toolbar_items.set(items);
         }
         if let Ok(items) = ui_service.list_info_panel_items() {
             self.signals.info_panel_items.set(items);
+        }
+        if let Ok(items) = ui_service.list_items(arclain_core::UiRegion::ContextMenu) {
+            self.signals.context_menu_items.set(items);
         }
     }
 }

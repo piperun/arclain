@@ -358,14 +358,14 @@ mod interface_settings {
     };
 
     #[test]
-    fn load_items_with_no_service_is_noop() {
+    fn load_display_options_with_no_service_is_noop() {
         let shared = create_test_shared_state();
         let mut state = InterfaceSettingsState::default();
         assert!(!state.loaded);
 
         handle_interface_settings_action(
             &mut state,
-            InterfaceSettingsAction::LoadItems,
+            InterfaceSettingsAction::LoadDisplayOptions,
             &shared,
         );
 
@@ -376,11 +376,10 @@ mod interface_settings {
             !state.loaded,
             "no ui_service → loader must short-circuit"
         );
-        assert!(state.items.is_empty());
     }
 
     #[test]
-    fn save_and_sync_with_no_service_does_not_panic_and_does_not_clear_dirty() {
+    fn save_display_options_with_no_service_does_not_panic_and_does_not_clear_dirty() {
         let shared = create_test_shared_state();
         let mut state = InterfaceSettingsState::default();
         state.show_button_labels = true;
@@ -388,7 +387,7 @@ mod interface_settings {
 
         handle_interface_settings_action(
             &mut state,
-            InterfaceSettingsAction::SaveAndSync,
+            InterfaceSettingsAction::SaveDisplayOptions,
             &shared,
         );
 
@@ -397,8 +396,31 @@ mod interface_settings {
         // remains pending-save until a service is wired up.
         assert!(
             state.dirty,
-            "no ui_service → SaveAndSync early-returns and dirty stays true"
+            "no ui_service → SaveDisplayOptions early-returns and dirty stays true"
         );
+    }
+
+    #[test]
+    fn toggle_item_visibility_with_no_service_is_noop() {
+        use arclain_core::UiRegion;
+
+        let shared = create_test_shared_state();
+        let mut state = InterfaceSettingsState::default();
+
+        // No ui_service in test shared → dispatcher early-returns
+        // without panic. Signal value unchanged.
+        let before = shared.signals().context_menu_items.get();
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::ToggleItemVisibility {
+                region: UiRegion::ContextMenu,
+                item_id: "anything".into(),
+                visible: false,
+            },
+            &shared,
+        );
+        let after = shared.signals().context_menu_items.get();
+        assert_eq!(before.len(), after.len());
     }
 
     #[test]
@@ -772,19 +794,20 @@ mod layout_editor_happy {
 
 mod interface_settings_happy {
     use super::*;
+    use arclain_core::UiRegion;
     use arclain_ui::features::settings::presentation::pages::{
         handle_interface_settings_action, InterfaceSettingsAction, InterfaceSettingsState,
     };
 
     #[test]
-    fn load_items_against_empty_db_marks_loaded() {
+    fn load_display_options_against_empty_db_marks_loaded() {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         let mut state = InterfaceSettingsState::default();
         assert!(!state.loaded);
 
         handle_interface_settings_action(
             &mut state,
-            InterfaceSettingsAction::LoadItems,
+            InterfaceSettingsAction::LoadDisplayOptions,
             &shared,
         );
 
@@ -793,7 +816,7 @@ mod interface_settings_happy {
     }
 
     #[test]
-    fn save_and_sync_clears_dirty_against_real_db() {
+    fn save_display_options_clears_dirty_against_real_db() {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         let mut state = InterfaceSettingsState::default();
         // Pretend the user toggled something.
@@ -802,18 +825,77 @@ mod interface_settings_happy {
 
         handle_interface_settings_action(
             &mut state,
-            InterfaceSettingsAction::SaveAndSync,
+            InterfaceSettingsAction::SaveDisplayOptions,
             &shared,
         );
 
         assert!(
             !state.dirty,
-            "SaveAndSync must clear dirty once the write completes"
+            "SaveDisplayOptions must clear dirty once the write completes"
         );
     }
 
     #[test]
-    fn save_and_sync_pushes_show_button_labels_into_ui_preferences_signal() {
+    fn toggle_item_visibility_updates_signal_and_persists() {
+        // Pre-seed the info_panel_items signal with a row, then toggle
+        // its visibility via the dispatcher. Verify the signal reflects
+        // the new value AND the DB persists the change (re-list and check).
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let ui_service = shared
+            .services
+            .ui_service
+            .as_ref()
+            .expect("ui_service present in with-dbs helper")
+            .clone();
+
+        // Pull seeded info-panel items and use the first as our victim.
+        let initial = ui_service.list_info_panel_items().expect("list");
+        let victim = initial
+            .into_iter()
+            .next()
+            .expect("seeded info-panel items present");
+        let target_id = victim.id.clone();
+        let started_visible = victim.visible;
+        // Push the live list into the signal so the dispatcher's
+        // signal->mutate->signal round-trip has something to find.
+        shared
+            .signals()
+            .info_panel_items
+            .set(ui_service.list_info_panel_items().unwrap());
+
+        let mut state = InterfaceSettingsState::default();
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::ToggleItemVisibility {
+                region: UiRegion::InfoPanel,
+                item_id: target_id.clone(),
+                visible: !started_visible,
+            },
+            &shared,
+        );
+
+        let after_signal = shared.signals().info_panel_items.get();
+        let signal_visible = after_signal
+            .iter()
+            .find(|i| i.id == target_id)
+            .expect("item still in signal")
+            .visible;
+        assert_eq!(
+            signal_visible, !started_visible,
+            "signal must reflect the toggle"
+        );
+
+        let after_db = ui_service.list_info_panel_items().expect("list");
+        let db_visible = after_db
+            .iter()
+            .find(|i| i.id == target_id)
+            .expect("item still in DB")
+            .visible;
+        assert_eq!(db_visible, !started_visible, "DB must persist the toggle");
+    }
+
+    #[test]
+    fn save_display_options_pushes_show_button_labels_into_ui_preferences_signal() {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         // Confirm baseline.
         assert!(!shared.signals().ui_preferences.get().show_button_labels);
@@ -824,13 +906,13 @@ mod interface_settings_happy {
 
         handle_interface_settings_action(
             &mut state,
-            InterfaceSettingsAction::SaveAndSync,
+            InterfaceSettingsAction::SaveDisplayOptions,
             &shared,
         );
 
         assert!(
             shared.signals().ui_preferences.get().show_button_labels,
-            "SaveAndSync must propagate show_button_labels into ui_preferences signal"
+            "SaveDisplayOptions must propagate show_button_labels into ui_preferences signal"
         );
     }
 }

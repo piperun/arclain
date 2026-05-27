@@ -1,13 +1,24 @@
-//! Info panel settings section - configure which property groups are displayed.
+//! Info panel settings section - visibility toggles for info-panel sections.
+//!
+//! Reads `shared.signals().info_panel_items` (the canonical source)
+//! and returns at most one `(item_id, new_visible)` event per render
+//! frame. The caller wraps that into an
+//! `InterfaceSettingsAction::ToggleItemVisibility` and the dispatcher
+//! is the only place that mutates the DB or the signal.
 
 use crate::shared::components::settings_form::{SectionHeader, SettingsRow};
 use crate::shared::theme::AppTheme;
-use arclain_core::{UiItem, UiRegion};
+use arclain_core::UiItem;
 use arclain_widgets::ToggleSwitch;
 use eframe::egui;
 
-/// Render the info panel configuration section
-pub fn render(ui: &mut egui::Ui, theme: &AppTheme, items: &mut Vec<UiItem>, on_change: &mut bool) {
+/// Render the info panel configuration section. Returns
+/// `Some((item_id, new_visible))` if the user toggled a row this frame.
+pub fn render(
+    ui: &mut egui::Ui,
+    theme: &AppTheme,
+    items: &[UiItem],
+) -> Option<(String, bool)> {
     SectionHeader::new("Property Groups").show(ui, &theme.colors);
 
     ui.label(
@@ -17,25 +28,28 @@ pub fn render(ui: &mut egui::Ui, theme: &AppTheme, items: &mut Vec<UiItem>, on_c
     );
     ui.add_space(8.0);
 
-    // Filter and sort info panel sections
-    let mut info_items: Vec<&mut UiItem> = items
-        .iter_mut()
-        .filter(|i| i.region == UiRegion::InfoPanel)
-        .collect();
-    info_items.sort_by_key(|i| i.sort_order);
+    let mut sorted_items: Vec<&UiItem> = items.iter().collect();
+    sorted_items.sort_by_key(|i| i.sort_order);
 
-    for item in info_items.iter_mut() {
+    let mut emitted: Option<(String, bool)> = None;
+
+    for item in sorted_items {
         let label = item.label.clone();
+        let mut visible = item.visible;
+
         SettingsRow::new(&label)
             .description(format!("Show the {} section", label))
             .action(|ui| {
                 if ui
-                    .add(ToggleSwitch::new(&mut item.visible).size(44.0, 22.0))
+                    .add(ToggleSwitch::new(&mut visible).size(44.0, 22.0))
                     .changed()
+                    && emitted.is_none()
                 {
-                    *on_change = true;
+                    emitted = Some((item.id.clone(), visible));
                 }
             })
             .show(ui, &theme.colors);
     }
+
+    emitted
 }
