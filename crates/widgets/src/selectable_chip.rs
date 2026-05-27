@@ -14,6 +14,7 @@ pub struct SelectableChip<'a> {
     selected: bool,
     active: bool,
     colors: Option<&'a ThemeColors>,
+    debug_lines: bool,
 }
 
 impl<'a> SelectableChip<'a> {
@@ -24,6 +25,7 @@ impl<'a> SelectableChip<'a> {
             selected: false,
             active: true,
             colors: None,
+            debug_lines: false,
         }
     }
 
@@ -44,6 +46,13 @@ impl<'a> SelectableChip<'a> {
 
     pub fn with_theme_colors(mut self, colors: &'a ThemeColors) -> Self {
         self.colors = Some(colors);
+        self
+    }
+
+    /// Force the debug overlay on. ORs with `EGUI_UI_DEBUG_GUIDELINES`.
+    /// Stripped in release builds.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
         self
     }
 
@@ -91,10 +100,20 @@ impl<'a> SelectableChip<'a> {
                 ui.label(egui::RichText::new(&label).color(text_color));
             });
 
-        ui.interact(
+        let response = ui.interact(
             chip.response.rect,
             chip.response.id,
             egui::Sense::click(),
-        )
+        );
+
+        #[cfg(debug_assertions)]
+        crate::debug::paint_widget_rect_debug(
+            ui.painter(),
+            response.rect,
+            "sel-chip",
+            self.debug_lines || crate::debug::ui_debug_guidelines_enabled(),
+        );
+
+        response
     }
 }

@@ -14,6 +14,7 @@ pub struct ThemedSlider<'a> {
     theme_colors: Option<&'a ThemeColors>,
     /// Internal state for text editing
     text_edit_id: Option<egui::Id>,
+    debug_lines: bool,
 }
 
 impl<'a> ThemedSlider<'a> {
@@ -26,6 +27,7 @@ impl<'a> ThemedSlider<'a> {
             height: 28.0,
             theme_colors: None,
             text_edit_id: None,
+            debug_lines: false,
         }
     }
 
@@ -47,6 +49,13 @@ impl<'a> ThemedSlider<'a> {
     /// Set a unique ID for the text edit (required for state persistence)
     pub fn id(mut self, id: egui::Id) -> Self {
         self.text_edit_id = Some(id);
+        self
+    }
+
+    /// Force the debug overlay on. ORs with `EGUI_UI_DEBUG_GUIDELINES`.
+    /// Stripped in release builds.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
         self
     }
 }
@@ -209,6 +218,14 @@ impl<'a> Widget for ThemedSlider<'a> {
             d.insert_temp(text_state_id, text_value);
             d.insert_temp(edit_id.with("stored"), *self.value);
         });
+
+        #[cfg(debug_assertions)]
+        crate::debug::paint_widget_rect_debug(
+            ui.painter(),
+            rect,
+            "slider",
+            self.debug_lines || crate::debug::ui_debug_guidelines_enabled(),
+        );
 
         response
     }

@@ -9,6 +9,7 @@ pub struct ThemedDropdown<'a> {
     selected_text: String,
     colors: Option<&'a ThemeColors>,
     width: Option<f32>,
+    debug_lines: bool,
 }
 
 impl<'a> ThemedDropdown<'a> {
@@ -18,6 +19,7 @@ impl<'a> ThemedDropdown<'a> {
             selected_text: selected_text.into(),
             colors: None,
             width: None,
+            debug_lines: false,
         }
     }
 
@@ -28,6 +30,13 @@ impl<'a> ThemedDropdown<'a> {
 
     pub fn width(mut self, width: f32) -> Self {
         self.width = Some(width);
+        self
+    }
+
+    /// Force the debug overlay on for the closed combo button rect.
+    /// ORs with `EGUI_UI_DEBUG_GUIDELINES`. Stripped in release builds.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
         self
     }
 
@@ -49,6 +58,16 @@ impl<'a> ThemedDropdown<'a> {
             combo = combo.width(w);
         }
 
-        combo.show_ui(ui, menu_contents)
+        let inner = combo.show_ui(ui, menu_contents);
+
+        #[cfg(debug_assertions)]
+        crate::debug::paint_widget_rect_debug(
+            ui.painter(),
+            inner.response.rect,
+            "dropdown",
+            self.debug_lines || crate::debug::ui_debug_guidelines_enabled(),
+        );
+
+        inner
     }
 }

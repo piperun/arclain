@@ -9,6 +9,7 @@ pub struct CollapsibleSection<'a> {
     title: &'a str,
     default_open: bool,
     colors: Option<&'a ThemeColors>,
+    debug_lines: bool,
 }
 
 impl<'a> CollapsibleSection<'a> {
@@ -18,6 +19,7 @@ impl<'a> CollapsibleSection<'a> {
             title,
             default_open: true,
             colors: None,
+            debug_lines: false,
         }
     }
 
@@ -28,6 +30,13 @@ impl<'a> CollapsibleSection<'a> {
 
     pub fn with_theme_colors(mut self, colors: &'a ThemeColors) -> Self {
         self.colors = Some(colors);
+        self
+    }
+
+    /// Force the debug overlay on for the header rect. ORs with
+    /// `EGUI_UI_DEBUG_GUIDELINES`. Stripped in release builds.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
         self
     }
 
@@ -76,6 +85,14 @@ impl<'a> CollapsibleSection<'a> {
                     text_color,
                 );
             }
+
+            #[cfg(debug_assertions)]
+            crate::debug::paint_widget_rect_debug(
+                ui.painter(),
+                rect,
+                "collapsible-hdr",
+                self.debug_lines || crate::debug::ui_debug_guidelines_enabled(),
+            );
         });
 
         // Store state

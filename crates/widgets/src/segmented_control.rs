@@ -12,6 +12,7 @@ pub struct SegmentedControl<'a> {
     width: f32,
     height: f32,
     theme_colors: Option<&'a ThemeColors>,
+    debug_lines: bool,
 }
 
 impl<'a> SegmentedControl<'a> {
@@ -29,6 +30,7 @@ impl<'a> SegmentedControl<'a> {
             width: 120.0,
             height: 28.0,
             theme_colors: None,
+            debug_lines: false,
         }
     }
 
@@ -42,6 +44,13 @@ impl<'a> SegmentedControl<'a> {
     /// Apply theme colors.
     pub fn with_theme_colors(mut self, colors: &'a ThemeColors) -> Self {
         self.theme_colors = Some(colors);
+        self
+    }
+
+    /// Force the debug overlay on. ORs with `EGUI_UI_DEBUG_GUIDELINES`.
+    /// Stripped in release builds.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
         self
     }
 }
@@ -157,6 +166,14 @@ impl<'a> Widget for SegmentedControl<'a> {
             ui.painter()
                 .galley(unsel_pos, unsel_galley, Color32::PLACEHOLDER);
         }
+
+        #[cfg(debug_assertions)]
+        crate::debug::paint_widget_rect_debug(
+            ui.painter(),
+            rect,
+            "seg-ctrl",
+            self.debug_lines || crate::debug::ui_debug_guidelines_enabled(),
+        );
 
         response
     }

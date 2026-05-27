@@ -95,6 +95,7 @@ pub struct TextInput<'a> {
     required: bool,
     /// Whether to mask input as a password
     password: bool,
+    debug_lines: bool,
 }
 
 impl<'a> TextInput<'a> {
@@ -117,6 +118,7 @@ impl<'a> TextInput<'a> {
             error_text: None,
             required: false,
             password: false,
+            debug_lines: false,
         }
     }
 
@@ -244,6 +246,14 @@ impl<'a> TextInput<'a> {
     /// Mark the field as required (shows asterisk after label)
     pub fn required(mut self) -> Self {
         self.required = true;
+        self
+    }
+
+    /// Force the debug overlay on for the input's frame rect (not the
+    /// surrounding label/helper text). ORs with
+    /// `EGUI_UI_DEBUG_GUIDELINES`. Stripped in release builds.
+    pub fn debug_lines(mut self, on: bool) -> Self {
+        self.debug_lines = on;
         self
     }
 }
@@ -489,6 +499,14 @@ impl<'a> TextInput<'a> {
                     },
                 );
             }
+
+            #[cfg(debug_assertions)]
+            crate::debug::paint_widget_rect_debug(
+                ui.painter(),
+                full_rect,
+                "text-input",
+                self.debug_lines || crate::debug::ui_debug_guidelines_enabled(),
+            );
 
             // Render helper text or error text below input
             let show_error = self.state == TextInputState::Error && self.error_text.is_some();

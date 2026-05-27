@@ -187,7 +187,7 @@ impl Toaster {
                         egui::Color32::from_rgba_unmultiplied(40, 44, 52, (220.0 * opacity) as u8);
                     let accent = toast.level.color();
 
-                    egui::Frame::NONE
+                    let frame_response = egui::Frame::NONE
                         .fill(bg_color)
                         .stroke(egui::Stroke::new(2.0, accent.gamma_multiply(opacity)))
                         .corner_radius(8.0)
@@ -208,6 +208,18 @@ impl Toaster {
                                 ));
                             });
                         });
+
+                    // Toast is data, not a builder — no per-instance
+                    // `debug_lines` builder, so the overlay is purely
+                    // env-flag driven. Useful when toasts pile up off
+                    // the bottom edge or when the fade math drifts.
+                    #[cfg(debug_assertions)]
+                    crate::debug::paint_widget_rect_debug(
+                        ui.painter(),
+                        frame_response.response.rect,
+                        &format!("toast[{}]", i),
+                        crate::debug::ui_debug_guidelines_enabled(),
+                    );
 
                     if i < toast_count - 1 {
                         ui.add_space(spacing);
