@@ -11,7 +11,7 @@
 //! unlock the meaty round-trip tests for save/delete/etc.
 
 mod common;
-use common::create_test_shared_state;
+use common::{create_test_shared_state, create_test_shared_state_with_dbs};
 
 // ============================================================================
 // ProfilesPage dispatcher (handle_profiles_action)
@@ -414,3 +414,424 @@ mod interface_settings {
         );
     }
 }
+
+// ============================================================================
+// Happy-path tests (against real temp-file SQLite databases with
+// production schemas applied). Each test owns its own tempdir; the
+// dir is held in scope until the test returns so open SQLite handles
+// stay valid.
+// ============================================================================
+
+mod profiles_page_happy {
+    use super::*;
+    use arclain_core::features::organization::{ArchiveFormat, ArchiveProfile};
+    use arclain_ui::features::organization::presentation::views::profiles_page::{
+        handle_profiles_action, ProfilesAction, ProfilesPage,
+    };
+
+    fn profile_named(name: &str) -> ArchiveProfile {
+        ArchiveProfile {
+            id: 0,
+            name: name.into(),
+            description: None,
+            format: ArchiveFormat::SevenZ,
+            compression_level: 5,
+            compression_method: Some("LZMA2".into()),
+            solid_archive: true,
+            encrypt_headers: false,
+            is_default: false,
+            is_system: false,
+        }
+    }
+
+    /// ConfigDb seeds 3 system profiles ("Maximum Compression (7z)",
+    /// "Fast Compression (7z)", "Zip Compatible") on first init.
+    /// Tests that count user-created profiles must filter `!is_system`.
+    fn user_names(profiles: &[ArchiveProfile]) -> Vec<String> {
+        profiles
+            .iter()
+            .filter(|p| !p.is_system)
+            .map(|p| p.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn load_against_fresh_db_returns_seeded_system_profiles_only() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut page = ProfilesPage::new();
+
+        handle_profiles_action(&mut page, ProfilesAction::LoadProfiles, &shared);
+
+        let profiles = page
+            .profiles()
+            .expect("LoadProfiles must populate the cache");
+        assert!(
+            user_names(profiles).is_empty(),
+            "no user profiles until SaveProfile fires"
+        );
+        assert!(
+            !profiles.is_empty(),
+            "fresh-init DB ships with system-defaults seeded"
+        );
+        assert_eq!(page.error(), None);
+    }
+
+    #[test]
+    fn save_then_load_returns_the_profile() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut page = ProfilesPage::new();
+
+        handle_profiles_action(
+            &mut page,
+            ProfilesAction::SaveProfile(profile_named("alpha")),
+            &shared,
+        );
+
+        // Save's dispatcher branch re-fetches the list, so `page.profiles`
+        // already reflects the new row without a separate LoadProfiles call.
+        let profiles = page.profiles().expect("save should re-populate cache");
+        assert_eq!(user_names(profiles), vec!["alpha".to_string()]);
+        assert_eq!(page.error(), None);
+    }
+
+    #[test]
+    fn delete_removes_only_the_targeted_profile() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut page = ProfilesPage::new();
+
+        handle_profiles_action(
+            &mut page,
+            ProfilesAction::SaveProfile(profile_named("alpha")),
+            &shared,
+        );
+        handle_profiles_action(
+            &mut page,
+            ProfilesAction::SaveProfile(profile_named("beta")),
+            &shared,
+        );
+        let id_alpha = page
+            .profiles()
+            .unwrap()
+            .iter()
+            .find(|p| p.name == "alpha")
+            .unwrap()
+            .id;
+
+        handle_profiles_action(
+            &mut page,
+            ProfilesAction::DeleteProfile(id_alpha),
+            &shared,
+        );
+
+        let after = page.profiles().unwrap();
+        assert_eq!(user_names(after), vec!["beta".to_string()]);
+    }
+
+    #[test]
+    fn set_default_marks_only_one_profile_default() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut page = ProfilesPage::new();
+
+        handle_profiles_action(
+            &mut page,
+            ProfilesAction::SaveProfile(profile_named("alpha")),
+            &shared,
+        );
+        handle_profiles_action(
+            &mut page,
+            ProfilesAction::SaveProfile(profile_named("beta")),
+            &shared,
+        );
+        let id_beta = page
+            .profiles()
+            .unwrap()
+            .iter()
+            .find(|p| p.name == "beta")
+            .unwrap()
+            .id;
+
+        handle_profiles_action(
+            &mut page,
+            ProfilesAction::SetDefaultProfile(id_beta),
+            &shared,
+        );
+
+        let after = page.profiles().unwrap();
+        let defaults: Vec<&str> = after
+            .iter()
+            .filter(|p| p.is_default)
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(defaults, vec!["beta"]);
+    }
+}
+
+mod rules_page_happy {
+    use arclain_core::features::organization::{OrganizationRule, RuleTrigger};
+    use arclain_ui::features::organization::presentation::views::rules_page::{
+        handle_rules_page_action, RulesPage, RulesPageAction,
+    };
+
+    use super::*;
+
+    #[test]
+    fn load_rules_against_empty_db_populates_empty_vec() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let service = shared
+            .services
+            .organization_service
+            .as_ref()
+            .unwrap()
+            .clone();
+        let mut page = RulesPage::new();
+
+        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &service, None);
+
+        assert_eq!(page.error(), None);
+        // page.rules is not pub; we infer success from the absence of an
+        // error and from a follow-up LoadRule(0) creating fresh state.
+    }
+
+    #[test]
+    fn load_rule_with_id_zero_succeeds_against_real_db() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let service = shared
+            .services
+            .organization_service
+            .as_ref()
+            .unwrap()
+            .clone();
+        let mut page = RulesPage::new();
+
+        handle_rules_page_action(
+            &mut page,
+            RulesPageAction::LoadRule { rule_id: 0 },
+            &service,
+            None,
+        );
+
+        assert_eq!(page.editor_load_error(), None);
+        assert!(!page.is_editor_dirty());
+    }
+
+    #[test]
+    fn save_rule_then_load_returns_it() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let service = shared
+            .services
+            .organization_service
+            .as_ref()
+            .unwrap()
+            .clone();
+
+        // Insert a rule directly via the service (the dispatcher save
+        // path goes through RulesPage::save_editor_rule which isn't
+        // an action — it's called from the settings header save
+        // button). Use the service to stage the fixture, then dispatch
+        // LoadRules to verify the dispatcher picks it up.
+        let rule = OrganizationRule {
+            id: 0,
+            name: "demo-rule".into(),
+            priority: 100,
+            is_enabled: true,
+            trigger: RuleTrigger::default(),
+            actions: Default::default(),
+            ..Default::default()
+        };
+        service.save_domain_rule(&rule).expect("seed rule");
+
+        let mut page = RulesPage::new();
+        handle_rules_page_action(&mut page, RulesPageAction::LoadRules, &service, None);
+
+        assert_eq!(page.error(), None);
+        // We can't read page.rules directly (private), but a
+        // subsequent LoadRule with the seeded id should now succeed
+        // without setting editor_load_error.
+        let seeded_id = service
+            .list_domain_rules()
+            .expect("list rules")
+            .into_iter()
+            .find(|r| r.name == "demo-rule")
+            .expect("seeded rule present")
+            .id;
+
+        handle_rules_page_action(
+            &mut page,
+            RulesPageAction::LoadRule { rule_id: seeded_id },
+            &service,
+            None,
+        );
+        assert_eq!(
+            page.editor_load_error(),
+            None,
+            "LoadRule with a real id must succeed"
+        );
+    }
+}
+
+mod process_page_happy {
+    use super::*;
+    use arclain_ui::features::process::view::{handle_process_action, ProcessAction};
+    use arclain_ui::features::process::ProcessPageState;
+
+    #[test]
+    fn load_organization_rules_with_real_service_caches_empty_vec_against_empty_db() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut state = ProcessPageState::default();
+
+        handle_process_action(
+            &mut state,
+            ProcessAction::LoadOrganizationRules,
+            &shared,
+        );
+
+        let cache = state
+            .cached_org_rules
+            .as_ref()
+            .expect("cache should be populated");
+        assert!(
+            cache.is_empty(),
+            "fresh DB has no rules; cache should be Some(empty)"
+        );
+    }
+
+    #[test]
+    fn load_interrupted_count_against_empty_db_returns_zero() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut state = ProcessPageState::default();
+
+        handle_process_action(
+            &mut state,
+            ProcessAction::LoadInterruptedCount,
+            &shared,
+        );
+
+        assert_eq!(
+            state.interrupted_run_count,
+            Some(0),
+            "no rows in pipeline_runs → count is 0"
+        );
+    }
+}
+
+mod layout_editor_happy {
+    use super::*;
+    use arclain_ui::features::settings::presentation::pages::{
+        handle_info_panel_layout_action, handle_toolbar_layout_action, InfoPanelLayoutState,
+        LayoutEditorAction, ToolbarLayoutState,
+    };
+
+    #[test]
+    fn toolbar_sync_with_real_service_loads_seeded_defaults() {
+        // ConfigDb's ui::seed module ships canonical toolbar entries
+        // (navigation group, file-actions, view, etc.) on first init.
+        // We assert "non-empty" rather than a hardcoded count so the
+        // test doesn't break every time defaults are tweaked.
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let ui_service = shared.services.ui_service.as_deref();
+        let mut state = ToolbarLayoutState::default();
+
+        handle_toolbar_layout_action(
+            &mut state,
+            LayoutEditorAction::SyncItems,
+            ui_service,
+            None,
+        );
+
+        assert!(state.loaded, "real UiService must flip loaded=true");
+        assert!(
+            !state.items.is_empty(),
+            "fresh DB ships with seeded toolbar defaults"
+        );
+        assert!(
+            !state.dirty,
+            "loading existing items shouldn't mark the editor dirty"
+        );
+    }
+
+    #[test]
+    fn info_panel_sync_with_real_service_loads_seeded_defaults() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let ui_service = shared.services.ui_service.as_deref();
+        let mut state = InfoPanelLayoutState::default();
+
+        handle_info_panel_layout_action(
+            &mut state,
+            LayoutEditorAction::SyncItems,
+            ui_service,
+            None,
+        );
+
+        assert!(state.loaded);
+        assert!(
+            !state.items.is_empty(),
+            "fresh DB ships with seeded info-panel sections"
+        );
+    }
+}
+
+mod interface_settings_happy {
+    use super::*;
+    use arclain_ui::features::settings::presentation::pages::{
+        handle_interface_settings_action, InterfaceSettingsAction, InterfaceSettingsState,
+    };
+
+    #[test]
+    fn load_items_against_empty_db_marks_loaded() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut state = InterfaceSettingsState::default();
+        assert!(!state.loaded);
+
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::LoadItems,
+            &shared,
+        );
+
+        assert!(state.loaded, "real UiService must flip loaded=true");
+        assert!(!state.dirty, "fresh load shouldn't be dirty");
+    }
+
+    #[test]
+    fn save_and_sync_clears_dirty_against_real_db() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let mut state = InterfaceSettingsState::default();
+        // Pretend the user toggled something.
+        state.show_button_labels = true;
+        state.dirty = true;
+
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::SaveAndSync,
+            &shared,
+        );
+
+        assert!(
+            !state.dirty,
+            "SaveAndSync must clear dirty once the write completes"
+        );
+    }
+
+    #[test]
+    fn save_and_sync_pushes_show_button_labels_into_ui_preferences_signal() {
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        // Confirm baseline.
+        assert!(!shared.signals().ui_preferences.get().show_button_labels);
+
+        let mut state = InterfaceSettingsState::default();
+        state.show_button_labels = true;
+        state.dirty = true;
+
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::SaveAndSync,
+            &shared,
+        );
+
+        assert!(
+            shared.signals().ui_preferences.get().show_button_labels,
+            "SaveAndSync must propagate show_button_labels into ui_preferences signal"
+        );
+    }
+}
+
