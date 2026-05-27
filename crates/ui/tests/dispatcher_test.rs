@@ -983,6 +983,113 @@ mod interface_settings_happy {
     }
 
     #[test]
+    fn toggle_item_visibility_for_toolbar_persists_to_signal_and_db() {
+        // Symmetric to the InfoPanel test above; covers the
+        // UiRegion::Toolbar arm of the dispatcher's ToggleItemVisibility
+        // match. Catches the case where Toolbar was accidentally routed
+        // to the wrong signal (or to the no-signal fallback).
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let ui_service = shared.services.ui_service.as_ref().unwrap().clone();
+
+        let initial = ui_service.list_toolbar_items().expect("list");
+        let victim = initial
+            .into_iter()
+            .next()
+            .expect("seeded toolbar items present");
+        let target_id = victim.id.clone();
+        let started_visible = victim.visible;
+        shared
+            .signals()
+            .toolbar_items
+            .set(ui_service.list_toolbar_items().unwrap());
+
+        let mut state = InterfaceSettingsState::default();
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::ToggleItemVisibility {
+                region: UiRegion::Toolbar,
+                item_id: target_id.clone(),
+                visible: !started_visible,
+            },
+            &shared,
+        );
+
+        let signal_visible = shared
+            .signals()
+            .toolbar_items
+            .get()
+            .iter()
+            .find(|i| i.id == target_id)
+            .expect("item still in signal")
+            .visible;
+        assert_eq!(signal_visible, !started_visible);
+
+        let db_visible = ui_service
+            .list_toolbar_items()
+            .expect("list")
+            .iter()
+            .find(|i| i.id == target_id)
+            .expect("item still in DB")
+            .visible;
+        assert_eq!(db_visible, !started_visible);
+    }
+
+    #[test]
+    fn toggle_item_visibility_for_context_menu_persists_to_signal_and_db() {
+        // Same symmetry check for UiRegion::ContextMenu. Interface
+        // page's context-menu section is the most likely consumer of
+        // this arm — the symmetry test guards against silent breakage
+        // there if the dispatcher's region match drifts.
+        let (_tmp, shared) = create_test_shared_state_with_dbs();
+        let ui_service = shared.services.ui_service.as_ref().unwrap().clone();
+
+        let initial = ui_service
+            .list_items(UiRegion::ContextMenu)
+            .expect("list");
+        let victim = initial
+            .into_iter()
+            .next()
+            .expect("seeded context-menu items present");
+        let target_id = victim.id.clone();
+        let started_visible = victim.visible;
+        shared.signals().context_menu_items.set(
+            ui_service
+                .list_items(UiRegion::ContextMenu)
+                .unwrap(),
+        );
+
+        let mut state = InterfaceSettingsState::default();
+        handle_interface_settings_action(
+            &mut state,
+            InterfaceSettingsAction::ToggleItemVisibility {
+                region: UiRegion::ContextMenu,
+                item_id: target_id.clone(),
+                visible: !started_visible,
+            },
+            &shared,
+        );
+
+        let signal_visible = shared
+            .signals()
+            .context_menu_items
+            .get()
+            .iter()
+            .find(|i| i.id == target_id)
+            .expect("item still in signal")
+            .visible;
+        assert_eq!(signal_visible, !started_visible);
+
+        let db_visible = ui_service
+            .list_items(UiRegion::ContextMenu)
+            .expect("list")
+            .iter()
+            .find(|i| i.id == target_id)
+            .expect("item still in DB")
+            .visible;
+        assert_eq!(db_visible, !started_visible);
+    }
+
+    #[test]
     fn save_display_options_pushes_show_button_labels_into_ui_preferences_signal() {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         // Confirm baseline.
