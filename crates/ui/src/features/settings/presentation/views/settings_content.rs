@@ -149,14 +149,28 @@ pub fn render_settings_content(
         SettingsPage::Server => pages::server::render(ui, theme, server_state),
         SettingsPage::Interface => {
             if let Some(shared_state) = shared {
-                let ui_service = shared_state.services.ui_service.as_deref();
-                crate::features::settings::presentation::pages::render_interface_settings(
-                    ui,
-                    theme,
-                    shared_state,
-                    interface_state,
-                    ui_service,
-                )
+                if let Some(action) =
+                    crate::features::settings::presentation::pages::render_interface_settings(
+                        ui,
+                        theme,
+                        interface_state,
+                    )
+                {
+                    use crate::features::settings::presentation::pages::InterfaceSettingsAction;
+                    match action {
+                        InterfaceSettingsAction::Navigate(page) => {
+                            return Some(SettingsAction::NavigateTo(page));
+                        }
+                        other => {
+                            crate::features::settings::presentation::pages::handle_interface_settings_action(
+                                interface_state,
+                                other,
+                                shared_state,
+                            );
+                        }
+                    }
+                }
+                None
             } else {
                 None
             }

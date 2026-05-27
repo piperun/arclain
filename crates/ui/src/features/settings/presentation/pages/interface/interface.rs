@@ -1,4 +1,12 @@
-use crate::features::settings::types::SettingsAction;
+//! Interface settings page.
+//!
+//! Architecture: `render_interface_settings` returns
+//! `Option<InterfaceSettingsAction>` describing intent — either a
+//! data load, a save-and-sync cascade, or a navigation request. The
+//! sibling `handle_interface_settings_action` function owns all
+//! UiService calls and signal mutations so the render path itself
+//! stays a pure intent-emitter.
+
 use crate::shared::components::Form;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
@@ -110,23 +118,45 @@ impl InterfaceSettingsState {
     }
 }
 
-/// Render the Interface settings page
-/// Returns Some(SettingsAction) if navigation is requested
+/// Intents emitted by `render_interface_settings`. Caller translates
+/// `Navigate` into a `SettingsAction::NavigateTo` and routes data
+/// actions through `handle_interface_settings_action`.
+#[derive(Debug, Clone)]
+pub enum InterfaceSettingsAction {
+    /// First-render load: fetch items + display options from the
+    /// UiService and populate `state`. Auto-fired when `state.loaded`
+    /// is false.
+    LoadItems,
+    /// User mutated something (`state.dirty` is true). Save items +
+    /// display options to the UiService, then refresh the canonical
+    /// signals (`toolbar_items`, `info_panel_items`, `ui_preferences`,
+    /// `browser_view_state`) so other features see the update.
+    SaveAndSync,
+    /// User picked a layout target in the dialog — navigate to its
+    /// editor page.
+    Navigate(crate::core::navigation::SettingsPage),
+}
+
+/// Render the Interface settings page.
 pub fn render_interface_settings(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    shared: &SharedState,
     interface_state: &mut InterfaceSettingsState,
-    ui_service: Option<&UiService>,
-) -> Option<SettingsAction> {
-    let mut action: Option<SettingsAction> = None;
-
-    // Load items from database if not already loaded
+) -> Option<InterfaceSettingsAction> {
+    // Auto-fire LoadItems on first render. Dispatcher populates
+    // state.items + state.layout_options + state.show_button_labels
+    // synchronously after render returns; next frame the form
+    // renders against real data.
     if !interface_state.loaded {
-        if let Some(service) = ui_service {
-            interface_state.load_from_service(service);
-        }
+        ui.label(
+            egui::RichText::new("Loading interface settings…")
+                .size(12.0)
+                .color(theme.colors.on_surface_variant),
+        );
+        return Some(InterfaceSettingsAction::LoadItems);
     }
+
+    let mut emitted: Option<InterfaceSettingsAction> = None;
 
     Form::new()
         .id("interface_settings")
@@ -135,102 +165,80 @@ pub fn render_interface_settings(
 
             // Toolbar section - just Edit Layout button
             render_section(ui, theme, "Toolbar", |ui| {
-            ui.label(
-                egui::RichText::new("Customize toolbar button arrangement")
-                    .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-            ui.add_space(8.0);
+                ui.label(
+                    egui::RichText::new("Customize toolbar button arrangement")
+                        .size(12.0)
+                        .color(theme.colors.on_surface_variant),
+                );
+                ui.add_space(8.0);
 
-            // Edit Layout button - opens dialog
-            if ui
-                .add(TextButton::new(format!(
-                    "{} Edit Layout",
-                    egui_phosphor::regular::PENCIL_SIMPLE
-                ), ButtonSize::Medium).with_theme_colors(&theme.colors))
-                .clicked()
-            {
-                interface_state.layout_dialog_open = true;
-            }
-        });
-
-        // Context Menu section
-        render_section(ui, theme, "Context Menu", |ui| {
-            sections::context_menu_section::render(
-                ui,
-                theme,
-                &mut interface_state.items,
-                &mut interface_state.dirty,
-            );
-        });
-
-        // Info Panel section
-        render_section(ui, theme, "Info Panel", |ui| {
-            sections::info_panel_section::render(
-                ui,
-                theme,
-                &mut interface_state.items,
-                &mut interface_state.dirty,
-            );
-        });
-
-        // Layout section
-        render_section(ui, theme, "Layout", |ui| {
-            sections::layout_section::render(
-                ui,
-                theme,
-                &mut interface_state.layout_options,
-                &mut interface_state.dirty,
-            );
-        });
-
-        // Header section - button labels
-        render_section(ui, theme, "Header", |ui| {
-            ui.label(
-                egui::RichText::new("Configure header button display")
-                    .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-            ui.add_space(8.0);
-
-            if ui
-                .checkbox(&mut interface_state.show_button_labels, "Show button labels in header")
-                .on_hover_text("Display text labels next to icons in header buttons")
-                .changed()
-            {
-                interface_state.dirty = true;
-            }
-        });
-
-        ui.add_space(16.0);
-
-        // Auto-save: save immediately when changes are made
-        if interface_state.dirty {
-            if let Some(service) = ui_service {
-                interface_state.save_to_service(service);
-
-                // Reload toolbar items in AppSignals
-                if let Ok(items) = service.list_toolbar_items() {
-                    shared.signals().toolbar_items.set(items);
+                // Edit Layout button - opens dialog
+                if ui
+                    .add(
+                        TextButton::new(
+                            format!(
+                                "{} Edit Layout",
+                                egui_phosphor::regular::PENCIL_SIMPLE
+                            ),
+                            ButtonSize::Medium,
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
+                    interface_state.layout_dialog_open = true;
                 }
+            });
 
-                // Reload info panel items in AppSignals
-                if let Ok(items) = service.list_info_panel_items() {
-                    shared.signals().info_panel_items.set(items);
+            // Context Menu section
+            render_section(ui, theme, "Context Menu", |ui| {
+                sections::context_menu_section::render(
+                    ui,
+                    theme,
+                    &mut interface_state.items,
+                    &mut interface_state.dirty,
+                );
+            });
+
+            // Info Panel section
+            render_section(ui, theme, "Info Panel", |ui| {
+                sections::info_panel_section::render(
+                    ui,
+                    theme,
+                    &mut interface_state.items,
+                    &mut interface_state.dirty,
+                );
+            });
+
+            // Layout section
+            render_section(ui, theme, "Layout", |ui| {
+                sections::layout_section::render(
+                    ui,
+                    theme,
+                    &mut interface_state.layout_options,
+                    &mut interface_state.dirty,
+                );
+            });
+
+            // Header section - button labels
+            render_section(ui, theme, "Header", |ui| {
+                ui.label(
+                    egui::RichText::new("Configure header button display")
+                        .size(12.0)
+                        .color(theme.colors.on_surface_variant),
+                );
+                ui.add_space(8.0);
+
+                if ui
+                    .checkbox(&mut interface_state.show_button_labels, "Show button labels in header")
+                    .on_hover_text("Display text labels next to icons in header buttons")
+                    .changed()
+                {
+                    interface_state.dirty = true;
                 }
+            });
 
-                // Update ui_preferences signal for reactivity (header uses this)
-                let mut prefs = shared.signals().ui_preferences.get();
-                prefs.show_button_labels = interface_state.show_button_labels;
-                shared.signals().ui_preferences.set(prefs);
-
-                // Update browser view state with new panel defaults
-                shared.signals().tabs.get().active().browser_view_state.update(|state| {
-                    state.toolbar_state.show_tree_panel = interface_state.layout_options.tree_panel_visible;
-                    state.toolbar_state.show_properties_panel = interface_state.layout_options.properties_panel_visible;
-                });
-            }
-        }
+            ui.add_space(16.0);
         });
 
     // Layout type selection dialog
@@ -264,7 +272,7 @@ pub fn render_interface_settings(
                             .clicked()
                         {
                             interface_state.layout_dialog_open = false;
-                            action = Some(SettingsAction::NavigateTo(
+                            emitted = Some(InterfaceSettingsAction::Navigate(
                                 crate::core::navigation::SettingsPage::ToolbarLayout,
                             ));
                         }
@@ -283,7 +291,7 @@ pub fn render_interface_settings(
                             .clicked()
                         {
                             interface_state.layout_dialog_open = false;
-                            action = Some(SettingsAction::NavigateTo(
+                            emitted = Some(InterfaceSettingsAction::Navigate(
                                 crate::core::navigation::SettingsPage::InfoPanelLayout,
                             ));
                         }
@@ -292,14 +300,90 @@ pub fn render_interface_settings(
                     ui.add_space(12.0);
 
                     // Cancel button
-                    if ui.add(TextButton::new("Cancel", ButtonSize::Small).with_theme_colors(&theme.colors)).clicked() {
+                    if ui
+                        .add(
+                            TextButton::new("Cancel", ButtonSize::Small)
+                                .with_theme_colors(&theme.colors),
+                        )
+                        .clicked()
+                    {
                         interface_state.layout_dialog_open = false;
                     }
                 });
             });
     }
 
-    action
+    // Auto-save: any pending dirty state takes priority over navigation
+    // dispatch on the same frame ONLY if no Navigate was emitted —
+    // otherwise the next frame will see dirty still true and re-emit.
+    if emitted.is_none() && interface_state.dirty {
+        emitted = Some(InterfaceSettingsAction::SaveAndSync);
+    }
+
+    emitted
+}
+
+/// Dispatch an `InterfaceSettingsAction` against the UiService and
+/// the shared signal graph. Called by the parent view after
+/// `render_interface_settings` returns an action. All side effects on
+/// the DB and on canonical signals live here.
+pub fn handle_interface_settings_action(
+    state: &mut InterfaceSettingsState,
+    action: InterfaceSettingsAction,
+    shared: &SharedState,
+) {
+    match action {
+        InterfaceSettingsAction::Navigate(_) => {
+            // Navigation is the caller's responsibility — it translates
+            // to SettingsAction::NavigateTo and returns up the chain.
+            // The dispatcher should never be called with this variant.
+            debug_assert!(
+                false,
+                "InterfaceSettingsAction::Navigate should be handled by the caller, not the data dispatcher"
+            );
+        }
+        InterfaceSettingsAction::LoadItems => {
+            if let Some(service) = shared.services.ui_service.as_deref() {
+                state.load_from_service(service);
+            }
+        }
+        InterfaceSettingsAction::SaveAndSync => {
+            let Some(service) = shared.services.ui_service.as_deref() else {
+                return;
+            };
+            state.save_to_service(service);
+
+            // Refresh canonical item signals so anyone subscribed
+            // (header, browser, etc.) sees the update.
+            if let Ok(items) = service.list_toolbar_items() {
+                shared.signals().toolbar_items.set(items);
+            }
+            if let Ok(items) = service.list_info_panel_items() {
+                shared.signals().info_panel_items.set(items);
+            }
+
+            // Push label preference into ui_preferences signal.
+            let mut prefs = shared.signals().ui_preferences.get();
+            prefs.show_button_labels = state.show_button_labels;
+            shared.signals().ui_preferences.set(prefs);
+
+            // Push panel-visibility into the active tab's browser
+            // view state. Mirrors the pre-MVU auto-save behavior:
+            // applying a Layout setting takes effect on the visible
+            // tab immediately so the user sees the change.
+            shared
+                .signals()
+                .tabs
+                .get()
+                .active()
+                .browser_view_state
+                .update(|s| {
+                    s.toolbar_state.show_tree_panel = state.layout_options.tree_panel_visible;
+                    s.toolbar_state.show_properties_panel =
+                        state.layout_options.properties_panel_visible;
+                });
+        }
+    }
 }
 
 /// Helper function to render a settings section with consistent Y2K styling

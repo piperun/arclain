@@ -1,4 +1,7 @@
 mod interface;
 pub mod sections;
 
-pub use interface::{render_interface_settings, InterfaceSettingsState};
+pub use interface::{
+    handle_interface_settings_action, render_interface_settings, InterfaceSettingsAction,
+    InterfaceSettingsState,
+};
