@@ -107,21 +107,35 @@ jobs:
 
           # Poll for the codeberg release to exist — Woodpecker's
           # publish-release step creates it on the same tag, in
-          # parallel with this workflow. If GitHub finishes first,
-          # wait up to ~10 min.
+          # parallel with this workflow.
+          #
+          # Budget sizing: Woodpecker's release path is fetch-gameta
+          # → cargo-check → cargo-test → wasm-plugins →
+          # build-linux-x86_64 → publish-release. On a busy shared
+          # codeberg runner that's commonly 15-20 min wall-clock.
+          # GitHub's own Windows build + cache restore eats the
+          # first ~5-10 min before we even hit this poll, so the
+          # effective polling window has to span the *gap* between
+          # the two pipelines. Was 60 × 10s = 10 min and timed out
+          # routinely (release created at ~20 min, GitHub gave up
+          # at 10). 180 × 10s = 30 min covers the typical case with
+          # margin; pushing further hits GitHub's 6-hour job limit
+          # which we don't want to chew through on a polling loop.
+          $maxRetries = 180
           $release = $null
-          for ($i = 0; $i -lt 60; $i++) {
+          for ($i = 0; $i -lt $maxRetries; $i++) {
             try {
               $release = Invoke-RestMethod -Uri "https://codeberg.org/api/v1/repos/$repo/releases/tags/$tag" -Headers $headers
-              Write-Host "Found release id=$($release.id) for tag $tag"
+              Write-Host "Found release id=$($release.id) for tag $tag after $i retry(ies)"
               break
             } catch {
-              Write-Host "Release $tag not yet on codeberg, retrying in 10s ($i/60)…"
+              Write-Host "Release $tag not yet on codeberg, retrying in 10s ($i/$maxRetries)…"
               Start-Sleep -Seconds 10
             }
           }
           if (-not $release) {
-            throw "Codeberg release for tag $tag never appeared after 10 min. Did the Woodpecker publish-release step fail?"
+            $minutes = [int]($maxRetries * 10 / 60)
+            throw "Codeberg release for tag $tag never appeared after $minutes min. Either the Woodpecker publish-release step failed, or it ran longer than the polling budget — check https://codeberg.org/$repo/releases first; if the release IS there, increase \$maxRetries above."
           }
 
           $assetsUrl = "https://codeberg.org/api/v1/repos/$repo/releases/$($release.id)/assets"
