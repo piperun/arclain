@@ -71,8 +71,9 @@ pub fn delete_selected(
         }
         // Refresh listing
         let mut st = state.lock();
+        let active_id = st.signals.tabs.get().active_id();
         if let Some(a) = st.signals.tabs.get().active().archive_path.get() {
-            if st.list_archive(&a).is_ok() {
+            if st.list_archive(&a, active_id).is_ok() {
                 drop(st);
 
                 // We need to reload archive data - call the archive_operations module

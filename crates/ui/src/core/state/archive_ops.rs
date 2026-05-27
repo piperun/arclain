@@ -1,6 +1,7 @@
 //! Archive operations - listing, reading, writing files
 
 use super::AppState;
+use crate::core::tabs::TabId;
 use anyhow::Result;
 use arclain_core::utilities::auto_password_for;
 use parking_lot::RwLock;
@@ -9,9 +10,41 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 impl AppState {
-    pub fn list_archive(&mut self, path: &Path) -> Result<Vec<arclain_core::ArchiveEntry>> {
+    /// List an archive and populate the **named** tab's per-tab signals.
+    ///
+    /// Pre-tab-aware refactor this used `signals.tabs.get().active()`
+    /// to decide which tab to write into — fine for synchronous calls
+    /// from the active tab, but catastrophic for the background
+    /// `load_archive_into_tab` worker pool that serializes on the
+    /// `AppState` mutex. Five concurrent multi-drop opens would all
+    /// resolve `active()` to whichever tab was active when each lock
+    /// was acquired (usually the last-created one), so all 5 events
+    /// wrote their entries + archive_extras + queued plugin event
+    /// against the same tab — the per-event metadata-signal handles
+    /// in the queued events were therefore all the active tab's
+    /// signal, and every plugin emit clobbered the same tab.
+    ///
+    /// Callers now pass the explicit `target_tab_id`. Active-tab
+    /// call sites pass `signals.tabs.get().active_id()`.
+    pub fn list_archive(
+        &mut self,
+        path: &Path,
+        target_tab_id: TabId,
+    ) -> Result<Vec<arclain_core::ArchiveEntry>> {
         info!("Opening archive: {}", path.display());
-        self.signals.tabs.get().active().current_password.set(None);
+        let tab = self
+            .signals
+            .tabs
+            .get()
+            .get(target_tab_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "list_archive: target tab {:?} not found in collection",
+                    target_tab_id
+                )
+            })?
+            .clone();
+        tab.current_password.set(None);
 
         // Select appropriate backend based on file extension
         let backend = self.backend_selector.select(path)?;
@@ -26,7 +59,7 @@ impl AppState {
                         info!("Attempting to open encrypted archive with auto-detected password");
                         match backend.list(path, Some(password)) {
                             Ok(new_info) => {
-                                self.signals.tabs.get().active().current_password.set(Some(password.clone()));
+                                tab.current_password.set(Some(password.clone()));
                                 new_info
                             }
                             Err(e) => {
@@ -50,7 +83,7 @@ impl AppState {
                 if let Some(ref password) = pw {
                     info!("Attempting to open archive with auto-detected password");
                     let info = backend.list(path, Some(password))?;
-                    self.signals.tabs.get().active().current_password.set(Some(password.clone()));
+                    tab.current_password.set(Some(password.clone()));
                     info
                 } else {
                     debug!("No auto-password found");
@@ -60,7 +93,6 @@ impl AppState {
         };
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
         let archive_path = Some(path.to_path_buf());
-        let tab = self.signals.tabs.get().active().clone();
         tab.archive_path.set(archive_path.clone());
 
         // Update archive_extras signal — the encryption fields are
@@ -73,7 +105,8 @@ impl AppState {
             headers_encrypted: info.headers_encrypted,
             encryption_method: info.encryption_method.clone(),
         });
-        crate::core::operations::navigation_signals::reset_navigation(&self.signals);
+        tab.navigation
+            .set(arclain_core::archive::NavigationState::new());
 
         // Update reactive signals for async UI updates
         tab.entries
@@ -158,16 +191,33 @@ impl AppState {
         Ok(tab.entries.get().as_ref().clone())
     }
 
+    /// Re-list a tab's archive after the user has manually entered a
+    /// password (from the password dialog). Takes an explicit
+    /// `target_tab_id` for the same reason as `list_archive` — the
+    /// password unlock can resolve while the user has navigated to a
+    /// different tab.
     pub fn list_with_password(
         &mut self,
         path: &Path,
         password: &str,
+        target_tab_id: TabId,
     ) -> Result<Vec<arclain_core::ArchiveEntry>> {
         info!("Listing archive with manually provided password");
         let backend = self.backend_selector.select(path)?;
         let info = backend.list(path, Some(password))?;
         self.last_entries = info.entries.iter().map(|e| e.path.clone()).collect();
-        let tab = self.signals.tabs.get().active().clone();
+        let tab = self
+            .signals
+            .tabs
+            .get()
+            .get(target_tab_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "list_with_password: target tab {:?} not found",
+                    target_tab_id
+                )
+            })?
+            .clone();
         tab.archive_path.set(Some(path.to_path_buf()));
 
         // Update archive_extras — see `list_archive` above for the
@@ -177,7 +227,8 @@ impl AppState {
             headers_encrypted: info.headers_encrypted,
             encryption_method: info.encryption_method.clone(),
         });
-        crate::core::operations::navigation_signals::reset_navigation(&self.signals);
+        tab.navigation
+            .set(arclain_core::archive::NavigationState::new());
         tab.current_password
             .set(Some(password.to_string()));
 

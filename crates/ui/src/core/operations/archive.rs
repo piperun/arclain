@@ -49,7 +49,8 @@ pub fn open_archive(
         state.lock().signals.tabs.get().active().navigation.set(NavigationState::new());
 
         let mut st = state.lock();
-        match st.list_archive(&file) {
+        let active_id = st.signals.tabs.get().active_id();
+        match st.list_archive(&file, active_id) {
             Ok(_) => {
                 // list_archive writes its return value into tab signals;
                 // load_archive_data reads from those signals directly,
@@ -102,7 +103,8 @@ pub fn open_archive_by_path(
     state.lock().signals.tabs.get().active().navigation.set(NavigationState::new());
 
     let mut st = state.lock();
-    match st.list_archive(path) {
+    let active_id = st.signals.tabs.get().active_id();
+    match st.list_archive(path, active_id) {
         Ok(_) => {
             drop(st);
             load_archive_data(
@@ -147,11 +149,12 @@ pub fn try_open_with_password(
     entries: &mut Vec<FileEntry>,
 ) -> bool {
     let mut st = state.lock();
+    let active_id = st.signals.tabs.get().active_id();
     // Save the current navigation state before re-listing
     let saved_current_path = st.signals.tabs.get().active().navigation.get().current_path.clone();
     let saved_path_stack = st.signals.tabs.get().active().navigation.get().path_stack.clone();
 
-    match st.list_with_password(path, password) {
+    match st.list_with_password(path, password, active_id) {
         Ok(_) => {
             // Restore navigation state after re-listing
             {
@@ -644,7 +647,14 @@ pub fn load_archive_into_tab(
     let path_owned = path.to_path_buf();
     std::thread::spawn(move || {
         let mut st = state.lock();
-        match st.list_archive(&path_owned) {
+        // Pass the explicit tab_id — without it, list_archive
+        // resolves through `signals.tabs.get().active()`, which for
+        // background batch loads is whichever tab was active when
+        // the mutex was acquired. Multi-drop opens were all writing
+        // entries + queued plugin events into the same (active)
+        // tab. See archive_ops.rs::list_archive for the full
+        // rationale.
+        match st.list_archive(&path_owned, tab_id) {
             Ok(archive_entries) => {
                 drop(st);
                 tab.entries.set(std::sync::Arc::new(archive_entries));

@@ -217,7 +217,8 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                             // Now log + surface so a stale view is at
                             // least visible.
                             let mut state = app.shared_state.app_state.lock();
-                            match state.list_archive(&archive) {
+                            let active_id = state.signals.tabs.get().active_id();
+                            match state.list_archive(&archive, active_id) {
                                 Ok(_) => {
                                     crate::core::operations::navigation_view::refresh_view_entries(
                                         &state.signals,
