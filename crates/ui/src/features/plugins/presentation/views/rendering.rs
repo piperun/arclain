@@ -23,6 +23,40 @@ fn loading_placeholder_layout() -> arclain_plugins::types::PluginLayout {
     }
 }
 
+// =============================================================================
+// Documented doctrine exception: lock-free plugin runtime polling
+// =============================================================================
+//
+// The MVU doctrine says "render must not call services / DB / IO."
+// This module deliberately violates that rule by calling
+// `try_with_plugin_instance` (a WASM-runtime call) from inside the
+// render path. The reason: plugin events go through WASM that can
+// block for *seconds* — dlsite-metadata in particular does
+// synchronous HTTP from inside the plugin sandbox. A blocking lock
+// on the plugin manager during render would freeze the entire UI
+// whenever a worker thread was mid-fetch.
+//
+// The pattern below is a deliberate workaround:
+//   1. The "real" layout lives in `signals().plugin_dialog_state`
+//      as `cached_dialog_layout`. Render reads it cheap.
+//   2. When the cache is stale or missing, render attempts a
+//      *non-blocking* `try_lock` via `try_with_plugin_instance`.
+//      If the lock is free: fetch fresh layout, update cache.
+//      If contended: keep showing what we had + `request_repaint`
+//      for next frame.
+//
+// The conversion options considered (see MVU doctrine memory):
+//   * Pure MVU (emit FetchLayout action): adds 1-2 frames of latency
+//     every refresh — visibly worse UX for the same lock-contention
+//     problem.
+//   * Background reactor: architecturally cleanest but requires a
+//     new cross-thread coordination pattern we don't use elsewhere
+//     yet, plus per-dialog cancellation, lifecycle, etc. Worth doing
+//     only if the reactor pattern earns reuse elsewhere first.
+//
+// Until either of those becomes worth the cost, the lock-free poll
+// stays — documented as a deliberate exception, not as drift.
+
 /// Try to fetch the layout for a plugin extension point without
 /// blocking the UI thread. Returns the layout if the lock was free,
 /// `None` if a worker thread is mid-event and we should keep using

@@ -249,13 +249,23 @@ fn render_properties_panel(
                                     if let Some(manager_arc) = &shared.services.plugin_manager {
                                         let manager = manager_arc.lock();
 
-                                        // try_lock so a worker holding
-                                        // the plugin instance during a
-                                        // long-running fetch doesn't
-                                        // freeze the UI. On contention
-                                        // skip this plugin's panel
-                                        // section for this frame; it
-                                        // reappears next frame.
+                                        // Documented MVU exception:
+                                        // lock-free poll of the plugin
+                                        // runtime from render. Same
+                                        // rationale as the cache-dance
+                                        // pattern in
+                                        // features/plugins/presentation/views/rendering.rs
+                                        // — plugin events can block
+                                        // for seconds inside WASM
+                                        // (e.g. dlsite-metadata's
+                                        // synchronous HTTP), so a
+                                        // blocking lock here would
+                                        // freeze the UI whenever a
+                                        // worker is mid-event. On
+                                        // try-lock contention we skip
+                                        // this plugin's panel section
+                                        // for this frame; it reappears
+                                        // next frame.
                                         let elements = match manager
                                             .try_with_plugin_instance(plugin_id, |instance| {
                                                 instance
