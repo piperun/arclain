@@ -26,14 +26,17 @@ pub fn render(
                 );
                 ui.add_space(12.0);
 
-                // Calculate default paths for hints
-                let defaults =
-                    arclain_core::config::database::DbPaths::calculate_defaults("arclain").ok();
-                let default_key = defaults
+                // Default paths come from `state.default_paths`, captured
+                // once at state construction (see SecuritySettingsState).
+                let default_key = state
+                    .default_paths
                     .as_ref()
                     .and_then(|d| d.key_file.as_ref())
                     .map(|p| p.to_string_lossy());
-                let default_db = defaults.as_ref().map(|d| d.secrets_db.to_string_lossy());
+                let default_db = state
+                    .default_paths
+                    .as_ref()
+                    .map(|d| d.secrets_db.to_string_lossy());
 
                 // Key file picker
                 ui.label(

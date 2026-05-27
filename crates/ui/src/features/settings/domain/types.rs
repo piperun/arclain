@@ -216,6 +216,11 @@ pub struct SecuritySettingsState {
     pub encrypted_crc_policy: Signal<EncryptedCrcPolicy>,
     pub info: Signal<String>,
     pub error: Signal<String>,
+    /// Default DB paths captured once at state construction so the
+    /// render path can show them as hint text without recomputing
+    /// (which would touch `dirs::config_dir()` and env-var lookups
+    /// every frame).
+    pub default_paths: Option<arclain_core::DbPaths>,
 }
 
 impl Default for SecuritySettingsState {
@@ -226,6 +231,7 @@ impl Default for SecuritySettingsState {
             encrypted_crc_policy: Signal::new(EncryptedCrcPolicy::default()),
             info: Signal::new(String::new()),
             error: Signal::new(String::new()),
+            default_paths: arclain_core::DbPaths::calculate_defaults("arclain").ok(),
         }
     }
 }
