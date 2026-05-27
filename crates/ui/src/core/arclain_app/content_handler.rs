@@ -69,11 +69,32 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                     if let Some(org_service) =
                         app.shared_state.services.organization_service.as_ref()
                     {
-                        app.organization_feature.rules_page.render(
-                            ui,
-                            &app.shared_state.theme,
-                            org_service,
-                        );
+                        if let Some(action) = app
+                            .organization_feature
+                            .rules_page
+                            .render(ui, &app.shared_state.theme)
+                        {
+                            use crate::features::organization::presentation::views::RulesPageAction;
+                            match action {
+                                RulesPageAction::Navigate(_page) => {
+                                    // Top-level Organize view doesn't drive
+                                    // SettingsPage navigation directly — the
+                                    // Edit-rule flow lives under Settings, not
+                                    // this top-level page. Ignore Navigate
+                                    // intents here.
+                                }
+                                other => {
+                                    let pm_guard =
+                                        app.shared_state.services.plugin_manager.as_ref().map(|m| m.lock());
+                                    crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
+                                        &mut app.organization_feature.rules_page,
+                                        other,
+                                        org_service,
+                                        pm_guard.as_deref(),
+                                    );
+                                }
+                            }
+                        }
                     } else {
                         ui.label("Organization service not available.");
                     }

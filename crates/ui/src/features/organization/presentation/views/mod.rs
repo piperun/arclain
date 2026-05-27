@@ -6,4 +6,4 @@ pub mod profiles_page;
 pub mod rules_page;
 
 pub use profiles_page::ProfilesPage;
-pub use rules_page::{RuleEditorAction, RulesPage};
+pub use rules_page::{RuleEditorAction, RuleEditorOutput, RulesPage, RulesPageAction};

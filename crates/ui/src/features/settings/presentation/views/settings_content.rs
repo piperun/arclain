@@ -178,7 +178,22 @@ pub fn render_settings_content(
             if let Some(rp) = rules_page {
                 if let Some(shared_state) = shared {
                     if let Some(org_service) = shared_state.services.organization_service.as_ref() {
-                        return rp.render(ui, theme, org_service);
+                        if let Some(action) = rp.render(ui, theme) {
+                            use crate::features::organization::presentation::views::RulesPageAction;
+                            match action {
+                                RulesPageAction::Navigate(page) => {
+                                    return Some(SettingsAction::NavigateTo(page));
+                                }
+                                other => {
+                                    crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
+                                        rp,
+                                        other,
+                                        org_service,
+                                        plugin_manager,
+                                    );
+                                }
+                            }
+                        }
                     } else {
                         ui.label("Organization service not available.");
                     }
@@ -253,13 +268,16 @@ pub fn render_settings_content(
             if let Some(rp) = rules_page {
                 if let Some(shared_state) = shared {
                     if let Some(org_service) = shared_state.services.organization_service.as_ref() {
-                        if let Some(editor_action) = rp.render_edit_rule(
-                            ui,
-                            theme,
-                            org_service,
-                            *rule_id,
-                            plugin_manager,
-                        ) {
+                        let output = rp.render_edit_rule(ui, theme, *rule_id);
+                        if let Some(data_action) = output.data_action {
+                            crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
+                                rp,
+                                data_action,
+                                org_service,
+                                plugin_manager,
+                            );
+                        }
+                        if let Some(editor_action) = output.editor_action {
                             use crate::features::organization::presentation::views::RuleEditorAction;
                             match editor_action {
                                 RuleEditorAction::Saved | RuleEditorAction::Cancelled => {
