@@ -13,7 +13,8 @@ pub mod server;
 // Re-export for convenience
 pub use interface::render_interface_settings;
 pub use layout_editor::{
-    render_info_panel_layout, render_toolbar_layout, InfoPanelLayoutState, ToolbarLayoutState,
+    handle_info_panel_layout_action, handle_toolbar_layout_action, render_info_panel_layout,
+    render_toolbar_layout, InfoPanelLayoutState, LayoutEditorAction, ToolbarLayoutState,
 };
 
 use crate::shared::theme::AppTheme;

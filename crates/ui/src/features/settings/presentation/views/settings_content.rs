@@ -221,25 +221,39 @@ pub fn render_settings_content(
             }
         }
         SettingsPage::ToolbarLayout => {
-            let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
-            crate::features::settings::presentation::pages::render_toolbar_layout(
-                ui,
-                theme,
-                ui_service,
-                toolbar_layout_state,
-                plugin_manager,
-            );
+            if let Some(action) =
+                crate::features::settings::presentation::pages::render_toolbar_layout(
+                    ui,
+                    theme,
+                    toolbar_layout_state,
+                )
+            {
+                let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
+                crate::features::settings::presentation::pages::handle_toolbar_layout_action(
+                    toolbar_layout_state,
+                    action,
+                    ui_service,
+                    plugin_manager,
+                );
+            }
             None
         }
         SettingsPage::InfoPanelLayout => {
-            let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
-            crate::features::settings::presentation::pages::render_info_panel_layout(
-                ui,
-                theme,
-                ui_service,
-                info_panel_layout_state,
-                plugin_manager,
-            );
+            if let Some(action) =
+                crate::features::settings::presentation::pages::render_info_panel_layout(
+                    ui,
+                    theme,
+                    info_panel_layout_state,
+                )
+            {
+                let ui_service = shared.and_then(|s| s.services.ui_service.as_deref());
+                crate::features::settings::presentation::pages::handle_info_panel_layout_action(
+                    info_panel_layout_state,
+                    action,
+                    ui_service,
+                    plugin_manager,
+                );
+            }
             None
         }
         SettingsPage::KeyboardMouse => {
