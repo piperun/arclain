@@ -51,9 +51,10 @@ deps *args:
     {{python}} scripts/_deps.py {{args}}
 
 # ─── cocogitto ──────────────────────────────────────────────────────────
-# Cog's tag template is supplied via `-A "v<version>"`. The quadrupled
-# braces in recipes are just-syntax for emitting literal `{{` and `}}`.
-# All bump recipes accept extra args, e.g. `just bump --dry-run`.
+# Tag format is controlled by `cog.toml` (cog 7 default = unprefixed
+# `{version}`; the old `-A "v{{version}}"` annotation flag from cog 6
+# is gone and does nothing useful in cog 7). All bump recipes accept
+# extra args, e.g. `just bump --dry-run`.
 
 # Verify commit messages on the current branch.
 cog-check:
@@ -63,26 +64,26 @@ cog-check:
 changelog:
     cog changelog
 
-# Auto-detect bump type from conventional commits; create annotated tag.
+# Auto-detect bump type from conventional commits; create the tag.
 bump *args:
-    cog bump --auto -A "v{{{{version}}}}" {{args}}
+    cog bump --auto {{args}}
 
 # Explicit major bump.
 bump-major *args:
-    cog bump --major -A "v{{{{version}}}}" {{args}}
+    cog bump --major {{args}}
 
 # Explicit minor bump.
 bump-minor *args:
-    cog bump --minor -A "v{{{{version}}}}" {{args}}
+    cog bump --minor {{args}}
 
 # Explicit patch bump.
 bump-patch *args:
-    cog bump --patch -A "v{{{{version}}}}" {{args}}
+    cog bump --patch {{args}}
 
 # Workspace bump using the `release` hook profile (cargo test + check).
 bump-release *args:
-    cog bump --auto -A "v{{{{version}}}}" --hook-profile release {{args}}
+    cog bump --auto --hook-profile release {{args}}
 
 # Bump a specific monorepo package: `just bump-package dlsite-metadata`.
 bump-package name *args:
-    cog bump --package {{name}} --auto -A "v{{{{version}}}}" {{args}}
+    cog bump --package {{name}} --auto {{args}}
