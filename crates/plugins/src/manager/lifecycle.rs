@@ -58,7 +58,7 @@ impl PluginManager {
                 Some(backend.clone()),
                 self.library_service.clone(),
                 settings,
-                self.metadata_signal.clone(),
+                self.active_tab_bridge.clone(),
             )?
         } else {
             loaded.instantiate_with_backend(
@@ -67,7 +67,7 @@ impl PluginManager {
                 None,
                 self.library_service.clone(),
                 settings,
-                self.metadata_signal.clone(),
+                self.active_tab_bridge.clone(),
             )?
         };
 

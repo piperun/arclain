@@ -6,10 +6,10 @@
 //! `get_top_tabs`, `get_ui_layout`, `get_all_settings`, etc.) to wait for
 //! the HTTP round-trip to finish.
 //!
-//! Post-fix, `event_worker` snapshots `gameta_client` and `metadata_signal`
-//! under a brief lock, drops the lock, then runs the blocking HTTP call
-//! outside any lock. The native-fetch fallback re-acquires briefly for the
-//! WASM call.
+//! Post-fix, `event_worker` snapshots `gameta_client` and the metadata
+//! signal (resolved through the `ActiveTabBridge`) under a brief lock,
+//! drops the lock, then runs the blocking HTTP call outside any lock.
+//! The native-fetch fallback re-acquires briefly for the WASM call.
 //!
 //! These tests document the anti-pattern (test 1) and the fixed shape
 //! (test 2) using the same primitives `event_worker` uses
@@ -110,7 +110,7 @@ async fn c2_lock_held_during_blocking_http_blocks_other_acquirers() {
 /// Post-fix shape: snapshot the client under the lock, drop the lock,
 /// then run the blocking HTTP. Concurrent acquirers acquire fast.
 /// This is the shape `event_worker` now uses (with the gameta_client
-/// + metadata_signal snapshot).
+/// and the bridge-resolved metadata signal snapshot).
 #[tokio::test]
 async fn c2_dropping_lock_before_http_does_not_block_others() {
     let server = MockServer::start().await;

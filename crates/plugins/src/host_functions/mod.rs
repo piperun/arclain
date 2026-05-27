@@ -12,6 +12,7 @@ mod settings;
 
 pub use plugin_logger::PluginLogger;
 
+use crate::active_tab::ActiveTabBridge;
 use crate::arclain::plugin::host::{Host, LogLevel};
 use crate::types::PluginCapability;
 use arclain_core::ArchiveBackend;
@@ -31,8 +32,6 @@ pub struct HostFunctions {
     pub async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
     pub capabilities: std::collections::HashSet<PluginCapability>,
     pub archive_backend: Option<Arc<dyn ArchiveBackend>>,
-    pub current_archive: Arc<Mutex<Option<String>>>,
-    pub current_password: Arc<Mutex<Option<String>>>,
     pub settings: Arc<Mutex<HashMap<String, String>>>,
     /// Flips to `true` whenever the plugin (or host) writes a setting.
     /// `PluginManager::get_all_settings` swaps this back to `false` after
@@ -52,8 +51,11 @@ pub struct HostFunctions {
     pub table: ResourceTable,
     pub ctx: WasiCtx,
 
-    // Reactive signal for UI updates
-    pub metadata_signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
+    /// Bridge to the host's per-tab signal tree — replaces the
+    /// previous held `current_archive` / `current_password` /
+    /// `metadata_signal` fields. See `crate::active_tab` for why
+    /// this is a bridge instead of stored state.
+    pub active_tab: Option<Arc<dyn ActiveTabBridge>>,
 
     // Pending status message from plugin (to be displayed in status bar)
     pub pending_status_message: Arc<Mutex<Option<String>>>,
@@ -94,8 +96,6 @@ impl HostFunctions {
             async_http_client: None,
             capabilities,
             archive_backend: None,
-            current_archive: Arc::new(Mutex::new(None)),
-            current_password: Arc::new(Mutex::new(None)),
             settings: Arc::new(Mutex::new(initial_settings)),
             settings_dirty: Arc::new(AtomicBool::new(true)),
             network_log: Arc::new(Mutex::new(Vec::new())),
@@ -108,7 +108,7 @@ impl HostFunctions {
             data_service: DataService::new().with_id(&plugin_id),
             table: ResourceTable::new(),
             ctx,
-            metadata_signal: None,
+            active_tab: None,
             pending_status_message: Arc::new(Mutex::new(None)),
             plugin_logger,
         }
@@ -153,16 +153,11 @@ impl HostFunctions {
         self.gameta_client = Some(client);
     }
 
-    pub fn set_metadata_signal(
-        &mut self,
-        signal: arclain_signals::Signal<Option<serde_json::Value>>,
-    ) {
-        self.metadata_signal = Some(signal);
-    }
-
-    pub fn set_archive_context(&self, archive_path: Option<String>, password: Option<String>) {
-        *self.current_archive.lock() = archive_path;
-        *self.current_password.lock() = password;
+    /// Install the bridge to the host's per-tab signal tree. Replaces
+    /// the pre-bridge `set_metadata_signal` + `set_archive_context`
+    /// pair — see `crate::active_tab` for the rationale.
+    pub fn set_active_tab_bridge(&mut self, bridge: Arc<dyn ActiveTabBridge>) {
+        self.active_tab = Some(bridge);
     }
 
     pub fn check_capability(&self, cap: PluginCapability) -> bool {

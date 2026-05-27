@@ -79,6 +79,20 @@ pub fn process_metadata_signal(
                     meta.product_id
                 );
 
+                // Status-bar message — gives the user visible feedback
+                // that a plugin recognized the archive. The chip in the
+                // status bar already surfaces the metadata visually, but
+                // it's a static indicator; a transient message on the
+                // left side answers "did something happen just now?".
+                let summary = if !meta.title.is_empty() {
+                    format!("Found: {} [{}]", meta.title, meta.product_id)
+                } else {
+                    format!("Found metadata for {}", meta.product_id)
+                };
+                shared_state.signals().status_bar.update(|s| {
+                    s.message = summary;
+                });
+
                 // Update per-tab game_metadata signal
                 shared_state.signals().tabs.get().active().game_metadata.set(Some(meta.clone()));
                 // Note: metadata already consumed (set to None) on line 63

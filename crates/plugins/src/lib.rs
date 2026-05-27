@@ -34,6 +34,7 @@
 //! }).unwrap();
 //! ```
 
+pub mod active_tab;
 mod conversions;
 pub mod host_functions;
 pub mod loader;
@@ -57,6 +58,7 @@ pub use bindings::arclain;
 pub(crate) use bindings::PluginWorld;
 
 // Re-export main types
+pub use active_tab::ActiveTabBridge;
 pub use host_functions::HostFunctions;
 pub use loader::{DiscoveredPlugin, PluginLoader};
 pub use manager::{PluginListItem, PluginManager};

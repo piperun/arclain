@@ -41,13 +41,18 @@ impl PluginManager {
             debug!("Event worker processing: {:?}", event);
 
             for (plugin_id, instance_arc) in enabled_plugin_snapshot(&plugins, &enabled_plugins) {
-                // Phase 1: under lock — set archive context and dispatch
-                // the event. The plugin's regex check is fast, so the lock
-                // is only held briefly here.
+                // Phase 1: under lock — dispatch the event. The plugin's
+                // regex check is fast, so the lock is only held briefly.
+                // Pre-bridge this path also did `set_archive_context` to
+                // hand the event's archive into the held `current_archive`
+                // mutex; with the bridge the plugin's `current_archive_info`
+                // call resolves through the host's per-tab signals, so the
+                // explicit push is unnecessary — events fire synchronously
+                // after the open on the active tab, so the bridge returns
+                // the same archive the event carries.
                 let actions = {
-                    let PluginEvent::OnArchiveOpen { path, password, .. } = &event;
+                    let PluginEvent::OnArchiveOpen { path, .. } = &event;
                     let mut instance = instance_arc.lock();
-                    instance.set_archive_context(Some(path.clone()), password.clone());
 
                     let id = "event:archive_opened".to_string();
                     let value = Some(path.clone());
@@ -64,8 +69,15 @@ impl PluginManager {
                 // Phase 2: process actions WITHOUT holding the instance
                 // lock, so concurrent UI renders and other operations on
                 // the same plugin can proceed during the gameta HTTP
-                // round-trip. Snapshot the client/signal Arcs under a brief
-                // lock, drop it, then run the blocking HTTP outside.
+                // round-trip. Snapshot the client + the metadata signal
+                // (resolved via the bridge) under a brief lock, drop it,
+                // then run the blocking HTTP outside.
+                //
+                // Snapshotting the `Signal<T>` here pins the write to
+                // whichever tab is active right now — if the user
+                // switches tabs while the HTTP is in flight, the
+                // metadata still lands on the originally-targeted tab
+                // because the snapshot captured that tab's `Arc`.
                 for action in actions {
                     let crate::types::PluginAction::RequestFetch { key } = action else {
                         continue;
@@ -81,7 +93,10 @@ impl PluginManager {
 
                     let (gameta_client, metadata_signal) = {
                         let instance = instance_arc.lock();
-                        (instance.get_gameta_client(), instance.get_metadata_signal())
+                        let signal = instance
+                            .get_active_tab_bridge()
+                            .map(|b| b.metadata_signal());
+                        (instance.get_gameta_client(), signal)
                     };
 
                     let mut handled_by_server = false;

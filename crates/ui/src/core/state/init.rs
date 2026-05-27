@@ -242,7 +242,17 @@ impl AppState {
                 if let Some(ref gc) = services.gameta_client {
                     manager.set_gameta_client(gc.clone());
                 }
-                manager.set_metadata_signal(me.signals.tabs.get().active().metadata.clone());
+                // Install the active-tab bridge. Resolves through
+                // `AppSignals` at call time so plugins always see the
+                // currently active tab — pre-bridge this was a
+                // `set_metadata_signal` of the first tab's signal
+                // handle, which went stale on every subsequent
+                // `replace_active` / `col.open`. See
+                // `arclain_plugins::active_tab`.
+                let bridge = std::sync::Arc::new(
+                    crate::shared::active_tab_bridge::AppSignalsBridge::new(me.signals.clone()),
+                );
+                manager.set_active_tab_bridge(bridge);
                 me.plugin_event_sender = Some(manager.get_event_sender());
                 plugin_manager = Some(Arc::new(Mutex::new(manager)));
 

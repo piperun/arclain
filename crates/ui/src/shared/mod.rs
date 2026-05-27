@@ -1,5 +1,6 @@
 //! Shared utilities and infrastructure for the UI
 
+pub mod active_tab_bridge;
 pub mod async_image;
 pub mod components;
 pub mod dialogs;

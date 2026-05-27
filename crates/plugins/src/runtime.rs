@@ -101,7 +101,7 @@ impl LoadedPlugin {
         backend: Option<Arc<dyn ArchiveBackend>>,
         library_service: Option<Arc<arclain_core::LibraryService>>,
         settings: HashMap<String, String>,
-        metadata_signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
+        active_tab_bridge: Option<Arc<dyn crate::ActiveTabBridge>>,
     ) -> Result<PluginInstance> {
         // Create host functions state
         let mut host_funcs = if let Some(backend) = backend {
@@ -125,7 +125,7 @@ impl LoadedPlugin {
             host_funcs.set_library_service(lib_svc);
         }
 
-        host_funcs.metadata_signal = metadata_signal;
+        host_funcs.active_tab = active_tab_bridge;
 
         let mut store = Store::new(&self.engine, host_funcs);
         let mut linker = Linker::new(&self.engine);
@@ -277,17 +277,11 @@ impl PluginInstance {
         }
     }
 
-    /// Set the metadata signal for host functions
-    pub fn set_metadata_signal(
-        &mut self,
-        signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
-    ) {
-        let host = self.store.data_mut();
-        if let Some(s) = signal {
-            host.set_metadata_signal(s);
-        } else {
-            host.metadata_signal = None;
-        }
+    /// Install the bridge to the host's per-tab signal tree for this
+    /// instance. Replaces the pre-bridge `set_metadata_signal` +
+    /// `set_archive_context` pair — see `crate::active_tab`.
+    pub fn set_active_tab_bridge(&mut self, bridge: Arc<dyn crate::ActiveTabBridge>) {
+        self.store.data_mut().set_active_tab_bridge(bridge);
     }
 
     /// Set the async HTTP client for host functions
@@ -297,13 +291,6 @@ impl PluginInstance {
             Some(c) => host.set_async_http_client(c),
             None => host.async_http_client = None,
         }
-    }
-
-    /// Set archive context
-    pub fn set_archive_context(&mut self, archive_path: Option<String>, password: Option<String>) {
-        self.store
-            .data_mut()
-            .set_archive_context(archive_path, password);
     }
 
     /// Set the library service for host functions
@@ -333,10 +320,12 @@ impl PluginInstance {
         data.gameta_client.clone()
     }
 
-    /// Get metadata signal reference (if set)
-    pub fn get_metadata_signal(&self) -> Option<arclain_signals::Signal<Option<serde_json::Value>>> {
+    /// Get a handle to the active-tab bridge if one has been
+    /// installed. Used by the dispatch worker to snapshot per-tab
+    /// signals at event-fire time.
+    pub fn get_active_tab_bridge(&self) -> Option<Arc<dyn crate::ActiveTabBridge>> {
         let data = self.store.data();
-        data.metadata_signal.clone()
+        data.active_tab.clone()
     }
 
     /// Get network logs from the plugin

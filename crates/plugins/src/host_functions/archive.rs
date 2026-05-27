@@ -9,8 +9,9 @@ impl HostFunctions {
     pub(super) fn impl_current_archive_info(
         &mut self,
     ) -> Option<crate::arclain::plugin::host::ArchiveInfo> {
-        // Return current archive path if available
-        let archive: String = self.current_archive.lock().clone()?;
+        // Resolve through the bridge so the answer always reflects
+        // the currently active tab — see `crate::active_tab`.
+        let archive = self.active_tab.as_ref()?.archive_path()?;
         let path_buf = std::path::PathBuf::from(&archive);
         let filename: String = path_buf.file_name()?.to_str()?.to_string();
 
@@ -28,12 +29,14 @@ impl HostFunctions {
             .archive_backend
             .as_ref()
             .ok_or("Archive backend not available")?;
-        let archive = self
-            .current_archive
-            .lock()
-            .clone()
+        let bridge = self
+            .active_tab
+            .as_ref()
+            .ok_or("Active-tab bridge not configured")?;
+        let archive = bridge
+            .archive_path()
             .ok_or("No archive currently open")?;
-        let password = self.current_password.lock().clone();
+        let password = bridge.current_password();
 
         let info = backend
             .list(Path::new(&archive), password.as_deref())
@@ -51,10 +54,12 @@ impl HostFunctions {
             return Err("ArchiveModify capability not granted".to_string());
         }
 
-        let current_path = self
-            .current_archive
-            .lock()
-            .clone()
+        let bridge = self
+            .active_tab
+            .as_ref()
+            .ok_or("Active-tab bridge not configured")?;
+        let current_path = bridge
+            .archive_path()
             .ok_or("No archive currently open")?;
 
         let path = Path::new(&current_path);
@@ -83,9 +88,12 @@ impl HostFunctions {
         // Perform the rename
         std::fs::rename(&path, &new_path).map_err(|e| format!("Failed to rename: {}", e))?;
 
-        // Update the current archive path
+        // Push the new path back through the bridge so the active
+        // tab's `archive_path` signal reflects the rename — listeners
+        // (status bar, breadcrumb, plugin re-reads) pick it up on
+        // the next frame.
         let new_path_str = new_path.to_string_lossy().into_owned();
-        *self.current_archive.lock() = Some(new_path_str.clone());
+        bridge.set_archive_path(Some(new_path_str.clone()));
 
         info!(
             "[HostFunctions] Renamed archive from '{}' to '{}'",

@@ -39,8 +39,11 @@ pub struct PluginManager {
     pub(crate) event_sender: std::sync::mpsc::Sender<PluginEvent>,
     /// Handle to the event worker thread
     _event_worker_handle: Option<std::thread::JoinHandle<()>>,
-    /// Reactive signal for metadata updates
-    pub(crate) metadata_signal: Option<arclain_signals::Signal<Option<serde_json::Value>>>,
+    /// Bridge to the host's per-tab signal tree. Plugins read the
+    /// currently active archive + password and write metadata to
+    /// the active tab's signal through this. See
+    /// `crate::active_tab` for the bridge rationale.
+    pub(crate) active_tab_bridge: Option<Arc<dyn crate::ActiveTabBridge>>,
     /// Cached result of `get_all_top_tabs` — invalidated whenever a
     /// plugin is loaded, enabled, or disabled. Avoids the per-frame
     /// WASM call into every enabled plugin (audit finding P3).
@@ -88,7 +91,7 @@ impl PluginManager {
             initial_settings,
             event_sender,
             _event_worker_handle: Some(worker_handle),
-            metadata_signal: None,
+            active_tab_bridge: None,
             cached_top_tabs: parking_lot::Mutex::new(None),
             settings_cache: parking_lot::Mutex::new(HashMap::new()),
         })
@@ -127,7 +130,7 @@ impl PluginManager {
             initial_settings,
             event_sender,
             _event_worker_handle: Some(worker_handle),
-            metadata_signal: None,
+            active_tab_bridge: None,
             cached_top_tabs: parking_lot::Mutex::new(None),
             settings_cache: parking_lot::Mutex::new(HashMap::new()),
         })
@@ -154,14 +157,13 @@ impl PluginManager {
         plugins.values().map(|p| p.instance.clone()).collect()
     }
 
-    /// Set the metadata signal for reactive updates
-    pub fn set_metadata_signal(
-        &mut self,
-        signal: arclain_signals::Signal<Option<serde_json::Value>>,
-    ) {
-        self.metadata_signal = Some(signal.clone());
+    /// Install the bridge to the host's per-tab signal tree. Replaces
+    /// the pre-bridge `set_metadata_signal` — see `crate::active_tab`
+    /// for why this is a bridge instead of a held handle.
+    pub fn set_active_tab_bridge(&mut self, bridge: Arc<dyn crate::ActiveTabBridge>) {
+        self.active_tab_bridge = Some(bridge.clone());
         for instance in self.instance_snapshot() {
-            instance.lock().set_metadata_signal(Some(signal.clone()));
+            instance.lock().set_active_tab_bridge(bridge.clone());
         }
     }
 
@@ -235,14 +237,6 @@ impl PluginManager {
         }
     }
 
-    /// Set the archive context for all plugins
-    pub fn set_archive_context(&mut self, archive_path: Option<String>, password: Option<String>) {
-        for instance in self.instance_snapshot() {
-            instance
-                .lock()
-                .set_archive_context(archive_path.clone(), password.clone());
-        }
-    }
 }
 
 #[cfg(test)]

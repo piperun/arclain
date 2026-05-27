@@ -195,9 +195,12 @@ impl HostFunctions {
                 }
 
                 // Always trigger the signal so the UI receives metadata even if
-                // persistence failed (e.g. corrupt database with stale triggers)
-                if let Some(ref signal) = self.metadata_signal {
-                    signal.set(Some(parsed.clone()));
+                // persistence failed (e.g. corrupt database with stale triggers).
+                // Resolves through the bridge so the write lands on the
+                // currently-active tab's per-tab `metadata` signal — see
+                // `crate::active_tab` for why this isn't a held handle.
+                if let Some(ref bridge) = self.active_tab {
+                    bridge.metadata_signal().set(Some(parsed.clone()));
                     debug!("[Cache SAVE] Triggered metadata signal for {}", id);
                 }
             }
