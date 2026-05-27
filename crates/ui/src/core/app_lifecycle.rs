@@ -53,61 +53,85 @@ pub fn process_hotkey_input(
     hotkey_manager.check_input(ctx)
 }
 
-/// Check for and process metadata updates from plugin signals
+/// Check for and process metadata updates from plugin signals.
+///
+/// Walks EVERY tab, not just the active one — the dispatch worker
+/// writes each event's metadata into its originating tab's signal
+/// (per `PluginEvent::OnArchiveOpen.metadata_signal`), and that tab
+/// might not be the active one by the time the worker finishes.
+/// Pre-walk, drag-dropping 5 archives left tabs 1–4 with
+/// `Some(metadata)` sitting unconsumed in their signal — their
+/// `game_metadata` stayed `None` and the status-bar chip / Process
+/// page output naming only populated when the user manually
+/// switched to each tab. The per-frame walk consumes each tab
+/// independently so every open's metadata reaches its tab on the
+/// next frame.
 pub fn process_metadata_signal(
     shared_state: &SharedState,
     organization_feature: &mut organization::OrganizationFeature,
 ) {
-    let new_metadata = {
-        let tab = shared_state.signals().tabs.get().active().clone();
-        let val = tab.metadata.get();
-        if val.is_some() {
-            tab.metadata.set(None); // Consume
-            val
-        } else {
-            None
-        }
-    };
+    let col = shared_state.signals().tabs.get();
+    let active_id = col.active_id();
 
-    if let Some(json_val) = new_metadata {
+    // Last-consumed wins for the status-bar message. If several
+    // tabs consume in one frame (typical for a batch drag-drop) the
+    // user sees the latest title surface on the left. Imperfect UX
+    // for batches but better than no feedback; richer aggregation
+    // (e.g. "Found 5 archives") can come later.
+    let mut latest_summary: Option<String> = None;
+
+    for tab in col.tabs() {
+        let Some(json_val) = tab.metadata.get() else {
+            continue;
+        };
+        tab.metadata.set(None); // Consume
+
         let json_str = json_val.to_string();
-        match arclain_core::features::organization::GameMetadata::from_json(&json_str) {
-            Ok(meta) => {
-                tracing::info!(
-                    "Received metadata signal update: {} (ID: {})",
-                    meta.title,
-                    meta.product_id
-                );
-
-                // Status-bar message — gives the user visible feedback
-                // that a plugin recognized the archive. The chip in the
-                // status bar already surfaces the metadata visually, but
-                // it's a static indicator; a transient message on the
-                // left side answers "did something happen just now?".
-                let summary = if !meta.title.is_empty() {
-                    format!("Found: {} [{}]", meta.title, meta.product_id)
-                } else {
-                    format!("Found metadata for {}", meta.product_id)
-                };
-                shared_state.signals().status_bar.update(|s| {
-                    s.message = summary;
-                });
-
-                // Update per-tab game_metadata signal
-                shared_state.signals().tabs.get().active().game_metadata.set(Some(meta.clone()));
-                // Note: metadata already consumed (set to None) on line 63
-
-                // Update active organizer panel
-                if let Some(page) = &mut organization_feature.organizer_page {
-                    page.panel.session.metadata = Some(meta);
-                    page.panel.update_preview();
-                    tracing::info!("Updated Organization Panel with new metadata");
-                }
-            }
+        let meta = match arclain_core::features::organization::GameMetadata::from_json(&json_str) {
+            Ok(m) => m,
             Err(e) => {
                 tracing::warn!("Failed to parse metadata from signal: {}", e);
+                continue;
+            }
+        };
+
+        tracing::info!(
+            "Received metadata signal update for tab {:?}: {} (ID: {})",
+            tab.id,
+            meta.title,
+            meta.product_id
+        );
+
+        latest_summary = Some(if !meta.title.is_empty() {
+            format!("Found: {} [{}]", meta.title, meta.product_id)
+        } else {
+            format!("Found metadata for {}", meta.product_id)
+        });
+
+        // Populate THIS tab's `game_metadata` — not the active
+        // tab's. The chip in the status bar reads
+        // `active_tab.game_metadata`, so the user only sees a chip
+        // for the tab they're looking at, but every tab now has
+        // the right value when they switch to it.
+        tab.game_metadata.set(Some(meta.clone()));
+
+        // The Organizer is a global UI singleton tied to the active
+        // tab — only push metadata into it when the consumed tab IS
+        // the active one; otherwise we'd overwrite the organizer
+        // with whichever tab consumed last (rarely the right one).
+        if tab.id == active_id {
+            if let Some(page) = &mut organization_feature.organizer_page {
+                page.panel.session.metadata = Some(meta);
+                page.panel.update_preview();
+                tracing::info!("Updated Organization Panel with new metadata");
             }
         }
+    }
+
+    if let Some(summary) = latest_summary {
+        shared_state.signals().status_bar.update(|s| {
+            s.message = summary;
+        });
     }
 }
 
