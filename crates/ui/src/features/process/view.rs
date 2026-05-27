@@ -1,19 +1,58 @@
 //! Process page view — 3-panel layout: input | pipeline builder | preview+execute.
+//!
+//! Architecture: render returns `Option<ProcessAction>` describing
+//! intent — initial cache loads, preset persistence, or pipeline
+//! execution. The sibling `handle_process_action` function owns all
+//! DB / file-IO / async-spawn side effects so the render path itself
+//! stays a pure intent-emitter.
 
 use super::state::ProcessPageState;
 use super::step_widgets;
 use crate::shared::SharedState;
 use arclain_core::{
-    CompressionLevel, ConvertFormat, OutputArtifact, OutputCollisionPolicy, PipelineInput,
-    PipelineOutput, PipelineStep,
+    CompressionLevel, ConvertFormat, OrganizationRule, OutputArtifact, OutputCollisionPolicy,
+    PipelineInput, PipelineOutput, PipelineStep,
 };
 use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, Text, TextButton, ThemedDropdown};
 use eframe::egui;
 
-pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPageState) {
+/// Intents emitted by `render`. Navigation-free; the dispatcher
+/// (`handle_process_action`) owns all side effects.
+#[derive(Debug, Clone)]
+pub enum ProcessAction {
+    /// Fetch the count of interrupted pipeline runs from the config DB.
+    /// Fired once when `state.interrupted_run_count` is `None`.
+    LoadInterruptedCount,
+    /// Fetch organization rules from the service, cache them in
+    /// `state.cached_org_rules`. Fired once per session when the cache
+    /// is empty.
+    LoadOrganizationRules,
+    /// User clicked Execute — spawn the pipeline run on the tokio
+    /// runtime via `core::operations::process_runner::spawn_run`.
+    RunPipeline,
+    /// Presets list mutated (saved or deleted) — persist to disk.
+    SavePresets,
+}
+
+pub fn render(
+    ctx: &egui::Context,
+    shared: &SharedState,
+    state: &mut ProcessPageState,
+) -> Option<ProcessAction> {
+    let mut emitted: Option<ProcessAction> = None;
+
+    // Auto-fire initial cache loads. Both are session-cached after
+    // first dispatch; subsequent renders skip these branches. If both
+    // need loading, only one fires this frame and the other fires
+    // next frame — 2-frame warm-up is imperceptible.
+    if state.interrupted_run_count.is_none() {
+        emitted = Some(ProcessAction::LoadInterruptedCount);
+    } else if state.cached_org_rules.is_none() {
+        emitted = Some(ProcessAction::LoadOrganizationRules);
+    }
+
     let selected_metadata = shared.signals().tabs.get().active().game_metadata.get();
     state.refresh_preview(selected_metadata.as_ref());
-    state.ensure_interrupted_count(shared.services.config_db.as_ref());
 
     // Sync is_running from the signal
     let run_state = shared.signals().process_run.get();
@@ -56,7 +95,11 @@ pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPage
 
     egui::TopBottomPanel::top("process_preset_bar").show(ctx, |ui| {
         ui.add_space(4.0);
-        super::preset_bar::render(ui, shared, state);
+        if let Some(action) = super::preset_bar::render(ui, shared, state) {
+            if emitted.is_none() {
+                emitted = Some(action);
+            }
+        }
         ui.add_space(4.0);
     });
 
@@ -68,9 +111,17 @@ pub fn render(ctx: &egui::Context, shared: &SharedState, state: &mut ProcessPage
     egui::SidePanel::right("process_preview_panel")
         .resizable(true)
         .default_width(340.0)
-        .show(ctx, |ui| render_preview_panel(ui, shared, state));
+        .show(ctx, |ui| {
+            if let Some(action) = render_preview_panel(ui, shared, state) {
+                if emitted.is_none() {
+                    emitted = Some(action);
+                }
+            }
+        });
 
     egui::CentralPanel::default().show(ctx, |ui| render_pipeline_panel(ui, shared, state));
+
+    emitted
 }
 
 fn render_input_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageState) {
@@ -149,12 +200,15 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
     Text::new("Pipeline").size(16.0).strong().show(ui);
     ui.add_space(6.0);
 
-    // Load rules once per frame for the Organize step widget
-    let rules: Vec<arclain_core::OrganizationRule> = shared
-        .services
-        .organization_service
-        .as_ref()
-        .and_then(|svc| svc.list_domain_rules().ok())
+    // Snapshot the rules cache so we can iterate state.pipeline.steps
+    // mutably without holding a borrow on state.cached_org_rules. The
+    // cache is populated by the LoadOrganizationRules dispatch (auto-
+    // fired from `render` when the cache is empty). Empty slice until
+    // the dispatcher runs.
+    let rules: Vec<OrganizationRule> = state
+        .cached_org_rules
+        .as_deref()
+        .map(|v| v.to_vec())
         .unwrap_or_default();
 
     let mut any_changed = false;
@@ -305,7 +359,12 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
     }
 }
 
-fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageState) {
+fn render_preview_panel(
+    ui: &mut egui::Ui,
+    shared: &SharedState,
+    state: &mut ProcessPageState,
+) -> Option<ProcessAction> {
+    let mut emitted: Option<ProcessAction> = None;
     Text::new("Preview").size(16.0).strong().show(ui);
     ui.add_space(6.0);
 
@@ -465,19 +524,53 @@ fn render_preview_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pro
         )
         .clicked()
     {
-        let origin_tab = shared.signals().tabs.get().active().clone();
-        crate::core::operations::process_runner::spawn_run(
-            state.pipeline.clone(),
-            shared.app_state.clone(),
-            shared.services.clone(),
-            shared.signals().process_run.clone(),
-            &shared.services.tokio_runtime,
-            origin_tab,
-        );
+        emitted = Some(ProcessAction::RunPipeline);
     }
 
     if let Some(ref summary) = state.last_result_summary {
         ui.add_space(8.0);
         Text::new(summary).show(ui);
+    }
+
+    emitted
+}
+
+/// Dispatch a `ProcessAction` against the shared services / runtime.
+/// Called by the parent view (`core::arclain_app::content_handler`)
+/// after `render` returns an action. All side effects on the DB,
+/// filesystem, and tokio runtime live here, so the render path stays
+/// a pure intent-emitter.
+pub fn handle_process_action(
+    state: &mut ProcessPageState,
+    action: ProcessAction,
+    shared: &SharedState,
+) {
+    match action {
+        ProcessAction::LoadInterruptedCount => {
+            state.ensure_interrupted_count(shared.services.config_db.as_ref());
+        }
+        ProcessAction::LoadOrganizationRules => {
+            let rules = shared
+                .services
+                .organization_service
+                .as_ref()
+                .and_then(|svc| svc.list_domain_rules().ok())
+                .unwrap_or_default();
+            state.cached_org_rules = Some(rules);
+        }
+        ProcessAction::RunPipeline => {
+            let origin_tab = shared.signals().tabs.get().active().clone();
+            crate::core::operations::process_runner::spawn_run(
+                state.pipeline.clone(),
+                shared.app_state.clone(),
+                shared.services.clone(),
+                shared.signals().process_run.clone(),
+                &shared.services.tokio_runtime,
+                origin_tab,
+            );
+        }
+        ProcessAction::SavePresets => {
+            state.save_presets();
+        }
     }
 }

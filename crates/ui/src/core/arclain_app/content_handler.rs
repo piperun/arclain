@@ -117,11 +117,17 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                 });
             }
             AppPage::Process => {
-                crate::features::process::view::render(
+                if let Some(action) = crate::features::process::view::render(
                     ctx,
                     &app.shared_state,
                     &mut app.process_state,
-                );
+                ) {
+                    crate::features::process::view::handle_process_action(
+                        &mut app.process_state,
+                        action,
+                        &app.shared_state,
+                    );
+                }
             }
             AppPage::OrganizeArchive(_name) => {
                 let shared_state = app.shared_state.clone();

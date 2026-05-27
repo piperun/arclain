@@ -1,6 +1,6 @@
 //! Process page state — current pipeline, preview cache, run status, presets.
 
-use arclain_core::{GameMetadata, Pipeline, PipelinePreview, SavedPreset};
+use arclain_core::{GameMetadata, OrganizationRule, Pipeline, PipelinePreview, SavedPreset};
 
 #[derive(Default)]
 pub struct ProcessPageState {
@@ -23,6 +23,12 @@ pub struct ProcessPageState {
     /// a banner until the user dismisses it. `None` = not yet queried.
     pub interrupted_run_count: Option<usize>,
     pub interrupted_banner_dismissed: bool,
+    /// Cached organization rules for the Organize step picker. `None` =
+    /// not yet loaded; the page emits a LoadOrganizationRules action on
+    /// the first render to populate this. Cached for the session — if
+    /// the user adds rules in Settings, they'll see them on next launch
+    /// (or a future explicit refresh).
+    pub cached_org_rules: Option<Vec<OrganizationRule>>,
 }
 
 impl ProcessPageState {

@@ -1,12 +1,19 @@
 //! Preset dropdown + save/delete buttons at the top of the Process page.
 
 use super::state::ProcessPageState;
+use super::view::ProcessAction;
 use crate::shared::SharedState;
 use arclain_core::SavedPreset;
 use arclain_widgets::{ButtonSize, Text, TextButton, ThemedDropdown};
 use eframe::egui;
 
-pub fn render(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageState) {
+pub fn render(
+    ui: &mut egui::Ui,
+    shared: &SharedState,
+    state: &mut ProcessPageState,
+) -> Option<ProcessAction> {
+    let mut emitted: Option<ProcessAction> = None;
+
     ui.horizontal(|ui| {
         Text::new("Preset:").strong().show(ui);
 
@@ -58,7 +65,7 @@ pub fn render(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageSt
                 pipeline: state.pipeline.clone(),
             });
             state.active_preset_name = Some(name);
-            state.save_presets();
+            emitted = Some(ProcessAction::SavePresets);
         }
 
         let active = state.active_preset_name.clone();
@@ -75,8 +82,10 @@ pub fn render(ui: &mut egui::Ui, shared: &SharedState, state: &mut ProcessPageSt
             {
                 state.presets.retain(|p| p.name != name);
                 state.active_preset_name = None;
-                state.save_presets();
+                emitted = Some(ProcessAction::SavePresets);
             }
         }
     });
+
+    emitted
 }
