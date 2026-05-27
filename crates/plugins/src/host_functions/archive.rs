@@ -25,23 +25,30 @@ impl HostFunctions {
         if !self.check_capability(PluginCapability::ArchiveMetadataRead) {
             return Err("ArchiveMetadataRead capability not granted".to_string());
         }
-        let backend = self
-            .archive_backend
-            .as_ref()
-            .ok_or("Archive backend not available")?;
         let bridge = self
             .active_tab
             .as_ref()
             .ok_or("Active-tab bridge not configured")?;
-        let archive = bridge
-            .archive_path()
-            .ok_or("No archive currently open")?;
-        let password = bridge.current_password();
 
-        let info = backend
-            .list(Path::new(&archive), password.as_deref())
-            .map_err(|e| e.to_string())?;
-        Ok(info.entries.into_iter().map(|e| e.path).collect())
+        // Read the host's authoritative per-tab entries cache via
+        // the bridge. The host populates this when `list_archive`
+        // runs at open time, so we pay only an `Arc` clone + per-
+        // entry `String` clone — never the multi-second cost of
+        // re-listing through the archive backend (7z in particular
+        // spawns a subprocess each call).
+        //
+        // An empty result with no archive_path means the plugin is
+        // asking outside of an archive context — return the same
+        // error the pre-bridge code did. Empty + an open archive
+        // means the archive really has zero entries, or it's
+        // encrypted and not yet unlocked; both produce an empty Vec
+        // and the plugin's downstream "no codes detected" path
+        // handles it gracefully.
+        let entries = bridge.archive_entries();
+        if entries.is_empty() && bridge.archive_path().is_none() {
+            return Err("No archive currently open".to_string());
+        }
+        Ok(entries)
     }
 
     /// Rename the currently open archive file

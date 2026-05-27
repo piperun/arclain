@@ -40,6 +40,23 @@ impl ActiveTabBridge for AppSignalsBridge {
         self.signals.tabs.get().active().current_password.get()
     }
 
+    fn archive_entries(&self) -> Vec<String> {
+        // tab.entries is `Signal<Arc<Vec<ArchiveEntry>>>`; .get()
+        // returns the Arc, .iter() walks it, and we materialize the
+        // path strings the plugin will consume. Cheap relative to
+        // the alternative (re-listing via backend.list, which for
+        // 7z spawns a subprocess and takes seconds).
+        self.signals
+            .tabs
+            .get()
+            .active()
+            .entries
+            .get()
+            .iter()
+            .map(|e| e.path.clone())
+            .collect()
+    }
+
     fn metadata_signal(&self) -> Signal<Option<serde_json::Value>> {
         self.signals.tabs.get().active().metadata.clone()
     }

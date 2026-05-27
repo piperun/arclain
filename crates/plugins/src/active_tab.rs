@@ -49,6 +49,19 @@ pub trait ActiveTabBridge: Send + Sync {
     /// unlocked it), or `None`.
     fn current_password(&self) -> Option<String>;
 
+    /// In-archive paths the host has already listed for the active
+    /// tab. Returned in archive order. Empty if no archive is open,
+    /// or if the archive is encrypted and not yet unlocked (no
+    /// listing has been produced).
+    ///
+    /// The host populates this when `list_archive` runs at open
+    /// time — plugins reading it pay only an `Arc` clone + a per-
+    /// entry `String` clone, never a backend re-list. Use this in
+    /// preference to making the plugin call its own listing
+    /// function (which would round-trip through the archive
+    /// backend and, for 7z, spawn a subprocess each time).
+    fn archive_entries(&self) -> Vec<String>;
+
     /// Signal handle for the active tab's metadata. Writes to the
     /// returned signal cause the active tab's `game_metadata` to
     /// update on the next frame. Callers that need write durability
