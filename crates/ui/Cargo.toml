@@ -74,3 +74,5 @@ windows-core = "0.56"
 [dev-dependencies]
 egui_kittest = "0.33.3"
 tracing-test = "0.2"
+# In-memory DieselPool construction for dispatcher tests.
+arclain_db = { path = "../db" }

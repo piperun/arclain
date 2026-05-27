@@ -1,74 +1,17 @@
-use arclain_ui::core::navigation::PageNavigator;
-use arclain_ui::core::services::Services;
-use arclain_ui::core::state::AppState;
 use arclain_ui::features::archive_browser::{Action, BrowserController};
 use arclain_ui::features::archive_operations::ArchiveOperationsState;
-use arclain_ui::features::organization::OrganizationFeature;
 use arclain_ui::shared::models::file_entry::FileEntry;
-use arclain_ui::shared::theme::AppTheme;
-use arclain_ui::shared::SharedState;
-use arclain_widgets::Toaster;
 
-use arclain_core::backends::sevenz_cli::SevenZipCli;
-use arclain_core::backends::BackendSelector;
-use arclain_core::UserConfig;
-use eframe::egui;
-use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::runtime::Runtime;
 
-// Helper to create a minimal SharedState for testing
-fn create_test_shared_state() -> SharedState {
-    let runtime = Runtime::new().unwrap();
-    let services = Arc::new(Services::new(runtime));
+mod common;
+use common::TestContext;
 
-    // Create minimal AppState
-    let app_state = AppState {
-        user_config: UserConfig::default(),
-        pass_rules: vec![],
-        backend_selector: BackendSelector::new_native(),
-        fallback_backend: SevenZipCli::detect(None).expect("7z executable not found for tests"),
-        last_entries: vec![],
-        encrypted_crc_policy: "on_open".to_string(),
-        db_paths: None,
-        dbs: None,
-        plugin_event_sender: None,
-        pending_plugin_event: None,
-        signals: arclain_ui::core::signals::AppSignals::new(),
-    };
-
-    let signals = app_state.signals.clone();
-
-    SharedState {
-        app_state: Arc::new(Mutex::new(app_state)),
-        services,
-        theme: AppTheme::new(false),
-        toaster: Arc::new(Mutex::new(Toaster::new())),
-        refresh_requests: Arc::new(Mutex::new(Vec::new())),
-        pending_plugin_actions: Arc::new(Mutex::new(Vec::new())),
-        signals,
-    }
+trait HandleAction {
+    fn handle_action(&mut self, action: Action);
 }
 
-pub struct TestContext {
-    pub shared: SharedState,
-    pub navigator: PageNavigator,
-    pub org_feature: OrganizationFeature,
-    pub egui_ctx: egui::Context,
-}
-
-impl TestContext {
-    fn new() -> Self {
-        let shared = create_test_shared_state();
-        Self {
-            org_feature: OrganizationFeature::new(&shared),
-            shared,
-            navigator: PageNavigator::new(),
-            egui_ctx: egui::Context::default(),
-        }
-    }
-
+impl HandleAction for TestContext {
     fn handle_action(&mut self, action: Action) {
         let controller = BrowserController::new();
         // Since we removed ops_state, we need to mock it or update the test to not rely on it being passed explicitly

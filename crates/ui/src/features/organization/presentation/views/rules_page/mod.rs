@@ -74,6 +74,19 @@ impl RulesPage {
         Self::default()
     }
 
+    /// Currently surfaced page-level error (load-rules failures
+    /// etc.). Used by integration tests to assert dispatcher
+    /// behavior.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Currently surfaced editor-load error (set by `LoadRule` when
+    /// the requested rule is missing or the service errors out).
+    pub fn editor_load_error(&self) -> Option<&str> {
+        self.editor_load_error.as_deref()
+    }
+
     pub fn render(
         &mut self,
         ui: &mut egui::Ui,

@@ -491,6 +491,7 @@ dependencies = [
  "arclain-network",
  "arclain_app_fs",
  "arclain_core",
+ "arclain_db",
  "arclain_plugins",
  "arclain_signals",
  "arclain_theme",

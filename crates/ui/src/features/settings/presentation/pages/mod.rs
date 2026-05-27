@@ -13,6 +13,7 @@ pub mod server;
 // Re-export for convenience
 pub use interface::{
     handle_interface_settings_action, render_interface_settings, InterfaceSettingsAction,
+    InterfaceSettingsState,
 };
 pub use layout_editor::{
     handle_info_panel_layout_action, handle_toolbar_layout_action, render_info_panel_layout,

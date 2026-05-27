@@ -57,6 +57,19 @@ impl ProfilesPage {
         Self::default()
     }
 
+    /// Currently surfaced error message, if any. Used by integration
+    /// tests to assert dispatcher behavior; the render path reads
+    /// `self.error` directly.
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    /// Borrow the cached profiles list. `None` until the dispatcher
+    /// has run `LoadProfiles` at least once.
+    pub fn profiles(&self) -> Option<&[ArchiveProfile]> {
+        self.profiles.as_deref()
+    }
+
     pub fn render(
         &mut self,
         ui: &mut egui::Ui,
