@@ -113,18 +113,21 @@ pub fn render_header_panel(
                 &active_paths,
             );
 
+            let header_inputs = components::header::HeaderInputs {
+                show_nav_buttons: true, // Always show nav buttons
+                can_go_back,
+                is_on_settings,
+                server_status: &server_status,
+                search_hits: &search_hits,
+                active_code: &active_code,
+            };
             let actions = components::header::render(
                 ui,
                 &shared_state.theme,
                 header_state,
                 &mut result.theme_toggle,
-                true, // Always show nav buttons
-                can_go_back,
-                is_on_settings,
                 &mut search_focus_requested,
-                &server_status,
-                &search_hits,
-                &active_code,
+                &header_inputs,
             );
 
             result.search_action = actions.search_action;

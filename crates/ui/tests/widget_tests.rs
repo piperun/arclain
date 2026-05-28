@@ -151,19 +151,15 @@ fn header_renders_with_nav_buttons() {
             let theme = arclain_theme::AppTheme::new(true);
             let mut toggle = false;
             let mut focus = false;
-            render(
-                ui,
-                &theme,
-                state,
-                &mut toggle,
-                true,  // show_nav_buttons
-                true,  // can_go_back
-                false, // is_on_settings
-                &mut focus,
-                &arclain_ui::core::signals::ServerConnectionStatus::Offline,
-                &[],
-                "",
-            );
+            let inputs = HeaderInputs {
+                show_nav_buttons: true,
+                can_go_back: true,
+                is_on_settings: false,
+                server_status: &arclain_ui::core::signals::ServerConnectionStatus::Offline,
+                search_hits: &[],
+                active_code: "",
+            };
+            render(ui, &theme, state, &mut toggle, &mut focus, &inputs);
         },
         HeaderState::default(),
     );
@@ -180,19 +176,15 @@ fn header_renders_without_nav_buttons() {
             let theme = arclain_theme::AppTheme::new(false);
             let mut toggle = false;
             let mut focus = false;
-            render(
-                ui,
-                &theme,
-                state,
-                &mut toggle,
-                false, // show_nav_buttons
-                false, // can_go_back
-                false, // is_on_settings
-                &mut focus,
-                &arclain_ui::core::signals::ServerConnectionStatus::Offline,
-                &[],
-                "",
-            );
+            let inputs = HeaderInputs {
+                show_nav_buttons: false,
+                can_go_back: false,
+                is_on_settings: false,
+                server_status: &arclain_ui::core::signals::ServerConnectionStatus::Offline,
+                search_hits: &[],
+                active_code: "",
+            };
+            render(ui, &theme, state, &mut toggle, &mut focus, &inputs);
         },
         HeaderState::default(),
     );
@@ -209,19 +201,15 @@ fn header_renders_on_settings_page() {
             let theme = arclain_theme::AppTheme::new(true);
             let mut toggle = false;
             let mut focus = false;
-            render(
-                ui,
-                &theme,
-                state,
-                &mut toggle,
-                true, // show_nav_buttons
-                true, // can_go_back
-                true, // is_on_settings
-                &mut focus,
-                &arclain_ui::core::signals::ServerConnectionStatus::Offline,
-                &[],
-                "",
-            );
+            let inputs = HeaderInputs {
+                show_nav_buttons: true,
+                can_go_back: true,
+                is_on_settings: true,
+                server_status: &arclain_ui::core::signals::ServerConnectionStatus::Offline,
+                search_hits: &[],
+                active_code: "",
+            };
+            render(ui, &theme, state, &mut toggle, &mut focus, &inputs);
         },
         HeaderState::default(),
     );
@@ -258,9 +246,14 @@ fn search_palette_renders_tab_and_file_results_without_panic() {
         move |ui, selected: &mut usize| {
             let theme = arclain_theme::AppTheme::new(true);
             let anchor = ui.max_rect();
-            let _ = search_palette::view::render_area(
-                ui, &theme, anchor, "sc", &hits, "RJ000222", false, selected,
-            );
+            let view = search_palette::PaletteView {
+                anchor_rect: anchor,
+                query: "sc",
+                hits: &hits,
+                active_code: "RJ000222",
+                scroll_to_selected: false,
+            };
+            let _ = search_palette::view::render_area(ui, &theme, &view, selected);
         },
         0usize,
     );

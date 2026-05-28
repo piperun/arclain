@@ -82,23 +82,37 @@ pub fn handle_keys(ui: &egui::Ui, hits_len: usize, selected: &mut usize) -> KeyI
     intent
 }
 
-/// Render the results dropdown as a floating Area anchored under
-/// `anchor_rect` (the search box). Returns `Some(action)` when a row is
-/// clicked. A *moving* pointer over a row updates `selected`; a stationary
-/// pointer does not, so keyboard nav isn't yanked back to wherever the
-/// mouse happens to rest. When `scroll_to_selected` is set (the caller
-/// just arrowed), the selected row is scrolled into view. `active_code`
-/// labels the file group ("Files in RJ…").
+/// The palette's per-frame render data, grouped so [`render_area`] keeps a
+/// small signature.
+pub struct PaletteView<'a> {
+    /// The search box rect; the dropdown anchors directly under it.
+    pub anchor_rect: egui::Rect,
+    pub query: &'a str,
+    pub hits: &'a [SearchHit],
+    /// Active archive's code; labels the file group ("Files in RJ…").
+    pub active_code: &'a str,
+    /// The caller just navigated with the arrows — scroll the selected row
+    /// into view this frame.
+    pub scroll_to_selected: bool,
+}
+
+/// Render the results dropdown as a floating Area anchored under the search
+/// box. Returns `Some(action)` when a row is clicked. A *moving* pointer
+/// over a row updates `selected`; a stationary pointer does not, so keyboard
+/// nav isn't yanked back to wherever the mouse happens to rest.
 pub fn render_area(
     ui: &egui::Ui,
     theme: &AppTheme,
-    anchor_rect: egui::Rect,
-    query: &str,
-    hits: &[SearchHit],
-    active_code: &str,
-    scroll_to_selected: bool,
+    view: &PaletteView<'_>,
     selected: &mut usize,
 ) -> Option<SearchPaletteAction> {
+    let PaletteView {
+        anchor_rect,
+        query,
+        hits,
+        active_code,
+        scroll_to_selected,
+    } = *view;
     // Keep the selection inside the current result set.
     if hits.is_empty() {
         *selected = 0;

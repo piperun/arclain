@@ -24,19 +24,33 @@ pub struct HeaderActions {
     pub search_action: Option<SearchPaletteAction>,
 }
 
+/// Read-only inputs to [`render`] beyond its mutable state and out-params,
+/// grouped to keep the entry point's signature small.
+pub struct HeaderInputs<'a> {
+    pub show_nav_buttons: bool,
+    pub can_go_back: bool,
+    pub is_on_settings: bool,
+    pub server_status: &'a ServerConnectionStatus,
+    pub search_hits: &'a [SearchHit],
+    pub active_code: &'a str,
+}
+
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     state: &mut HeaderState,
     on_theme_toggle: &mut bool,
-    show_nav_buttons: bool,
-    can_go_back: bool,
-    is_on_settings: bool,
     search_focus_requested: &mut bool,
-    server_status: &ServerConnectionStatus,
-    search_hits: &[SearchHit],
-    active_code: &str,
+    inputs: &HeaderInputs<'_>,
 ) -> HeaderActions {
+    let HeaderInputs {
+        show_nav_buttons,
+        can_go_back,
+        is_on_settings,
+        server_status,
+        search_hits,
+        active_code,
+    } = *inputs;
     let mut actions = HeaderActions::default();
     let show_labels = state.show_button_labels;
 
@@ -109,7 +123,7 @@ pub fn render(
                         .corner_radius(4.0)
                         .inner_margin(egui::Margin::symmetric(8, 6));
 
-                    let search_width = center_width.min(400.0).max(200.0);
+                    let search_width = center_width.clamp(200.0, 400.0);
 
                     search_frame
                         .show(ui, |ui| {
@@ -167,16 +181,16 @@ pub fn render(
     }
 
     if state.search_palette.open {
-        if let Some(action) = search_palette::render_area(
-            ui,
-            theme,
-            search_resp.rect,
-            &state.search_text,
-            search_hits,
+        let palette_view = search_palette::PaletteView {
+            anchor_rect: search_resp.rect,
+            query: &state.search_text,
+            hits: search_hits,
             active_code,
-            key_intent.navigated,
-            &mut state.search_palette.selected,
-        ) {
+            scroll_to_selected: key_intent.navigated,
+        };
+        if let Some(action) =
+            search_palette::render_area(ui, theme, &palette_view, &mut state.search_palette.selected)
+        {
             search_action = Some(action);
             state.search_palette.open = false;
             state.search_text.clear();

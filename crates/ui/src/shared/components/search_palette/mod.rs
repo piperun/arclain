@@ -10,4 +10,7 @@ pub mod model;
 pub mod view;
 
 pub use model::{build_hits, match_range, SearchHit, TabSummary, MAX_FILE_HITS};
-pub use view::{action_for, handle_keys, render_area, KeyIntent, SearchPaletteAction, SearchPaletteState};
+pub use view::{
+    action_for, handle_keys, render_area, KeyIntent, PaletteView, SearchPaletteAction,
+    SearchPaletteState,
+};
