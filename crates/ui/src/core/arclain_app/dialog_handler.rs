@@ -539,14 +539,18 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                             use crate::shared::components::drop_overlay::DropZone;
                             let mut col = app.shared_state.signals().tabs.get();
                             let ctrl_held = ctx.input(|i| i.modifiers.ctrl);
+                            // Dedupe before routing — a single drop gesture
+                            // must never open the same archive into two tabs
+                            // (some platforms repeat the final file in the
+                            // drop event). See `file_drop::dedupe_dropped_paths`.
+                            let dropped_paths = crate::core::file_drop::dedupe_dropped_paths(
+                                dropped.iter().filter_map(|f| f.path.clone()).collect(),
+                            );
                             let mut tabs_to_load: Vec<(
                                 crate::core::tabs::TabId,
                                 std::path::PathBuf,
                             )> = Vec::new();
-                            for (idx, file) in dropped.iter().enumerate() {
-                                let Some(path) = file.path.clone() else {
-                                    continue;
-                                };
+                            for (idx, path) in dropped_paths.iter().cloned().enumerate() {
                                 // First file honors zone/Ctrl; subsequent files always open new tabs.
                                 let effective_zone = if ctrl_held && idx == 0 {
                                     DropZone::ReplaceCurrent
@@ -578,10 +582,9 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                                                     let mut state =
                                                         app.shared_state.signals().ask_each_time_drop.get();
                                                     state.show = true;
-                                                    state.pending_paths = dropped
-                                                        .iter()
-                                                        .filter_map(|f| f.path.clone())
-                                                        .collect();
+                                                    // Deduped paths (see above) so the modal
+                                                    // doesn't route the same archive twice either.
+                                                    state.pending_paths = dropped_paths.clone();
                                                     app.shared_state
                                                         .signals()
                                                         .ask_each_time_drop
