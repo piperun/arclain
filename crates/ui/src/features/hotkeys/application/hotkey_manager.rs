@@ -20,6 +20,32 @@ impl Default for HotkeyManager {
     }
 }
 
+/// Should a focused text widget swallow this chord instead of letting it
+/// fire an app hotkey?
+///
+/// True for bare keys (no Ctrl/Alt — that's typing) and for the standard
+/// text-editing chords (Ctrl+A/C/V/X/Z/Y) that egui's `TextEdit` consumes
+/// on its own. Without this, Ctrl+A in the search box would both select the
+/// query text and trigger the archive's "select all files" hotkey.
+fn swallowed_by_text_focus(key: egui::Key, modifiers: &Modifiers) -> bool {
+    if !modifiers.ctrl && !modifiers.alt {
+        return true; // bare key — it's typing, not a shortcut
+    }
+    if modifiers.ctrl && !modifiers.alt {
+        // Shift stays allowed so Ctrl+Shift+Z (redo) is covered too.
+        return matches!(
+            key,
+            egui::Key::A
+                | egui::Key::C
+                | egui::Key::V
+                | egui::Key::X
+                | egui::Key::Z
+                | egui::Key::Y
+        );
+    }
+    false
+}
+
 impl HotkeyManager {
     /// Create a new HotkeyManager with default bindings
     pub fn new() -> Self {
@@ -96,12 +122,14 @@ impl HotkeyManager {
                                 .bindings
                                 .find_action_for_input(&InputKey::Keyboard(kb_key), &modifiers)
                             {
-                                // Smart focus handling:
-                                // If a text widget is focused, only allow hotkeys that use modifiers (Ctrl/Alt)
-                                // or are special keys (F-keys), avoiding interference with typing.
-                                let is_text_input = !modifiers.ctrl && !modifiers.alt;
-                                if input.focused && is_text_input {
-                                    // Ignore simple key presses when typing
+                                // When a text widget holds keyboard focus it owns
+                                // both bare keys (typing) and the standard editing
+                                // chords (Ctrl+A/C/V/X/Z/Y) that egui's TextEdit
+                                // handles internally. Firing an app hotkey for those
+                                // double-handles the key — e.g. Ctrl+A would both
+                                // select the search text AND select every file in the
+                                // archive. Let the focused editor swallow them.
+                                if input.focused && swallowed_by_text_focus(*key, &modifiers) {
                                     continue;
                                 }
 
@@ -200,6 +228,42 @@ mod tests {
             binding.key,
             InputKey::Keyboard(KeyboardKey::Backspace)
         ));
+    }
+
+    #[test]
+    fn ctrl_a_is_swallowed_by_a_focused_text_widget() {
+        // Regression: Ctrl+A in the search box used to both select the query
+        // text (egui) AND fire SelectAll (archive "select all files"). A
+        // focused editor must swallow the editing chords so the app hotkey
+        // doesn't double-handle them.
+        let ctrl = Modifiers::ctrl();
+        for key in [
+            egui::Key::A,
+            egui::Key::C,
+            egui::Key::V,
+            egui::Key::X,
+            egui::Key::Z,
+            egui::Key::Y,
+        ] {
+            assert!(
+                swallowed_by_text_focus(key, &ctrl),
+                "Ctrl+{key:?} should be swallowed by a focused text widget"
+            );
+        }
+    }
+
+    #[test]
+    fn non_editing_chords_still_fire_while_typing() {
+        // Ctrl+, (OpenSettings) isn't a text-editing chord, so a focused
+        // search box must NOT swallow it.
+        assert!(!swallowed_by_text_focus(egui::Key::Comma, &Modifiers::ctrl()));
+    }
+
+    #[test]
+    fn bare_keys_are_swallowed_while_typing() {
+        // Bare keys (no Ctrl/Alt) are typing — never steal them for hotkeys.
+        assert!(swallowed_by_text_focus(egui::Key::Delete, &Modifiers::none()));
+        assert!(swallowed_by_text_focus(egui::Key::A, &Modifiers::none()));
     }
 
     #[test]
