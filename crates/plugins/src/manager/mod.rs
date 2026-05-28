@@ -16,7 +16,6 @@ use types::ManagedPlugin;
 
 use crate::loader::PluginLoader;
 use crate::types::{PluginEvent, Result};
-use arclain_core::ArchiveBackend;
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -27,7 +26,6 @@ pub struct PluginManager {
     pub(crate) loader: PluginLoader,
     pub(crate) plugins: Arc<RwLock<HashMap<String, ManagedPlugin>>>,
     pub(crate) enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
-    pub(crate) backend: Option<Arc<dyn ArchiveBackend>>,
     pub(crate) library_service: Option<Arc<arclain_core::LibraryService>>,
     pub(crate) content_cache: Option<Arc<arclain_data::ContentCache>>,
     pub(crate) resource_manager: Option<Arc<arclain_data::ResourceManager>>,
@@ -82,46 +80,6 @@ impl PluginManager {
             loader,
             plugins,
             enabled_plugins,
-            backend: None,
-            library_service: None,
-            content_cache: None,
-            resource_manager: None,
-            async_http_client: None,
-            gameta_client: None,
-            initial_settings,
-            event_sender,
-            _event_worker_handle: Some(worker_handle),
-            active_tab_bridge: None,
-            cached_top_tabs: parking_lot::Mutex::new(None),
-            settings_cache: parking_lot::Mutex::new(HashMap::new()),
-        })
-    }
-
-    /// Create a new plugin manager with archive backend
-    pub fn with_backend(
-        plugins_dir: PathBuf,
-        backend: Arc<dyn ArchiveBackend>,
-        initial_settings: HashMap<String, HashMap<String, String>>,
-    ) -> Result<Self> {
-        let loader = PluginLoader::new(plugins_dir)?;
-        let plugins = Arc::new(RwLock::new(HashMap::new()));
-        let enabled_plugins = Arc::new(RwLock::new(HashMap::new()));
-
-        // Create channel for async event dispatch
-        let (event_sender, event_receiver) = std::sync::mpsc::channel::<PluginEvent>();
-
-        // Spawn worker thread to process events
-        let plugins_clone = plugins.clone();
-        let enabled_plugins_clone = enabled_plugins.clone();
-        let worker_handle = std::thread::spawn(move || {
-            Self::event_worker(event_receiver, plugins_clone, enabled_plugins_clone);
-        });
-
-        Ok(Self {
-            loader,
-            plugins,
-            enabled_plugins,
-            backend: Some(backend),
             library_service: None,
             content_cache: None,
             resource_manager: None,

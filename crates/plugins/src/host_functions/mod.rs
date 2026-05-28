@@ -15,7 +15,6 @@ pub use plugin_logger::PluginLogger;
 use crate::active_tab::ActiveTabBridge;
 use crate::arclain::plugin::host::{Host, LogLevel};
 use crate::types::PluginCapability;
-use arclain_core::ArchiveBackend;
 use arclain_data::DataService;
 use arclain_data::ResourceManager;
 
@@ -45,7 +44,6 @@ pub struct HostFunctions {
     pub plugin_id: String,
     pub async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
     pub capabilities: std::collections::HashSet<PluginCapability>,
-    pub archive_backend: Option<Arc<dyn ArchiveBackend>>,
     pub settings: Arc<Mutex<HashMap<String, String>>>,
     /// Flips to `true` whenever the plugin (or host) writes a setting.
     /// `PluginManager::get_all_settings` swaps this back to `false` after
@@ -121,7 +119,6 @@ impl HostFunctions {
             plugin_id: plugin_id.clone(),
             async_http_client: None,
             capabilities,
-            archive_backend: None,
             settings: Arc::new(Mutex::new(initial_settings)),
             settings_dirty: Arc::new(AtomicBool::new(true)),
             network_log: Arc::new(Mutex::new(Vec::new())),
@@ -139,23 +136,6 @@ impl HostFunctions {
             pending_status_message: Arc::new(Mutex::new(None)),
             plugin_logger,
         }
-    }
-
-    pub fn with_backend(
-        plugin_id: String,
-        capabilities: std::collections::HashSet<PluginCapability>,
-        requests_per_minute: u32,
-        backend: Arc<dyn ArchiveBackend>,
-        initial_settings: HashMap<String, String>,
-    ) -> Self {
-        let mut host_funcs = Self::new(
-            plugin_id,
-            capabilities,
-            requests_per_minute,
-            initial_settings,
-        );
-        host_funcs.archive_backend = Some(backend);
-        host_funcs
     }
 
     pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {

@@ -223,9 +223,8 @@ impl AppState {
         // Initialize plugin system
         info!("Initializing plugin system");
         let plugins_dir = PathBuf::from("plugins");
-        let backend_arc = Arc::new(me.fallback_backend.clone());
         let settings = me.user_config.get_all_plugin_settings();
-        match PluginManager::with_backend(plugins_dir, backend_arc, settings) {
+        match PluginManager::new(plugins_dir, settings) {
             Ok(mut manager) => {
                 manager.init().ok();
                 // Inject services

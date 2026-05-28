@@ -50,26 +50,14 @@ impl PluginManager {
             .cloned()
             .unwrap_or_default();
 
-        // Instantiate the plugin with backend if available
-        let mut instance = if let Some(ref backend) = self.backend {
-            loaded.instantiate_with_backend(
-                capabilities.clone(),
-                rate_limit,
-                Some(backend.clone()),
-                self.library_service.clone(),
-                settings,
-                self.active_tab_bridge.clone(),
-            )?
-        } else {
-            loaded.instantiate_with_backend(
-                capabilities.clone(),
-                rate_limit,
-                None,
-                self.library_service.clone(),
-                settings,
-                self.active_tab_bridge.clone(),
-            )?
-        };
+        // Instantiate the plugin with its host-function state.
+        let mut instance = loaded.instantiate(
+            capabilities.clone(),
+            rate_limit,
+            self.library_service.clone(),
+            settings,
+            self.active_tab_bridge.clone(),
+        )?;
 
         // Inject optional services
         if let Some(ref client) = self.gameta_client {
@@ -194,7 +182,8 @@ impl PluginManager {
 
         // Create a temporary instance to get metadata
         let capabilities = Vec::new(); // Empty capabilities for validation
-        let mut temp_instance = loaded.instantiate(capabilities, 60, HashMap::new())?;
+        let mut temp_instance =
+            loaded.instantiate(capabilities, 60, None, HashMap::new(), None)?;
         temp_instance.init()?;
         let metadata = temp_instance.get_metadata()?;
         temp_instance.cleanup()?;
