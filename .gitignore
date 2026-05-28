@@ -46,3 +46,7 @@ crates/freya-spike/
 crates/dioxus-spike/
 
 nul
+
+# Python bytecode cache (scripts/ helpers + tests)
+__pycache__/
+*.pyc
