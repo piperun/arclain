@@ -51,6 +51,9 @@ pub struct KeyIntent {
     pub activate: bool,
     /// Escape pressed — close the palette.
     pub dismiss: bool,
+    /// Up/Down moved the selection — the dropdown should scroll the newly
+    /// selected row into view this frame.
+    pub navigated: bool,
 }
 
 /// Consume Up/Down/Enter/Escape and move `selected`. Call only when the
@@ -65,9 +68,11 @@ pub fn handle_keys(ui: &egui::Ui, hits_len: usize, selected: &mut usize) -> KeyI
         if hits_len > 0 {
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
                 *selected = (*selected + 1) % hits_len;
+                intent.navigated = true;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
                 *selected = (*selected + hits_len - 1) % hits_len;
+                intent.navigated = true;
             }
             if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                 intent.activate = true;
@@ -79,8 +84,11 @@ pub fn handle_keys(ui: &egui::Ui, hits_len: usize, selected: &mut usize) -> KeyI
 
 /// Render the results dropdown as a floating Area anchored under
 /// `anchor_rect` (the search box). Returns `Some(action)` when a row is
-/// clicked. Hovering a row updates `selected`. `active_code` labels the
-/// file group ("Files in RJ…").
+/// clicked. A *moving* pointer over a row updates `selected`; a stationary
+/// pointer does not, so keyboard nav isn't yanked back to wherever the
+/// mouse happens to rest. When `scroll_to_selected` is set (the caller
+/// just arrowed), the selected row is scrolled into view. `active_code`
+/// labels the file group ("Files in RJ…").
 pub fn render_area(
     ui: &egui::Ui,
     theme: &AppTheme,
@@ -88,6 +96,7 @@ pub fn render_area(
     query: &str,
     hits: &[SearchHit],
     active_code: &str,
+    scroll_to_selected: bool,
     selected: &mut usize,
 ) -> Option<SearchPaletteAction> {
     // Keep the selection inside the current result set.
@@ -167,8 +176,8 @@ pub fn render_area(
                                 let is_sel = idx == *selected;
                                 let fill = if is_sel { selected_fill } else { egui::Color32::TRANSPARENT };
                                 let resp = render_row(ui, theme, hit, query, is_sel, fill, width);
-                                if is_sel {
-                                    resp.scroll_to_me(None);
+                                if is_sel && scroll_to_selected {
+                                    resp.scroll_to_me(Some(egui::Align::Center));
                                 }
                                 if resp.clicked() {
                                     clicked = Some(idx);
@@ -181,8 +190,14 @@ pub fn render_area(
                 });
         });
 
-    if let Some(h) = hovered {
-        *selected = h;
+    // Only let hover drive the selection when the pointer actually moved
+    // this frame. A stationary mouse resting over the list must not keep
+    // overriding keyboard nav (the classic combo-box keyboard/mouse fight).
+    let pointer_moved = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_))));
+    if pointer_moved {
+        if let Some(h) = hovered {
+            *selected = h;
+        }
     }
     clicked.map(|i| action_for(&hits[i]))
 }

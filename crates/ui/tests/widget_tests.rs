@@ -259,12 +259,52 @@ fn search_palette_renders_tab_and_file_results_without_panic() {
             let theme = arclain_theme::AppTheme::new(true);
             let anchor = ui.max_rect();
             let _ = search_palette::view::render_area(
-                ui, &theme, anchor, "sc", &hits, "RJ000222", selected,
+                ui, &theme, anchor, "sc", &hits, "RJ000222", false, selected,
             );
         },
         0usize,
     );
     harness.run();
+}
+
+#[test]
+fn handle_keys_arrows_move_selection_and_flag_navigation() {
+    // Regression: arrowing the palette must actually move the selection AND
+    // flag `navigated` (so the dropdown scrolls the new row into view).
+    // The headless render test above never pressed a key, so it couldn't
+    // catch nav being broken — this drives real ArrowUp/Down events.
+    use arclain_ui::shared::components::search_palette::view::handle_keys;
+
+    // state.0 = selected index, state.1 = "navigated fired at least once".
+    // key_press emits down+up, so step() runs two frames; navigated is only
+    // true on the down frame — accumulate it instead of reading last frame.
+    let mut harness = Harness::new_ui_state(
+        |ui, st: &mut (usize, bool)| {
+            let intent = handle_keys(ui, 3, &mut st.0);
+            st.1 |= intent.navigated;
+        },
+        (0usize, false),
+    );
+
+    harness.step();
+    assert_eq!(harness.state().0, 0, "starts at the top");
+
+    harness.key_press(egui::Key::ArrowDown);
+    harness.step();
+    assert_eq!(harness.state().0, 1, "ArrowDown advances");
+    assert!(harness.state().1, "ArrowDown flags navigated for scroll-follow");
+
+    harness.key_press(egui::Key::ArrowDown);
+    harness.step();
+    assert_eq!(harness.state().0, 2, "ArrowDown advances again");
+
+    harness.key_press(egui::Key::ArrowDown);
+    harness.step();
+    assert_eq!(harness.state().0, 0, "ArrowDown wraps past the end");
+
+    harness.key_press(egui::Key::ArrowUp);
+    harness.step();
+    assert_eq!(harness.state().0, 2, "ArrowUp wraps backwards");
 }
 
 // =============================================================================

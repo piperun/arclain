@@ -138,17 +138,6 @@ pub fn render(
         })
         .inner;
 
-    // Consume CTRL+A after the TextEdit renders. The TextEdit will have
-    // already processed it to select all text; we consume it afterward so
-    // the archive's select-all hotkey doesn't also fire.
-    if search_resp.has_focus() {
-        ui.input_mut(|i| {
-            if i.key_pressed(egui::Key::A) && i.modifiers.ctrl {
-                i.consume_key(egui::Modifiers::CTRL, egui::Key::A);
-            }
-        });
-    }
-
     // === Unified search palette (anchored under the search box) ===
     //
     // Activation comes from either the pre-render keyboard intent (Enter)
@@ -185,6 +174,7 @@ pub fn render(
             &state.search_text,
             search_hits,
             active_code,
+            key_intent.navigated,
             &mut state.search_palette.selected,
         ) {
             search_action = Some(action);
