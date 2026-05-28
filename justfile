@@ -50,10 +50,17 @@ ui *args:
 deps *args:
     {{python}} scripts/_deps.py {{args}}
 
+# Run the Python helper unit + smoke tests (fast).
+test-scripts:
+    {{python}} -m unittest discover -s scripts -p "test_*.py"
+
 # ─── cocogitto ──────────────────────────────────────────────────────────
-# Tag format is controlled by `cog.toml` (cog 7 default = unprefixed
-# `{version}`; the old `-A "v{{version}}"` annotation flag from cog 6
-# is gone and does nothing useful in cog 7). All bump recipes accept
+# Tag name/prefix is controlled by `cog.toml` (cog 7 default = unprefixed
+# version, no `v`). The `-A/--annotated` flag still exists in cog 7 — it
+# makes the created tag annotated (tagger + date + message) instead of the
+# default lightweight tag. These recipes omit it: arclain's changelog shows
+# no 1970-01-01 dates without it, so lightweight tags are fine here. Append
+# `-A "msg"` to a bump if you want annotated tags. All bump recipes accept
 # extra args, e.g. `just bump --dry-run`.
 
 # Verify commit messages on the current branch.
@@ -90,6 +97,22 @@ bump-package name *args:
 
 # Push the latest bump to both remotes.
 #
+# Branch and tag go in SEPARATE pushes. A combined
+# `git push <remote> master --tags` delivers the tag bundled with the
+# branch update, and in this setup that does NOT raise Woodpecker's
+# `event: tag` pipeline on codeberg — so the Linux build + release
+# step never fires. A dedicated push of just the tag produces a clean
+# tag-create event that Woodpecker acts on. (Confirmed empirically:
+# deleting the tag on codeberg and re-pushing only the tag triggers
+# the release.)
+#
+# We push exactly the tag(s) at HEAD — `$(git tag --points-at HEAD)`,
+# i.e. whatever `cog bump` just created — instead of `--tags`. `--tags`
+# would shove every local tag at the remote (stale experiments, package
+# tags, …), each a potential spurious pipeline; pushing only the bump
+# tag keeps the release event clean and intentional. The `$(…)` form
+# works in both PowerShell and sh, so the recipe stays cross-platform.
+#
 # GitHub MUST go first. The codeberg→GitHub push-mirror replicates
 # refs but does NOT trigger GitHub Actions on the mirrored push, so
 # the Windows build never fires when we only push to codeberg. By
@@ -98,11 +121,14 @@ bump-package name *args:
 # runs the windows-build workflow. Codeberg second drives Woodpecker
 # (Linux build + the release the Windows job uploads into).
 #
-# If a tag already exists on GitHub at the same SHA (e.g. the mirror
-# beat you to it), the push is a no-op and Actions won't fire — in
-# that case delete + re-push the tag on GitHub to force a fresh
-# event: `git push github :refs/tags/<tag>` then
-# `git push github refs/tags/<tag>`.
+# A tag push only fires CI if the tag is NEW to that remote. If a
+# release's tag already landed on a remote (e.g. an earlier combined
+# push put it there), the remote won't re-fire — delete + re-push the
+# tag to force a fresh event:
+#   git push <remote> :refs/tags/<tag>
+#   git push <remote> refs/tags/<tag>
 push-release:
-    git push github master --tags
-    git push origin master --tags
+    git push github master
+    git push github $(git tag --points-at HEAD)
+    git push origin master
+    git push origin $(git tag --points-at HEAD)
