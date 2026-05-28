@@ -91,11 +91,15 @@ jobs:
           Get-Content "$out.sha256"
 
       - name: Upload to codeberg release
-        # Only on tag pushes — for workflow_dispatch runs on master
-        # there's no release to upload to. Manual dispatch still
-        # builds + checksums and keeps the artifact attached to the
-        # workflow run (next step).
-        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        # Upload whenever the ref is a tag — covers both the tag push
+        # AND a manual `workflow_dispatch --ref <tag>` (the advertised
+        # "re-run a failed upload" fallback). A dispatch on a branch
+        # (refs/heads/master) has no release to target, so it's still
+        # skipped; it just builds + checksums and keeps the .exe as a
+        # workflow artifact (next step). Was gated on
+        # `event_name == 'push'`, which silently no-op'd the manual
+        # fallback the workflow_dispatch trigger promises.
+        if: startsWith(github.ref, 'refs/tags/')
         working-directory: codeberg/arclain
         shell: pwsh
         env:
