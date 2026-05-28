@@ -55,7 +55,7 @@ pub fn render_rule_editor(
                     .width(content_width - 240.0)
                     .with_theme_colors(&theme.colors)
                     .show(ui);
-                if ui.add(TextButton::new("🧪 Test Regex", ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
+                if ui.add(TextButton::new(format!("{} Test Regex", egui_phosphor::regular::TEST_TUBE), ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
                     dialog.show_regex_tester = true;
                     dialog.regex_test_pattern = dialog.edit_pattern.clone();
                     dialog.regex_test_results.clear();

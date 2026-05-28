@@ -403,10 +403,11 @@ pub fn render_tab_scrollbar(ui: &mut egui::Ui, info: &TabScrollInfo, theme: &The
         natural_position_fraction(info.offset, content_w, viewport_w)
     };
 
-    if response.dragged() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-    } else if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    // PointingHand (matches the chips / buttons), not Grab/Grabbing —
+    // winit has no native grab cursor on Windows and falls back to
+    // SizeAll (the 4-way move arrow), which reads wrong for a scrollbar.
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
 
     let painter = ui.painter();
