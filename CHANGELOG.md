@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.3.1 - 2026-05-28
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Bug Fixes
+- (**ui**) keep search palette selection in view while arrowing - (0d8aa15) - 0xdev
+- (**ui**) let focused text inputs swallow editing chords - (6e4140b) - 0xdev
+- (**ui**) polish unified search palette - (de79c87) - 0xdev
+
+- - -
+
 ## 2.3.0 - 2026-05-28
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
