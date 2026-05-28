@@ -2,6 +2,17 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.3.2 - 2026-05-28
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Bug Fixes
+- (**ui**) respect keyboard focus and popups for app hotkeys - (bfa5f6d) - 0xdev
+#### Refactoring
+- (**ui**) group header and palette render args into structs - (62b6455) - 0xdev
+
+- - -
+
 ## 2.3.1 - 2026-05-28
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
