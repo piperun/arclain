@@ -87,3 +87,22 @@ bump-release *args:
 # Bump a specific monorepo package: `just bump-package dlsite-metadata`.
 bump-package name *args:
     cog bump --package {{name}} --auto {{args}}
+
+# Push the latest bump to both remotes.
+#
+# GitHub MUST go first. The codeberg→GitHub push-mirror replicates
+# refs but does NOT trigger GitHub Actions on the mirrored push, so
+# the Windows build never fires when we only push to codeberg. By
+# pushing to GitHub directly first — before codeberg even has the
+# tag for the mirror to sync — GitHub sees a real authored push and
+# runs the windows-build workflow. Codeberg second drives Woodpecker
+# (Linux build + the release the Windows job uploads into).
+#
+# If a tag already exists on GitHub at the same SHA (e.g. the mirror
+# beat you to it), the push is a no-op and Actions won't fire — in
+# that case delete + re-push the tag on GitHub to force a fresh
+# event: `git push github :refs/tags/<tag>` then
+# `git push github refs/tags/<tag>`.
+push-release:
+    git push github master --tags
+    git push origin master --tags
