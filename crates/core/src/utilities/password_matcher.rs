@@ -119,9 +119,62 @@ pub fn derive_pattern_for(filename: &str) -> String {
     regex::escape(filename)
 }
 
+/// Re-derive broader patterns for auto-saved rules that still carry the
+/// old one-archive-only `regex::escape(filename)` pattern (saved before
+/// `derive_pattern_for` existed). Returns `Some(upgraded)` if any rule
+/// changed, `None` if nothing matched — so the caller can skip the DB
+/// write entirely when there's nothing to do.
+///
+/// A rule is upgraded **only** when it bears the exact auto-saved
+/// fingerprint that `save_password_rule_from_archive` produced:
+///
+/// - name is `"Auto-saved: <filename>"`, **and**
+/// - pattern equals `regex::escape(<filename>)` (i.e. still literal).
+///
+/// That double check means a rule the user renamed, hand-broadened, or
+/// crafted from scratch is never touched — we only ever rewrite rules
+/// we can prove we auto-generated narrowly. Order is preserved, so the
+/// caller can zip old/new to count changes.
+///
+/// Idempotent: once broadened, the pattern no longer equals the literal
+/// escape, so a second pass leaves it alone and returns `None`.
+pub fn upgrade_auto_saved_rules(rules: &[PassRule]) -> Option<Vec<PassRule>> {
+    const PREFIX: &str = "Auto-saved: ";
+    let mut changed = false;
+    let upgraded: Vec<PassRule> = rules
+        .iter()
+        .map(|rule| {
+            if let Some(filename) = rule.name.strip_prefix(PREFIX) {
+                if rule.pattern == regex::escape(filename) {
+                    let broadened = derive_pattern_for(filename);
+                    if broadened != rule.pattern {
+                        changed = true;
+                        return PassRule {
+                            pattern: broadened,
+                            ..rule.clone()
+                        };
+                    }
+                }
+            }
+            rule.clone()
+        })
+        .collect();
+    changed.then_some(upgraded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn auto_saved(filename: &str) -> PassRule {
+        PassRule {
+            name: format!("Auto-saved: {}", filename),
+            pattern: regex::escape(filename),
+            password: "pw".to_string(),
+            priority: 10,
+            enabled: true,
+        }
+    }
 
     #[test]
     fn test_password_matching_by_archive_name() {
@@ -227,5 +280,86 @@ mod tests {
     fn derive_pattern_code_wins_over_bracket() {
         let pattern = derive_pattern_for("[Crew] Title [RJ100003] v1.zip");
         assert_eq!(pattern, "(?i)RJ100003");
+    }
+
+    // -------- upgrade_auto_saved_rules --------
+
+    /// An auto-saved rule whose filename carries an RJ code gets its
+    /// literal pattern broadened to the case-insensitive code match.
+    #[test]
+    fn upgrade_broadens_rj_coded_auto_saved_rule() {
+        let rules = vec![auto_saved("Some Title [RJ100001] v1.zip")];
+        let upgraded = upgrade_auto_saved_rules(&rules).expect("should change");
+        assert_eq!(upgraded[0].pattern, "(?i)RJ100001");
+        // Everything else preserved.
+        assert_eq!(upgraded[0].name, rules[0].name);
+        assert_eq!(upgraded[0].password, rules[0].password);
+        assert_eq!(upgraded[0].priority, rules[0].priority);
+        assert_eq!(upgraded[0].enabled, rules[0].enabled);
+    }
+
+    /// A plain filename re-derives to the same literal escape, so the
+    /// rule is unchanged — and with nothing else to change, the whole
+    /// pass returns None.
+    #[test]
+    fn upgrade_leaves_plain_filename_rule_untouched() {
+        let rules = vec![auto_saved("plain-archive.zip")];
+        assert!(upgrade_auto_saved_rules(&rules).is_none());
+    }
+
+    /// A rule the user renamed (no "Auto-saved:" prefix) is never
+    /// touched, even if its pattern happens to look literal.
+    #[test]
+    fn upgrade_skips_hand_renamed_rule() {
+        let rules = vec![rule_named("My RJ pack", &regex::escape("X [RJ100001].zip"))];
+        assert!(upgrade_auto_saved_rules(&rules).is_none());
+    }
+
+    /// An auto-saved rule the user already hand-broadened (pattern no
+    /// longer equals the literal escape of the filename) is left alone.
+    #[test]
+    fn upgrade_skips_already_broadened_rule() {
+        let mut r = auto_saved("Title [RJ100001] v1.zip");
+        r.pattern = "(?i)RJ100001".to_string(); // user (or a prior run) broadened it
+        assert!(upgrade_auto_saved_rules(&[r]).is_none());
+    }
+
+    /// Running the pass twice is a no-op the second time (idempotent).
+    #[test]
+    fn upgrade_is_idempotent() {
+        let rules = vec![auto_saved("Game [RJ100001].zip")];
+        let once = upgrade_auto_saved_rules(&rules).expect("first pass changes");
+        assert!(upgrade_auto_saved_rules(&once).is_none(), "second pass is a no-op");
+    }
+
+    /// Mixed set: only the RJ-coded auto-saved rule changes; the plain
+    /// one and the hand-named one ride through untouched, order kept.
+    #[test]
+    fn upgrade_only_touches_matching_rules() {
+        let rules = vec![
+            auto_saved("plain.zip"),
+            auto_saved("Foo [RJ100002] v3.7z"),
+            rule_named("Custom", r"^custom"),
+        ];
+        let upgraded = upgrade_auto_saved_rules(&rules).expect("one rule changes");
+        assert_eq!(upgraded[0].pattern, regex::escape("plain.zip"));
+        assert_eq!(upgraded[1].pattern, "(?i)RJ100002");
+        assert_eq!(upgraded[2].pattern, r"^custom");
+        let changed = upgraded
+            .iter()
+            .zip(&rules)
+            .filter(|(a, b)| a.pattern != b.pattern)
+            .count();
+        assert_eq!(changed, 1);
+    }
+
+    fn rule_named(name: &str, pattern: &str) -> PassRule {
+        PassRule {
+            name: name.to_string(),
+            pattern: pattern.to_string(),
+            password: "pw".to_string(),
+            priority: 10,
+            enabled: true,
+        }
     }
 }
