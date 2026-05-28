@@ -2,6 +2,28 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.2.6 - 2026-05-28
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Features
+- (**password**) upgrade legacy auto-saved rules to broad patterns at startup - (7f12df9) - 0xdev
+- (**ui**) move tab scrollbar to its own strip below the tabs - (bc952d0) - 0xdev
+- (**ui**) make the tab-strip position pill draggable - (ff6cc66) - 0xdev
+#### Bug Fixes
+- (**ui**) scrollbar pointer cursor + phosphor icon on Test Regex button - (d9132cc) - 0xdev
+- (**ui**) dedupe dropped paths so one drop never double-opens an archive - (d2687b2) - 0xdev
+#### Build system
+- (**scripts**) add push-release recipe (GitHub first to fire Actions) - (5ab725f) - 0xdev
+#### Continuous Integration
+- (**github**) let workflow_dispatch on a tag upload to the release - (1461207) - 0xdev
+#### Refactoring
+- (**plugins**) remove dead archive_backend plumbing - (a4aa67c) - 0xdev
+#### Miscellaneous Chores
+- (**ui**) gate format_mode to unix to clear Windows dead-code warning - (d264fbf) - 0xdev
+
+- - -
+
 ## 2.2.5 - 2026-05-27
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
