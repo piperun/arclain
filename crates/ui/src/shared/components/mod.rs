@@ -26,6 +26,7 @@ pub mod network_log;
 // imports violated the shared/ boundary.
 pub mod preview_tree;
 pub mod search_bar;
+pub mod search_palette;
 pub mod settings_card;
 pub mod settings_form;
 pub mod settings_header;

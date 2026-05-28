@@ -4,6 +4,7 @@
 //! and provides the AppRenderContext for passing state to rendering functions.
 
 use crate::core::navigation::PageNavigator;
+use crate::shared::components::search_palette::{self, SearchHit, SearchPaletteAction, TabSummary};
 use crate::shared::{components, SharedState};
 use eframe::egui;
 
@@ -15,6 +16,8 @@ pub struct HeaderActions {
     pub navigate_settings: bool,
     pub theme_toggle: bool,
     pub show_logs: bool,
+    /// A unified-search result was activated (switch tab / jump to file).
+    pub search_action: Option<SearchPaletteAction>,
 }
 
 /// Render the header panel
@@ -31,6 +34,7 @@ pub fn render_header_panel(
         navigate_settings: false,
         theme_toggle: false,
         show_logs: false,
+        search_action: None,
     };
 
     egui::TopBottomPanel::top("header_panel")
@@ -55,6 +59,60 @@ pub fn render_header_panel(
 
             let server_status = shared_state.signals().server_status.get();
 
+            // Build unified-search hits from live tab + entry signals. The
+            // matching itself is pure (search_palette::build_hits); here we
+            // just snapshot each tab's code/title/maker/file and the active
+            // archive's entry paths.
+            let col = shared_state.signals().tabs.get();
+            let active_id = col.active_id();
+            let tab_summaries: Vec<TabSummary> = col
+                .tabs()
+                .iter()
+                .map(|t| {
+                    let file = t
+                        .archive_path
+                        .get()
+                        .as_ref()
+                        .and_then(|p| p.file_name())
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let (code, title, maker) = match t.game_metadata.get() {
+                        Some(m) => (
+                            m.product_id,
+                            if m.title.is_empty() {
+                                t.display_title()
+                            } else {
+                                m.title
+                            },
+                            m.creator.unwrap_or_default(),
+                        ),
+                        None => (String::new(), t.display_title(), String::new()),
+                    };
+                    TabSummary {
+                        id: t.id,
+                        code,
+                        title,
+                        maker,
+                        file,
+                        entry_count: t.entries.get().len(),
+                        active: t.id == active_id,
+                    }
+                })
+                .collect();
+            let active_entries = col.active().entries.get();
+            let active_paths: Vec<&str> =
+                active_entries.iter().map(|e| e.path.as_str()).collect();
+            let active_code = tab_summaries
+                .iter()
+                .find(|s| s.active)
+                .map(|s| s.code.clone())
+                .unwrap_or_default();
+            let search_hits: Vec<SearchHit> = search_palette::build_hits(
+                &header_state.search_text,
+                &tab_summaries,
+                &active_paths,
+            );
+
             let actions = components::header::render(
                 ui,
                 &shared_state.theme,
@@ -65,7 +123,11 @@ pub fn render_header_panel(
                 is_on_settings,
                 &mut search_focus_requested,
                 &server_status,
+                &search_hits,
+                &active_code,
             );
+
+            result.search_action = actions.search_action;
 
             // Sync search focus request back to signal (if consumed)
             if search_focus_requested != shared_state.signals().search_focus_requested.get() {

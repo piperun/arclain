@@ -445,6 +445,30 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         }
     }
 
+    // Unified search palette: switch to a tab, or navigate the active
+    // archive's file list to a matched entry's folder.
+    if let Some(search_action) = header_actions.search_action {
+        use crate::shared::components::search_palette::SearchPaletteAction;
+        match search_action {
+            SearchPaletteAction::SwitchTab(id) => {
+                let mut col = app.shared_state.signals().tabs.get();
+                col.switch_to(id);
+                app.shared_state.signals().tabs.set(col);
+            }
+            SearchPaletteAction::JumpToFile(path) => {
+                // Navigate to the entry's parent folder (root when the file
+                // sits at the archive root); the cleared query then shows
+                // the unfiltered folder with the entry in view.
+                let parent = path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+                let signals = app.shared_state.signals();
+                crate::core::operations::navigation_signals::navigate_to_absolute(
+                    signals, parent,
+                );
+                crate::core::operations::navigation_view::refresh_view_entries(signals);
+            }
+        }
+    }
+
     // === Render Tab Bar Panel ===
     let tab_action =
         app_rendering::render_tab_bar_panel(ctx, &app.shared_state, &mut app.top_tab_bar_state);

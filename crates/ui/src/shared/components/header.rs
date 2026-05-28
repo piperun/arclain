@@ -1,4 +1,5 @@
 use crate::core::signals::ServerConnectionStatus;
+use crate::shared::components::search_palette::{self, SearchHit, SearchPaletteAction, SearchPaletteState};
 use arclain_theme::{AppTheme, ButtonVariant};
 use arclain_widgets::TextInput;
 use eframe::egui;
@@ -8,6 +9,8 @@ use egui::Widget;
 pub struct HeaderState {
     pub search_text: String,
     pub show_button_labels: bool, // UI preference: show text labels on buttons
+    /// Unified-search dropdown state (open flag + selected row).
+    pub search_palette: SearchPaletteState,
 }
 
 #[derive(Default)]
@@ -17,6 +20,8 @@ pub struct HeaderActions {
     pub navigate_plugins: bool,
     pub navigate_settings: bool,
     pub show_logs: bool,
+    /// A unified-search result was activated this frame (Enter or click).
+    pub search_action: Option<SearchPaletteAction>,
 }
 
 pub fn render(
@@ -29,9 +34,23 @@ pub fn render(
     is_on_settings: bool,
     search_focus_requested: &mut bool,
     server_status: &ServerConnectionStatus,
+    search_hits: &[SearchHit],
+    active_code: &str,
 ) -> HeaderActions {
     let mut actions = HeaderActions::default();
     let show_labels = state.show_button_labels;
+
+    // Consume the palette's nav keys BEFORE the search TextEdit renders
+    // below, so the focused single-line edit never reacts to them (Enter
+    // would surrender focus and close the palette before we read the
+    // activation; Up/Down would move the caret). Uses last frame's open
+    // flag — focus-derived open/close happens after the box renders.
+    let was_open = state.search_palette.open;
+    let key_intent = if was_open {
+        search_palette::handle_keys(ui, search_hits.len(), &mut state.search_palette.selected)
+    } else {
+        search_palette::KeyIntent::default()
+    };
 
     let full_rect = ui.available_rect_before_wrap();
     let left_width = if show_nav_buttons { 80.0 } else { 0.0 };
@@ -80,38 +99,91 @@ pub fn render(
         egui::pos2(full_rect.min.x + left_width + 12.0, full_rect.min.y),
         egui::vec2(center_width, full_rect.height()),
     );
-    ui.scope_builder(egui::UiBuilder::new().max_rect(center_rect), |ui| {
-        ui.with_layout(
-            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-            |ui| {
-                let search_frame = egui::Frame::NONE
-                    .fill(theme.colors.surface_variant)
-                    .corner_radius(4.0)
-                    .inner_margin(egui::Margin::symmetric(8, 6));
+    let search_resp = ui
+        .scope_builder(egui::UiBuilder::new().max_rect(center_rect), |ui| {
+            ui.with_layout(
+                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                |ui| {
+                    let search_frame = egui::Frame::NONE
+                        .fill(theme.colors.surface_variant)
+                        .corner_radius(4.0)
+                        .inner_margin(egui::Margin::symmetric(8, 6));
 
-                let search_width = center_width.min(400.0).max(200.0);
+                    let search_width = center_width.min(400.0).max(200.0);
 
-                search_frame.show(ui, |ui| {
-                    ui.set_width(search_width);
-                    let response = TextInput::new(&mut state.search_text)
-                        .hint(if is_on_settings {
-                            "Search settings..."
-                        } else {
-                            "Search files..."
+                    search_frame
+                        .show(ui, |ui| {
+                            ui.set_width(search_width);
+                            let response = TextInput::new(&mut state.search_text)
+                                .hint(if is_on_settings {
+                                    "Search settings..."
+                                } else {
+                                    "Search files..."
+                                })
+                                .prefix_icon(egui_phosphor::regular::MAGNIFYING_GLASS)
+                                .width(search_width)
+                                .with_theme_colors(&theme.colors)
+                                .show(ui);
+
+                            if *search_focus_requested {
+                                response.response.request_focus();
+                                *search_focus_requested = false;
+                            }
+                            response.response
                         })
-                        .prefix_icon(egui_phosphor::regular::MAGNIFYING_GLASS)
-                        .width(search_width)
-                        .with_theme_colors(&theme.colors)
-                        .show(ui);
+                        .inner
+                },
+            )
+            .inner
+        })
+        .inner;
 
-                    if *search_focus_requested {
-                        response.response.request_focus();
-                        *search_focus_requested = false;
-                    }
-                });
-            },
-        );
-    });
+    // === Unified search palette (anchored under the search box) ===
+    //
+    // Activation comes from either the pre-render keyboard intent (Enter)
+    // or a row click in the dropdown below. Tabs/files were matched by
+    // app_rendering and passed in as `search_hits`.
+    let mut search_action: Option<SearchPaletteAction> = None;
+    if was_open && key_intent.activate && !search_hits.is_empty() {
+        let idx = state.search_palette.selected.min(search_hits.len() - 1);
+        search_action = Some(search_palette::action_for(&search_hits[idx]));
+    }
+    let dismissed = was_open && key_intent.dismiss;
+
+    // Typing changes the result set — reset the selection to the top.
+    if search_resp.changed() {
+        state.search_palette.selected = 0;
+    }
+
+    if search_action.is_some() || dismissed {
+        // Activated or Esc: close, clear the query, drop focus.
+        state.search_palette.open = false;
+        state.search_text.clear();
+        search_resp.surrender_focus();
+    } else {
+        // Otherwise the box's focus drives visibility (gained → open,
+        // click-outside → closed).
+        state.search_palette.open = search_resp.has_focus();
+    }
+
+    if state.search_palette.open {
+        if let Some(action) = search_palette::render_area(
+            ui,
+            theme,
+            search_resp.rect,
+            &state.search_text,
+            search_hits,
+            active_code,
+            &mut state.search_palette.selected,
+        ) {
+            search_action = Some(action);
+            state.search_palette.open = false;
+            state.search_text.clear();
+            search_resp.surrender_focus();
+        }
+    }
+
+    actions.search_action = search_action;
 
     // === RIGHT SECTION: Utilities ===
     let right_rect = egui::Rect::from_min_size(

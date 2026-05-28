@@ -161,6 +161,8 @@ fn header_renders_with_nav_buttons() {
                 false, // is_on_settings
                 &mut focus,
                 &arclain_ui::core::signals::ServerConnectionStatus::Offline,
+                &[],
+                "",
             );
         },
         HeaderState::default(),
@@ -188,6 +190,8 @@ fn header_renders_without_nav_buttons() {
                 false, // is_on_settings
                 &mut focus,
                 &arclain_ui::core::signals::ServerConnectionStatus::Offline,
+                &[],
+                "",
             );
         },
         HeaderState::default(),
@@ -215,11 +219,51 @@ fn header_renders_on_settings_page() {
                 true, // is_on_settings
                 &mut focus,
                 &arclain_ui::core::signals::ServerConnectionStatus::Offline,
+                &[],
+                "",
             );
         },
         HeaderState::default(),
     );
 
+    harness.run();
+}
+
+// =============================================================================
+// Search palette
+// =============================================================================
+
+#[test]
+fn search_palette_renders_tab_and_file_results_without_panic() {
+    use arclain_ui::core::tabs::TabId;
+    use arclain_ui::shared::components::search_palette::{self, SearchHit, TabSummary};
+
+    // A query that hits both a tab (by code/title) and a file path
+    // exercises group labels, highlight slicing, and both row layouts —
+    // none of which the empty-hits header tests reach.
+    let tabs = vec![TabSummary {
+        id: TabId(1),
+        code: "RJ000222".into(),
+        title: "Scene Pack".into(),
+        maker: "Coralt".into(),
+        file: "scene.rar".into(),
+        entry_count: 3,
+        active: true,
+    }];
+    let paths = ["scene_01.txt", "img_main.jpg"];
+    let hits: Vec<SearchHit> = search_palette::build_hits("sc", &tabs, &paths);
+    assert!(hits.len() >= 2, "query should match the tab and a file");
+
+    let mut harness = Harness::new_ui_state(
+        move |ui, selected: &mut usize| {
+            let theme = arclain_theme::AppTheme::new(true);
+            let anchor = ui.max_rect();
+            let _ = search_palette::view::render_area(
+                ui, &theme, anchor, "sc", &hits, "RJ000222", selected,
+            );
+        },
+        0usize,
+    );
     harness.run();
 }
 
