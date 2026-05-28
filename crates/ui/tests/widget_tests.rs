@@ -308,6 +308,73 @@ fn handle_keys_arrows_move_selection_and_flag_navigation() {
 }
 
 // =============================================================================
+// Hotkey focus arbitration (end-to-end through a live egui Context)
+// =============================================================================
+
+#[test]
+fn check_input_suppresses_contextual_hotkey_while_text_field_focused() {
+    // Drive the real arbitration: a focused TextEdit must keep Ctrl+A for
+    // "select all text", so the SelectAll app hotkey ("select all files")
+    // must NOT fire. Pairs with the control test below.
+    use arclain_ui::features::hotkeys::{HotkeyAction, HotkeyManager};
+
+    let manager = HotkeyManager::new();
+    // state: (text buffer, accumulated triggered actions, frame counter)
+    let mut harness = Harness::new_ui_state(
+        move |ui, st: &mut (String, Vec<HotkeyAction>, u32)| {
+            st.2 += 1;
+            // check_input runs at frame-top in the app (before widgets), so
+            // call it before the TextEdit: it reads last frame's focus and
+            // this frame's still-unconsumed key events.
+            st.1.extend(manager.check_input(ui.ctx()));
+            let resp = ui.text_edit_singleline(&mut st.0);
+            if st.2 == 1 {
+                resp.request_focus();
+            }
+        },
+        (String::new(), Vec::new(), 0u32),
+    );
+
+    harness.step(); // frame 1: focus requested
+    harness.step(); // frame 2: focus now active
+    harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::A);
+    harness.step(); // frame 3: Ctrl+A arrives while focused
+
+    assert!(
+        !harness.state().1.contains(&HotkeyAction::SelectAll),
+        "SelectAll must not fire while a text field is focused; got {:?}",
+        harness.state().1
+    );
+}
+
+#[test]
+fn check_input_fires_contextual_hotkey_when_nothing_focused() {
+    // Control for the test above: the same Ctrl+A, with no widget holding
+    // focus, DOES fire SelectAll — proving the suppression there is the focus
+    // guard, not a missing binding.
+    use arclain_ui::features::hotkeys::{HotkeyAction, HotkeyManager};
+
+    let manager = HotkeyManager::new();
+    let mut harness = Harness::new_ui_state(
+        move |ui, st: &mut Vec<HotkeyAction>| {
+            st.extend(manager.check_input(ui.ctx()));
+            ui.label("no focusable widget here"); // takes no keyboard focus
+        },
+        Vec::new(),
+    );
+
+    harness.step();
+    harness.key_press_modifiers(egui::Modifiers::CTRL, egui::Key::A);
+    harness.step();
+
+    assert!(
+        harness.state().contains(&HotkeyAction::SelectAll),
+        "SelectAll should fire when no widget owns the keyboard; got {:?}",
+        harness.state()
+    );
+}
+
+// =============================================================================
 // Carousel (empty)
 // =============================================================================
 

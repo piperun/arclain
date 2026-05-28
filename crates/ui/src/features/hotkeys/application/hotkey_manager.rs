@@ -20,30 +20,30 @@ impl Default for HotkeyManager {
     }
 }
 
-/// Should a focused text widget swallow this chord instead of letting it
-/// fire an app hotkey?
+/// Whether a *keyboard* hotkey should fire, given what egui is currently
+/// doing with the keyboard. (Mouse-button hotkeys bypass this entirely.)
 ///
-/// True for bare keys (no Ctrl/Alt — that's typing) and for the standard
-/// text-editing chords (Ctrl+A/C/V/X/Z/Y) that egui's `TextEdit` consumes
-/// on its own. Without this, Ctrl+A in the search box would both select the
-/// query text and trigger the archive's "select all files" hotkey.
-fn swallowed_by_text_focus(key: egui::Key, modifiers: &Modifiers) -> bool {
-    if !modifiers.ctrl && !modifiers.alt {
-        return true; // bare key — it's typing, not a shortcut
+/// This is the central focus-respect rule that keeps app hotkeys from
+/// fighting whatever owns the keyboard:
+/// - A popup or context menu is open → it owns the keyboard; nothing else
+///   fires.
+/// - A widget holds keyboard focus (a text field is being edited) → only
+///   global application shortcuts fire; anything contextual is suppressed
+///   so it can't act on a keystroke meant for the editor. Keyed on the
+///   action's intent ([`HotkeyAction::fires_while_typing`]), so it holds
+///   for any chord the action is rebound to — not a hardcoded key list.
+fn keyboard_hotkey_allowed(
+    action: HotkeyAction,
+    editor_has_keyboard: bool,
+    popup_open: bool,
+) -> bool {
+    if popup_open {
+        return false;
     }
-    if modifiers.ctrl && !modifiers.alt {
-        // Shift stays allowed so Ctrl+Shift+Z (redo) is covered too.
-        return matches!(
-            key,
-            egui::Key::A
-                | egui::Key::C
-                | egui::Key::V
-                | egui::Key::X
-                | egui::Key::Z
-                | egui::Key::Y
-        );
+    if editor_has_keyboard && !action.fires_while_typing() {
+        return false;
     }
-    false
+    true
 }
 
 impl HotkeyManager {
@@ -64,6 +64,14 @@ impl HotkeyManager {
     /// Check current frame input and return any triggered actions
     pub fn check_input(&self, ctx: &egui::Context) -> Vec<HotkeyAction> {
         let mut triggered = Vec::new();
+
+        // Read what egui is doing with the keyboard before borrowing input,
+        // so keyboard_hotkey_allowed can suppress hotkeys that would fight a
+        // focused editor or an open popup/context menu. (These touch the
+        // memory / pass-state locks; querying them outside the `input`
+        // closure keeps the locking obvious.)
+        let editor_has_keyboard = ctx.wants_keyboard_input();
+        let popup_open = ctx.is_popup_open();
 
         ctx.input(|input| {
             // Get current modifiers state
@@ -122,14 +130,14 @@ impl HotkeyManager {
                                 .bindings
                                 .find_action_for_input(&InputKey::Keyboard(kb_key), &modifiers)
                             {
-                                // When a text widget holds keyboard focus it owns
-                                // both bare keys (typing) and the standard editing
-                                // chords (Ctrl+A/C/V/X/Z/Y) that egui's TextEdit
-                                // handles internally. Firing an app hotkey for those
-                                // double-handles the key — e.g. Ctrl+A would both
-                                // select the search text AND select every file in the
-                                // archive. Let the focused editor swallow them.
-                                if input.focused && swallowed_by_text_focus(*key, &modifiers) {
+                                // Don't fire while a focused editor or open
+                                // context menu owns the keyboard — see
+                                // keyboard_hotkey_allowed.
+                                if !keyboard_hotkey_allowed(
+                                    action,
+                                    editor_has_keyboard,
+                                    popup_open,
+                                ) {
                                     continue;
                                 }
 
@@ -231,39 +239,54 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_is_swallowed_by_a_focused_text_widget() {
+    fn focused_editor_suppresses_contextual_hotkeys_only() {
         // Regression: Ctrl+A in the search box used to both select the query
-        // text (egui) AND fire SelectAll (archive "select all files"). A
-        // focused editor must swallow the editing chords so the app hotkey
-        // doesn't double-handle them.
-        let ctrl = Modifiers::ctrl();
-        for key in [
-            egui::Key::A,
-            egui::Key::C,
-            egui::Key::V,
-            egui::Key::X,
-            egui::Key::Z,
-            egui::Key::Y,
-        ] {
+        // text (egui) AND fire SelectAll ("select all files"). With a focused
+        // editor, contextual actions are suppressed regardless of their chord,
+        // while global app shortcuts still fire.
+        let focused = true;
+        let no_menu = false;
+        assert!(
+            !keyboard_hotkey_allowed(HotkeyAction::SelectAll, focused, no_menu),
+            "SelectAll must not fire while a text field is focused"
+        );
+        assert!(
+            !keyboard_hotkey_allowed(HotkeyAction::DeleteSelected, focused, no_menu),
+            "DeleteSelected must not fire while typing"
+        );
+        assert!(
+            !keyboard_hotkey_allowed(HotkeyAction::ExtractSelected, focused, no_menu),
+            "ExtractSelected must not fire while typing"
+        );
+        assert!(
+            keyboard_hotkey_allowed(HotkeyAction::OpenSettings, focused, no_menu),
+            "OpenSettings is global — still fires while typing"
+        );
+        assert!(
+            keyboard_hotkey_allowed(HotkeyAction::Search, focused, no_menu),
+            "Search is global — still fires while typing"
+        );
+    }
+
+    #[test]
+    fn open_popup_suppresses_all_keyboard_hotkeys() {
+        // An open popup / context menu owns the keyboard — not even global
+        // shortcuts should fire underneath it.
+        let popup_open = true;
+        assert!(!keyboard_hotkey_allowed(HotkeyAction::SelectAll, false, popup_open));
+        assert!(!keyboard_hotkey_allowed(HotkeyAction::OpenSettings, false, popup_open));
+        assert!(!keyboard_hotkey_allowed(HotkeyAction::Search, true, popup_open));
+    }
+
+    #[test]
+    fn hotkeys_fire_normally_when_nothing_owns_the_keyboard() {
+        // No focus, no menu: every action is allowed through.
+        for action in HotkeyAction::all() {
             assert!(
-                swallowed_by_text_focus(key, &ctrl),
-                "Ctrl+{key:?} should be swallowed by a focused text widget"
+                keyboard_hotkey_allowed(action, false, false),
+                "{action:?} should fire when nothing owns the keyboard"
             );
         }
-    }
-
-    #[test]
-    fn non_editing_chords_still_fire_while_typing() {
-        // Ctrl+, (OpenSettings) isn't a text-editing chord, so a focused
-        // search box must NOT swallow it.
-        assert!(!swallowed_by_text_focus(egui::Key::Comma, &Modifiers::ctrl()));
-    }
-
-    #[test]
-    fn bare_keys_are_swallowed_while_typing() {
-        // Bare keys (no Ctrl/Alt) are typing — never steal them for hotkeys.
-        assert!(swallowed_by_text_focus(egui::Key::Delete, &Modifiers::none()));
-        assert!(swallowed_by_text_focus(egui::Key::A, &Modifiers::none()));
     }
 
     #[test]

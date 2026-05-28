@@ -264,6 +264,19 @@ impl HotkeyAction {
         }
     }
 
+    /// Whether this action should still fire while a text widget holds
+    /// keyboard focus (i.e. the user is typing).
+    ///
+    /// Only global application shortcuts do — focusing search or opening
+    /// settings make sense mid-type. Everything that acts on the browser,
+    /// the selection, or the file list must not, or it fires on keystrokes
+    /// meant for the text field (e.g. Ctrl+A "select all files" fighting
+    /// Ctrl+A "select all text"). This is keyed on the action's intent, so
+    /// any rebind — to any chord — inherits the correct behaviour.
+    pub fn fires_while_typing(&self) -> bool {
+        matches!(self, HotkeyAction::OpenSettings | HotkeyAction::Search)
+    }
+
     /// Get all available actions
     pub fn all() -> Vec<HotkeyAction> {
         vec![
@@ -410,6 +423,26 @@ mod tests {
                 action
             );
         }
+    }
+
+    #[test]
+    fn only_application_shortcuts_fire_while_typing() {
+        // Global app shortcuts keep working mid-type; everything that acts on
+        // the browser/selection/files is suppressed so it can't fire on
+        // keystrokes meant for a focused text field.
+        for action in HotkeyAction::all() {
+            let expected = action.category() == "Application";
+            assert_eq!(
+                action.fires_while_typing(),
+                expected,
+                "{action:?}: fires_while_typing should match the Application category"
+            );
+        }
+        assert!(HotkeyAction::Search.fires_while_typing());
+        assert!(HotkeyAction::OpenSettings.fires_while_typing());
+        assert!(!HotkeyAction::SelectAll.fires_while_typing());
+        assert!(!HotkeyAction::DeleteSelected.fires_while_typing());
+        assert!(!HotkeyAction::ExtractSelected.fires_while_typing());
     }
 
     #[test]
