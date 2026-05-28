@@ -122,7 +122,7 @@ pub fn render_area(
                 .fill(colors.surface_variant)
                 .stroke(egui::Stroke::new(1.0, colors.outline))
                 .corner_radius(4.0)
-                .inner_margin(egui::Margin::symmetric(0, 4))
+                .inner_margin(egui::Margin::symmetric(0, 8))
                 .shadow(egui::epaint::Shadow {
                     offset: [0, 8],
                     blur: 24,
@@ -167,6 +167,9 @@ pub fn render_area(
                                 let is_sel = idx == *selected;
                                 let fill = if is_sel { selected_fill } else { egui::Color32::TRANSPARENT };
                                 let resp = render_row(ui, theme, hit, query, is_sel, fill, width);
+                                if is_sel {
+                                    resp.scroll_to_me(None);
+                                }
                                 if resp.clicked() {
                                     clicked = Some(idx);
                                 }
@@ -209,7 +212,7 @@ fn render_row(
     let colors = &theme.colors;
     let inner = egui::Frame::NONE
         .fill(fill)
-        .inner_margin(egui::Margin::symmetric(12, 6))
+        .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(width - 24.0);
             ui.horizontal(|ui| {
@@ -237,7 +240,7 @@ fn render_row(
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if is_sel {
-                                ui.label(egui::RichText::new("switch \u{21b5}").size(10.0).color(colors.primary));
+                                ui.label(egui::RichText::new(egui_phosphor::regular::ARROW_RIGHT).size(10.0).color(colors.primary));
                             }
                             if t.active {
                                 ui.label(egui::RichText::new("active").size(9.0).color(colors.primary));
@@ -257,7 +260,7 @@ fn render_row(
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if is_sel {
-                                ui.label(egui::RichText::new("jump \u{21b5}").size(10.0).color(colors.primary));
+                                ui.label(egui::RichText::new(egui_phosphor::regular::ARROW_RIGHT).size(10.0).color(colors.primary));
                             }
                         });
                     }
