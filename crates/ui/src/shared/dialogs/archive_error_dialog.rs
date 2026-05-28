@@ -289,6 +289,12 @@ fn lookup_group_name(gid: u32) -> Option<String> {
 /// Format a POSIX mode word the way `ls -l` does — `-rwxr-x---` etc.
 /// Includes the file-type character. Doesn't handle setuid/setgid/sticky
 /// (rarely relevant for archive files and would clutter the dialog).
+///
+/// `#[cfg(unix)]` to match its only caller, the unix `gather_diagnostic`
+/// — POSIX mode bits are meaningless on Windows, where the dialog uses
+/// the `#[cfg(not(unix))]` stub that never gathers ownership/mode. Kept
+/// out of the Windows build entirely (otherwise it's dead code there).
+#[cfg(unix)]
 fn format_mode(mode: u32) -> String {
     let file_type = match mode & 0o170000 {
         0o040000 => 'd',
@@ -985,6 +991,7 @@ mod tests {
         assert_eq!(shell_quote("don't.7z"), "'don'\\''t.7z'");
     }
 
+    #[cfg(unix)]
     #[test]
     fn format_mode_renders_ls_minus_l_string() {
         // -rw------- (regular file, owner-read+write only)
