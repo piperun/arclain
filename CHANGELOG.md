@@ -2,6 +2,20 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## 2.3.0 - 2026-05-28
+### Packages
+- dlsite-metadata locked to dlsite-metadata-0.11.0
+### Global changes
+#### Features
+- (**ui**) unified search palette over tabs and active archive - (890804b) - 0xdev
+#### Continuous Integration
+- (**release**) push branch and tag separately to fire codeberg pipeline - (5bfdf46) - 0xdev
+#### Miscellaneous Chores
+- (**just**) add typecheck recipe for the python helpers - (07487a2) - 0xdev
+- (**scripts**) track build-helper tests, ignore python cache - (c81c60e) - 0xdev
+
+- - -
+
 ## 2.2.6 - 2026-05-28
 ### Packages
 - dlsite-metadata locked to dlsite-metadata-0.11.0
