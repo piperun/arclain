@@ -54,6 +54,10 @@ deps *args:
 test-scripts:
     {{python}} -m unittest discover -s scripts -p "test_*.py"
 
+# Strict type-check the Python helpers with basedpyright (via uvx, no install).
+typecheck:
+    uvx basedpyright
+
 # ─── cocogitto ──────────────────────────────────────────────────────────
 # Tag name/prefix is controlled by `cog.toml` (cog 7 default = unprefixed
 # version, no `v`). The `-A/--annotated` flag still exists in cog 7 — it
