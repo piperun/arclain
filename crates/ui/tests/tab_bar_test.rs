@@ -43,7 +43,7 @@ impl TabBarState {
 fn tab_bar_renders_with_one_active_tab() {
     let mut harness = Harness::new_ui_state(
         |ui, state: &mut TabBarState| {
-            let action = render_tab_bar(ui, &state.col, &state.theme.colors);
+            let (action, _scroll) = render_tab_bar(ui, &state.col, &state.theme.colors);
             state.last_action = action;
         },
         TabBarState::new(),

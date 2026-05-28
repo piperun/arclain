@@ -11,8 +11,9 @@
 //!
 //! ```text
 //! +-----------------------------------------------+
-//! | [tab1] [tab2 active] [tab3] ...   | [+]      |
-//! | ----------------                              |  <- position pill
+//! | [tab1] [tab2 active] [tab3] ...   | [⌄] [+]  |  <- tab strip
+//! +-----------------------------------------------+
+//! | ════▭▭▭▭▭═══════════════════════════════════ |  <- scrollbar strip
 //! +-----------------------------------------------+
 //! ```
 //!
@@ -22,9 +23,12 @@
 //! Switching the active tab (via click or keyboard) scrolls it into
 //! view if it was off-screen.
 //!
-//! When tabs overflow horizontally, a position pill renders below the
-//! strip showing `offset / max_offset` as a colored thumb on a track.
-//! Invisible when content fits.
+//! When tabs overflow horizontally, a draggable scrollbar renders in
+//! its OWN strip directly below the tab row (rendered as a separate
+//! panel by the caller — see `render_tab_scrollbar`) so it never eats
+//! into the tab chips' height. The strip is omitted entirely when the
+//! tabs fit. Dragging the thumb scrubs the strip; wheel scroll and
+//! scroll-into-view keep working alongside it.
 
 use crate::core::tabs::{TabId, TabsCollection};
 use arclain_theme::ThemeColors;
@@ -80,28 +84,53 @@ const TAB_TITLE_MAX_WIDTH_INACTIVE: f32 = 180.0;
 /// currently-open archive shows a longer prefix at a glance. Chrome-
 /// style adaptive width — switching tabs reflows the strip.
 const TAB_TITLE_MAX_WIDTH_ACTIVE: f32 = 360.0;
-/// When true, the position pill always renders when overflow exists
-/// (bypasses the hover-/scroll-driven visibility). Useful for verifying
-/// pill placement / size during development.
-const DEBUG_ALWAYS_SHOW_PILL: bool = false;
 /// Corner radius for tab chips and the `+` button. Currently 0 to match
 /// arclain's brutalist visual language; once a theme system exposes a
 /// `tab_corner_radius` variable, this becomes theme-driven.
 const TAB_CORNER_RADIUS: u8 = 0;
 
-/// Height of the position pill track (the thin colored bar below the
-/// tab strip indicating scroll position).
-const POSITION_PILL_HEIGHT: f32 = 5.0;
-const POSITION_PILL_GAP: f32 = 2.0;
+/// Thickness of the draggable scrollbar track in its own strip below
+/// the tab row. Taller than the old 5px indicator pill so the thumb is
+/// an easy grab target.
+const SCROLLBAR_THICKNESS: f32 = 8.0;
+/// Total vertical space the scrollbar strip panel should reserve
+/// (track + a little breathing room above/below). The caller sizes its
+/// dedicated panel to this.
+pub const SCROLLBAR_STRIP_HEIGHT: f32 = SCROLLBAR_THICKNESS + 6.0;
 
-/// Render the multi-archive tab bar. Returns Some(action) when the user
-/// clicked something; the caller applies the action to its
-/// `TabsCollection`.
+/// Scroll geometry captured during `render_tab_bar`, handed back so the
+/// caller can render the scrollbar in its own panel below the tabs.
+/// `has_overflow` gates whether that panel is shown at all.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TabScrollInfo {
+    pub offset: f32,
+    pub content_width: f32,
+    pub viewport_width: f32,
+}
+
+impl TabScrollInfo {
+    pub fn has_overflow(&self) -> bool {
+        (self.content_width - self.viewport_width) > 0.5
+    }
+}
+
+/// Shared memory key: the scrollbar drag stashes its requested offset
+/// here, and `render_tab_bar` reads it the next frame to drive the
+/// ScrollArea via `horizontal_scroll_offset`. Both must agree on the
+/// id, hence the helper.
+fn pill_offset_key() -> egui::Id {
+    egui::Id::new("tab_bar/pill_drag_offset")
+}
+
+/// Render the multi-archive tab bar (the tab chips only). Returns the
+/// user action (if any) plus the scroll geometry so the caller can
+/// render the scrollbar in its own strip below — see
+/// `render_tab_scrollbar`.
 pub fn render_tab_bar(
     ui: &mut egui::Ui,
     col: &TabsCollection,
     theme: &ThemeColors,
-) -> Option<TabBarAction> {
+) -> (Option<TabBarAction>, TabScrollInfo) {
     let mut action: Option<TabBarAction> = None;
 
     // Track which tab was active last frame so we know when the user
@@ -119,20 +148,16 @@ pub fn render_tab_bar(
     let mut content_width: f32 = 0.0;
     let mut viewport_rect = egui::Rect::NOTHING;
 
-    // A pill drag last frame requested an explicit scroll offset (the
-    // pill is painted *below* the scroll area, so it can only feed the
-    // offset forward one frame). `paint_position_pill` writes this key
-    // while the thumb is grabbed and clears it on release, so it only
-    // overrides the natural offset during an active drag — wheel scroll
-    // and scroll-into-view keep working untouched the rest of the time.
-    let pill_offset_key = egui::Id::new("tab_bar/pill_drag_offset");
-    let pending_pill_offset: Option<f32> = ui.memory(|m| m.data.get_temp(pill_offset_key));
+    // A scrollbar drag last frame requested an explicit scroll offset.
+    // The scrollbar lives in a separate panel rendered *after* this
+    // one, so it can only feed the offset forward one frame.
+    // `render_tab_scrollbar` writes this key while the thumb is grabbed
+    // and clears it on release, so it only overrides the natural offset
+    // during an active drag — wheel scroll and scroll-into-view keep
+    // working untouched the rest of the time.
+    let pending_pill_offset: Option<f32> = ui.memory(|m| m.data.get_temp(pill_offset_key()));
 
     ui.vertical(|ui| {
-        // Zero vertical spacing between the row and the position pill —
-        // we control the gap via POSITION_PILL_GAP explicitly. Without
-        // this, ui.vertical's default item_spacing.y (~4px) eats into
-        // the panel's fixed height and clips the pill out.
         ui.spacing_mut().item_spacing.y = 0.0;
         // Row: scroll area on the left taking remaining width, then
         // chevron (overflow menu), then + button on the right edge.
@@ -313,153 +338,71 @@ pub fn render_tab_bar(
                 viewport_rect = scroll_out.inner_rect;
             });
         });
-
-        // Compute overflow + paint position pill (gated by hover /
-        // recent scroll / debug).
-        let viewport_w = viewport_rect.width();
-        let max_offset = (content_width - viewport_w).max(0.0);
-        let has_overflow = max_offset > 0.5;
-
-        if has_overflow {
-            // Track previous scroll offset across frames to detect
-            // "actively scrolling". When the offset changed since last
-            // frame, refresh `last_scroll_time` to the current time.
-            let prev_offset_key = egui::Id::new("tab_bar/prev_offset_x");
-            let prev_offset: f32 = ui
-                .memory(|m| m.data.get_temp(prev_offset_key))
-                .unwrap_or(0.0);
-            let scrolling_now = (scroll_offset_x - prev_offset).abs() > 0.5;
-            ui.memory_mut(|m| m.data.insert_temp(prev_offset_key, scroll_offset_x));
-
-            let last_scroll_time_key = egui::Id::new("tab_bar/last_scroll_time");
-            let now = ui.input(|i| i.time);
-            if scrolling_now {
-                ui.memory_mut(|m| m.data.insert_temp(last_scroll_time_key, now));
-            }
-            let last_scroll_time: f64 = ui
-                .memory(|m| m.data.get_temp(last_scroll_time_key))
-                .unwrap_or(0.0);
-            let scrolled_recently = (now - last_scroll_time) < 0.6; // 600ms after-scroll lingering
-
-            // Hover anywhere over the tab-bar panel keeps the pill visible.
-            let panel_hovered = ui.rect_contains_pointer(viewport_rect)
-                || ui
-                    .input(|i| i.pointer.hover_pos())
-                    .map(|p| {
-                        // Slightly expand the test rect upward so hovering
-                        // the chip strip (which sits above the viewport's
-                        // pill area) also counts.
-                        let mut r = viewport_rect;
-                        r.min.y -= TAB_HEIGHT;
-                        r.contains(p)
-                    })
-                    .unwrap_or(false);
-
-            let target_visible = panel_hovered || scrolled_recently || DEBUG_ALWAYS_SHOW_PILL;
-            // Fade the pill in/out over 150ms.
-            let alpha = ui.ctx().animate_bool_with_time(
-                egui::Id::new("tab_bar/pill_alpha"),
-                target_visible,
-                0.15,
-            );
-
-            // Skip rendering entirely when fully transparent — avoids
-            // paying for the layout allocation when hidden.
-            if alpha > 0.01 {
-                paint_position_pill(
-                    ui,
-                    viewport_rect,
-                    scroll_offset_x,
-                    content_width,
-                    viewport_w,
-                    theme,
-                    alpha,
-                    pill_offset_key,
-                );
-            } else {
-                // Faded out → not draggable; drop any stale override
-                // so it can't keep forcing the offset once visible again.
-                ui.memory_mut(|m| m.data.remove_temp::<f32>(pill_offset_key));
-                // Still allocate the vertical space so the panel height
-                // stays consistent and the pill area doesn't visually
-                // jump.
-                let _ = ui.allocate_exact_size(
-                    egui::vec2(viewport_w, POSITION_PILL_HEIGHT + POSITION_PILL_GAP),
-                    egui::Sense::hover(),
-                );
-            }
-        } else {
-            // No overflow → nothing to scroll; clear any leftover pill
-            // override so it doesn't strangle wheel scroll if the tabs
-            // overflow again later.
-            ui.memory_mut(|m| m.data.remove_temp::<f32>(pill_offset_key));
-        }
     });
 
-    action
+    let info = TabScrollInfo {
+        offset: scroll_offset_x,
+        content_width,
+        viewport_width: viewport_rect.width(),
+    };
+
+    // No overflow → nothing to scroll and no scrollbar strip will be
+    // shown; drop any stale drag override so it can't keep forcing the
+    // offset (strangling wheel scroll) if the tabs overflow again later.
+    if !info.has_overflow() {
+        ui.memory_mut(|m| m.data.remove_temp::<f32>(pill_offset_key()));
+    }
+
+    (action, info)
 }
 
-/// Paint a thin position pill below the scroll viewport. Allocates
-/// `POSITION_PILL_HEIGHT + POSITION_PILL_GAP` vertical pixels in `ui`.
-/// `alpha` multiplies both the track and thumb colors (0..=1), enabling
-/// the hover-/scroll-driven fade-in/out.
+/// Render the draggable tab scrollbar into its own strip (the caller
+/// puts this in a dedicated panel directly below the tab row, so it
+/// never competes with the chips for vertical space). Always visible
+/// while called — the caller only calls it when `info.has_overflow()`.
 ///
-/// The pill is draggable: click or drag anywhere on the track and the
-/// thumb centers under the pointer, scrubbing the strip. The resulting
-/// offset is stashed in `pill_offset_key` and applied to the
-/// `ScrollArea` on the next frame (the pill is painted after the scroll
-/// area, so it can only feed the offset forward). The key is cleared
-/// the moment the pointer is released, handing control back to wheel
-/// scroll / scroll-into-view.
-fn paint_position_pill(
-    ui: &mut egui::Ui,
-    viewport: egui::Rect,
-    offset: f32,
-    content_w: f32,
-    viewport_w: f32,
-    theme: &ThemeColors,
-    alpha: f32,
-    pill_offset_key: egui::Id,
-) {
-    let total_h = POSITION_PILL_HEIGHT + POSITION_PILL_GAP;
+/// Click or drag anywhere on the track and the thumb centers under the
+/// pointer, scrubbing the strip. The resulting offset is stashed in
+/// `pill_offset_key()`; `render_tab_bar` applies it on the next frame
+/// via `horizontal_scroll_offset`. The key is cleared the instant the
+/// pointer releases, handing control back to wheel scroll /
+/// scroll-into-view.
+pub fn render_tab_scrollbar(ui: &mut egui::Ui, info: &TabScrollInfo, theme: &ThemeColors) {
+    let content_w = info.content_width;
+    let viewport_w = info.viewport_width;
+    let key = pill_offset_key();
+
+    // Track spans the full available width of the strip.
+    let avail_w = ui.available_width();
     let (track_rect, response) = ui.allocate_exact_size(
-        egui::vec2(viewport.width(), total_h),
+        egui::vec2(avail_w, SCROLLBAR_THICKNESS),
         egui::Sense::click_and_drag(),
-    );
-    let track = egui::Rect::from_min_size(
-        egui::pos2(viewport.left(), track_rect.top() + POSITION_PILL_GAP),
-        egui::vec2(viewport.width(), POSITION_PILL_HEIGHT),
     );
 
     let thumb_fraction = (viewport_w / content_w).clamp(0.05, 1.0);
-    let thumb_w = (track.width() * thumb_fraction).max(20.0);
-    let max_thumb_x = track.width() - thumb_w;
+    let thumb_w = (track_rect.width() * thumb_fraction).max(24.0);
+    let max_thumb_x = track_rect.width() - thumb_w;
 
     // Drag / click handling. `is_pointer_button_down_on` covers the
     // press (click-to-jump) and `dragged` the scrub; either way the
-    // thumb centers on the pointer. We compute a *display* fraction
-    // from the live pointer so the thumb tracks with no one-frame lag,
-    // and persist the matching scroll offset for the ScrollArea to pick
-    // up next frame.
+    // thumb centers on the pointer. Compute the live fraction so the
+    // thumb tracks with no one-frame lag and persist the matching
+    // scroll offset for the ScrollArea to pick up next frame.
     let interacting = response.is_pointer_button_down_on() || response.dragged();
     let position_fraction = if interacting && max_thumb_x > 0.5 {
         if let Some(px) = response.interact_pointer_pos().map(|p| p.x) {
-            let frac = pill_fraction_from_pointer(px, track.left(), thumb_w, max_thumb_x);
-            ui.memory_mut(|m| {
-                m.data.insert_temp(pill_offset_key, frac * (content_w - viewport_w))
-            });
+            let frac = pill_fraction_from_pointer(px, track_rect.left(), thumb_w, max_thumb_x);
+            ui.memory_mut(|m| m.data.insert_temp(key, frac * (content_w - viewport_w)));
             frac
         } else {
-            natural_position_fraction(offset, content_w, viewport_w)
+            natural_position_fraction(info.offset, content_w, viewport_w)
         }
     } else {
-        // Not grabbed this frame — drop any pending override so wheel
-        // scroll / scroll-into-view resume immediately on release.
-        ui.memory_mut(|m| m.data.remove_temp::<f32>(pill_offset_key));
-        natural_position_fraction(offset, content_w, viewport_w)
+        // Released / idle — drop the override so wheel scroll resumes.
+        ui.memory_mut(|m| m.data.remove_temp::<f32>(key));
+        natural_position_fraction(info.offset, content_w, viewport_w)
     };
 
-    // Grab affordance so the pill reads as interactive.
     if response.dragged() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
     } else if response.hovered() {
@@ -467,26 +410,24 @@ fn paint_position_pill(
     }
 
     let painter = ui.painter();
-    painter.rect_filled(
-        track,
-        egui::CornerRadius::same(2),
-        scale_alpha(theme.outline_variant, alpha),
-    );
+    painter.rect_filled(track_rect, egui::CornerRadius::same(3), theme.outline_variant);
 
-    let thumb_x = track.left() + max_thumb_x * position_fraction;
+    let thumb_x = track_rect.left() + max_thumb_x * position_fraction;
     let thumb_rect = egui::Rect::from_min_size(
-        egui::pos2(thumb_x, track.top()),
-        egui::vec2(thumb_w, POSITION_PILL_HEIGHT),
+        egui::pos2(thumb_x, track_rect.top()),
+        egui::vec2(thumb_w, SCROLLBAR_THICKNESS),
     );
-    painter.rect_filled(
-        thumb_rect,
-        egui::CornerRadius::same(2),
-        scale_alpha(theme.primary, alpha),
-    );
+    // Brighten the thumb while grabbed for tactile feedback.
+    let thumb_color = if interacting {
+        theme.primary
+    } else {
+        theme.outline
+    };
+    painter.rect_filled(thumb_rect, egui::CornerRadius::same(3), thumb_color);
 }
 
 /// Thumb position (0..=1) for a given scroll offset — the resting
-/// position when the pill isn't being dragged.
+/// position when the scrollbar isn't being dragged.
 fn natural_position_fraction(offset: f32, content_w: f32, viewport_w: f32) -> f32 {
     if content_w > viewport_w {
         (offset / (content_w - viewport_w)).clamp(0.0, 1.0)
@@ -497,7 +438,7 @@ fn natural_position_fraction(offset: f32, content_w: f32, viewport_w: f32) -> f3
 
 /// Map a pointer x-coordinate to a thumb position fraction (0..=1) such
 /// that the thumb *centers* under the pointer, clamped to the track.
-/// Factored out of `paint_position_pill` so the clamp edges are unit-
+/// Factored out of `render_tab_scrollbar` so the clamp edges are unit-
 /// testable without an egui pointer harness. Caller guarantees
 /// `max_thumb_x > 0`.
 fn pill_fraction_from_pointer(

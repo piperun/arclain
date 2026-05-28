@@ -503,6 +503,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     if should_show_archive_tab_bar {
         let theme = app.shared_state.theme.clone();
         let mut tab_bar_action: Option<crate::shared::components::tab_bar::TabBarAction> = None;
+        let mut tab_scroll_info = crate::shared::components::tab_bar::TabScrollInfo::default();
         let col_snapshot = app.shared_state.signals().tabs.get();
         egui::TopBottomPanel::top("multi_archive_tab_bar")
             // Pin the panel height. Without this, nested ui.vertical /
@@ -511,17 +512,39 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             // window height — and grab it all, exploding the strip
             // to fill the screen.
             //
-            // 26px chip + 2px gap + 5px position pill + 4px top + 4px bottom = 41px.
-            // Plus 2px buffer for pixel rounding / antialiasing.
-            .exact_height(43.0)
+            // Chips only now (the scrollbar moved to its own strip
+            // below): 26px chip + 4px top + 4px bottom + 2px buffer.
+            .exact_height(36.0)
             .frame(egui::Frame::NONE.fill(theme.colors.surface).inner_margin(egui::Margin::symmetric(6, 4)))
             .show(ctx, |ui| {
-                tab_bar_action = crate::shared::components::tab_bar::render_tab_bar(
+                let (a, info) = crate::shared::components::tab_bar::render_tab_bar(
                     ui,
                     &col_snapshot,
                     &theme.colors,
                 );
+                tab_bar_action = a;
+                tab_scroll_info = info;
             });
+        // Scrollbar in its own strip directly below the tabs — only
+        // when the tabs overflow. Keeping it out of the tab panel means
+        // it never eats into the chips' height. Declared as a `top`
+        // panel after the tab bar so egui stacks it immediately beneath.
+        if tab_scroll_info.has_overflow() {
+            egui::TopBottomPanel::top("multi_archive_tab_scrollbar")
+                .exact_height(crate::shared::components::tab_bar::SCROLLBAR_STRIP_HEIGHT)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme.colors.surface)
+                        .inner_margin(egui::Margin::symmetric(6, 3)),
+                )
+                .show(ctx, |ui| {
+                    crate::shared::components::tab_bar::render_tab_scrollbar(
+                        ui,
+                        &tab_scroll_info,
+                        &theme.colors,
+                    );
+                });
+        }
         if let Some(action) = tab_bar_action {
             let mut col = app.shared_state.signals().tabs.get();
             use crate::shared::components::tab_bar::TabBarAction;
