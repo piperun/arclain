@@ -119,6 +119,15 @@ pub fn render_tab_bar(
     let mut content_width: f32 = 0.0;
     let mut viewport_rect = egui::Rect::NOTHING;
 
+    // A pill drag last frame requested an explicit scroll offset (the
+    // pill is painted *below* the scroll area, so it can only feed the
+    // offset forward one frame). `paint_position_pill` writes this key
+    // while the thumb is grabbed and clears it on release, so it only
+    // overrides the natural offset during an active drag — wheel scroll
+    // and scroll-into-view keep working untouched the rest of the time.
+    let pill_offset_key = egui::Id::new("tab_bar/pill_drag_offset");
+    let pending_pill_offset: Option<f32> = ui.memory(|m| m.data.get_temp(pill_offset_key));
+
     ui.vertical(|ui| {
         // Zero vertical spacing between the row and the position pill —
         // we control the gap via POSITION_PILL_GAP explicitly. Without
@@ -184,9 +193,13 @@ pub fn render_tab_bar(
                 },
             );
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                let scroll_out = egui::ScrollArea::horizontal()
+                let mut scroll_area = egui::ScrollArea::horizontal()
                     .auto_shrink([false, true])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+                if let Some(off) = pending_pill_offset {
+                    scroll_area = scroll_area.horizontal_scroll_offset(off);
+                }
+                let scroll_out = scroll_area
                     .show(ui, |ui| {
                         // (B) Vertical mouse wheel scrolls horizontally
                         // when pointer is over the tab strip.
@@ -361,8 +374,12 @@ pub fn render_tab_bar(
                     viewport_w,
                     theme,
                     alpha,
+                    pill_offset_key,
                 );
             } else {
+                // Faded out → not draggable; drop any stale override
+                // so it can't keep forcing the offset once visible again.
+                ui.memory_mut(|m| m.data.remove_temp::<f32>(pill_offset_key));
                 // Still allocate the vertical space so the panel height
                 // stays consistent and the pill area doesn't visually
                 // jump.
@@ -371,6 +388,11 @@ pub fn render_tab_bar(
                     egui::Sense::hover(),
                 );
             }
+        } else {
+            // No overflow → nothing to scroll; clear any leftover pill
+            // override so it doesn't strangle wheel scroll if the tabs
+            // overflow again later.
+            ui.memory_mut(|m| m.data.remove_temp::<f32>(pill_offset_key));
         }
     });
 
@@ -381,6 +403,14 @@ pub fn render_tab_bar(
 /// `POSITION_PILL_HEIGHT + POSITION_PILL_GAP` vertical pixels in `ui`.
 /// `alpha` multiplies both the track and thumb colors (0..=1), enabling
 /// the hover-/scroll-driven fade-in/out.
+///
+/// The pill is draggable: click or drag anywhere on the track and the
+/// thumb centers under the pointer, scrubbing the strip. The resulting
+/// offset is stashed in `pill_offset_key` and applied to the
+/// `ScrollArea` on the next frame (the pill is painted after the scroll
+/// area, so it can only feed the offset forward). The key is cleared
+/// the moment the pointer is released, handing control back to wheel
+/// scroll / scroll-into-view.
 fn paint_position_pill(
     ui: &mut egui::Ui,
     viewport: egui::Rect,
@@ -389,16 +419,52 @@ fn paint_position_pill(
     viewport_w: f32,
     theme: &ThemeColors,
     alpha: f32,
+    pill_offset_key: egui::Id,
 ) {
     let total_h = POSITION_PILL_HEIGHT + POSITION_PILL_GAP;
-    let (track_rect, _) = ui.allocate_exact_size(
+    let (track_rect, response) = ui.allocate_exact_size(
         egui::vec2(viewport.width(), total_h),
-        egui::Sense::hover(),
+        egui::Sense::click_and_drag(),
     );
     let track = egui::Rect::from_min_size(
         egui::pos2(viewport.left(), track_rect.top() + POSITION_PILL_GAP),
         egui::vec2(viewport.width(), POSITION_PILL_HEIGHT),
     );
+
+    let thumb_fraction = (viewport_w / content_w).clamp(0.05, 1.0);
+    let thumb_w = (track.width() * thumb_fraction).max(20.0);
+    let max_thumb_x = track.width() - thumb_w;
+
+    // Drag / click handling. `is_pointer_button_down_on` covers the
+    // press (click-to-jump) and `dragged` the scrub; either way the
+    // thumb centers on the pointer. We compute a *display* fraction
+    // from the live pointer so the thumb tracks with no one-frame lag,
+    // and persist the matching scroll offset for the ScrollArea to pick
+    // up next frame.
+    let interacting = response.is_pointer_button_down_on() || response.dragged();
+    let position_fraction = if interacting && max_thumb_x > 0.5 {
+        if let Some(px) = response.interact_pointer_pos().map(|p| p.x) {
+            let frac = pill_fraction_from_pointer(px, track.left(), thumb_w, max_thumb_x);
+            ui.memory_mut(|m| {
+                m.data.insert_temp(pill_offset_key, frac * (content_w - viewport_w))
+            });
+            frac
+        } else {
+            natural_position_fraction(offset, content_w, viewport_w)
+        }
+    } else {
+        // Not grabbed this frame — drop any pending override so wheel
+        // scroll / scroll-into-view resume immediately on release.
+        ui.memory_mut(|m| m.data.remove_temp::<f32>(pill_offset_key));
+        natural_position_fraction(offset, content_w, viewport_w)
+    };
+
+    // Grab affordance so the pill reads as interactive.
+    if response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    } else if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
 
     let painter = ui.painter();
     painter.rect_filled(
@@ -407,14 +473,6 @@ fn paint_position_pill(
         scale_alpha(theme.outline_variant, alpha),
     );
 
-    let thumb_fraction = (viewport_w / content_w).clamp(0.05, 1.0);
-    let thumb_w = (track.width() * thumb_fraction).max(20.0);
-    let max_thumb_x = track.width() - thumb_w;
-    let position_fraction = if content_w > viewport_w {
-        (offset / (content_w - viewport_w)).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
     let thumb_x = track.left() + max_thumb_x * position_fraction;
     let thumb_rect = egui::Rect::from_min_size(
         egui::pos2(thumb_x, track.top()),
@@ -425,6 +483,74 @@ fn paint_position_pill(
         egui::CornerRadius::same(2),
         scale_alpha(theme.primary, alpha),
     );
+}
+
+/// Thumb position (0..=1) for a given scroll offset — the resting
+/// position when the pill isn't being dragged.
+fn natural_position_fraction(offset: f32, content_w: f32, viewport_w: f32) -> f32 {
+    if content_w > viewport_w {
+        (offset / (content_w - viewport_w)).clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Map a pointer x-coordinate to a thumb position fraction (0..=1) such
+/// that the thumb *centers* under the pointer, clamped to the track.
+/// Factored out of `paint_position_pill` so the clamp edges are unit-
+/// testable without an egui pointer harness. Caller guarantees
+/// `max_thumb_x > 0`.
+fn pill_fraction_from_pointer(
+    pointer_x: f32,
+    track_left: f32,
+    thumb_w: f32,
+    max_thumb_x: f32,
+) -> f32 {
+    let thumb_left =
+        (pointer_x - thumb_w / 2.0).clamp(track_left, track_left + max_thumb_x);
+    (thumb_left - track_left) / max_thumb_x
+}
+
+#[cfg(test)]
+mod pill_tests {
+    use super::*;
+
+    #[test]
+    fn pointer_at_track_start_yields_zero() {
+        // Pointer at (or before) the left edge → thumb pinned left.
+        assert_eq!(pill_fraction_from_pointer(100.0, 100.0, 40.0, 200.0), 0.0);
+        assert_eq!(pill_fraction_from_pointer(0.0, 100.0, 40.0, 200.0), 0.0);
+    }
+
+    #[test]
+    fn pointer_past_track_end_yields_one() {
+        // Pointer beyond the right travel limit → thumb pinned right.
+        // track_left=100, max_thumb_x=200 → thumb_left clamps to 300.
+        assert_eq!(pill_fraction_from_pointer(10_000.0, 100.0, 40.0, 200.0), 1.0);
+    }
+
+    #[test]
+    fn pointer_centers_thumb_under_cursor() {
+        // thumb_w=40 so half=20. Pointer at 220 → thumb_left=200 →
+        // (200-100)/200 = 0.5.
+        let frac = pill_fraction_from_pointer(220.0, 100.0, 40.0, 200.0);
+        assert!((frac - 0.5).abs() < 1e-6, "frac was {frac}");
+    }
+
+    #[test]
+    fn natural_fraction_handles_no_overflow() {
+        // content fits in viewport → always pinned left, no divide-by-zero.
+        assert_eq!(natural_position_fraction(0.0, 100.0, 100.0), 0.0);
+        assert_eq!(natural_position_fraction(50.0, 80.0, 120.0), 0.0);
+    }
+
+    #[test]
+    fn natural_fraction_maps_offset_to_position() {
+        // content 300, viewport 100 → max offset 200. offset 100 → 0.5.
+        assert!((natural_position_fraction(100.0, 300.0, 100.0) - 0.5).abs() < 1e-6);
+        // Over-scroll clamps to 1.0.
+        assert_eq!(natural_position_fraction(9999.0, 300.0, 100.0), 1.0);
+    }
 }
 
 fn scale_alpha(color: egui::Color32, alpha: f32) -> egui::Color32 {
