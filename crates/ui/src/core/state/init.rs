@@ -8,8 +8,8 @@ use arclain_core::backends::BackendSelector;
 use arclain_core::services::ConfigService;
 use arclain_core::services::Services as CoreServices;
 use arclain_core::utilities::{ChecksumService, PassRule};
-use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
 use arclain_core::{open_databases, DbPaths, SecretsKey};
+use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
 use arclain_core::{ContentCache, ResourceConfig, ResourceManager};
 use arclain_plugins::PluginManager;
 use parking_lot::Mutex;
@@ -19,6 +19,56 @@ use std::{
     sync::Arc,
 };
 use tracing::{info, warn};
+
+const PLUGINS_DIR_ENV: &str = "ARCLAIN_PLUGINS_DIR";
+
+fn resolve_plugins_dir() -> PathBuf {
+    let override_dir = env::var_os(PLUGINS_DIR_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    resolve_plugins_dir_from(override_dir, env::current_exe().ok(), dev_plugins_dir())
+}
+
+fn resolve_plugins_dir_from(
+    override_dir: Option<PathBuf>,
+    exe_path: Option<PathBuf>,
+    dev_plugins_dir: Option<PathBuf>,
+) -> PathBuf {
+    if let Some(path) = override_dir {
+        return path;
+    }
+
+    let bundled_plugins_dir = exe_path
+        .as_deref()
+        .and_then(Path::parent)
+        .map(|dir| dir.join("plugins"));
+
+    if let Some(path) = bundled_plugins_dir.as_ref().filter(|path| path.exists()) {
+        return path.clone();
+    }
+
+    if let Some(path) = dev_plugins_dir.filter(|path| path.exists()) {
+        return path;
+    }
+
+    bundled_plugins_dir.unwrap_or_else(|| PathBuf::from("plugins"))
+}
+
+fn dev_plugins_dir() -> Option<PathBuf> {
+    #[cfg(debug_assertions)]
+    {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        manifest_dir
+            .parent()
+            .and_then(Path::parent)
+            .map(|repo_root| repo_root.join("plugins"))
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        None
+    }
+}
 
 impl AppState {
     pub fn new() -> Result<(Self, crate::core::services::Services)> {
@@ -222,7 +272,8 @@ impl AppState {
 
         // Initialize plugin system
         info!("Initializing plugin system");
-        let plugins_dir = PathBuf::from("plugins");
+        let plugins_dir = resolve_plugins_dir();
+        info!("Using plugins directory: {}", plugins_dir.display());
         let settings = me.user_config.get_all_plugin_settings();
         match PluginManager::new(plugins_dir, settings) {
             Ok(mut manager) => {
@@ -366,5 +417,62 @@ impl AppState {
         }
 
         Ok((me, services))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_plugins_dir_from;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn plugin_dir_env_override_wins() {
+        let temp = TempDir::new().unwrap();
+        let override_dir = temp.path().join("override-plugins");
+        let exe_path = temp.path().join("install").join("arclain.exe");
+        let dev_plugins = temp.path().join("repo").join("plugins");
+
+        let resolved = resolve_plugins_dir_from(
+            Some(override_dir.clone()),
+            Some(exe_path),
+            Some(dev_plugins),
+        );
+
+        assert_eq!(resolved, override_dir);
+    }
+
+    #[test]
+    fn executable_adjacent_plugins_dir_wins_when_it_exists() {
+        let temp = TempDir::new().unwrap();
+        let install_dir = temp.path().join("install");
+        let bundled_plugins = install_dir.join("plugins");
+        let dev_plugins = temp.path().join("repo").join("plugins");
+        fs::create_dir_all(&bundled_plugins).unwrap();
+        fs::create_dir_all(&dev_plugins).unwrap();
+
+        let resolved = resolve_plugins_dir_from(
+            None,
+            Some(install_dir.join("arclain.exe")),
+            Some(dev_plugins),
+        );
+
+        assert_eq!(resolved, bundled_plugins);
+    }
+
+    #[test]
+    fn dev_plugins_dir_is_used_when_bundled_dir_is_missing() {
+        let temp = TempDir::new().unwrap();
+        let install_dir = temp.path().join("install");
+        let dev_plugins = temp.path().join("repo").join("plugins");
+        fs::create_dir_all(&dev_plugins).unwrap();
+
+        let resolved = resolve_plugins_dir_from(
+            None,
+            Some(install_dir.join("arclain.exe")),
+            Some(dev_plugins.clone()),
+        );
+
+        assert_eq!(resolved, dev_plugins);
     }
 }

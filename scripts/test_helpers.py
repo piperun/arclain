@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -80,6 +81,185 @@ class TestWorkspaceVersion(unittest.TestCase):
     def test_reads_real_cargo_toml(self):
         # Parses [workspace.package].version from the real root Cargo.toml.
         self.assertRegex(workspace_version(), r"^\d+\.\d+\.\d+")
+
+
+class TestPackageTargetDir(unittest.TestCase):
+    def test_cargo_target_dir_uses_env_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            target_dir = Path(d) / "custom-target"
+            with mock.patch.dict(
+                os.environ,
+                {"CARGO_TARGET_DIR": str(target_dir)},
+                clear=False,
+            ):
+                self.assertEqual(_package.cargo_target_dir(Path(d)), target_dir)
+
+    def test_cargo_target_dir_reads_cargo_metadata(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo_root = Path(d)
+            target_dir = repo_root / "metadata-target"
+            result = subprocess.CompletedProcess(
+                ["cargo", "metadata"],
+                0,
+                stdout=json.dumps({"target_directory": str(target_dir)}),
+                stderr="",
+            )
+            with mock.patch.dict(os.environ, {}, clear=True), \
+                 mock.patch.object(
+                     _package.subprocess,
+                     "run",
+                     return_value=result,
+                 ) as run:
+                self.assertEqual(_package.cargo_target_dir(repo_root), target_dir)
+
+            run.assert_called_once_with(
+                ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+                cwd=repo_root,
+                capture_output=True,
+                text=True,
+            )
+
+
+class TestPackagePlugins(unittest.TestCase):
+    def _write_plugin(
+        self,
+        plugins_root: Path,
+        name: str,
+        *,
+        wasm: bool = True,
+        manifest: bool = True,
+    ) -> None:
+        plugin_dir = plugins_root / name
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "Cargo.toml").write_text("[package]\nname = \"x\"\n")
+        if manifest:
+            (plugin_dir / f"{name}.toml").write_text("[plugin]\nid = \"x\"\n")
+        if wasm:
+            (plugin_dir / f"{name}.wasm").write_bytes(b"\0asm")
+
+    def test_copy_bundled_plugins_copies_required_sidecars(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            plugins_root = root / "plugins-src"
+            plugins_dest = root / "pkg" / "plugins"
+            plugins_root.mkdir()
+            plugins_dest.mkdir(parents=True)
+            self._write_plugin(plugins_root, "example-plugin")
+
+            copied = _package.copy_bundled_plugins(plugins_dest, plugins_root)
+
+            self.assertEqual(copied, ["example-plugin"])
+            self.assertTrue((plugins_dest / "example-plugin.toml").is_file())
+            self.assertTrue((plugins_dest / "example-plugin.wasm").is_file())
+
+    def test_copy_bundled_plugins_skips_unused_plugins(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            plugins_root = root / "plugins-src"
+            plugins_dest = root / "pkg" / "plugins"
+            plugins_root.mkdir()
+            plugins_dest.mkdir(parents=True)
+            self._write_plugin(
+                plugins_root,
+                "gstreamer-preview",
+                wasm=False,
+                manifest=False,
+            )
+
+            copied = _package.copy_bundled_plugins(plugins_dest, plugins_root)
+
+            self.assertEqual(copied, [])
+            self.assertEqual(list(plugins_dest.iterdir()), [])
+
+    def test_copy_bundled_plugins_fails_when_wasm_is_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            plugins_root = root / "plugins-src"
+            plugins_dest = root / "pkg" / "plugins"
+            plugins_root.mkdir()
+            plugins_dest.mkdir(parents=True)
+            self._write_plugin(plugins_root, "example-plugin", wasm=False)
+
+            with self.assertRaises(SystemExit):
+                _package.copy_bundled_plugins(plugins_dest, plugins_root)
+
+    def test_copy_bundled_plugins_fails_when_manifest_is_missing(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            plugins_root = root / "plugins-src"
+            plugins_dest = root / "pkg" / "plugins"
+            plugins_root.mkdir()
+            plugins_dest.mkdir(parents=True)
+            self._write_plugin(plugins_root, "example-plugin", manifest=False)
+
+            with self.assertRaises(SystemExit):
+                _package.copy_bundled_plugins(plugins_dest, plugins_root)
+
+
+class TestPackageFreshness(unittest.TestCase):
+    def test_stale_binary_fails_when_source_is_newer(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            binary = root / "target" / "release" / "arclain_ui.exe"
+            source = root / "crates" / "ui" / "src" / "main.rs"
+            binary.parent.mkdir(parents=True)
+            source.parent.mkdir(parents=True)
+            binary.write_bytes(b"old exe")
+            source.write_text("fn main() {}\n")
+            os.utime(binary, (100, 100))
+            os.utime(source, (200, 200))
+
+            with self.assertRaises(SystemExit):
+                _package.ensure_binary_fresh(binary, [source])
+
+    def test_fresh_binary_passes_when_newer_than_sources(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            binary = root / "target" / "release" / "arclain_ui.exe"
+            source = root / "crates" / "ui" / "src" / "main.rs"
+            binary.parent.mkdir(parents=True)
+            source.parent.mkdir(parents=True)
+            binary.write_bytes(b"new exe")
+            source.write_text("fn main() {}\n")
+            os.utime(source, (100, 100))
+            os.utime(binary, (200, 200))
+
+            _package.ensure_binary_fresh(binary, [source])
+
+
+class TestReleaseWorkflows(unittest.TestCase):
+    def test_windows_workflow_builds_tests_and_uploads_zip(self):
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "windows-build.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("scripts/_plugins.py build", workflow)
+        self.assertIn("scripts/_package.py --profile release --archive", workflow)
+        self.assertIn("ARCLAIN_BUNDLED_PLUGIN_DIR", workflow)
+        self.assertIn(
+            "bundled_dlsite_plugin_loads_against_current_host",
+            workflow,
+        )
+        self.assertIn("arclain-$tag-windows-x64.zip", workflow)
+        self.assertNotIn("windows-x64.exe", workflow)
+
+    def test_release_ci_ignores_independent_plugin_tags(self):
+        github_workflow = (
+            REPO_ROOT / ".github" / "workflows" / "windows-build.yml"
+        ).read_text(encoding="utf-8")
+        woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
+
+        self.assertNotIn("dlsite-metadata-[0-9]*", github_workflow)
+        self.assertNotIn("^(dlsite-metadata-)?[0-9]", woodpecker)
+
+    def test_woodpecker_release_tests_packaged_plugins(self):
+        woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
+
+        self.assertIn("ARCLAIN_BUNDLED_PLUGIN_DIR", woodpecker)
+        self.assertIn(
+            "bundled_dlsite_plugin_loads_against_current_host",
+            woodpecker,
+        )
 
 
 class TestSmoke(unittest.TestCase):

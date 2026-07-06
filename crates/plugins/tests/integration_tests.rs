@@ -2,9 +2,11 @@
 //!
 //! These tests verify the end-to-end functionality of the plugin system.
 
-use arclain_plugins::{PluginEvent, PluginManager};
+use arclain_plugins::{PluginEvent, PluginLoader, PluginManager};
 use std::collections::HashMap;
+use std::env;
 use std::fs;
+use std::path::PathBuf;
 use tempfile::TempDir;
 
 /// Helper to create a test plugins directory with a manifest
@@ -65,6 +67,43 @@ fn test_plugin_manager_init_empty_directory() {
 
     // Should have no plugins
     assert_eq!(manager.list_plugins().len(), 0);
+}
+
+#[test]
+fn bundled_dlsite_plugin_loads_against_current_host() {
+    // Override lets us point this same assertion at packaged plugin dirs
+    // when diagnosing a user's local install.
+    let plugins_dir = env::var_os("ARCLAIN_BUNDLED_PLUGIN_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            manifest_dir
+                .parent()
+                .and_then(|p| p.parent())
+                .expect("crates/plugins should live two levels below repo root")
+                .join("plugins")
+        });
+
+    let loader = PluginLoader::new(plugins_dir).unwrap();
+    let discovered = loader.discover_plugins().unwrap();
+    let dlsite = discovered
+        .iter()
+        .find(|plugin| plugin.manifest.plugin.id == "dlsite-metadata")
+        .expect("bundled dlsite-metadata manifest should be discovered");
+    let loaded = loader.load_plugin(dlsite).unwrap();
+    let mut instance = loaded
+        .instantiate(
+            dlsite.manifest.capabilities.to_capabilities(),
+            dlsite.manifest.rate_limits.http_requests_per_minute,
+            None,
+            HashMap::new(),
+            None,
+        )
+        .unwrap();
+
+    instance.init().unwrap();
+    let metadata = instance.get_metadata().unwrap();
+    assert_eq!(metadata.id, "dlsite-metadata");
 }
 
 #[test]

@@ -18,9 +18,10 @@ when:
   - event: push
     evaluate: 'not (CI_COMMIT_MESSAGE matches "^docs:")'
   - event: tag
-    # Match the cog-7 unified workspace tag (e.g. 2.1.0) AND the per-
-    # package plugin tag (e.g. dlsite-metadata-0.12.0).
-    evaluate: 'CI_COMMIT_TAG matches "^(dlsite-metadata-)?[0-9]"'
+    # Match app release tags only. WASM plugins are bundled with
+    # the desktop app until the plugin ABI has an explicit
+    # compatibility guard.
+    evaluate: 'CI_COMMIT_TAG matches "^[0-9]"'
 
 steps:
 
@@ -142,6 +143,14 @@ steps:
       # those bits, the asserts fail. cargo-test is the source of
       # truth for test gating; release.py just builds + packages.
       - python3 scripts/release.py release --skip-tests
+      - |
+        set -e
+        PLUGIN_DIR="$(find release -mindepth 2 -maxdepth 2 -type d -name plugins | head -n 1)"
+        if [ -z "$PLUGIN_DIR" ]; then
+          echo "No packaged plugins directory found under release/" >&2
+          exit 1
+        fi
+        ARCLAIN_BUNDLED_PLUGIN_DIR="$PLUGIN_DIR" cargo test --locked -p arclain_plugins --test integration_tests bundled_dlsite_plugin_loads_against_current_host -- --nocapture
       # Package + checksum in a single multi-line script so the
       # `cd dist && sha256sum X > X.sha256` redirect resolves in the
       # same shell that just ran cd. Splitting these into separate

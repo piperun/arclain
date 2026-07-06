@@ -32,6 +32,8 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+import _package
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
 PLUGINS_DIR = REPO_ROOT / "plugins"
@@ -271,7 +273,8 @@ def _package_build(
 
     print("\nBuilding plugins...")
     if not build_plugins():
-        print("WARNING: Some plugins failed to build, continuing...")
+        print("ERROR: Some plugins failed to build.")
+        sys.exit(1)
 
     os_name, arch = get_platform()
     binary_name = "arclain.exe" if os_name == "windows" else "arclain"
@@ -295,24 +298,7 @@ def _package_build(
         sys.exit(1)
     shutil.copy2(exe_path, pkg_dir / binary_name)
 
-    plugins_dest = pkg_dir / "plugins"
-    plugins_dest.mkdir()
-    for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
-        if not plugin_dir.is_dir():
-            continue
-        name = plugin_dir.name
-        if name in SKIP_PLUGINS:
-            print(f"  Skipping unused plugin: {name}")
-            continue
-
-        wasm = plugin_dir / f"{name}.wasm"
-        if wasm.exists():
-            shutil.copy2(wasm, plugins_dest)
-            print(f"  Copied plugin: {name}.wasm")
-
-        toml = plugin_dir / f"{name}.toml"
-        if toml.exists():
-            shutil.copy2(toml, plugins_dest)
+    _package.copy_bundled_plugins(pkg_dir / "plugins", PLUGINS_DIR)
 
     if archive_output:
         archive_fmt = "zip" if os_name == "windows" else "gztar"

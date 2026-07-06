@@ -18,11 +18,10 @@ name: windows-build
 on:
   push:
     tags:
-      # Mirror of the `.woodpecker.yml` tag matcher: cog-7 unified
-      # workspace tag (`2.1.0`, etc) plus per-package plugin tag
-      # (`dlsite-metadata-0.12.0`).
+      # Mirror of the `.woodpecker.yml` tag matcher: app release
+      # tags only. WASM plugins are bundled with the desktop app
+      # until the plugin ABI has an explicit compatibility guard.
       - '[0-9]*'
-      - 'dlsite-metadata-[0-9]*'
   workflow_dispatch:
     # Manual fallback for re-running uploads if a previous run's
     # upload step died mid-flight.
@@ -61,6 +60,11 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Cache cargo artifacts
         # Caches ~/.cargo/registry, ~/.cargo/git, and the workspace's
         # `target/` directory keyed on Cargo.lock + Cargo.toml + rust
@@ -78,24 +82,34 @@ jobs:
         working-directory: codeberg/arclain
         run: cargo build --release --bin arclain_ui --locked
 
-      - name: Package + checksum
+      - name: Build WASM plugins
+        working-directory: codeberg/arclain
+        run: python scripts/_plugins.py build
+
+      - name: Package zip + checksum
+        working-directory: codeberg/arclain
+        run: python scripts/_package.py --profile release --archive
+
+      - name: Verify bundled plugin compatibility
         working-directory: codeberg/arclain
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          $out = "dist/arclain-$tag-windows-x64.exe"
-          Copy-Item target/release/arclain_ui.exe $out
-          $hash = (Get-FileHash -Algorithm SHA256 $out).Hash.ToLower()
-          "$hash  $(Split-Path -Leaf $out)" | Out-File -FilePath "$out.sha256" -Encoding ascii
-          Get-Content "$out.sha256"
+          $packageDir = Get-ChildItem release -Directory -Filter "arclain-*-windows-x64" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+          if (-not $packageDir) {
+            throw "No packaged Windows release directory found under release/"
+          }
+
+          $env:ARCLAIN_BUNDLED_PLUGIN_DIR = Join-Path $packageDir.FullName "plugins"
+          cargo test --locked -p arclain_plugins --test integration_tests bundled_dlsite_plugin_loads_against_current_host -- --nocapture
 
       - name: Upload to codeberg release
         # Upload whenever the ref is a tag — covers both the tag push
         # AND a manual `workflow_dispatch --ref <tag>` (the advertised
         # "re-run a failed upload" fallback). A dispatch on a branch
         # (refs/heads/master) has no release to target, so it's still
-        # skipped; it just builds + checksums and keeps the .exe as a
+        # skipped; it just builds + checksums and keeps the zip as a
         # workflow artifact (next step). Was gated on
         # `event_name == 'push'`, which silently no-op'd the manual
         # fallback the workflow_dispatch trigger promises.
@@ -143,8 +157,8 @@ jobs:
           }
 
           $assetsUrl = "https://codeberg.org/api/v1/repos/$repo/releases/$($release.id)/assets"
-          foreach ($f in @("arclain-$tag-windows-x64.exe", "arclain-$tag-windows-x64.exe.sha256")) {
-            $path = "dist/$f"
+          foreach ($f in @("arclain-$tag-windows-x64.zip", "arclain-$tag-windows-x64.zip.sha256")) {
+            $path = "release/$f"
             Write-Host "Uploading $f…"
             Invoke-RestMethod `
               -Uri "${assetsUrl}?name=$f" `
@@ -154,7 +168,7 @@ jobs:
               -ContentType "application/octet-stream"
           }
 
-      - name: Upload .exe as GitHub artifact (always)
+      - name: Upload zip as GitHub artifact (always)
         # Belt-and-suspenders: keep a copy on the workflow run even
         # if the codeberg upload step skipped (dispatch run) or
         # failed (token expired, etc).
@@ -163,6 +177,6 @@ jobs:
         with:
           name: arclain-windows-x64
           path: |
-            codeberg/arclain/dist/arclain-*-windows-x64.exe
-            codeberg/arclain/dist/arclain-*-windows-x64.exe.sha256
+            codeberg/arclain/release/arclain-*-windows-x64.zip
+            codeberg/arclain/release/arclain-*-windows-x64.zip.sha256
           retention-days: 30

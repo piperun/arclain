@@ -23,8 +23,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
+import os
 import platform
 import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -79,6 +82,118 @@ def workspace_version() -> str:
     )
 
 
+def cargo_target_dir(repo_root: Path = REPO_ROOT) -> Path:
+    """Return the Cargo target directory for this workspace."""
+    env_target = os.environ.get("CARGO_TARGET_DIR")
+    if env_target:
+        target_dir = Path(env_target)
+        if not target_dir.is_absolute():
+            target_dir = repo_root / target_dir
+        return target_dir
+
+    result = subprocess.run(
+        ["cargo", "metadata", "--no-deps", "--format-version", "1"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("ERROR: Failed to determine Cargo target directory.", file=sys.stderr)
+        if result.stderr.strip():
+            print(result.stderr.strip(), file=sys.stderr)
+        raise SystemExit(result.returncode)
+
+    try:
+        metadata = json.loads(result.stdout)
+        return Path(metadata["target_directory"])
+    except (json.JSONDecodeError, KeyError) as error:
+        print("ERROR: Cargo metadata did not report target_directory.", file=sys.stderr)
+        print(f"  {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+
+
+def package_source_inputs(repo_root: Path = REPO_ROOT) -> list[Path]:
+    """Return source inputs that should be older than the packaged binary."""
+    files: list[Path] = []
+    for root in (repo_root / "crates", repo_root / "wit"):
+        if not root.exists():
+            continue
+        for pattern in ("*.rs", "*.toml", "*.wit"):
+            files.extend(path for path in root.rglob(pattern) if path.is_file())
+
+    for path in (repo_root / "Cargo.toml", repo_root / "Cargo.lock"):
+        if path.exists():
+            files.append(path)
+
+    return files
+
+
+def ensure_binary_fresh(binary_path: Path, source_paths: list[Path]) -> None:
+    """Fail when the packaged binary predates any host source input."""
+    source_files = [path for path in source_paths if path.exists() and path.is_file()]
+    if not source_files:
+        return
+
+    newest_source = max(source_files, key=lambda path: path.stat().st_mtime)
+    if binary_path.stat().st_mtime >= newest_source.stat().st_mtime:
+        return
+
+    print("ERROR: Built binary is older than the source tree.", file=sys.stderr)
+    print(f"  Binary: {binary_path}", file=sys.stderr)
+    print(f"  Newer source: {newest_source}", file=sys.stderr)
+    print(
+        "  Run `cargo build -p arclain_ui --release` with the same "
+        "Cargo target directory first.",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+def copy_bundled_plugins(
+    plugins_dest: Path,
+    plugins_dir: Path = PLUGINS_DIR,
+) -> list[str]:
+    """Copy shippable plugin sidecars into a package plugins directory.
+
+    Every non-skipped plugin crate must provide both `<name>.toml` and
+    `<name>.wasm`. Missing sidecars are fatal so release packages cannot
+    silently ship without the plugin files the host was tested against.
+    """
+    plugins_dest.mkdir(parents=True, exist_ok=True)
+
+    copied: list[str] = []
+    errors: list[str] = []
+    for plugin_dir in sorted(plugins_dir.iterdir()):
+        if not plugin_dir.is_dir() or not (plugin_dir / "Cargo.toml").exists():
+            continue
+
+        name = plugin_dir.name
+        if name in SKIP_PLUGINS:
+            print(f"  Skipping unused plugin: {name}")
+            continue
+
+        wasm = plugin_dir / f"{name}.wasm"
+        toml = plugin_dir / f"{name}.toml"
+        missing = [path.name for path in (toml, wasm) if not path.exists()]
+        if missing:
+            errors.append(f"{name}: missing {', '.join(missing)}")
+            continue
+
+        shutil.copy2(toml, plugins_dest)
+        shutil.copy2(wasm, plugins_dest)
+        copied.append(name)
+        print(f"  Copied plugin: {name}.toml")
+        print(f"  Copied plugin: {name}.wasm")
+
+    if errors:
+        print("ERROR: bundled plugin sidecars are incomplete:", file=sys.stderr)
+        for error in errors:
+            print(f"  {error}", file=sys.stderr)
+        raise SystemExit(1)
+
+    return copied
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Package arclain binary + plugins.")
     parser.add_argument(
@@ -108,37 +223,21 @@ def main() -> None:
 
     print(f"Packaging {label} ({pkg_name})...")
 
-    if pkg_dir.exists():
-        shutil.rmtree(pkg_dir)
-    pkg_dir.mkdir(parents=True)
-
-    target_dir = REPO_ROOT / "target"
+    target_dir = cargo_target_dir()
     cargo_profile_dir = "release" if args.profile == "release" else "debug"
     exe_path = target_dir / cargo_profile_dir / src_binary
     if not exe_path.exists():
         print(f"ERROR: Binary not found at {exe_path}")
-        print("  Did `cargo build` run first?")
+        print("  Did `cargo build` run first with the same Cargo target directory?")
         sys.exit(1)
+    ensure_binary_fresh(exe_path, package_source_inputs())
+
+    if pkg_dir.exists():
+        shutil.rmtree(pkg_dir)
+    pkg_dir.mkdir(parents=True)
     shutil.copy2(exe_path, pkg_dir / binary_name)
 
-    plugins_dest = pkg_dir / "plugins"
-    plugins_dest.mkdir()
-    for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
-        if not plugin_dir.is_dir():
-            continue
-        name = plugin_dir.name
-        if name in SKIP_PLUGINS:
-            print(f"  Skipping unused plugin: {name}")
-            continue
-
-        wasm = plugin_dir / f"{name}.wasm"
-        if wasm.exists():
-            shutil.copy2(wasm, plugins_dest)
-            print(f"  Copied plugin: {name}.wasm")
-
-        toml = plugin_dir / f"{name}.toml"
-        if toml.exists():
-            shutil.copy2(toml, plugins_dest)
+    copy_bundled_plugins(pkg_dir / "plugins")
 
     if args.archive:
         archive_fmt = "zip" if os_name == "windows" else "gztar"

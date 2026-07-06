@@ -3,10 +3,11 @@ ignore_merge_commits = true
 branch_whitelist = ["master", "main"]
 
 # v2 versioning model: the 10 arclain workspace crates share a single
-# unified version published as the global tag `v{version}`. Per-package
-# tags stay enabled only so `dlsite-metadata` (excluded from the
-# workspace) can still bump independently — it ships as WASM out-of-band
-# from the desktop app.
+# unified version published as the global tag. Per-package tags stay enabled
+# only so `dlsite-metadata` (excluded from the workspace) can bump its
+# manifest/changelog independently. Release CI ignores those package tags;
+# plugin WASM ships bundled with the desktop app until the plugin ABI has an
+# explicit compatibility guard.
 generate_mono_repository_global_tag = true
 generate_mono_repository_package_tags = true
 
@@ -47,12 +48,13 @@ post_bump_hooks = [
 # Use: cog bump --auto
 #
 # The 10 arclain workspace crates bump together as a single unified version
-# (tag format: `v{version}`). Any feat/fix/refactor commit on the workspace
+# (tag format: `{version}`). Any feat/fix/refactor commit on the workspace
 # drives the next bump.
 #
-# Plugins (dlsite-metadata, etc.) stay versioned independently because they
-# build as WASM and ship out-of-band from the desktop app. Bump those via
-# `cog bump --package dlsite-metadata` explicitly.
+# Plugins (dlsite-metadata, etc.) can still be versioned independently for
+# manifest/changelog bookkeeping via `cog bump --package dlsite-metadata`,
+# but package tags do not publish standalone plugin artifacts. App releases
+# bundle the current plugin WASM beside the desktop binary.
 # ─────────────────────────────────────────────────────────────────────────────
 
 [monorepo.packages.dlsite-metadata]
