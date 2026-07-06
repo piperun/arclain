@@ -101,9 +101,7 @@ impl PluginLogger {
                 Ok(f) => {
                     s.file = Some(f);
                     s.file_date = Some(today);
-                    s.bytes_written = std::fs::metadata(&path)
-                        .map(|m| m.len())
-                        .unwrap_or(0);
+                    s.bytes_written = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 }
                 Err(e) => {
                     // Fall back to dropping silently — surfaced by the

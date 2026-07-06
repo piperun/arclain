@@ -153,7 +153,10 @@ impl Center {
     }
 
     pub fn vertical(ui: &mut Ui, add_content: impl FnOnce(&mut Ui)) {
-        ui.with_layout(egui::Layout::centered_and_justified(egui::Direction::TopDown), add_content);
+        ui.with_layout(
+            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+            add_content,
+        );
     }
 }
 
@@ -389,7 +392,12 @@ impl Section {
         self
     }
 
-    pub fn show(self, ui: &mut Ui, theme: &crate::shared::theme::AppTheme, content: impl FnOnce(&mut Ui)) {
+    pub fn show(
+        self,
+        ui: &mut Ui,
+        theme: &crate::shared::theme::AppTheme,
+        content: impl FnOnce(&mut Ui),
+    ) {
         ui.label(
             egui::RichText::new(&self.title)
                 .size(13.0)

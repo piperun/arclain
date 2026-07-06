@@ -221,4 +221,3 @@ impl<'a> SettingsGroup<'a> {
         ui.add_space(8.0);
     }
 }
-

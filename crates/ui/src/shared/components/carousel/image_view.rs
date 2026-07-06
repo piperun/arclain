@@ -72,11 +72,8 @@ impl<'a> ImageView<'a> {
         let colors = self.colors.unwrap_or(&fallback_colors);
 
         // Draw background
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(8),
-            colors.surface_variant,
-        );
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(8), colors.surface_variant);
 
         // Render image
         let image_rendered = self.render_image(ui, rect, colors);
@@ -159,8 +156,7 @@ impl<'a> ImageView<'a> {
         if let (Some(url), Some(shared)) = (self.image_url, self.shared_state) {
             let fetch_id = egui::Id::new(("carousel_fetch", self.cache_key));
             let now = std::time::Instant::now();
-            let last_fired: Option<std::time::Instant> =
-                ctx.data(|d| d.get_temp(fetch_id));
+            let last_fired: Option<std::time::Instant> = ctx.data(|d| d.get_temp(fetch_id));
             let should_fetch = match last_fired {
                 None => true,
                 Some(t) => now.duration_since(t).as_secs() > 30,
@@ -190,10 +186,8 @@ impl<'a> ImageView<'a> {
             egui::FontId::proportional(12.0),
             egui::Color32::WHITE,
         );
-        let hint_rect = egui::Rect::from_center_size(
-            hint_pos,
-            hint_galley.size() + egui::vec2(16.0, 8.0),
-        );
+        let hint_rect =
+            egui::Rect::from_center_size(hint_pos, hint_galley.size() + egui::vec2(16.0, 8.0));
 
         ui.painter().rect_filled(
             hint_rect,

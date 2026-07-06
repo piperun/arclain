@@ -102,10 +102,7 @@ pub fn match_range(haystack: &str, needle: &str) -> Option<(usize, usize)> {
 }
 
 fn nth_char_byte(s: &str, n: usize) -> usize {
-    s.char_indices()
-        .nth(n)
-        .map(|(b, _)| b)
-        .unwrap_or(s.len())
+    s.char_indices().nth(n).map(|(b, _)| b).unwrap_or(s.len())
 }
 
 #[cfg(test)]
@@ -150,7 +147,10 @@ mod tests {
         ];
         let hits = build_hits("", &tabs, &["alpha.rar/cover.png"]);
         assert_eq!(tab_ids(&hits), vec![1, 2]);
-        assert!(file_paths(&hits).is_empty(), "empty query must not list files");
+        assert!(
+            file_paths(&hits).is_empty(),
+            "empty query must not list files"
+        );
     }
 
     #[test]
@@ -163,7 +163,13 @@ mod tests {
 
     #[test]
     fn tab_matches_on_each_field_case_insensitively() {
-        let tabs = vec![tab(7, "RJ000999", "Sample Pack", "Studio Glow", "[Glow] x.rar")];
+        let tabs = vec![tab(
+            7,
+            "RJ000999",
+            "Sample Pack",
+            "Studio Glow",
+            "[Glow] x.rar",
+        )];
         // code
         assert_eq!(tab_ids(&build_hits("rj000999", &tabs, &[])), vec![7]);
         // title

@@ -75,11 +75,7 @@ pub struct Carousel<'a> {
 }
 
 impl<'a> Carousel<'a> {
-    pub fn new(
-        id: &'a str,
-        images: &'a [(String, Option<String>)],
-        current_index: usize,
-    ) -> Self {
+    pub fn new(id: &'a str, images: &'a [(String, Option<String>)], current_index: usize) -> Self {
         Self {
             id,
             images,
@@ -259,7 +255,8 @@ impl<'a> Carousel<'a> {
                 // Calculate thumbnail layout - use same nav width for alignment
                 let thumb_nav_space = (thumb_nav_width + self.config.nav_gap) * 2.0;
                 let strip_width = (total_width - thumb_nav_space).max(100.0);
-                let thumb_offset_x = (available_width - (strip_width + thumb_nav_space)).max(0.0) / 2.0;
+                let thumb_offset_x =
+                    (available_width - (strip_width + thumb_nav_space)).max(0.0) / 2.0;
 
                 let mut thumb_x = thumb_row_rect.left() + thumb_offset_x;
 

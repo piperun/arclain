@@ -197,7 +197,15 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     ) {
         match result {
             crate::features::file_editing::FileEditResult::Save { new_name, content } => {
-                if let Some(archive) = app.shared_state.signals().tabs.get().active().archive_path.get() {
+                if let Some(archive) = app
+                    .shared_state
+                    .signals()
+                    .tabs
+                    .get()
+                    .active()
+                    .archive_path
+                    .get()
+                {
                     let mut status = app.shared_state.signals().status_bar.get();
 
                     // Save the file to archive
@@ -286,9 +294,10 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             // (now-gone) tab's dialog signal to set `show = false`.
             {
                 let ops = app.archive_operations.state_mut();
-                let origin_matches_id = |tab: &Option<std::sync::Arc<crate::core::tabs::TabState>>| {
-                    tab.as_ref().map(|t| t.id == id).unwrap_or(false)
-                };
+                let origin_matches_id =
+                    |tab: &Option<std::sync::Arc<crate::core::tabs::TabState>>| {
+                        tab.as_ref().map(|t| t.id == id).unwrap_or(false)
+                    };
                 if origin_matches_id(&ops.extraction_origin_tab) {
                     if let Some(mut child) = ops.extraction_child.take() {
                         let _ = child.kill();
@@ -317,11 +326,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     // against the failing path; other errors get the raw backend
     // output.
     {
-        let mut err_state = app
-            .shared_state
-            .signals()
-            .archive_error_dialog
-            .get();
+        let mut err_state = app.shared_state.signals().archive_error_dialog.get();
         crate::shared::dialogs::render_archive_error_dialog(
             ctx,
             &app.shared_state.theme,
@@ -362,10 +367,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
         if let Some(zone) = chosen_zone {
             use crate::shared::components::drop_overlay::DropZone;
             let mut col = app.shared_state.signals().tabs.get();
-            let mut tabs_to_load: Vec<(
-                crate::core::tabs::TabId,
-                std::path::PathBuf,
-            )> = Vec::new();
+            let mut tabs_to_load: Vec<(crate::core::tabs::TabId, std::path::PathBuf)> = Vec::new();
             // First file honors the user's choice; subsequent files
             // always open as new tabs (matching the overlay routing
             // semantics in the drop handler).
@@ -467,7 +469,8 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     let mut extraction_dialog = merge_origin_tab.extraction_dialog().get();
                     extraction_dialog.show = true;
                     extraction_dialog.title = "Merging Archive".to_string();
-                    extraction_dialog.file_action = format!("Merging {} parts...", mp.all_parts.len());
+                    extraction_dialog.file_action =
+                        format!("Merging {} parts...", mp.all_parts.len());
                     extraction_dialog.percent = 0;
                     extraction_dialog.can_pause = false;
                     extraction_dialog.can_minimize = false;
@@ -483,7 +486,10 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                             let mut sb = signals.status_bar.get();
                             sb.message = format!(
                                 "Merge complete: {}",
-                                result_path.file_name().unwrap_or_default().to_string_lossy()
+                                result_path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
                             );
                             signals.status_bar.set(sb);
                         }
@@ -579,8 +585,11 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                                                     // immediate path-routing for this drop. The
                                                     // modal will render in the dialog pass and
                                                     // route on user click.
-                                                    let mut state =
-                                                        app.shared_state.signals().ask_each_time_drop.get();
+                                                    let mut state = app
+                                                        .shared_state
+                                                        .signals()
+                                                        .ask_each_time_drop
+                                                        .get();
                                                     state.show = true;
                                                     // Deduped paths (see above) so the modal
                                                     // doesn't route the same archive twice either.

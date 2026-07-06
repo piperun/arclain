@@ -258,12 +258,9 @@ impl NetworkLog {
                         ui.set_width(ui.available_width());
                         ui.horizontal(|ui| {
                             // Color indicator dot
-                            let (rect, _) = ui.allocate_exact_size(
-                                egui::vec2(4.0, 14.0),
-                                egui::Sense::hover(),
-                            );
-                            ui.painter()
-                                .rect_filled(rect, 2.0, indicator_color);
+                            let (rect, _) =
+                                ui.allocate_exact_size(egui::vec2(4.0, 14.0), egui::Sense::hover());
+                            ui.painter().rect_filled(rect, 2.0, indicator_color);
 
                             ui.add_space(6.0);
 

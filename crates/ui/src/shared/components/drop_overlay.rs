@@ -57,7 +57,13 @@ pub fn render_drop_overlay(
         );
         // Ctrl-held drops always route to Replace regardless of cursor
         // zone — surface that here so users don't need to discover it.
-        draw_zone(ui, replace_rect, "Replace current tab", false, Some("Hold Ctrl"));
+        draw_zone(
+            ui,
+            replace_rect,
+            "Replace current tab",
+            false,
+            Some("Hold Ctrl"),
+        );
 
         if let Some(pos) = drop_pos {
             if new_tab_rect.contains(pos) {

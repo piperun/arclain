@@ -58,11 +58,7 @@ pub struct ThumbnailStrip<'a> {
 }
 
 impl<'a> ThumbnailStrip<'a> {
-    pub fn new(
-        id: &'a str,
-        images: &'a [(String, Option<String>)],
-        current_index: usize,
-    ) -> Self {
+    pub fn new(id: &'a str, images: &'a [(String, Option<String>)], current_index: usize) -> Self {
         Self {
             id,
             images,
@@ -137,7 +133,8 @@ impl<'a> ThumbnailStrip<'a> {
                         let is_selected = i == self.current_index;
                         let thumb_size = self.style.thumb_size();
 
-                        let (rect, response) = ui.allocate_exact_size(thumb_size, egui::Sense::click());
+                        let (rect, response) =
+                            ui.allocate_exact_size(thumb_size, egui::Sense::click());
                         let is_hovered = response.hovered();
 
                         // Border color based on state
@@ -231,8 +228,7 @@ impl<'a> ThumbnailStrip<'a> {
                 //    per cache_key so we don't spam the network every frame.
                 let fetch_id = egui::Id::new(("thumb_fetch", cache_key));
                 let now = std::time::Instant::now();
-                let last_fired: Option<std::time::Instant> =
-                    ctx.data(|d| d.get_temp(fetch_id));
+                let last_fired: Option<std::time::Instant> = ctx.data(|d| d.get_temp(fetch_id));
                 let should_fetch = match last_fired {
                     None => true,
                     Some(t) => now.duration_since(t).as_secs() > 30,

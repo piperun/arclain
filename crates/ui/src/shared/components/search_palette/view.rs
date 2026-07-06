@@ -120,7 +120,10 @@ pub fn render_area(
         *selected = hits.len() - 1;
     }
 
-    let tab_count = hits.iter().filter(|h| matches!(h, SearchHit::Tab(_))).count();
+    let tab_count = hits
+        .iter()
+        .filter(|h| matches!(h, SearchHit::Tab(_)))
+        .count();
     let file_count = hits.len() - tab_count;
     let width = anchor_rect.width().max(360.0);
 
@@ -158,8 +161,11 @@ pub fn render_area(
                         ui.vertical_centered(|ui| {
                             ui.add_space(18.0);
                             ui.label(
-                                egui::RichText::new(format!("No tabs or files match \u{201c}{}\u{201d}", query.trim()))
-                                    .color(colors.on_surface_variant),
+                                egui::RichText::new(format!(
+                                    "No tabs or files match \u{201c}{}\u{201d}",
+                                    query.trim()
+                                ))
+                                .color(colors.on_surface_variant),
                             );
                             ui.add_space(18.0);
                         });
@@ -178,17 +184,27 @@ pub fn render_area(
                                         "Tabs".to_string()
                                     };
                                     group_label(ui, colors, &label, tab_count);
-                                } else if matches!(hit, SearchHit::File { .. }) && idx == tab_count {
+                                } else if matches!(hit, SearchHit::File { .. }) && idx == tab_count
+                                {
                                     let where_ = if active_code.is_empty() {
                                         "active archive".to_string()
                                     } else {
                                         active_code.to_string()
                                     };
-                                    group_label(ui, colors, &format!("Files in {where_}"), file_count);
+                                    group_label(
+                                        ui,
+                                        colors,
+                                        &format!("Files in {where_}"),
+                                        file_count,
+                                    );
                                 }
 
                                 let is_sel = idx == *selected;
-                                let fill = if is_sel { selected_fill } else { egui::Color32::TRANSPARENT };
+                                let fill = if is_sel {
+                                    selected_fill
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                };
                                 let resp = render_row(ui, theme, hit, query, is_sel, fill, width);
                                 if is_sel && scroll_to_selected {
                                     resp.scroll_to_me(Some(egui::Align::Center));
@@ -207,7 +223,11 @@ pub fn render_area(
     // Only let hover drive the selection when the pointer actually moved
     // this frame. A stationary mouse resting over the list must not keep
     // overriding keyboard nav (the classic combo-box keyboard/mouse fight).
-    let pointer_moved = ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::PointerMoved(_))));
+    let pointer_moved = ui.input(|i| {
+        i.events
+            .iter()
+            .any(|e| matches!(e, egui::Event::PointerMoved(_)))
+    });
     if pointer_moved {
         if let Some(h) = hovered {
             *selected = h;
@@ -225,7 +245,11 @@ fn group_label(ui: &mut egui::Ui, colors: &arclain_theme::ThemeColors, text: &st
                 .size(10.0)
                 .color(colors.on_surface_variant),
         );
-        ui.label(egui::RichText::new(count.to_string()).size(10.0).color(colors.primary));
+        ui.label(
+            egui::RichText::new(count.to_string())
+                .size(10.0)
+                .color(colors.primary),
+        );
     });
 }
 
@@ -247,49 +271,120 @@ fn render_row(
             ui.horizontal(|ui| {
                 match hit {
                     SearchHit::Tab(t) => {
-                        ui.label(egui::RichText::new(egui_phosphor::regular::BROWSERS).color(colors.primary));
+                        ui.label(
+                            egui::RichText::new(egui_phosphor::regular::BROWSERS)
+                                .color(colors.primary),
+                        );
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
                             // primary: title + code
                             let mut primary = LayoutJob::default();
-                            append_hl(&mut primary, &t.title, query, colors.on_surface, colors.primary, 13.0);
+                            append_hl(
+                                &mut primary,
+                                &t.title,
+                                query,
+                                colors.on_surface,
+                                colors.primary,
+                                13.0,
+                            );
                             append_plain(&mut primary, "  ", colors.on_surface_variant, 13.0);
-                            append_hl(&mut primary, &t.code, query, colors.on_surface_variant, colors.primary, 13.0);
+                            append_hl(
+                                &mut primary,
+                                &t.code,
+                                query,
+                                colors.on_surface_variant,
+                                colors.primary,
+                                13.0,
+                            );
                             ui.label(primary);
 
                             // secondary: file · N files · maker
                             let mut secondary = LayoutJob::default();
-                            append_hl(&mut secondary, &t.file, query, colors.on_surface_variant, colors.primary, 11.0);
-                            append_plain(&mut secondary, &format!("  \u{00b7}  {} files", t.entry_count), colors.on_surface_variant, 11.0);
+                            append_hl(
+                                &mut secondary,
+                                &t.file,
+                                query,
+                                colors.on_surface_variant,
+                                colors.primary,
+                                11.0,
+                            );
+                            append_plain(
+                                &mut secondary,
+                                &format!("  \u{00b7}  {} files", t.entry_count),
+                                colors.on_surface_variant,
+                                11.0,
+                            );
                             if !t.maker.is_empty() {
-                                append_plain(&mut secondary, "  \u{00b7}  ", colors.on_surface_variant, 11.0);
-                                append_hl(&mut secondary, &t.maker, query, colors.on_surface_variant, colors.primary, 11.0);
+                                append_plain(
+                                    &mut secondary,
+                                    "  \u{00b7}  ",
+                                    colors.on_surface_variant,
+                                    11.0,
+                                );
+                                append_hl(
+                                    &mut secondary,
+                                    &t.maker,
+                                    query,
+                                    colors.on_surface_variant,
+                                    colors.primary,
+                                    11.0,
+                                );
                             }
                             ui.label(secondary);
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if is_sel {
-                                ui.label(egui::RichText::new(egui_phosphor::regular::ARROW_RIGHT).size(10.0).color(colors.primary));
+                                ui.label(
+                                    egui::RichText::new(egui_phosphor::regular::ARROW_RIGHT)
+                                        .size(10.0)
+                                        .color(colors.primary),
+                                );
                             }
                             if t.active {
-                                ui.label(egui::RichText::new("active").size(9.0).color(colors.primary));
+                                ui.label(
+                                    egui::RichText::new("active")
+                                        .size(9.0)
+                                        .color(colors.primary),
+                                );
                             }
                         });
                     }
                     SearchHit::File { path } => {
-                        ui.label(egui::RichText::new(egui_phosphor::regular::FILE).color(colors.on_surface_variant));
+                        ui.label(
+                            egui::RichText::new(egui_phosphor::regular::FILE)
+                                .color(colors.on_surface_variant),
+                        );
                         ui.add_space(8.0);
                         ui.vertical(|ui| {
                             let mut primary = LayoutJob::default();
-                            append_hl(&mut primary, path, query, colors.on_surface, colors.primary, 13.0);
+                            append_hl(
+                                &mut primary,
+                                path,
+                                query,
+                                colors.on_surface,
+                                colors.primary,
+                                13.0,
+                            );
                             ui.label(primary);
-                            if let Some(ext) = path.rsplit('.').next().filter(|e| !e.contains('/') && *e != path.as_str()) {
-                                ui.label(egui::RichText::new(ext.to_uppercase()).size(11.0).color(colors.on_surface_variant));
+                            if let Some(ext) = path
+                                .rsplit('.')
+                                .next()
+                                .filter(|e| !e.contains('/') && *e != path.as_str())
+                            {
+                                ui.label(
+                                    egui::RichText::new(ext.to_uppercase())
+                                        .size(11.0)
+                                        .color(colors.on_surface_variant),
+                                );
                             }
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if is_sel {
-                                ui.label(egui::RichText::new(egui_phosphor::regular::ARROW_RIGHT).size(10.0).color(colors.primary));
+                                ui.label(
+                                    egui::RichText::new(egui_phosphor::regular::ARROW_RIGHT)
+                                        .size(10.0)
+                                        .color(colors.primary),
+                                );
                             }
                         });
                     }
@@ -352,7 +447,9 @@ mod tests {
             SearchPaletteAction::SwitchTab(TabId(3))
         );
         assert_eq!(
-            action_for(&SearchHit::File { path: "dir/x.txt".into() }),
+            action_for(&SearchHit::File {
+                path: "dir/x.txt".into()
+            }),
             SearchPaletteAction::JumpToFile("dir/x.txt".into())
         );
     }

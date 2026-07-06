@@ -73,7 +73,14 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // 1. If on main page with archive loaded, try archive back navigation first
                 // 2. If that fails (e.g. at root), navigate UI page back
                 let is_on_main = app.page_navigator.is_on_main();
-                let archive_loaded = app.shared_state.signals().tabs.get().active().archive_loaded.get();
+                let archive_loaded = app
+                    .shared_state
+                    .signals()
+                    .tabs
+                    .get()
+                    .active()
+                    .archive_loaded
+                    .get();
                 let signals = app.shared_state.signals();
 
                 let mut handled = false;
@@ -96,7 +103,14 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // 1. If on main page with archive loaded, try archive forward navigation first
                 // 2. If that fails, navigate UI page forward
                 let is_on_main = app.page_navigator.is_on_main();
-                let archive_loaded = app.shared_state.signals().tabs.get().active().archive_loaded.get();
+                let archive_loaded = app
+                    .shared_state
+                    .signals()
+                    .tabs
+                    .get()
+                    .active()
+                    .archive_loaded
+                    .get();
                 let signals = app.shared_state.signals();
 
                 let mut handled = false;
@@ -216,21 +230,19 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // Ctrl+Shift+T — reopen most recently closed tab (browser-style).
     // Checked separately from the input_mut block below because it
     // dispatches a background load (mutable borrow on app fields).
-    let reopen_request: Option<(crate::core::tabs::TabId, std::path::PathBuf)> = ctx.input_mut(|i| {
-        if i.consume_key(
-            egui::Modifiers::CTRL | egui::Modifiers::SHIFT,
-            egui::Key::T,
-        ) {
-            let mut col = app.shared_state.signals().tabs.get();
-            let outcome = col.reopen_last_closed();
-            if outcome.is_some() {
-                app.shared_state.signals().tabs.set(col);
+    let reopen_request: Option<(crate::core::tabs::TabId, std::path::PathBuf)> =
+        ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::CTRL | egui::Modifiers::SHIFT, egui::Key::T) {
+                let mut col = app.shared_state.signals().tabs.get();
+                let outcome = col.reopen_last_closed();
+                if outcome.is_some() {
+                    app.shared_state.signals().tabs.set(col);
+                }
+                outcome
+            } else {
+                None
             }
-            outcome
-        } else {
-            None
-        }
-    });
+        });
     if let Some((new_tab_id, path)) = reopen_request {
         tracing::info!(
             "[tabs] reopened recently-closed tab {:?} → {}",
@@ -337,9 +349,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         // extraction is actually progressing (so set_if_changed is
         // a no-op on idle frames). The cycle is structurally broken.
         app.shared_state.signals().status_bar.set_if_changed(status);
-        active_tab
-            .extraction_dialog()
-            .set_if_changed(dialog);
+        active_tab.extraction_dialog().set_if_changed(dialog);
     }
 
     // === Lifecycle: Update window title ===
@@ -461,9 +471,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // the unfiltered folder with the entry in view.
                 let parent = path.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
                 let signals = app.shared_state.signals();
-                crate::core::operations::navigation_signals::navigate_to_absolute(
-                    signals, parent,
-                );
+                crate::core::operations::navigation_signals::navigate_to_absolute(signals, parent);
                 crate::core::operations::navigation_view::refresh_view_entries(signals);
             }
         }
@@ -479,7 +487,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             // Set toolbar context to Archive
             {
                 let tab = app.shared_state.signals().tabs.get().active().clone();
-                tab.active_toolbar.set(crate::core::signals::ToolbarContext::Archive);
+                tab.active_toolbar
+                    .set(crate::core::signals::ToolbarContext::Archive);
             }
             // Close any open plugin pages
             {
@@ -494,9 +503,15 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         }
         app_rendering::TabBarAction::SelectPluginTab { plugin_id, tab_id } => {
             // Set toolbar context to Plugin
-            app.shared_state.signals().tabs.get().active().active_toolbar.set(
-                crate::core::signals::ToolbarContext::Plugin(plugin_id.clone()),
-            );
+            app.shared_state
+                .signals()
+                .tabs
+                .get()
+                .active()
+                .active_toolbar
+                .set(crate::core::signals::ToolbarContext::Plugin(
+                    plugin_id.clone(),
+                ));
             // Open plugin page
             let mut dialog_state = app.shared_state.signals().plugin_dialog_state.get();
             dialog_state.page_stack.clear();
@@ -521,7 +536,13 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // (e.g. DLSite) have their own surface and shouldn't show archive tabs.
     let should_show_archive_tab_bar = app.page_navigator.is_on_main()
         && matches!(
-            app.shared_state.signals().tabs.get().active().active_toolbar.get(),
+            app.shared_state
+                .signals()
+                .tabs
+                .get()
+                .active()
+                .active_toolbar
+                .get(),
             crate::core::signals::ToolbarContext::Archive
         );
     if should_show_archive_tab_bar {
@@ -539,7 +560,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             // Chips only now (the scrollbar moved to its own strip
             // below): 26px chip + 4px top + 4px bottom + 2px buffer.
             .exact_height(36.0)
-            .frame(egui::Frame::NONE.fill(theme.colors.surface).inner_margin(egui::Margin::symmetric(6, 4)))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme.colors.surface)
+                    .inner_margin(egui::Margin::symmetric(6, 4)),
+            )
             .show(ctx, |ui| {
                 let (a, info) = crate::shared::components::tab_bar::render_tab_bar(
                     ui,
@@ -579,20 +604,13 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                     match col.close(id) {
                         CloseResult::Closed | CloseResult::NotFound => {}
                         CloseResult::BlockedByInFlight { count } => {
-                            let title = col
-                                .get(id)
-                                .map(|t| t.display_title())
-                                .unwrap_or_default();
-                            let mut confirm =
-                                app.shared_state.signals().close_tab_confirm.get();
+                            let title = col.get(id).map(|t| t.display_title()).unwrap_or_default();
+                            let mut confirm = app.shared_state.signals().close_tab_confirm.get();
                             confirm.show = true;
                             confirm.tab_id = Some(id);
                             confirm.tab_title = title;
                             confirm.in_flight_count = count;
-                            app.shared_state
-                                .signals()
-                                .close_tab_confirm
-                                .set(confirm);
+                            app.shared_state.signals().close_tab_confirm.set(confirm);
                         }
                     }
                 }

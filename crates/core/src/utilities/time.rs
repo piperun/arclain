@@ -43,7 +43,11 @@ mod tests {
         // helper returned its 0 fallback (which means the clock is
         // pathologically wrong, the test will surface it) or the system
         // clock is genuinely set far in the past.
-        assert!(s >= 1_767_225_600, "unix_seconds returned {} (< 2026-01-01)", s);
+        assert!(
+            s >= 1_767_225_600,
+            "unix_seconds returned {} (< 2026-01-01)",
+            s
+        );
         // Sanity upper bound: year 2100.
         assert!(s < 4_102_444_800, "unix_seconds returned {} (>= 2100)", s);
     }

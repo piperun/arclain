@@ -156,8 +156,7 @@ impl FileOpener {
         let mut seen: HashSet<String> = files.iter().cloned().collect();
         for entry in all_entries {
             let lower = entry.to_lowercase();
-            if (lower.ends_with(".dll") || lower.ends_with(".config"))
-                && seen.insert(entry.clone())
+            if (lower.ends_with(".dll") || lower.ends_with(".config")) && seen.insert(entry.clone())
             {
                 debug!("Adding potential dependency: {}", entry);
                 files.push(entry.clone());

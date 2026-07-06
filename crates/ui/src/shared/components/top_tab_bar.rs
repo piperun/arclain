@@ -191,11 +191,9 @@ fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
 
             // Layout first to learn the mesh extent (needed both for
             // sizing the rect and for visual-centering on its center).
-            let galley = ui.painter().layout_no_wrap(
-                text,
-                font_id.clone(),
-                text_color,
-            );
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text, font_id.clone(), text_color);
 
             let badge_size = egui::vec2(
                 (galley.mesh_bounds.width() + h_pad * 2.0)
@@ -214,9 +212,9 @@ fn render_badge(ui: &mut Ui, badge: &BadgeConfig, colors: &ThemeColors) {
             // Paint at the offset that lands mesh_bounds.center on rect.center.
             // Equivalent to what arclain_widgets::layout_text_visually_centered
             // returns when given the real target_center.
-            let paint_origin =
-                rect.center() - galley.mesh_bounds.center().to_vec2();
-            ui.painter().galley(paint_origin, galley.clone(), text_color);
+            let paint_origin = rect.center() - galley.mesh_bounds.center().to_vec2();
+            ui.painter()
+                .galley(paint_origin, galley.clone(), text_color);
 
             // Debug overlay: gated by the project-wide
             // EGUI_UI_DEBUG_GUIDELINES env var. Set it before launching

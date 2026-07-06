@@ -131,7 +131,8 @@ fn logger_emits_summary_when_drops_accumulate() {
     // Drop a bunch of lines (most fail the byte cap after the first
     // few are written).
     for _ in 0..50 {
-        logger.write("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+        logger
+            .write("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
     }
 
     // Force a summary flush regardless of timer

@@ -179,9 +179,7 @@ fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMet
     // ended up double-handling the click and the popup wouldn't
     // close — easier to track the open bit ourselves.
     let memory_key = response.id.with("selected_item_open");
-    let was_open = ui
-        .data(|d| d.get_temp::<bool>(memory_key))
-        .unwrap_or(false);
+    let was_open = ui.data(|d| d.get_temp::<bool>(memory_key)).unwrap_or(false);
     let mut is_open = was_open;
 
     if response.clicked() {
@@ -240,12 +238,7 @@ fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMet
                             } else {
                                 String::new()
                             };
-                            metadata_row(
-                                ui,
-                                theme,
-                                "Tags",
-                                &format!("{}{}", preview, suffix),
-                            );
+                            metadata_row(ui, theme, "Tags", &format!("{}{}", preview, suffix));
                         }
 
                         ui.add_space(4.0);
@@ -260,10 +253,7 @@ fn render_selected_item_chip(ui: &mut egui::Ui, theme: &AppTheme, meta: &GameMet
         // Close on click outside the popup AND outside the chip (so
         // the toggle on the chip's own click still works).
         let clicked_anywhere = ui.input(|i| i.pointer.any_click());
-        if clicked_anywhere
-            && !popup_response.contains_pointer()
-            && !response.contains_pointer()
-        {
+        if clicked_anywhere && !popup_response.contains_pointer() && !response.contains_pointer() {
             is_open = false;
         }
 

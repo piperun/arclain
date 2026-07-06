@@ -73,11 +73,8 @@ impl<'a> SettingsCard<'a> {
         let clicked = card.interact(egui::Sense::click()).clicked();
 
         if card.hovered() {
-            ui.painter().rect_filled(
-                card.rect,
-                8.0,
-                colors.primary.linear_multiply(0.1),
-            );
+            ui.painter()
+                .rect_filled(card.rect, 8.0, colors.primary.linear_multiply(0.1));
         }
 
         clicked
@@ -119,11 +116,8 @@ impl<'a> SettingsCard<'a> {
         let clicked = card.interact(egui::Sense::click()).clicked();
 
         if card.hovered() {
-            ui.painter().rect_filled(
-                card.rect,
-                8.0,
-                colors.primary.linear_multiply(0.1),
-            );
+            ui.painter()
+                .rect_filled(card.rect, 8.0, colors.primary.linear_multiply(0.1));
         }
 
         clicked

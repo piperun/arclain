@@ -2,8 +2,8 @@
 //!
 //! A dialog for selecting template variables with search and tabbed categories.
 
-use crate::shared::theme::AppTheme;
 use super::SearchBar;
+use crate::shared::theme::AppTheme;
 use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 
@@ -138,8 +138,7 @@ impl VariablePicker {
                 TemplateVariable::new("ext", "Original file extension").with_example("zip"),
                 TemplateVariable::new("date", "Current date (YYYY-MM-DD)")
                     .with_example("2024-01-15"),
-                TemplateVariable::new("time", "Current time (HH-MM-SS)")
-                    .with_example("14-30-00"),
+                TemplateVariable::new("time", "Current time (HH-MM-SS)").with_example("14-30-00"),
                 TemplateVariable::new("timestamp", "Unix timestamp").with_example("1705329000"),
             ])]
     }
@@ -266,7 +265,13 @@ impl VariablePicker {
                 // Cancel button
                 ui.horizontal(|ui| {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(TextButton::new("Cancel", ButtonSize::Small).with_theme_colors(&theme.colors)).clicked() {
+                        if ui
+                            .add(
+                                TextButton::new("Cancel", ButtonSize::Small)
+                                    .with_theme_colors(&theme.colors),
+                            )
+                            .clicked()
+                        {
                             self.open = false;
                         }
                     });
@@ -294,11 +299,8 @@ impl VariablePicker {
 
         // Draw hover/selection background
         if response.hovered() {
-            ui.painter().rect_filled(
-                rect,
-                4.0,
-                theme.colors.surface_variant,
-            );
+            ui.painter()
+                .rect_filled(rect, 4.0, theme.colors.surface_variant);
         }
 
         // Draw content on top
@@ -312,7 +314,10 @@ impl VariablePicker {
             theme.colors.primary,
         );
         ui.painter().galley(
-            egui::pos2(text_rect.left(), text_rect.center().y - placeholder_galley.size().y / 2.0),
+            egui::pos2(
+                text_rect.left(),
+                text_rect.center().y - placeholder_galley.size().y / 2.0,
+            ),
             placeholder_galley,
             theme.colors.primary,
         );
@@ -347,4 +352,3 @@ impl VariablePicker {
         response.clicked()
     }
 }
-

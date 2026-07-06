@@ -329,7 +329,10 @@ mod tests {
     fn upgrade_is_idempotent() {
         let rules = vec![auto_saved("Game [RJ100001].zip")];
         let once = upgrade_auto_saved_rules(&rules).expect("first pass changes");
-        assert!(upgrade_auto_saved_rules(&once).is_none(), "second pass is a no-op");
+        assert!(
+            upgrade_auto_saved_rules(&once).is_none(),
+            "second pass is a no-op"
+        );
     }
 
     /// Mixed set: only the RJ-coded auto-saved rule changes; the plain

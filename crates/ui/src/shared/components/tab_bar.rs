@@ -46,7 +46,10 @@ pub enum TabBarAction {
     /// User dropped a tab at a new position. Indices are into the current
     /// `TabsCollection::tabs()` slice; the caller forwards to
     /// `TabsCollection::reorder`.
-    Reorder { from_idx: usize, to_idx: usize },
+    Reorder {
+        from_idx: usize,
+        to_idx: usize,
+    },
     /// Close every tab except the given one. Tabs with in-flight ops
     /// are skipped silently — user can close those individually.
     CloseOthers(TabId),
@@ -190,10 +193,7 @@ pub fn render_tab_bar(
                         ui.horizontal(|ui| {
                             // Selectable label is the row body — Chrome-style
                             // it's the click target for Switch.
-                            if ui
-                                .selectable_label(is_active, &title)
-                                .clicked()
-                            {
+                            if ui.selectable_label(is_active, &title).clicked() {
                                 action = Some(TabBarAction::Switch(tab.id));
                                 egui::Popup::close_id(ui.ctx(), popup_id);
                             }
@@ -224,115 +224,114 @@ pub fn render_tab_bar(
                 if let Some(off) = pending_pill_offset {
                     scroll_area = scroll_area.horizontal_scroll_offset(off);
                 }
-                let scroll_out = scroll_area
-                    .show(ui, |ui| {
-                        // (B) Vertical mouse wheel scrolls horizontally
-                        // when pointer is over the tab strip.
-                        let pointer_over = ui
-                            .input(|i| i.pointer.hover_pos())
-                            .map(|p| ui.max_rect().contains(p))
-                            .unwrap_or(false);
-                        if pointer_over {
-                            ui.input_mut(|i| {
-                                if i.raw_scroll_delta.x == 0.0 && i.raw_scroll_delta.y != 0.0 {
-                                    i.raw_scroll_delta.x = i.raw_scroll_delta.y;
-                                    i.raw_scroll_delta.y = 0.0;
-                                }
-                                if i.smooth_scroll_delta.x == 0.0
-                                    && i.smooth_scroll_delta.y != 0.0
-                                {
-                                    i.smooth_scroll_delta.x = i.smooth_scroll_delta.y;
-                                    i.smooth_scroll_delta.y = 0.0;
-                                }
-                            });
-                        }
-
-                        // Use ui.horizontal (NOT horizontal_centered) — the
-                        // latter grabs available_size_before_wrap() for its
-                        // height, creating a feedback loop with the auto-
-                        // sizing TopBottomPanel that explodes the tab strip
-                        // to fill the entire window. ui.horizontal expands
-                        // only to fit its content's natural height; cross-
-                        // axis alignment is already Align::Center for
-                        // left_to_right layout, so the chip pills are
-                        // vertically centered relative to that height.
-                        ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = TAB_GAP;
-
-                            // Peek at the in-flight drag payload so chips
-                            // can render themselves dimmed when they're
-                            // the drag source. Peek (not take) keeps the
-                            // payload alive across frames until release.
-                            let dragged_source_id: Option<TabId> =
-                                egui::DragAndDrop::payload::<TabDragPayload>(ui.ctx())
-                                    .map(|p| p.from_id);
-                            let pointer_pos = ui.ctx().pointer_interact_pos();
-
-                            // Drop target tracking — set by whichever chip
-                            // the cursor sits over during an active drag.
-                            let mut drop_target_idx: Option<usize> = None;
-
-                            for (idx, tab) in col.tabs().iter().enumerate() {
-                                let is_active = tab.id == col.active_id();
-                                let title = tab.display_title();
-                                let in_flight =
-                                    tab.in_flight_ops.load(Ordering::SeqCst) > 0;
-                                let pinned = tab.pinned.load(Ordering::SeqCst);
-                                let is_drag_source = dragged_source_id == Some(tab.id);
-                                let (chip_action, chip_response) = render_tab_chip(
-                                    ui,
-                                    theme,
-                                    tab.id,
-                                    &title,
-                                    is_active,
-                                    in_flight,
-                                    is_drag_source,
-                                    pinned,
-                                );
-                                if let Some(a) = chip_action {
-                                    action = Some(a);
-                                }
-                                if is_active && active_changed {
-                                    chip_response.scroll_to_me(Some(egui::Align::Center));
-                                }
-                                // Did this chip just start being dragged?
-                                if chip_response.drag_started_by(egui::PointerButton::Primary) {
-                                    egui::DragAndDrop::set_payload(
-                                        ui.ctx(),
-                                        TabDragPayload { from_idx: idx, from_id: tab.id },
-                                    );
-                                }
-                                // Is the cursor (during an active drag)
-                                // over this chip's rect?
-                                if dragged_source_id.is_some() {
-                                    if let Some(pos) = pointer_pos {
-                                        if chip_response.rect.contains(pos) {
-                                            drop_target_idx = Some(idx);
-                                        }
-                                    }
-                                }
+                let scroll_out = scroll_area.show(ui, |ui| {
+                    // (B) Vertical mouse wheel scrolls horizontally
+                    // when pointer is over the tab strip.
+                    let pointer_over = ui
+                        .input(|i| i.pointer.hover_pos())
+                        .map(|p| ui.max_rect().contains(p))
+                        .unwrap_or(false);
+                    if pointer_over {
+                        ui.input_mut(|i| {
+                            if i.raw_scroll_delta.x == 0.0 && i.raw_scroll_delta.y != 0.0 {
+                                i.raw_scroll_delta.x = i.raw_scroll_delta.y;
+                                i.raw_scroll_delta.y = 0.0;
                             }
-
-                            // Pointer released this frame → commit the drop.
-                            // `any_released` covers all buttons; we filter
-                            // by checking that a drag payload exists.
-                            let released = ui.input(|i| i.pointer.any_released());
-                            if released {
-                                if let Some(payload) =
-                                    egui::DragAndDrop::take_payload::<TabDragPayload>(ui.ctx())
-                                {
-                                    if let Some(to_idx) = drop_target_idx {
-                                        if payload.from_idx != to_idx {
-                                            action = Some(TabBarAction::Reorder {
-                                                from_idx: payload.from_idx,
-                                                to_idx,
-                                            });
-                                        }
-                                    }
-                                }
+                            if i.smooth_scroll_delta.x == 0.0 && i.smooth_scroll_delta.y != 0.0 {
+                                i.smooth_scroll_delta.x = i.smooth_scroll_delta.y;
+                                i.smooth_scroll_delta.y = 0.0;
                             }
                         });
+                    }
+
+                    // Use ui.horizontal (NOT horizontal_centered) — the
+                    // latter grabs available_size_before_wrap() for its
+                    // height, creating a feedback loop with the auto-
+                    // sizing TopBottomPanel that explodes the tab strip
+                    // to fill the entire window. ui.horizontal expands
+                    // only to fit its content's natural height; cross-
+                    // axis alignment is already Align::Center for
+                    // left_to_right layout, so the chip pills are
+                    // vertically centered relative to that height.
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = TAB_GAP;
+
+                        // Peek at the in-flight drag payload so chips
+                        // can render themselves dimmed when they're
+                        // the drag source. Peek (not take) keeps the
+                        // payload alive across frames until release.
+                        let dragged_source_id: Option<TabId> =
+                            egui::DragAndDrop::payload::<TabDragPayload>(ui.ctx())
+                                .map(|p| p.from_id);
+                        let pointer_pos = ui.ctx().pointer_interact_pos();
+
+                        // Drop target tracking — set by whichever chip
+                        // the cursor sits over during an active drag.
+                        let mut drop_target_idx: Option<usize> = None;
+
+                        for (idx, tab) in col.tabs().iter().enumerate() {
+                            let is_active = tab.id == col.active_id();
+                            let title = tab.display_title();
+                            let in_flight = tab.in_flight_ops.load(Ordering::SeqCst) > 0;
+                            let pinned = tab.pinned.load(Ordering::SeqCst);
+                            let is_drag_source = dragged_source_id == Some(tab.id);
+                            let (chip_action, chip_response) = render_tab_chip(
+                                ui,
+                                theme,
+                                tab.id,
+                                &title,
+                                is_active,
+                                in_flight,
+                                is_drag_source,
+                                pinned,
+                            );
+                            if let Some(a) = chip_action {
+                                action = Some(a);
+                            }
+                            if is_active && active_changed {
+                                chip_response.scroll_to_me(Some(egui::Align::Center));
+                            }
+                            // Did this chip just start being dragged?
+                            if chip_response.drag_started_by(egui::PointerButton::Primary) {
+                                egui::DragAndDrop::set_payload(
+                                    ui.ctx(),
+                                    TabDragPayload {
+                                        from_idx: idx,
+                                        from_id: tab.id,
+                                    },
+                                );
+                            }
+                            // Is the cursor (during an active drag)
+                            // over this chip's rect?
+                            if dragged_source_id.is_some() {
+                                if let Some(pos) = pointer_pos {
+                                    if chip_response.rect.contains(pos) {
+                                        drop_target_idx = Some(idx);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Pointer released this frame → commit the drop.
+                        // `any_released` covers all buttons; we filter
+                        // by checking that a drag payload exists.
+                        let released = ui.input(|i| i.pointer.any_released());
+                        if released {
+                            if let Some(payload) =
+                                egui::DragAndDrop::take_payload::<TabDragPayload>(ui.ctx())
+                            {
+                                if let Some(to_idx) = drop_target_idx {
+                                    if payload.from_idx != to_idx {
+                                        action = Some(TabBarAction::Reorder {
+                                            from_idx: payload.from_idx,
+                                            to_idx,
+                                        });
+                                    }
+                                }
+                            }
+                        }
                     });
+                });
                 scroll_offset_x = scroll_out.state.offset.x;
                 content_width = scroll_out.content_size.x;
                 viewport_rect = scroll_out.inner_rect;
@@ -411,7 +410,11 @@ pub fn render_tab_scrollbar(ui: &mut egui::Ui, info: &TabScrollInfo, theme: &The
     }
 
     let painter = ui.painter();
-    painter.rect_filled(track_rect, egui::CornerRadius::same(3), theme.outline_variant);
+    painter.rect_filled(
+        track_rect,
+        egui::CornerRadius::same(3),
+        theme.outline_variant,
+    );
 
     let thumb_x = track_rect.left() + max_thumb_x * position_fraction;
     let thumb_rect = egui::Rect::from_min_size(
@@ -448,8 +451,7 @@ fn pill_fraction_from_pointer(
     thumb_w: f32,
     max_thumb_x: f32,
 ) -> f32 {
-    let thumb_left =
-        (pointer_x - thumb_w / 2.0).clamp(track_left, track_left + max_thumb_x);
+    let thumb_left = (pointer_x - thumb_w / 2.0).clamp(track_left, track_left + max_thumb_x);
     (thumb_left - track_left) / max_thumb_x
 }
 
@@ -468,7 +470,10 @@ mod pill_tests {
     fn pointer_past_track_end_yields_one() {
         // Pointer beyond the right travel limit → thumb pinned right.
         // track_left=100, max_thumb_x=200 → thumb_left clamps to 300.
-        assert_eq!(pill_fraction_from_pointer(10_000.0, 100.0, 40.0, 200.0), 1.0);
+        assert_eq!(
+            pill_fraction_from_pointer(10_000.0, 100.0, 40.0, 200.0),
+            1.0
+        );
     }
 
     #[test]
@@ -554,21 +559,15 @@ fn render_tab_chip(
     // (e.g. tab switches active state with different max_w, or archive
     // path changes) we recompute; otherwise we reuse.
     let cache_key = egui::Id::new(("tab_bar/truncate", id, max_title_w as u32));
-    let cached: Option<(String, bool, String)> =
-        ui.memory(|m| m.data.get_temp(cache_key));
+    let cached: Option<(String, bool, String)> = ui.memory(|m| m.data.get_temp(cache_key));
     let (label_text, was_truncated) = match cached {
         // Cache hit and the source label is unchanged.
         Some((cached_src, was_trunc, cached_label)) if cached_src == raw_label => {
             (cached_label, was_trunc)
         }
         _ => {
-            let computed = truncate_to_width(
-                ui.painter(),
-                &raw_label,
-                &font_id,
-                text_color,
-                max_title_w,
-            );
+            let computed =
+                truncate_to_width(ui.painter(), &raw_label, &font_id, text_color, max_title_w);
             ui.memory_mut(|m| {
                 m.data.insert_temp(
                     cache_key,
@@ -582,8 +581,7 @@ fn render_tab_chip(
     let probe = ui
         .painter()
         .layout_no_wrap(label_text.clone(), font_id.clone(), text_color);
-    let chip_width =
-        (probe.size().x + TAB_H_PAD * 2.0 + TAB_CLOSE_GAP + TAB_CLOSE_HIT_SIZE).ceil();
+    let chip_width = (probe.size().x + TAB_H_PAD * 2.0 + TAB_CLOSE_GAP + TAB_CLOSE_HIT_SIZE).ceil();
     let chip_size = egui::vec2(chip_width, TAB_HEIGHT);
     // Sense both click and drag — clicks dispatch Switch/Close, drags
     // reorder. egui's built-in drag threshold keeps a stationary click
@@ -655,15 +653,13 @@ fn render_tab_chip(
     };
 
     let mut action = if response.clicked() {
-        response
-            .interact_pointer_pos()
-            .map(|click_pos| {
-                if close_rect.contains(click_pos) {
-                    TabBarAction::Close(id)
-                } else {
-                    TabBarAction::Switch(id)
-                }
-            })
+        response.interact_pointer_pos().map(|click_pos| {
+            if close_rect.contains(click_pos) {
+                TabBarAction::Close(id)
+            } else {
+                TabBarAction::Switch(id)
+            }
+        })
     } else if response.clicked_by(egui::PointerButton::Middle) {
         // Middle-click anywhere on the chip closes it — matches the
         // standard browser tab convention. The close hit-rect handles
@@ -726,8 +722,7 @@ fn truncate_to_width(
     while lo < hi {
         let mid = (lo + hi + 1) / 2;
         let candidate: String = chars[..mid].iter().collect::<String>() + "\u{2026}";
-        let cand_probe =
-            painter.layout_no_wrap(candidate, font_id.clone(), color);
+        let cand_probe = painter.layout_no_wrap(candidate, font_id.clone(), color);
         if cand_probe.size().x <= max_width {
             lo = mid;
         } else {
@@ -748,11 +743,9 @@ fn truncate_to_width(
 fn render_chevron_button(ui: &mut egui::Ui, theme: &ThemeColors) -> egui::Response {
     let font_id = egui::FontId::proportional(FONT_SIZE);
     let icon = egui_phosphor::regular::CARET_DOWN;
-    let probe = ui.painter().layout_no_wrap(
-        icon.to_string(),
-        font_id.clone(),
-        theme.on_surface_variant,
-    );
+    let probe =
+        ui.painter()
+            .layout_no_wrap(icon.to_string(), font_id.clone(), theme.on_surface_variant);
     let size = egui::vec2((probe.size().x + TAB_H_PAD * 2.0).ceil(), TAB_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let (bg_fill, stroke_color) = if response.hovered() {
@@ -783,11 +776,9 @@ fn render_chevron_button(ui: &mut egui::Ui, theme: &ThemeColors) -> egui::Respon
 fn render_plus_button(ui: &mut egui::Ui, theme: &ThemeColors) -> egui::Response {
     let font_id = egui::FontId::proportional(FONT_SIZE);
     let icon = egui_phosphor::regular::PLUS;
-    let probe = ui.painter().layout_no_wrap(
-        icon.to_string(),
-        font_id.clone(),
-        theme.on_surface_variant,
-    );
+    let probe =
+        ui.painter()
+            .layout_no_wrap(icon.to_string(), font_id.clone(), theme.on_surface_variant);
     let size = egui::vec2((probe.size().x + TAB_H_PAD * 2.0).ceil(), TAB_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let (bg_fill, stroke_color) = if response.hovered() {

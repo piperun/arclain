@@ -9,7 +9,13 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render Toolbar (only on Main page AND when Archive context is active)
     let should_show_archive_toolbar = if app.page_navigator.is_on_main() {
         matches!(
-            app.shared_state.signals().tabs.get().active().active_toolbar.get(),
+            app.shared_state
+                .signals()
+                .tabs
+                .get()
+                .active()
+                .active_toolbar
+                .get(),
             ToolbarContext::Archive
         )
     } else {

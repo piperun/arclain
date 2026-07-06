@@ -71,18 +71,13 @@ impl HostFunctions {
             .active_tab
             .as_ref()
             .ok_or("Active-tab bridge not configured")?;
-        let current_path = bridge
-            .archive_path()
-            .ok_or("No archive currently open")?;
+        let current_path = bridge.archive_path().ok_or("No archive currently open")?;
 
         let path = Path::new(&current_path);
         let parent = path.parent().ok_or("Cannot determine parent directory")?;
 
         // Sanitize the new name to prevent path traversal
-        let safe_name = new_name
-            .replace(['/', '\\'], "_")
-            .trim()
-            .to_string();
+        let safe_name = new_name.replace(['/', '\\'], "_").trim().to_string();
 
         if safe_name.is_empty() {
             return Err("New name cannot be empty".to_string());
@@ -92,10 +87,7 @@ impl HostFunctions {
 
         // Check if target already exists
         if new_path.exists() && new_path != path {
-            return Err(format!(
-                "A file named '{}' already exists",
-                safe_name
-            ));
+            return Err(format!("A file named '{}' already exists", safe_name));
         }
 
         // Perform the rename

@@ -25,8 +25,7 @@ pub type PluginToolbarRenderer<'a> = &'a mut dyn FnMut(
 /// shared/ produces events, features/plugins routes them.
 ///
 /// Args: plugin_id, event_id, optional value.
-pub type PluginEventDispatcher<'a> =
-    &'a mut dyn FnMut(String, String, Option<String>);
+pub type PluginEventDispatcher<'a> = &'a mut dyn FnMut(String, String, Option<String>);
 
 /// Configuration for toolbar items loaded from database
 pub struct ToolbarConfig {

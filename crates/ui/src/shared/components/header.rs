@@ -1,5 +1,7 @@
 use crate::core::signals::ServerConnectionStatus;
-use crate::shared::components::search_palette::{self, SearchHit, SearchPaletteAction, SearchPaletteState};
+use crate::shared::components::search_palette::{
+    self, SearchHit, SearchPaletteAction, SearchPaletteState,
+};
 use arclain_theme::{AppTheme, ButtonVariant};
 use arclain_widgets::TextInput;
 use eframe::egui;
@@ -188,9 +190,12 @@ pub fn render(
             active_code,
             scroll_to_selected: key_intent.navigated,
         };
-        if let Some(action) =
-            search_palette::render_area(ui, theme, &palette_view, &mut state.search_palette.selected)
-        {
+        if let Some(action) = search_palette::render_area(
+            ui,
+            theme,
+            &palette_view,
+            &mut state.search_palette.selected,
+        ) {
             search_action = Some(action);
             state.search_palette.open = false;
             state.search_text.clear();

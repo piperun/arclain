@@ -51,7 +51,9 @@ pub fn render(
         for plugin in plugins.iter().filter(|p| p.enabled) {
             let pid = plugin.id.clone();
             if let Some(Some(layout)) = manager.try_with_plugin_instance(&pid, |instance| {
-                instance.get_ui_layout(PluginExtensionPoint::PluginButton).ok()
+                instance
+                    .get_ui_layout(PluginExtensionPoint::PluginButton)
+                    .ok()
             }) {
                 if let Some(layout) = layout {
                     plugin_elements.insert(pid, layout.flatten());

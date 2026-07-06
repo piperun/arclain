@@ -69,41 +69,118 @@ pub fn render_button(
     match item.id.as_str() {
         // ── Navigation (always icon-only) ──────────────────────
         "toolbar.back" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::ARROW_LEFT, "Back", ctx.can_go_back, || actions.go_back = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::ARROW_LEFT,
+                "Back",
+                ctx.can_go_back,
+                || actions.go_back = true,
+            );
         }
         "toolbar.forward" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::ARROW_RIGHT, "Forward", ctx.can_go_forward, || actions.go_forward = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::ARROW_RIGHT,
+                "Forward",
+                ctx.can_go_forward,
+                || actions.go_forward = true,
+            );
         }
         "toolbar.up" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::ARROW_UP, "Up one level", ctx.can_go_up, || actions.go_up = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::ARROW_UP,
+                "Up one level",
+                ctx.can_go_up,
+                || actions.go_up = true,
+            );
         }
 
         // ── File operations ─────────────────────────────────────
         "toolbar.open" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::FOLDER_OPEN, "Open", true, || actions.open = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::FOLDER_OPEN,
+                "Open",
+                true,
+                || actions.open = true,
+            );
         }
         "toolbar.extract" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::EXPORT, "Extract", ctx.archive_loaded && ctx.has_selection, || actions.extract = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::EXPORT,
+                "Extract",
+                ctx.archive_loaded && ctx.has_selection,
+                || actions.extract = true,
+            );
         }
         "toolbar.extract_all" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::TRAY_ARROW_DOWN, "Extract all", ctx.archive_loaded, || actions.extract_all = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::TRAY_ARROW_DOWN,
+                "Extract all",
+                ctx.archive_loaded,
+                || actions.extract_all = true,
+            );
         }
         "toolbar.add" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::PLUS, "Add", ctx.archive_loaded, || actions.add = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::PLUS,
+                "Add",
+                ctx.archive_loaded,
+                || actions.add = true,
+            );
         }
         "toolbar.delete" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::TRASH, "Delete", ctx.archive_loaded && ctx.has_selection, || actions.delete_selected = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::TRASH,
+                "Delete",
+                ctx.archive_loaded && ctx.has_selection,
+                || actions.delete_selected = true,
+            );
         }
 
         // ── Conversion / Organization ───────────────────────────
         "toolbar.convert" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::PACKAGE, "Convert...", ctx.archive_loaded, || actions.convert_to_7z = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::PACKAGE,
+                "Convert...",
+                ctx.archive_loaded,
+                || actions.convert_to_7z = true,
+            );
         }
         "toolbar.batch_convert" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::FOLDER_PLUS, "Batch Convert...", true, || actions.batch_convert = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::FOLDER_PLUS,
+                "Batch Convert...",
+                true,
+                || actions.batch_convert = true,
+            );
         }
         "toolbar.organize" => {
-            toolbar_button(ui, ctx, egui_phosphor::regular::FOLDERS, "Organize", ctx.archive_loaded, || actions.organize_archive = true);
+            toolbar_button(
+                ui,
+                ctx,
+                egui_phosphor::regular::FOLDERS,
+                "Organize",
+                ctx.archive_loaded,
+                || actions.organize_archive = true,
+            );
         }
 
         // ── View mode toggles ───────────────────────────────────
@@ -119,11 +196,14 @@ pub fn render_button(
             }
         }
         "toolbar.grid_view" => {
-            if arclain_widgets::ToggleButton::new(egui_phosphor::regular::GRID_FOUR, state.grid_view)
-                .with_theme_colors(&ctx.theme.colors)
-                .ui(ui)
-                .on_hover_text("Grid view")
-                .clicked()
+            if arclain_widgets::ToggleButton::new(
+                egui_phosphor::regular::GRID_FOUR,
+                state.grid_view,
+            )
+            .with_theme_colors(&ctx.theme.colors)
+            .ui(ui)
+            .on_hover_text("Grid view")
+            .clicked()
             {
                 state.grid_view = true;
             }
@@ -138,7 +218,11 @@ pub fn render_button(
                 if arclain_widgets::ToggleButton::new(icon, state.columns_locked)
                     .with_theme_colors(&ctx.theme.colors)
                     .ui(ui)
-                    .on_hover_text(if state.columns_locked { "Unlock columns" } else { "Lock columns" })
+                    .on_hover_text(if state.columns_locked {
+                        "Unlock columns"
+                    } else {
+                        "Lock columns"
+                    })
                     .clicked()
                 {
                     state.columns_locked = !state.columns_locked;
@@ -148,21 +232,27 @@ pub fn render_button(
 
         // ── Panel toggles ───────────────────────────────────────
         "toolbar.tree_panel" => {
-            if arclain_widgets::ToggleButton::new(egui_phosphor::regular::TREE_STRUCTURE, state.show_tree_panel)
-                .with_theme_colors(&ctx.theme.colors)
-                .ui(ui)
-                .on_hover_text("Tree panel")
-                .clicked()
+            if arclain_widgets::ToggleButton::new(
+                egui_phosphor::regular::TREE_STRUCTURE,
+                state.show_tree_panel,
+            )
+            .with_theme_colors(&ctx.theme.colors)
+            .ui(ui)
+            .on_hover_text("Tree panel")
+            .clicked()
             {
                 state.show_tree_panel = !state.show_tree_panel;
             }
         }
         "toolbar.properties_panel" => {
-            if arclain_widgets::ToggleButton::new(egui_phosphor::regular::INFO, state.show_properties_panel)
-                .with_theme_colors(&ctx.theme.colors)
-                .ui(ui)
-                .on_hover_text("Properties panel")
-                .clicked()
+            if arclain_widgets::ToggleButton::new(
+                egui_phosphor::regular::INFO,
+                state.show_properties_panel,
+            )
+            .with_theme_colors(&ctx.theme.colors)
+            .ui(ui)
+            .on_hover_text("Properties panel")
+            .clicked()
             {
                 state.show_properties_panel = !state.show_properties_panel;
             }

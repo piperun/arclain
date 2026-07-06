@@ -209,10 +209,16 @@ impl HostFunctions {
                 // for the tab I'm looking at" is what the user expects.
                 if let Some(ref ctx) = self.event_context {
                     ctx.metadata_signal.set(Some(parsed.clone()));
-                    debug!("[Cache SAVE] Triggered metadata signal for {} via event ctx", id);
+                    debug!(
+                        "[Cache SAVE] Triggered metadata signal for {} via event ctx",
+                        id
+                    );
                 } else if let Some(ref bridge) = self.active_tab {
                     bridge.metadata_signal().set(Some(parsed.clone()));
-                    debug!("[Cache SAVE] Triggered metadata signal for {} via bridge", id);
+                    debug!(
+                        "[Cache SAVE] Triggered metadata signal for {} via bridge",
+                        id
+                    );
                 }
             }
             Err(e) => error!("Failed to serialize ProductMetadata: {}", e),
@@ -293,18 +299,20 @@ impl HostFunctions {
 
         ids.into_iter()
             .zip(full_ids.iter())
-            .map(|(external_id, full_id)| match by_full_id.get(full_id.as_str()) {
-                Some(meta) => MetadataSummary {
-                    id: external_id,
-                    title: meta.title.clone(),
-                    geo_blocked: meta.geo_blocked,
+            .map(
+                |(external_id, full_id)| match by_full_id.get(full_id.as_str()) {
+                    Some(meta) => MetadataSummary {
+                        id: external_id,
+                        title: meta.title.clone(),
+                        geo_blocked: meta.geo_blocked,
+                    },
+                    None => MetadataSummary {
+                        id: external_id,
+                        title: None,
+                        geo_blocked: false,
+                    },
                 },
-                None => MetadataSummary {
-                    id: external_id,
-                    title: None,
-                    geo_blocked: false,
-                },
-            })
+            )
             .collect()
     }
 
@@ -393,9 +401,7 @@ impl HostFunctions {
                         .ok();
                 }
                 Ok(None) => {
-                    debug!(
-                        "[get_product_metadata] Not in metadata.sqlite, checking caches..."
-                    );
+                    debug!("[get_product_metadata] Not in metadata.sqlite, checking caches...");
                 }
                 Err(e) => {
                     warn!(
@@ -410,7 +416,10 @@ impl HostFunctions {
         let json_key = format!("{}:json:{}", source.to_lowercase(), product_id);
         if let Some(json_bytes) = self.data_service.get_data(&json_key) {
             if let Ok(json_str) = String::from_utf8(json_bytes) {
-                debug!("[get_product_metadata] Found JSON cache, migrating: {}", product_id);
+                debug!(
+                    "[get_product_metadata] Found JSON cache, migrating: {}",
+                    product_id
+                );
 
                 // Parse the raw API JSON into ProductMetadata
                 if let Ok(meta) =
@@ -439,12 +448,13 @@ impl HostFunctions {
         let html_key = format!("{}:html:{}", source.to_lowercase(), product_id);
         if let Some(html_bytes) = self.data_service.get_data(&html_key) {
             let html_str = String::from_utf8_lossy(&html_bytes);
-            debug!("[get_product_metadata] Found HTML cache, migrating: {}", product_id);
+            debug!(
+                "[get_product_metadata] Found HTML cache, migrating: {}",
+                product_id
+            );
 
             // Parse HTML on host side using gameta_lib
-            if let Ok(meta) =
-                self.parse_dlsite_html_to_metadata(&product_id, &source, &html_str)
-            {
+            if let Ok(meta) = self.parse_dlsite_html_to_metadata(&product_id, &source, &html_str) {
                 // Save to metadata.sqlite for next time
                 if let Some(lib_svc) = &self.library_service {
                     if let Err(e) = lib_svc.save_metadata(&meta) {
@@ -570,9 +580,7 @@ impl HostFunctions {
             return;
         };
         let html_str = String::from_utf8_lossy(&html_bytes);
-        let Ok(repaired) =
-            self.parse_dlsite_html_to_metadata(product_id, source, &html_str)
-        else {
+        let Ok(repaired) = self.parse_dlsite_html_to_metadata(product_id, source, &html_str) else {
             return;
         };
 
@@ -662,7 +670,6 @@ impl HostFunctions {
             updated_at: None,
         })
     }
-
 }
 
 /// Copy every non-null entry from `source` into `target`, overwriting
