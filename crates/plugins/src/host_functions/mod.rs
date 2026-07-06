@@ -93,11 +93,7 @@ pub struct HostFunctions {
 /// Default location for per-plugin log files. Mirrors
 /// `init_logging`'s arclain.log directory: `{data_dir}/arclain/logs/plugins`.
 fn default_plugin_log_dir() -> std::path::PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("arclain")
-        .join("logs")
-        .join("plugins")
+    arclain_core::utilities::plugin_log_dir()
 }
 
 impl HostFunctions {

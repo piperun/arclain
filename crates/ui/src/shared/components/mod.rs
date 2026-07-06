@@ -18,6 +18,7 @@ pub mod drop_overlay;
 pub mod header;
 pub mod item_table;
 pub mod layout;
+pub mod logs_page;
 pub mod network_log;
 // `panel` and `properties_panel` moved to
 // `features/archive_browser/presentation/components/` in the

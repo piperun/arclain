@@ -102,16 +102,16 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
             }
             AppPage::Logs => {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    let logs = if let Some(manager) = &app.shared_state.services.plugin_manager {
+                    let network_logs = if let Some(manager) = &app.shared_state.services.plugin_manager {
                         manager.lock().get_network_log()
                     } else {
                         Vec::new()
                     };
 
-                    crate::shared::components::network_log::NetworkLog::render_page(
+                    crate::shared::components::logs_page::LogsPage::render_page(
                         ui,
-                        &logs,
-                        &mut app.network_log_state,
+                        &network_logs,
+                        &mut app.logs_page_state,
                         &app.shared_state.theme.colors,
                     );
                 });

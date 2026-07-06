@@ -42,7 +42,7 @@ pub struct ArclainApp {
 
     // UI Components
     pub(crate) top_tab_bar_state: components::top_tab_bar::TopTabBarState,
-    pub(crate) network_log_state: crate::shared::components::network_log::NetworkLogState,
+    pub(crate) logs_page_state: crate::shared::components::logs_page::LogsPageState,
     pub(crate) process_state: crate::features::process::ProcessPageState,
 
     // State & Flags
@@ -55,6 +55,17 @@ pub struct ArclainApp {
 
 impl ArclainApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let app_log_path = arclain_core::utilities::current_app_log_path();
+        let plugin_log_dir = arclain_core::utilities::plugin_log_dir();
+        let log_session =
+            crate::shared::components::logs_page::LogSession::capture(app_log_path, plugin_log_dir);
+        Self::new_with_log_session(cc, log_session)
+    }
+
+    pub fn new_with_log_session(
+        cc: &eframe::CreationContext<'_>,
+        log_session: crate::shared::components::logs_page::LogSession,
+    ) -> Self {
         // Initialize shared state (includes AppState, Services, Theme)
         let shared_state = crate::shared::SharedState::new(cc);
 
@@ -74,7 +85,9 @@ impl ArclainApp {
                 crate::features::password_management::PasswordManagementFeature::new(&shared_state),
             hotkey_manager: crate::features::hotkeys::HotkeyManager::new(),
             top_tab_bar_state: components::top_tab_bar::TopTabBarState::new("archive"),
-            network_log_state: crate::shared::components::network_log::NetworkLogState::new(),
+            logs_page_state: crate::shared::components::logs_page::LogsPageState::with_session(
+                log_session,
+            ),
             process_state: crate::features::process::ProcessPageState::new(),
             _pending_archive_path: None,
             _last_window_title: None,

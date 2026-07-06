@@ -2,8 +2,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use anyhow::Result;
-use arclain_core::utilities::init_logging;
+use arclain_core::utilities::{current_app_log_path, init_logging, plugin_log_dir};
 use arclain_ui::core::arclain_app::ArclainApp;
+use arclain_ui::shared::components::logs_page::LogSession;
 use eframe::egui;
 use tracing::info;
 
@@ -20,6 +21,13 @@ fn main() -> Result<()> {
     if let Err(e) = init_logging() {
         eprintln!("Failed to initialize logging: {}", e);
     }
+
+    let app_log_path = current_app_log_path();
+    let app_log_offset = std::fs::metadata(&app_log_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    let log_session =
+        LogSession::capture_with_app_offset(app_log_path, app_log_offset, plugin_log_dir());
 
     info!("Starting Arclain application");
 
@@ -82,7 +90,12 @@ fn main() -> Result<()> {
     eframe::run_native(
         "Arclain",
         options,
-        Box::new(|cc| Ok(Box::new(ArclainApp::new(cc)))),
+        Box::new(move |cc| {
+            Ok(Box::new(ArclainApp::new_with_log_session(
+                cc,
+                log_session.clone(),
+            )))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("Failed to run app: {}", e))?;
 

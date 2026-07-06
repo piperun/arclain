@@ -16,6 +16,29 @@ use tracing_subscriber::{
     EnvFilter,
 };
 
+/// Directory that stores arclain's application log files.
+pub fn app_log_dir() -> PathBuf {
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("arclain")
+        .join("logs")
+}
+
+/// Directory that stores per-plugin log files.
+pub fn plugin_log_dir() -> PathBuf {
+    app_log_dir().join("plugins")
+}
+
+/// App log path for a specific local date.
+pub fn app_log_path_for_date(date: chrono::NaiveDate) -> PathBuf {
+    app_log_dir().join(format!("arclain-{}.log", date.format("%Y-%m-%d")))
+}
+
+/// App log path for today's local date.
+pub fn current_app_log_path() -> PathBuf {
+    app_log_path_for_date(chrono::Local::now().date_naive())
+}
+
 /// Initialize the logging system with default configuration
 ///
 /// Log levels can be controlled via RUST_LOG environment variable:
@@ -32,17 +55,17 @@ pub fn init_logging() -> Result<(), Box<dyn std::error::Error>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
 
     // Use platform-specific app data directory
-    let log_dir = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("arclain")
-        .join("logs");
+    let log_dir = app_log_dir();
 
     // Ensure log directory exists
     std::fs::create_dir_all(&log_dir)?;
 
     // Create filename with format: arclain-YYYY-MM-DD.log
-    let today = chrono::Local::now().format("%Y-%m-%d");
-    let log_filename = format!("arclain-{}.log", today);
+    let log_filename = current_app_log_path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("arclain.log")
+        .to_string();
 
     // Use 'never' rotation with our custom filename (we handle date in filename)
     let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
@@ -104,17 +127,17 @@ pub fn init_logging_with_filter(filter: &str) -> Result<(), Box<dyn std::error::
     let filter = EnvFilter::new(filter);
 
     // Use platform-specific app data directory
-    let log_dir = dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("arclain")
-        .join("logs");
+    let log_dir = app_log_dir();
 
     // Ensure log directory exists
     std::fs::create_dir_all(&log_dir)?;
 
     // Create filename with format: arclain-YYYY-MM-DD.log
-    let today = chrono::Local::now().format("%Y-%m-%d");
-    let log_filename = format!("arclain-{}.log", today);
+    let log_filename = current_app_log_path()
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("arclain.log")
+        .to_string();
 
     let file_appender = tracing_appender::rolling::never(&log_dir, &log_filename);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
