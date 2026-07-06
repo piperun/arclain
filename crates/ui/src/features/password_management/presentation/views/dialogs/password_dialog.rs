@@ -56,7 +56,7 @@ pub fn render_password_dialog(
                     .max_rect(content)
                     .layout(egui::Layout::top_down(egui::Align::LEFT))
             );
-            
+
             child.vertical(|ui| {
                 ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
                 ui.horizontal(|ui| {
@@ -90,7 +90,7 @@ pub fn render_password_dialog(
                 if password_response.response.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !dialog.password.is_empty() {
                     result = Some(PasswordDialogResult::Unlock);
                 }
-                
+
                 // Optional: ESC cancels
                 if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     result = Some(PasswordDialogResult::Cancel);
@@ -107,9 +107,9 @@ pub fn render_password_dialog(
                 if !dialog.error.is_empty() {
                     crate::shared::components::error_label(ui, theme, &dialog.error);
                 }
-                
+
                 ui.add_space(8.0);
-                
+
                 ui.horizontal(|ui| {
                     ui.add_space(content.width() - 212.0);
 

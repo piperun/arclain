@@ -129,7 +129,7 @@ impl OrganizePanel {
         }
 
         panel.update_preview();
-        
+
         // Debug: Log rules and selection
         tracing::debug!(
             "OrganizePanel::new - {} rules loaded, selected_rule_index={}, selected_rule={}",
@@ -137,7 +137,7 @@ impl OrganizePanel {
             panel.ui_state.selected_rule_index,
             panel.session.rules.get(panel.ui_state.selected_rule_index).map(|r| format!("'{}'", r.name)).unwrap_or("None".to_string())
         );
-        
+
         panel
     }
 
@@ -314,14 +314,14 @@ impl OrganizePanel {
                     .color(theme.colors.on_surface_variant),
             );
             ui.add_space(20.0);
-            
+
             arclain_widgets::Text::new("No metadata found")
                 .size(32.0)
                 .strong()
                 .color(theme.colors.on_surface_variant)
                 .show(ui);
             ui.add_space(30.0);
-            
+
             ui.label(
                 egui::RichText::new("please try and fetch the metadata before trying to organize with dlsite-metadata.")
                     .size(16.0)
