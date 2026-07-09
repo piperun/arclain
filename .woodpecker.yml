@@ -136,13 +136,9 @@ steps:
           libxcb-xfixes0-dev libxkbcommon-dev libssl-dev pkg-config
           python3
       - rustup target add wasm32-wasip2
-      # --skip-tests: the cargo-test step (this step's depends_on)
-      # already ran the full suite as the `runner` user. release.py
-      # would re-run it here as root and trip user-permission tests
-      # that explicitly check chmod 0o500/0o700 — root bypasses
-      # those bits, the asserts fail. cargo-test is the source of
-      # truth for test gating; release.py just builds + packages.
-      - python3 scripts/release.py release --skip-tests
+      # The cargo-test step is the source of truth for test gating;
+      # release.py just builds + packages.
+      - python3 scripts/release.py release
       - |
         set -e
         PLUGIN_DIR="$(find release -mindepth 2 -maxdepth 2 -type d -name plugins | head -n 1)"

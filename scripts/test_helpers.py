@@ -12,6 +12,7 @@ parses.
 from __future__ import annotations
 
 import importlib
+import inspect
 import json
 import os
 import shutil
@@ -228,6 +229,20 @@ class TestPackageFreshness(unittest.TestCase):
 
 
 class TestReleaseWorkflows(unittest.TestCase):
+    def test_release_script_does_not_override_cargo_target_dir(self):
+        release_script = (REPO_ROOT / "scripts" / "release.py").read_text(
+            encoding="utf-8",
+        )
+
+        self.assertNotIn("CARGO_TARGET_DIR", release_script)
+
+    def test_release_command_does_not_run_cargo_tests(self):
+        release = importlib.import_module("release")
+        woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
+
+        self.assertNotIn("cargo\", \"test", inspect.getsource(release.cmd_release))
+        self.assertNotIn("release --skip-tests", woodpecker)
+
     def test_windows_workflow_builds_tests_and_uploads_zip(self):
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "windows-build.yml"

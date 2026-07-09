@@ -4,27 +4,68 @@
 # Heavy logic lives in scripts/_*.py — keeps recipes readable and
 # argparse-free dispatch out of the way.
 
-set windows-shell := ["powershell.exe", "-NoProfile", "-Command"]
+set windows-shell := ["pwsh", "-NoProfile", "-Command"]
 
 python := if os_family() == "windows" { "python" } else { "python3" }
 
-# Default when you type bare `just`: fast iteration build.
-default: debug
+# Show available recipes (bare `just`).
+default:
+    @just --list
+
+# ─── build ────────────────────────────────────────────────────────────────
+# `just build` (ui), `just build release`, `just build ui --features foo`.
+
+# Build a target. scope: ui (default) | release | plugins.
+build scope="ui" *args:
+    just _build-{{scope}} {{args}}
+
+_build-ui *args:
+    cargo build -p arclain_ui {{args}}
+
+_build-release *args:
+    cargo build --release -p arclain_ui {{args}}
+
+_build-plugins:
+    just plugins
 
 # Fast iteration: debug binary + plugins, no zip, no tests.
 debug:
-    cargo build -p arclain_ui
-    just plugins
-    {{python}} scripts/_package.py --profile debug
+    {{python}} scripts/release.py debug
 
-# `skip-tests=true` skips `cargo test --workspace` (hotfixes only).
+# ─── test ─────────────────────────────────────────────────────────────────
+# `just test` (all), `just test rust`, `just test ui -- --nocapture`.
 
-# Full release: tests, optimized binary, plugins, zip + sha256.
-release skip-tests="false":
-    {{ if skip-tests == "true" { "echo 'Skipping tests'" } else { "cargo test --workspace" } }}
-    cargo build --release -p arclain_ui
-    just plugins
-    {{python}} scripts/_package.py --profile release --archive
+# Run test suites. scope: all (default) | rust | ui | core | plugins | scripts.
+test scope="all" *args:
+    just _test-{{scope}} {{args}}
+
+_test-all:
+    just _test-rust
+    just _test-scripts
+
+_test-rust *args:
+    cargo test --workspace {{args}}
+
+_test-ui *args:
+    cargo test -p arclain_ui {{args}}
+
+_test-core *args:
+    cargo test -p arclain_core {{args}}
+
+_test-plugins *args:
+    cargo test -p arclain_plugins {{args}}
+
+_test-scripts:
+    {{python}} -m unittest discover -s scripts -p "test_*.py"
+
+# ─── release ──────────────────────────────────────────────────────────────
+# `just release` builds plugins, packages the optimized binary, and archives it.
+
+# Full release: optimized binary, plugins, zip + sha256.
+release *args:
+    {{python}} scripts/release.py release {{args}}
+
+# ─── plugins ──────────────────────────────────────────────────────────────
 
 # Build WASM plugins for all crates under plugins/.
 plugins:
@@ -34,6 +75,7 @@ plugins:
 clean-plugins:
     {{python}} scripts/_plugins.py clean
 
+# ─── app/dev helpers ──────────────────────────────────────────────────────
 # Extra args forward verbatim: `just ui --features dev-foo`.
 
 # Run `cargo ui` with RUST_LOG from scripts/logging_config.json.
@@ -52,7 +94,7 @@ deps *args:
 
 # Run the Python helper unit + smoke tests (fast).
 test-scripts:
-    {{python}} -m unittest discover -s scripts -p "test_*.py"
+    just _test-scripts
 
 # Strict type-check the Python helpers with basedpyright (via uvx, no install).
 typecheck:

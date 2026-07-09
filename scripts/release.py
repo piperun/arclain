@@ -3,14 +3,14 @@
 Arclain dev + release CLI.
 
 Usage:
-    python scripts/release.py release [--skip-tests]
+    python scripts/release.py release
     python scripts/release.py debug
     python scripts/release.py plugins
     python scripts/release.py ui [-- <cargo run args>]
     python scripts/release.py clean-plugins
     python scripts/release.py deps [--update | --upgrade [--incompatible]] [--dry-run]
 
-`release` produces an optimized, test-gated zip under release/.
+`release` produces an optimized zip under release/.
 Versioning is NOT done here — run `cog bump --minor` (or similar)
 locally before tagging; this script assumes the version in
 Cargo.toml is already correct for the build.
@@ -263,13 +263,10 @@ def _package_build(
     `archive_output=True` zips the folder for distribution. Debug builds
     skip this since they're not meant for distribution.
     """
-    target_dir = REPO_ROOT / "target"
-    build_env = {"CARGO_TARGET_DIR": str(target_dir)}
-
     cargo_cmd = ["cargo", "build", "--package", "arclain_ui"]
     if profile == "release":
         cargo_cmd.insert(2, "--release")
-    run(cargo_cmd, cwd=REPO_ROOT, env=build_env)
+    run(cargo_cmd, cwd=REPO_ROOT)
 
     print("\nBuilding plugins...")
     if not build_plugins():
@@ -291,6 +288,7 @@ def _package_build(
 
     # cargo profile dir layout: target/release/ for --release,
     # target/debug/ for the default profile.
+    target_dir = _package.cargo_target_dir(REPO_ROOT)
     cargo_profile_dir = "release" if profile == "release" else "debug"
     exe_path = target_dir / cargo_profile_dir / src_binary
     if not exe_path.exists():
@@ -322,33 +320,23 @@ def _package_build(
 
 
 def cmd_release(args: argparse.Namespace) -> None:
-    """Full release workflow: tests, optimized build, zip.
+    """Full release workflow: optimized build, plugins, zip.
 
     Versioning happens separately via `cog bump` (run locally before
     tagging) — this script doesn't touch versions. CI invokes us
     after the tag is already on the remote.
     """
+    _ = args
     print("=== Arclain Release Build ===")
     print(f"Repository: {REPO_ROOT}")
 
-    target_dir = REPO_ROOT / "target"
-    release_env = {"CARGO_TARGET_DIR": str(target_dir)}
-    print(f"Using project target directory: {target_dir}\n")
+    target_dir = _package.cargo_target_dir(REPO_ROOT)
+    print(f"Using Cargo target directory: {target_dir}\n")
 
     version = get_version_from_cargo()
     print(f"Building version: {version}\n")
 
-    if not args.skip_tests:
-        print("Step 1: Running test suite...")
-        run(
-            ["cargo", "test", "--workspace"],
-            cwd=REPO_ROOT, env=release_env,
-        )
-        print("All tests passed!\n")
-    else:
-        print("Step 1: Skipping tests\n")
-
-    print("Step 2: Building optimized binary + plugins...")
+    print("Building optimized binary + plugins...")
     _package_build(
         profile="release",
         out_root=REPO_ROOT / "release",
@@ -370,8 +358,8 @@ def cmd_debug(_args: argparse.Namespace) -> None:
     print("=== Arclain Debug Build (fast iteration) ===")
     print(f"Repository: {REPO_ROOT}")
 
-    target_dir = REPO_ROOT / "target"
-    print(f"Using project target directory: {target_dir}\n")
+    target_dir = _package.cargo_target_dir(REPO_ROOT)
+    print(f"Using Cargo target directory: {target_dir}\n")
 
     version = get_version_from_cargo()
     print(f"Building version: {version}\n")
@@ -471,7 +459,7 @@ def main() -> None:
     release_parser = sub.add_parser("release", help="Full release workflow")
     release_parser.add_argument(
         "-t", "--skip-tests", action="store_true",
-        help="Skip the test suite (use for hotfixes only)",
+        help="Deprecated no-op; releases no longer run tests implicitly",
     )
 
     sub.add_parser(
