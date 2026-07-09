@@ -5,8 +5,7 @@
 # argparse-free dispatch out of the way.
 
 set windows-shell := ["pwsh", "-NoProfile", "-Command"]
-
-python := if os_family() == "windows" { "python" } else { "python3" }
+import? 'just/common.just'
 
 # Show available recipes (bare `just`).
 default:
@@ -92,46 +91,10 @@ ui *args:
 deps *args:
     {{python}} scripts/_deps.py {{args}}
 
-# Run the Python helper unit + smoke tests (fast).
-test-scripts:
-    just _test-scripts
-
-# Strict type-check the Python helpers with basedpyright (via uvx, no install).
-typecheck:
-    uvx basedpyright
-
 # ─── cocogitto ──────────────────────────────────────────────────────────
-# Tag name/prefix is controlled by `cog.toml` (cog 7 default = unprefixed
-# version, no `v`). The `-A/--annotated` flag still exists in cog 7 — it
-# makes the created tag annotated (tagger + date + message) instead of the
-# default lightweight tag. These recipes omit it: arclain's changelog shows
-# no 1970-01-01 dates without it, so lightweight tags are fine here. Append
-# `-A "msg"` to a bump if you want annotated tags. All bump recipes accept
-# extra args, e.g. `just bump --dry-run`.
-
-# Verify commit messages on the current branch.
-cog-check:
-    cog check
-
-# Generate CHANGELOG.md from conventional commits.
-changelog:
-    cog changelog
-
-# Auto-detect bump type from conventional commits; create the tag.
-bump *args:
-    cog bump --auto {{args}}
-
-# Explicit major bump.
-bump-major *args:
-    cog bump --major {{args}}
-
-# Explicit minor bump.
-bump-minor *args:
-    cog bump --minor {{args}}
-
-# Explicit patch bump.
-bump-patch *args:
-    cog bump --patch {{args}}
+# cog-check / changelog / bump[ major|minor|patch] come from the shared
+# library; arclain uses lightweight tags (tag_template stays the default "").
+# arclain keeps its workspace- and package-scoped bump variants below.
 
 # Workspace bump using the `release` hook profile (cargo test + check).
 bump-release *args:
