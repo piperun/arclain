@@ -9,7 +9,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::features::organization::engine::OrganizationPlan;
-use crate::features::organization::organizer::{copy_plan_source, persist_plan_output};
+#[cfg(test)]
+use crate::features::organization::organizer::open_plan_metadata_handle;
+use crate::features::organization::organizer::{
+    apply_deferred_directory_metadata, copy_plan_source, persist_plan_output,
+};
 use crate::utilities::CheckedRelativePath;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,10 +138,27 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
 fn apply_plan_to_workdir_with_swap_hook<F>(
     plan: &OrganizationPlan,
     work_dir: &Path,
-    mut hook: F,
+    hook: F,
 ) -> Result<()>
 where
     F: FnMut(PlanSwapPoint) -> Result<()>,
+{
+    apply_plan_to_workdir_with_hooks(plan, work_dir, hook, |directory| {
+        directory
+            .close()
+            .context("remove pre-backup plan staging directory")
+    })
+}
+
+fn apply_plan_to_workdir_with_hooks<F, C>(
+    plan: &OrganizationPlan,
+    work_dir: &Path,
+    mut hook: F,
+    close_prebackup_staging: C,
+) -> Result<()>
+where
+    F: FnMut(PlanSwapPoint) -> Result<()>,
+    C: FnOnce(tempfile::TempDir) -> Result<()>,
 {
     plan.validate_paths()?;
 
@@ -192,42 +213,74 @@ where
 
     // Construct the complete new layout by copying. The original work tree is
     // not mutated until every source and generated output has been persisted.
-    for (source, destination) in &checked_moves {
-        let source_path = source.resolve_under(work_dir)?;
-        match fs::symlink_metadata(&source_path) {
-            Ok(_) => {
-                let source_path = source.resolve_under(work_dir)?;
-                copy_plan_source(&staging, destination, &source_path).with_context(|| {
-                    format!(
-                        "stage organization source {:?} at {:?}",
-                        source.as_path(),
-                        destination.as_path()
+    let prebackup_result: Result<(
+        Vec<CheckedRelativePath>,
+        Vec<CheckedRelativePath>,
+        tempfile::TempDir,
+    )> = (|| {
+        let mut deferred_directories = Vec::new();
+        for (source, destination) in &checked_moves {
+            let source_path = source.resolve_under(work_dir)?;
+            match fs::symlink_metadata(&source_path) {
+                Ok(_) => {
+                    let source_path = source.resolve_under(work_dir)?;
+                    copy_plan_source(
+                        &staging,
+                        destination,
+                        &source_path,
+                        &mut deferred_directories,
                     )
-                })?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                tracing::warn!("[apply_plan] source missing: {}", source_path.display());
-            }
-            Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("inspect move source {:?}", source_path));
+                    .with_context(|| {
+                        format!(
+                            "stage organization source {:?} at {:?}",
+                            source.as_path(),
+                            destination.as_path()
+                        )
+                    })?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::warn!("[apply_plan] source missing: {}", source_path.display());
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("inspect move source {:?}", source_path));
+                }
             }
         }
-    }
-    for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
-        let mut bytes = std::io::Cursor::new(content.as_bytes());
-        persist_plan_output(&staging, checked_path, &mut bytes)
-            .with_context(|| format!("stage generated output {:?}", checked_path.as_path()))?;
-    }
+        for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
+            let mut bytes = std::io::Cursor::new(content.as_bytes());
+            persist_plan_output(&staging, checked_path, &mut bytes)
+                .with_context(|| format!("stage generated output {:?}", checked_path.as_path()))?;
+        }
+        apply_deferred_directory_metadata(&staging, &mut deferred_directories)
+            .context("preserve staged organization directory metadata")?;
 
-    // Capture both trees before mutation so a read/validation failure remains
-    // side-effect free.
-    let original_entries = checked_top_level_entries(work_dir)?;
-    let staged_entries = checked_top_level_entries(&staging)?;
-    let mut backup_dir = tempfile::Builder::new()
-        .prefix(".arclain-plan-backup-")
-        .tempdir_in(work_parent)
-        .context("create pipeline plan backup directory")?;
+        // Capture both trees before mutation so a read/validation failure remains
+        // side-effect free.
+        let original_entries = checked_top_level_entries(work_dir)?;
+        let staged_entries = checked_top_level_entries(&staging)?;
+        let backup_dir = tempfile::Builder::new()
+            .prefix(".arclain-plan-backup-")
+            .tempdir_in(work_parent)
+            .context("create pipeline plan backup directory")?;
+        Ok((original_entries, staged_entries, backup_dir))
+    })();
+
+    let (original_entries, staged_entries, mut backup_dir) = match prebackup_result {
+        Ok(result) => result,
+        Err(staging_error) => {
+            let staging_path = staging_dir.path().to_path_buf();
+            if let Err(cleanup_error) = close_prebackup_staging(staging_dir) {
+                anyhow::bail!(
+                    "building organization staging layout failed: {staging_error:#}; removing \
+                     pre-backup staging directory failed: {cleanup_error:#}; staging path: {}",
+                    staging_path.display()
+                );
+            }
+            return Err(staging_error);
+        }
+    };
+
     // Once original entries enter the backup, an unwind must preserve it. The
     // directory is explicitly closed only after commit or successful rollback.
     backup_dir.disable_cleanup(true);
@@ -329,6 +382,41 @@ mod tests {
             })
             .map(|entry| entry.path())
             .collect()
+    }
+
+    fn assert_original_layout(work: &Path) {
+        assert_eq!(fs::read(work.join("alpha.bin")).unwrap(), b"alpha");
+        assert_eq!(fs::read(work.join("beta.bin")).unwrap(), b"beta");
+        assert_eq!(fs::read(work.join("unplanned.bin")).unwrap(), b"unplanned");
+        assert!(!work.join("Alpha").exists());
+        assert!(!work.join("Beta").exists());
+    }
+
+    fn transactional_fixture(parent: &Path) -> (PathBuf, OrganizationPlan) {
+        let work = parent.join("work");
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("alpha.bin"), b"alpha").unwrap();
+        fs::write(work.join("beta.bin"), b"beta").unwrap();
+        fs::write(work.join("unplanned.bin"), b"unplanned").unwrap();
+        let plan = empty_plan(
+            vec![
+                ("alpha.bin".into(), "Alpha/output.bin".into()),
+                ("beta.bin".into(), "Beta/output.bin".into()),
+            ],
+            vec![],
+        );
+        (work, plan)
+    }
+
+    fn assert_time_close(actual: std::time::SystemTime, expected: std::time::SystemTime) {
+        let difference = actual
+            .duration_since(expected)
+            .or_else(|_| expected.duration_since(actual))
+            .unwrap();
+        assert!(
+            difference <= std::time::Duration::from_secs(2),
+            "timestamp differs by {difference:?}: actual={actual:?}, expected={expected:?}"
+        );
     }
 
     #[cfg(unix)]
@@ -556,6 +644,188 @@ mod tests {
     }
 
     #[test]
+    fn apply_plan_merges_later_file_into_readonly_source_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(work.join("source-dir")).unwrap();
+        fs::write(work.join("source-dir/original.bin"), b"original").unwrap();
+        fs::write(work.join("later.bin"), b"later").unwrap();
+        let mut permissions = fs::metadata(work.join("source-dir")).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(work.join("source-dir"), permissions).unwrap();
+        let plan = empty_plan(
+            vec![
+                ("source-dir".into(), "Out".into()),
+                ("later.bin".into(), "Out/later.bin".into()),
+            ],
+            vec![],
+        );
+
+        apply_plan_to_workdir(&plan, &work).unwrap();
+
+        assert_eq!(
+            fs::read(work.join("Out/original.bin")).unwrap(),
+            b"original"
+        );
+        assert_eq!(fs::read(work.join("Out/later.bin")).unwrap(), b"later");
+        assert!(fs::metadata(work.join("Out"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        let mut permissions = fs::metadata(work.join("Out")).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(work.join("Out"), permissions).unwrap();
+    }
+
+    #[test]
+    fn apply_plan_writes_generated_file_under_readonly_source_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(work.join("source-dir")).unwrap();
+        fs::write(work.join("source-dir/original.bin"), b"original").unwrap();
+        let mut permissions = fs::metadata(work.join("source-dir")).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(work.join("source-dir"), permissions).unwrap();
+        let plan = empty_plan(
+            vec![("source-dir".into(), "Out".into())],
+            vec![("Out/metadata.json".into(), "generated".into())],
+        );
+
+        apply_plan_to_workdir(&plan, &work).unwrap();
+
+        assert_eq!(
+            fs::read(work.join("Out/metadata.json")).unwrap(),
+            b"generated"
+        );
+        assert!(fs::metadata(work.join("Out"))
+            .unwrap()
+            .permissions()
+            .readonly());
+        let mut permissions = fs::metadata(work.join("Out")).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(work.join("Out"), permissions).unwrap();
+    }
+
+    #[test]
+    fn apply_plan_preserves_source_file_timestamps() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        let source = work.join("game.bin");
+        fs::write(&source, b"game").unwrap();
+        let expected_modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(946_684_800);
+        let expected_accessed = expected_modified + std::time::Duration::from_secs(60);
+        open_plan_metadata_handle(&source)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_accessed(expected_accessed)
+                    .set_modified(expected_modified),
+            )
+            .unwrap();
+        let source_metadata = fs::metadata(&source).unwrap();
+        let plan = empty_plan(vec![("game.bin".into(), "Out/game.bin".into())], vec![]);
+
+        apply_plan_to_workdir(&plan, &work).unwrap();
+
+        let output_metadata = fs::metadata(work.join("Out/game.bin")).unwrap();
+        assert_time_close(
+            output_metadata.modified().unwrap(),
+            source_metadata.modified().unwrap(),
+        );
+        assert_time_close(
+            output_metadata.accessed().unwrap(),
+            source_metadata.accessed().unwrap(),
+        );
+    }
+
+    #[test]
+    fn apply_plan_preserves_source_directory_timestamps_after_population() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        let source = work.join("source-dir");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("original.bin"), b"original").unwrap();
+        let expected_modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(978_307_200);
+        let expected_accessed = expected_modified + std::time::Duration::from_secs(60);
+        open_plan_metadata_handle(&source)
+            .unwrap()
+            .set_times(
+                std::fs::FileTimes::new()
+                    .set_accessed(expected_accessed)
+                    .set_modified(expected_modified),
+            )
+            .unwrap();
+        let source_metadata = fs::metadata(&source).unwrap();
+        let plan = empty_plan(
+            vec![("source-dir".into(), "Out".into())],
+            vec![("Out/generated.txt".into(), "generated".into())],
+        );
+
+        apply_plan_to_workdir(&plan, &work).unwrap();
+
+        let output_metadata = fs::metadata(work.join("Out")).unwrap();
+        assert_time_close(
+            output_metadata.modified().unwrap(),
+            source_metadata.modified().unwrap(),
+        );
+        assert_time_close(
+            output_metadata.accessed().unwrap(),
+            source_metadata.accessed().unwrap(),
+        );
+    }
+
+    #[test]
+    fn apply_plan_reports_prebackup_error_and_staging_cleanup_failure() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("a.bin"), b"a").unwrap();
+        fs::write(work.join("b.bin"), b"b").unwrap();
+        let plan = empty_plan(
+            vec![
+                ("a.bin".into(), "conflict".into()),
+                ("b.bin".into(), "conflict/child.bin".into()),
+            ],
+            vec![],
+        );
+        let retained_path = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let retained_path_for_cleanup = retained_path.clone();
+
+        let error = apply_plan_to_workdir_with_hooks(
+            &plan,
+            &work,
+            |_| Ok(()),
+            move |directory| {
+                let path = directory.keep();
+                *retained_path_for_cleanup.lock().unwrap() = Some(path.clone());
+                anyhow::bail!("injected staging cleanup failure at {}", path.display());
+            },
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+        let retained_path = retained_path.lock().unwrap().clone().unwrap();
+
+        assert!(error.contains("conflict"), "missing build error: {error}");
+        assert!(
+            error.contains("injected staging cleanup failure"),
+            "missing cleanup error: {error}"
+        );
+        assert!(
+            error.contains(&retained_path.display().to_string()),
+            "missing exact staging path: {error}"
+        );
+        assert!(retained_path.exists());
+        assert_eq!(fs::read(work.join("a.bin")).unwrap(), b"a");
+        assert_eq!(fs::read(work.join("b.bin")).unwrap(), b"b");
+        fs::remove_dir_all(&retained_path).unwrap();
+        assert_no_plan_staging_directories(temp.path());
+    }
+
+    #[test]
     fn apply_plan_restores_complete_layout_when_second_promotion_fails() {
         let temp = tempfile::tempdir().unwrap();
         let work = temp.path().join("work");
@@ -589,6 +859,36 @@ mod tests {
         assert!(!work.join("Alpha").exists());
         assert!(!work.join("Beta").exists());
         assert_no_plan_staging_directories(temp.path());
+    }
+
+    #[test]
+    fn apply_plan_restores_complete_layout_at_each_forward_swap_failure() {
+        let cases = [
+            PlanSwapPoint::BeforeBackup(0),
+            PlanSwapPoint::BeforeBackup(1),
+            PlanSwapPoint::BeforePromote(0),
+            PlanSwapPoint::BeforePromote(1),
+        ];
+
+        for failure_point in cases {
+            let temp = tempfile::tempdir().unwrap();
+            let (work, plan) = transactional_fixture(temp.path());
+
+            let error = apply_plan_to_workdir_with_swap_hook(&plan, &work, |point| {
+                if point == failure_point {
+                    anyhow::bail!("injected forward swap failure at {point:?}");
+                }
+                Ok(())
+            })
+            .unwrap_err();
+
+            assert!(
+                format!("{error:#}").contains("injected forward swap failure"),
+                "unexpected error for {failure_point:?}: {error:#}"
+            );
+            assert_original_layout(&work);
+            assert_no_plan_staging_directories(temp.path());
+        }
     }
 
     #[test]
@@ -629,6 +929,131 @@ mod tests {
         }
         assert_eq!(fs::read(work.join("alpha.bin")).unwrap(), b"alpha");
         assert_eq!(fs::read(work.join("beta.bin")).unwrap(), b"beta");
+        assert_eq!(fs::read(work.join("Alpha/output.bin")).unwrap(), b"alpha");
+        let recovery_directories = plan_recovery_directories(temp.path());
+        let staging = recovery_directories
+            .iter()
+            .find(|path| {
+                !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("backup")
+            })
+            .unwrap();
+        let backup = recovery_directories
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("backup")
+            })
+            .unwrap();
+        assert_eq!(fs::read(staging.join("Beta/output.bin")).unwrap(), b"beta");
+        assert!(fs::read_dir(backup).unwrap().next().is_none());
+        for path in recovery_directories {
+            fs::remove_dir_all(path).unwrap();
+        }
+        assert_no_plan_staging_directories(temp.path());
+    }
+
+    #[test]
+    fn apply_plan_retains_exact_recovery_contents_when_backup_restore_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let (work, plan) = transactional_fixture(temp.path());
+
+        let error = apply_plan_to_workdir_with_swap_hook(&plan, &work, |point| {
+            if matches!(
+                point,
+                PlanSwapPoint::BeforePromote(0) | PlanSwapPoint::BeforeRestoreBackup(0)
+            ) {
+                anyhow::bail!("injected backup restore failure");
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        let error = format!("{error:#}");
+        let recovery_directories = plan_recovery_directories(temp.path());
+        let staging = recovery_directories
+            .iter()
+            .find(|path| {
+                !path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("backup")
+            })
+            .unwrap();
+        let backup = recovery_directories
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("backup")
+            })
+            .unwrap();
+
+        assert!(error.contains(&staging.display().to_string()));
+        assert!(error.contains(&backup.display().to_string()));
+        assert_eq!(fs::read(work.join("alpha.bin")).unwrap(), b"alpha");
+        assert_eq!(fs::read(work.join("beta.bin")).unwrap(), b"beta");
+        assert!(!work.join("unplanned.bin").exists());
+        assert_eq!(
+            fs::read(backup.join("unplanned.bin")).unwrap(),
+            b"unplanned"
+        );
+        assert_eq!(
+            fs::read(staging.join("Alpha/output.bin")).unwrap(),
+            b"alpha"
+        );
+        assert_eq!(fs::read(staging.join("Beta/output.bin")).unwrap(), b"beta");
+        for path in recovery_directories {
+            fs::remove_dir_all(path).unwrap();
+        }
+        assert_no_plan_staging_directories(temp.path());
+    }
+
+    #[test]
+    fn apply_plan_retains_original_backup_when_restore_destination_collides() {
+        let temp = tempfile::tempdir().unwrap();
+        let (work, plan) = transactional_fixture(temp.path());
+
+        let error = apply_plan_to_workdir_with_swap_hook(&plan, &work, |point| {
+            if point == PlanSwapPoint::BeforePromote(0) {
+                anyhow::bail!("injected promotion failure");
+            }
+            if point == PlanSwapPoint::BeforeRestoreBackup(0) {
+                fs::write(work.join("unplanned.bin"), b"collision")?;
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        let error = format!("{error:#}");
+        let recovery_directories = plan_recovery_directories(temp.path());
+        let backup = recovery_directories
+            .iter()
+            .find(|path| {
+                path.file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("backup")
+            })
+            .unwrap();
+
+        assert!(error.contains("refusing to replace existing"));
+        assert_eq!(fs::read(work.join("alpha.bin")).unwrap(), b"alpha");
+        assert_eq!(fs::read(work.join("beta.bin")).unwrap(), b"beta");
+        assert_eq!(fs::read(work.join("unplanned.bin")).unwrap(), b"collision");
+        assert_eq!(
+            fs::read(backup.join("unplanned.bin")).unwrap(),
+            b"unplanned"
+        );
+        for path in recovery_directories {
+            fs::remove_dir_all(path).unwrap();
+        }
+        assert_no_plan_staging_directories(temp.path());
     }
 
     #[test]

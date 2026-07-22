@@ -14,6 +14,80 @@ pub use super::flatten::find_and_flatten_game_content; // Kept as pub if needed 
 pub use super::metadata::{GameMetadata, ScreenshotData};
 pub use super::tasks::*;
 
+pub(crate) fn open_plan_metadata_handle(path: &Path) -> std::io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        const FILE_SHARE_WRITE: u32 = 0x0000_0002;
+        const FILE_SHARE_DELETE: u32 = 0x0000_0004;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+        return std::fs::OpenOptions::new()
+            .access_mode(FILE_WRITE_ATTRIBUTES)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path);
+    }
+
+    #[cfg(not(windows))]
+    std::fs::File::open(path)
+}
+
+#[derive(Debug)]
+struct PreservedPlanMetadata {
+    permissions: std::fs::Permissions,
+    accessed: std::time::SystemTime,
+    modified: std::time::SystemTime,
+    #[cfg(any(windows, target_os = "macos"))]
+    created: std::time::SystemTime,
+}
+
+impl PreservedPlanMetadata {
+    fn capture(metadata: &std::fs::Metadata, source: &Path) -> Result<Self> {
+        Ok(Self {
+            permissions: metadata.permissions(),
+            accessed: metadata
+                .accessed()
+                .with_context(|| format!("reading access time for {}", source.display()))?,
+            modified: metadata
+                .modified()
+                .with_context(|| format!("reading modification time for {}", source.display()))?,
+            #[cfg(any(windows, target_os = "macos"))]
+            created: metadata
+                .created()
+                .with_context(|| format!("reading creation time for {}", source.display()))?,
+        })
+    }
+
+    fn apply_to_file(&self, file: &std::fs::File, destination: &Path) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        use std::os::macos::fs::FileTimesExt;
+        #[cfg(windows)]
+        use std::os::windows::fs::FileTimesExt;
+
+        let times = std::fs::FileTimes::new()
+            .set_accessed(self.accessed)
+            .set_modified(self.modified);
+        #[cfg(any(windows, target_os = "macos"))]
+        let times = times.set_created(self.created);
+
+        file.set_times(times)
+            .with_context(|| format!("preserving timestamps on {}", destination.display()))?;
+        file.set_permissions(self.permissions.clone())
+            .with_context(|| format!("preserving permissions on {}", destination.display()))?;
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct DeferredDirectoryMetadata {
+    destination: CheckedRelativePath,
+    metadata: PreservedPlanMetadata,
+}
+
 /// Persist a plan-controlled file without following or replacing an existing
 /// final leaf. The temporary file is created beside the destination so the
 /// final no-clobber operation is atomic on the destination filesystem.
@@ -21,6 +95,15 @@ pub(crate) fn persist_plan_output<R: std::io::Read + ?Sized>(
     root: &Path,
     relative: &CheckedRelativePath,
     reader: &mut R,
+) -> Result<()> {
+    persist_plan_output_with_metadata(root, relative, reader, None)
+}
+
+fn persist_plan_output_with_metadata<R: std::io::Read + ?Sized>(
+    root: &Path,
+    relative: &CheckedRelativePath,
+    reader: &mut R,
+    metadata: Option<&PreservedPlanMetadata>,
 ) -> Result<()> {
     let output = relative.resolve_under(root)?;
     let parent = output
@@ -44,13 +127,16 @@ pub(crate) fn persist_plan_output<R: std::io::Read + ?Sized>(
     staged
         .flush()
         .with_context(|| format!("flushing staged output {}", checked_output.display()))?;
+    if let Some(metadata) = metadata {
+        metadata.apply_to_file(staged.as_file(), &checked_output)?;
+    }
     staged
         .as_file()
         .sync_all()
         .with_context(|| format!("syncing staged output {}", checked_output.display()))?;
 
     let checked_output = relative.resolve_under(root)?;
-    staged
+    let persisted = staged
         .persist_noclobber(&checked_output)
         .map_err(|error| error.error)
         .with_context(|| {
@@ -59,6 +145,15 @@ pub(crate) fn persist_plan_output<R: std::io::Read + ?Sized>(
                 checked_output.display()
             )
         })?;
+    // tempfile clears Windows temporary-file attributes during persistence,
+    // which also clears read-only. Reapply after the no-clobber move while the
+    // returned handle still identifies the persisted file.
+    if let Some(metadata) = metadata {
+        metadata.apply_to_file(&persisted, &checked_output)?;
+        persisted
+            .sync_all()
+            .with_context(|| format!("syncing persisted output {}", checked_output.display()))?;
+    }
     Ok(())
 }
 
@@ -69,9 +164,11 @@ pub(crate) fn copy_plan_source(
     output_root: &Path,
     destination: &CheckedRelativePath,
     source: &Path,
+    deferred_directories: &mut Vec<DeferredDirectoryMetadata>,
 ) -> Result<()> {
     let metadata = std::fs::symlink_metadata(source)
         .with_context(|| format!("inspecting organization source {}", source.display()))?;
+    let preserved_metadata = PreservedPlanMetadata::capture(&metadata, source)?;
 
     if metadata.file_type().is_symlink() {
         anyhow::bail!(
@@ -83,15 +180,13 @@ pub(crate) fn copy_plan_source(
     if metadata.is_file() {
         let mut source_file = std::fs::File::open(source)
             .with_context(|| format!("opening organization source {}", source.display()))?;
-        persist_plan_output(output_root, destination, &mut source_file)
-            .with_context(|| format!("copying organization source {}", source.display()))?;
-        let copied = destination.resolve_under(output_root)?;
-        std::fs::set_permissions(&copied, metadata.permissions()).with_context(|| {
-            format!(
-                "preserving organization source permissions on {}",
-                copied.display()
-            )
-        })?;
+        persist_plan_output_with_metadata(
+            output_root,
+            destination,
+            &mut source_file,
+            Some(&preserved_metadata),
+        )
+        .with_context(|| format!("copying organization source {}", source.display()))?;
         return Ok(());
     }
 
@@ -138,16 +233,51 @@ pub(crate) fn copy_plan_source(
         })?;
         let child_destination =
             CheckedRelativePath::new(format!("{}/{}", destination.as_path().display(), name))?;
-        copy_plan_source(output_root, &child_destination, &entry.path())?;
+        copy_plan_source(
+            output_root,
+            &child_destination,
+            &entry.path(),
+            deferred_directories,
+        )?;
     }
 
-    let copied = destination.resolve_under(output_root)?;
-    std::fs::set_permissions(&copied, metadata.permissions()).with_context(|| {
-        format!(
-            "preserving organization directory permissions on {}",
-            copied.display()
-        )
-    })?;
+    deferred_directories.push(DeferredDirectoryMetadata {
+        destination: destination.clone(),
+        metadata: preserved_metadata,
+    });
+
+    Ok(())
+}
+
+/// Apply directory timestamps and permissions only after every planned child
+/// has been populated. Applying deepest-first prevents a read-only ancestor
+/// from blocking a later valid merge. ACLs, extended attributes, and hard-link
+/// identity are not represented by Rust's portable filesystem metadata API.
+pub(crate) fn apply_deferred_directory_metadata(
+    output_root: &Path,
+    deferred_directories: &mut Vec<DeferredDirectoryMetadata>,
+) -> Result<()> {
+    deferred_directories
+        .sort_by_key(|record| std::cmp::Reverse(record.destination.as_path().components().count()));
+
+    for record in deferred_directories.drain(..) {
+        let destination = record.destination.resolve_under(output_root)?;
+        let directory = open_plan_metadata_handle(&destination).with_context(|| {
+            format!(
+                "opening organization output directory {} for metadata",
+                destination.display()
+            )
+        })?;
+        record
+            .metadata
+            .apply_to_file(&directory, &destination)
+            .with_context(|| {
+                format!(
+                    "preserving organization directory metadata on {}",
+                    destination.display()
+                )
+            })?;
+    }
 
     Ok(())
 }
@@ -295,6 +425,7 @@ pub fn execute_organization_plan(
 
     // 2. Move files according to plan
     debug!("Moving files according to plan");
+    let mut deferred_directories = Vec::new();
 
     if plan.use_standard_layout {
         // Standard Layout: Smart Flattening
@@ -316,7 +447,12 @@ pub fn execute_organization_plan(
             match std::fs::symlink_metadata(&src_path) {
                 Ok(_) => {
                     let src_path = source.resolve_under(&source_extracted)?;
-                    copy_plan_source(&organized_dir, destination, &src_path)?;
+                    copy_plan_source(
+                        &organized_dir,
+                        destination,
+                        &src_path,
+                        &mut deferred_directories,
+                    )?;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     debug!("Source file not found (maybe directory?): {}", src_rel);
@@ -381,6 +517,9 @@ pub fn execute_organization_plan(
             }
         }
     }
+
+    apply_deferred_directory_metadata(&organized_dir, &mut deferred_directories)
+        .context("preserving organized directory metadata")?;
 
     // 3. Compress organized directory to dest
     debug!("Compressing organized structure to {}", format_name);
