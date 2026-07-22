@@ -185,15 +185,27 @@ impl ProxyConfig {
         }
     }
 
-    /// Validate that the config can be turned into a usable proxy.
+    /// Validate that the active transport can be turned into a usable proxy.
     ///
-    /// Returns `Ok(())` when the config is disabled (no proxy needed)
-    /// OR when the address parses cleanly. Returns a user-readable
-    /// `Err(String)` when proxying is enabled but the address fails to
-    /// parse. Used by the settings save flow to surface invalid input
-    /// instead of silently disabling the proxy (audit finding M4).
+    /// Disabled configurations always pass because no transport will consume
+    /// their stored address. Storage boundaries that must reject malformed
+    /// nonempty addresses even while disabled should use
+    /// [`ProxyConfig::validate_for_storage`].
     pub fn validate(&self) -> Result<(), String> {
         if !self.enabled {
+            return Ok(());
+        }
+        self.create_proxy().map(|_| ())
+    }
+
+    /// Validate a proxy configuration before storing it.
+    ///
+    /// A disabled proxy may have no address, but every nonempty address must
+    /// be a strict host-and-port authority regardless of enablement. This
+    /// prevents invalid or credential-bearing authorities from crossing a
+    /// persistence boundary and being activated later.
+    pub fn validate_for_storage(&self) -> Result<(), String> {
+        if !self.enabled && self.address.is_empty() {
             return Ok(());
         }
         self.create_proxy().map(|_| ())
@@ -815,6 +827,31 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn storage_validation_rejects_disabled_nonempty_address_userinfo_without_echoing_it() {
+        let mut config = embedded_userinfo_config();
+        config.enabled = false;
+
+        let error = config
+            .validate_for_storage()
+            .expect_err("stored nonempty proxy authorities must remain strict when disabled");
+
+        assert_credentials_redacted(&error);
+        assert!(error.contains("<invalid address>"), "{error}");
+    }
+
+    #[test]
+    fn storage_validation_accepts_blank_disabled_proxy() {
+        let config = ProxyConfig {
+            enabled: false,
+            address: String::new(),
+            username: Some(USERNAME_SECRET.to_string()),
+            password: Some(PASSWORD_SECRET.to_string()),
+        };
+
+        assert!(config.validate_for_storage().is_ok());
     }
 
     #[test]
