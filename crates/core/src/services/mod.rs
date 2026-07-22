@@ -8,6 +8,7 @@ mod config_service;
 mod library_service;
 mod manager;
 mod merge_service;
+mod network_proxy_persistence_service;
 mod organization_service;
 mod secrets_service;
 mod ui_service;
@@ -19,6 +20,9 @@ pub use manager::Services;
 pub use merge_service::{
     CompressionLevel, MergeOptions, MergePhase, MergePreview, MergeProgress,
     MergeProgressCallback, MergeService, OutputFormat,
+};
+pub use network_proxy_persistence_service::{
+    NetworkProxyPersistenceService, ProxyRecoveryOutcome, ProxySaveOutcome,
 };
 pub use organization_service::OrganizationService;
 pub use secrets_service::SecretsService;
