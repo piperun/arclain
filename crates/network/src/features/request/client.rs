@@ -55,48 +55,83 @@ pub(super) fn parse_content_range_total(header: &str) -> Option<u64> {
 }
 
 /// State-carrying completion signal for one asynchronous request.
-#[derive(Debug, Clone)]
-pub(super) struct RequestCompletion {
-    sender: watch::Sender<RequestStatus>,
+#[derive(Debug)]
+struct CompletionState {
+    status: RequestStatus,
     #[cfg(test)]
     status_clone_count: Arc<AtomicUsize>,
 }
 
-impl RequestCompletion {
-    pub(super) fn new(initial: RequestStatus) -> Self {
-        let (sender, _receiver) = watch::channel(initial);
+impl CompletionState {
+    fn new(status: RequestStatus) -> Self {
         Self {
-            sender,
+            status,
             #[cfg(test)]
             status_clone_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    pub(super) fn status(&self) -> RequestStatus {
+    fn clone_status(&self) -> RequestStatus {
         #[cfg(test)]
         self.status_clone_count.fetch_add(1, Ordering::Relaxed);
-        self.sender.borrow().clone()
+        self.status.clone()
+    }
+}
+
+impl Clone for CompletionState {
+    fn clone(&self) -> Self {
+        #[cfg(test)]
+        self.status_clone_count.fetch_add(1, Ordering::Relaxed);
+        Self {
+            status: self.status.clone(),
+            #[cfg(test)]
+            status_clone_count: self.status_clone_count.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct RequestCompletion {
+    sender: watch::Sender<CompletionState>,
+}
+
+impl RequestCompletion {
+    pub(super) fn new(initial: RequestStatus) -> Self {
+        let (sender, _receiver) = watch::channel(CompletionState::new(initial));
+        Self { sender }
+    }
+
+    pub(super) fn status(&self) -> RequestStatus {
+        self.sender.borrow().clone_status()
     }
 
     fn is_complete(&self) -> bool {
-        self.sender.borrow().is_complete()
+        self.sender.borrow().status.is_complete()
     }
 
     fn is_pending(&self) -> bool {
-        self.sender.borrow().is_pending()
+        self.sender.borrow().status.is_pending()
     }
 
     #[cfg(test)]
     pub(super) fn status_clone_count(&self) -> usize {
-        self.status_clone_count.load(Ordering::Relaxed)
+        self.sender
+            .borrow()
+            .status_clone_count
+            .load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(super) fn clone_watched_state_for_test(&self) {
+        let _cloned: CompletionState = self.sender.borrow().clone();
     }
 
     pub(super) fn set(&self, status: RequestStatus) {
         self.sender.send_if_modified(move |current| {
-            if current.is_complete() {
+            if current.status.is_complete() {
                 return false;
             }
-            *current = status;
+            current.status = status;
             true
         });
     }
@@ -106,7 +141,7 @@ impl RequestCompletion {
         loop {
             let is_complete = {
                 let status = receiver.borrow_and_update();
-                status.is_complete()
+                status.status.is_complete()
             };
             if is_complete {
                 return;

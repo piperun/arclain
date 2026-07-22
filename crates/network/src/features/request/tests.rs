@@ -328,6 +328,25 @@ async fn completion_during_waiter_setup_is_not_lost() {
     assert!(matches!(status, RequestStatus::Failed(ref message) if message == "during-setup"));
 }
 
+#[test]
+fn clone_counter_detects_clones_of_the_watched_completion_state() {
+    let completion = RequestCompletion::new(RequestStatus::Ready(HttpResponse {
+        status_code: 200,
+        headers: Default::default(),
+        body: vec![0x3c; 1024 * 1024],
+        content_type: None,
+    }));
+    assert_eq!(completion.status_clone_count(), 0);
+
+    completion.clone_watched_state_for_test();
+
+    assert_eq!(
+        completion.status_clone_count(),
+        1,
+        "the counter must catch deep clones of the watch payload"
+    );
+}
+
 #[tokio::test]
 async fn internal_completion_checks_do_not_clone_ready_response_bodies() {
     let mock_server = MockServer::start().await;
