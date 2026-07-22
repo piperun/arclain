@@ -11,6 +11,7 @@ parses.
 """
 from __future__ import annotations
 
+import argparse
 import importlib
 import inspect
 import json
@@ -28,7 +29,9 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import _package
+import _plugins
 import _ui
+import release
 from _package import get_platform, workspace_version
 from _ui import load_rust_log
 
@@ -115,6 +118,124 @@ class TestPluginVersions(unittest.TestCase):
                 with (root / f"{plugin}.toml").open("rb") as handle:
                     manifest_version = tomllib.load(handle)["plugin"]["version"]
                 self.assertEqual(manifest_version, cargo_version, plugin)
+
+
+class TestReleaseDelegation(unittest.TestCase):
+    def test_release_delegates_plugin_build_and_packaging_once(self):
+        args = argparse.Namespace(skip_tests=True)
+
+        with mock.patch.object(release, "run") as run, \
+             mock.patch.object(
+                 release._package,
+                 "cargo_target_dir",
+                 return_value=REPO_ROOT / "target",
+             ), \
+             mock.patch.object(
+                 release._package,
+                 "workspace_version",
+                 return_value="1.2.3",
+             ) as workspace_version, \
+             mock.patch.object(_plugins, "build", return_value=0) as build, \
+             mock.patch.object(_package, "package") as package:
+            release.cmd_release(args)
+
+        run.assert_called_once_with(
+            ["cargo", "build", "--release", "--package", "arclain_ui"],
+            cwd=REPO_ROOT,
+        )
+        build.assert_called_once_with()
+        workspace_version.assert_called_once_with()
+        package.assert_called_once_with(
+            profile="release",
+            archive=True,
+            version="1.2.3",
+        )
+
+    def test_debug_delegates_plugin_build_and_packaging_once(self):
+        with mock.patch.object(release, "run") as run, \
+             mock.patch.object(
+                 release._package,
+                 "cargo_target_dir",
+                 return_value=REPO_ROOT / "target",
+             ), \
+             mock.patch.object(
+                 release._package,
+                 "workspace_version",
+                 return_value="1.2.3",
+             ) as workspace_version, \
+             mock.patch.object(_plugins, "build", return_value=0) as build, \
+             mock.patch.object(_package, "package") as package:
+            release.cmd_debug(argparse.Namespace())
+
+        run.assert_called_once_with(
+            ["cargo", "build", "--package", "arclain_ui"],
+            cwd=REPO_ROOT,
+        )
+        build.assert_called_once_with()
+        workspace_version.assert_called_once_with()
+        package.assert_called_once_with(
+            profile="debug",
+            archive=False,
+            version="1.2.3",
+        )
+
+    def test_plugin_commands_delegate_to_canonical_helpers(self):
+        with mock.patch.object(_plugins, "build", return_value=0) as build:
+            release.cmd_plugins(argparse.Namespace())
+
+        build.assert_called_once_with()
+
+        with mock.patch.object(_plugins, "clean", return_value=0) as clean:
+            release.cmd_clean_plugins(argparse.Namespace())
+
+        clean.assert_called_once_with()
+
+    def test_plugin_build_failures_propagate_without_packaging(self):
+        commands = (
+            (release.cmd_release, argparse.Namespace(skip_tests=False)),
+            (release.cmd_debug, argparse.Namespace()),
+            (release.cmd_plugins, argparse.Namespace()),
+        )
+        for command, args in commands:
+            with self.subTest(command=command.__name__), \
+                 mock.patch.object(release, "run"), \
+                 mock.patch.object(
+                     release._package,
+                     "cargo_target_dir",
+                     return_value=REPO_ROOT / "target",
+                 ), \
+                 mock.patch.object(
+                     release._package,
+                     "workspace_version",
+                     return_value="1.2.3",
+                 ), \
+                 mock.patch.object(_plugins, "build", return_value=23), \
+                 mock.patch.object(_package, "package") as package:
+                with self.assertRaises(SystemExit) as raised:
+                    command(args)
+
+                self.assertEqual(raised.exception.code, 23)
+                package.assert_not_called()
+
+    def test_plugin_clean_failure_propagates_exact_status(self):
+        with mock.patch.object(_plugins, "clean", return_value=29), \
+             self.assertRaises(SystemExit) as raised:
+            release.cmd_clean_plugins(argparse.Namespace())
+
+        self.assertEqual(raised.exception.code, 29)
+
+    def test_release_source_has_no_duplicate_helper_implementations(self):
+        source = inspect.getsource(release)
+
+        for helper in (
+            "build_plugins",
+            "clean_plugins",
+            "get_platform",
+            "sha256_file",
+            "get_version_from_cargo",
+        ):
+            with self.subTest(helper=helper):
+                self.assertNotIn(f"def {helper}(", source)
 
 
 class TestGetPlatform(unittest.TestCase):

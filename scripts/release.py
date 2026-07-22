@@ -31,12 +31,10 @@ from pathlib import Path
 from typing import Callable
 
 import _package
+import _plugins
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SCRIPT_DIR = Path(__file__).resolve().parent
-PLUGINS_DIR = REPO_ROOT / "plugins"
-WASM_TARGET = "wasm32-wasip2"
-SKIP_PLUGINS = {"gstreamer-preview", "ui-demo"}
 LOGGING_CONFIG = SCRIPT_DIR / "logging_config.json"
 DEFAULT_RUST_LOG = "arclain=debug,info"
 
@@ -72,112 +70,9 @@ def run_passthrough(
     return subprocess.run(cmd, cwd=cwd, env=merged_env).returncode
 
 
-def get_version_from_cargo() -> str:
-    """Extract `[workspace.package].version` from the root Cargo.toml.
-
-    Reads the unified workspace version, not a per-crate file. After
-    the workspace.package migration, per-crate Cargo.toml files use
-    `version.workspace = true` and contain no explicit version string
-    — naively grepping them now picks up a *dependency*'s version
-    (e.g. egui_extras = { version = "0.33.0", ... }) and ships
-    binaries with completely wrong names. Use tomllib (stdlib since
-    Python 3.11) to walk the structured tree instead.
-    """
-    cargo_toml = REPO_ROOT / "Cargo.toml"
-    if not cargo_toml.exists():
-        return "0.0.0"
-
-    import tomllib
-    with open(cargo_toml, "rb") as f:
-        data = tomllib.load(f)
-
-    return (
-        data.get("workspace", {})
-        .get("package", {})
-        .get("version", "0.0.0")
-    )
-
-
 def have_command(name: str) -> bool:
     """True if `name` is on PATH."""
     return shutil.which(name) is not None
-
-
-# ---------------------------------------------------------------------------
-# Plugin build
-# ---------------------------------------------------------------------------
-
-
-def build_plugins() -> bool:
-    """Build all WASM plugins. Returns True if all succeeded."""
-    print("Building WASM plugins...")
-    print(f"  Target: {WASM_TARGET}")
-
-    # Ensure target is installed
-    installed = subprocess.run(
-        ["rustup", "target", "list", "--installed"],
-        capture_output=True, text=True,
-    )
-    if WASM_TARGET not in installed.stdout:
-        print(f"  Installing target {WASM_TARGET}...")
-        run(["rustup", "target", "add", WASM_TARGET])
-
-    all_ok = True
-    for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
-        cargo_toml = plugin_dir / "Cargo.toml"
-        if not plugin_dir.is_dir() or not cargo_toml.exists():
-            continue
-
-        plugin_name = plugin_dir.name
-        print(f"\n  Building {plugin_name}...")
-
-        result = subprocess.run(
-            ["cargo", "build", "--target", WASM_TARGET, "--release", "--target-dir", "."],
-            cwd=plugin_dir,
-        )
-        if result.returncode != 0:
-            print(f"  ERROR: Failed to build {plugin_name}")
-            all_ok = False
-            continue
-
-        # WASM filename uses underscores
-        wasm_name = plugin_name.replace("-", "_")
-        wasm_src = plugin_dir / WASM_TARGET / "release" / f"{wasm_name}.wasm"
-        wasm_dest = plugin_dir / f"{plugin_name}.wasm"
-
-        if wasm_src.exists():
-            shutil.copy2(wasm_src, wasm_dest)
-            size = wasm_dest.stat().st_size
-            print(f"  Built: {plugin_name}.wasm ({size:,} bytes)")
-        else:
-            print(f"  WARNING: WASM file not found at {wasm_src}")
-
-    return all_ok
-
-
-def clean_plugins() -> None:
-    """Remove all .wasm artifacts and `cargo clean` every plugin."""
-    print("Cleaning WASM plugins...")
-
-    removed = 0
-    for wasm in PLUGINS_DIR.rglob("*.wasm"):
-        wasm.unlink()
-        removed += 1
-    print(f"  Removed {removed} .wasm file(s)")
-
-    print("\nRunning cargo clean in each plugin...")
-    for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
-        if not plugin_dir.is_dir() or not (plugin_dir / "Cargo.toml").exists():
-            continue
-
-        print(f"  {plugin_dir.name}")
-        result = subprocess.run(
-            ["cargo", "clean", "-q"], cwd=plugin_dir, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            print(f"    WARNING: cargo clean failed for {plugin_dir.name}")
-
-    print("\nClean complete.")
 
 
 # ---------------------------------------------------------------------------
@@ -230,9 +125,10 @@ def _package_build(
     run(cargo_cmd, cwd=REPO_ROOT)
 
     print("\nBuilding plugins...")
-    if not build_plugins():
+    plugin_status = _plugins.build()
+    if plugin_status != 0:
         print("ERROR: Some plugins failed to build.")
-        sys.exit(1)
+        sys.exit(plugin_status)
 
     _package.package(
         profile=profile,
@@ -255,7 +151,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     target_dir = _package.cargo_target_dir(REPO_ROOT)
     print(f"Using Cargo target directory: {target_dir}\n")
 
-    version = get_version_from_cargo()
+    version = _package.workspace_version()
     print(f"Building version: {version}\n")
 
     print("Building optimized binary + plugins...")
@@ -281,7 +177,7 @@ def cmd_debug(_args: argparse.Namespace) -> None:
     target_dir = _package.cargo_target_dir(REPO_ROOT)
     print(f"Using Cargo target directory: {target_dir}\n")
 
-    version = get_version_from_cargo()
+    version = _package.workspace_version()
     print(f"Building version: {version}\n")
 
     print("Building debug binary + plugins...")
@@ -294,23 +190,17 @@ def cmd_debug(_args: argparse.Namespace) -> None:
 
 def cmd_plugins(_args: argparse.Namespace) -> None:
     """Standalone plugin build."""
-    if not build_plugins():
+    plugin_status = _plugins.build()
+    if plugin_status != 0:
         print("\nWARNING: Some plugins failed to build.")
-        sys.exit(1)
-
-    # Summary
-    print("\nPlugin files:")
-    for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
-        wasm = plugin_dir / f"{plugin_dir.name}.wasm"
-        if wasm.exists():
-            size = wasm.stat().st_size
-            print(f"  {wasm.relative_to(REPO_ROOT)} ({size:,} bytes)")
+        sys.exit(plugin_status)
 
 
 def cmd_clean_plugins(_args: argparse.Namespace) -> None:
     """Remove .wasm artifacts and clean each plugin's build dir."""
-    _ = _args
-    clean_plugins()
+    plugin_status = _plugins.clean()
+    if plugin_status != 0:
+        sys.exit(plugin_status)
 
 
 def cmd_ui(args: argparse.Namespace) -> None:
