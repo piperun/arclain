@@ -59,12 +59,13 @@ pub enum PluginStatus {
     Error,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum SnapshotStatus {
     #[default]
     Idle,
     Pending,
     Ready,
+    Failed(String),
 }
 
 impl PluginStatus {
@@ -127,6 +128,15 @@ impl PluginsListState {
         }
         self.plugins = plugins;
         self.snapshot_status = SnapshotStatus::Ready;
+        self.snapshot_request_id = None;
+        true
+    }
+
+    pub fn apply_snapshot_failure(&mut self, request_id: RequestId, error: String) -> bool {
+        if self.snapshot_request_id != Some(request_id) {
+            return false;
+        }
+        self.snapshot_status = SnapshotStatus::Failed(error);
         self.snapshot_request_id = None;
         true
     }

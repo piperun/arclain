@@ -1,7 +1,9 @@
 mod ui_jobs;
 
 pub use crate::features::plugins::domain::types::RequestId;
-pub use ui_jobs::{PluginUiJobs, PluginUiRequest, PluginUiResult, PluginUiTarget};
+pub use ui_jobs::{
+    PluginUiFailureContext, PluginUiJobs, PluginUiRequest, PluginUiResult, PluginUiTarget,
+};
 
 use crate::features::plugins::domain::types::{PluginsListState, SnapshotStatus};
 use crate::features::plugins::presentation::controllers::plugin_controller::{
@@ -16,9 +18,17 @@ pub fn request_plugin_snapshot(shared: &SharedState, state: &mut PluginsListStat
     }
     let user_config = shared.signals().user_config.get();
     if let Some(snapshot) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) {
-        state.plugins = snapshot.as_ref().clone();
-        state.snapshot_status = SnapshotStatus::Ready;
-        state.snapshot_request_id = None;
+        match snapshot {
+            Ok(snapshot) => {
+                state.plugins = snapshot.as_ref().clone();
+                state.snapshot_status = SnapshotStatus::Ready;
+                state.snapshot_request_id = None;
+            }
+            Err(error) => {
+                state.snapshot_status = SnapshotStatus::Failed(error.to_string());
+                state.snapshot_request_id = None;
+            }
+        }
         return;
     }
     let request_id = shared
@@ -40,6 +50,16 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
             } => {
                 let dialog_signal = shared.signals().plugin_dialog_state.clone();
                 let mut dialog_state = dialog_signal.get();
+                let actions = match actions {
+                    Ok(actions) => actions,
+                    Err(error) => {
+                        if dialog_state.apply_page_init_failure(request_id, error.clone()) {
+                            dialog_signal.set(dialog_state);
+                            shared.toaster.lock().error(error);
+                        }
+                        continue;
+                    }
+                };
                 if !dialog_state.apply_page_initialized(request_id) {
                     continue;
                 }
@@ -64,21 +84,17 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                     page_display_name_signal: Some(&origin.page_display_name),
                     metadata_signal: Some(&origin.metadata),
                     shared_state: Some(shared),
+                    origin_tab: Some(origin_tab),
                 };
-                match actions {
-                    Ok(actions) => {
-                        for action in actions {
-                            process_action(
-                                action,
-                                &plugin_id,
-                                &mut dialog_state,
-                                &mut toaster,
-                                Some(&shared.refresh_requests),
-                                &context,
-                            );
-                        }
-                    }
-                    Err(error) => toaster.error(error),
+                for action in actions {
+                    process_action(
+                        action,
+                        &plugin_id,
+                        &mut dialog_state,
+                        &mut toaster,
+                        Some(&shared.refresh_requests),
+                        &context,
+                    );
                 }
                 dialog_signal.set(dialog_state);
             }
@@ -131,11 +147,100 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
             PluginUiResult::LayoutLoaded { .. }
             | PluginUiResult::ChromeSnapshotLoaded { .. }
             | PluginUiResult::NetworkLogLoaded { .. } => {}
-            PluginUiResult::Failed { error, .. } => shared.toaster.lock().error(error),
+            PluginUiResult::UiEventFinished {
+                plugin_id,
+                origin_tab,
+                result,
+                ..
+            } => match result {
+                Ok(completion) => {
+                    if let Some(settings) = completion.settings {
+                        persist_plugin_settings(shared, &plugin_id, settings);
+                    }
+                    process_actions_for_origin(shared, &plugin_id, origin_tab, completion.actions);
+                }
+                Err(error) => shared.toaster.lock().error(error),
+            },
+            PluginUiResult::Failed {
+                request_id,
+                context,
+                error,
+            } => {
+                match context {
+                    PluginUiFailureContext::Snapshot { .. } => {
+                        plugins
+                            .list_state
+                            .apply_snapshot_failure(request_id, error.clone());
+                        plugins
+                            .settings_list_state
+                            .apply_snapshot_failure(request_id, error.clone());
+                    }
+                    PluginUiFailureContext::PageInit { .. } => {
+                        let signal = shared.signals().plugin_dialog_state.clone();
+                        let mut state = signal.get();
+                        if state.apply_page_init_failure(request_id, error.clone()) {
+                            signal.set(state);
+                        }
+                    }
+                    _ => {}
+                }
+                shared.toaster.lock().error(error);
+            }
         }
     }
 
     // Keep cheap chrome data warm. The pending-key set coalesces this
     // per frame until the worker result is drained.
     let _ = shared.plugin_ui_jobs.chrome_snapshot();
+}
+
+fn persist_plugin_settings(
+    shared: &SharedState,
+    plugin_id: &str,
+    settings: std::collections::HashMap<String, String>,
+) {
+    let mut app = shared.app_state.lock();
+    app.user_config.set_plugin_settings(plugin_id, settings);
+    if let Some(service) = &shared.services.config_service {
+        if let Err(error) = service.save_user_config(&app.user_config) {
+            tracing::error!("Failed to save plugin settings: {error}");
+            shared.toaster.lock().error(error.to_string());
+        }
+    }
+    shared.signals().user_config.set(app.user_config.clone());
+}
+
+fn process_actions_for_origin(
+    shared: &SharedState,
+    plugin_id: &str,
+    origin_tab: crate::core::tabs::TabId,
+    actions: Vec<arclain_plugins::types::PluginAction>,
+) {
+    let tabs = shared.signals().tabs.get();
+    let Some(origin) = tabs.get(origin_tab).cloned() else {
+        return;
+    };
+    drop(tabs);
+
+    let dialog_signal = shared.signals().plugin_dialog_state.clone();
+    let mut dialog_state = dialog_signal.get();
+    let mut toaster = shared.toaster.lock();
+    let context = ActionContext {
+        lightbox_signal: Some(&origin.lightbox_state),
+        page_display_name_signal: Some(&origin.page_display_name),
+        metadata_signal: Some(&origin.metadata),
+        shared_state: Some(shared),
+        origin_tab: Some(origin_tab),
+    };
+    for action in actions {
+        process_action(
+            action,
+            plugin_id,
+            &mut dialog_state,
+            &mut toaster,
+            Some(&shared.refresh_requests),
+            &context,
+        );
+    }
+    dialog_signal.set(dialog_state);
 }

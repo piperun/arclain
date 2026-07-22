@@ -185,7 +185,7 @@ pub fn render_tab_bar_panel(
                 source: None,
             }];
 
-            if let Some((_, top_tabs)) = shared_state.plugin_ui_jobs.chrome_snapshot() {
+            if let Some(Ok((_, top_tabs))) = shared_state.plugin_ui_jobs.chrome_snapshot() {
                 for (plugin_id, tab_config) in top_tabs.iter() {
                     tabs.push(components::top_tab_bar::TopTab {
                         id: tab_config.id.clone(),
@@ -271,6 +271,7 @@ pub fn render_status_bar_panel(
             let plugin_info = shared_state
                 .plugin_ui_jobs
                 .chrome_snapshot()
+                .and_then(Result::ok)
                 .map(|(summary, _)| components::status_bar::PluginStatusInfo {
                     total_plugins: summary.total,
                     enabled_plugins: summary.enabled,

@@ -89,7 +89,8 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                                     let plugins = app
                                         .shared_state
                                         .plugin_ui_jobs
-                                        .plugin_snapshot(&user_config);
+                                        .plugin_snapshot(&user_config)
+                                        .and_then(Result::ok);
                                     crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                         &mut app.organization_feature.rules_page,
                                         other,
@@ -110,6 +111,7 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                         .shared_state
                         .plugin_ui_jobs
                         .network_log()
+                        .and_then(Result::ok)
                         .unwrap_or_default();
 
                     crate::shared::components::logs_page::LogsPage::render_page(

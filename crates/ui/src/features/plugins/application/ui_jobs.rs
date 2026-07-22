@@ -62,6 +62,49 @@ pub enum PluginUiRequest {
     Install {
         wasm_path: PathBuf,
     },
+    UiEvent {
+        plugin_id: String,
+        event_id: String,
+        value: Option<String>,
+        origin_tab: TabId,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct PluginUiEventCompletion {
+    pub actions: Vec<PluginAction>,
+    pub settings: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PluginUiFailureContext {
+    PageInit {
+        plugin_id: String,
+        page_id: String,
+        origin_tab: TabId,
+    },
+    Layout {
+        plugin_id: String,
+        target: PluginUiTarget,
+        origin_tab: Option<TabId>,
+    },
+    Snapshot {
+        visibility: Option<String>,
+    },
+    ChromeSnapshot,
+    NetworkLog,
+    SetEnabled {
+        plugin_id: String,
+        enabled: bool,
+    },
+    Install {
+        wasm_path: PathBuf,
+    },
+    UiEvent {
+        plugin_id: String,
+        event_id: String,
+        origin_tab: TabId,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -95,8 +138,15 @@ pub enum PluginUiResult {
         request_id: RequestId,
         result: std::result::Result<(), String>,
     },
+    UiEventFinished {
+        request_id: RequestId,
+        plugin_id: String,
+        origin_tab: TabId,
+        result: std::result::Result<PluginUiEventCompletion, String>,
+    },
     Failed {
         request_id: RequestId,
+        context: PluginUiFailureContext,
         error: String,
     },
 }
@@ -108,8 +158,9 @@ enum RequestKey {
     Snapshot(Option<String>),
     ChromeSnapshot,
     NetworkLog,
-    SetEnabled(String, bool),
-    Install(PathBuf),
+    SetEnabled(RequestId, String, bool),
+    Install(RequestId, PathBuf),
+    UiEvent(RequestId, String, String, TabId),
 }
 
 impl PluginUiRequest {
@@ -131,9 +182,64 @@ impl PluginUiRequest {
             Self::ChromeSnapshot => RequestKey::ChromeSnapshot,
             Self::NetworkLog => RequestKey::NetworkLog,
             Self::SetEnabled { plugin_id, enabled } => {
-                RequestKey::SetEnabled(plugin_id.clone(), *enabled)
+                RequestKey::SetEnabled(request_id, plugin_id.clone(), *enabled)
             }
-            Self::Install { wasm_path } => RequestKey::Install(wasm_path.clone()),
+            Self::Install { wasm_path } => RequestKey::Install(request_id, wasm_path.clone()),
+            Self::UiEvent {
+                plugin_id,
+                event_id,
+                origin_tab,
+                ..
+            } => RequestKey::UiEvent(request_id, plugin_id.clone(), event_id.clone(), *origin_tab),
+        }
+    }
+}
+
+impl RequestKey {
+    fn failure_context(&self) -> PluginUiFailureContext {
+        match self {
+            Self::PageInit(_, plugin_id, page_id, origin_tab) => PluginUiFailureContext::PageInit {
+                plugin_id: plugin_id.clone(),
+                page_id: page_id.clone(),
+                origin_tab: *origin_tab,
+            },
+            Self::Layout(plugin_id, target, origin_tab) => PluginUiFailureContext::Layout {
+                plugin_id: plugin_id.clone(),
+                target: target.clone(),
+                origin_tab: *origin_tab,
+            },
+            Self::Snapshot(visibility) => PluginUiFailureContext::Snapshot {
+                visibility: visibility.clone(),
+            },
+            Self::ChromeSnapshot => PluginUiFailureContext::ChromeSnapshot,
+            Self::NetworkLog => PluginUiFailureContext::NetworkLog,
+            Self::SetEnabled(_, plugin_id, enabled) => PluginUiFailureContext::SetEnabled {
+                plugin_id: plugin_id.clone(),
+                enabled: *enabled,
+            },
+            Self::Install(_, wasm_path) => PluginUiFailureContext::Install {
+                wasm_path: wasm_path.clone(),
+            },
+            Self::UiEvent(_, plugin_id, event_id, origin_tab) => PluginUiFailureContext::UiEvent {
+                plugin_id: plugin_id.clone(),
+                event_id: event_id.clone(),
+                origin_tab: *origin_tab,
+            },
+        }
+    }
+}
+
+impl PluginUiFailureContext {
+    fn operation_name(&self) -> &'static str {
+        match self {
+            Self::PageInit { .. } => "page init",
+            Self::Layout { .. } => "layout",
+            Self::Snapshot { .. } => "plugin snapshot",
+            Self::ChromeSnapshot => "chrome snapshot",
+            Self::NetworkLog => "network log",
+            Self::SetEnabled { .. } => "set enabled",
+            Self::Install { .. } => "install",
+            Self::UiEvent { .. } => "UI event",
         }
     }
 }
@@ -162,9 +268,12 @@ struct PluginUiCache {
         (String, PluginUiTarget, Option<TabId>),
         std::result::Result<Arc<PluginLayout>, Arc<str>>,
     >,
-    snapshots: HashMap<Option<String>, Arc<Vec<PluginInfo>>>,
-    chrome: Option<(PluginStatusSummary, Arc<Vec<(String, TopTabConfig)>>)>,
+    snapshots: HashMap<Option<String>, std::result::Result<Arc<Vec<PluginInfo>>, Arc<str>>>,
+    chrome: Option<
+        std::result::Result<(PluginStatusSummary, Arc<Vec<(String, TopTabConfig)>>), Arc<str>>,
+    >,
     network_log: Option<(Instant, Arc<Vec<(SystemTime, String)>>)>,
+    network_log_failure: Option<Arc<str>>,
     completed_mutations: HashMap<RequestId, PluginUiMutation>,
 }
 
@@ -247,6 +356,7 @@ impl PluginUiJobs {
         let origin_tab = match &request {
             PluginUiRequest::PageInit { origin_tab, .. } => Some(*origin_tab),
             PluginUiRequest::Layout { origin_tab, .. } => *origin_tab,
+            PluginUiRequest::UiEvent { origin_tab, .. } => Some(*origin_tab),
             _ => None,
         };
         let origin_context = origin_tab.and_then(|tab_id| {
@@ -266,11 +376,14 @@ impl PluginUiJobs {
             PluginUiRequest::PageInit { .. }
                 | PluginUiRequest::SetEnabled { .. }
                 | PluginUiRequest::Install { .. }
+                | PluginUiRequest::UiEvent { .. }
         ) {
-            if self.ordered_sender.send(job).is_err() {
-                self.pending
-                    .lock()
-                    .retain(|_, pending_id| *pending_id != request_id);
+            if let Err(mpsc::SendError(job)) = self.ordered_sender.send(job) {
+                let completed = failed_completed(
+                    job,
+                    "plugin UI ordered worker channel is unavailable".to_string(),
+                );
+                publish_completed(&self.sender, &self.completion_epoch, completed);
             }
             return request_id;
         }
@@ -282,12 +395,12 @@ impl PluginUiJobs {
             let fallback_key = job.key.clone();
             let fallback_request_id = job.request_id;
             let completed = tokio::task::spawn_blocking(move || execute_job(manager, job)).await;
-            let completed = completed.unwrap_or_else(|error| Completed {
-                key: fallback_key,
-                result: PluginUiResult::Failed {
-                    request_id: fallback_request_id,
-                    error: format!("plugin UI worker failed: {error}"),
-                },
+            let completed = completed.unwrap_or_else(|error| {
+                failed_completed_parts(
+                    fallback_key,
+                    fallback_request_id,
+                    format!("plugin UI worker failed: {error}"),
+                )
             });
             publish_completed(&sender, &completion_epoch, completed);
         });
@@ -353,7 +466,10 @@ impl PluginUiJobs {
             .retain(|key, _| !matches!(key, RequestKey::Layout(..)));
     }
 
-    pub fn plugin_snapshot(&self, user_config: &UserConfig) -> Option<Arc<Vec<PluginInfo>>> {
+    pub fn plugin_snapshot(
+        &self,
+        user_config: &UserConfig,
+    ) -> Option<std::result::Result<Arc<Vec<PluginInfo>>, Arc<str>>> {
         let key = user_config.plugin_visibility.clone();
         let snapshot = self.cache.lock().snapshots.get(&key).cloned();
         if snapshot.is_none() {
@@ -373,7 +489,9 @@ impl PluginUiJobs {
 
     pub fn chrome_snapshot(
         &self,
-    ) -> Option<(PluginStatusSummary, Arc<Vec<(String, TopTabConfig)>>)> {
+    ) -> Option<
+        std::result::Result<(PluginStatusSummary, Arc<Vec<(String, TopTabConfig)>>), Arc<str>>,
+    > {
         let snapshot = self.cache.lock().chrome.clone();
         if snapshot.is_none() {
             self.request(PluginUiRequest::ChromeSnapshot);
@@ -386,15 +504,25 @@ impl PluginUiJobs {
         self.pending.lock().remove(&RequestKey::ChromeSnapshot);
     }
 
-    pub fn network_log(&self) -> Option<Arc<Vec<(SystemTime, String)>>> {
+    pub fn network_log(
+        &self,
+    ) -> Option<std::result::Result<Arc<Vec<(SystemTime, String)>>, Arc<str>>> {
         self.network_log_at(Instant::now())
     }
 
-    fn network_log_at(&self, now: Instant) -> Option<Arc<Vec<(SystemTime, String)>>> {
-        let cached = self.cache.lock().network_log.clone();
+    fn network_log_at(
+        &self,
+        now: Instant,
+    ) -> Option<std::result::Result<Arc<Vec<(SystemTime, String)>>, Arc<str>>> {
+        let cache = self.cache.lock();
+        if let Some(error) = cache.network_log_failure.clone() {
+            return Some(Err(error));
+        }
+        let cached = cache.network_log.clone();
+        drop(cache);
         if let Some((fetched_at, entries)) = cached {
             if now.saturating_duration_since(fetched_at) < NETWORK_LOG_TTL {
-                return Some(entries);
+                return Some(Ok(entries));
             }
             self.invalidate_network_log();
         }
@@ -403,7 +531,10 @@ impl PluginUiJobs {
     }
 
     pub fn invalidate_network_log(&self) {
-        self.cache.lock().network_log = None;
+        let mut cache = self.cache.lock();
+        cache.network_log = None;
+        cache.network_log_failure = None;
+        drop(cache);
         self.pending.lock().remove(&RequestKey::NetworkLog);
     }
 
@@ -432,18 +563,19 @@ impl PluginUiJobs {
                     summary, top_tabs, ..
                 },
             ) => {
-                cache.chrome = Some((*summary, Arc::new(top_tabs.clone())));
+                cache.chrome = Some(Ok((*summary, Arc::new(top_tabs.clone()))));
             }
             (RequestKey::Snapshot(visibility), PluginUiResult::SnapshotLoaded { plugins, .. }) => {
                 cache
                     .snapshots
-                    .insert(visibility.clone(), Arc::new(plugins.clone()));
+                    .insert(visibility.clone(), Ok(Arc::new(plugins.clone())));
             }
             (RequestKey::NetworkLog, PluginUiResult::NetworkLogLoaded { entries, .. }) => {
                 cache.network_log = Some((Instant::now(), Arc::new(entries.clone())));
+                cache.network_log_failure = None;
             }
             (
-                RequestKey::SetEnabled(plugin_id, enabled),
+                RequestKey::SetEnabled(_, plugin_id, enabled),
                 PluginUiResult::MutationFinished { request_id, .. },
             ) => {
                 cache.completed_mutations.insert(
@@ -454,10 +586,35 @@ impl PluginUiJobs {
                     },
                 );
             }
-            (RequestKey::Install(_), PluginUiResult::MutationFinished { request_id, .. }) => {
+            (RequestKey::Install(_, _), PluginUiResult::MutationFinished { request_id, .. }) => {
                 cache
                     .completed_mutations
                     .insert(*request_id, PluginUiMutation::Install);
+            }
+            (_, PluginUiResult::Failed { context, error, .. }) => {
+                let error = Arc::<str>::from(error.as_str());
+                match context {
+                    PluginUiFailureContext::Layout {
+                        plugin_id,
+                        target,
+                        origin_tab,
+                    } => {
+                        cache
+                            .layouts
+                            .insert((plugin_id.clone(), target.clone(), *origin_tab), Err(error));
+                    }
+                    PluginUiFailureContext::Snapshot { visibility } => {
+                        cache.snapshots.insert(visibility.clone(), Err(error));
+                    }
+                    PluginUiFailureContext::ChromeSnapshot => {
+                        cache.chrome = Some(Err(error));
+                    }
+                    PluginUiFailureContext::NetworkLog => {
+                        cache.network_log = None;
+                        cache.network_log_failure = Some(error);
+                    }
+                    _ => {}
+                }
             }
             _ => {}
         }
@@ -472,6 +629,7 @@ fn result_request_id(result: &PluginUiResult) -> RequestId {
         | PluginUiResult::ChromeSnapshotLoaded { request_id, .. }
         | PluginUiResult::NetworkLogLoaded { request_id, .. }
         | PluginUiResult::MutationFinished { request_id, .. }
+        | PluginUiResult::UiEventFinished { request_id, .. }
         | PluginUiResult::Failed { request_id, .. } => *request_id,
     }
 }
@@ -493,7 +651,8 @@ fn execute_job(manager: Option<Arc<Mutex<PluginManager>>>, job: QueuedJob) -> Co
         request,
         origin_context,
     } = job;
-    let result = catch_worker_failure(request_id, || {
+    let context = key.failure_context();
+    let result = catch_worker_failure(request_id, context, || {
         execute(manager, request_id, request, origin_context)
     });
     Completed { key, result }
@@ -501,14 +660,33 @@ fn execute_job(manager: Option<Arc<Mutex<PluginManager>>>, job: QueuedJob) -> Co
 
 fn catch_worker_failure(
     request_id: RequestId,
+    context: PluginUiFailureContext,
     operation: impl FnOnce() -> PluginUiResult,
 ) -> PluginUiResult {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation)).unwrap_or_else(|panic| {
         PluginUiResult::Failed {
             request_id,
+            context,
             error: panic_message(panic),
         }
     })
+}
+
+fn failed_completed(job: QueuedJob, error: String) -> Completed {
+    failed_completed_parts(job.key, job.request_id, error)
+}
+
+fn failed_completed_parts(key: RequestKey, request_id: RequestId, error: String) -> Completed {
+    let context = key.failure_context();
+    let error = format!("{}: {error}", context.operation_name());
+    Completed {
+        key,
+        result: PluginUiResult::Failed {
+            request_id,
+            context,
+            error,
+        },
+    }
 }
 
 fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
@@ -598,6 +776,9 @@ fn execute(
             let Some(manager) = manager else {
                 return PluginUiResult::Failed {
                     request_id,
+                    context: PluginUiFailureContext::Snapshot {
+                        visibility: user_config.plugin_visibility.clone(),
+                    },
                     error: "plugin manager unavailable".to_string(),
                 };
             };
@@ -616,6 +797,7 @@ fn execute(
             let Some(manager) = manager else {
                 return PluginUiResult::Failed {
                     request_id,
+                    context: PluginUiFailureContext::ChromeSnapshot,
                     error: "plugin manager unavailable".to_string(),
                 };
             };
@@ -634,6 +816,7 @@ fn execute(
             let Some(manager) = manager else {
                 return PluginUiResult::Failed {
                     request_id,
+                    context: PluginUiFailureContext::NetworkLog,
                     error: "plugin manager unavailable".to_string(),
                 };
             };
@@ -670,6 +853,39 @@ fn execute(
                 });
             PluginUiResult::MutationFinished { request_id, result }
         }
+        PluginUiRequest::UiEvent {
+            plugin_id,
+            event_id,
+            value,
+            origin_tab,
+        } => {
+            let result = manager
+                .ok_or_else(|| "plugin manager unavailable".to_string())
+                .and_then(|manager| {
+                    let instance = {
+                        let manager = manager.lock();
+                        manager.get_plugin_instance(&plugin_id)
+                    };
+                    let instance =
+                        instance.ok_or_else(|| format!("plugin not found: {plugin_id}"))?;
+                    let actions = {
+                        let mut instance = instance.lock();
+                        with_event_context(&mut instance, origin_context, |instance| {
+                            instance
+                                .send_ui_event(&event_id, value)
+                                .map_err(|error| error.to_string())
+                        })?
+                    };
+                    let settings = manager.lock().get_settings_for(&plugin_id);
+                    Ok(PluginUiEventCompletion { actions, settings })
+                });
+            PluginUiResult::UiEventFinished {
+                request_id,
+                plugin_id,
+                origin_tab,
+                result,
+            }
+        }
     }
 }
 
@@ -694,7 +910,8 @@ mod tests {
 
         let cached = jobs
             .network_log_at(fetched_at + NETWORK_LOG_TTL - Duration::from_millis(1))
-            .expect("fresh log must remain cached");
+            .expect("fresh log must remain cached")
+            .expect("fresh log must be successful");
         assert!(Arc::ptr_eq(&cached, &entries));
 
         assert!(
@@ -707,11 +924,14 @@ mod tests {
     #[test]
     fn worker_panic_becomes_an_explicit_failure_result() {
         let request_id = RequestId(42);
-        let result = catch_worker_failure(request_id, || panic!("fixture panic"));
+        let result =
+            catch_worker_failure(request_id, PluginUiFailureContext::ChromeSnapshot, || {
+                panic!("fixture panic")
+            });
 
         assert!(matches!(
             result,
-            PluginUiResult::Failed { request_id: id, error }
+            PluginUiResult::Failed { request_id: id, error, .. }
                 if id == request_id && error.contains("fixture panic")
         ));
     }
@@ -732,5 +952,71 @@ mod tests {
         });
 
         assert_eq!(observed.load(Ordering::SeqCst), 73);
+    }
+
+    #[test]
+    fn ui_event_request_snapshots_its_explicit_origin_tab() {
+        let observed = Arc::new(AtomicU64::new(0));
+        let observed_by_provider = observed.clone();
+        let jobs = test_jobs().with_origin_context_provider(move |tab_id| {
+            observed_by_provider.store(tab_id.0, Ordering::SeqCst);
+            None
+        });
+
+        jobs.request(PluginUiRequest::UiEvent {
+            plugin_id: "plugin".to_string(),
+            event_id: "clicked".to_string(),
+            value: None,
+            origin_tab: TabId(91),
+        });
+
+        assert_eq!(observed.load(Ordering::SeqCst), 91);
+    }
+
+    #[test]
+    fn disconnected_ordered_worker_publishes_a_contextual_page_init_failure() {
+        let mut jobs = test_jobs();
+        let (disconnected_sender, disconnected_receiver) = mpsc::channel();
+        drop(disconnected_receiver);
+        jobs.ordered_sender = disconnected_sender;
+        let mut page_state = crate::features::plugins::domain::state::PluginDialogState::default();
+        let request_id = page_state.open_page("plugin", "page", TabId(7));
+
+        jobs.request_with_id(
+            request_id,
+            PluginUiRequest::PageInit {
+                plugin_id: "plugin".to_string(),
+                page_id: "page".to_string(),
+                origin_tab: TabId(7),
+            },
+        );
+
+        let results = jobs.drain();
+        assert_eq!(results.len(), 1, "channel failure must publish a result");
+        assert!(matches!(
+            &results[0],
+            PluginUiResult::Failed {
+                request_id: id,
+                context: PluginUiFailureContext::PageInit {
+                    plugin_id,
+                    page_id,
+                    origin_tab,
+                },
+                error,
+            }
+                if *id == request_id
+                    && plugin_id == "plugin"
+                    && page_id == "page"
+                    && *origin_tab == TabId(7)
+                    && error.contains("ordered worker")
+                    && error.contains("page init")
+        ));
+        let PluginUiResult::Failed { error, .. } = &results[0] else {
+            unreachable!();
+        };
+        assert!(page_state.apply_page_init_failure(request_id, error.clone()));
+        assert!(!page_state.page_init_pending());
+        assert!(page_state.page_init_error().is_some());
+        assert!(!page_state.page_layout_ready());
     }
 }

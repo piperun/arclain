@@ -43,7 +43,7 @@ pub fn render(
     if let Some(shared) = shared {
         let user_config = shared.signals().user_config.get();
         let origin_tab = Some(shared.signals().tabs.get().active_id());
-        if let Some(plugins) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) {
+        if let Some(Ok(plugins)) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) {
             for plugin in plugins.iter().filter(|plugin| plugin.enabled) {
                 if let Some(Ok(layout)) = shared.plugin_ui_jobs.layout(
                     &plugin.id,

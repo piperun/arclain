@@ -2,7 +2,6 @@ use crate::core::signals::AppSignals;
 use crate::core::AppState;
 use crate::platform::detect_dark_mode;
 use crate::shared::theme::{load_cjk_fonts, AppTheme};
-use arclain_plugins::types::PluginAction;
 use arclain_widgets::Toaster;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -16,13 +15,6 @@ pub struct SharedState {
     pub toaster: Arc<Mutex<Toaster>>,
     /// Panel refresh requests from plugins (extension point names to refresh)
     pub refresh_requests: Arc<Mutex<Vec<String>>>,
-    /// Plugin actions emitted from background `send_ui_event` threads
-    /// (the dispatch helper pushes here). Drained by detail_view at the
-    /// start of each render so actions reach `process_plugin_actions`.
-    /// Lives on SharedState (not PluginsListState) so every dispatcher —
-    /// detail view, dialog/page callbacks, toolbar, panel — can write
-    /// to one shared sink.
-    pub pending_plugin_actions: Arc<Mutex<Vec<(String, PluginAction)>>>,
     pub plugin_ui_jobs: crate::features::plugins::application::PluginUiJobs,
     /// Direct access to signals without locking AppState
     pub signals: AppSignals,
@@ -72,7 +64,6 @@ impl SharedState {
             theme,
             toaster: Arc::new(Mutex::new(Toaster::new())),
             refresh_requests: Arc::new(Mutex::new(Vec::new())),
-            pending_plugin_actions: Arc::new(Mutex::new(Vec::new())),
             plugin_ui_jobs,
             signals: signals.clone(),
         };

@@ -63,6 +63,7 @@ pub fn render(
                             let config = shared.signals().user_config.get();
                             shared.plugin_ui_jobs.plugin_snapshot(&config)
                         })
+                        .and_then(Result::ok)
                         .and_then(|plugins| {
                             plugins
                                 .iter()

@@ -193,6 +193,7 @@ impl BrowserController {
         let dlsite_enabled = shared
             .plugin_ui_jobs
             .plugin_snapshot(&user_config)
+            .and_then(Result::ok)
             .map(|plugins| {
                 plugins.iter().any(|p| {
                     (p.id.eq_ignore_ascii_case("dlsite")

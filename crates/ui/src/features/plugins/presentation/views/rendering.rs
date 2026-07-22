@@ -88,7 +88,7 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
             .open(&mut open)
             .show(ctx, |ui| {
                 let mut callback =
-                    crate::features::plugins::presentation::controllers::plugin_controller::create_dialog_callback(shared, plugin_id.clone());
+                    crate::features::plugins::presentation::controllers::plugin_controller::create_dialog_callback(shared, plugin_id.clone(), origin_tab);
 
 
                 let mut render = |elements: &[arclain_plugins::types::PluginUiElement]| {
@@ -183,7 +183,10 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
         state.cached_page_layout_stale = false;
         shared.signals().plugin_dialog_state.set(state);
     }
-    let page_layout = if page_layout_ready {
+    let page_init_error = shared.signals().plugin_dialog_state.get().page_init_error();
+    let page_layout = if let Some(error) = page_init_error {
+        message_layout(format!("Plugin page initialization failed: {error}"))
+    } else if page_layout_ready {
         match cached_or_request_layout(shared, &plugin_id, target, origin_tab) {
             Some(Ok(fresh)) => {
                 let mut state = shared.signals().plugin_dialog_state.get();

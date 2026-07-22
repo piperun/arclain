@@ -18,6 +18,12 @@ pub enum PageInitState {
         page_id: String,
         origin_tab: TabId,
     },
+    Failed {
+        plugin_id: String,
+        page_id: String,
+        origin_tab: TabId,
+        error: Arc<str>,
+    },
 }
 
 /// State for managing plugin dialogs and pages
@@ -127,12 +133,12 @@ impl PluginDialogState {
     /// generation has completed. Fetching it sooner can cache the
     /// plugin's pre-initialization layout indefinitely.
     pub fn page_layout_ready(&self) -> bool {
-        !self.page_init_pending()
+        matches!(self.page_init, PageInitState::Idle)
     }
 
     pub fn pending_page_init(&self) -> Option<(RequestId, &str, &str, TabId)> {
         match &self.page_init {
-            PageInitState::Idle => None,
+            PageInitState::Idle | PageInitState::Failed { .. } => None,
             PageInitState::Pending {
                 request_id,
                 plugin_id,
@@ -155,6 +161,35 @@ impl PluginDialogState {
         }
         self.page_init = PageInitState::Idle;
         true
+    }
+
+    pub fn apply_page_init_failure(&mut self, request_id: RequestId, error: String) -> bool {
+        let PageInitState::Pending {
+            request_id: pending,
+            plugin_id,
+            page_id,
+            origin_tab,
+        } = &self.page_init
+        else {
+            return false;
+        };
+        if *pending != request_id {
+            return false;
+        }
+        self.page_init = PageInitState::Failed {
+            plugin_id: plugin_id.clone(),
+            page_id: page_id.clone(),
+            origin_tab: *origin_tab,
+            error: Arc::from(error),
+        };
+        true
+    }
+
+    pub fn page_init_error(&self) -> Option<Arc<str>> {
+        match &self.page_init {
+            PageInitState::Failed { error, .. } => Some(error.clone()),
+            _ => None,
+        }
     }
 }
 

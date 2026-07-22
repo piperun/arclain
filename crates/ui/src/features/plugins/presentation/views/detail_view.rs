@@ -51,35 +51,6 @@ pub fn render(
     content_cache: Option<&Arc<arclain_core::ContentCache>>,
 ) -> bool {
     let mut needs_refresh = false;
-    let mut main_layout_stale = false;
-
-    // Drain any plugin actions that background `send_ui_event` threads
-    // pushed since the last render. Without this, the actions sit in
-    // `shared.pending_plugin_actions` indefinitely (or, pre-fix, were
-    // pushed into a per-frame local sink that got dropped on return).
-    //
-    // Also: scan the queue BEFORE draining for a `RefreshPanel` action
-    // targeting `MainPage`. If present, invalidate `cached_main_layout`
-    // so the next render fetches a fresh layout (audit P4 invalidation).
-    if let Some(shared) = shared {
-        main_layout_stale =
-            invalidate_main_layout_on_refresh_panel(state, &shared.pending_plugin_actions);
-
-        let mut toaster = shared.toaster.lock();
-        let dialog_signal = shared.signals().plugin_dialog_state.clone();
-        let mut dialog_state = dialog_signal.get();
-        // lightbox_state is per-tab now (post 2026-05-20 audit B2 follow-up)
-        let active_tab = shared.signals().tabs.get().active().clone();
-        drain_pending_plugin_actions(
-            &shared.pending_plugin_actions,
-            &mut toaster,
-            &mut dialog_state,
-            Some(&shared.refresh_requests),
-            Some(&active_tab.lightbox_state),
-            Some(shared),
-        );
-        dialog_signal.set(dialog_state);
-    }
 
     // Drop cached MainPage layout if the user switched plugins, so
     // render_plugin_ui fetches the new plugin's layout on the next
@@ -257,14 +228,6 @@ pub fn render(
 
         if plugin_info.loaded {
             if let Some(shared) = shared {
-                let origin_tab = Some(shared.signals().tabs.get().active_id());
-                if main_layout_stale {
-                    shared.plugin_ui_jobs.invalidate_layout(
-                        &plugin_info.id,
-                        &crate::features::plugins::application::PluginUiTarget::MainPage,
-                        origin_tab,
-                    );
-                }
                 render_plugin_ui(
                     ui,
                     theme,
@@ -401,6 +364,7 @@ fn render_plugin_ui(
     content_cache: Option<&Arc<arclain_core::ContentCache>>,
     cached_main_layout: &mut Option<(String, Arc<arclain_plugins::types::PluginLayout>)>,
 ) {
+    let origin_tab = shared.signals().tabs.get().active_id();
     // Audit P4: cached_main_layout serves the layout for the
     // currently-selected plugin. Fetch fresh only when the cache is
     // empty or holds a different plugin's layout. Re-fetches happen
@@ -416,11 +380,10 @@ fn render_plugin_ui(
             .as_ref()
             .map(|(_, layout)| Ok(layout.clone()))
     } else {
-        let origin_tab = Some(shared.signals().tabs.get().active_id());
         let layout = shared.plugin_ui_jobs.layout(
             plugin_id,
             crate::features::plugins::application::PluginUiTarget::MainPage,
-            origin_tab,
+            Some(origin_tab),
         );
         if let Some(Ok(ref layout)) = layout {
             *cached_main_layout = Some((plugin_id.to_string(), layout.clone()));
@@ -443,8 +406,9 @@ fn render_plugin_ui(
                 let shared_clone = shared.clone();
 
                 let mut event_callback = Box::new(move |id: &str, value: Option<String>| {
-                    crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+                    crate::features::plugins::presentation::dispatch::dispatch_plugin_event_for_tab(
                         &shared_clone,
+                        origin_tab,
                         plugin_id_clone.clone(),
                         id.to_string(),
                         value,
@@ -471,10 +435,6 @@ fn render_plugin_ui(
                         render(content);
                     }
                 }
-                // Actions pushed by the spawned thread are now visible to
-                // `drain_pending_plugin_actions` on the NEXT render of this
-                // panel. Toasts, RefreshPanel, etc. propagate within ~1
-                // frame instead of being silently dropped.
             }
         }
         Some(Err(error)) => {
@@ -509,71 +469,10 @@ pub(crate) fn invalidate_main_layout_on_plugin_change(state: &mut PluginsListSta
     }
 }
 
-/// Drop `state.cached_main_layout` if `pending_plugin_actions`
-/// contains a `RefreshPanel` action targeting the `MainPage`
-/// extension point. Called once per render of the detail view, before
-/// `drain_pending_plugin_actions` removes the action from the queue.
-pub(crate) fn invalidate_main_layout_on_refresh_panel(
-    state: &mut PluginsListState,
-    pending: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
-) -> bool {
-    let needs_invalidation = {
-        let pending = pending.lock();
-        pending.iter().any(|(_, action)| {
-            matches!(
-                action,
-                arclain_plugins::types::PluginAction::RefreshPanel { extension_point }
-                    if extension_point == "MainPage"
-            )
-        })
-    };
-    if needs_invalidation {
-        state.cached_main_layout = None;
-    }
-    needs_invalidation
-}
-
-/// Drain a queue of plugin actions into `process_plugin_actions`.
-///
-/// Background `send_ui_event` threads in this view push actions into a
-/// long-lived sink on `PluginsListState`. Each render of the detail
-/// panel calls this to forward them to toaster / refresh_requests /
-/// dialog state. Without it, `ShowToast`, `ShowMessage`, `RefreshPanel`,
-/// `EmitMetadata`, etc. emitted by plugin events are silently dropped.
-///
-/// Takes its dependencies explicitly rather than going through
-/// `SharedState` so it remains unit-testable without bootstrapping the
-/// full app state.
-pub(crate) fn drain_pending_plugin_actions(
-    pending: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
-    toaster: &mut arclain_widgets::Toaster,
-    dialog_state: &mut crate::features::plugins::domain::state::PluginDialogState,
-    refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
-    lightbox_signal: Option<&arclain_signals::Signal<crate::shared::dialogs::LightboxState>>,
-    shared_state: Option<&SharedState>,
-) {
-    let drained: Vec<(String, arclain_plugins::types::PluginAction)> =
-        std::mem::take(&mut *pending.lock());
-    for (plugin_id, action) in drained {
-        crate::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
-            vec![action],
-            &plugin_id,
-            dialog_state,
-            toaster,
-            refresh_requests,
-            lightbox_signal,
-            shared_state,
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::plugins::domain::state::PluginDialogState;
     use arclain_core::UserConfig;
-    use arclain_plugins::types::PluginAction;
-    use arclain_widgets::Toaster;
 
     #[test]
     fn plugin_proxy_toggle_uses_inherited_dlsite_defaults() {
@@ -629,70 +528,6 @@ mod tests {
         assert!(!settings.contains_key("custom"));
     }
 
-    /// Regression test for C7 from `docs/AUDIT_2026-05-03.md`.
-    ///
-    /// Pre-fix, plugin actions returned by `send_ui_event` in the
-    /// detail view were pushed into a function-local
-    /// `Arc<Mutex<Vec<PluginAction>>>` whose only owner was the render
-    /// function itself. When render returned the local was dropped and
-    /// the actions were lost — the inline comment at the bottom of the
-    /// match arm even said "we can't process them synchronously here".
-    ///
-    /// Post-fix, actions land in `state.pending_plugin_actions` (a
-    /// long-lived sink on `PluginsListState`) and the next render
-    /// calls `drain_pending_plugin_actions`. This test pre-loads a
-    /// `RefreshPanel` action, runs the drain, and asserts the queue
-    /// is empty AND the observable side effect (push into the
-    /// `refresh_requests` Vec) happened.
-    #[test]
-    fn c7_drain_processes_pending_actions() {
-        let pending: Arc<Mutex<Vec<(String, PluginAction)>>> = Arc::new(Mutex::new(vec![(
-            "test_plugin".to_string(),
-            PluginAction::RefreshPanel {
-                extension_point: "info_panel".to_string(),
-            },
-        )]));
-        let mut toaster = Toaster::new();
-        let mut dialog_state = PluginDialogState::default();
-        let refresh_requests: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-
-        drain_pending_plugin_actions(
-            &pending,
-            &mut toaster,
-            &mut dialog_state,
-            Some(&refresh_requests),
-            None,
-            None,
-        );
-
-        assert!(
-            pending.lock().is_empty(),
-            "C7 fix regressed: pending queue should be empty after drain",
-        );
-        assert_eq!(
-            refresh_requests.lock().len(),
-            1,
-            "C7 fix regressed: RefreshPanel should have pushed an entry into refresh_requests",
-        );
-        assert_eq!(
-            refresh_requests.lock()[0],
-            "info_panel",
-            "C7 fix regressed: pushed entry should match the action's extension_point",
-        );
-    }
-
-    /// Drain on an empty queue should be a no-op.
-    #[test]
-    fn c7_drain_on_empty_queue_is_noop() {
-        let pending: Arc<Mutex<Vec<(String, PluginAction)>>> = Arc::new(Mutex::new(Vec::new()));
-        let mut toaster = Toaster::new();
-        let mut dialog_state = PluginDialogState::default();
-
-        drain_pending_plugin_actions(&pending, &mut toaster, &mut dialog_state, None, None, None);
-
-        assert!(pending.lock().is_empty());
-    }
-
     /// Regression test for P4 from `docs/AUDIT_2026-05-03.md`.
     ///
     /// `cached_main_layout` is per-plugin. When the user switches the
@@ -732,59 +567,6 @@ mod tests {
         assert!(
             state.cached_main_layout.is_some(),
             "Cache for plugin_a should not be dropped when plugin_a is still selected",
-        );
-    }
-
-    /// `RefreshPanel { extension_point: "MainPage" }` in the pending
-    /// queue must invalidate `cached_main_layout` even if the same
-    /// plugin is still selected (e.g. the plugin's settings changed).
-    #[test]
-    fn p4_invalidate_main_layout_on_refresh_panel_for_main_page() {
-        let mut state = PluginsListState::default();
-        state.selected_plugin = Some("plugin_a".to_string());
-        state.cached_main_layout = Some((
-            "plugin_a".to_string(),
-            Arc::new(arclain_plugins::types::PluginLayout::default()),
-        ));
-        let pending: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
-            Arc::new(Mutex::new(vec![(
-                "plugin_a".to_string(),
-                arclain_plugins::types::PluginAction::RefreshPanel {
-                    extension_point: "MainPage".to_string(),
-                },
-            )]));
-
-        invalidate_main_layout_on_refresh_panel(&mut state, &pending);
-
-        assert!(
-            state.cached_main_layout.is_none(),
-            "RefreshPanel for MainPage should drop the cache",
-        );
-    }
-
-    /// `RefreshPanel` for a different extension point must NOT
-    /// invalidate `cached_main_layout`.
-    #[test]
-    fn p4_keep_main_layout_when_refresh_targets_other_extension() {
-        let mut state = PluginsListState::default();
-        state.selected_plugin = Some("plugin_a".to_string());
-        state.cached_main_layout = Some((
-            "plugin_a".to_string(),
-            Arc::new(arclain_plugins::types::PluginLayout::default()),
-        ));
-        let pending: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
-            Arc::new(Mutex::new(vec![(
-                "plugin_a".to_string(),
-                arclain_plugins::types::PluginAction::RefreshPanel {
-                    extension_point: "Settings".to_string(),
-                },
-            )]));
-
-        invalidate_main_layout_on_refresh_panel(&mut state, &pending);
-
-        assert!(
-            state.cached_main_layout.is_some(),
-            "RefreshPanel for Settings should not drop the MainPage cache",
         );
     }
 }

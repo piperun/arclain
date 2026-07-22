@@ -1,98 +1,36 @@
-//! Centralized plugin-event dispatcher.
+//! Origin-aware plugin UI-event dispatch.
 //!
-//! Every UI path that fires a plugin event must go through
-//! `dispatch_plugin_event`. The helper:
-//! - locks the plugin instance on a tokio blocking thread (NOT the UI
-//!   thread), so the WASM call (which may include synchronous polling
-//!   for HTTP) never freezes the UI;
-//! - pushes returned actions into `SharedState::pending_plugin_actions`;
-//! - persists settings if the plugin's `settings_dirty` flag flipped
-//!   during the event.
-//!
-//! Direct calls to `instance.send_ui_event(...)` from the UI thread are
-//! a regression and should be replaced with this helper.
+//! Events are queued on [`PluginUiJobs`](crate::features::plugins::application::PluginUiJobs)
+//! so WASM execution, settings persistence, action routing, ordering, and failures all
+//! share one completion path.
 
+use crate::core::tabs::TabId;
+use crate::features::plugins::application::PluginUiRequest;
 use crate::shared::SharedState;
 
-/// Fire-and-forget plugin event dispatch.
-///
-/// Returns immediately. Actions land in `shared.pending_plugin_actions`
-/// on a future frame; settings auto-save to disk if the plugin marked
-/// them dirty.
-///
-/// v1 intentional omission: plugin calls do NOT increment `in_flight_ops`
-/// on the originating tab. Plugin events are typically short-lived (ms to
-/// low seconds) and the overhead of OpGuard wiring through every dispatch
-/// call site outweighs the benefit at this stage. If a tab is force-closed
-/// while a plugin call is in flight, the call runs to completion against the
-/// captured `Arc<TabState>` but the user can't observe the result. A future
-/// audit pass can add OpGuard here if plugin calls become long-running.
+/// Queue an event for the tab that is active at dispatch time.
 pub fn dispatch_plugin_event(
     shared: &SharedState,
     plugin_id: String,
     event_id: String,
     value: Option<String>,
 ) {
-    let Some(pm_arc) = shared.services.plugin_manager.clone() else {
-        return;
-    };
-    let app_state = shared.app_state.clone();
-    let cfg_svc = shared.services.config_service.clone();
-    let tokio_runtime = shared.services.tokio_runtime.clone();
-    let sink = shared.pending_plugin_actions.clone();
+    let origin_tab = shared.signals().tabs.get().active_id();
+    dispatch_plugin_event_for_tab(shared, origin_tab, plugin_id, event_id, value);
+}
 
-    let work = move || {
-        // Audit finding R8: do NOT hold the `PluginManager` mutex across
-        // `instance.send_ui_event(...)`. That call can run for seconds
-        // (synchronous HTTP polling inside DLsite metadata fetch), during
-        // which every other plugin-event dispatch app-wide would queue
-        // on `pm_arc.lock()` and serialize. The manager's `plugins` /
-        // `enabled_plugins` are themselves `RwLock`s designed to allow
-        // concurrent reads; holding the outer `Mutex<PluginManager>`
-        // defeated that. The background `event_worker` in
-        // `crates/plugins/src/manager/dispatch.rs` follows the same
-        // snapshot-then-drop pattern we adopt here.
-        let instance_arc = {
-            let mgr = pm_arc.lock();
-            mgr.get_plugin_instance(&plugin_id)
-        };
-        let Some(instance_arc) = instance_arc else {
-            return;
-        };
-
-        // Run the WASM call holding ONLY the per-instance mutex.
-        let actions = {
-            let mut instance = instance_arc.lock();
-            instance.send_ui_event(&event_id, value).ok()
-        };
-
-        // Re-acquire the manager briefly to snapshot settings. This is
-        // a cheap RwLock-read internally; the manager mutex is no
-        // longer the contention point.
-        let settings_to_save = pm_arc.lock().get_settings_for(&plugin_id);
-
-        if let Some(actions) = actions {
-            let mut s = sink.lock();
-            for a in actions {
-                s.push((plugin_id.clone(), a));
-            }
-        }
-
-        if let Some(settings_to_save) = settings_to_save {
-            let mut state = app_state.lock();
-            state
-                .user_config
-                .set_plugin_settings(&plugin_id, settings_to_save);
-
-            if let Some(ref svc) = cfg_svc {
-                if let Err(e) = svc.save_user_config(&state.user_config) {
-                    tracing::error!("Failed to save plugin settings: {}", e);
-                }
-            }
-        }
-    };
-
-    tokio_runtime.spawn(async move {
-        let _ = tokio::task::spawn_blocking(work).await;
+/// Queue an event for an explicitly captured origin tab.
+pub fn dispatch_plugin_event_for_tab(
+    shared: &SharedState,
+    origin_tab: TabId,
+    plugin_id: String,
+    event_id: String,
+    value: Option<String>,
+) {
+    shared.plugin_ui_jobs.request(PluginUiRequest::UiEvent {
+        plugin_id,
+        event_id,
+        value,
+        origin_tab,
     });
 }

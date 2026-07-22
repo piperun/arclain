@@ -38,6 +38,7 @@ pub fn render(
         if needs_refresh {
             state.invalidate_snapshot();
             if let Some(shared) = shared {
+                shared.plugin_ui_jobs.invalidate_plugin_snapshots();
                 crate::features::plugins::application::request_plugin_snapshot(shared, state);
             }
         }

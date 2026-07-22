@@ -213,9 +213,12 @@ impl Panel {
                                 }
                                 return;
                             }
-                            if let Some(ref shared) = shared_owned {
-                                crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+                            if let (Some(shared), Some(origin_tab)) =
+                                (shared_owned.as_ref(), origin_tab)
+                            {
+                                crate::features::plugins::presentation::dispatch::dispatch_plugin_event_for_tab(
                                     shared,
+                                    origin_tab,
                                     pid.clone(),
                                     element_id.to_string(),
                                     value,

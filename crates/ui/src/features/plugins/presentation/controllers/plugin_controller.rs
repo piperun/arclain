@@ -18,6 +18,7 @@ pub struct ActionContext<'a> {
     pub page_display_name_signal: Option<&'a Signal<Option<String>>>,
     pub metadata_signal: Option<&'a Signal<Option<serde_json::Value>>>,
     pub shared_state: Option<&'a crate::shared::SharedState>,
+    pub origin_tab: Option<crate::core::tabs::TabId>,
 }
 
 /// Process a list of plugin actions.
@@ -41,6 +42,7 @@ pub fn process_plugin_actions(
         page_display_name_signal: None,
         metadata_signal: None,
         shared_state,
+        origin_tab: shared_state.map(|shared| shared.signals().tabs.get().active_id()),
     };
     for action in actions {
         process_action(
@@ -144,7 +146,16 @@ pub fn process_action(
             // Async background fetch — host handles on tokio runtime
             tracing::info!("Plugin {} requested background fetch: {}", plugin_id, key);
             if let Some(shared) = ctx.shared_state {
-                spawn_background_fetch(shared, &plugin_id, &key, ctx.metadata_signal.cloned());
+                let origin_tab = ctx
+                    .origin_tab
+                    .unwrap_or_else(|| shared.signals().tabs.get().active_id());
+                spawn_background_fetch(
+                    shared,
+                    &plugin_id,
+                    &key,
+                    origin_tab,
+                    ctx.metadata_signal.cloned(),
+                );
             }
         }
     }
@@ -152,14 +163,14 @@ pub fn process_action(
 
 /// Create a callback handler for plugin dialog events.
 ///
-/// Plugin events are dispatched through `dispatch_plugin_event`, which
-/// runs the WASM call on a tokio blocking thread. Returned actions
-/// land in `SharedState::pending_plugin_actions` and the next render
-/// drains them via `drain_pending_plugin_actions` in detail_view.
+/// Plugin events are queued with their origin tab through `PluginUiJobs`.
+/// The central completion path applies returned actions and settings to
+/// that same tab even if the user switches before WASM returns.
 /// Layout invalidation is a pure signal mutation and stays inline.
 pub fn create_dialog_callback(
     shared: &crate::shared::SharedState,
     plugin_id: String,
+    origin_tab: crate::core::tabs::TabId,
 ) -> Box<dyn FnMut(&str, Option<String>)> {
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
     let shared_owned = shared.clone();
@@ -173,8 +184,9 @@ pub fn create_dialog_callback(
             return;
         }
 
-        crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+        crate::features::plugins::presentation::dispatch::dispatch_plugin_event_for_tab(
             &shared_owned,
+            origin_tab,
             pid.clone(),
             element_id.to_string(),
             value,
@@ -225,8 +237,9 @@ pub fn create_page_callback(
             return;
         }
 
-        crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+        crate::features::plugins::presentation::dispatch::dispatch_plugin_event_for_tab(
             &shared_owned,
+            origin_tab,
             pid.clone(),
             element_id.to_string(),
             value,
@@ -250,6 +263,7 @@ fn spawn_background_fetch(
     shared: &crate::shared::SharedState,
     plugin_id: &str,
     key: &str,
+    origin_tab: crate::core::tabs::TabId,
     origin_metadata: Option<Signal<Option<serde_json::Value>>>,
 ) {
     // Parse "source:id" format
@@ -261,32 +275,38 @@ fn spawn_background_fetch(
     };
 
     let plugin_id_owned = plugin_id.to_string();
-    let metadata_signal =
-        origin_metadata.unwrap_or_else(|| shared.signals().tabs.get().active().metadata.clone());
+    let metadata_signal = origin_metadata.unwrap_or_else(|| {
+        let tabs = shared.signals().tabs.get();
+        tabs.get(origin_tab)
+            .unwrap_or_else(|| tabs.active())
+            .metadata
+            .clone()
+    });
 
     // Send fetch-completion event back to the plugin. Called when the gameta
     // server succeeds; the plugin clears its in_progress flag in response.
     //
-    // Direct `send_ui_event` is correct here: this closure runs inside
-    // `tokio_runtime.spawn(async move { ... })` below, never on the UI
-    // thread, and the returned actions (if any) are pure notifications
-    // — the plugin uses the metadata_signal for actual data flow.
+    // Completion notifications use the same ordered, origin-aware event
+    // path as direct UI interactions so errors and returned actions are
+    // never dropped.
     let make_complete_notifier = || {
         let pid = plugin_id_owned.clone();
-        let pm = shared.services.plugin_manager.clone();
+        let jobs = shared.plugin_ui_jobs.clone();
         let key = key.to_string();
         move |success: bool| {
-            if let Some(pm) = pm {
-                let event = if success {
-                    format!("background_fetch_complete:{}", key)
-                } else {
-                    format!("background_fetch_failed:{}", key)
-                };
-                let manager = pm.lock();
-                manager.with_plugin_instance(&pid, |instance| {
-                    let _ = instance.send_ui_event(&event, None);
-                });
-            }
+            let event = if success {
+                format!("background_fetch_complete:{}", key)
+            } else {
+                format!("background_fetch_failed:{}", key)
+            };
+            jobs.request(
+                crate::features::plugins::application::PluginUiRequest::UiEvent {
+                    plugin_id: pid,
+                    event_id: event,
+                    value: None,
+                    origin_tab,
+                },
+            );
         }
     };
 
@@ -294,21 +314,21 @@ fn spawn_background_fetch(
     // SOCKS5-aware client). The plugin's `do_native_fetch:` handler clears
     // its in-progress flag on completion, so no separate notifier needed.
     //
-    // Same as above — this closure runs on a tokio blocking thread inside
-    // spawn_native_dispatch, not the UI thread, so direct `send_ui_event`
-    // is correct.
+    // Native fetch dispatch is likewise ordered with other plugin side
+    // effects and retains the original tab context.
     let make_native_dispatcher = || {
         let pid = plugin_id_owned.clone();
-        let pm = shared.services.plugin_manager.clone();
+        let jobs = shared.plugin_ui_jobs.clone();
         let key = key.to_string();
         move || {
-            if let Some(pm) = pm {
-                let event = format!("do_native_fetch:{}", key);
-                let manager = pm.lock();
-                manager.with_plugin_instance(&pid, |instance| {
-                    let _ = instance.send_ui_event(&event, None);
-                });
-            }
+            jobs.request(
+                crate::features::plugins::application::PluginUiRequest::UiEvent {
+                    plugin_id: pid,
+                    event_id: format!("do_native_fetch:{}", key),
+                    value: None,
+                    origin_tab,
+                },
+            );
         }
     };
 

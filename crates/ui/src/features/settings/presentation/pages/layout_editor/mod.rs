@@ -43,7 +43,7 @@ impl Region for ToolbarRegion {
 
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
         let user_config = shared.signals().user_config.get();
-        let Some(snapshot) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) else {
+        let Some(Ok(snapshot)) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) else {
             return false;
         };
         let enabled_plugins: Vec<_> = snapshot
@@ -161,7 +161,7 @@ impl Region for InfoPanelRegion {
 
     fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
         let user_config = shared.signals().user_config.get();
-        let Some(snapshot) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) else {
+        let Some(Ok(snapshot)) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) else {
             return false;
         };
         let enabled_plugins: Vec<_> = snapshot

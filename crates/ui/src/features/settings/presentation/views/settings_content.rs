@@ -194,8 +194,10 @@ pub fn render_settings_content(
                                 }
                                 other => {
                                     let user_config = shared_state.signals().user_config.get();
-                                    let plugins =
-                                        shared_state.plugin_ui_jobs.plugin_snapshot(&user_config);
+                                    let plugins = shared_state
+                                        .plugin_ui_jobs
+                                        .plugin_snapshot(&user_config)
+                                        .and_then(Result::ok);
                                     crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                         rp,
                                         other,
@@ -289,7 +291,10 @@ pub fn render_settings_content(
                         let output = rp.render_edit_rule(ui, theme, *rule_id);
                         if let Some(data_action) = output.data_action {
                             let user_config = shared_state.signals().user_config.get();
-                            let plugins = shared_state.plugin_ui_jobs.plugin_snapshot(&user_config);
+                            let plugins = shared_state
+                                .plugin_ui_jobs
+                                .plugin_snapshot(&user_config)
+                                .and_then(Result::ok);
                             crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                 rp,
                                 data_action,
