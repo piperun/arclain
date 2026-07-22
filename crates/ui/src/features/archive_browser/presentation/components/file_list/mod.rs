@@ -30,6 +30,24 @@ fn archive_action(
     create(entry.archive_path.clone())
 }
 
+pub(super) fn visible_drag_payload(
+    entries: &[FileEntry],
+    order: &[usize],
+    selection: &RevisionedSelection,
+    dragged: &FileEntry,
+) -> Vec<String> {
+    if !selection.contains(&dragged.archive_path) {
+        return vec![dragged.archive_path.clone()];
+    }
+
+    order
+        .iter()
+        .map(|index| &entries[*index])
+        .filter(|entry| selection.contains(&entry.archive_path))
+        .map(|entry| entry.archive_path.clone())
+        .collect()
+}
+
 // ================= List View (sortable + select-all) =================
 
 fn header_sort_label(
@@ -638,16 +656,8 @@ pub fn render_list_view(
                                 // If the dragged row isn't selected, just drag that one.
                                 // Build the visible selected payload only for the frame where a
                                 // drag actually starts; settled frames perform no full scan.
-                                let files_to_drag: Vec<String> = if is_selected {
-                                    order
-                                        .iter()
-                                        .map(|index| &entries[*index])
-                                        .filter(|entry| selection.contains(&entry.archive_path))
-                                        .map(|entry| entry.archive_path.clone())
-                                        .collect()
-                                } else {
-                                    vec![archive_path.clone()]
-                                };
+                                let files_to_drag =
+                                    visible_drag_payload(entries, order, selection, entry);
                                 if !files_to_drag.is_empty() {
                                     action = Some(FileListAction::DragStarted(files_to_drag));
                                 }

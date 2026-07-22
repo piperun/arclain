@@ -3,8 +3,8 @@
 //! Renders files and folders as responsive vertical cards with file type icons,
 //! hover-reveal actions, context menus, and selection support.
 
-use super::archive_action;
 use super::types::{FileEntry, FileListAction};
+use super::{archive_action, visible_drag_payload};
 use crate::core::tabs::view_state::RevisionedSelection;
 use crate::shared::theme::AppTheme;
 use arclain_widgets::{pixel_align, ButtonSize, TextButton};
@@ -59,8 +59,14 @@ pub fn render_grid_view(
                                 if idx >= order.len() {
                                     break;
                                 }
-                                let card_action =
-                                    render_card(ui, theme, &entries[order[idx]], selection);
+                                let card_action = render_card(
+                                    ui,
+                                    theme,
+                                    entries,
+                                    order,
+                                    &entries[order[idx]],
+                                    selection,
+                                );
                                 if action.is_none() {
                                     action = card_action;
                                 }
@@ -77,6 +83,8 @@ pub fn render_grid_view(
 fn render_card(
     ui: &mut egui::Ui,
     theme: &AppTheme,
+    entries: &[FileEntry],
+    order: &[usize],
     entry: &FileEntry,
     selection: &mut RevisionedSelection,
 ) -> Option<FileListAction> {
@@ -289,7 +297,9 @@ fn render_card(
     // ── Interactions ────────────────────────────────────────────
     if response.drag_started() {
         response.ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-        action = Some(FileListAction::DragStarted(vec![archive_path.clone()]));
+        action = Some(FileListAction::DragStarted(grid_drag_payload(
+            entries, order, selection, entry,
+        )));
     } else if response.double_clicked() {
         if entry.is_folder {
             action = Some(FileListAction::Navigate(entry_path.clone()));
@@ -305,6 +315,15 @@ fn render_card(
     }
 
     action
+}
+
+fn grid_drag_payload(
+    entries: &[FileEntry],
+    order: &[usize],
+    selection: &RevisionedSelection,
+    dragged: &FileEntry,
+) -> Vec<String> {
+    visible_drag_payload(entries, order, selection, dragged)
 }
 
 // ── File type icon mapping ──────────────────────────────────────────
@@ -355,4 +374,41 @@ fn file_type_icon<'a>(name: &str, is_folder: bool, theme: &AppTheme) -> (&'a str
 
 fn extension(name: &str) -> &str {
     name.rsplit('.').next().unwrap_or("")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(path: &str) -> FileEntry {
+        FileEntry {
+            name: path.to_string(),
+            path: path.to_string(),
+            archive_path: path.to_string(),
+            size: "0 B".to_string(),
+            compressed: "0 B".to_string(),
+            ratio: "0%".to_string(),
+            modified: String::new(),
+            crc32: String::new(),
+            encrypted: false,
+            is_folder: false,
+        }
+    }
+
+    #[test]
+    fn selected_grid_card_drag_uses_visible_multi_selection_in_display_order() {
+        let entries = vec![entry("a.txt"), entry("b.txt"), entry("hidden.txt")];
+        let visible_order = [1, 0];
+        let mut selection = RevisionedSelection::default();
+        selection.extend([
+            "a.txt".to_string(),
+            "b.txt".to_string(),
+            "hidden.txt".to_string(),
+        ]);
+
+        assert_eq!(
+            grid_drag_payload(&entries, &visible_order, &selection, &entries[0]),
+            ["b.txt", "a.txt"]
+        );
+    }
 }

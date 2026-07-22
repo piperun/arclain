@@ -334,3 +334,87 @@ fn idle_render_reuses_entry_allocation_without_publishing_state() {
     assert_eq!(view_notifications.load(Ordering::SeqCst), 0);
     assert_eq!(browser.borrow().tree_projection_rebuild_count(tab.id), 1);
 }
+
+#[test]
+fn full_toolbar_and_browser_idle_frames_do_not_publish_browser_view_state() {
+    use arclain_ui::features::archive_browser::ArchiveBrowser;
+    use arclain_ui::shared::components::toolbar::{self, ToolbarConfig};
+    use egui_kittest::Harness;
+
+    let ctx = TestContext::new();
+    let shared = ctx.shared.clone();
+    let tab = shared.signals().tabs.get().active().clone();
+    tab.archive_path.set(Some(PathBuf::from("settled.zip")));
+    tab.browser_entries.update(|snapshot| {
+        snapshot.replace(vec![FileEntry {
+            name: "settled.txt".to_string(),
+            path: "settled.txt".to_string(),
+            archive_path: "settled.txt".to_string(),
+            size: "0 B".to_string(),
+            compressed: "0 B".to_string(),
+            ratio: "0%".to_string(),
+            modified: String::new(),
+            crc32: String::new(),
+            encrypted: false,
+            is_folder: false,
+        }]);
+    });
+    tab.entries.set(Arc::new(vec![arclain_core::ArchiveEntry {
+        path: "folder/settled.txt".to_string(),
+        size: 0,
+        packed_size: 0,
+        modified: None,
+        is_dir: false,
+        encrypted: false,
+        crc32: None,
+    }]));
+    tab.browser_view_state.update(|state| {
+        state.toolbar_state.show_tree_panel = true;
+    });
+
+    let notifications = Arc::new(AtomicUsize::new(0));
+    let notifications_for_listener = notifications.clone();
+    tab.browser_view_state.subscribe(move || {
+        notifications_for_listener.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let mut browser = ArchiveBrowser::new(&shared);
+    let shared_for_frame = shared.clone();
+    let tab_for_frame = tab.clone();
+    let mut harness = Harness::new(move |ctx| {
+        egui::TopBottomPanel::top("toolbar_panel").show(ctx, |ui| {
+            let mut view_state = tab_for_frame.browser_view_state.get();
+            let config = ToolbarConfig::new(shared_for_frame.signals().toolbar_items.get());
+            let mut plugin_renderer = |_: &mut egui::Ui, _: &str, _: &_| Vec::new();
+            let mut plugin_dispatcher = |_: String, _: String, _: Option<String>| {};
+            let _ = toolbar::render(
+                ui,
+                &shared_for_frame.theme,
+                &mut view_state.toolbar_state,
+                false,
+                false,
+                false,
+                true,
+                false,
+                false,
+                Some(&config),
+                Some(&shared_for_frame),
+                &mut plugin_renderer,
+                &mut plugin_dispatcher,
+            );
+            tab_for_frame.browser_view_state.set_if_changed(view_state);
+        });
+        let _ = browser.render(ctx, &shared_for_frame);
+    });
+
+    harness.run_steps(2);
+
+    assert_eq!(notifications.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn production_toolbar_uses_change_gated_browser_view_publication() {
+    let source = include_str!("../src/core/arclain_app/toolbar_handler.rs");
+    assert!(source.contains("tab.browser_view_state.set_if_changed(view_state);"));
+    assert!(!source.contains("tab.browser_view_state.set(view_state);"));
+}

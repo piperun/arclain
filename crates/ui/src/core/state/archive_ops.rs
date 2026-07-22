@@ -1,13 +1,67 @@
 //! Archive operations - listing, reading, writing files
 
-use super::AppState;
-use crate::core::tabs::TabId;
+use super::{AppState, PendingPluginEvent};
+use crate::core::signals::AppSignals;
+use crate::core::tabs::{TabId, TabState};
 use anyhow::Result;
+use arclain_core::archive::ArchiveKind;
 use arclain_core::utilities::auto_password_for;
+use arclain_core::ArchiveEntry;
+use arclain_plugins::PluginEvent;
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+
+fn clear_archive_selection(tab: &TabState) {
+    let mut view_state = tab.browser_view_state.get();
+    if view_state.selection.clear() {
+        tab.browser_view_state.set_if_changed(view_state);
+    }
+    tab.selection_count.set_if_changed(0);
+}
+
+fn publish_archive_entries(tab: &TabState, entries: Vec<ArchiveEntry>) -> Arc<Vec<ArchiveEntry>> {
+    let entries = Arc::new(entries);
+    tab.entries.set(entries.clone());
+    entries
+}
+
+fn archive_open_event(
+    path: &Path,
+    kind: ArchiveKind,
+    password: Option<String>,
+    entries: Arc<Vec<ArchiveEntry>>,
+    tab: &TabState,
+) -> PluginEvent {
+    PluginEvent::OnArchiveOpen {
+        path: path.to_string_lossy().into_owned(),
+        kind,
+        password,
+        entries,
+        metadata_signal: tab.metadata.clone(),
+    }
+}
+
+fn dispatch_pending_plugin_events(
+    pending: &mut Vec<PendingPluginEvent>,
+    sender: Option<&Sender<PluginEvent>>,
+    signals: &AppSignals,
+) {
+    let tabs = signals.tabs.get();
+    for pending_event in pending.drain(..) {
+        if let Some(sender) = sender {
+            if let Err(error) = sender.send(pending_event.event) {
+                warn!("Failed to send deferred event to plugin worker: {}", error);
+            }
+        }
+
+        if let Some(tab) = tabs.get(pending_event.origin_tab_id) {
+            tab.ui_ready.set(true);
+        }
+    }
+}
 
 impl AppState {
     /// List an archive and populate the **named** tab's per-tab signals.
@@ -100,17 +154,22 @@ impl AppState {
         // live on the dedicated extras signal. The full ArchiveInfo
         // is now a Computed that reads entries + archive_path +
         // archive_extras (post 2026-05-20 Tier 2 item 6 audit).
-        tab.archive_extras.set(crate::core::operations::archive::ArchiveExtras {
-            archive_encrypted: info.encrypted,
-            headers_encrypted: info.headers_encrypted,
-            encryption_method: info.encryption_method.clone(),
-        });
+        tab.archive_extras
+            .set(crate::core::operations::archive::ArchiveExtras {
+                archive_encrypted: info.encrypted,
+                headers_encrypted: info.headers_encrypted,
+                encryption_method: info.encryption_method.clone(),
+            });
         tab.navigation
             .set(arclain_core::archive::NavigationState::new());
 
-        // Update reactive signals for async UI updates
-        tab.entries
-            .set(std::sync::Arc::new(info.entries.clone()));
+        // Matching root paths are common across unrelated archives. Reset
+        // selection before publishing a replacement so extract/delete state
+        // cannot leak from the archive previously shown in this tab.
+        clear_archive_selection(&tab);
+
+        // Keep this exact Arc for the plugin event as well as the tab signal.
+        let published_entries = publish_archive_entries(&tab, info.entries.clone());
 
         // Attempt password detection with correct archive context
         if tab.current_password.read().is_none() {
@@ -151,16 +210,16 @@ impl AppState {
         // the worker processes us.
         tab.metadata.set(None);
         if self.plugin_event_sender.is_some() {
-            use arclain_plugins::PluginEvent;
-            let event = PluginEvent::OnArchiveOpen {
-                path: path.to_string_lossy().into_owned(),
-                kind: info.archive_kind,
-                password: tab.current_password.get(),
-                entries: tab.entries.get(),
-                metadata_signal: tab.metadata.clone(),
-            };
+            let event = archive_open_event(
+                path,
+                info.archive_kind,
+                tab.current_password.get(),
+                published_entries.clone(),
+                &tab,
+            );
 
-            self.pending_plugin_events.push(event);
+            self.pending_plugin_events
+                .push(PendingPluginEvent::new(target_tab_id, event));
             tab.ui_ready.set(false);
 
             info!(
@@ -185,10 +244,9 @@ impl AppState {
         } else {
             arclain_core::Archive::new(backend, path.to_path_buf())
         };
-        tab.opened_archive
-            .set(Some(Arc::new(RwLock::new(archive))));
+        tab.opened_archive.set(Some(Arc::new(RwLock::new(archive))));
 
-        Ok(tab.entries.get().as_ref().clone())
+        Ok(published_entries.as_ref().clone())
     }
 
     /// Re-list a tab's archive after the user has manually entered a
@@ -222,41 +280,43 @@ impl AppState {
 
         // Update archive_extras — see `list_archive` above for the
         // post-Tier 2 (item 6) rationale.
-        tab.archive_extras.set(crate::core::operations::archive::ArchiveExtras {
-            archive_encrypted: info.encrypted,
-            headers_encrypted: info.headers_encrypted,
-            encryption_method: info.encryption_method.clone(),
-        });
+        tab.archive_extras
+            .set(crate::core::operations::archive::ArchiveExtras {
+                archive_encrypted: info.encrypted,
+                headers_encrypted: info.headers_encrypted,
+                encryption_method: info.encryption_method.clone(),
+            });
         tab.navigation
             .set(arclain_core::archive::NavigationState::new());
-        tab.current_password
-            .set(Some(password.to_string()));
+        tab.current_password.set(Some(password.to_string()));
+
+        clear_archive_selection(&tab);
+        let published_entries = publish_archive_entries(&tab, info.entries.clone());
 
         // Queue OnArchiveOpen for deferred dispatch — see the
         // sibling `list_archive` site above for why the payload
         // carries per-tab snapshots of entries + the metadata
         // signal handle.
         if self.plugin_event_sender.is_some() {
-            use arclain_plugins::PluginEvent;
-            let event = PluginEvent::OnArchiveOpen {
-                path: path.to_string_lossy().into_owned(),
-                kind: info.archive_kind.clone(),
-                password: Some(password.to_string()),
-                entries: tab.entries.get(),
-                metadata_signal: tab.metadata.clone(),
-            };
+            let event = archive_open_event(
+                path,
+                info.archive_kind.clone(),
+                Some(password.to_string()),
+                published_entries.clone(),
+                &tab,
+            );
 
-            self.pending_plugin_events.push(event);
+            self.pending_plugin_events
+                .push(PendingPluginEvent::new(target_tab_id, event));
             tab.ui_ready.set(false);
         }
 
         // Create Archive handle with password and store in signal for session operations
         let archive =
             arclain_core::Archive::with_password(backend, path.to_path_buf(), password.to_string());
-        tab.opened_archive
-            .set(Some(Arc::new(RwLock::new(archive))));
+        tab.opened_archive.set(Some(Arc::new(RwLock::new(archive))));
 
-        Ok(tab.entries.get().as_ref().clone())
+        Ok(published_entries.as_ref().clone())
     }
 
     /// Drain queued plugin events into the worker channel.
@@ -274,26 +334,16 @@ impl AppState {
             self.pending_plugin_events.len()
         );
 
-        if let Some(ref sender) = self.plugin_event_sender {
-            for event in self.pending_plugin_events.drain(..) {
-                if let Err(e) = sender.send(event) {
-                    warn!("Failed to send deferred event to plugin worker: {}", e);
-                }
-            }
-        } else {
-            // No sender wired up — drop the events rather than
-            // accumulating them indefinitely.
-            self.pending_plugin_events.clear();
-        }
-
-        self.signals.tabs.get().active().ui_ready.set(true);
+        dispatch_pending_plugin_events(
+            &mut self.pending_plugin_events,
+            self.plugin_event_sender.as_ref(),
+            &self.signals,
+        );
     }
 
     pub fn get_current_entries(&self) -> Vec<arclain_core::ArchiveEntry> {
         let tab = self.signals.tabs.get().active().clone();
-        tab.navigation
-            .get()
-            .filter_entries(&tab.entries.get())
+        tab.navigation.get().filter_entries(&tab.entries.get())
     }
 
     pub fn add_files_to_archive(&self, archive: &Path, files: Vec<PathBuf>) -> Result<()> {
@@ -323,5 +373,115 @@ impl AppState {
     ) -> Result<()> {
         let backend = self.backend_selector.select(archive)?;
         backend.add_or_update_file_from_str(archive, path_in_archive, content)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::signals::AppSignals;
+    use crate::core::state::PendingPluginEvent;
+    use arclain_core::archive::ArchiveKind;
+    use arclain_core::ArchiveEntry;
+    use arclain_plugins::PluginEvent;
+    use std::sync::mpsc;
+
+    fn entry(path: &str) -> ArchiveEntry {
+        ArchiveEntry {
+            path: path.to_string(),
+            size: 0,
+            packed_size: 0,
+            modified: None,
+            is_dir: false,
+            encrypted: false,
+            crc32: None,
+        }
+    }
+
+    fn event(path: &str, tab: &crate::core::tabs::TabState) -> PluginEvent {
+        PluginEvent::OnArchiveOpen {
+            path: path.to_string(),
+            kind: ArchiveKind::Zip,
+            password: None,
+            entries: tab.entries.get(),
+            metadata_signal: tab.metadata.clone(),
+        }
+    }
+
+    #[test]
+    fn preparing_a_replacement_archive_clears_selection_and_count() {
+        let tab = crate::core::tabs::TabState::new(TabId(7));
+        tab.browser_view_state.update(|state| {
+            state.selection.insert("same/path.txt".to_string());
+        });
+        tab.selection_count.set(1);
+
+        clear_archive_selection(&tab);
+
+        assert!(tab.browser_view_state.get().selection.is_empty());
+        assert_eq!(tab.selection_count.get(), 0);
+    }
+
+    #[test]
+    fn decrypted_entries_are_the_published_event_and_browser_snapshot() {
+        let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
+        tab.entries.set(Arc::new(vec![entry("locked-name.txt")]));
+
+        let published = publish_archive_entries(&tab, vec![entry("decrypted-name.txt")]);
+        let plugin_event = archive_open_event(
+            Path::new("encrypted.zip"),
+            ArchiveKind::Zip,
+            Some("secret".to_string()),
+            published.clone(),
+            &tab,
+        );
+        crate::core::operations::navigation_view::refresh_view_entries_for_tab(&signals, tab.id);
+
+        assert!(Arc::ptr_eq(&published, &tab.entries.get()));
+        let PluginEvent::OnArchiveOpen { entries, .. } = plugin_event;
+        assert!(Arc::ptr_eq(&published, &entries));
+        assert_eq!(published[0].path, "decrypted-name.txt");
+        assert_eq!(
+            tab.browser_entries.get().entries[0].name,
+            "decrypted-name.txt"
+        );
+    }
+
+    #[test]
+    fn queued_plugin_events_keep_order_and_mark_every_origin_tab_ready() {
+        let signals = AppSignals::new();
+        let first_id = signals.tabs.get().active_id();
+        let second_id = {
+            let mut tabs = signals.tabs.get();
+            let id = tabs.open(None);
+            signals.tabs.set(tabs);
+            id
+        };
+        let tabs = signals.tabs.get();
+        let first = tabs.get(first_id).unwrap().clone();
+        let second = tabs.get(second_id).unwrap().clone();
+        first.ui_ready.set(false);
+        second.ui_ready.set(false);
+
+        let mut pending = vec![
+            PendingPluginEvent::new(first_id, event("first.zip", &first)),
+            PendingPluginEvent::new(second_id, event("second.zip", &second)),
+            PendingPluginEvent::new(first_id, event("third.zip", &first)),
+        ];
+        let (sender, receiver) = mpsc::channel();
+
+        dispatch_pending_plugin_events(&mut pending, Some(&sender), &signals);
+
+        let paths = receiver
+            .try_iter()
+            .map(|event| match event {
+                PluginEvent::OnArchiveOpen { path, .. } => path,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(paths, ["first.zip", "second.zip", "third.zip"]);
+        assert!(pending.is_empty());
+        assert!(first.ui_ready.get());
+        assert!(second.ui_ready.get());
     }
 }

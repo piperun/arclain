@@ -1,12 +1,81 @@
 use crate::shared::theme::AppTheme;
 use arclain_widgets::pixel_align;
 use eframe::egui;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct TreePanelState {
     pub selected_path: String,
-    pub expanded_folders: HashMap<String, bool>,
+    expanded_folders: Arc<HashSet<String>>,
+    expansion_generation: u64,
+}
+
+impl PartialEq for TreePanelState {
+    fn eq(&self, other: &Self) -> bool {
+        self.selected_path == other.selected_path
+            && self.expansion_generation == other.expansion_generation
+    }
+}
+
+impl TreePanelState {
+    fn set_selected_path(&mut self, current_path: &str) -> bool {
+        if self.selected_path == current_path {
+            return false;
+        }
+        self.selected_path.clear();
+        self.selected_path.push_str(current_path);
+        true
+    }
+
+    fn is_expanded(&self, path: &str) -> bool {
+        self.expanded_folders.contains(path)
+    }
+
+    fn bump_expansion_generation(&mut self) {
+        self.expansion_generation = self.expansion_generation.wrapping_add(1).max(1);
+    }
+
+    pub(crate) fn expansion_generation(&self) -> u64 {
+        self.expansion_generation
+    }
+
+    pub(crate) fn toggle_expanded(&mut self, path: &str) -> bool {
+        if path.is_empty() {
+            return false;
+        }
+        let expanded = Arc::make_mut(&mut self.expanded_folders);
+        if !expanded.remove(path) {
+            expanded.insert(path.to_string());
+        }
+        self.bump_expansion_generation();
+        true
+    }
+
+    pub(crate) fn auto_expand_current_path(&mut self, current_path: &str) -> bool {
+        if current_path.is_empty() {
+            return false;
+        }
+
+        let mut path_accumulator = String::new();
+        let mut missing = Vec::new();
+        for segment in current_path.split('/') {
+            if !path_accumulator.is_empty() {
+                path_accumulator.push('/');
+            }
+            path_accumulator.push_str(segment);
+            if !self.expanded_folders.contains(&path_accumulator) {
+                missing.push(path_accumulator.clone());
+            }
+        }
+
+        if missing.is_empty() {
+            return false;
+        }
+        Arc::make_mut(&mut self.expanded_folders).extend(missing);
+        self.bump_expansion_generation();
+        true
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +163,94 @@ impl FolderTree {
         root_nodes.sort_by(|a, b| a.name.cmp(&b.name));
         Self { roots: root_nodes }
     }
+
+    fn flatten_visible(&self, state: &TreePanelState, rows: &mut Vec<TreeRow>) {
+        rows.push(TreeRow::Root);
+        for node in &self.roots {
+            Self::flatten_node(node, state, rows);
+        }
+    }
+
+    fn flatten_node(node: &TreeNode, state: &TreePanelState, rows: &mut Vec<TreeRow>) {
+        let has_children = !node.children.is_empty();
+        rows.push(TreeRow::Folder {
+            name: node.name.clone(),
+            full_path: node.full_path.clone(),
+            indent_level: node.indent_level,
+            has_children,
+        });
+        if has_children && state.is_expanded(&node.full_path) {
+            for child in &node.children {
+                Self::flatten_node(child, state, rows);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TreeRow {
+    Root,
+    Folder {
+        name: String,
+        full_path: String,
+        indent_level: usize,
+        has_children: bool,
+    },
+}
+
+impl TreeRow {
+    #[cfg(test)]
+    fn path_for_test(&self) -> &str {
+        match self {
+            Self::Root => "",
+            Self::Folder { full_path, .. } => full_path,
+        }
+    }
+}
+
+/// Cached visible tree rows for one archive tab.
+///
+/// The hierarchy generation and expansion generation are explicit O(1) keys;
+/// settled frames neither clone/compare the expansion set nor rebuild row
+/// metadata.
+#[derive(Default)]
+pub struct TreeRowProjectionCache {
+    tree_generation: Option<u64>,
+    expansion_generation: u64,
+    rows: Vec<TreeRow>,
+    rebuilds: usize,
+    #[cfg(test)]
+    rendered_rows: usize,
+}
+
+impl TreeRowProjectionCache {
+    fn projection(
+        &mut self,
+        tree: &FolderTree,
+        tree_generation: u64,
+        state: &TreePanelState,
+    ) -> &[TreeRow] {
+        if self.tree_generation != Some(tree_generation)
+            || self.expansion_generation != state.expansion_generation()
+        {
+            self.rows.clear();
+            tree.flatten_visible(state, &mut self.rows);
+            self.tree_generation = Some(tree_generation);
+            self.expansion_generation = state.expansion_generation();
+            self.rebuilds += 1;
+        }
+        &self.rows
+    }
+
+    #[cfg(test)]
+    fn rebuild_count(&self) -> usize {
+        self.rebuilds
+    }
+
+    #[cfg(test)]
+    fn rendered_row_count(&self) -> usize {
+        self.rendered_rows
+    }
 }
 
 pub fn render(
@@ -102,24 +259,14 @@ pub fn render(
     state: &mut TreePanelState,
     archive_name: &str,
     tree: &FolderTree,
+    tree_generation: u64,
+    row_projection: &mut TreeRowProjectionCache,
     current_path: &str,
 ) -> Option<String> {
     let mut navigate_to: Option<String> = None;
 
-    state.selected_path = current_path.to_string();
-
-    if !current_path.is_empty() {
-        let mut path_accumulator = String::new();
-        for segment in current_path.split('/') {
-            if !path_accumulator.is_empty() {
-                path_accumulator.push('/');
-            }
-            path_accumulator.push_str(segment);
-            state
-                .expanded_folders
-                .entry(path_accumulator.clone())
-                .or_insert(true);
-        }
+    if state.set_selected_path(current_path) {
+        state.auto_expand_current_path(current_path);
     }
 
     ui.add_space(4.0);
@@ -150,98 +297,72 @@ pub fn render(
 
     ui.add_space(8.0);
 
-    // Tree view with egui_ltreeview
-    egui::ScrollArea::vertical()
-        .id_salt("tree_scroll")
-        .auto_shrink([false; 2])
-        .show(ui, |ui| {
-            ui.add_space(4.0);
-
-            // Root archive item
-            let is_root_selected = current_path.is_empty();
-            if tree_item(
-                ui,
-                theme,
-                egui_phosphor::regular::PACKAGE,
-                archive_name,
-                archive_name,
-                0,
-                is_root_selected,
-                false,
-            )
-            .clicked
-            {
-                navigate_to = Some(String::new());
-            }
-
-            // Render tree nodes recursively
-            for node in &tree.roots {
-                if let Some(path) = render_tree_node(ui, theme, state, node, current_path) {
-                    navigate_to = Some(path);
+    #[cfg(test)]
+    let mut rendered_rows = 0;
+    {
+        let rows = row_projection.projection(tree, tree_generation, state);
+        egui::ScrollArea::vertical()
+            .id_salt("tree_scroll")
+            .auto_shrink([false; 2])
+            .show_rows(ui, 32.0, rows.len(), |ui, row_range| {
+                for row_index in row_range {
+                    #[cfg(test)]
+                    {
+                        rendered_rows += 1;
+                    }
+                    match &rows[row_index] {
+                        TreeRow::Root => {
+                            if tree_item(
+                                ui,
+                                theme,
+                                egui_phosphor::regular::PACKAGE,
+                                archive_name,
+                                archive_name,
+                                0,
+                                current_path.is_empty(),
+                                false,
+                            )
+                            .clicked
+                            {
+                                navigate_to = Some(String::new());
+                            }
+                        }
+                        TreeRow::Folder {
+                            name,
+                            full_path,
+                            indent_level,
+                            has_children,
+                        } => {
+                            let is_expanded = state.is_expanded(full_path);
+                            let icon = if *has_children && is_expanded {
+                                egui_phosphor::regular::FOLDER_OPEN
+                            } else {
+                                egui_phosphor::regular::FOLDER
+                            };
+                            let response = tree_item(
+                                ui,
+                                theme,
+                                icon,
+                                name,
+                                full_path,
+                                *indent_level,
+                                current_path == full_path,
+                                *has_children,
+                            );
+                            if response.clicked {
+                                navigate_to = Some(full_path.clone());
+                            }
+                            if response.toggle_clicked && *has_children {
+                                state.toggle_expanded(full_path);
+                            }
+                        }
+                    }
                 }
-            }
-
-            ui.add_space(4.0);
-        });
-
-    navigate_to
-}
-
-fn render_tree_node(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    state: &mut TreePanelState,
-    node: &TreeNode,
-    current_path: &str,
-) -> Option<String> {
-    let mut navigate_to: Option<String> = None;
-
-    let is_expanded = state
-        .expanded_folders
-        .get(&node.full_path)
-        .copied()
-        .unwrap_or(false);
-    let has_children = !node.children.is_empty();
-    let is_selected = current_path == node.full_path;
-
-    let icon = if has_children {
-        if is_expanded {
-            egui_phosphor::regular::FOLDER_OPEN
-        } else {
-            egui_phosphor::regular::FOLDER
-        }
-    } else {
-        egui_phosphor::regular::FOLDER
-    };
-
-    let response = tree_item(
-        ui,
-        theme,
-        icon,
-        &node.name,
-        &node.full_path,
-        node.indent_level,
-        is_selected,
-        has_children,
-    );
-
-    if response.clicked {
-        navigate_to = Some(node.full_path.clone());
+            });
     }
-
-    if response.toggle_clicked && has_children {
-        state
-            .expanded_folders
-            .insert(node.full_path.clone(), !is_expanded);
-    }
-
-    // Render children if expanded
-    if is_expanded && has_children {
-        for child in &node.children {
-            if let Some(path) = render_tree_node(ui, theme, state, child, current_path) {
-                navigate_to = Some(path);
-            }
-        }
+    #[cfg(test)]
+    {
+        row_projection.rendered_rows = rendered_rows;
     }
 
     navigate_to
@@ -321,9 +442,9 @@ fn tree_item(
             );
         }
 
-        // Draw icon and text
+        // Draw icon and text separately. Joining them with `format!` used to
+        // allocate a new String for every rendered row on every settled frame.
         let text_pos = pixel_align(egui::pos2(rect.min.x + indent, rect.center().y));
-        let text = format!("{} {}", icon, label);
 
         // Use selection text color when selected, otherwise primary text color
         let text_color = if selected {
@@ -335,7 +456,14 @@ fn tree_item(
         ui.painter().text(
             text_pos,
             egui::Align2::LEFT_CENTER,
-            text,
+            icon,
+            egui::FontId::proportional(14.0),
+            text_color,
+        );
+        ui.painter().text(
+            pixel_align(egui::pos2(text_pos.x + 18.0, text_pos.y)),
+            egui::Align2::LEFT_CENTER,
+            label,
             egui::FontId::proportional(14.0),
             text_color,
         );
@@ -344,5 +472,112 @@ fn tree_item(
     TreeItemResponse {
         clicked: response.clicked(),
         toggle_clicked,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn paths(rows: &[TreeRow]) -> Vec<&str> {
+        rows.iter().map(TreeRow::path_for_test).collect()
+    }
+
+    #[test]
+    fn ten_thousand_tree_rows_render_only_the_small_viewport_slice() {
+        let tree = FolderTree::from_folders(
+            &(0..10_000)
+                .map(|index| format!("folder-{index:05}"))
+                .collect::<Vec<_>>(),
+        );
+        let mut state = TreePanelState::default();
+        let mut rows = TreeRowProjectionCache::default();
+        let theme = AppTheme::new(false);
+        let ctx = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(320.0, 320.0),
+            )),
+            ..Default::default()
+        };
+
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                render(ui, &theme, &mut state, "large.zip", &tree, 1, &mut rows, "");
+            });
+        });
+
+        assert!(
+            rows.rendered_row_count() < 100,
+            "show_rows visited {} of 10,001 rows",
+            rows.rendered_row_count()
+        );
+    }
+
+    #[test]
+    fn settled_frames_reuse_the_flattened_row_allocation() {
+        let tree = FolderTree::from_folders(&["a".to_string(), "b".to_string()]);
+        let state = TreePanelState::default();
+        let mut cache = TreeRowProjectionCache::default();
+
+        let first_ptr = cache.projection(&tree, 5, &state).as_ptr();
+        assert_eq!(cache.rebuild_count(), 1);
+        let second_ptr = cache.projection(&tree, 5, &state).as_ptr();
+
+        assert_eq!(first_ptr, second_ptr);
+        assert_eq!(cache.rebuild_count(), 1);
+    }
+
+    #[test]
+    fn toggling_parent_advances_one_generation_and_rebuilds_descendants() {
+        let tree = FolderTree::from_folders(&["parent".to_string(), "parent/child".to_string()]);
+        let mut state = TreePanelState::default();
+        let mut cache = TreeRowProjectionCache::default();
+
+        assert_eq!(paths(cache.projection(&tree, 1, &state)), ["", "parent"]);
+        let generation = state.expansion_generation();
+
+        assert!(state.toggle_expanded("parent"));
+        assert_eq!(state.expansion_generation(), generation + 1);
+        assert_eq!(
+            paths(cache.projection(&tree, 1, &state)),
+            ["", "parent", "parent/child"]
+        );
+        assert_eq!(cache.rebuild_count(), 2);
+    }
+
+    #[test]
+    fn auto_expansion_invalidates_only_for_new_path_segments() {
+        let tree =
+            FolderTree::from_folders(&["a".to_string(), "a/b".to_string(), "a/b/c".to_string()]);
+        let mut state = TreePanelState::default();
+        let mut cache = TreeRowProjectionCache::default();
+        cache.projection(&tree, 9, &state);
+
+        assert!(state.auto_expand_current_path("a/b/c"));
+        let expanded_generation = state.expansion_generation();
+        assert_eq!(
+            paths(cache.projection(&tree, 9, &state)),
+            ["", "a", "a/b", "a/b/c"]
+        );
+        assert_eq!(cache.rebuild_count(), 2);
+
+        assert!(!state.auto_expand_current_path("a/b/c"));
+        assert_eq!(state.expansion_generation(), expanded_generation);
+        cache.projection(&tree, 9, &state);
+        assert_eq!(cache.rebuild_count(), 2);
+    }
+
+    #[test]
+    fn tree_generation_invalidates_rows_when_folder_count_is_unchanged() {
+        let first = FolderTree::from_folders(&["a".to_string()]);
+        let second = FolderTree::from_folders(&["b".to_string()]);
+        let state = TreePanelState::default();
+        let mut cache = TreeRowProjectionCache::default();
+
+        assert_eq!(paths(cache.projection(&first, 11, &state)), ["", "a"]);
+        assert_eq!(paths(cache.projection(&second, 12, &state)), ["", "b"]);
+        assert_eq!(cache.rebuild_count(), 2);
     }
 }

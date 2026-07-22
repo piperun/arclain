@@ -103,7 +103,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     &mut plugin_renderer,
                     &mut plugin_dispatcher,
                 );
-                tab.browser_view_state.set(view_state);
+                tab.browser_view_state.set_if_changed(view_state);
 
                 // Handle toolbar actions
                 let shared_state = app.shared_state.clone();

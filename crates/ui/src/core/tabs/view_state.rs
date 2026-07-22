@@ -53,7 +53,13 @@ impl BrowserEntriesSnapshot {
 pub struct ArchiveTreeProjectionCache {
     source: Option<Arc<Vec<ArchiveEntry>>>,
     tree: FolderTree,
+    generation: u64,
     rebuilds: usize,
+}
+
+pub struct ArchiveTreeProjection<'a> {
+    pub tree: &'a FolderTree,
+    pub generation: u64,
 }
 
 impl ArchiveTreeProjectionCache {
@@ -61,7 +67,7 @@ impl ArchiveTreeProjectionCache {
         &mut self,
         entries: &Arc<Vec<ArchiveEntry>>,
         build: impl FnOnce(&[ArchiveEntry]) -> FolderTree,
-    ) -> &FolderTree {
+    ) -> ArchiveTreeProjection<'_> {
         let source_changed = self
             .source
             .as_ref()
@@ -70,10 +76,14 @@ impl ArchiveTreeProjectionCache {
         if source_changed {
             self.tree = build(entries.as_slice());
             self.source = Some(entries.clone());
+            self.generation = self.generation.wrapping_add(1).max(1);
             self.rebuilds += 1;
         }
 
-        &self.tree
+        ArchiveTreeProjection {
+            tree: &self.tree,
+            generation: self.generation,
+        }
     }
 
     pub fn rebuild_count(&self) -> usize {
@@ -619,15 +629,23 @@ mod tests {
         let navigation = arclain_core::NavigationState::default();
         let mut cache = ArchiveTreeProjectionCache::default();
 
-        cache.projection(&first, |entries| {
-            FolderTree::from_folders(&navigation.get_all_folders(entries))
-        });
-        cache.projection(&first, |_| panic!("settled tree projection rebuilt"));
+        let first_generation = cache
+            .projection(&first, |entries| {
+                FolderTree::from_folders(&navigation.get_all_folders(entries))
+            })
+            .generation;
+        let settled_generation = cache
+            .projection(&first, |_| panic!("settled tree projection rebuilt"))
+            .generation;
+        assert_eq!(settled_generation, first_generation);
         assert_eq!(cache.rebuild_count(), 1);
 
-        cache.projection(&second, |entries| {
-            FolderTree::from_folders(&navigation.get_all_folders(entries))
-        });
+        let replacement_generation = cache
+            .projection(&second, |entries| {
+                FolderTree::from_folders(&navigation.get_all_folders(entries))
+            })
+            .generation;
+        assert_ne!(replacement_generation, first_generation);
         assert_eq!(cache.rebuild_count(), 2);
     }
 }

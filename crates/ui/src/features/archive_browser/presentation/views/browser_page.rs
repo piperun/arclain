@@ -6,7 +6,7 @@ use crate::core::tabs::view_state::{
 use crate::core::tabs::TabState;
 use crate::features::archive_browser::domain::Action;
 use crate::features::archive_browser::presentation::components::file_list;
-use crate::shared::components::tree_panel::{self, FolderTree};
+use crate::shared::components::tree_panel::{self, FolderTree, TreeRowProjectionCache};
 use crate::shared::SharedState;
 use arclain_core::ActionType;
 use arclain_signals::Signal;
@@ -27,6 +27,7 @@ pub fn render_archive_browser(
     tab: &TabState,
     projection: &mut BrowserProjectionCache,
     tree_projection: &mut ArchiveTreeProjectionCache,
+    tree_rows: &mut TreeRowProjectionCache,
 ) -> Action {
     let mut action = Action::None;
 
@@ -51,16 +52,14 @@ pub fn render_archive_browser(
 
     // Render tree panel if enabled
     if view_state.toolbar_state.show_tree_panel {
-        let archive_name = tab
-            .archive_path
-            .get()
+        let archive_path = tab.archive_path.get();
+        let archive_name = archive_path
             .as_ref()
             .and_then(|path| path.file_name())
-            .map(|name| name.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "archive".to_string());
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_else(|| std::borrow::Cow::Borrowed("archive"));
         let archive_entries = tab.entries.get();
         let navigation = tab.navigation.get();
-        let current_path = navigation.current_path.clone();
         let tree = tree_projection.projection(&archive_entries, |entries| {
             FolderTree::from_folders(&navigation.get_all_folders(entries))
         });
@@ -68,9 +67,11 @@ pub fn render_archive_browser(
             ctx,
             &mut view_state,
             shared,
-            &archive_name,
-            tree,
-            &current_path,
+            archive_name.as_ref(),
+            tree.tree,
+            tree.generation,
+            tree_rows,
+            &navigation.current_path,
             &mut action,
         );
     }
@@ -151,6 +152,8 @@ fn render_tree_panel(
     shared: &SharedState,
     archive_name: &str,
     tree: &FolderTree,
+    tree_generation: u64,
+    tree_rows: &mut TreeRowProjectionCache,
     current_path: &str,
     action: &mut Action,
 ) {
@@ -164,6 +167,8 @@ fn render_tree_panel(
                 &mut state.tree_state,
                 archive_name,
                 tree,
+                tree_generation,
+                tree_rows,
                 current_path,
             ) {
                 *action = Action::NavigateToPath(path);

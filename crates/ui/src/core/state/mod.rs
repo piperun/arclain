@@ -21,6 +21,27 @@ use arclain_core::UserConfig;
 use arclain_core::{ConfigDbs, DbPaths};
 
 use super::signals::AppSignals;
+use super::tabs::TabId;
+
+/// Plugin event captured together with the tab that originated it.
+///
+/// The event payload already carries tab-local archive data and metadata
+/// handles. Keeping the `TabId` alongside it lets the deferred UI dispatcher
+/// release the matching tab's `ui_ready` gate after queueing the event, even
+/// when another tab became active in the meantime.
+pub struct PendingPluginEvent {
+    pub origin_tab_id: TabId,
+    pub event: arclain_plugins::PluginEvent,
+}
+
+impl PendingPluginEvent {
+    pub fn new(origin_tab_id: TabId, event: arclain_plugins::PluginEvent) -> Self {
+        Self {
+            origin_tab_id,
+            event,
+        }
+    }
+}
 
 /// Core application state
 pub struct AppState {
@@ -45,7 +66,7 @@ pub struct AppState {
     /// `Option<PluginEvent>` slot — opening 5 archives in one frame
     /// (e.g. multi-file drag-drop) silently lost the first 4 because
     /// each push overwrote the slot. Vec preserves them all.
-    pub pending_plugin_events: Vec<arclain_plugins::PluginEvent>,
+    pub pending_plugin_events: Vec<PendingPluginEvent>,
     /// Reactive signals for async state updates
     pub signals: AppSignals,
 }

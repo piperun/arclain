@@ -2,6 +2,7 @@ use super::domain::Action;
 use super::presentation::BrowserController;
 use crate::core::tabs::view_state::{ArchiveTreeProjectionCache, BrowserProjectionCache};
 use crate::core::tabs::TabId;
+use crate::shared::components::tree_panel::TreeRowProjectionCache;
 use crate::shared::SharedState;
 use eframe::egui;
 use std::collections::{HashMap, HashSet};
@@ -15,6 +16,7 @@ pub struct ArchiveBrowser {
 struct ArchiveTabProjectionCache {
     files: BrowserProjectionCache,
     tree: ArchiveTreeProjectionCache,
+    tree_rows: TreeRowProjectionCache,
 }
 
 impl ArchiveBrowser {
@@ -37,6 +39,7 @@ impl ArchiveBrowser {
             &active,
             &mut projection.files,
             &mut projection.tree,
+            &mut projection.tree_rows,
         )
     }
 
