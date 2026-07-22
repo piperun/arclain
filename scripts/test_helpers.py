@@ -242,6 +242,16 @@ class TestPackageFreshness(unittest.TestCase):
 
 
 class TestReleaseWorkflows(unittest.TestCase):
+    def test_headless_ci_runs_all_non_ui_test_targets(self):
+        woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
+        compose = (REPO_ROOT / "compose.yaml").read_text(encoding="utf-8")
+        complete_non_ui = "cargo nextest run --workspace --exclude arclain_ui --locked"
+        ui_lib_only = "cargo nextest run -p arclain_ui --lib --locked"
+        for text in (woodpecker, compose):
+            self.assertIn(complete_non_ui, text)
+            self.assertIn(ui_lib_only, text)
+        self.assertNotIn("cargo nextest run --workspace --lib --locked", woodpecker)
+
     def test_release_script_does_not_override_cargo_target_dir(self):
         release_script = (REPO_ROOT / "scripts" / "release.py").read_text(
             encoding="utf-8",

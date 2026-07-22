@@ -71,9 +71,9 @@ steps:
       # creates /home/runner so cargo has somewhere to write its dep
       # cache.
       #
-      # --lib only: skips integration tests that exercise the egui
-      # event loop (which would need xvfb in CI). Matches the user's
-      # local cargo-test workflow.
+      # Non-UI packages run every unit and integration target. The
+      # arclain_ui package remains library-only because its integration
+      # targets require a display and event loop.
       # Install cargo-nextest from its prebuilt binary release —
       # `cargo install cargo-nextest` from source adds ~2 min of
       # cold compile on every CI run. Drops straight into
@@ -82,11 +82,11 @@ steps:
       - useradd -m runner
       - chown -R runner:runner /workspace
       # nextest gives process-per-test isolation (vs cargo's
-      # thread-per-test) and cleaner output. --lib still skips
-      # integration tests that need an egui event loop / xvfb;
-      # doctests are excluded from nextest entirely and covered by
-      # the follow-up `cargo test --doc` step below.
-      - su runner -c "cd /workspace/codeberg/arclain && cargo nextest run --workspace --lib --locked"
+      # thread-per-test) and cleaner output. Doctests are excluded
+      # from nextest entirely and covered by the follow-up
+      # `cargo test --doc` step below.
+      - su runner -c "cd /workspace/codeberg/arclain && cargo nextest run --workspace --exclude arclain_ui --locked"
+      - su runner -c "cd /workspace/codeberg/arclain && cargo nextest run -p arclain_ui --lib --locked"
       - su runner -c "cd /workspace/codeberg/arclain && cargo test --workspace --doc --locked"
     depends_on: [fetch-gameta]
 

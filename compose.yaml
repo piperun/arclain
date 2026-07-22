@@ -54,11 +54,14 @@ services:
     <<: *base
     command: cargo check --workspace --locked
 
-  # Mirrors woodpecker `cargo-test` step (--lib + doctests, no GUI ITs).
+  # Mirrors woodpecker `cargo-test`: all unit and integration targets for
+  # non-UI packages, UI library tests only, then workspace doctests. UI
+  # integration targets require a display and event loop.
   test:
     <<: *base
     command: >
-      sh -c "cargo nextest run --workspace --lib --locked &&
+      sh -c "cargo nextest run --workspace --exclude arclain_ui --locked &&
+             cargo nextest run -p arclain_ui --lib --locked &&
              cargo test --workspace --doc --locked"
 
   # Mirrors woodpecker `wasm-plugins` step. Note: dlsite-metadata is
