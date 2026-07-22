@@ -12,7 +12,7 @@ use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::runtime::Handle;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
 /// Result of a streaming download.
@@ -52,17 +52,51 @@ pub(super) fn parse_content_range_total(header: &str) -> Option<u64> {
     total_part.parse::<u64>().ok()
 }
 
+/// State-carrying completion signal for one asynchronous request.
+#[derive(Debug, Clone)]
+pub(super) struct RequestCompletion {
+    sender: watch::Sender<RequestStatus>,
+}
+
+impl RequestCompletion {
+    pub(super) fn new(initial: RequestStatus) -> Self {
+        let (sender, _receiver) = watch::channel(initial);
+        Self { sender }
+    }
+
+    pub(super) fn status(&self) -> RequestStatus {
+        self.sender.borrow().clone()
+    }
+
+    pub(super) fn set(&self, status: RequestStatus) {
+        self.sender.send_if_modified(move |current| {
+            if current.is_complete() {
+                return false;
+            }
+            *current = status;
+            true
+        });
+    }
+
+    pub(super) async fn wait(&self) -> RequestStatus {
+        let mut receiver = self.sender.subscribe();
+        loop {
+            let status = receiver.borrow_and_update().clone();
+            if status.is_complete() {
+                return status;
+            }
+            receiver
+                .changed()
+                .await
+                .expect("request completion sender lives in PendingEntry");
+        }
+    }
+}
+
 /// One row of the pending-requests map.
-///
-/// `notify` is fired exactly once when the request transitions into a
-/// terminal state (Ready / Failed / Cancelled). Callers of
-/// [`AsyncHttpClient::await_complete`] block on the same `Notify` so
-/// they can wake up directly on completion instead of polling
-/// `status()` every 100ms (audit P2).
 #[derive(Debug)]
 pub(crate) struct PendingEntry {
-    pub(crate) status: RequestStatus,
-    pub(crate) notify: Arc<Notify>,
+    completion: RequestCompletion,
 }
 
 /// Async HTTP client with security features
@@ -239,14 +273,13 @@ impl AsyncHttpClient {
     /// Internal: start an async request
     fn start_request(&self, request: HttpRequest, use_proxy: bool) -> RequestId {
         let id = RequestId::new();
-        let notify = Arc::new(Notify::new());
+        let completion = RequestCompletion::new(RequestStatus::Pending);
 
         // Mark as pending
         self.pending.lock().insert(
             id.clone(),
             PendingEntry {
-                status: RequestStatus::Pending,
-                notify: notify.clone(),
+                completion: completion.clone(),
             },
         );
 
@@ -257,7 +290,6 @@ impl AsyncHttpClient {
             self.client_direct.read().clone()
         };
 
-        let pending = self.pending.clone();
         let request_id = id.clone();
 
         debug!(
@@ -268,9 +300,7 @@ impl AsyncHttpClient {
         // Spawn async task
         self.runtime.spawn(async move {
             // Update status to in-progress
-            if let Some(entry) = pending.lock().get_mut(&request_id) {
-                entry.status = RequestStatus::InProgress;
-            }
+            completion.set(RequestStatus::InProgress);
 
             // Fix DLSite CDN URLs with padded folder names (from old WASM plugin)
             // e.g., /RJ00361000/ -> /RJ361000/
@@ -348,11 +378,7 @@ impl AsyncHttpClient {
                 }
             };
 
-            if let Some(entry) = pending.lock().get_mut(&request_id) {
-                entry.status = status;
-            }
-            // Wake any task awaiting this request via `await_complete`.
-            notify.notify_waiters();
+            completion.set(status);
         });
 
         id
@@ -360,7 +386,10 @@ impl AsyncHttpClient {
 
     /// Get the status of a request
     pub fn status(&self, id: &RequestId) -> Option<RequestStatus> {
-        self.pending.lock().get(id).map(|e| e.status.clone())
+        self.pending
+            .lock()
+            .get(id)
+            .map(|entry| entry.completion.status())
     }
 
     /// Await the completion of a request without polling.
@@ -371,25 +400,25 @@ impl AsyncHttpClient {
     /// poll loop, this wakes once when the HTTP task finishes
     /// (audit P2).
     pub async fn await_complete(&self, id: &RequestId) -> Option<RequestStatus> {
-        // Snapshot the Notify and check current status under the lock.
-        let notify = {
+        let completion = {
             let pending = self.pending.lock();
             let entry = pending.get(id)?;
-            if entry.status.is_complete() {
-                return Some(entry.status.clone());
-            }
-            entry.notify.clone()
+            entry.completion.clone()
         };
-        notify.notified().await;
-        self.pending.lock().get(id).map(|e| e.status.clone())
+
+        completion.wait().await;
+        self.pending
+            .lock()
+            .get(id)
+            .map(|entry| entry.completion.status())
     }
 
     /// Take the response (removes from pending)
     pub fn take_response(&self, id: &RequestId) -> Option<RequestStatus> {
         let mut pending = self.pending.lock();
         if let Some(entry) = pending.get(id) {
-            if entry.status.is_complete() {
-                return pending.remove(id).map(|e| e.status);
+            if entry.completion.status().is_complete() {
+                return pending.remove(id).map(|entry| entry.completion.status());
             }
         }
         None
@@ -406,9 +435,10 @@ impl AsyncHttpClient {
     /// branched on `RequestStatus::Cancelled` specifically.
     pub fn cancel(&self, id: &RequestId) {
         let mut pending = self.pending.lock();
-        if let Some(entry) = pending.remove(id) {
-            entry.notify.notify_waiters();
+        if let Some(entry) = pending.get(id) {
+            entry.completion.set(RequestStatus::Cancelled);
         }
+        pending.remove(id);
     }
 
     /// Get count of pending requests
@@ -416,7 +446,7 @@ impl AsyncHttpClient {
         self.pending
             .lock()
             .values()
-            .filter(|e| e.status.is_pending())
+            .filter(|entry| entry.completion.status().is_pending())
             .count()
     }
 

@@ -1,8 +1,8 @@
 use crate::features::proxy::ProxyConfig;
-use crate::features::request::client::parse_content_range_total;
+use crate::features::request::client::{parse_content_range_total, RequestCompletion};
 use crate::features::whitelist::DomainWhitelist;
 use crate::AsyncHttpClient;
-use crate::{HttpRequest, RequestStatus};
+use crate::{HttpRequest, HttpResponse, RequestStatus};
 
 #[test]
 fn parse_content_range_total_handles_normal_response() {
@@ -215,11 +215,11 @@ async fn test_runtime_config_update() {
 /// every 100ms in a 30-second loop. With ~10 carousel images that's
 /// 100 wakes/sec doing nothing while waiting for HTTP.
 ///
-/// Post-fix, callers `await_complete(id).await` and the HTTP-spawned
-/// task `notify_waiters` on terminal status. This test verifies the
-/// notification path: an awaited completion resolves promptly when
-/// the wiremock server responds, far below any plausible 100ms poll
-/// quantum that the old loop would have introduced.
+/// Post-fix, callers `await_complete(id).await` subscribe to a watch
+/// cell carrying the latest status. This test verifies the completion
+/// path: an awaited completion resolves promptly when the wiremock
+/// server responds, far below any plausible 100ms poll quantum that
+/// the old loop would have introduced.
 #[tokio::test]
 async fn p2_await_complete_resolves_on_completion() {
     let mock_server = MockServer::start().await;
@@ -277,8 +277,8 @@ async fn p2_await_complete_returns_immediately_when_already_done() {
     // Drain via the legacy poll helper so we know status is terminal.
     let _ = wait_for_request(&client, &id).await;
 
-    // Now await_complete should return without ever blocking on the
-    // Notify (the early-exit branch under the lock).
+    // Now await_complete should observe the terminal value stored in
+    // the completion cell without blocking for another transition.
     let start = std::time::Instant::now();
     let status = client.await_complete(&id).await;
     assert!(matches!(status, Some(RequestStatus::Ready(_))));
@@ -295,6 +295,99 @@ async fn p2_await_complete_returns_none_for_unknown_id() {
     let bogus = crate::RequestId::new();
     let result = client.await_complete(&bogus).await;
     assert!(result.is_none());
+}
+
+#[tokio::test]
+async fn terminal_state_sent_before_wait_is_still_observed() {
+    let completion = RequestCompletion::new(RequestStatus::Pending);
+    completion.set(RequestStatus::Failed("finished-before-wait".into()));
+
+    let status = tokio::time::timeout(Duration::from_millis(100), completion.wait())
+        .await
+        .expect("stored completion must not wait for another edge");
+
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message == "finished-before-wait")
+    );
+}
+
+#[tokio::test]
+async fn completion_during_waiter_setup_is_not_lost() {
+    let completion = RequestCompletion::new(RequestStatus::Pending);
+    let waiter = completion.wait();
+
+    // The terminal update lands after the caller has created its wait
+    // future but before that future gets its first poll.
+    completion.set(RequestStatus::Failed("during-setup".into()));
+
+    let status = tokio::time::timeout(Duration::from_millis(100), waiter)
+        .await
+        .expect("completion during waiter setup must be stored");
+    assert!(matches!(status, RequestStatus::Failed(ref message) if message == "during-setup"));
+}
+
+#[tokio::test]
+async fn cancellation_wakes_an_existing_waiter_before_removal() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/cancel"))
+        .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(30)))
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let id = client.request(HttpRequest::get(&format!("{}/cancel", mock_server.uri())));
+
+    let waiter = client.await_complete(&id);
+    tokio::pin!(waiter);
+    tokio::select! {
+        biased;
+        result = &mut waiter => panic!("request completed before cancellation: {result:?}"),
+        _ = tokio::task::yield_now() => {}
+    }
+
+    client.cancel(&id);
+
+    let result = tokio::time::timeout(Duration::from_millis(100), &mut waiter)
+        .await
+        .expect("cancellation must wake an already-subscribed waiter");
+    assert!(
+        result.is_none(),
+        "cancelled entries remain removed publicly"
+    );
+}
+
+#[test]
+fn late_worker_updates_do_not_overwrite_terminal_states() {
+    let failed = RequestCompletion::new(RequestStatus::Failed("first failure".into()));
+    failed.set(RequestStatus::InProgress);
+    assert!(matches!(
+        failed.status(),
+        RequestStatus::Failed(ref message) if message == "first failure"
+    ));
+
+    let cancelled = RequestCompletion::new(RequestStatus::Cancelled);
+    cancelled.set(RequestStatus::Ready(HttpResponse {
+        status_code: 200,
+        headers: Default::default(),
+        body: b"late response".to_vec(),
+        content_type: None,
+    }));
+    assert!(matches!(cancelled.status(), RequestStatus::Cancelled));
+
+    let ready = RequestCompletion::new(RequestStatus::Ready(HttpResponse {
+        status_code: 204,
+        headers: Default::default(),
+        body: Vec::new(),
+        content_type: None,
+    }));
+    ready.set(RequestStatus::Failed("late failure".into()));
+    assert!(matches!(
+        ready.status(),
+        RequestStatus::Ready(ref response) if response.status_code == 204
+    ));
 }
 
 /// Regression test for P19 from `docs/AUDIT_2026-05-03.md`.
