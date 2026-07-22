@@ -190,14 +190,10 @@ fn run_one(
     // input+pipeline AND the output is still on disk, skip. No matching row
     // OR missing output → treat as a fresh run.
     //
-    // Audit finding M7: this is a check-then-act with respect to the
-    // predicted output path. Another process could create or remove
-    // the path between the `exists()` call and the eventual write.
-    // Single-user desktop usage makes this unreachable in practice,
-    // and the collision policy below is the authoritative gate when
-    // the user does run a second pipeline against the same output —
-    // the race window is widened only across configuration changes
-    // we don't currently support.
+    // This preliminary check supports early Skip/Fail feedback. Commit is the
+    // authoritative collision gate: it rechecks under a destination-scoped
+    // process lock and promotes with an atomic no-replace rename, so a
+    // concurrent arrival cannot be overwritten after this check.
     let app_default = ctx
         .default_collision_policy
         .unwrap_or(OutputCollisionPolicy::Smart);

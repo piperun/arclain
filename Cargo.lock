@@ -370,6 +370,7 @@ dependencies = [
  "rayon",
  "regex",
  "reqwest",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sevenz-rust2",
@@ -383,6 +384,7 @@ dependencies = [
  "unrar",
  "walkdir",
  "which",
+ "windows-sys 0.61.2",
  "zeroize",
  "zip",
 ]
