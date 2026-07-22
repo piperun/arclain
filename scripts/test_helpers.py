@@ -162,13 +162,15 @@ class TestOwnedFormatting(unittest.TestCase):
         lines = (REPO_ROOT / "justfile").read_text(encoding="utf-8").splitlines()
         fmt_index = lines.index("fmt:")
         self.assertEqual(
-            lines[fmt_index:fmt_index + 5],
+            lines[fmt_index:fmt_index + 7],
             [
                 "fmt:",
                 "    {{python}} scripts/_format.py",
                 "",
                 "fmt-check:",
                 "    {{python}} scripts/_format.py --check",
+                "",
+                "# ─── release ──────────────────────────────────────────────────────────────",
             ],
         )
         self.assertEqual(lines.count("fmt:"), 1)
