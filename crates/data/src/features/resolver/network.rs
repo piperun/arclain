@@ -10,11 +10,22 @@ use std::sync::Arc;
 /// Resolver for network/HTTP data
 pub struct NetworkResolver {
     client: Arc<AsyncHttpClient>,
+    plugin_id: Option<String>,
 }
 
 impl NetworkResolver {
     pub fn new(client: Arc<AsyncHttpClient>) -> Self {
-        Self { client }
+        Self {
+            client,
+            plugin_id: None,
+        }
+    }
+
+    pub fn for_plugin(client: Arc<AsyncHttpClient>, plugin_id: impl Into<String>) -> Self {
+        Self {
+            client,
+            plugin_id: Some(plugin_id.into()),
+        }
     }
 }
 
@@ -22,29 +33,24 @@ impl DataSourceResolver for NetworkResolver {
     fn try_resolve(&self, _key: &str, request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
         let url = request.url.as_ref().ok_or(ResolveError::NotConfigured)?;
 
-        // Determine if proxy should be used based on plugin_id
-        let use_proxy = if let Some(plugin_id) = &request.plugin_id {
-            // Check the client's plugin proxy map
-            let result = self.client.should_use_proxy_for_plugin(plugin_id);
+        let result = if let Some(plugin_id) = self.plugin_id.as_deref() {
             tracing::debug!(
-                "[NetworkResolver] plugin_id='{}' -> use_proxy={}",
-                plugin_id,
-                result
+                "[NetworkResolver] fetching key='{}' through checked plugin '{}' route",
+                _key,
+                plugin_id
             );
-            result
+            self.client
+                .blocking_get_for_plugin(plugin_id, url)
+                .map_err(|error| error.to_string())
         } else {
-            tracing::debug!("[NetworkResolver] No plugin_id provided -> use_proxy=false");
-            false
+            tracing::debug!(
+                "[NetworkResolver] fetching host key='{}' through direct route",
+                _key
+            );
+            self.client.blocking_get(url, false)
         };
 
-        tracing::debug!(
-            "[NetworkResolver] Fetching key='{}' url='{}' (proxy: {})",
-            _key,
-            url,
-            use_proxy
-        );
-
-        match self.client.blocking_get(url, use_proxy) {
+        match result {
             Ok(data) => {
                 tracing::debug!("[NetworkResolver] Fetched {} bytes", data.len());
                 // DEBUG: Log small responses to diagnose API issues

@@ -176,6 +176,8 @@ impl PluginManager {
             String,
             Arc<parking_lot::Mutex<crate::runtime::PluginInstance>>,
             Vec<String>,
+            bool,
+            u32,
         )> = {
             let plugins = self.plugins.read();
             plugins
@@ -185,12 +187,21 @@ impl PluginManager {
                         id.clone(),
                         p.instance.clone(),
                         p.manifest.capabilities.network_domains.clone(),
+                        p.manifest.capabilities.network,
+                        p.manifest.rate_limits.http_requests_per_minute,
                     )
                 })
                 .collect()
         };
 
-        for (plugin_id, instance, domains) in snapshot {
+        for (plugin_id, instance, domains, network_enabled, requests_per_minute) in snapshot {
+            client.configure_plugin(
+                &plugin_id,
+                arclain_network::PluginNetworkPolicy {
+                    network_enabled,
+                    requests_per_minute,
+                },
+            );
             instance.lock().set_async_http_client(Some(client.clone()));
             for domain in &domains {
                 client.approve_domain(&plugin_id, domain);

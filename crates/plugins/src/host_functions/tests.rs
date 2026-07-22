@@ -1,53 +1,67 @@
 use super::*;
 
-#[test]
-fn test_rate_limiter() {
-    let limiter = RateLimiter::new(5);
+fn host_functions(
+    plugin_id: &str,
+    capabilities: std::collections::HashSet<PluginCapability>,
+    requests_per_minute: u32,
+) -> HostFunctions {
+    HostFunctions::new(
+        plugin_id.to_string(),
+        capabilities,
+        requests_per_minute,
+        HashMap::new(),
+    )
+    .unwrap()
+}
 
-    // Should allow first 5 requests
-    for _ in 0..5 {
-        assert!(limiter.check_rate_limit());
-    }
-
-    // Should deny 6th request
-    assert!(!limiter.check_rate_limit());
+fn async_client(runtime: &tokio::runtime::Runtime) -> Arc<arclain_network::AsyncHttpClient> {
+    Arc::new(arclain_network::AsyncHttpClient::new(
+        runtime.handle().clone(),
+        Arc::new(parking_lot::RwLock::new(
+            arclain_network::DomainWhitelist::default(),
+        )),
+        None,
+    ))
 }
 
 #[test]
-fn test_host_functions_creation() {
-    let caps = vec![PluginCapability::Network].into_iter().collect();
-    let host_funcs = HostFunctions::new(caps, 10);
+fn async_client_observes_exact_manifest_network_policy() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let client = async_client(&runtime);
+    let capabilities = [PluginCapability::Network].into_iter().collect();
+    let mut host = host_functions("manifest-policy", capabilities, 7);
 
-    assert!(host_funcs.http_client.is_some());
-    assert!(host_funcs.check_capability(PluginCapability::Network));
-    assert!(!host_funcs.check_capability(PluginCapability::FileRead));
+    host.set_async_http_client(client.clone());
+
+    assert_eq!(
+        client.plugin_network_policy("manifest-policy"),
+        Some(arclain_network::PluginNetworkPolicy {
+            network_enabled: true,
+            requests_per_minute: 7,
+        })
+    );
 }
 
 #[test]
-fn test_buffer_allocation() {
-    let caps = std::collections::HashSet::new();
-    let host_funcs = HostFunctions::new(caps, 10);
+fn disabled_manifest_network_capability_is_registered_disabled() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let client = async_client(&runtime);
+    let mut host = host_functions("disabled-policy", Default::default(), 19);
 
-    let data = vec![1, 2, 3, 4, 5];
-    let id = host_funcs.allocate_buffer(data.clone());
+    host.set_async_http_client(client.clone());
 
-    let retrieved = host_funcs.take_buffer(id);
-    assert_eq!(retrieved, Some(data));
-
-    // Should be removed after taking
-    assert_eq!(host_funcs.take_buffer(id), None);
-}
-
-#[test]
-fn test_capability_checking() {
-    let caps = vec![PluginCapability::FileRead, PluginCapability::Network]
-        .into_iter()
-        .collect();
-
-    let host_funcs = HostFunctions::new(caps, 10);
-
-    assert!(host_funcs.check_capability(PluginCapability::FileRead));
-    assert!(host_funcs.check_capability(PluginCapability::Network));
-    assert!(!host_funcs.check_capability(PluginCapability::FileWrite));
-    assert!(!host_funcs.check_capability(PluginCapability::ArchiveMetadataWrite));
+    assert_eq!(
+        client.plugin_network_policy("disabled-policy"),
+        Some(arclain_network::PluginNetworkPolicy {
+            network_enabled: false,
+            requests_per_minute: 19,
+        })
+    );
+    assert!(matches!(
+        client.request_for_plugin(
+            "disabled-policy",
+            arclain_network::HttpRequest::get("https://example.com/"),
+        ),
+        Err(arclain_network::HttpError::PluginNetworkDisabled { .. })
+    ));
 }

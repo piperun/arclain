@@ -7,7 +7,7 @@ use crate::features::request::plugin_policy::{
 };
 use crate::features::request::PluginNetworkPolicy;
 use crate::features::whitelist::DomainWhitelist;
-use crate::{AsyncHttpClient, StreamingDownload};
+use crate::{AsyncHttpClient, StreamingDownload, StreamingResponseMetadata};
 use crate::{HttpError, HttpRequest, HttpResponse, RequestStatus};
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -1001,6 +1001,45 @@ async fn plugin_policy_checked_streaming_get_uses_the_pinned_executor() {
 }
 
 #[tokio::test]
+async fn disabled_plugin_streaming_is_terminal_before_metadata_or_body() {
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    client.configure_plugin(
+        "disabled-stream",
+        PluginNetworkPolicy {
+            network_enabled: false,
+            requests_per_minute: 17,
+        },
+    );
+
+    let (result, bytes, metadata_callbacks) = tokio::task::spawn_blocking(move || {
+        let mut bytes = Vec::new();
+        let mut metadata_callbacks = 0;
+        let result = client.blocking_get_streaming_for_plugin_with_metadata(
+            "disabled-stream",
+            "https://example.com/file",
+            &mut bytes,
+            None,
+            None,
+            |_| {
+                metadata_callbacks += 1;
+                Ok(())
+            },
+        );
+        (result, bytes, metadata_callbacks)
+    })
+    .await
+    .expect("disabled streaming worker panicked");
+
+    assert!(matches!(
+        result,
+        Err(HttpError::PluginNetworkDisabled { .. })
+    ));
+    assert!(bytes.is_empty());
+    assert_eq!(metadata_callbacks, 0);
+}
+
+#[tokio::test]
 async fn plugin_policy_checked_streaming_preserves_range_and_if_match_headers() {
     let listener = TokioTcpListener::bind("127.0.0.1:0")
         .await
@@ -1816,6 +1855,286 @@ async fn streaming_get_writes_body_to_writer() {
         Some("Wed, 21 Oct 2026 07:28:00 GMT")
     );
     assert_eq!(info.total_size, Some(body.len() as u64));
+}
+
+/// Response identity must be available exactly once before the first body
+/// byte is exposed to persistent storage. This is the point at which callers
+/// atomically bind a resumable sidecar to the validated response.
+#[tokio::test]
+async fn streaming_metadata_is_delivered_once_before_body_bytes() {
+    let mock_server = MockServer::start().await;
+    let body = b"streamed-body".to_vec();
+    Mock::given(method("GET"))
+        .and(path("/metadata"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("etag", "\"metadata-v1\"")
+                .insert_header("last-modified", "Wed, 21 Oct 2026 07:28:00 GMT")
+                .set_body_bytes(body.clone()),
+        )
+        .mount(&mock_server)
+        .await;
+
+    struct MetadataBoundWriter {
+        bytes: Vec<u8>,
+        callbacks: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Write for MetadataBoundWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            assert_eq!(
+                self.callbacks.load(std::sync::atomic::Ordering::SeqCst),
+                1,
+                "body bytes were written before metadata was bound"
+            );
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let url = format!("{}/metadata", mock_server.uri());
+    let expected_url = url.clone();
+    let callbacks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let writer_callbacks = callbacks.clone();
+    let (result, writer, metadata) = tokio::task::spawn_blocking(move || {
+        let mut writer = MetadataBoundWriter {
+            bytes: Vec::new(),
+            callbacks: writer_callbacks,
+        };
+        let mut metadata = None;
+        let result = client.blocking_get_streaming_with_metadata(
+            &url,
+            false,
+            &mut writer,
+            None,
+            None,
+            |response_metadata| {
+                assert_eq!(
+                    callbacks.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "metadata callback ran more than once"
+                );
+                metadata = Some(response_metadata.clone());
+                Ok(())
+            },
+        );
+        (result, writer, metadata)
+    })
+    .await
+    .unwrap();
+
+    let download = result.expect("streaming download succeeded");
+    let metadata: StreamingResponseMetadata = metadata.expect("metadata callback ran");
+    assert_eq!(writer.bytes, body);
+    assert_eq!(download.bytes_written, body.len() as u64);
+    assert_eq!(metadata.validated_url, expected_url);
+    assert!(!metadata.was_partial);
+    assert_eq!(metadata.etag.as_deref(), Some("\"metadata-v1\""));
+    assert_eq!(
+        metadata.last_modified.as_deref(),
+        Some("Wed, 21 Oct 2026 07:28:00 GMT")
+    );
+    assert_eq!(metadata.range_start, None);
+    assert_eq!(metadata.total_size, Some(body.len() as u64));
+    assert_eq!(metadata.expected_body_length, Some(body.len() as u64));
+}
+
+#[tokio::test]
+async fn streaming_metadata_failure_writes_no_body_bytes() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/metadata-failure"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"must-not-be-written"))
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let url = format!("{}/metadata-failure", mock_server.uri());
+    let (result, buffer) = tokio::task::spawn_blocking(move || {
+        let mut buffer = Vec::new();
+        let result = client.blocking_get_streaming_with_metadata(
+            &url,
+            false,
+            &mut buffer,
+            None,
+            None,
+            |_| Err("sidecar write failed".to_string()),
+        );
+        (result, buffer)
+    })
+    .await
+    .unwrap();
+
+    assert!(result.unwrap_err().contains("sidecar write failed"));
+    assert!(buffer.is_empty(), "callback failure leaked body bytes");
+}
+
+#[tokio::test]
+async fn streaming_metadata_binds_the_final_redirect_url() {
+    let mock_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/redirect"))
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/final"))
+        .mount(&mock_server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/final"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ok"))
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    client.allow_special_plugin_addresses_for_test();
+    client.configure_plugin(
+        "redirect-metadata",
+        PluginNetworkPolicy {
+            network_enabled: true,
+            requests_per_minute: 10,
+        },
+    );
+    client.approve_domain("redirect-metadata", "127.0.0.1");
+    let initial_url = format!("{}/redirect", mock_server.uri());
+    let expected_final_url = format!("{}/final", mock_server.uri());
+    let (result, metadata_urls) = tokio::task::spawn_blocking(move || {
+        let mut buffer = Vec::new();
+        let mut metadata_urls = Vec::new();
+        let result = client.blocking_get_streaming_for_plugin_with_metadata(
+            "redirect-metadata",
+            &initial_url,
+            &mut buffer,
+            None,
+            None,
+            |metadata| {
+                metadata_urls.push(metadata.validated_url.clone());
+                Ok(())
+            },
+        );
+        (result, metadata_urls)
+    })
+    .await
+    .unwrap();
+
+    result.expect("redirected streaming download succeeded");
+    assert_eq!(metadata_urls, vec![expected_final_url]);
+}
+
+#[tokio::test]
+async fn interrupted_strong_etag_stream_exposes_identity_for_exact_range_resume() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind resume server");
+    let address = listener.local_addr().expect("resume server address");
+    let server = std::thread::spawn(move || {
+        for attempt in 0..2 {
+            let (mut stream, _) = listener.accept().expect("accept resume request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("set request timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = stream.read(&mut buffer).expect("read resume request");
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let request = String::from_utf8(request).expect("ASCII HTTP request");
+            if attempt == 0 {
+                assert!(!request.to_ascii_lowercase().contains("\r\nrange:"));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nETag: \"v1\"\r\nConnection: close\r\n\r\nabc",
+                    )
+                    .expect("write interrupted response");
+            } else {
+                let lowercase = request.to_ascii_lowercase();
+                assert!(lowercase.contains("\r\nrange: bytes=3-\r\n"));
+                assert!(lowercase.contains("\r\nif-match: \"v1\"\r\n"));
+                stream
+                    .write_all(
+                        b"HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 3-5/6\r\nETag: \"v1\"\r\nConnection: close\r\n\r\ndef",
+                    )
+                    .expect("write resumed response");
+            }
+            stream.flush().expect("flush resume response");
+        }
+    });
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let url = format!("http://{address}/resume");
+    let expected_url = url.clone();
+    let (first, prefix, first_metadata, second, suffix, second_metadata) =
+        tokio::task::spawn_blocking(move || {
+            let mut prefix = Vec::new();
+            let mut first_metadata = None;
+            let first = client.blocking_get_streaming_with_metadata(
+                &url,
+                false,
+                &mut prefix,
+                None,
+                None,
+                |metadata| {
+                    first_metadata = Some(metadata.clone());
+                    Ok(())
+                },
+            );
+
+            let mut suffix = Vec::new();
+            let mut second_metadata = None;
+            let second = client.blocking_get_streaming_with_metadata(
+                &url,
+                false,
+                &mut suffix,
+                Some(3),
+                Some("\"v1\""),
+                |metadata| {
+                    second_metadata = Some(metadata.clone());
+                    Ok(())
+                },
+            );
+            (
+                first,
+                prefix,
+                first_metadata,
+                second,
+                suffix,
+                second_metadata,
+            )
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        first.is_err(),
+        "truncated first response unexpectedly succeeded"
+    );
+    assert_eq!(prefix, b"abc");
+    let first_metadata = first_metadata.expect("interrupted response supplied metadata");
+    assert_eq!(first_metadata.validated_url, expected_url);
+    assert_eq!(first_metadata.etag.as_deref(), Some("\"v1\""));
+    assert_eq!(first_metadata.total_size, Some(6));
+    assert_eq!(first_metadata.expected_body_length, Some(6));
+
+    let second = second.expect("strong ETag range resume succeeded");
+    assert!(second.was_partial);
+    assert_eq!(suffix, b"def");
+    let second_metadata = second_metadata.expect("resume supplied metadata");
+    assert_eq!(second_metadata.range_start, Some(3));
+    assert_eq!(second_metadata.total_size, Some(6));
+    assert_eq!(second_metadata.expected_body_length, Some(3));
+    server.join().expect("resume server did not panic");
 }
 
 /// Range request with start_byte returns 206 Partial Content; the

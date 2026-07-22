@@ -63,6 +63,20 @@ impl PluginManager {
         if let Some(ref client) = self.gameta_client {
             instance.set_gameta_client(Some(client.clone()));
         }
+        if let Some(ref client) = self.async_http_client {
+            client.configure_plugin(
+                &plugin_id,
+                arclain_network::PluginNetworkPolicy {
+                    network_enabled: capabilities
+                        .contains(&crate::types::PluginCapability::Network),
+                    requests_per_minute: rate_limit,
+                },
+            );
+            instance.set_async_http_client(Some(client.clone()));
+            for domain in &discovered.manifest.capabilities.network_domains {
+                client.approve_domain(&plugin_id, domain);
+            }
+        }
 
         // Initialize the plugin
         instance.init()?;
@@ -94,15 +108,6 @@ impl PluginManager {
         self.plugins.write().insert(plugin_id.clone(), managed);
         self.enabled_plugins.write().insert(plugin_id.clone(), true);
         self.invalidate_top_tabs_cache();
-
-        // Auto-approve network domains from manifest
-        if !discovered.manifest.capabilities.network_domains.is_empty() {
-            if let Some(ref client) = self.async_http_client {
-                for domain in &discovered.manifest.capabilities.network_domains {
-                    client.approve_domain(&plugin_id, domain);
-                }
-            }
-        }
 
         info!("Plugin '{}' loaded and initialized", metadata.name);
         Ok(())

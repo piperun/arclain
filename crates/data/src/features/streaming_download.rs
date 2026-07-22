@@ -27,14 +27,15 @@
 //! not reproduce those validators is also discarded and retried once from
 //! byte zero, so bytes from different representations are never combined.
 //!
-//! The current network API returns response validators only after a stream
-//! completes. Consequently, bytes left by an interrupted first request are
-//! intentionally unbound and will be restarted rather than resumed.
+//! The network API publishes validated response identity before the first body
+//! byte. The sidecar is installed atomically at that boundary, so an
+//! interrupted strong-ETag response can resume without redownloading its
+//! verified prefix.
 
 use crate::features::content_cache::ContentCache;
 use anyhow::{Context, Result};
 use arclain_db::CacheType;
-use arclain_network::{AsyncHttpClient, StreamingDownload};
+use arclain_network::{AsyncHttpClient, StreamingDownload, StreamingResponseMetadata};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -54,6 +55,9 @@ use parking_lot::Mutex;
 /// but is not strong enough to authorize a resume.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PartialMeta {
+    #[serde(default)]
+    requested_url: Option<String>,
+    /// Final validated URL after redirects.
     url: String,
     etag: Option<String>,
     last_modified: Option<String>,
@@ -66,6 +70,7 @@ struct ResumeRecord {
     offset: u64,
     total_size: u64,
     etag: String,
+    validated_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -80,6 +85,7 @@ struct DownloadRequestDescriptor {
     cache_type: CacheType,
     product_id: Option<String>,
     use_proxy: bool,
+    plugin_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,7 +199,41 @@ fn write_meta(meta_path: &Path, meta: &PartialMeta) -> Result<()> {
     if let Some(parent) = meta_path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("creating partial dir {:?}", parent))?;
     }
-    fs::write(meta_path, json).with_context(|| format!("writing partial meta {:?}", meta_path))
+    static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let sequence = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = meta_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow::anyhow!("partial metadata path has no UTF-8 filename"))?;
+    let temp_path = meta_path.with_file_name(format!(
+        ".{file_name}.tmp-{}-{sequence}",
+        std::process::id()
+    ));
+
+    let write_result = (|| -> Result<()> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .with_context(|| format!("creating temporary partial meta {:?}", temp_path))?;
+        file.write_all(json.as_bytes())
+            .with_context(|| format!("writing temporary partial meta {:?}", temp_path))?;
+        file.flush()
+            .with_context(|| format!("flushing temporary partial meta {:?}", temp_path))?;
+        file.sync_all()
+            .with_context(|| format!("syncing temporary partial meta {:?}", temp_path))?;
+        fs::rename(&temp_path, meta_path).with_context(|| {
+            format!(
+                "atomically installing partial meta {:?} from {:?}",
+                meta_path, temp_path
+            )
+        })?;
+        Ok(())
+    })();
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    write_result
 }
 
 fn is_strong_etag(etag: &str) -> bool {
@@ -266,7 +306,7 @@ where
         let meta = read_meta(meta_path)?;
         let total_size = meta.total_size?;
         let etag = meta.etag?;
-        if meta.url != requested_url
+        if meta.requested_url.as_deref() != Some(requested_url)
             || !is_strong_etag(&etag)
             || offset == 0
             || offset >= total_size
@@ -277,6 +317,7 @@ where
             offset,
             total_size,
             etag,
+            validated_url: meta.url,
         })
     })();
 
@@ -307,19 +348,101 @@ pub fn fetch_url_to_cache(
     product_id: Option<&str>,
     use_proxy: bool,
 ) -> Result<u64, String> {
-    fetch_url_to_cache_with(
+    fetch_url_to_cache_with_metadata(
         cache,
         key,
         url,
         cache_type,
         product_id,
         use_proxy,
-        |writer, range_start, if_match| {
-            http_client.blocking_get_streaming(url, use_proxy, writer, range_start, if_match)
+        |writer, range_start, if_match, bind_metadata| {
+            http_client.blocking_get_streaming_with_metadata(
+                url,
+                use_proxy,
+                writer,
+                range_start,
+                if_match,
+                |metadata| bind_metadata(metadata),
+            )
         },
     )
 }
 
+/// Checked plugin variant of [`fetch_url_to_cache`]. No URL controlled by a
+/// plugin is ever sent through a host-only client, including redirects and
+/// streaming retries.
+pub fn fetch_url_to_cache_for_plugin(
+    cache: &ContentCache,
+    http_client: &AsyncHttpClient,
+    key: &str,
+    url: &str,
+    cache_type: CacheType,
+    product_id: Option<&str>,
+    plugin_id: &str,
+) -> Result<u64, String> {
+    let request = DownloadRequestDescriptor {
+        url: url.to_string(),
+        cache_type,
+        product_id: product_id.map(str::to_string),
+        use_proxy: false,
+        plugin_id: Some(plugin_id.to_string()),
+    };
+    fetch_url_to_cache_with_metadata_file_ops(
+        cache,
+        key,
+        request,
+        |writer, range_start, if_match, bind_metadata| {
+            http_client
+                .blocking_get_streaming_for_plugin_with_metadata(
+                    plugin_id,
+                    url,
+                    writer,
+                    range_start,
+                    if_match,
+                    |metadata| bind_metadata(metadata),
+                )
+                .map_err(|error| error.to_string())
+        },
+        |path| fs::remove_file(path),
+        false,
+    )
+}
+
+fn fetch_url_to_cache_with_metadata<F>(
+    cache: &ContentCache,
+    key: &str,
+    url: &str,
+    cache_type: CacheType,
+    product_id: Option<&str>,
+    use_proxy: bool,
+    fetch: F,
+) -> Result<u64, String>
+where
+    F: FnMut(
+        &mut File,
+        Option<u64>,
+        Option<&str>,
+        &mut dyn FnMut(&StreamingResponseMetadata) -> Result<(), String>,
+    ) -> Result<StreamingDownload, String>,
+{
+    let request = DownloadRequestDescriptor {
+        url: url.to_string(),
+        cache_type,
+        product_id: product_id.map(str::to_string),
+        use_proxy,
+        plugin_id: None,
+    };
+    fetch_url_to_cache_with_metadata_file_ops(
+        cache,
+        key,
+        request,
+        fetch,
+        |path| fs::remove_file(path),
+        false,
+    )
+}
+
+#[cfg(test)]
 fn fetch_url_to_cache_with<F>(
     cache: &ContentCache,
     key: &str,
@@ -337,19 +460,128 @@ where
         cache_type,
         product_id: product_id.map(str::to_string),
         use_proxy,
+        plugin_id: None,
     };
     fetch_url_to_cache_with_file_ops(cache, key, request, fetch, |path| fs::remove_file(path))
 }
 
+#[cfg(test)]
 fn fetch_url_to_cache_with_file_ops<F, R>(
     cache: &ContentCache,
     key: &str,
     request_descriptor: DownloadRequestDescriptor,
     mut fetch: F,
-    mut remove_file: R,
+    remove_file: R,
 ) -> Result<u64, String>
 where
     F: FnMut(&mut File, Option<u64>, Option<&str>) -> Result<StreamingDownload, String>,
+    R: FnMut(&Path) -> std::io::Result<()>,
+{
+    let requested_url = request_descriptor.url.clone();
+    fetch_url_to_cache_with_metadata_file_ops(
+        cache,
+        key,
+        request_descriptor,
+        move |writer, range_start, if_match, bind_metadata| {
+            let result = fetch(writer, range_start, if_match)?;
+            bind_metadata(&StreamingResponseMetadata {
+                validated_url: requested_url.clone(),
+                was_partial: result.was_partial,
+                etag: result.etag.clone(),
+                last_modified: result.last_modified.clone(),
+                range_start: result.was_partial.then_some(range_start).flatten(),
+                total_size: result.total_size,
+                expected_body_length: Some(result.bytes_written),
+            })?;
+            Ok(result)
+        },
+        remove_file,
+        true,
+    )
+}
+
+fn bind_response_metadata(
+    meta_path: &Path,
+    requested_url: &str,
+    resume: Option<&ResumeRecord>,
+    metadata: &StreamingResponseMetadata,
+) -> Result<(), String> {
+    if let Some(record) = resume {
+        if !metadata.was_partial
+            || metadata.range_start != Some(record.offset)
+            || metadata.total_size != Some(record.total_size)
+            || metadata.etag.as_deref() != Some(record.etag.as_str())
+            || !metadata.etag.as_deref().is_some_and(is_strong_etag)
+            || metadata.validated_url != record.validated_url
+        {
+            return Err(
+                "resume response metadata does not match the bound representation".to_string(),
+            );
+        }
+    } else if metadata.was_partial {
+        return Err("fresh streaming request unexpectedly returned partial content".to_string());
+    }
+
+    write_meta(
+        meta_path,
+        &PartialMeta {
+            requested_url: Some(requested_url.to_string()),
+            url: metadata.validated_url.clone(),
+            etag: metadata.etag.clone(),
+            last_modified: metadata.last_modified.clone(),
+            total_size: metadata.total_size,
+        },
+    )
+    .map_err(|error| format!("binding partial response metadata: {error:#}"))
+}
+
+fn execute_fetch_attempt<F>(
+    fetch: &mut F,
+    file: &mut File,
+    range_start: Option<u64>,
+    if_match: Option<&str>,
+    meta_path: &Path,
+    requested_url: &str,
+    resume: Option<&ResumeRecord>,
+) -> Result<StreamingDownload, String>
+where
+    F: FnMut(
+        &mut File,
+        Option<u64>,
+        Option<&str>,
+        &mut dyn FnMut(&StreamingResponseMetadata) -> Result<(), String>,
+    ) -> Result<StreamingDownload, String>,
+{
+    let mut callback_count = 0_usize;
+    let mut bind_metadata = |metadata: &StreamingResponseMetadata| {
+        callback_count += 1;
+        if callback_count != 1 {
+            return Err("streaming metadata callback ran more than once".to_string());
+        }
+        bind_response_metadata(meta_path, requested_url, resume, metadata)
+    };
+    let result = fetch(file, range_start, if_match, &mut bind_metadata)?;
+    if callback_count != 1 {
+        return Err("streaming transport completed without response metadata".to_string());
+    }
+    Ok(result)
+}
+
+fn fetch_url_to_cache_with_metadata_file_ops<F, R>(
+    cache: &ContentCache,
+    key: &str,
+    request_descriptor: DownloadRequestDescriptor,
+    mut fetch: F,
+    mut remove_file: R,
+    retry_resume_errors: bool,
+) -> Result<u64, String>
+where
+    F: FnMut(
+        &mut File,
+        Option<u64>,
+        Option<&str>,
+        &mut dyn FnMut(&StreamingResponseMetadata) -> Result<(), String>,
+    ) -> Result<StreamingDownload, String>,
     R: FnMut(&Path) -> std::io::Result<()>,
 {
     let (partial_path, meta_path) = partial_paths(cache, key);
@@ -399,15 +631,19 @@ where
             .map_err(|e| format!("opening fresh partial file: {e}"))?
     };
 
-    let initial_result = fetch(
+    let initial_result = execute_fetch_attempt(
+        &mut fetch,
         &mut file,
         resume.as_ref().map(|record| record.offset),
         resume.as_ref().map(|record| record.etag.as_str()),
+        &meta_path,
+        &request_descriptor.url,
+        resume.as_ref(),
     );
     let mut did_restart = false;
     let mut result = match initial_result {
         Ok(result) => result,
-        Err(error) if resume.is_some() => {
+        Err(error) if resume.is_some() && retry_resume_errors => {
             warn!(
                 "[streaming] resume stream failed for {}; discarding appended bytes before restart",
                 key
@@ -427,7 +663,16 @@ where
                 .open(&partial_path)
                 .map_err(|open_error| format!("opening clean restart file: {open_error}"))?;
             did_restart = true;
-            fetch(&mut file, None, None).map_err(|restart_error| {
+            execute_fetch_attempt(
+                &mut fetch,
+                &mut file,
+                None,
+                None,
+                &meta_path,
+                &request_descriptor.url,
+                None,
+            )
+            .map_err(|restart_error| {
                 format!("resume failed ({error}); clean restart failed: {restart_error}")
             })?
         }
@@ -456,7 +701,15 @@ where
             .truncate(true)
             .open(&partial_path)
             .map_err(|e| format!("opening clean restart file: {e}"))?;
-        result = fetch(&mut file, None, None)?;
+        result = execute_fetch_attempt(
+            &mut fetch,
+            &mut file,
+            None,
+            None,
+            &meta_path,
+            &request_descriptor.url,
+            None,
+        )?;
         did_restart = true;
     }
     if (resume.is_none() || did_restart) && result.was_partial {
@@ -478,16 +731,6 @@ where
         return Err(format!(
             "completed partial size {partial_size} does not match resource total {total_size}"
         ));
-    }
-
-    let meta = PartialMeta {
-        url: request_descriptor.url.clone(),
-        etag: result.etag.clone(),
-        last_modified: result.last_modified.clone(),
-        total_size: Some(total_size),
-    };
-    if let Err(e) = write_meta(&meta_path, &meta) {
-        debug!("[streaming] failed to write meta sidecar: {}", e);
     }
 
     drop(file);
@@ -552,7 +795,7 @@ mod tests {
     use super::*;
     use crate::traits::CacheIndex;
     use arclain_db::CacheEntry;
-    use arclain_network::StreamingDownload;
+    use arclain_network::{StreamingDownload, StreamingResponseMetadata};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Default)]
@@ -672,6 +915,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("foo.meta");
         let meta = PartialMeta {
+            requested_url: Some("https://example.com/v.mp4".to_string()),
             url: "https://example.com/v.mp4".to_string(),
             etag: Some("\"abc123\"".to_string()),
             last_modified: Some("Wed, 21 Oct 2026 07:28:00 GMT".to_string()),
@@ -705,6 +949,7 @@ mod tests {
         write_meta(
             &meta_path,
             &PartialMeta {
+                requested_url: Some(url.to_string()),
                 url: url.to_string(),
                 etag: etag.map(str::to_string),
                 last_modified: None,
@@ -813,6 +1058,7 @@ mod tests {
         write_meta(
             &meta_path,
             &PartialMeta {
+                requested_url: Some("https://example.test/file".to_string()),
                 url: "https://example.test/file".to_string(),
                 etag: Some("\"v1\"".to_string()),
                 last_modified: None,
@@ -918,6 +1164,7 @@ mod tests {
         write_meta(
             &meta_path,
             &PartialMeta {
+                requested_url: Some(url.to_string()),
                 url: url.to_string(),
                 etag: Some("\"v1\"".to_string()),
                 last_modified: None,
@@ -957,6 +1204,236 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_fresh_stream_binds_sidecar_before_bytes_and_resumes_exact_suffix() {
+        let (_dir, cache, index) = test_cache();
+        let key = "bound-interrupted-key";
+        let requested_url = "https://origin.example/file";
+        let validated_url = "https://cdn.example/file";
+        let (data_path, meta_path) = partial_paths(&cache, key);
+
+        let first = fetch_url_to_cache_with_metadata(
+            &cache,
+            key,
+            requested_url,
+            CacheType::Other,
+            None,
+            false,
+            |writer, range_start, if_match, bind_metadata| {
+                assert_eq!(range_start, None);
+                assert_eq!(if_match, None);
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: validated_url.to_string(),
+                    was_partial: false,
+                    etag: Some("\"v1\"".to_string()),
+                    last_modified: None,
+                    range_start: None,
+                    total_size: Some(6),
+                    expected_body_length: Some(6),
+                })?;
+                assert!(meta_path.exists(), "body started before sidecar binding");
+                writer.write_all(b"abc").unwrap();
+                Err("connection closed after three bytes".to_string())
+            },
+        );
+
+        assert!(first.is_err());
+        assert_eq!(fs::read(&data_path).unwrap(), b"abc");
+        let bound = read_meta(&meta_path).expect("interrupted stream retained bound metadata");
+        assert_eq!(bound.requested_url.as_deref(), Some(requested_url));
+        assert_eq!(bound.url, validated_url);
+        assert_eq!(bound.etag.as_deref(), Some("\"v1\""));
+        assert_eq!(bound.total_size, Some(6));
+
+        let mut calls = 0;
+        let bytes = fetch_url_to_cache_with_metadata(
+            &cache,
+            key,
+            requested_url,
+            CacheType::Other,
+            None,
+            false,
+            |writer, range_start, if_match, bind_metadata| {
+                calls += 1;
+                assert_eq!(range_start, Some(3));
+                assert_eq!(if_match, Some("\"v1\""));
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: validated_url.to_string(),
+                    was_partial: true,
+                    etag: Some("\"v1\"".to_string()),
+                    last_modified: None,
+                    range_start: Some(3),
+                    total_size: Some(6),
+                    expected_body_length: Some(3),
+                })?;
+                writer.write_all(b"def").unwrap();
+                Ok(streaming_result(3, true, Some("\"v1\""), Some(6)))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(calls, 1, "resume redownloaded the prefix");
+        assert_eq!(bytes, 6);
+        assert_eq!(cache.get(key).unwrap().unwrap(), b"abcdef");
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 1);
+        assert!(!data_path.exists());
+        assert!(!meta_path.exists());
+    }
+
+    #[test]
+    fn interrupted_weak_or_missing_etag_restarts_without_a_range() {
+        for (label, etag) in [("weak", Some("W/\"v1\"")), ("missing", None)] {
+            let (_dir, cache, _index) = test_cache();
+            let key = format!("{label}-etag-key");
+            let url = "https://example.test/file";
+
+            let first = fetch_url_to_cache_with_metadata(
+                &cache,
+                &key,
+                url,
+                CacheType::Other,
+                None,
+                false,
+                |writer, range_start, if_match, bind_metadata| {
+                    assert_eq!(range_start, None);
+                    assert_eq!(if_match, None);
+                    bind_metadata(&StreamingResponseMetadata {
+                        validated_url: url.to_string(),
+                        was_partial: false,
+                        etag: etag.map(str::to_string),
+                        last_modified: None,
+                        range_start: None,
+                        total_size: Some(6),
+                        expected_body_length: Some(6),
+                    })?;
+                    writer.write_all(b"abc").unwrap();
+                    Err("interrupted".to_string())
+                },
+            );
+            assert!(first.is_err());
+
+            let bytes = fetch_url_to_cache_with_metadata(
+                &cache,
+                &key,
+                url,
+                CacheType::Other,
+                None,
+                false,
+                |writer, range_start, if_match, bind_metadata| {
+                    assert_eq!(range_start, None, "{label} ETag authorized a range");
+                    assert_eq!(if_match, None, "{label} ETag authorized If-Match");
+                    bind_metadata(&StreamingResponseMetadata {
+                        validated_url: url.to_string(),
+                        was_partial: false,
+                        etag: Some("\"v2\"".to_string()),
+                        last_modified: None,
+                        range_start: None,
+                        total_size: Some(6),
+                        expected_body_length: Some(6),
+                    })?;
+                    writer.write_all(b"fresh!").unwrap();
+                    Ok(streaming_result(6, false, Some("\"v2\""), Some(6)))
+                },
+            )
+            .unwrap();
+
+            assert_eq!(bytes, 6);
+            assert_eq!(cache.get(&key).unwrap().unwrap(), b"fresh!");
+        }
+    }
+
+    #[test]
+    fn sidecar_install_failure_aborts_before_body_bytes() {
+        let (_dir, cache, index) = test_cache();
+        let key = "sidecar-failure-key";
+        let url = "https://example.test/file";
+        let (data_path, meta_path) = partial_paths(&cache, key);
+
+        let result = fetch_url_to_cache_with_metadata(
+            &cache,
+            key,
+            url,
+            CacheType::Other,
+            None,
+            false,
+            |writer, _range_start, _if_match, bind_metadata| {
+                fs::create_dir(&meta_path).expect("inject metadata destination failure");
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: url.to_string(),
+                    was_partial: false,
+                    etag: Some("\"v1\"".to_string()),
+                    last_modified: None,
+                    range_start: None,
+                    total_size: Some(6),
+                    expected_body_length: Some(6),
+                })?;
+                writer.write_all(b"unsafe!").unwrap();
+                Ok(streaming_result(7, false, Some("\"v1\""), Some(7)))
+            },
+        );
+
+        assert!(result
+            .unwrap_err()
+            .contains("binding partial response metadata"));
+        assert_eq!(fs::metadata(&data_path).unwrap().len(), 0);
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn changed_redirect_identity_rejects_resume_before_appending() {
+        let (_dir, cache, index) = test_cache();
+        let key = "changed-redirect-key";
+        let requested_url = "https://origin.example/file";
+        let (data_path, meta_path) = partial_paths(&cache, key);
+        fs::create_dir_all(data_path.parent().unwrap()).unwrap();
+        fs::write(&data_path, b"abc").unwrap();
+        write_meta(
+            &meta_path,
+            &PartialMeta {
+                requested_url: Some(requested_url.to_string()),
+                url: "https://cdn-one.example/file".to_string(),
+                etag: Some("\"v1\"".to_string()),
+                last_modified: None,
+                total_size: Some(6),
+            },
+        )
+        .unwrap();
+
+        let result = fetch_url_to_cache_with_metadata(
+            &cache,
+            key,
+            requested_url,
+            CacheType::Other,
+            None,
+            false,
+            |writer, range_start, if_match, bind_metadata| {
+                assert_eq!(range_start, Some(3));
+                assert_eq!(if_match, Some("\"v1\""));
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: "https://cdn-two.example/file".to_string(),
+                    was_partial: true,
+                    etag: Some("\"v1\"".to_string()),
+                    last_modified: None,
+                    range_start: Some(3),
+                    total_size: Some(6),
+                    expected_body_length: Some(3),
+                })?;
+                writer.write_all(b"def").unwrap();
+                Ok(streaming_result(3, true, Some("\"v1\""), Some(6)))
+            },
+        );
+
+        assert!(result
+            .unwrap_err()
+            .contains("does not match the bound representation"));
+        assert_eq!(fs::read(&data_path).unwrap(), b"abc");
+        assert!(
+            !meta_path.exists(),
+            "old redirect binding remained authoritative"
+        );
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn resumed_total_mismatch_truncates_and_restarts_once_without_range() {
         let (_dir, cache, index) = test_cache();
         let key = "restart-key";
@@ -967,6 +1444,7 @@ mod tests {
         write_meta(
             &meta_path,
             &PartialMeta {
+                requested_url: Some(url.to_string()),
                 url: url.to_string(),
                 etag: Some("\"v1\"".to_string()),
                 last_modified: None,
@@ -1021,6 +1499,7 @@ mod tests {
         write_meta(
             &meta_path,
             &PartialMeta {
+                requested_url: Some(url.to_string()),
                 url: url.to_string(),
                 etag: Some("\"v1\"".to_string()),
                 last_modified: None,
@@ -1067,6 +1546,7 @@ mod tests {
         write_meta(
             &meta_path,
             &PartialMeta {
+                requested_url: Some(url.to_string()),
                 url: url.to_string(),
                 etag: Some("\"v1\"".to_string()),
                 last_modified: None,
@@ -1116,6 +1596,7 @@ mod tests {
         write_meta(
             &meta_path,
             &PartialMeta {
+                requested_url: Some(url.to_string()),
                 url: url.to_string(),
                 etag: Some("\"v1\"".to_string()),
                 last_modified: None,
@@ -1133,6 +1614,7 @@ mod tests {
                 cache_type: CacheType::Other,
                 product_id: None,
                 use_proxy: false,
+                plugin_id: None,
             },
             |writer, range_start, if_match| {
                 assert_eq!(range_start, Some(3));

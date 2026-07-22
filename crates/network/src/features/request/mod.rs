@@ -9,6 +9,6 @@ pub mod types;
 #[cfg(test)]
 mod tests;
 
-pub use client::{AsyncHttpClient, StreamingDownload};
+pub use client::{AsyncHttpClient, StreamingDownload, StreamingResponseMetadata};
 pub use plugin_policy::PluginNetworkPolicy;
 pub use types::{HttpRequest, RequestId, RequestStatus};

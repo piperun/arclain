@@ -10,6 +10,9 @@ mod metadata;
 mod plugin_logger;
 mod settings;
 
+#[cfg(test)]
+mod tests;
+
 pub use plugin_logger::PluginLogger;
 
 use crate::active_tab::ActiveTabBridge;
@@ -129,6 +132,7 @@ pub struct HostFunctions {
     pub plugin_id: PluginId,
     pub async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
     pub capabilities: std::collections::HashSet<PluginCapability>,
+    requests_per_minute: u32,
     pub settings: Arc<Mutex<HashMap<String, String>>>,
     /// Flips to `true` whenever the plugin (or host) writes a setting.
     /// `PluginManager::get_all_settings` swaps this back to `false` after
@@ -201,13 +205,14 @@ impl HostFunctions {
     pub(crate) fn new_with_plugin_log_dir(
         plugin_id: String,
         capabilities: std::collections::HashSet<PluginCapability>,
-        _requests_per_minute: u32,
+        requests_per_minute: u32,
         initial_settings: HashMap<String, String>,
         plugin_log_dir: &Path,
     ) -> PluginResult<Self> {
         Self::build(
             plugin_id,
             capabilities,
+            requests_per_minute,
             initial_settings,
             Some(plugin_log_dir),
             HostMode::Normal,
@@ -218,6 +223,7 @@ impl HostFunctions {
         Self::build(
             plugin_id,
             Default::default(),
+            0,
             HashMap::new(),
             None,
             HostMode::MetadataValidation,
@@ -227,6 +233,7 @@ impl HostFunctions {
     fn build(
         plugin_id: String,
         capabilities: std::collections::HashSet<PluginCapability>,
+        requests_per_minute: u32,
         initial_settings: HashMap<String, String>,
         plugin_log_dir: Option<&Path>,
         mode: HostMode,
@@ -248,6 +255,7 @@ impl HostFunctions {
             plugin_id,
             async_http_client: None,
             capabilities,
+            requests_per_minute,
             settings: Arc::new(Mutex::new(initial_settings)),
             settings_dirty: Arc::new(AtomicBool::new(true)),
             network_log: Arc::new(Mutex::new(Vec::new())),
@@ -314,8 +322,18 @@ impl HostFunctions {
     }
 
     pub fn set_async_http_client(&mut self, client: Arc<arclain_network::AsyncHttpClient>) {
+        client.configure_plugin(
+            self.plugin_id.as_str(),
+            arclain_network::PluginNetworkPolicy {
+                network_enabled: self.capabilities.contains(&PluginCapability::Network),
+                requests_per_minute: self.requests_per_minute,
+            },
+        );
         // Register Network resolver with DataService
-        let resolver = Arc::new(arclain_data::NetworkResolver::new(client.clone()));
+        let resolver = Arc::new(arclain_data::NetworkResolver::for_plugin(
+            client.clone(),
+            self.plugin_id.as_str(),
+        ));
         self.data_service
             .register_resolver(arclain_data::DataSource::Network, resolver);
         self.async_http_client = Some(client);
@@ -556,21 +574,20 @@ impl Host for HostFunctions {
             self.async_http_client.as_ref(),
         ) {
             let key = request.key.clone();
-            let use_proxy = http_client.should_use_proxy_for_plugin(self.plugin_id.as_str());
             let cache_type = match request.resource_type {
                 crate::arclain::plugin::host::ResourceType::Binary => arclain_db::CacheType::Other,
                 crate::arclain::plugin::host::ResourceType::Image => arclain_db::CacheType::Cover,
                 crate::arclain::plugin::host::ResourceType::Json => arclain_db::CacheType::Other,
             };
             let product_id = request.product_id.as_deref();
-            match arclain_data::fetch_url_to_cache(
+            match arclain_data::features::streaming_download::fetch_url_to_cache_for_plugin(
                 cache,
                 http_client,
                 &key,
                 url,
                 cache_type,
                 product_id,
-                use_proxy,
+                self.plugin_id.as_str(),
             ) {
                 Ok(bytes) => {
                     tracing::debug!(
@@ -586,7 +603,7 @@ impl Host for HostFunctions {
                         key,
                         e
                     );
-                    // Fall through to the buffered path as a fallback.
+                    return false;
                 }
             }
         }

@@ -277,6 +277,45 @@ class TestReleaseWorkflows(unittest.TestCase):
         )
 
 
+class TestPluginFetchRouting(unittest.TestCase):
+    def _source(self, relative_path: str) -> str:
+        return (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+
+    def test_manager_registers_manifest_network_capability_and_exact_rpm(self):
+        manager = self._source("crates/plugins/src/manager/mod.rs")
+        lifecycle = self._source("crates/plugins/src/manager/lifecycle.rs")
+        combined = manager + lifecycle
+
+        self.assertIn("PluginNetworkPolicy", combined)
+        self.assertIn("configure_plugin", combined)
+        self.assertIn("http_requests_per_minute", combined)
+        self.assertIn("PluginCapability::Network", combined)
+
+    def test_plugin_data_paths_use_checked_network_entry_points(self):
+        resolver = self._source("crates/data/src/features/resolver/network.rs")
+        streaming = self._source("crates/data/src/features/streaming_download.rs")
+        host = self._source("crates/plugins/src/host_functions/mod.rs")
+
+        self.assertIn("pub fn for_plugin", resolver)
+        self.assertIn("blocking_get_for_plugin", resolver)
+        self.assertNotIn("should_use_proxy_for_plugin", resolver)
+        self.assertIn(".blocking_get(url, false)", resolver)
+        self.assertNotIn(".blocking_get(url, use_proxy)", resolver)
+
+        self.assertIn("blocking_get_streaming_for_plugin_with_metadata", streaming)
+        self.assertIn("blocking_get_streaming_with_metadata", streaming)
+        self.assertNotIn("should_use_proxy_for_plugin", streaming)
+
+        self.assertNotIn("should_use_proxy_for_plugin", host)
+        self.assertNotIn("Fall through to the buffered path as a fallback", host)
+
+    def test_plugin_images_are_checked_and_host_images_remain_host_owned(self):
+        image_fetcher = self._source("crates/ui/src/shared/image_fetcher.rs")
+
+        self.assertIn("client.request_for_plugin(pid, request)", image_fetcher)
+        self.assertIn("Ok(client.request(request))", image_fetcher)
+
+
 class TestSmoke(unittest.TestCase):
     def test_helpers_import_cleanly(self):
         for name in ("_plugins", "_deps", "_package", "_ui"):

@@ -7,8 +7,10 @@
 //! HTTP status, timeout, or DNS error from the caller.
 
 use arclain_data::{
-    DataRequest, DataService, DataSource, DataSourceResolver, DataStatus, ResolveError,
+    DataRequest, DataService, DataSource, DataSourceResolver, DataStatus, NetworkResolver,
+    ResolveError,
 };
+use arclain_network::AsyncHttpClient;
 use std::sync::Arc;
 
 /// Test resolver that always returns NotFound (cache miss)
@@ -134,4 +136,13 @@ fn ioerror_preferred_over_notconfigured() {
         "expected I/O error message to win over NotConfigured, got: {}",
         err
     );
+}
+
+#[test]
+fn plugin_network_resolver_exposes_a_bound_plugin_constructor() {
+    fn construct(client: Arc<AsyncHttpClient>) -> NetworkResolver {
+        NetworkResolver::for_plugin(client, "bound-plugin")
+    }
+
+    let _current_signature: fn(Arc<AsyncHttpClient>) -> NetworkResolver = construct;
 }

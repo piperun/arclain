@@ -51,6 +51,23 @@ pub struct StreamingDownload {
     pub total_size: Option<u64>,
 }
 
+/// Validated response identity delivered before any streaming body bytes.
+///
+/// Callers can use this callback boundary to atomically persist the exact
+/// representation they are about to write. `validated_url` is the final URL
+/// after redirects, while the range fields describe the response body that
+/// will follow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamingResponseMetadata {
+    pub validated_url: String,
+    pub was_partial: bool,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub range_start: Option<u64>,
+    pub total_size: Option<u64>,
+    pub expected_body_length: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ContentRange {
     pub(super) start: u64,
@@ -548,6 +565,16 @@ impl AsyncHttpClient {
             .insert(plugin_id.to_string(), policy);
     }
 
+    /// Return the registered manifest-derived policy for observability and
+    /// tests. Request authorization still happens inside the checked executor.
+    pub fn plugin_network_policy(&self, plugin_id: &str) -> Option<PluginNetworkPolicy> {
+        self.plugin_context
+            .plugin_policies
+            .read()
+            .get(plugin_id)
+            .copied()
+    }
+
     #[cfg(test)]
     pub(super) fn allow_special_plugin_addresses_for_test(&self) {
         self.plugin_context
@@ -932,6 +959,32 @@ impl AsyncHttpClient {
         start_byte: Option<u64>,
         if_match: Option<&str>,
     ) -> Result<StreamingDownload, String> {
+        self.blocking_get_streaming_with_metadata(
+            url,
+            use_proxy,
+            writer,
+            start_byte,
+            if_match,
+            |_| Ok(()),
+        )
+    }
+
+    /// Host streaming GET with a validated metadata callback. The callback is
+    /// invoked exactly once after response-header validation and before any
+    /// body byte is written. A callback error aborts with zero new body bytes.
+    pub fn blocking_get_streaming_with_metadata<W, F>(
+        &self,
+        url: &str,
+        use_proxy: bool,
+        writer: &mut W,
+        start_byte: Option<u64>,
+        if_match: Option<&str>,
+        on_metadata: F,
+    ) -> Result<StreamingDownload, String>
+    where
+        W: std::io::Write,
+        F: FnOnce(&StreamingResponseMetadata) -> Result<(), String>,
+    {
         let client = if use_proxy {
             self.client_proxied.read().clone()
         } else {
@@ -959,7 +1012,7 @@ impl AsyncHttpClient {
                 .send()
                 .await
                 .map_err(|e| format!("Request failed: {}", e))?;
-            write_streaming_response(response, writer, start).await
+            write_streaming_response_with_metadata(response, writer, start, on_metadata).await
         })
     }
 
@@ -973,6 +1026,32 @@ impl AsyncHttpClient {
         start_byte: Option<u64>,
         if_match: Option<&str>,
     ) -> Result<StreamingDownload, HttpError> {
+        self.blocking_get_streaming_for_plugin_with_metadata(
+            plugin_id,
+            url,
+            writer,
+            start_byte,
+            if_match,
+            |_| Ok(()),
+        )
+    }
+
+    /// Checked plugin streaming GET with a validated metadata callback.
+    /// Redirect, capability, whitelist, DNS, and rate-limit authorization all
+    /// remain inside the checked executor.
+    pub fn blocking_get_streaming_for_plugin_with_metadata<W, F>(
+        &self,
+        plugin_id: &str,
+        url: &str,
+        writer: &mut W,
+        start_byte: Option<u64>,
+        if_match: Option<&str>,
+        on_metadata: F,
+    ) -> Result<StreamingDownload, HttpError>
+    where
+        W: std::io::Write,
+        F: FnOnce(&StreamingResponseMetadata) -> Result<(), String>,
+    {
         let mut request = HttpRequest::get(url);
         if let Some(start) = start_byte {
             request = request.with_header("Range", format!("bytes={start}-"));
@@ -983,7 +1062,7 @@ impl AsyncHttpClient {
 
         self.runtime.block_on(async {
             let response = self.plugin_context.execute(plugin_id, request).await?;
-            write_streaming_response(response, writer, start_byte)
+            write_streaming_response_with_metadata(response, writer, start_byte, on_metadata)
                 .await
                 .map_err(|message| HttpError::RequestFailed { message })
         })
@@ -1072,11 +1151,16 @@ impl AsyncHttpClient {
     }
 }
 
-async fn write_streaming_response<W: std::io::Write>(
+async fn write_streaming_response_with_metadata<W, F>(
     mut response: reqwest::Response,
     writer: &mut W,
     requested_start: Option<u64>,
-) -> Result<StreamingDownload, String> {
+    on_metadata: F,
+) -> Result<StreamingDownload, String>
+where
+    W: std::io::Write,
+    F: FnOnce(&StreamingResponseMetadata) -> Result<(), String>,
+{
     let status = response.status();
     if !status.is_success() {
         return Err(format!("HTTP error: {status}"));
@@ -1139,6 +1223,16 @@ async fn write_streaming_response<W: std::io::Write>(
             .and_then(|value| value.parse::<u64>().ok())
     };
     let declared_length = content_range.map(|range| range.end - range.start + 1);
+    let metadata = StreamingResponseMetadata {
+        validated_url: response.url().to_string(),
+        was_partial,
+        etag: etag.clone(),
+        last_modified: last_modified.clone(),
+        range_start: content_range.map(|range| range.start),
+        total_size,
+        expected_body_length: declared_length.or(total_size),
+    };
+    on_metadata(&metadata)?;
     let mut total_written = 0_u64;
 
     while let Some(chunk) = response
