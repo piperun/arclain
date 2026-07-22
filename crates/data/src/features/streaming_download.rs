@@ -41,6 +41,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
@@ -91,6 +92,7 @@ struct CompletedDownload {
 struct DownloadState {
     gate: Mutex<()>,
     completed: Mutex<Option<CompletedDownload>>,
+    participants: AtomicUsize,
 }
 
 type DownloadLockRegistry = HashMap<DownloadIdentity, Weak<DownloadState>>;
@@ -108,7 +110,9 @@ struct DownloadIdentityLock {
 
 impl Drop for DownloadIdentityLock {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.state) != 1 {
+        let previous_participants = self.state.participants.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous_participants > 0, "download participant underflow");
+        if previous_participants != 1 {
             return;
         }
 
@@ -116,7 +120,7 @@ impl Drop for DownloadIdentityLock {
         let current = registry.get(&self.identity);
         let points_to_state =
             current.is_some_and(|weak| Weak::ptr_eq(weak, &Arc::downgrade(&self.state)));
-        if points_to_state && Arc::strong_count(&self.state) == 1 {
+        if points_to_state && self.state.participants.load(Ordering::Acquire) == 0 {
             registry.remove(&self.identity);
         }
     }
@@ -139,10 +143,12 @@ fn download_identity_lock(cache_base_dir: &Path, key: &str) -> Result<DownloadId
             let state = Arc::new(DownloadState {
                 gate: Mutex::new(()),
                 completed: Mutex::new(None),
+                participants: AtomicUsize::new(0),
             });
             registry.insert(identity.clone(), Arc::downgrade(&state));
             state
         });
+    state.participants.fetch_add(1, Ordering::Relaxed);
 
     Ok(DownloadIdentityLock { identity, state })
 }
@@ -849,6 +855,55 @@ mod tests {
 
         assert!(download_lock_registry().lock().contains_key(&identity));
         drop(lock);
+        assert!(!download_lock_registry().lock().contains_key(&identity));
+    }
+
+    #[test]
+    fn identity_registry_removes_entry_after_concurrent_final_drops() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = download_identity_lock(dir.path(), "concurrent-final-drops").unwrap();
+        let second = download_identity_lock(dir.path(), "concurrent-final-drops").unwrap();
+        let identity = first.identity.clone();
+
+        assert_eq!(first.state.participants.load(Ordering::SeqCst), 2);
+
+        let ready = Arc::new(std::sync::Barrier::new(3));
+        let first_ready = ready.clone();
+        let first_drop = std::thread::spawn(move || {
+            first_ready.wait();
+            drop(first);
+        });
+        let second_ready = ready.clone();
+        let second_drop = std::thread::spawn(move || {
+            second_ready.wait();
+            drop(second);
+        });
+
+        ready.wait();
+        first_drop.join().unwrap();
+        second_drop.join().unwrap();
+
+        assert!(!download_lock_registry().lock().contains_key(&identity));
+    }
+
+    #[test]
+    fn identity_registry_keeps_entry_after_non_final_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = download_identity_lock(dir.path(), "non-final-drop").unwrap();
+        let second = download_identity_lock(dir.path(), "non-final-drop").unwrap();
+        let identity = first.identity.clone();
+
+        drop(first);
+
+        let retained = download_lock_registry()
+            .lock()
+            .get(&identity)
+            .and_then(Weak::upgrade)
+            .expect("non-final drop removed a live download state");
+        assert!(Arc::ptr_eq(&retained, &second.state));
+
+        drop(retained);
+        drop(second);
         assert!(!download_lock_registry().lock().contains_key(&identity));
     }
 
