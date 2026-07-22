@@ -1764,6 +1764,124 @@ mod proxy_routing_atomicity_tests {
             .expect("a valid routing apply must clear the unavailable state");
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unavailable_routing_activation_is_atomic_with_checked_requests() {
+        const PLUGIN_ID: &str = "unavailable-routing-race-plugin";
+        const TARGET_HOST: &str = "unavailable-routing-race.test";
+
+        let direct_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct sentinel");
+        let direct_address = direct_listener
+            .local_addr()
+            .expect("direct sentinel address");
+        let proxy_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind SOCKS5 sentinel");
+        let proxy_address = proxy_listener.local_addr().expect("SOCKS5 address");
+
+        let whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
+        whitelist.write().approve(PLUGIN_ID, TARGET_HOST);
+        let client = Arc::new(AsyncHttpClient::new(Handle::current(), whitelist, None));
+        client.configure_plugin(
+            PLUGIN_ID,
+            PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 60,
+            },
+        );
+        client.allow_special_plugin_addresses_for_test();
+        client.set_plugin_dns_answers_for_test(TARGET_HOST, vec![vec![direct_address]]);
+        client.apply_proxy_routing(
+            Some(ProxyConfig {
+                enabled: true,
+                address: proxy_address.to_string(),
+                username: None,
+                password: None,
+            }),
+            HashMap::from([(PLUGIN_ID.to_string(), true)]),
+        );
+
+        let (installed_sender, installed_receiver) = mpsc::sync_channel(0);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
+        let transition_client = client.clone();
+        let transition = std::thread::spawn(move || {
+            let replacement = ProxyRuntimeState::unavailable();
+            let mut runtime = transition_client.plugin_context.proxy_runtime.write();
+            *runtime = replacement;
+            installed_sender
+                .send(())
+                .expect("announce unavailable routing state");
+            release_receiver
+                .recv()
+                .expect("receive routing-state release");
+        });
+        installed_receiver
+            .recv()
+            .expect("routing transition did not install unavailable state");
+
+        let (request_sender, request_receiver) = mpsc::sync_channel(0);
+        let request_client = client.clone();
+        let request_thread = std::thread::spawn(move || {
+            request_sender
+                .send(
+                    request_client.request_for_plugin(
+                        PLUGIN_ID,
+                        HttpRequest::get(format!(
+                            "http://{TARGET_HOST}:{}/resource",
+                            direct_address.port()
+                        ))
+                        .with_timeout(Duration::from_secs(1)),
+                    ),
+                )
+                .expect("report synchronous request preflight");
+        });
+        let request = match request_receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(result) => result.expect("checked request should start while routing is locked"),
+            Err(error) => {
+                release_sender
+                    .send(())
+                    .expect("release routing transition after blocked preflight");
+                transition.join().expect("routing transition panicked");
+                request_thread.join().expect("request preflight panicked");
+                panic!("synchronous request preflight blocked on routing: {error}");
+            }
+        };
+        request_thread.join().expect("request preflight panicked");
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while client.plugin_dns_lookup_count_for_test(TARGET_HOST) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("checked request did not reach post-DNS authorization");
+
+        release_sender.send(()).expect("release routing transition");
+        transition.join().expect("routing transition panicked");
+
+        let (direct_connection, proxy_connection) = tokio::join!(
+            tokio::time::timeout(Duration::from_millis(250), direct_listener.accept()),
+            tokio::time::timeout(Duration::from_millis(250), proxy_listener.accept()),
+        );
+        assert!(
+            direct_connection.is_err(),
+            "checked request reached the direct sentinel after routing became unavailable"
+        );
+        assert!(
+            proxy_connection.is_err(),
+            "checked request reached the proxy sentinel after routing became unavailable"
+        );
+        assert!(
+            matches!(
+                client.await_complete(&request).await,
+                Some(RequestStatus::Failed(message))
+                    if message.contains("routing is unavailable")
+            ),
+            "checked request must fail with the unavailable-routing error"
+        );
+    }
+
     async fn assert_overlapping_enable_never_reaches_direct(
         initial_proxy: Option<ProxyConfig>,
         initial_map: HashMap<String, bool>,
