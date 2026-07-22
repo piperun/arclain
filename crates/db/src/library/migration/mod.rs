@@ -32,11 +32,13 @@ pub enum MigrationResult {
 /// Check if the database has the old arclain schema.
 /// Returns true if `genres_json` column exists in product_metadata.
 fn has_old_schema(conn: &Connection) -> Result<bool> {
-    let mut stmt = conn.prepare("PRAGMA table_info(product_metadata)")?;
-    let columns: Vec<String> = stmt
+    let mut stmt = conn
+        .prepare("PRAGMA table_info(product_metadata)")
+        .context("inspect product_metadata schema")?;
+    let columns = stmt
         .query_map([], |row| row.get::<_, String>(1))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .context("read product_metadata schema columns")?;
 
     if columns.is_empty() {
         // Table doesn't exist yet
@@ -405,12 +407,82 @@ mod tests {
     }
 
     #[test]
+    fn normalized_id_collision_aborts_and_rolls_back_the_entire_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_old_schema(&conn);
+        conn.execute(
+            "INSERT INTO product_metadata (id, source, external_id, cached_at) \
+             VALUES ('itch:12345', 'itch', '12345', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO product_metadata (id, source, external_id, cached_at) \
+             VALUES ('itchio:12345', 'itchio', '12345', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let error = match migrate_to_gameta_schema(&conn, None) {
+            Ok(_) => panic!("migration silently replaced a normalized-ID collision"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("itchio:12345"),
+            "colliding row id missing from error: {error}"
+        );
+        assert!(
+            has_old_schema(&conn).unwrap(),
+            "legacy schema was not rolled back after normalized-ID collision"
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM product_metadata", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 2, "migration lost a colliding legacy row");
+    }
+
+    #[test]
+    fn invalid_id_read_error_includes_legacy_rowid() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_old_schema(&conn);
+        conn.execute(
+            "INSERT INTO product_metadata (id, source, external_id, cached_at) \
+             VALUES (NULL, 'dlsite', 'NULL-ID', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let legacy_rowid: i64 = conn
+            .query_row(
+                "SELECT rowid FROM product_metadata WHERE id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let error = match migrate_to_gameta_schema(&conn, None) {
+            Ok(_) => panic!("migration accepted a NULL legacy id"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains(&format!("rowid {legacy_rowid}")),
+            "stable legacy row identity missing from error: {error}"
+        );
+        assert!(has_old_schema(&conn).unwrap());
+    }
+
+    #[test]
     fn migration_backup_contains_committed_wal_rows() {
         let temp = tempfile::tempdir().unwrap();
         let db_path = temp.path().join("library.sqlite");
         let conn = Connection::open(&db_path).unwrap();
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
             .unwrap();
+        let journal_mode: String = conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(journal_mode, "wal", "test database did not enter WAL mode");
         create_old_schema(&conn);
         conn.execute(
             "INSERT INTO product_metadata (id, source, external_id, cached_at) \
@@ -418,6 +490,13 @@ mod tests {
             rusqlite::params!["dlsite:RJWAL", "dlsite", "RJWAL", "2024-01-01T00:00:00Z"],
         )
         .unwrap();
+        let mut wal_path = db_path.as_os_str().to_os_string();
+        wal_path.push("-wal");
+        let wal_path = PathBuf::from(wal_path);
+        let wal_len = std::fs::metadata(&wal_path)
+            .expect("WAL file should exist while the live connection is open")
+            .len();
+        assert!(wal_len > 32, "WAL file contained no committed frames");
 
         migrate_to_gameta_schema(&conn, Some(&db_path)).unwrap();
 

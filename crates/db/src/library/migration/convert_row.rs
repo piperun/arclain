@@ -52,22 +52,38 @@ pub(super) struct OldRow {
 
 pub(super) fn read_old_rows(conn: &Connection) -> Result<Vec<OldRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, source, external_id, title, creator, description, release_date,
+        "SELECT rowid AS legacy_rowid,
+                id, source, external_id, title, creator, description, release_date,
                 price, currency, rating, rating_count, purchase_count, favorite_count, review_count,
                 file_size, file_format, age_rating,
                 genres_json, tags_json, languages_json, product_formats_json,
                 series_name, illustrator, voice_actors_json, miscellaneous, update_info, rankings_json,
                 extras_json, raw_api_response, raw_html, geo_blocked, cached_at, updated_at
-         FROM product_metadata",
+         FROM product_metadata
+         ORDER BY rowid",
     )?;
 
     let mut rows = stmt.query([])?;
     let mut result = Vec::new();
-    while let Some(row) = rows.next()? {
-        let id: String = row.get(0).context("read legacy product metadata row id")?;
-        let row_id = id.clone();
-        let old = read_old_row(row, id)
-            .with_context(|| format!("read legacy product_metadata row {row_id:?}"))?;
+    let mut ordinal = 0_usize;
+    loop {
+        let next_ordinal = ordinal + 1;
+        let Some(row) = rows
+            .next()
+            .with_context(|| format!("step legacy product_metadata row ordinal {next_ordinal}"))?
+        else {
+            break;
+        };
+        ordinal = next_ordinal;
+
+        let legacy_rowid: i64 = row
+            .get("legacy_rowid")
+            .with_context(|| format!("read legacy product_metadata row ordinal {ordinal} rowid"))?;
+        let identity = format!("legacy product_metadata rowid {legacy_rowid} (ordinal {ordinal})");
+        let id: String = row
+            .get("id")
+            .with_context(|| format!("read {identity} id"))?;
+        let old = read_old_row(row, id).with_context(|| format!("read {identity}"))?;
         result.push(old);
     }
     Ok(result)
@@ -76,38 +92,38 @@ pub(super) fn read_old_rows(conn: &Connection) -> Result<Vec<OldRow>> {
 fn read_old_row(row: &Row<'_>, id: String) -> rusqlite::Result<OldRow> {
     Ok(OldRow {
         id,
-        source: row.get(1)?,
-        external_id: row.get(2)?,
-        title: row.get::<_, Option<String>>(3)?,
-        creator: row.get::<_, Option<String>>(4)?,
-        description: row.get::<_, Option<String>>(5)?,
-        release_date: row.get::<_, Option<String>>(6)?,
-        price: row.get::<_, Option<i64>>(7)?,
-        currency: row.get::<_, Option<String>>(8)?,
-        rating: row.get::<_, Option<f64>>(9)?,
-        rating_count: row.get::<_, Option<i64>>(10)?,
-        purchase_count: row.get::<_, Option<i64>>(11)?,
-        favorite_count: row.get::<_, Option<i64>>(12)?,
-        review_count: row.get::<_, Option<i64>>(13)?,
-        file_size: row.get::<_, Option<String>>(14)?,
-        file_format: row.get::<_, Option<String>>(15)?,
-        age_rating: row.get::<_, Option<String>>(16)?,
-        genres_json: row.get::<_, Option<String>>(17)?,
-        tags_json: row.get::<_, Option<String>>(18)?,
-        languages_json: row.get::<_, Option<String>>(19)?,
-        product_formats_json: row.get::<_, Option<String>>(20)?,
-        series_name: row.get::<_, Option<String>>(21)?,
-        illustrator: row.get::<_, Option<String>>(22)?,
-        voice_actors_json: row.get::<_, Option<String>>(23)?,
-        miscellaneous: row.get::<_, Option<String>>(24)?,
-        update_info: row.get::<_, Option<String>>(25)?,
-        rankings_json: row.get::<_, Option<String>>(26)?,
-        extras_json: row.get::<_, Option<String>>(27)?,
-        raw_api_response: row.get::<_, Option<String>>(28)?,
-        raw_html: row.get::<_, Option<String>>(29)?,
-        geo_blocked: row.get::<_, Option<bool>>(30)?,
-        cached_at: row.get(31)?,
-        updated_at: row.get::<_, Option<String>>(32)?,
+        source: row.get("source")?,
+        external_id: row.get("external_id")?,
+        title: row.get::<_, Option<String>>("title")?,
+        creator: row.get::<_, Option<String>>("creator")?,
+        description: row.get::<_, Option<String>>("description")?,
+        release_date: row.get::<_, Option<String>>("release_date")?,
+        price: row.get::<_, Option<i64>>("price")?,
+        currency: row.get::<_, Option<String>>("currency")?,
+        rating: row.get::<_, Option<f64>>("rating")?,
+        rating_count: row.get::<_, Option<i64>>("rating_count")?,
+        purchase_count: row.get::<_, Option<i64>>("purchase_count")?,
+        favorite_count: row.get::<_, Option<i64>>("favorite_count")?,
+        review_count: row.get::<_, Option<i64>>("review_count")?,
+        file_size: row.get::<_, Option<String>>("file_size")?,
+        file_format: row.get::<_, Option<String>>("file_format")?,
+        age_rating: row.get::<_, Option<String>>("age_rating")?,
+        genres_json: row.get::<_, Option<String>>("genres_json")?,
+        tags_json: row.get::<_, Option<String>>("tags_json")?,
+        languages_json: row.get::<_, Option<String>>("languages_json")?,
+        product_formats_json: row.get::<_, Option<String>>("product_formats_json")?,
+        series_name: row.get::<_, Option<String>>("series_name")?,
+        illustrator: row.get::<_, Option<String>>("illustrator")?,
+        voice_actors_json: row.get::<_, Option<String>>("voice_actors_json")?,
+        miscellaneous: row.get::<_, Option<String>>("miscellaneous")?,
+        update_info: row.get::<_, Option<String>>("update_info")?,
+        rankings_json: row.get::<_, Option<String>>("rankings_json")?,
+        extras_json: row.get::<_, Option<String>>("extras_json")?,
+        raw_api_response: row.get::<_, Option<String>>("raw_api_response")?,
+        raw_html: row.get::<_, Option<String>>("raw_html")?,
+        geo_blocked: row.get::<_, Option<bool>>("geo_blocked")?,
+        cached_at: row.get("cached_at")?,
+        updated_at: row.get::<_, Option<String>>("updated_at")?,
     })
 }
 
@@ -150,7 +166,7 @@ pub(super) fn convert_and_insert(conn: &Connection, old: &OldRow) -> Result<()> 
         .transpose()?;
 
     conn.execute(
-        "INSERT OR REPLACE INTO product_metadata (
+        "INSERT INTO product_metadata (
             id, source, external_id, title, creator, description, release_date,
             price, currency, rating, rating_count, purchase_count, favorite_count, review_count,
             file_size, file_format, age_rating, genres, tags, languages,
@@ -250,7 +266,7 @@ fn build_extras(old: &OldRow) -> Result<Option<String>> {
         Ok(None)
     } else {
         serde_json::to_string(&extras)
-            .context("serialize converted product metadata extras")
+            .with_context(|| format!("serialize converted extras for row {:?}", old.id))
             .map(Some)
     }
 }
