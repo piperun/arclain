@@ -10,6 +10,57 @@ use tracing::{info, warn};
 #[derive(Clone)]
 pub struct SevenZBackend;
 
+fn write_archive_entry<R: std::io::Read + ?Sized>(
+    dest: &Path,
+    entry_name: &str,
+    is_directory: bool,
+    reader: &mut R,
+) -> Result<()> {
+    let relative = crate::utilities::CheckedRelativePath::new(entry_name)
+        .with_context(|| format!("unsafe 7z entry {entry_name:?}"))?;
+    let output = relative.resolve_under(dest)?;
+
+    if is_directory {
+        std::fs::create_dir_all(&output)
+            .with_context(|| format!("create archive directory {}", output.display()))?;
+        relative.resolve_under(dest)?;
+        return Ok(());
+    }
+
+    let parent = output
+        .parent()
+        .ok_or_else(|| anyhow!("archive entry has no destination parent: {entry_name:?}"))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("create archive parent {}", parent.display()))?;
+
+    let checked_output = relative.resolve_under(dest)?;
+    let checked_parent = checked_output
+        .parent()
+        .ok_or_else(|| anyhow!("archive entry has no destination parent: {entry_name:?}"))?;
+    let mut staged = tempfile::NamedTempFile::new_in(checked_parent)
+        .with_context(|| format!("stage extracted file in {}", checked_parent.display()))?;
+    std::io::copy(reader, &mut staged)
+        .with_context(|| format!("write staged archive entry {entry_name:?}"))?;
+    staged.flush()?;
+    staged.as_file().sync_all()?;
+
+    // Revalidate immediately before persistence. `persist_noclobber` atomically
+    // fails if the leaf now exists, so a final-component symlink is never
+    // followed or overwritten. Parent replacement by a separate local process
+    // remains the documented std-only limitation.
+    let checked_output = relative.resolve_under(dest)?;
+    staged
+        .persist_noclobber(&checked_output)
+        .map_err(|error| error.error)
+        .with_context(|| format!("persist extracted file {}", checked_output.display()))?;
+
+    Ok(())
+}
+
+fn sevenz_entry_error(error: anyhow::Error) -> sevenz_rust2::Error {
+    sevenz_rust2::Error::Other(std::borrow::Cow::Owned(error.to_string()))
+}
+
 impl SevenZBackend {
     pub fn new() -> Self {
         Self
@@ -143,12 +194,15 @@ impl ArchiveBackend for SevenZBackend {
 
         std::fs::create_dir_all(dest).context("Failed to create destination directory")?;
 
-        if let Some(pwd) = password {
-            sevenz_rust2::decompress_file_with_password(path, dest, Password::from(pwd))
-                .context("Failed to extract encrypted 7z archive")?;
-        } else {
-            sevenz_rust2::decompress_file(path, dest).context("Failed to extract 7z archive")?;
-        }
+        let pwd = password.map(Password::from).unwrap_or_else(Password::empty);
+        let mut reader = ArchiveReader::open(path, pwd).context("Failed to open 7z archive")?;
+        reader
+            .for_each_entries(|entry, reader| {
+                write_archive_entry(dest, &entry.name, entry.is_directory, reader)
+                    .map_err(sevenz_entry_error)?;
+                Ok(true)
+            })
+            .context("Failed to extract 7z archive")?;
 
         Ok(())
     }
@@ -220,19 +274,8 @@ impl ArchiveBackend for SevenZBackend {
                     });
                 }
 
-                let dest_path = dest.join(&entry_path);
-                if entry.is_directory {
-                    std::fs::create_dir_all(&dest_path).ok();
-                } else {
-                    if let Some(parent) = dest_path.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    let mut out = File::create(&dest_path)?;
-
-                    // Copy with cancellation check could be better, but standard copy is blocking
-                    // For large files, this might delay cancellation until file is done
-                    std::io::copy(reader, &mut out)?;
-                }
+                write_archive_entry(dest, &entry_path, entry.is_directory, reader)
+                    .map_err(sevenz_entry_error)?;
             }
             Ok(true)
         })?;
@@ -274,16 +317,8 @@ impl ArchiveBackend for SevenZBackend {
         reader.for_each_entries(|entry, reader| {
             let entry_path = entry.name.clone();
             if entry_path.starts_with(&dir_prefix) || entry_path == dir_path {
-                let dest_path = dest.join(&entry_path);
-                if entry.is_directory {
-                    std::fs::create_dir_all(&dest_path).ok();
-                } else {
-                    if let Some(parent) = dest_path.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    let mut out = File::create(&dest_path)?;
-                    std::io::copy(reader, &mut out)?;
-                }
+                write_archive_entry(dest, &entry_path, entry.is_directory, reader)
+                    .map_err(sevenz_entry_error)?;
             }
             Ok(true)
         })?;
@@ -364,16 +399,8 @@ impl ArchiveBackend for SevenZBackend {
                     });
                 }
 
-                let dest_path = dest.join(&entry_path);
-                if entry.is_directory {
-                    std::fs::create_dir_all(&dest_path).ok();
-                } else {
-                    if let Some(parent) = dest_path.parent() {
-                        std::fs::create_dir_all(parent).ok();
-                    }
-                    let mut out = File::create(&dest_path)?;
-                    std::io::copy(reader, &mut out)?;
-                }
+                write_archive_entry(dest, &entry_path, entry.is_directory, reader)
+                    .map_err(sevenz_entry_error)?;
             }
             Ok(true)
         })?;
@@ -774,5 +801,82 @@ impl ArchiveBackend for SevenZBackend {
             return Err(anyhow!("File not found in archive: {}", path_in_archive));
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod path_safety_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn native_entry_writer_rejects_parent_traversal_before_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outside = temp.path().join("escaped.txt");
+        let mut body = Cursor::new(b"owned".to_vec());
+
+        let error = write_archive_entry(&dest, "../escaped.txt", false, &mut body)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("unsafe") || error.contains("relative"));
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn native_entry_writer_rejects_absolute_path_before_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outside = temp.path().join("absolute-escaped.txt");
+        let entry_name = outside.to_string_lossy();
+        let mut body = Cursor::new(b"owned".to_vec());
+
+        let error = write_archive_entry(&dest, &entry_name, false, &mut body)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("unsafe") || error.contains("relative"));
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn native_entry_writer_writes_safe_nested_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut body = Cursor::new(b"safe".to_vec());
+
+        write_archive_entry(&dest, "Game/data.bin", false, &mut body).unwrap();
+
+        assert_eq!(std::fs::read(dest.join("Game/data.bin")).unwrap(), b"safe");
+    }
+
+    #[test]
+    fn native_entry_writer_does_not_clobber_existing_leaf() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let output = dest.join("existing.bin");
+        std::fs::write(&output, b"original").unwrap();
+        let mut body = Cursor::new(b"replacement".to_vec());
+
+        write_archive_entry(&dest, "existing.bin", false, &mut body).unwrap_err();
+
+        assert_eq!(std::fs::read(output).unwrap(), b"original");
+    }
+
+    #[test]
+    fn native_entry_writer_creates_directory_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let dest = temp.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut body = Cursor::new(Vec::new());
+
+        write_archive_entry(&dest, "Game/data", true, &mut body).unwrap();
+
+        assert!(dest.join("Game/data").is_dir());
     }
 }
