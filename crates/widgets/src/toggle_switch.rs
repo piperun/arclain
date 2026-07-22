@@ -153,7 +153,7 @@ impl<'a> Widget for ToggleSwitch<'a> {
                 .theme_colors
                 .map(|c| c.outline)
                 .unwrap_or(visuals.widgets.inactive.bg_stroke.color);
-            let stroke = Stroke::new(1.0, border_color);
+            let stroke = Stroke::new(1.0_f32, border_color);
             ui.painter()
                 .rect(rect, corner_radius, bg_color, stroke, StrokeKind::Middle);
 
@@ -228,13 +228,13 @@ impl<'a> Widget for ToggleSwitch<'a> {
                     ui.painter().circle_stroke(
                         thumb_center,
                         thumb_radius + 1.0,
-                        Stroke::new(1.0, debug_colors::TEXT_CENTER),
+                        Stroke::new(1.0_f32, debug_colors::TEXT_CENTER),
                     );
                     // Travel bounds: vertical line segments at min_x
                     // and max_x, full track height. Tells you the
                     // thumb's allowed range at a glance — easy to
                     // see if padding is wrong.
-                    let bounds_stroke = Stroke::new(1.0, debug_colors::GAP_LINE);
+                    let bounds_stroke = Stroke::new(1.0_f32, debug_colors::GAP_LINE);
                     ui.painter().line_segment(
                         [pos2(min_x, rect.top()), pos2(min_x, rect.bottom())],
                         bounds_stroke,

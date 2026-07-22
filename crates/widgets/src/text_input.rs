@@ -376,7 +376,7 @@ impl<'a> TextInput<'a> {
                 full_rect,
                 corner_radius,
                 bg_fill,
-                egui::Stroke::new(1.0, border_color),
+                egui::Stroke::new(1.0_f32, border_color),
                 egui::StrokeKind::Inside,
             );
 

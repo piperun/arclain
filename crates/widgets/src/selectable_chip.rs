@@ -62,19 +62,19 @@ impl<'a> SelectableChip<'a> {
                 (
                     colors.primary,
                     colors.on_primary,
-                    egui::Stroke::new(2.0, colors.primary),
+                    egui::Stroke::new(2.0_f32, colors.primary),
                 )
             } else if self.active {
                 (
                     colors.primary_container,
                     colors.on_primary_container,
-                    egui::Stroke::new(1.0, colors.outline),
+                    egui::Stroke::new(1.0_f32, colors.outline),
                 )
             } else {
                 (
                     colors.surface_variant.gamma_multiply(0.7),
                     colors.on_surface_variant,
-                    egui::Stroke::new(1.0, colors.outline.gamma_multiply(0.5)),
+                    egui::Stroke::new(1.0_f32, colors.outline.gamma_multiply(0.5)),
                 )
             }
         } else {
@@ -82,7 +82,7 @@ impl<'a> SelectableChip<'a> {
             (
                 visuals.bg_fill,
                 visuals.fg_stroke.color,
-                egui::Stroke::new(1.0, visuals.bg_stroke.color),
+                egui::Stroke::new(1.0_f32, visuals.bg_stroke.color),
             )
         };
 

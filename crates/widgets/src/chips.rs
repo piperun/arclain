@@ -101,7 +101,7 @@ impl<'a> Widget for Chips<'a> {
             let stroke_col = self.stroke_color.unwrap_or(colors.outline);
             let bg = self.background_color.unwrap_or(colors.surface_variant);
             let txt = self.text_color.unwrap_or(colors.on_surface);
-            (bg, egui::Stroke::new(1.0, stroke_col), txt)
+            (bg, egui::Stroke::new(1.0_f32, stroke_col), txt)
         } else {
             let bg = self
                 .background_color
@@ -111,7 +111,7 @@ impl<'a> Widget for Chips<'a> {
                 .unwrap_or(ui.visuals().widgets.inactive.fg_stroke.color);
             (
                 bg,
-                egui::Stroke::new(1.0, ui.visuals().widgets.inactive.bg_stroke.color),
+                egui::Stroke::new(1.0_f32, ui.visuals().widgets.inactive.bg_stroke.color),
                 txt,
             )
         };

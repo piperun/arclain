@@ -96,7 +96,7 @@ impl<'a> Widget for SegmentedControl<'a> {
                 .unwrap_or(Color32::WHITE);
 
             // Draw background
-            let stroke = Stroke::new(1.0, bg_color.linear_multiply(0.8));
+            let stroke = Stroke::new(1.0_f32, bg_color.linear_multiply(0.8));
             ui.painter()
                 .rect(rect, corner_radius, bg_color, stroke, StrokeKind::Middle);
 

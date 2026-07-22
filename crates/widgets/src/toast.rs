@@ -189,7 +189,7 @@ impl Toaster {
 
                     let frame_response = egui::Frame::NONE
                         .fill(bg_color)
-                        .stroke(egui::Stroke::new(2.0, accent.gamma_multiply(opacity)))
+                        .stroke(egui::Stroke::new(2.0_f32, accent.gamma_multiply(opacity)))
                         .corner_radius(8.0)
                         .inner_margin(egui::Margin::symmetric(12, 10))
                         .show(ui, |ui| {

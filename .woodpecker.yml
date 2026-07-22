@@ -57,6 +57,7 @@ steps:
       - chown -R runner:runner /workspace
       - su runner -c "cd /workspace/codeberg/arclain && python3 scripts/_format.py --check"
       - su runner -c "cd /workspace/codeberg/arclain && cargo check --workspace --locked"
+      - su runner -c "cd /workspace/codeberg/arclain && RUSTFLAGS='-Dfuture-incompatible' cargo check -p arclain_theme -p arclain_widgets --locked"
     depends_on: [fetch-gameta]
 
   cargo-test:

@@ -122,7 +122,7 @@ impl<'a> Widget for ThemedSlider<'a> {
                 track_rect,
                 corner,
                 track_bg,
-                Stroke::new(1.0, track_bg),
+                Stroke::new(1.0_f32, track_bg),
                 StrokeKind::Middle,
             );
 
@@ -153,7 +153,7 @@ impl<'a> Widget for ThemedSlider<'a> {
                 thumb_rect,
                 CornerRadius::ZERO,
                 thumb_color,
-                Stroke::new(1.0, track_fill),
+                Stroke::new(1.0_f32, track_fill),
                 StrokeKind::Middle,
             );
         }

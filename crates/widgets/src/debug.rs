@@ -100,7 +100,7 @@ pub fn paint_global_debug_hud(ctx: &egui::Context) {
         .show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(Color32::from_black_alpha(200))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(80, 200, 80)))
+                .stroke(Stroke::new(1.0_f32, Color32::from_rgb(80, 200, 80)))
                 .inner_margin(egui::Margin::symmetric(8, 4))
                 .corner_radius(egui::CornerRadius::same(4))
                 .show(ui, |ui| {
@@ -145,7 +145,7 @@ pub fn paint_widget_rect_debug(painter: &Painter, rect: Rect, label: &str, enabl
     painter.rect_stroke(
         rect,
         egui::CornerRadius::ZERO,
-        Stroke::new(1.0, debug_colors::RECT_OUTLINE),
+        Stroke::new(1.0_f32, debug_colors::RECT_OUTLINE),
         egui::StrokeKind::Middle,
     );
 
@@ -154,7 +154,7 @@ pub fn paint_widget_rect_debug(painter: &Painter, rect: Rect, label: &str, enabl
     // content overlaps the rect outline.
     let c = rect.center();
     let half = 6.0;
-    let cross = Stroke::new(1.0, debug_colors::RECT_CENTER);
+    let cross = Stroke::new(1.0_f32, debug_colors::RECT_CENTER);
     painter.line_segment(
         [Pos2::new(c.x - half, c.y), Pos2::new(c.x + half, c.y)],
         cross,
@@ -216,11 +216,11 @@ pub fn paint_centering_debug(
     painter.rect_stroke(
         container,
         egui::CornerRadius::ZERO,
-        Stroke::new(1.0, debug_colors::RECT_OUTLINE),
+        Stroke::new(1.0_f32, debug_colors::RECT_OUTLINE),
         egui::StrokeKind::Middle,
     );
     let cc = container.center();
-    let cross = Stroke::new(1.0, debug_colors::RECT_CENTER);
+    let cross = Stroke::new(1.0_f32, debug_colors::RECT_CENTER);
     painter.line_segment(
         [Pos2::new(cc.x - 8.0, cc.y), Pos2::new(cc.x + 8.0, cc.y)],
         cross,
@@ -234,11 +234,11 @@ pub fn paint_centering_debug(
     painter.rect_stroke(
         inner,
         egui::CornerRadius::ZERO,
-        Stroke::new(1.0, debug_colors::TEXT_BOUNDS),
+        Stroke::new(1.0_f32, debug_colors::TEXT_BOUNDS),
         egui::StrokeKind::Middle,
     );
     let mc = inner.center();
-    let cross = Stroke::new(1.0, debug_colors::TEXT_CENTER);
+    let cross = Stroke::new(1.0_f32, debug_colors::TEXT_CENTER);
     painter.line_segment(
         [Pos2::new(mc.x - 6.0, mc.y), Pos2::new(mc.x + 6.0, mc.y)],
         cross,
@@ -292,17 +292,17 @@ pub fn paint_child_in_parent_debug(
     painter.rect_stroke(
         parent,
         egui::CornerRadius::ZERO,
-        Stroke::new(1.0, debug_colors::PARENT),
+        Stroke::new(1.0_f32, debug_colors::PARENT),
         egui::StrokeKind::Middle,
     );
     painter.rect_stroke(
         child,
         egui::CornerRadius::ZERO,
-        Stroke::new(1.0, debug_colors::CHILD),
+        Stroke::new(1.0_f32, debug_colors::CHILD),
         egui::StrokeKind::Middle,
     );
 
-    let gap_stroke = Stroke::new(1.0, debug_colors::GAP_LINE);
+    let gap_stroke = Stroke::new(1.0_f32, debug_colors::GAP_LINE);
     let mid_y = child.center().y;
     let mid_x = child.center().x;
 

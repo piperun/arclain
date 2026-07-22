@@ -45,7 +45,7 @@ impl ButtonVariant {
     /// Get the stroke/border for this variant
     pub fn stroke(&self, colors: &ThemeColors) -> Stroke {
         match self {
-            ButtonVariant::Outline => Stroke::new(1.0, colors.outline),
+            ButtonVariant::Outline => Stroke::new(1.0_f32, colors.outline),
             _ => Stroke::NONE,
         }
     }
