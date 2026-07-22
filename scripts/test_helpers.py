@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -31,6 +32,18 @@ from _package import get_platform, workspace_version
 from _ui import load_rust_log
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class TestPluginVersions(unittest.TestCase):
+    def test_plugin_manifest_versions_match_cargo(self):
+        for plugin in ("dlsite-metadata", "gstreamer-preview", "ui-demo"):
+            with self.subTest(plugin=plugin):
+                root = REPO_ROOT / "plugins" / plugin
+                with (root / "Cargo.toml").open("rb") as handle:
+                    cargo_version = tomllib.load(handle)["package"]["version"]
+                with (root / f"{plugin}.toml").open("rb") as handle:
+                    manifest_version = tomllib.load(handle)["plugin"]["version"]
+                self.assertEqual(manifest_version, cargo_version, plugin)
 
 
 class TestGetPlatform(unittest.TestCase):

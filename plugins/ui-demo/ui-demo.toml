@@ -1,7 +1,7 @@
 [plugin]
 id = "ui-demo"
 name = "UI Demo Plugin"
-version = "0.1.0"
+version = "0.2.1"
 description = "Demonstrates UI capabilities in the sidebar and plugins page"
 author = "Arclain Team"
 
