@@ -426,11 +426,7 @@ impl PluginRequestContext {
         request: HttpRequest,
     ) -> Result<reqwest::Response, HttpError> {
         validate_plugin_headers(&request.headers)?;
-        let initial_url = if request.url.contains("img.dlsite.jp") {
-            fix_dlsite_cdn_folder(&request.url)
-        } else {
-            request.url.clone()
-        };
+        let initial_url = fix_dlsite_cdn_folder(&request.url);
         let mut url = validate_plugin_url(&initial_url)?;
         let mut method = request.method;
         let mut headers = request.headers;
@@ -756,11 +752,7 @@ impl AsyncHttpClient {
 
             // Fix DLSite CDN URLs with padded folder names (from old WASM plugin)
             // e.g., /RJ00361000/ -> /RJ361000/
-            let url = if request.url.contains("img.dlsite.jp") {
-                fix_dlsite_cdn_folder(&request.url)
-            } else {
-                request.url.clone()
-            };
+            let url = fix_dlsite_cdn_folder(&request.url);
 
             // Build request
             let mut req_builder = match request.method {
@@ -1260,6 +1252,13 @@ async fn response_to_status(response: reqwest::Response, request_id: &RequestId)
 /// e.g., /RJ00361000/RJ360420_ -> /RJ361000/RJ360420_ (6 digits like product)
 ///       /VJ01006000/VJ01005126_ -> unchanged (8 digits matches product)
 fn fix_dlsite_cdn_folder(url: &str) -> String {
+    let is_image_host = url::Url::parse(url)
+        .ok()
+        .is_some_and(|parsed| parsed.host_str() == Some("img.dlsite.jp"));
+    if !is_image_host {
+        return url.to_string();
+    }
+
     let prefixes = ["RJ", "VJ", "BJ", "RE"];
 
     for prefix in prefixes {
@@ -1319,7 +1318,19 @@ fn fix_dlsite_cdn_folder(url: &str) -> String {
 /// CDN folder-name fix-ups) without sprinkling the literal pair
 /// across multiple sites.
 pub(crate) fn is_dlsite_url(url: &str) -> bool {
-    url.contains("dlsite.com") || url.contains("dlsite.jp")
+    url::Url::parse(url)
+        .ok()
+        .and_then(|parsed| {
+            parsed.host_str().map(|host| {
+                ["dlsite.com", "dlsite.jp"].iter().any(|apex| {
+                    host == *apex
+                        || host
+                            .strip_suffix(apex)
+                            .is_some_and(|prefix| prefix.ends_with('.'))
+                })
+            })
+        })
+        .unwrap_or(false)
 }
 
 /// Apply the Firefox-mimicking header set DLsite expects on age-gated
@@ -1347,7 +1358,15 @@ pub(crate) fn inject_dlsite_browser_headers(
 
 #[cfg(test)]
 mod dlsite_url_tests {
-    use super::is_dlsite_url;
+    use super::{fix_dlsite_cdn_folder, is_dlsite_url, AsyncHttpClient};
+    use crate::features::request::PluginNetworkPolicy;
+    use crate::features::whitelist::DomainWhitelist;
+    use crate::HttpRequest;
+    use parking_lot::RwLock;
+    use std::sync::Arc;
+    use tokio::runtime::Handle;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[test]
     fn matches_dlsite_com() {
@@ -1364,8 +1383,108 @@ mod dlsite_url_tests {
     }
 
     #[test]
-    fn does_not_match_unrelated_host() {
-        assert!(!is_dlsite_url("https://example.com/file"));
-        assert!(!is_dlsite_url("https://dlsite.example.org/spoof"));
+    fn matches_dlsite_apexes_and_label_boundary_subdomains() {
+        for url in [
+            "https://dlsite.com/",
+            "https://DLsite.JP/",
+            "https://api.www.dlsite.com/file",
+            "https://img.dlsite.jp/file",
+        ] {
+            assert!(is_dlsite_url(url), "DLsite host did not match: {url}");
+        }
+    }
+
+    #[test]
+    fn does_not_match_dlsite_text_outside_the_canonical_host() {
+        for url in [
+            "https://example.com/file",
+            "https://dlsite.example.org/spoof",
+            "https://evil-dlsite.com/file",
+            "https://dlsite.com.attacker.example/file",
+            "https://example.com/dlsite.com/file",
+            "https://example.com/file?origin=img.dlsite.jp",
+            "not a URL containing dlsite.jp",
+        ] {
+            assert!(!is_dlsite_url(url), "unrelated URL matched DLsite: {url}");
+        }
+    }
+
+    #[test]
+    fn cdn_folder_fix_only_applies_to_the_exact_image_host() {
+        let path = "/modpub/images2/work/doujin/RJ00361000/RJ361000_img_main.jpg";
+        assert_eq!(
+            fix_dlsite_cdn_folder(&format!("https://img.dlsite.jp{path}")),
+            format!(
+                "https://img.dlsite.jp{}",
+                path.replace("RJ00361000", "RJ361000")
+            )
+        );
+
+        for url in [
+            format!("https://cdn.img.dlsite.jp{path}"),
+            format!("https://img.dlsite.jp.attacker.example{path}"),
+            format!("https://example.com/img.dlsite.jp{path}"),
+            format!("https://example.com{path}?origin=img.dlsite.jp"),
+        ] {
+            assert_eq!(
+                fix_dlsite_cdn_folder(&url),
+                url,
+                "unrelated authority received the DLsite CDN rewrite"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn checked_plugin_redirect_does_not_inject_dlsite_secrets_on_unrelated_host() {
+        let server = MockServer::start().await;
+        let final_path = "/assets/dlsite.com/final";
+        let final_url = format!(
+            "http://final.test:{}{final_path}?origin=img.dlsite.jp",
+            server.address().port()
+        );
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(ResponseTemplate::new(302).append_header("Location", final_url.as_str()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(final_path))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
+        whitelist.write().approve("plugin-a", "start.test");
+        whitelist.write().approve("plugin-a", "final.test");
+        let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+        client.configure_plugin(
+            "plugin-a",
+            PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 60,
+            },
+        );
+        client.allow_special_plugin_addresses_for_test();
+        client.set_plugin_dns_answers_for_test("start.test", vec![vec![*server.address()]]);
+        client.set_plugin_dns_answers_for_test("final.test", vec![vec![*server.address()]]);
+
+        let start_url = format!("http://start.test:{}/start", server.address().port());
+        let response = client
+            .plugin_context
+            .execute("plugin-a", HttpRequest::get(start_url))
+            .await
+            .expect("checked redirect request should succeed");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("record checked redirect requests");
+        let redirected = requests
+            .iter()
+            .find(|request| request.url.path() == final_path)
+            .expect("redirect target request was not received");
+        assert!(!redirected.headers.contains_key("cookie"));
+        assert!(!redirected.headers.contains_key("referer"));
     }
 }
