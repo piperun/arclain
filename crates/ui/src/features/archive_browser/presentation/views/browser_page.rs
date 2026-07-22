@@ -8,7 +8,17 @@ use crate::shared::components::tree_panel;
 use crate::shared::SharedState;
 use arclain_core::ActionType;
 use arclain_plugins::types::PluginExtensionPoint;
+use arclain_signals::Signal;
 use eframe::egui;
+
+/// Run cache-update work against a borrowed signal value, releasing the signal
+/// lock before returning anything that will be consumed by egui rendering.
+fn with_borrowed_signal_value<T, R>(signal: &Signal<T>, use_value: impl FnOnce(&T) -> R) -> R {
+    let value = signal.read();
+    let result = use_value(&value);
+    drop(value);
+    result
+}
 
 pub fn render_archive_browser(
     ctx: &egui::Context,
@@ -27,13 +37,15 @@ pub fn render_archive_browser(
 
     let entries = tab.browser_entries.get();
     let mut view_state = tab.browser_view_state.get();
-    let search_text = shared.signals().search_text.get();
-    let render_projection = projection.render_projection(
-        &entries,
-        view_state.sort_state,
-        &search_text,
-        &view_state.selection,
-    );
+    let render_projection =
+        with_borrowed_signal_value(&shared.signals().search_text, |search_text| {
+            projection.render_projection(
+                &entries,
+                view_state.sort_state,
+                search_text,
+                &view_state.selection,
+            )
+        });
 
     // Render tree panel if enabled
     if view_state.toolbar_state.show_tree_panel {
@@ -380,5 +392,50 @@ fn map_file_list_action(file_action: file_list::FileListAction) -> Action {
         file_list::FileListAction::CopyPath(file) => Action::CopyPath(file),
         file_list::FileListAction::ShowProperties(file) => Action::ShowProperties(file),
         file_list::FileListAction::DragStarted(files) => Action::DragExtract(files),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct CloneTrackedSearch {
+        value: String,
+        clones: Arc<AtomicUsize>,
+    }
+
+    impl Clone for CloneTrackedSearch {
+        fn clone(&self) -> Self {
+            self.clones.fetch_add(1, Ordering::Relaxed);
+            Self {
+                value: self.value.clone(),
+                clones: self.clones.clone(),
+            }
+        }
+    }
+
+    #[test]
+    fn settled_nonempty_search_reads_do_not_clone_or_notify() {
+        let clones = Arc::new(AtomicUsize::new(0));
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let search = Signal::new(CloneTrackedSearch {
+            value: "needle".to_string(),
+            clones: clones.clone(),
+        });
+        let notification_count = notifications.clone();
+        search.subscribe(move || {
+            notification_count.fetch_add(1, Ordering::Relaxed);
+        });
+
+        for _ in 0..3 {
+            with_borrowed_signal_value(&search, |query| {
+                assert_eq!(query.value, "needle");
+            });
+        }
+
+        assert_eq!(clones.load(Ordering::Relaxed), 0);
+        assert_eq!(notifications.load(Ordering::Relaxed), 0);
     }
 }
