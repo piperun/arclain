@@ -6,7 +6,7 @@ use crate::services::{
     CacheService, ConfigService, LibraryService, NetworkProxyPersistenceService,
     OrganizationService, ProxyRecoveryOutcome, UiService,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use arclain_db::{DbPaths, SqliteDb};
 use arclain_network::features::gameta_client::{GametaClient, ServerConfig};
 use arclain_network::features::whitelist::DomainWhitelist;
@@ -100,7 +100,16 @@ impl Services {
             dbs.config_pool.clone(),
             arclain_db::DbConnection::open(&paths.config_db)?,
         ));
-        match NetworkProxyPersistenceService::new(&config_svc, &dbs.secrets).recover_pending()? {
+        let recovery =
+            NetworkProxyPersistenceService::new(&config_svc, &dbs.secrets).recover_pending();
+        let recovery = match recovery {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.async_http_client.mark_plugin_routing_unavailable();
+                return Err(error).context("recovering pending proxy settings update");
+            }
+        };
+        match recovery {
             ProxyRecoveryOutcome::NoPendingUpdate => {}
             ProxyRecoveryOutcome::RolledBack => {
                 tracing::warn!("[services] Rolled back an interrupted proxy settings update");
@@ -127,62 +136,81 @@ impl Services {
         let cache_dir = app_dirs.cache_dir;
 
         // --- Proxy Configuration ---
-        if let Ok(mut conn) = dbs.config_pool.get() {
-            if let Ok(user_config) = arclain_db::UserConfig::load_diesel(&mut conn) {
-                let proxy_config =
-                    crate::utilities::proxy::resolve_proxy_config(&user_config, &dbs.secrets);
-                crate::utilities::proxy::apply_proxy_to_client(
-                    &self.async_http_client,
-                    proxy_config,
-                    &user_config,
-                );
-
-                // --- Gameta Server Client ---
-                if user_config.gameta_server_enabled {
-                    if let Some(url) = user_config.gameta_server_url.clone() {
-                        let api_key = match dbs.secrets.get_secret("gameta:api_key") {
-                            Ok(Some(key)) => {
-                                let key_str: &str = key.as_ref();
-                                Some(key_str.to_string())
-                            }
-                            Ok(None) => None,
-                            Err(e) => {
-                                tracing::warn!(
-                                    "[GametaClient] Failed to load API key from secrets: {}",
-                                    e
-                                );
-                                None
-                            }
-                        };
-
-                        let config = ServerConfig { url, api_key };
-                        let client = GametaClient::new(config);
-
-                        match client.health() {
-                            Ok(resp) => {
-                                tracing::info!(
-                                    "[GametaClient] Connected to gameta server \
-                                     (status: {}, version: {})",
-                                    resp.status,
-                                    resp.version
-                                );
-                                self.gameta_client = Some(Arc::new(client));
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "[GametaClient] Health check failed, \
-                                     gameta integration disabled: {}",
-                                    e
-                                );
-                            }
+        match dbs.config_pool.get() {
+            Ok(mut conn) => match arclain_db::UserConfig::load_diesel(&mut conn) {
+                Ok(user_config) => {
+                    let proxy_config = match crate::utilities::proxy::resolve_proxy_config(
+                        &user_config,
+                        &dbs.secrets,
+                    ) {
+                        Ok(config) => config,
+                        Err(error) => {
+                            self.async_http_client.mark_plugin_routing_unavailable();
+                            return Err(error).context("resolving persisted proxy configuration");
                         }
-                    } else {
-                        tracing::warn!(
-                            "[GametaClient] gameta_server_enabled is true \
+                    };
+                    crate::utilities::proxy::apply_proxy_to_client(
+                        &self.async_http_client,
+                        proxy_config,
+                        &user_config,
+                    )
+                    .context("applying persisted proxy routing")?;
+
+                    // --- Gameta Server Client ---
+                    if user_config.gameta_server_enabled {
+                        if let Some(url) = user_config.gameta_server_url.clone() {
+                            let api_key = match dbs.secrets.get_secret("gameta:api_key") {
+                                Ok(Some(key)) => {
+                                    let key_str: &str = key.as_ref();
+                                    Some(key_str.to_string())
+                                }
+                                Ok(None) => None,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "[GametaClient] Failed to load API key from secrets: {}",
+                                        e
+                                    );
+                                    None
+                                }
+                            };
+
+                            let config = ServerConfig { url, api_key };
+                            let client = GametaClient::new(config);
+
+                            match client.health() {
+                                Ok(resp) => {
+                                    tracing::info!(
+                                        "[GametaClient] Connected to gameta server \
+                                     (status: {}, version: {})",
+                                        resp.status,
+                                        resp.version
+                                    );
+                                    self.gameta_client = Some(Arc::new(client));
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "[GametaClient] Health check failed, \
+                                     gameta integration disabled: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        } else {
+                            tracing::warn!(
+                                "[GametaClient] gameta_server_enabled is true \
                              but no URL is configured"
-                        );
+                            );
+                        }
                     }
                 }
+                Err(error) => {
+                    self.async_http_client.mark_plugin_routing_unavailable();
+                    return Err(error).context("loading user config for proxy routing");
+                }
+            },
+            Err(error) => {
+                self.async_http_client.mark_plugin_routing_unavailable();
+                return Err(error).context("acquiring connection to load user config");
             }
         }
 
@@ -205,6 +233,33 @@ mod tests {
     use super::*;
     use crate::services::ConfigService;
     use arclain_db::{open_databases, DbConnection, SecretsKey, UserConfig};
+    use arclain_network::{HttpRequest, PluginNetworkPolicy};
+
+    const CHECKED_PLUGIN_ID: &str = "dlsite-metadata";
+
+    fn configure_checked_plugin(services: &Services) {
+        services.async_http_client.configure_plugin(
+            CHECKED_PLUGIN_ID,
+            PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 60,
+            },
+        );
+    }
+
+    fn assert_checked_plugin_routing_unavailable(services: &Services) {
+        let error = services
+            .async_http_client
+            .request_for_plugin(
+                CHECKED_PLUGIN_ID,
+                HttpRequest::get("https://example.com/resource"),
+            )
+            .expect_err("checked plugin request must fail while routing is unavailable");
+        assert!(
+            error.to_string().contains("routing is unavailable"),
+            "unexpected unavailable-routing error: {error}"
+        );
+    }
 
     #[test]
     fn init_db_services_rejects_corrupt_proxy_marker_before_proxy_application() {
@@ -232,15 +287,125 @@ mod tests {
 
         let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
         let mut services = Services::new(runtime);
-        services
-            .async_http_client
-            .apply_plugin_proxy_map(crate::utilities::effective_plugin_proxy_map(&config));
+        configure_checked_plugin(&services);
+        services.async_http_client.apply_proxy_routing(
+            crate::utilities::proxy::resolve_proxy_config(&config, &dbs.secrets).unwrap(),
+            crate::utilities::effective_plugin_proxy_map(&config),
+        );
 
         let error = services.init_db_services(&dbs, &paths).unwrap_err();
 
-        assert!(error.to_string().contains("pending proxy update marker"));
-        assert!(services
-            .async_http_client
-            .should_use_proxy_for_plugin("dlsite"));
+        assert!(
+            format!("{error:#}").contains("pending proxy update marker"),
+            "{error:#}"
+        );
+        assert_checked_plugin_routing_unavailable(&services);
+    }
+
+    #[test]
+    fn init_db_services_fails_closed_when_credential_secret_cannot_be_decrypted() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DbPaths {
+            config_db: temp.path().join("config.sqlite"),
+            cache_db: temp.path().join("metadata.sqlite"),
+            secrets_db: temp.path().join("secrets.redb"),
+            key_file: None,
+        };
+        let original_key = SecretsKey::generate();
+        {
+            let dbs = open_databases(&paths, &original_key).unwrap();
+            let connection = DbConnection::open(&paths.config_db).unwrap();
+            UserConfig::ensure_table(&connection).unwrap();
+            let config_service =
+                ConfigService::from_connection(dbs.config_pool.clone(), connection);
+            let mut config = UserConfig::new();
+            config.socks5_enabled = true;
+            config.socks5_address = Some("127.0.0.1:1080".to_string());
+            config.socks5_username = Some("proxy-user".to_string());
+            config_service.save_user_config(&config).unwrap();
+            dbs.secrets
+                .set_secret("proxy:socks5", "proxy-password")
+                .unwrap();
+        }
+
+        let dbs = open_databases(&paths, &SecretsKey::generate()).unwrap();
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let mut services = Services::new(runtime);
+        configure_checked_plugin(&services);
+
+        let error = services.init_db_services(&dbs, &paths).unwrap_err();
+
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("proxy password"), "{diagnostic}");
+        assert!(!diagnostic.contains("proxy-password"), "{diagnostic}");
+        assert!(!diagnostic.contains("proxy-user"), "{diagnostic}");
+        assert_checked_plugin_routing_unavailable(&services);
+    }
+
+    #[test]
+    fn init_db_services_does_not_read_proxy_secret_for_credentialless_proxy() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DbPaths {
+            config_db: temp.path().join("config.sqlite"),
+            cache_db: temp.path().join("metadata.sqlite"),
+            secrets_db: temp.path().join("secrets.redb"),
+            key_file: None,
+        };
+        let original_key = SecretsKey::generate();
+        {
+            let dbs = open_databases(&paths, &original_key).unwrap();
+            let connection = DbConnection::open(&paths.config_db).unwrap();
+            UserConfig::ensure_table(&connection).unwrap();
+            let config_service =
+                ConfigService::from_connection(dbs.config_pool.clone(), connection);
+            let mut config = UserConfig::new();
+            config.socks5_enabled = true;
+            config.socks5_address = Some("127.0.0.1:1080".to_string());
+            config_service.save_user_config(&config).unwrap();
+            dbs.secrets
+                .set_secret("proxy:socks5", "unreadable-but-unused-password")
+                .unwrap();
+        }
+
+        let dbs = open_databases(&paths, &SecretsKey::generate()).unwrap();
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let mut services = Services::new(runtime);
+        configure_checked_plugin(&services);
+
+        services.init_db_services(&dbs, &paths).unwrap();
+
+        assert!(
+            services
+                .async_http_client
+                .should_use_proxy_for_plugin(CHECKED_PLUGIN_ID),
+            "credentialless proxy did not install its default plugin route"
+        );
+    }
+
+    #[test]
+    fn init_db_services_fails_closed_when_user_config_cannot_be_loaded() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DbPaths {
+            config_db: temp.path().join("config.sqlite"),
+            cache_db: temp.path().join("metadata.sqlite"),
+            secrets_db: temp.path().join("secrets.redb"),
+            key_file: None,
+        };
+        let dbs = open_databases(&paths, &SecretsKey::generate()).unwrap();
+        dbs.config
+            .with_connection(|connection| {
+                connection.execute_batch("DROP TABLE user_config")?;
+                Ok(())
+            })
+            .unwrap();
+
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let mut services = Services::new(runtime);
+        configure_checked_plugin(&services);
+
+        let error = services.init_db_services(&dbs, &paths).unwrap_err();
+
+        assert!(error.to_string().contains("user config"), "{error:#}");
+        assert_checked_plugin_routing_unavailable(&services);
     }
 }

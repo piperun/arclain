@@ -3,16 +3,13 @@
 //! Handles resolution of proxy settings from UserConfig and SecretsDb,
 //! and application to the AsyncHttpClient.
 
+use anyhow::{anyhow, Context, Result};
 use arclain_db::{SecretsDb, UserConfig};
 use arclain_network::{features::proxy::ProxyConfig, AsyncHttpClient};
 use std::collections::HashMap;
 
-const DEFAULT_PROXIED_PLUGINS: [&str; 4] = [
-    "dlsite-metadata",
-    "dlsite",
-    "dlsite-api",
-    "dlsite-html",
-];
+const DEFAULT_PROXIED_PLUGINS: [&str; 4] =
+    ["dlsite-metadata", "dlsite", "dlsite-api", "dlsite-html"];
 
 /// Derive the runtime routing map from persisted settings.
 ///
@@ -32,36 +29,37 @@ pub fn effective_plugin_proxy_map(user_config: &UserConfig) -> HashMap<String, b
 }
 
 /// Resolve proxy configuration from UserConfig and SecretsDb
-pub fn resolve_proxy_config(user_config: &UserConfig, secrets: &SecretsDb) -> Option<ProxyConfig> {
+pub fn resolve_proxy_config(
+    user_config: &UserConfig,
+    secrets: &SecretsDb,
+) -> Result<Option<ProxyConfig>> {
     if !user_config.socks5_enabled {
-        return None;
+        return Ok(None);
     }
 
     let address = user_config.socks5_address.clone().unwrap_or_default();
 
     if address.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     let mut password = None;
     if user_config.socks5_username.is_some() {
-        // Try to load password from secrets
-        if let Ok(Some(pwd)) = secrets.get_secret("proxy:socks5") {
+        if let Some(pwd) = secrets
+            .get_secret("proxy:socks5")
+            .context("loading proxy password from encrypted storage")?
+        {
             let pwd_str: &str = pwd.as_ref();
             password = Some(pwd_str.to_string());
         }
     }
 
-    Some(ProxyConfig {
+    Ok(Some(ProxyConfig {
         enabled: true,
         address,
         username: user_config.socks5_username.clone(),
         password,
-    })
-}
-
-fn clear_proxy_transport(client: &AsyncHttpClient, user_config: &UserConfig) {
-    client.apply_proxy_routing(None, effective_plugin_proxy_map(user_config));
+    }))
 }
 
 /// Apply proxy configuration to the HTTP client
@@ -69,31 +67,36 @@ pub fn apply_proxy_to_client(
     client: &AsyncHttpClient,
     proxy_config: Option<ProxyConfig>,
     user_config: &UserConfig,
-) {
-    if let Some(config) = proxy_config {
-        if !config.enabled {
-            tracing::info!("[Proxy] {}", config.log_summary());
-            clear_proxy_transport(client, user_config);
-            return;
-        }
-        if let Err(error) = config.validate() {
-            tracing::warn!("[Proxy] Refusing invalid proxy configuration: {}", error);
-            clear_proxy_transport(client, user_config);
-            return;
-        }
-
-        tracing::info!("[Proxy] Enabling {}", config.log_summary());
-        client.apply_proxy_routing(Some(config), effective_plugin_proxy_map(user_config));
-    } else {
-        if user_config.socks5_enabled {
-            tracing::warn!(
-                "[Proxy] Enabled SOCKS5 transport is unavailable; proxied plugin routes will fail closed"
-            );
-        } else {
-            tracing::info!("[Proxy] SOCKS5 proxy disabled");
-        }
-        clear_proxy_transport(client, user_config);
+) -> Result<()> {
+    if !user_config.socks5_enabled {
+        tracing::info!("[Proxy] SOCKS5 proxy disabled");
+        client.apply_proxy_routing(None, effective_plugin_proxy_map(user_config));
+        return Ok(());
     }
+
+    let Some(config) = proxy_config else {
+        client.mark_plugin_routing_unavailable();
+        tracing::warn!(
+            "[Proxy] Enabled SOCKS5 transport is unavailable; plugin requests will fail closed"
+        );
+        return Err(anyhow!("enabled SOCKS5 transport is unavailable"));
+    };
+    if !config.enabled {
+        client.mark_plugin_routing_unavailable();
+        tracing::warn!("[Proxy] Refusing disabled transport for enabled proxy settings");
+        return Err(anyhow!(
+            "enabled proxy settings resolved to a disabled transport"
+        ));
+    }
+    if let Err(error) = config.validate() {
+        client.mark_plugin_routing_unavailable();
+        tracing::warn!("[Proxy] Refusing invalid proxy configuration: {}", error);
+        return Err(anyhow!(error));
+    }
+
+    tracing::info!("[Proxy] Enabling {}", config.log_summary());
+    client.apply_proxy_routing(Some(config), effective_plugin_proxy_map(user_config));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -178,7 +181,8 @@ mod tests {
         user_config.socks5_enabled = true;
 
         tracing::subscriber::with_default(capture.clone(), || {
-            apply_proxy_to_client(&client, Some(config), &user_config);
+            apply_proxy_to_client(&client, Some(config), &user_config)
+                .expect_err("invalid proxy must fail closed");
         });
 
         let diagnostics = capture.output();
@@ -189,7 +193,7 @@ mod tests {
             );
         }
         assert!(diagnostics.contains("<invalid address>"), "{diagnostics}");
-        assert!(client.should_use_proxy_for_plugin("dlsite"));
+        assert!(!client.should_use_proxy_for_plugin("dlsite"));
     }
 
     #[test]
@@ -210,12 +214,45 @@ mod tests {
         user_config.set_plugin_proxy_enabled("custom", true);
         user_config.set_plugin_proxy_enabled("dlsite-api", false);
 
-        apply_proxy_to_client(&client, None, &user_config);
+        apply_proxy_to_client(&client, None, &user_config)
+            .expect_err("missing enabled proxy must fail closed");
 
-        assert!(client.should_use_proxy_for_plugin("dlsite"));
-        assert!(client.should_use_proxy_for_plugin("dlsite-metadata"));
-        assert!(client.should_use_proxy_for_plugin("custom"));
+        assert!(!client.should_use_proxy_for_plugin("dlsite"));
+        assert!(!client.should_use_proxy_for_plugin("dlsite-metadata"));
+        assert!(!client.should_use_proxy_for_plugin("custom"));
         assert!(!client.should_use_proxy_for_plugin("dlsite-api"));
+    }
+
+    #[test]
+    fn valid_proxy_reapply_clears_unavailable_checked_routing_state() {
+        const PLUGIN_ID: &str = "dlsite-metadata";
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = AsyncHttpClient::new(
+            runtime.handle().clone(),
+            Arc::new(parking_lot::RwLock::new(
+                arclain_network::features::whitelist::DomainWhitelist::default(),
+            )),
+            None,
+        );
+        let mut user_config = UserConfig::default();
+        user_config.socks5_enabled = true;
+
+        apply_proxy_to_client(&client, None, &user_config)
+            .expect_err("missing enabled proxy must fail closed");
+        assert!(!client.should_use_proxy_for_plugin(PLUGIN_ID));
+
+        let valid = ProxyConfig {
+            enabled: true,
+            address: "127.0.0.1:1080".to_string(),
+            username: None,
+            password: None,
+        };
+        apply_proxy_to_client(&client, Some(valid), &user_config)
+            .expect("valid proxy must restore checked routing");
+        assert!(client.should_use_proxy_for_plugin(PLUGIN_ID));
     }
 
     #[test]

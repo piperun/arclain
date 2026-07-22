@@ -205,6 +205,7 @@ struct ProxyRuntimeState {
     proxy_config: Option<ProxyConfig>,
     plugin_proxy_map: HashMap<String, bool>,
     client_proxied: reqwest::Client,
+    plugin_routing_available: bool,
 }
 
 impl ProxyRuntimeState {
@@ -214,6 +215,16 @@ impl ProxyRuntimeState {
             proxy_config,
             plugin_proxy_map,
             client_proxied,
+            plugin_routing_available: true,
+        }
+    }
+
+    fn unavailable() -> Self {
+        Self {
+            proxy_config: None,
+            plugin_proxy_map: HashMap::new(),
+            client_proxied: AsyncHttpClient::build_client(None),
+            plugin_routing_available: false,
         }
     }
 }
@@ -233,6 +244,15 @@ struct PluginRequestContext {
 
 impl PluginRequestContext {
     fn registered_policy(&self, plugin_id: &str) -> Result<PluginNetworkPolicy, HttpError> {
+        if self
+            .proxy_runtime
+            .try_read()
+            .is_some_and(|runtime| !runtime.plugin_routing_available)
+        {
+            return Err(HttpError::RequestFailed {
+                message: "plugin network routing is unavailable".to_string(),
+            });
+        }
         let policy = self
             .plugin_policies
             .read()
@@ -359,6 +379,11 @@ impl PluginRequestContext {
 
         let proxy_config = {
             let runtime = self.proxy_runtime.read();
+            if !runtime.plugin_routing_available {
+                return Err(HttpError::RequestFailed {
+                    message: "plugin network routing is unavailable".to_string(),
+                });
+            }
             if *runtime.plugin_proxy_map.get(plugin_id).unwrap_or(&false) {
                 Some(
                     runtime
@@ -571,6 +596,14 @@ impl AsyncHttpClient {
         let replacement = ProxyRuntimeState::new(proxy_config, plugin_proxy_map);
         *self.plugin_context.proxy_runtime.write() = replacement;
         info!("AsyncHttpClient proxy routing updated");
+    }
+
+    /// Atomically deny checked plugin requests when persisted proxy routing
+    /// cannot be resolved safely. Host-owned direct requests remain usable,
+    /// and a later successful [`Self::apply_proxy_routing`] clears this state.
+    pub fn mark_plugin_routing_unavailable(&self) {
+        *self.plugin_context.proxy_runtime.write() = ProxyRuntimeState::unavailable();
+        warn!("AsyncHttpClient plugin routing marked unavailable");
     }
 
     /// Register the network capability and request budget for a plugin.
@@ -1670,6 +1703,65 @@ mod proxy_routing_atomicity_tests {
             .expect("acknowledge SOCKS5 CONNECT");
 
         std::net::SocketAddr::new(address.into(), u16::from_be_bytes(port))
+    }
+
+    async fn serve_one_host_request(listener: TcpListener) {
+        let (mut socket, _) = listener.accept().await.expect("accept host request");
+        let mut request = [0_u8; 1024];
+        let _ = socket.read(&mut request).await.expect("read host request");
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .expect("write host response");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unavailable_plugin_routing_denies_plugins_but_keeps_host_requests_available() {
+        const PLUGIN_ID: &str = "unavailable-routing-plugin";
+
+        let host_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind host sentinel");
+        let host_address = host_listener.local_addr().expect("host sentinel address");
+        let host_server = tokio::spawn(serve_one_host_request(host_listener));
+
+        let client = AsyncHttpClient::new(
+            Handle::current(),
+            Arc::new(RwLock::new(DomainWhitelist::default())),
+            None,
+        );
+        client.configure_plugin(
+            PLUGIN_ID,
+            PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 60,
+            },
+        );
+
+        client.mark_plugin_routing_unavailable();
+        let denied = client
+            .plugin_context
+            .registered_policy(PLUGIN_ID)
+            .expect_err("checked plugin routing must fail closed while unavailable");
+        assert!(
+            denied.to_string().contains("routing is unavailable"),
+            "unexpected unavailable-routing error: {denied}"
+        );
+
+        let host_request = client.request(HttpRequest::get(format!("http://{host_address}/")));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(2), client.await_complete(&host_request))
+                .await
+                .expect("host request timed out"),
+            Some(RequestStatus::Ready(_))
+        ));
+        host_server.await.expect("host sentinel panicked");
+
+        client.apply_proxy_routing(None, HashMap::new());
+        client
+            .plugin_context
+            .registered_policy(PLUGIN_ID)
+            .expect("a valid routing apply must clear the unavailable state");
     }
 
     async fn assert_overlapping_enable_never_reaches_direct(
