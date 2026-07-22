@@ -340,6 +340,11 @@ pub fn handle_action(
                 return;
             }
 
+            let plugin_proxy_map = if socks5_enabled {
+                candidate.get_plugin_proxy_settings()
+            } else {
+                Default::default()
+            };
             state.user_config = candidate;
             state.signals.user_config.set(state.user_config.clone());
             drop(state);
@@ -348,6 +353,10 @@ pub fn handle_action(
                 .services
                 .async_http_client
                 .update_config(Some(config.clone()));
+            shared
+                .services
+                .async_http_client
+                .update_plugin_proxy_map(plugin_proxy_map);
             log_saved_proxy_configuration(&config);
             tracing::info!("Network settings saved");
         }
@@ -503,6 +512,8 @@ mod tests {
     use tempfile::TempDir;
     use tracing_test::traced_test;
 
+    const PROXY_PLUGIN_ID: &str = "proxy-map-test-plugin";
+
     struct ProxySaveFixture {
         shared: SharedState,
         config_service: Arc<ConfigService>,
@@ -539,6 +550,7 @@ mod tests {
             previous.socks5_enabled = true;
             previous.socks5_address = Some(unavailable_proxy.to_string());
             previous.socks5_username = Some("previous-proxy-user-2c8f".to_string());
+            previous.set_plugin_proxy_enabled(PROXY_PLUGIN_ID, true);
             config_service
                 .save_user_config(&previous)
                 .expect("persist previous proxy settings");
@@ -555,6 +567,9 @@ mod tests {
                 username: previous.socks5_username.clone(),
                 password: Some(previous_password.clone()),
             }));
+            services
+                .async_http_client
+                .update_plugin_proxy_map(previous.get_plugin_proxy_settings());
 
             let signals = AppSignals::new();
             signals.user_config.set(previous.clone());
@@ -827,6 +842,83 @@ mod tests {
         assert!(!format!("{:?}", fixture.shared.toaster.lock()).contains("Error"));
         assert!(!logs_contain("Refusing to save invalid proxy"));
         assert!(logs_contain("Network settings saved"));
+    }
+
+    #[test]
+    fn save_network_disable_clears_runtime_plugin_proxy_map() {
+        let fixture = ProxySaveFixture::new();
+        assert!(
+            fixture
+                .shared
+                .services
+                .async_http_client
+                .should_use_proxy_for_plugin(PROXY_PLUGIN_ID)
+        );
+
+        handle_action(
+            SettingsAction::SaveNetwork {
+                socks5_enabled: false,
+                socks5_address: Some(String::new()),
+                socks5_username: None,
+                socks5_password: Some(String::new()),
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            &mut ServerSettingsState::default(),
+            &fixture.shared,
+        );
+
+        assert!(
+            !fixture
+                .shared
+                .services
+                .async_http_client
+                .should_use_proxy_for_plugin(PROXY_PLUGIN_ID),
+            "disabling the global proxy left its per-plugin route enabled"
+        );
+    }
+
+    #[test]
+    fn save_network_reenable_restores_persisted_plugin_proxy_map() {
+        let fixture = ProxySaveFixture::new();
+        fixture
+            .shared
+            .services
+            .async_http_client
+            .update_plugin_proxy_map(Default::default());
+        assert!(
+            !fixture
+                .shared
+                .services
+                .async_http_client
+                .should_use_proxy_for_plugin(PROXY_PLUGIN_ID)
+        );
+
+        handle_action(
+            SettingsAction::SaveNetwork {
+                socks5_enabled: true,
+                socks5_address: Some("127.0.0.1:1080".to_string()),
+                socks5_username: None,
+                socks5_password: Some(String::new()),
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            &mut ServerSettingsState::default(),
+            &fixture.shared,
+        );
+
+        assert!(
+            fixture
+                .shared
+                .services
+                .async_http_client
+                .should_use_proxy_for_plugin(PROXY_PLUGIN_ID),
+            "re-enabling the global proxy did not restore the persisted per-plugin route"
+        );
     }
 
     #[traced_test]
