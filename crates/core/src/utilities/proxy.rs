@@ -7,7 +7,12 @@ use arclain_db::{SecretsDb, UserConfig};
 use arclain_network::{features::proxy::ProxyConfig, AsyncHttpClient};
 use std::collections::HashMap;
 
-const DEFAULT_PROXIED_PLUGINS: [&str; 3] = ["dlsite", "dlsite-api", "dlsite-html"];
+const DEFAULT_PROXIED_PLUGINS: [&str; 4] = [
+    "dlsite-metadata",
+    "dlsite",
+    "dlsite-api",
+    "dlsite-html",
+];
 
 /// Derive the runtime routing map from persisted settings.
 ///
@@ -208,6 +213,7 @@ mod tests {
         apply_proxy_to_client(&client, None, &user_config);
 
         assert!(client.should_use_proxy_for_plugin("dlsite"));
+        assert!(client.should_use_proxy_for_plugin("dlsite-metadata"));
         assert!(client.should_use_proxy_for_plugin("custom"));
         assert!(!client.should_use_proxy_for_plugin("dlsite-api"));
     }
@@ -224,6 +230,13 @@ mod tests {
         assert_eq!(enabled.get("dlsite"), Some(&true));
         assert_eq!(enabled.get("dlsite-api"), Some(&false));
         assert_eq!(enabled.get("dlsite-html"), Some(&true));
+        assert_eq!(enabled.get("dlsite-metadata"), Some(&true));
+
+        user_config.set_plugin_proxy_enabled("dlsite-metadata", false);
+        assert_eq!(
+            effective_plugin_proxy_map(&user_config).get("dlsite-metadata"),
+            Some(&false)
+        );
 
         user_config.socks5_enabled = false;
         assert!(effective_plugin_proxy_map(&user_config).is_empty());
