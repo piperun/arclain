@@ -55,6 +55,11 @@ pub fn resolve_proxy_config(user_config: &UserConfig, secrets: &SecretsDb) -> Op
     })
 }
 
+fn clear_proxy_transport(client: &AsyncHttpClient, user_config: &UserConfig) {
+    client.update_config(None);
+    client.update_plugin_proxy_map(effective_plugin_proxy_map(user_config));
+}
+
 /// Apply proxy configuration to the HTTP client
 pub fn apply_proxy_to_client(
     client: &AsyncHttpClient,
@@ -64,14 +69,12 @@ pub fn apply_proxy_to_client(
     if let Some(config) = proxy_config {
         if !config.enabled {
             tracing::info!("[Proxy] {}", config.log_summary());
-            client.update_config(None);
-            client.update_plugin_proxy_map(HashMap::new());
+            clear_proxy_transport(client, user_config);
             return;
         }
         if let Err(error) = config.validate() {
             tracing::warn!("[Proxy] Refusing invalid proxy configuration: {}", error);
-            client.update_config(None);
-            client.update_plugin_proxy_map(HashMap::new());
+            clear_proxy_transport(client, user_config);
             return;
         }
 
@@ -80,9 +83,14 @@ pub fn apply_proxy_to_client(
 
         client.update_plugin_proxy_map(effective_plugin_proxy_map(user_config));
     } else {
-        tracing::info!("[Proxy] SOCKS5 proxy disabled");
-        client.update_config(None);
-        client.update_plugin_proxy_map(HashMap::new());
+        if user_config.socks5_enabled {
+            tracing::warn!(
+                "[Proxy] Enabled SOCKS5 transport is unavailable; proxied plugin routes will fail closed"
+            );
+        } else {
+            tracing::info!("[Proxy] SOCKS5 proxy disabled");
+        }
+        clear_proxy_transport(client, user_config);
     }
 }
 
@@ -139,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_proxy_address_is_not_logged_or_applied() {
+    fn invalid_enabled_proxy_is_redacted_and_keeps_plugin_routing_fail_closed() {
         const ADDRESS_USER: &str = "core-address-user-secret-38af";
         const ADDRESS_PASSWORD: &str = "core-address-password-secret-74bc";
         const DIRECT_USER: &str = "core-direct-user-secret-12de";
@@ -164,8 +172,11 @@ mod tests {
         };
         let capture = EventCapture::default();
 
+        let mut user_config = UserConfig::default();
+        user_config.socks5_enabled = true;
+
         tracing::subscriber::with_default(capture.clone(), || {
-            apply_proxy_to_client(&client, Some(config), &UserConfig::default());
+            apply_proxy_to_client(&client, Some(config), &user_config);
         });
 
         let diagnostics = capture.output();
@@ -176,7 +187,32 @@ mod tests {
             );
         }
         assert!(diagnostics.contains("<invalid address>"), "{diagnostics}");
-        assert!(!client.should_use_proxy_for_plugin("dlsite"));
+        assert!(client.should_use_proxy_for_plugin("dlsite"));
+    }
+
+    #[test]
+    fn missing_enabled_proxy_transport_keeps_plugin_routing_fail_closed() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = AsyncHttpClient::new(
+            runtime.handle().clone(),
+            Arc::new(parking_lot::RwLock::new(
+                arclain_network::features::whitelist::DomainWhitelist::default(),
+            )),
+            None,
+        );
+        let mut user_config = UserConfig::default();
+        user_config.socks5_enabled = true;
+        user_config.set_plugin_proxy_enabled("custom", true);
+        user_config.set_plugin_proxy_enabled("dlsite-api", false);
+
+        apply_proxy_to_client(&client, None, &user_config);
+
+        assert!(client.should_use_proxy_for_plugin("dlsite"));
+        assert!(client.should_use_proxy_for_plugin("custom"));
+        assert!(!client.should_use_proxy_for_plugin("dlsite-api"));
     }
 
     #[test]
