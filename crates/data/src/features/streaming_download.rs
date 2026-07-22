@@ -795,8 +795,11 @@ mod tests {
     use super::*;
     use crate::traits::CacheIndex;
     use arclain_db::CacheEntry;
-    use arclain_network::{StreamingDownload, StreamingResponseMetadata};
+    use arclain_network::features::proxy::ProxyConfig;
+    use arclain_network::{PluginNetworkPolicy, StreamingDownload, StreamingResponseMetadata};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
 
     #[derive(Default)]
     struct RecordingIndex {
@@ -892,6 +895,88 @@ mod tests {
             last_modified: None,
             total_size,
         }
+    }
+
+    fn read_socks_http_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set SOCKS test connection timeout");
+
+        let mut greeting = [0_u8; 2];
+        stream
+            .read_exact(&mut greeting)
+            .expect("read SOCKS5 greeting prefix");
+        assert_eq!(greeting[0], 0x05);
+        let mut methods = vec![0_u8; usize::from(greeting[1])];
+        stream
+            .read_exact(&mut methods)
+            .expect("read SOCKS5 authentication methods");
+        assert!(
+            methods.contains(&0x00),
+            "client did not offer no-auth SOCKS5"
+        );
+        stream
+            .write_all(&[0x05, 0x00])
+            .expect("select SOCKS5 no-authentication");
+
+        let mut connect = [0_u8; 4];
+        stream
+            .read_exact(&mut connect)
+            .expect("read SOCKS5 CONNECT prefix");
+        assert_eq!(&connect[..3], &[0x05, 0x01, 0x00]);
+        assert_eq!(connect[3], 0x01, "checked target was not pinned as IPv4");
+        let mut target = [0_u8; 4];
+        stream
+            .read_exact(&mut target)
+            .expect("read pinned SOCKS5 target");
+        assert_eq!(target, [1, 1, 1, 1], "proxy observed the wrong target");
+        let mut port = [0_u8; 2];
+        stream
+            .read_exact(&mut port)
+            .expect("read pinned SOCKS5 target port");
+        assert_eq!(u16::from_be_bytes(port), 80);
+        stream
+            .write_all(&[0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0, 0])
+            .expect("acknowledge SOCKS5 CONNECT");
+
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).expect("read HTTP request");
+            assert!(read > 0, "HTTP request closed before its headers completed");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        String::from_utf8(request).expect("checked HTTP request was not ASCII")
+    }
+
+    fn checked_plugin_client(
+        runtime: &tokio::runtime::Runtime,
+        proxy_address: Option<std::net::SocketAddr>,
+        plugin_id: &str,
+        network_enabled: bool,
+    ) -> AsyncHttpClient {
+        let whitelist = Arc::new(parking_lot::RwLock::new(
+            arclain_network::DomainWhitelist::default(),
+        ));
+        let proxy = proxy_address.map(|address| ProxyConfig {
+            enabled: true,
+            address: address.to_string(),
+            username: None,
+            password: None,
+        });
+        let client = AsyncHttpClient::new(runtime.handle().clone(), whitelist, proxy);
+        client.configure_plugin(
+            plugin_id,
+            PluginNetworkPolicy {
+                network_enabled,
+                requests_per_minute: 4,
+            },
+        );
+        client.replace_plugin_manifest_domains(plugin_id, &["1.1.1.1".to_string()]);
+        if proxy_address.is_some() {
+            client.update_plugin_proxy_map(HashMap::from([(plugin_id.to_string(), true)]));
+        }
+        client
     }
 
     #[test]
@@ -1277,6 +1362,167 @@ mod tests {
         assert_eq!(index.upserts.load(Ordering::SeqCst), 1);
         assert!(!data_path.exists());
         assert!(!meta_path.exists());
+    }
+
+    #[test]
+    fn checked_plugin_interrupted_stream_resumes_end_to_end() {
+        let (_dir, cache, index) = test_cache();
+        let key = "checked-loopback-resume";
+        let plugin_id = "checked-resume-plugin";
+        let requested_url = "http://1.1.1.1/resume";
+        let (data_path, meta_path) = partial_paths(&cache, key);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local SOCKS5 server");
+        let proxy_address = listener.local_addr().expect("local SOCKS5 address");
+        let server_meta_path = meta_path.clone();
+        let server_url = requested_url.to_string();
+
+        let server = std::thread::spawn(move || {
+            for attempt in 0..2 {
+                let (mut stream, _) = listener.accept().expect("accept SOCKS5 connection");
+                let request = read_socks_http_request(&mut stream);
+                let normalized = request.to_ascii_lowercase();
+
+                if attempt == 0 {
+                    assert!(
+                        !normalized.contains("\r\nrange:"),
+                        "fresh checked request unexpectedly sent Range: {request:?}"
+                    );
+                    assert!(
+                        !normalized.contains("\r\nif-match:"),
+                        "fresh checked request unexpectedly sent If-Match: {request:?}"
+                    );
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nETag: \"v1\"\r\nConnection: close\r\n\r\n",
+                        )
+                        .expect("write interrupted response headers");
+                    stream.flush().expect("flush interrupted response headers");
+
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !server_meta_path.exists() && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    let metadata: serde_json::Value = serde_json::from_slice(
+                        &fs::read(&server_meta_path)
+                            .expect("sidecar was not bound before the first body byte"),
+                    )
+                    .expect("bound sidecar was invalid JSON");
+                    assert_eq!(metadata["requested_url"], server_url);
+                    assert_eq!(metadata["url"], server_url);
+                    assert_eq!(metadata["etag"], "\"v1\"");
+                    assert_eq!(metadata["total_size"], 6);
+
+                    stream
+                        .write_all(b"abc")
+                        .expect("write interrupted response prefix");
+                } else {
+                    assert!(
+                        normalized.contains("\r\nrange: bytes=3-\r\n"),
+                        "resume did not send the exact Range header: {request:?}"
+                    );
+                    assert!(
+                        normalized.contains("\r\nif-match: \"v1\"\r\n"),
+                        "resume did not send the exact If-Match header: {request:?}"
+                    );
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 3-5/6\r\nETag: \"v1\"\r\nConnection: close\r\n\r\ndef",
+                        )
+                        .expect("write resumed response");
+                }
+                stream.flush().expect("flush SOCKS5 HTTP response");
+            }
+        });
+
+        let runtime = tokio::runtime::Runtime::new().expect("build checked-fetch runtime");
+        let client = checked_plugin_client(&runtime, Some(proxy_address), plugin_id, true);
+
+        let first = fetch_url_to_cache_for_plugin(
+            &cache,
+            &client,
+            key,
+            requested_url,
+            CacheType::Other,
+            None,
+            plugin_id,
+        );
+        assert!(
+            first.is_err(),
+            "interrupted checked fetch unexpectedly succeeded"
+        );
+        assert_eq!(fs::read(&data_path).unwrap(), b"abc");
+        assert!(
+            meta_path.exists(),
+            "interrupted checked fetch lost its sidecar"
+        );
+
+        let bytes = fetch_url_to_cache_for_plugin(
+            &cache,
+            &client,
+            key,
+            requested_url,
+            CacheType::Other,
+            None,
+            plugin_id,
+        )
+        .expect("checked fetch did not resume its validated suffix");
+
+        assert_eq!(bytes, 6);
+        assert_eq!(cache.get(key).unwrap().unwrap(), b"abcdef");
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 1);
+        assert!(!data_path.exists());
+        assert!(!meta_path.exists());
+        server.join().expect("local SOCKS5 server panicked");
+    }
+
+    #[test]
+    fn checked_plugin_policy_rejection_never_falls_back_to_host_streaming() {
+        let (_dir, cache, index) = test_cache();
+        let key = "checked-policy-rejection";
+        let plugin_id = "disabled-network-plugin";
+        let (partial_path, meta_path) = partial_paths(&cache, key);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind host-fallback sentinel");
+        listener
+            .set_nonblocking(true)
+            .expect("make host-fallback sentinel nonblocking");
+        let address = listener
+            .local_addr()
+            .expect("host-fallback sentinel address");
+        let url = format!("http://{address}/must-not-connect");
+        let runtime = tokio::runtime::Runtime::new().expect("build checked-fetch runtime");
+        let client = checked_plugin_client(&runtime, None, plugin_id, false);
+
+        let error = fetch_url_to_cache_for_plugin(
+            &cache,
+            &client,
+            key,
+            &url,
+            CacheType::Other,
+            None,
+            plugin_id,
+        )
+        .expect_err("disabled plugin network policy unexpectedly fetched data");
+
+        assert!(
+            error
+                .to_ascii_lowercase()
+                .contains("network capability is disabled"),
+            "{error}"
+        );
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+        assert!(
+            partial_path.exists(),
+            "checked fetch did not open its body sink"
+        );
+        assert_eq!(fs::metadata(&partial_path).unwrap().len(), 0);
+        assert!(
+            !meta_path.exists(),
+            "policy rejection persisted response metadata"
+        );
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 0);
+        assert!(cache.get(key).unwrap().is_none());
     }
 
     #[test]
