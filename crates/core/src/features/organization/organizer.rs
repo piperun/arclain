@@ -62,6 +62,96 @@ pub(crate) fn persist_plan_output<R: std::io::Read + ?Sized>(
     Ok(())
 }
 
+/// Copy a plan source into an owned output tree without replacing existing
+/// content. Directories are merged recursively so ancestor/descendant plan
+/// destinations are supported, while duplicate leaves fail closed.
+pub(crate) fn copy_plan_source(
+    output_root: &Path,
+    destination: &CheckedRelativePath,
+    source: &Path,
+) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(source)
+        .with_context(|| format!("inspecting organization source {}", source.display()))?;
+
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "organization source may not be a symlink: {}",
+            source.display()
+        );
+    }
+
+    if metadata.is_file() {
+        let mut source_file = std::fs::File::open(source)
+            .with_context(|| format!("opening organization source {}", source.display()))?;
+        persist_plan_output(output_root, destination, &mut source_file)
+            .with_context(|| format!("copying organization source {}", source.display()))?;
+        let copied = destination.resolve_under(output_root)?;
+        std::fs::set_permissions(&copied, metadata.permissions()).with_context(|| {
+            format!(
+                "preserving organization source permissions on {}",
+                copied.display()
+            )
+        })?;
+        return Ok(());
+    }
+
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "organization source is not a regular file or directory: {}",
+            source.display()
+        );
+    }
+
+    let output = destination.resolve_under(output_root)?;
+    match std::fs::symlink_metadata(&output) {
+        Ok(existing) if existing.is_dir() && !existing.file_type().is_symlink() => {}
+        Ok(_) => anyhow::bail!(
+            "organization directory destination already exists as a non-directory: {}",
+            output.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir_all(&output).with_context(|| {
+                format!(
+                    "creating organization output directory {}",
+                    output.display()
+                )
+            })?;
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspecting organization output {}", output.display()));
+        }
+    }
+    destination.resolve_under(output_root)?;
+
+    let mut entries = std::fs::read_dir(source)
+        .with_context(|| format!("reading organization source directory {}", source.display()))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let name = entry.file_name().into_string().map_err(|name| {
+            anyhow::anyhow!(
+                "organization source contains a non-Unicode path component: {:?}",
+                name
+            )
+        })?;
+        let child_destination =
+            CheckedRelativePath::new(format!("{}/{}", destination.as_path().display(), name))?;
+        copy_plan_source(output_root, &child_destination, &entry.path())?;
+    }
+
+    let copied = destination.resolve_under(output_root)?;
+    std::fs::set_permissions(&copied, metadata.permissions()).with_context(|| {
+        format!(
+            "preserving organization directory permissions on {}",
+            copied.display()
+        )
+    })?;
+
+    Ok(())
+}
+
 /// Organize archive with game metadata using Archive (dependency injection pattern)
 ///
 /// This is the primary API for organizing archives. Pass in an Archive handle
@@ -223,25 +313,18 @@ pub fn execute_organization_plan(
         // Legacy/Custom Layout: Explicit moves
         for ((src_rel, _), (source, destination)) in plan.moves.iter().zip(&checked_moves) {
             let src_path = source.resolve_under(&source_extracted)?;
-            let dst_path = destination.resolve_under(&organized_dir)?;
-
-            if src_path.exists() {
-                if let Some(parent) = dst_path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                let src_path = source.resolve_under(&source_extracted)?;
-                let dst_path = destination.resolve_under(&organized_dir)?;
-                // Use copy instead of rename to avoid issues if we want to keep source for some reason
-                // (though we delete it later). Rename is faster but cross-device issues might occur if temp is weird.
-                // Since it's all in temp, rename should be fine.
-                if std::fs::rename(&src_path, &dst_path).is_err() {
+            match std::fs::symlink_metadata(&src_path) {
+                Ok(_) => {
                     let src_path = source.resolve_under(&source_extracted)?;
-                    let mut source_file = std::fs::File::open(&src_path)
-                        .with_context(|| format!("opening move source {}", src_path.display()))?;
-                    persist_plan_output(&organized_dir, destination, &mut source_file)?;
+                    copy_plan_source(&organized_dir, destination, &src_path)?;
                 }
-            } else {
-                debug!("Source file not found (maybe directory?): {}", src_rel);
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    debug!("Source file not found (maybe directory?): {}", src_rel);
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("inspecting move source {}", src_path.display()));
+                }
             }
         }
     }

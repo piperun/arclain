@@ -9,90 +9,136 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::features::organization::engine::OrganizationPlan;
-use crate::features::organization::organizer::persist_plan_output;
+use crate::features::organization::organizer::{copy_plan_source, persist_plan_output};
 use crate::utilities::CheckedRelativePath;
 
-struct StagedMoveRollback {
-    moves: Vec<(PathBuf, PathBuf)>,
-    armed: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanSwapPoint {
+    BeforeBackup(usize),
+    BeforePromote(usize),
+    BeforeRevertPromotion(usize),
+    BeforeRestoreBackup(usize),
 }
 
-impl StagedMoveRollback {
-    fn new() -> Self {
-        Self {
-            moves: Vec::new(),
-            armed: true,
-        }
-    }
+fn checked_top_level_entries(root: &Path) -> Result<Vec<CheckedRelativePath>> {
+    let mut entries = fs::read_dir(root)
+        .with_context(|| format!("read top-level entries from {:?}", root))?
+        .collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
 
-    fn record(&mut self, staged: PathBuf, source: PathBuf) {
-        self.moves.push((staged, source));
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-        self.moves.clear();
-    }
-
-    fn rollback(&mut self) -> Result<()> {
-        let mut failures = Vec::new();
-
-        for (staged, source) in self.moves.iter().rev() {
-            match fs::symlink_metadata(staged) {
-                Ok(_) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    failures.push(format!("inspect staged source {:?}: {error}", staged));
-                    continue;
-                }
-            }
-
-            match fs::symlink_metadata(source) {
-                Ok(_) => {
-                    failures.push(format!(
-                        "refusing to replace existing rollback source {:?}",
-                        source
-                    ));
-                    continue;
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    failures.push(format!("inspect rollback source {:?}: {error}", source));
-                    continue;
-                }
-            }
-
-            if let Err(error) = fs::rename(staged, source) {
-                failures.push(format!(
-                    "restore staged source {:?} to {:?}: {error}",
-                    staged, source
-                ));
-            }
-        }
-
-        if failures.is_empty() {
-            self.disarm();
-            Ok(())
-        } else {
-            anyhow::bail!("{}", failures.join("; "))
-        }
-    }
+    entries
+        .into_iter()
+        .map(|entry| {
+            let name = entry.file_name().into_string().map_err(|name| {
+                anyhow::anyhow!(
+                    "plan layout contains a non-Unicode top-level entry: {:?}",
+                    name
+                )
+            })?;
+            CheckedRelativePath::new(name)
+        })
+        .collect()
 }
 
-impl Drop for StagedMoveRollback {
-    fn drop(&mut self) {
-        if self.armed {
-            if let Err(error) = self.rollback() {
-                tracing::error!("failed to roll back staged organization moves: {error:#}");
-            }
+fn rename_noclobber(source: &Path, destination: &Path) -> Result<()> {
+    match fs::symlink_metadata(destination) {
+        Ok(_) => anyhow::bail!(
+            "refusing to replace existing plan transaction path {:?}",
+            destination
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("inspect plan transaction path {:?}", destination));
         }
     }
+
+    fs::rename(source, destination).with_context(|| {
+        format!(
+            "move plan transaction path {:?} -> {:?}",
+            source, destination
+        )
+    })
+}
+
+fn rollback_layout_swap<F>(
+    promoted: &[(PathBuf, PathBuf)],
+    backed_up: &[(PathBuf, PathBuf)],
+    hook: &mut F,
+) -> Vec<String>
+where
+    F: FnMut(PlanSwapPoint) -> Result<()>,
+{
+    let mut failures = Vec::new();
+
+    for (index, (work_path, staged_path)) in promoted.iter().rev().enumerate() {
+        if let Err(error) = hook(PlanSwapPoint::BeforeRevertPromotion(index)) {
+            failures.push(format!(
+                "prepare to revert promoted entry {:?}: {error:#}",
+                work_path
+            ));
+            continue;
+        }
+        if let Err(error) = rename_noclobber(work_path, staged_path) {
+            failures.push(format!("revert promoted entry {:?}: {error:#}", work_path));
+        }
+    }
+
+    for (index, (backup_path, work_path)) in backed_up.iter().rev().enumerate() {
+        if let Err(error) = hook(PlanSwapPoint::BeforeRestoreBackup(index)) {
+            failures.push(format!(
+                "prepare to restore backup entry {:?}: {error:#}",
+                backup_path
+            ));
+            continue;
+        }
+        if let Err(error) = rename_noclobber(backup_path, work_path) {
+            failures.push(format!("restore backup entry {:?}: {error:#}", backup_path));
+        }
+    }
+
+    failures
+}
+
+fn close_transaction_directories(
+    staging_dir: tempfile::TempDir,
+    backup_dir: tempfile::TempDir,
+) -> Vec<String> {
+    let staging_path = staging_dir.path().to_path_buf();
+    let backup_path = backup_dir.path().to_path_buf();
+    let mut failures = Vec::new();
+
+    if let Err(error) = backup_dir.close() {
+        failures.push(format!(
+            "remove plan transaction backup {}: {error}",
+            backup_path.display()
+        ));
+    }
+    if let Err(error) = staging_dir.close() {
+        failures.push(format!(
+            "remove plan transaction staging {}: {error}",
+            staging_path.display()
+        ));
+    }
+
+    failures
 }
 
 /// Apply the plan's moves + generated_files to `work_dir` in place.
 /// Does NOT handle `plan.downloads` (pipeline executor doesn't run HTTP
 /// fetches; downloads are expected to be prefetched or skipped).
 pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result<()> {
+    apply_plan_to_workdir_with_swap_hook(plan, work_dir, |_| Ok(()))
+}
+
+fn apply_plan_to_workdir_with_swap_hook<F>(
+    plan: &OrganizationPlan,
+    work_dir: &Path,
+    mut hook: F,
+) -> Result<()>
+where
+    F: FnMut(PlanSwapPoint) -> Result<()>,
+{
     plan.validate_paths()?;
 
     let root_folder = CheckedRelativePath::new(&plan.root_folder)?;
@@ -119,8 +165,8 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
         .map(|download| CheckedRelativePath::new(&download.dest_path))
         .collect::<Result<Vec<_>>>()?;
 
-    // Resolve the final paths before touching the work tree. This catches
-    // static symlinked parents while the original layout is still intact.
+    // Resolve every plan path before constructing output. This rejects static
+    // symlinked parents while the original layout is untouched.
     for (source, destination) in &checked_moves {
         source.resolve_under(work_dir)?;
         destination.resolve_under(work_dir)?;
@@ -132,9 +178,6 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
         path.resolve_under(work_dir)?;
     }
 
-    // Stage 1: stage all moves in an owned sibling directory. Keeping staging
-    // outside the work tree prevents collisions with valid archive paths and
-    // still guarantees same-filesystem renames.
     let work_root = work_dir
         .canonicalize()
         .with_context(|| format!("canonicalize work directory {:?}", work_dir))?;
@@ -146,68 +189,103 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
         .tempdir_in(work_parent)
         .context("create pipeline plan staging directory")?;
     let staging = staging_dir.path().to_path_buf();
-    let mut rollback = StagedMoveRollback::new();
 
-    let staging_result: Result<()> = (|| {
-        for (source, destination) in &checked_moves {
-            let src = source.resolve_under(work_dir)?;
-            let dest = destination.resolve_under(&staging)?;
-            if !src.exists() {
-                tracing::warn!("[apply_plan] source missing: {}", src.display());
-                continue;
+    // Construct the complete new layout by copying. The original work tree is
+    // not mutated until every source and generated output has been persisted.
+    for (source, destination) in &checked_moves {
+        let source_path = source.resolve_under(work_dir)?;
+        match fs::symlink_metadata(&source_path) {
+            Ok(_) => {
+                let source_path = source.resolve_under(work_dir)?;
+                copy_plan_source(&staging, destination, &source_path).with_context(|| {
+                    format!(
+                        "stage organization source {:?} at {:?}",
+                        source.as_path(),
+                        destination.as_path()
+                    )
+                })?;
             }
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent).with_context(|| format!("mkdir {:?}", parent))?;
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                tracing::warn!("[apply_plan] source missing: {}", source_path.display());
             }
-
-            let src = source.resolve_under(work_dir)?;
-            let dest = destination.resolve_under(&staging)?;
-            fs::rename(&src, &dest)
-                .with_context(|| format!("stage move {:?} -> {:?}", src, dest))?;
-            rollback.record(dest, src);
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("inspect move source {:?}", source_path));
+            }
         }
+    }
+    for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
+        let mut bytes = std::io::Cursor::new(content.as_bytes());
+        persist_plan_output(&staging, checked_path, &mut bytes)
+            .with_context(|| format!("stage generated output {:?}", checked_path.as_path()))?;
+    }
+
+    // Capture both trees before mutation so a read/validation failure remains
+    // side-effect free.
+    let original_entries = checked_top_level_entries(work_dir)?;
+    let staged_entries = checked_top_level_entries(&staging)?;
+    let mut backup_dir = tempfile::Builder::new()
+        .prefix(".arclain-plan-backup-")
+        .tempdir_in(work_parent)
+        .context("create pipeline plan backup directory")?;
+    // Once original entries enter the backup, an unwind must preserve it. The
+    // directory is explicitly closed only after commit or successful rollback.
+    backup_dir.disable_cleanup(true);
+    let backup = backup_dir.path().to_path_buf();
+
+    let mut backed_up = Vec::new();
+    let mut promoted = Vec::new();
+    let swap_result: Result<()> = (|| {
+        for (index, relative) in original_entries.iter().enumerate() {
+            hook(PlanSwapPoint::BeforeBackup(index))?;
+            let source = relative.resolve_under(work_dir)?;
+            let destination = relative.resolve_under(&backup)?;
+            rename_noclobber(&source, &destination)?;
+            backed_up.push((destination, source));
+        }
+
+        for (index, relative) in staged_entries.iter().enumerate() {
+            hook(PlanSwapPoint::BeforePromote(index))?;
+            let source = relative.resolve_under(&staging)?;
+            let destination = relative.resolve_under(work_dir)?;
+            rename_noclobber(&source, &destination)?;
+            promoted.push((destination, source));
+        }
+
         Ok(())
     })();
 
-    if let Err(staging_error) = staging_result {
-        if let Err(rollback_error) = rollback.rollback() {
-            rollback.disarm();
-            let recovery_path = staging_dir.keep();
-            return Err(anyhow::anyhow!(
-                "staging organization moves failed: {staging_error:#}; rollback failed: \
-                 {rollback_error:#}; staged sources retained at {}",
-                recovery_path.display()
-            ));
+    if let Err(swap_error) = swap_result {
+        let rollback_failures = rollback_layout_swap(&promoted, &backed_up, &mut hook);
+        if !rollback_failures.is_empty() {
+            let staging_recovery = staging_dir.keep();
+            let backup_recovery = backup_dir.keep();
+            anyhow::bail!(
+                "organization layout transaction failed: {swap_error:#}; rollback failed: {}; \
+                 recovery staging path: {}; recovery backup path: {}",
+                rollback_failures.join("; "),
+                staging_recovery.display(),
+                backup_recovery.display()
+            );
         }
-        return Err(staging_error);
-    }
-    rollback.disarm();
 
-    // Stage 2: remove the old layout. Staging is an owned sibling and cannot
-    // be mistaken for a plan-controlled work-tree entry.
-    for entry in fs::read_dir(work_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            fs::remove_dir_all(&path).ok();
-        } else {
-            fs::remove_file(&path).ok();
+        let cleanup_failures = close_transaction_directories(staging_dir, backup_dir);
+        if !cleanup_failures.is_empty() {
+            anyhow::bail!(
+                "organization layout transaction failed: {swap_error:#}; layout was restored, \
+                 but cleanup failed: {}",
+                cleanup_failures.join("; ")
+            );
         }
+        return Err(swap_error);
     }
 
-    // Move staging contents up to work_dir root
-    for entry in fs::read_dir(&staging)? {
-        let entry = entry?;
-        let top_level = CheckedRelativePath::new(entry.file_name().to_string_lossy())?;
-        let from = top_level.resolve_under(&staging)?;
-        let to = top_level.resolve_under(work_dir)?;
-        fs::rename(&from, &to).with_context(|| format!("move {:?} -> {:?}", from, to))?;
-    }
-    // Stage 3: write generated files (metadata.json etc.)
-    for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
-        let mut bytes = std::io::Cursor::new(content.as_bytes());
-        persist_plan_output(work_dir, checked_path, &mut bytes)
-            .with_context(|| format!("write generated output {:?}", checked_path.as_path()))?;
+    let cleanup_failures = close_transaction_directories(staging_dir, backup_dir);
+    if !cleanup_failures.is_empty() {
+        anyhow::bail!(
+            "organization layout committed, but transaction cleanup failed: {}",
+            cleanup_failures.join("; ")
+        );
     }
 
     Ok(())
@@ -237,6 +315,20 @@ mod tests {
             staging_directories.is_empty(),
             "staging directories remain: {staging_directories:?}"
         );
+    }
+
+    fn plan_recovery_directories(parent: &Path) -> Vec<PathBuf> {
+        fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".arclain-plan-")
+            })
+            .map(|entry| entry.path())
+            .collect()
     }
 
     #[cfg(unix)]
@@ -393,6 +485,150 @@ mod tests {
         assert_eq!(fs::read(work.join("c.bin")).unwrap(), b"c");
         assert_eq!(fs::read(work.join("d.bin")).unwrap(), b"d");
         assert_no_plan_staging_directories(temp.path());
+    }
+
+    #[test]
+    fn apply_plan_rejects_nested_destination_collision_without_touching_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(work.join("dir")).unwrap();
+        fs::write(work.join("dir/nested.bin"), b"original nested").unwrap();
+        fs::write(work.join("replacement.bin"), b"replacement").unwrap();
+        let plan = empty_plan(
+            vec![
+                ("dir".into(), "Out".into()),
+                ("replacement.bin".into(), "Out/nested.bin".into()),
+            ],
+            vec![],
+        );
+
+        assert!(apply_plan_to_workdir(&plan, &work).is_err());
+        assert_eq!(
+            fs::read(work.join("dir/nested.bin")).unwrap(),
+            b"original nested"
+        );
+        assert_eq!(
+            fs::read(work.join("replacement.bin")).unwrap(),
+            b"replacement"
+        );
+        assert_no_plan_staging_directories(temp.path());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn apply_plan_rejects_symlink_nested_inside_moved_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::create_dir(work.join("dir")).unwrap();
+        fs::write(outside.join("secret.bin"), b"secret").unwrap();
+        symlink_dir_for_test(&outside, &work.join("dir/linked"));
+        let plan = empty_plan(vec![("dir".into(), "Out".into())], vec![]);
+
+        assert!(apply_plan_to_workdir(&plan, &work).is_err());
+        assert!(work.join("dir/linked").exists());
+        assert_eq!(fs::read(outside.join("secret.bin")).unwrap(), b"secret");
+        assert_no_plan_staging_directories(temp.path());
+    }
+
+    #[test]
+    fn apply_plan_preserves_source_file_permissions() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        let source = work.join("game.bin");
+        fs::write(&source, b"game").unwrap();
+        let mut permissions = fs::metadata(&source).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&source, permissions).unwrap();
+        let plan = empty_plan(vec![("game.bin".into(), "Out/game.bin".into())], vec![]);
+
+        apply_plan_to_workdir(&plan, &work).unwrap();
+
+        let output = work.join("Out/game.bin");
+        assert!(fs::metadata(&output).unwrap().permissions().readonly());
+        let mut permissions = fs::metadata(&output).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(output, permissions).unwrap();
+    }
+
+    #[test]
+    fn apply_plan_restores_complete_layout_when_second_promotion_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("alpha.bin"), b"alpha").unwrap();
+        fs::write(work.join("beta.bin"), b"beta").unwrap();
+        fs::write(work.join("unplanned.bin"), b"unplanned").unwrap();
+        let plan = empty_plan(
+            vec![
+                ("alpha.bin".into(), "Alpha/output.bin".into()),
+                ("beta.bin".into(), "Beta/output.bin".into()),
+            ],
+            vec![],
+        );
+
+        let error = apply_plan_to_workdir_with_swap_hook(&plan, &work, |point| {
+            if point == PlanSwapPoint::BeforePromote(1) {
+                anyhow::bail!("injected second-promotion failure");
+            }
+            Ok(())
+        })
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("injected second-promotion failure"),
+            "unexpected error: {error:#}"
+        );
+        assert_eq!(fs::read(work.join("alpha.bin")).unwrap(), b"alpha");
+        assert_eq!(fs::read(work.join("beta.bin")).unwrap(), b"beta");
+        assert_eq!(fs::read(work.join("unplanned.bin")).unwrap(), b"unplanned");
+        assert!(!work.join("Alpha").exists());
+        assert!(!work.join("Beta").exists());
+        assert_no_plan_staging_directories(temp.path());
+    }
+
+    #[test]
+    fn apply_plan_retains_recovery_directories_when_promotion_rollback_fails() {
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        fs::create_dir(&work).unwrap();
+        fs::write(work.join("alpha.bin"), b"alpha").unwrap();
+        fs::write(work.join("beta.bin"), b"beta").unwrap();
+        let plan = empty_plan(
+            vec![
+                ("alpha.bin".into(), "Alpha/output.bin".into()),
+                ("beta.bin".into(), "Beta/output.bin".into()),
+            ],
+            vec![],
+        );
+
+        let error = apply_plan_to_workdir_with_swap_hook(&plan, &work, |point| {
+            if matches!(
+                point,
+                PlanSwapPoint::BeforePromote(1) | PlanSwapPoint::BeforeRevertPromotion(0)
+            ) {
+                anyhow::bail!("injected transactional swap failure");
+            }
+            Ok(())
+        })
+        .unwrap_err();
+        let error = format!("{error:#}");
+        let recovery_directories = plan_recovery_directories(temp.path());
+
+        assert!(error.contains("recovery"), "unexpected error: {error}");
+        assert_eq!(recovery_directories.len(), 2, "unexpected recovery state");
+        for recovery_directory in recovery_directories {
+            assert!(
+                error.contains(&recovery_directory.display().to_string()),
+                "recovery path missing from error: {error}"
+            );
+        }
+        assert_eq!(fs::read(work.join("alpha.bin")).unwrap(), b"alpha");
+        assert_eq!(fs::read(work.join("beta.bin")).unwrap(), b"beta");
     }
 
     #[test]
