@@ -9,12 +9,30 @@ use crate::features::plugins::presentation::rendering as ui;
 use crate::shared::components::Form;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
+use arclain_core::utilities::effective_plugin_proxy_map;
+use arclain_core::UserConfig;
 use arclain_plugins::PluginManager;
 use arclain_widgets::toggle_switch::ToggleSwitch;
 use arclain_widgets::Chips;
 use eframe::egui;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::Arc;
+
+fn persist_plugin_proxy_setting(
+    user_config: &mut UserConfig,
+    plugin_id: &str,
+    enabled: bool,
+    persist: impl FnOnce(&UserConfig) -> anyhow::Result<()>,
+) -> anyhow::Result<HashMap<String, bool>> {
+    let mut candidate = user_config.clone();
+    candidate.set_plugin_proxy_enabled(plugin_id, enabled);
+    persist(&candidate)?;
+
+    let proxy_map = effective_plugin_proxy_map(&candidate);
+    *user_config = candidate;
+    Ok(proxy_map)
+}
 
 /// Render the plugin detail view
 /// Returns true if the plugin list needs to be refreshed
@@ -162,24 +180,43 @@ pub fn render(
             .description("Route this plugin's traffic through the configured SOCKS5 proxy.")
             .action(|ui| {
                 if ui.add(ToggleSwitch::new(&mut proxy_toggle_val)).changed() {
-                    let mut app = app_state.lock();
-                    app.user_config
-                        .set_plugin_proxy_enabled(&plugin_info.id, proxy_toggle_val);
+                    let Some(config_service) = config_service.as_ref() else {
+                        tracing::error!(
+                            "Failed to save plugin proxy setting: ConfigService is unavailable"
+                        );
+                        if let Some(shared) = shared {
+                            shared.toaster.lock().error(
+                                "Plugin proxy setting was not saved: configuration storage is unavailable",
+                            );
+                        }
+                        return;
+                    };
 
-                    if let Some(ref cfg_svc) = config_service {
-                        let res: anyhow::Result<()> = cfg_svc.save_user_config(&app.user_config);
-                        if let Err(e) = res {
-                            tracing::error!("Failed to save user config: {}", e);
+                    let mut app = app_state.lock();
+                    match persist_plugin_proxy_setting(
+                        &mut app.user_config,
+                        &plugin_info.id,
+                        proxy_toggle_val,
+                        |candidate| config_service.save_user_config(candidate),
+                    ) {
+                        Ok(proxy_map) => {
+                            app.signals.user_config.set(app.user_config.clone());
+                            drop(app);
+                            if let Some(client) = &http_client {
+                                client.update_plugin_proxy_map(proxy_map);
+                            }
+                            needs_refresh = true;
+                        }
+                        Err(error) => {
+                            drop(app);
+                            tracing::error!("Failed to save plugin proxy setting: {error}");
+                            if let Some(shared) = shared {
+                                shared.toaster.lock().error(
+                                    "Plugin proxy setting was not saved: configuration persistence failed",
+                                );
+                            }
                         }
                     }
-
-                    // Update Client from services
-                    let map = app.user_config.get_plugin_proxy_settings();
-                    if let Some(client) = &http_client {
-                        client.update_plugin_proxy_map(map);
-                    }
-
-                    needs_refresh = true;
                 }
             })
             .show(ui, &theme.colors);
@@ -548,9 +585,41 @@ pub(crate) fn drain_pending_plugin_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::plugins::domain::state::PluginDialogState;
+    use arclain_core::UserConfig;
     use arclain_plugins::types::PluginAction;
     use arclain_widgets::Toaster;
-    use crate::features::plugins::domain::state::PluginDialogState;
+
+    #[test]
+    fn plugin_proxy_update_preserves_effective_defaults_and_overrides() {
+        let mut config = UserConfig::new();
+        config.socks5_enabled = true;
+        config.set_plugin_proxy_enabled("dlsite-api", false);
+
+        let map = persist_plugin_proxy_setting(&mut config, "custom", true, |_| Ok(()))
+            .expect("persist plugin proxy setting");
+
+        assert_eq!(map.get("custom"), Some(&true));
+        assert_eq!(map.get("dlsite"), Some(&true));
+        assert_eq!(map.get("dlsite-api"), Some(&false));
+        assert_eq!(map.get("dlsite-html"), Some(&true));
+    }
+
+    #[test]
+    fn plugin_proxy_update_failure_keeps_persisted_candidate_out_of_memory() {
+        let mut config = UserConfig::new();
+        config.socks5_enabled = true;
+        config.set_plugin_proxy_enabled("existing", true);
+
+        let result = persist_plugin_proxy_setting(&mut config, "custom", true, |_| {
+            anyhow::bail!("simulated persistence failure")
+        });
+
+        assert!(result.is_err());
+        let settings = config.get_plugin_proxy_settings();
+        assert_eq!(settings.get("existing"), Some(&true));
+        assert!(!settings.contains_key("custom"));
+    }
 
     /// Regression test for C7 from `docs/AUDIT_2026-05-03.md`.
     ///

@@ -7,7 +7,7 @@ use arclain_core::backends::sevenz_cli::SevenZipCli;
 use arclain_core::backends::BackendSelector;
 use arclain_core::services::ConfigService;
 use arclain_core::services::Services as CoreServices;
-use arclain_core::utilities::{ChecksumService, PassRule};
+use arclain_core::utilities::{effective_plugin_proxy_map, ChecksumService, PassRule};
 use arclain_core::{open_databases, DbPaths, SecretsKey};
 use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
 use arclain_core::{ContentCache, ResourceConfig, ResourceManager};
@@ -175,10 +175,11 @@ impl AppState {
         // Initialize Services Manager
         let mut services = CoreServices::new(Arc::new(runtime));
 
-        // Initialize plugin proxy map on the SERVICES client (used by DataService)
+        // Keep plugin routing fail-closed if database-backed service
+        // initialization fails before the proxy credentials can be loaded.
         services
             .async_http_client
-            .update_plugin_proxy_map(me.user_config.get_plugin_proxy_settings());
+            .update_plugin_proxy_map(effective_plugin_proxy_map(&me.user_config));
         info!("Initialized HTTP client proxy settings");
 
         // Open Databases and Init Services
