@@ -54,9 +54,7 @@ fn build_font_definitions(cjk_font: Option<Vec<u8>>) -> egui::FontDefinitions {
             y_offset_factor: -0.15,
             ..Default::default()
         };
-        *phosphor_font = std::sync::Arc::new(
-            egui::FontData::from_owned(phosphor_font.font.to_vec()).tweak(tweak),
-        );
+        std::sync::Arc::make_mut(phosphor_font).tweak = tweak;
     }
 
     fonts
@@ -123,6 +121,22 @@ mod tests {
             .values()
             .flatten()
             .any(|name| name == "phosphor"));
+    }
+
+    #[test]
+    fn phosphor_font_keeps_bundled_bytes_borrowed() {
+        let fonts = build_font_definitions(None);
+        let phosphor = &fonts.font_data["phosphor"];
+
+        match &phosphor.font {
+            std::borrow::Cow::Borrowed(_) => {}
+            std::borrow::Cow::Owned(bytes) => {
+                panic!(
+                    "bundled Phosphor font unexpectedly copied {} bytes",
+                    bytes.len()
+                )
+            }
+        }
     }
 
     #[test]
