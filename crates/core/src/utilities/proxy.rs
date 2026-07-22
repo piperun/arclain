@@ -13,14 +13,7 @@ pub fn resolve_proxy_config(user_config: &UserConfig, secrets: &SecretsDb) -> Op
         return None;
     }
 
-    let mut address = user_config.socks5_address.clone().unwrap_or_default();
-    // Strip protocol if present for consistency
-    if let Some(stripped) = address
-        .strip_prefix("socks5://")
-        .or_else(|| address.strip_prefix("socks5h://"))
-    {
-        address = stripped.to_string();
-    }
+    let address = user_config.socks5_address.clone().unwrap_or_default();
 
     if address.is_empty() {
         return None;
@@ -50,7 +43,20 @@ pub fn apply_proxy_to_client(
     user_config: &UserConfig,
 ) {
     if let Some(config) = proxy_config {
-        tracing::info!("[Proxy] Enabling SOCKS5 proxy at {}", config.address);
+        if !config.enabled {
+            tracing::info!("[Proxy] {}", config.log_summary());
+            client.update_config(None);
+            client.update_plugin_proxy_map(HashMap::new());
+            return;
+        }
+        if let Err(error) = config.validate() {
+            tracing::warn!("[Proxy] Refusing invalid proxy configuration: {}", error);
+            client.update_config(None);
+            client.update_plugin_proxy_map(HashMap::new());
+            return;
+        }
+
+        tracing::info!("[Proxy] Enabling {}", config.log_summary());
         client.update_config(Some(config));
 
         // Enable proxy for specific plugins if configured
@@ -73,5 +79,99 @@ pub fn apply_proxy_to_client(
         tracing::info!("[Proxy] SOCKS5 proxy disabled");
         client.update_config(None);
         client.update_plugin_proxy_map(HashMap::new());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fmt;
+    use std::fmt::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id, Record};
+    use tracing::{Event, Metadata, Subscriber};
+
+    #[derive(Clone, Default)]
+    struct EventCapture {
+        events: Arc<Mutex<Vec<String>>>,
+        next_span: Arc<AtomicU64>,
+    }
+
+    impl EventCapture {
+        fn output(&self) -> String {
+            self.events.lock().unwrap().join("\n")
+        }
+    }
+
+    impl Subscriber for EventCapture {
+        fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, _attributes: &Attributes<'_>) -> Id {
+            Id::from_u64(self.next_span.fetch_add(1, Ordering::Relaxed) + 1)
+        }
+
+        fn record(&self, _span: &Id, _values: &Record<'_>) {}
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            struct Visitor(String);
+            impl Visit for Visitor {
+                fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+                    write!(&mut self.0, "{}={value:?} ", field.name()).unwrap();
+                }
+            }
+
+            let mut visitor = Visitor(String::new());
+            event.record(&mut visitor);
+            self.events.lock().unwrap().push(visitor.0);
+        }
+
+        fn enter(&self, _span: &Id) {}
+        fn exit(&self, _span: &Id) {}
+    }
+
+    #[test]
+    fn invalid_proxy_address_is_not_logged_or_applied() {
+        const ADDRESS_USER: &str = "core-address-user-secret-38af";
+        const ADDRESS_PASSWORD: &str = "core-address-password-secret-74bc";
+        const DIRECT_USER: &str = "core-direct-user-secret-12de";
+        const DIRECT_PASSWORD: &str = "core-direct-password-secret-56f0";
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = AsyncHttpClient::new(
+            runtime.handle().clone(),
+            Arc::new(parking_lot::RwLock::new(
+                arclain_network::features::whitelist::DomainWhitelist::default(),
+            )),
+            None,
+        );
+        let config = ProxyConfig {
+            enabled: true,
+            address: format!("{ADDRESS_USER}:{ADDRESS_PASSWORD}@proxy.example:1080"),
+            username: Some(DIRECT_USER.to_string()),
+            password: Some(DIRECT_PASSWORD.to_string()),
+        };
+        let capture = EventCapture::default();
+
+        tracing::subscriber::with_default(capture.clone(), || {
+            apply_proxy_to_client(&client, Some(config), &UserConfig::default());
+        });
+
+        let diagnostics = capture.output();
+        for secret in [ADDRESS_USER, ADDRESS_PASSWORD, DIRECT_USER, DIRECT_PASSWORD] {
+            assert!(
+                !diagnostics.contains(secret),
+                "proxy secret leaked in {diagnostics:?}"
+            );
+        }
+        assert!(diagnostics.contains("<invalid address>"), "{diagnostics}");
+        assert!(!client.should_use_proxy_for_plugin("dlsite"));
     }
 }

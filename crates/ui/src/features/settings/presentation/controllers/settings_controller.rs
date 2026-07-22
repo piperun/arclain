@@ -8,6 +8,7 @@ use crate::features::plugins::domain::types::PluginsListState;
 use crate::features::settings::domain::types::{
     ArchivesSettingsState, SecuritySettingsState, ServerSettingsState, SettingsAction,
 };
+use arclain_network::features::proxy::ProxyConfig;
 
 use crate::shared::SharedState;
 
@@ -17,6 +18,13 @@ pub fn extract_navigation(action: &SettingsAction) -> Option<SettingsPage> {
         SettingsAction::NavigateTo(page) => Some(page.clone()),
         _ => None,
     }
+}
+
+fn log_saved_proxy_configuration(config: &ProxyConfig) {
+    tracing::info!(
+        "[SaveNetwork] Network settings saved successfully: {}",
+        config.log_summary()
+    );
 }
 
 /// Handle a settings action, mutating the appropriate state.
@@ -248,36 +256,13 @@ pub fn handle_action(
             socks5_username,
             socks5_password,
         } => {
-            // Sanitize address: strip any protocol prefixes
-            let clean_address = socks5_address.map(|addr| {
-                addr.strip_prefix("socks5h://")
-                    .or_else(|| addr.strip_prefix("socks5://"))
-                    .or_else(|| addr.strip_prefix("http://"))
-                    .or_else(|| addr.strip_prefix("https://"))
-                    .unwrap_or(&addr)
-                    .to_string()
-            });
-
             let mut state = shared.app_state.lock();
             state.user_config.socks5_enabled = socks5_enabled;
-            state.user_config.socks5_address = clean_address.clone();
+            state.user_config.socks5_address = socks5_address.clone();
             state.user_config.socks5_username = socks5_username.clone();
             state.signals.user_config.set(state.user_config.clone());
 
             let mut password_to_use = None;
-
-            // Save config via ConfigService
-            if let Some(ref config_svc) = shared.services.config_service {
-                match config_svc.save_user_config(&state.user_config) {
-                    Ok(_) => {
-                        tracing::info!("[SaveNetwork] Network settings saved successfully: enabled={}, address={}",
-                            socks5_enabled, clean_address.as_deref().unwrap_or("<unset>"));
-                    }
-                    Err(e) => {
-                        tracing::error!("[SaveNetwork] Failed to save network settings: {}", e);
-                    }
-                }
-            }
 
             // Handle password via secrets DB (not yet in ConfigService)
             if let Some(ref dbs) = state.dbs {
@@ -297,13 +282,23 @@ pub fn handle_action(
             // Update client. Validate the config first so an invalid
             // SOCKS5 address surfaces as a toast rather than silently
             // disabling the proxy (audit finding M4).
-            use arclain_network::features::proxy::ProxyConfig;
             let config = ProxyConfig {
                 enabled: socks5_enabled,
-                address: clean_address.unwrap_or_default(),
+                address: socks5_address.unwrap_or_default(),
                 username: socks5_username,
                 password: password_to_use,
             };
+
+            // Save config via ConfigService. Log only the redacted summary,
+            // even when the address fails validation.
+            if let Some(ref config_svc) = shared.services.config_service {
+                match config_svc.save_user_config(&state.user_config) {
+                    Ok(_) => log_saved_proxy_configuration(&config),
+                    Err(e) => {
+                        tracing::error!("[SaveNetwork] Failed to save network settings: {}", e);
+                    }
+                }
+            }
 
             if let Err(msg) = config.validate() {
                 tracing::warn!("[SaveNetwork] Refusing to apply invalid proxy: {}", msg);
@@ -339,7 +334,6 @@ pub fn handle_action(
             let status_signal = network_state.connection_test_status.clone();
 
             // Create config for test
-            use arclain_network::features::proxy::ProxyConfig;
             let config = ProxyConfig {
                 enabled: socks5_enabled,
                 address: socks5_address.unwrap_or_default(),
@@ -450,5 +444,35 @@ pub fn handle_action(
         SettingsAction::SaveEditedRule => {
             // Handled specially in SettingsFeature::render where rules_page is available
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arclain_network::features::proxy::ProxyConfig;
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    #[test]
+    fn saved_proxy_diagnostic_redacts_invalid_address_and_direct_credentials() {
+        const ADDRESS_USER: &str = "ui-address-user-secret-0a7d";
+        const ADDRESS_PASSWORD: &str = "ui-address-password-secret-4b2e";
+        const DIRECT_USER: &str = "ui-direct-user-secret-8c1f";
+        const DIRECT_PASSWORD: &str = "ui-direct-password-secret-6d3a";
+        let config = ProxyConfig {
+            enabled: true,
+            address: format!("{ADDRESS_USER}:{ADDRESS_PASSWORD}@proxy.example:1080"),
+            username: Some(DIRECT_USER.to_string()),
+            password: Some(DIRECT_PASSWORD.to_string()),
+        };
+
+        log_saved_proxy_configuration(&config);
+
+        for secret in [ADDRESS_USER, ADDRESS_PASSWORD, DIRECT_USER, DIRECT_PASSWORD] {
+            assert!(!logs_contain(secret), "proxy secret leaked in tracing");
+        }
+        assert!(logs_contain("<invalid address>"));
+        assert!(logs_contain("authenticated"));
     }
 }

@@ -389,29 +389,9 @@ impl PluginRequestContext {
             AsyncHttpClient::client_builder().resolve_to_addrs(&host, pinned_addresses);
 
         if let Some(config) = proxy_config {
-            let mut proxy_url =
-                url::Url::parse(&format!("socks5://{}", config.address)).map_err(|error| {
-                    HttpError::RequestFailed {
-                        message: format!("invalid SOCKS5 proxy configuration: {error}"),
-                    }
-                })?;
-            if let (Some(username), Some(password)) = (&config.username, &config.password) {
-                proxy_url
-                    .set_username(username)
-                    .map_err(|_| HttpError::RequestFailed {
-                        message: "invalid SOCKS5 proxy username".to_string(),
-                    })?;
-                proxy_url
-                    .set_password(Some(password))
-                    .map_err(|_| HttpError::RequestFailed {
-                        message: "invalid SOCKS5 proxy password".to_string(),
-                    })?;
-            }
-            let proxy = reqwest::Proxy::all(proxy_url.as_str()).map_err(|error| {
-                HttpError::RequestFailed {
-                    message: format!("invalid SOCKS5 proxy configuration: {error}"),
-                }
-            })?;
+            let proxy = config
+                .create_pinned_proxy()
+                .map_err(|message| HttpError::RequestFailed { message })?;
             builder = builder.proxy(proxy);
         }
 

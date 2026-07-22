@@ -24,6 +24,12 @@ struct ParsedProxyAuthority {
     authority: String,
 }
 
+#[derive(Clone, Copy)]
+enum ProxyDnsResolution {
+    Remote,
+    Local,
+}
+
 fn parse_proxy_authority(address: &str) -> Result<ParsedProxyAuthority, &'static str> {
     if address.is_empty()
         || address.trim() != address
@@ -109,7 +115,7 @@ impl ProxyConfig {
     /// Construct the authenticated proxy URL without exposing it to any
     /// diagnostic surface. The returned string must only be passed to
     /// `reqwest`.
-    fn proxy_url(&self) -> Result<String, String> {
+    fn proxy_url(&self, dns_resolution: ProxyDnsResolution) -> Result<String, String> {
         let mut url = self
             .parsed_authority()
             .map_err(|reason| {
@@ -119,6 +125,11 @@ impl ProxyConfig {
                 )
             })?
             .url;
+
+        if matches!(dns_resolution, ProxyDnsResolution::Local) {
+            url.set_scheme("socks5")
+                .map_err(|_| format!("Invalid proxy scheme for {}", self.log_summary()))?;
+        }
 
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             url.set_username(username)
@@ -130,10 +141,24 @@ impl ProxyConfig {
         Ok(url.into())
     }
 
-    fn create_proxy(&self) -> Result<reqwest::Proxy, String> {
-        let proxy_url = self.proxy_url()?;
+    fn create_proxy_with_resolution(
+        &self,
+        dns_resolution: ProxyDnsResolution,
+    ) -> Result<reqwest::Proxy, String> {
+        let proxy_url = self.proxy_url(dns_resolution)?;
         reqwest::Proxy::all(&proxy_url)
             .map_err(|_| format!("Failed to create {}", self.log_summary()))
+    }
+
+    fn create_proxy(&self) -> Result<reqwest::Proxy, String> {
+        self.create_proxy_with_resolution(ProxyDnsResolution::Remote)
+    }
+
+    /// Build the locally resolving SOCKS proxy used after plugin DNS has been
+    /// validated and pinned. Credential-bearing URL material never leaves this
+    /// type, and invalid authorities return only redacted diagnostics.
+    pub(crate) fn create_pinned_proxy(&self) -> Result<reqwest::Proxy, String> {
+        self.create_proxy_with_resolution(ProxyDnsResolution::Local)
     }
 
     /// Build a `reqwest::Proxy` from this config. Returns `None` when

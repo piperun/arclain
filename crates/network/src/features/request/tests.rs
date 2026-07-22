@@ -631,6 +631,50 @@ fn configure_enabled_plugin(client: &AsyncHttpClient, plugin_id: &str, rpm: u32)
 }
 
 #[tokio::test]
+async fn pinned_plugin_client_rejects_proxy_address_userinfo_without_leaking_secrets() {
+    const ADDRESS_USER: &str = "pinned-address-user-secret-91f4";
+    const ADDRESS_PASSWORD: &str = "pinned-address-password-secret-27ab";
+    const DIRECT_USER: &str = "pinned-direct-user-secret-63cd";
+    const DIRECT_PASSWORD: &str = "pinned-direct-password-secret-48e2";
+
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind proxy connection sentinel");
+    let proxy_address = listener.local_addr().expect("read proxy sentinel address");
+    let client = AsyncHttpClient::new(
+        Handle::current(),
+        Arc::new(parking_lot::RwLock::new(DomainWhitelist::default())),
+        Some(ProxyConfig {
+            enabled: true,
+            address: format!("{ADDRESS_USER}:{ADDRESS_PASSWORD}@{proxy_address}"),
+            username: Some(DIRECT_USER.to_string()),
+            password: Some(DIRECT_PASSWORD.to_string()),
+        }),
+    );
+    let target = AuthorizedPluginTarget {
+        url: url::Url::parse("http://pinned.example/resource").unwrap(),
+        use_proxy: true,
+        resolved: vec!["93.184.216.34:80".parse().unwrap()],
+    };
+
+    let error = client
+        .build_pinned_plugin_client(&target)
+        .expect_err("address userinfo must be rejected before building a client")
+        .to_string();
+
+    for secret in [ADDRESS_USER, ADDRESS_PASSWORD, DIRECT_USER, DIRECT_PASSWORD] {
+        assert!(!error.contains(secret), "proxy secret leaked in {error:?}");
+    }
+    assert!(error.contains("<invalid address>"), "{error}");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "invalid proxy configuration reached the network"
+    );
+}
+
+#[tokio::test]
 async fn plugin_policy_rejects_mixed_dns_answers_even_when_whitelisted() {
     let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
     whitelist.write().approve("plugin-a", "example.com");
