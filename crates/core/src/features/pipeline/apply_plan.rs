@@ -540,6 +540,36 @@ mod tests {
         );
     }
 
+    fn set_test_times(path: &Path, times: std::fs::FileTimes) {
+        let file = open_plan_metadata_handle(path).unwrap();
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::FILETIME;
+            use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+
+            // Opening a Windows directory can update its last-access time.
+            // Freeze that automatic update before installing the fixture's
+            // explicit timestamps on the same handle.
+            let unchanged = FILETIME {
+                dwLowDateTime: u32::MAX,
+                dwHighDateTime: u32::MAX,
+            };
+            let preserved = unsafe {
+                SetFileTime(
+                    file.as_raw_handle() as _,
+                    std::ptr::null(),
+                    &unchanged,
+                    std::ptr::null(),
+                )
+            };
+            assert_ne!(preserved, 0, "failed to freeze Windows access time");
+        }
+
+        file.set_times(times).unwrap();
+    }
+
     #[cfg(any(windows, target_os = "macos"))]
     fn set_creation_time(path: &Path, created: std::time::SystemTime) {
         #[cfg(target_os = "macos")]
@@ -885,15 +915,12 @@ mod tests {
         fs::write(source.join("original.bin"), b"original").unwrap();
         let expected_modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(978_307_200);
         let expected_accessed = expected_modified + std::time::Duration::from_secs(60);
-        open_plan_metadata_handle(&source)
-            .unwrap()
-            .set_times(
-                std::fs::FileTimes::new()
-                    .set_accessed(expected_accessed)
-                    .set_modified(expected_modified),
-            )
-            .unwrap();
-        let source_metadata = fs::metadata(&source).unwrap();
+        set_test_times(
+            &source,
+            std::fs::FileTimes::new()
+                .set_accessed(expected_accessed)
+                .set_modified(expected_modified),
+        );
         let plan = empty_plan(
             vec![("source-dir".into(), "Out".into())],
             vec![("Out/generated.txt".into(), "generated".into())],
@@ -902,14 +929,8 @@ mod tests {
         apply_plan_to_workdir(&plan, &work).unwrap();
 
         let output_metadata = fs::metadata(work.join("Out")).unwrap();
-        assert_time_close(
-            output_metadata.modified().unwrap(),
-            source_metadata.modified().unwrap(),
-        );
-        assert_time_close(
-            output_metadata.accessed().unwrap(),
-            source_metadata.accessed().unwrap(),
-        );
+        assert_time_close(output_metadata.modified().unwrap(), expected_modified);
+        assert_time_close(output_metadata.accessed().unwrap(), expected_accessed);
     }
 
     #[cfg(any(windows, target_os = "macos"))]
