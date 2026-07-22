@@ -35,12 +35,15 @@ pub mod status_bar;
 pub mod status_icon;
 pub mod tab_bar;
 pub mod toolbar;
-pub mod variables_panel;
 pub mod top_tab_bar;
 pub mod tree_panel;
+pub mod variables_panel;
 
 pub use breadcrumbs::Breadcrumbs;
-pub use layout::{Center, Column, CrossAxisAlignment, FormField, MainAxisAlignment, Padding, Row, Section, SizedBox, Spacer};
+pub use layout::{
+    Center, Column, CrossAxisAlignment, FormField, MainAxisAlignment, Padding, Row, Section,
+    SizedBox, Spacer,
+};
 pub use search_bar::SearchBar;
 pub use settings_card::SettingsCard;
 pub use settings_form::Form;

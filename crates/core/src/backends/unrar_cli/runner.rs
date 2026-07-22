@@ -86,9 +86,7 @@ impl UnrarCli {
         debug!("Running UnRAR: {:?} {:?}", self.exe, args);
 
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
         crate::utilities::hide_console(&mut cmd);
         let output = cmd.output().context("spawning unrar")?;
 
@@ -140,9 +138,7 @@ impl UnrarCli {
         }
 
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
         crate::utilities::hide_console(&mut cmd);
         let output = cmd.output().with_context(|| {
             format!("spawning unrar at {:?} with {} args", self.exe, args.len())

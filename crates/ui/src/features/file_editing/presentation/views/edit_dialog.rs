@@ -1,8 +1,8 @@
-use arclain_theme::ButtonVariant;
-use arclain_widgets::{ButtonSize, TextButton, TextInput};
 use crate::features::file_editing::domain::types::{FileEditDialog, FileEditResult};
 use crate::shared::dialogs::helpers::{show_dimmed_modal, ModalParams};
 use crate::shared::theme::AppTheme;
+use arclain_theme::ButtonVariant;
+use arclain_widgets::{ButtonSize, TextButton, TextInput};
 use eframe::egui;
 
 pub fn render_file_edit_dialog(

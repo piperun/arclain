@@ -98,9 +98,14 @@ pub fn render_settings_overview(ui: &mut egui::Ui, theme: &AppTheme) -> Option<S
             .spacing(egui::vec2(spacing, spacing))
             .show(ui, |ui| {
                 for (index, page) in SettingsPage::all_pages().into_iter().enumerate() {
-                    if SettingsCard::new(page.icon(), page.display_name(), page.description(), &theme.colors)
-                        .size(card_width, 100.0)
-                        .show(ui)
+                    if SettingsCard::new(
+                        page.icon(),
+                        page.display_name(),
+                        page.description(),
+                        &theme.colors,
+                    )
+                    .size(card_width, 100.0)
+                    .show(ui)
                     {
                         selected_page = Some(page);
                     }
@@ -150,9 +155,14 @@ pub fn render_settings_search_results(
                     || page.description().to_lowercase().contains(&query)
                 {
                     found = true;
-                    if SettingsCard::new(page.icon(), page.display_name(), page.description(), &theme.colors)
-                        .size(280.0, 80.0)
-                        .show_compact(ui)
+                    if SettingsCard::new(
+                        page.icon(),
+                        page.display_name(),
+                        page.description(),
+                        &theme.colors,
+                    )
+                    .size(280.0, 80.0)
+                    .show_compact(ui)
                     {
                         selected_page = Some(page);
                     }

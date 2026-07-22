@@ -50,8 +50,10 @@ fn tab_bar_renders_with_one_active_tab() {
     );
     harness.run();
     assert_eq!(harness.state().col.tabs().len(), 1);
-    assert!(harness.state().last_action.is_none(),
-            "passive render with no input should not produce an action");
+    assert!(
+        harness.state().last_action.is_none(),
+        "passive render with no input should not produce an action"
+    );
 }
 
 #[test]
@@ -75,7 +77,9 @@ fn tab_bar_renders_with_multiple_tabs_without_panic() {
 #[test]
 fn tab_bar_renders_with_in_flight_ops_indicator_without_panic() {
     let mut state = TabBarState::new();
-    state.col.open(Some(std::path::PathBuf::from("/tmp/busy.zip")));
+    state
+        .col
+        .open(Some(std::path::PathBuf::from("/tmp/busy.zip")));
     state.col.tabs()[0].in_flight_ops.store(3, Ordering::SeqCst);
 
     let mut harness = Harness::new_ui_state(
@@ -87,7 +91,9 @@ fn tab_bar_renders_with_in_flight_ops_indicator_without_panic() {
     harness.run();
     // Sanity: the in-flight counter is preserved.
     assert_eq!(
-        harness.state().col.tabs()[0].in_flight_ops.load(Ordering::SeqCst),
+        harness.state().col.tabs()[0]
+            .in_flight_ops
+            .load(Ordering::SeqCst),
         3
     );
 }

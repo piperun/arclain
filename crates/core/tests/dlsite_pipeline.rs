@@ -89,10 +89,7 @@ fn json_and_html_pipeline_full_roundtrip() {
     let html = html_response();
     let ajax_key = format!("dlsite:ajax:{}", TEST_EXTERNAL_ID);
     let html_key = format!("dlsite:html:{}", TEST_EXTERNAL_ID);
-    let responses = [
-        (ajax_key.as_str(), &ajax),
-        (html_key.as_str(), &html),
-    ];
+    let responses = [(ajax_key.as_str(), &ajax), (html_key.as_str(), &html)];
 
     let parsed = provider
         .parse_responses(TEST_EXTERNAL_ID, &responses)
@@ -234,17 +231,18 @@ fn geo_blocked_response_persists_with_flag_set() {
     let parsed = provider
         .parse_responses(TEST_EXTERNAL_ID, &responses)
         .expect("parse_responses geo-blocked");
-    assert!(
-        parsed.geo_blocked,
-        "provider must flag geo-blocked HTML",
-    );
+    assert!(parsed.geo_blocked, "provider must flag geo-blocked HTML",);
 
     let (_tempdir, svc) = temp_library();
-    svc.save_metadata(&parsed).expect("first save (no prior row)");
+    svc.save_metadata(&parsed)
+        .expect("first save (no prior row)");
 
     let loaded = svc
         .get_metadata(&parsed.id)
         .expect("get_metadata")
         .expect("row exists");
-    assert!(loaded.geo_blocked, "geo_blocked must round-trip through SQLite");
+    assert!(
+        loaded.geo_blocked,
+        "geo_blocked must round-trip through SQLite"
+    );
 }

@@ -4,8 +4,8 @@
 
 use super::super::context::{RenderContext, UiEventHandler};
 use super::super::image::try_render_image;
-use crate::shared::image_fetcher::trigger_image_fetch;
 use crate::shared::components::settings_form::SectionHeader;
+use crate::shared::image_fetcher::trigger_image_fetch;
 use arclain_plugins::types::WarningIcon;
 use arclain_widgets::Chips;
 use eframe::egui;
@@ -194,14 +194,12 @@ fn render_list_item_thumbnail(
             if let (Some(url), Some(shared)) = (image_url, ctx.shared_state) {
                 let fetch_id = egui::Id::new(("fetch", key));
                 let now = std::time::Instant::now();
-                let fetch_started: Option<std::time::Instant> =
-                    ui.data(|d| d.get_temp(fetch_id));
+                let fetch_started: Option<std::time::Instant> = ui.data(|d| d.get_temp(fetch_id));
 
                 let should_fetch = match fetch_started {
                     None => true,
                     Some(started) => {
-                        now.duration_since(started).as_secs()
-                            > IMAGE_FETCH_RETRY_INTERVAL_SECS
+                        now.duration_since(started).as_secs() > IMAGE_FETCH_RETRY_INTERVAL_SECS
                     }
                 };
 

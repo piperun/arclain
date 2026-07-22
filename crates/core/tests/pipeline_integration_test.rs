@@ -206,7 +206,8 @@ fn executor_end_to_end_idempotent_rerun() {
     {
         let file = std::fs::File::create(&input).unwrap();
         let mut zw = zip::ZipWriter::new(file);
-        zw.start_file("a.txt", zip::write::SimpleFileOptions::default()).unwrap();
+        zw.start_file("a.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
         zw.write_all(b"aaaa").unwrap();
         zw.start_file("nested/b.txt", zip::write::SimpleFileOptions::default())
             .unwrap();
@@ -285,18 +286,31 @@ fn executor_end_to_end_idempotent_rerun() {
     })
     .expect("second run should succeed");
 
-    assert_eq!(skipped.len(), 1, "second run should emit exactly one FileSkipped");
+    assert_eq!(
+        skipped.len(),
+        1,
+        "second run should emit exactly one FileSkipped"
+    );
     assert!(skipped[0].contains("already processed"));
-    assert!(completed.is_empty(), "no new FileComplete on idempotent re-run");
+    assert!(
+        completed.is_empty(),
+        "no new FileComplete on idempotent re-run"
+    );
 
     // Output must be byte-identical + mtime unchanged (proof it wasn't rewritten).
     let output_bytes_after = std::fs::read(&expected_output).unwrap();
-    assert_eq!(output_bytes_before, output_bytes_after, "output bytes drifted");
+    assert_eq!(
+        output_bytes_before, output_bytes_after,
+        "output bytes drifted"
+    );
     let mtime_after = std::fs::metadata(&expected_output)
         .unwrap()
         .modified()
         .unwrap();
-    assert_eq!(mtime_before, mtime_after, "mtime advanced — work was redone");
+    assert_eq!(
+        mtime_before, mtime_after,
+        "mtime advanced — work was redone"
+    );
 
     // Input also untouched.
     assert_eq!(input_bytes_before, std::fs::read(&input).unwrap());
@@ -712,7 +726,11 @@ fn smart_rerun_with_matching_db_row_skips_work() {
         use arclain_core::PipelineProgress::*;
         match ev {
             FileSkipped { output, reason } => skipped.push((output, reason)),
-            AllComplete { succeeded, skipped: s, failed } => summary = Some((succeeded, s, failed)),
+            AllComplete {
+                succeeded,
+                skipped: s,
+                failed,
+            } => summary = Some((succeeded, s, failed)),
             _ => {}
         }
     })
@@ -872,7 +890,10 @@ fn smart_rerun_reruns_when_output_was_deleted() {
 
     // DB row was stale (output missing) → Smart proceeded → backend errored.
     // The important assertion: no skip happened.
-    assert!(skipped.is_empty(), "Smart should rerun when stored output is gone");
+    assert!(
+        skipped.is_empty(),
+        "Smart should rerun when stored output is gone"
+    );
     assert_eq!(failures.len(), 1);
 }
 
@@ -1070,8 +1091,7 @@ fn folder_output_smart_skips_on_rerun() {
     };
 
     // First run — produces the folder
-    execute_pipeline(&pipeline, tmp.path(), &ctx, |_| {})
-        .expect("first run should succeed");
+    execute_pipeline(&pipeline, tmp.path(), &ctx, |_| {}).expect("first run should succeed");
     let out_folder = output_dir.join("pack");
     assert!(out_folder.is_dir());
 
@@ -1113,10 +1133,7 @@ fn apply_plan_reorganizes_files() {
             ("game.exe".into(), "MyGame/game.exe".into()),
             ("data/sprites.dat".into(), "MyGame/data/sprites.dat".into()),
         ],
-        generated_files: vec![(
-            "MyGame/metadata.json".into(),
-            r#"{"title":"Test"}"#.into(),
-        )],
+        generated_files: vec![("MyGame/metadata.json".into(), r#"{"title":"Test"}"#.into())],
         downloads: vec![],
         use_standard_layout: true,
         resolved_variables: Default::default(),

@@ -134,7 +134,7 @@ pub fn extract_with_progress_dialog(
     // We cannot easily access parent module private items if they are not pub.
     // native_progress should be accessible via crate::platform::drag_source::native_progress
     use crate::platform::drag_source::native_progress;
-    
+
     native_progress::extract_with_native_progress(
         backend,
         archive_path,

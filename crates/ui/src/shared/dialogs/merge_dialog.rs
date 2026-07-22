@@ -58,9 +58,9 @@ impl MergeDialogState {
 
     /// Get a preview of the output filename
     pub fn preview_output_name(&self) -> Option<String> {
-        self.multipart.as_ref().map(|mp| {
-            format!("{}.{}", mp.base_name, self.output_format.extension())
-        })
+        self.multipart
+            .as_ref()
+            .map(|mp| format!("{}.{}", mp.base_name, self.output_format.extension()))
     }
 }
 
@@ -179,17 +179,20 @@ pub fn render_merge_dialog(
                                 egui::RichText::new("Output Format:")
                                     .color(theme.colors.on_surface_variant),
                             );
-                            ThemedDropdown::new("output_format", state.output_format.display_name())
-                                .with_theme_colors(&theme.colors)
-                                .show_ui(ui, |ui| {
-                                    for format in OutputFormat::all() {
-                                        ui.selectable_value(
-                                            &mut state.output_format,
-                                            *format,
-                                            format.display_name(),
-                                        );
-                                    }
-                                });
+                            ThemedDropdown::new(
+                                "output_format",
+                                state.output_format.display_name(),
+                            )
+                            .with_theme_colors(&theme.colors)
+                            .show_ui(ui, |ui| {
+                                for format in OutputFormat::all() {
+                                    ui.selectable_value(
+                                        &mut state.output_format,
+                                        *format,
+                                        format.display_name(),
+                                    );
+                                }
+                            });
                             ui.end_row();
 
                             // Compression level
@@ -197,17 +200,20 @@ pub fn render_merge_dialog(
                                 egui::RichText::new("Compression:")
                                     .color(theme.colors.on_surface_variant),
                             );
-                            ThemedDropdown::new("compression_level", state.compression_level.display_name())
-                                .with_theme_colors(&theme.colors)
-                                .show_ui(ui, |ui| {
-                                    for level in CompressionLevel::all() {
-                                        ui.selectable_value(
-                                            &mut state.compression_level,
-                                            *level,
-                                            level.display_name(),
-                                        );
-                                    }
-                                });
+                            ThemedDropdown::new(
+                                "compression_level",
+                                state.compression_level.display_name(),
+                            )
+                            .with_theme_colors(&theme.colors)
+                            .show_ui(ui, |ui| {
+                                for level in CompressionLevel::all() {
+                                    ui.selectable_value(
+                                        &mut state.compression_level,
+                                        *level,
+                                        level.display_name(),
+                                    );
+                                }
+                            });
                             ui.end_row();
                         });
 

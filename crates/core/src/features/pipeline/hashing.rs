@@ -31,8 +31,8 @@ pub fn hash_file_blake3_with_progress<F: FnMut(u8)>(
     path: &Path,
     mut on_progress: F,
 ) -> Result<(String, u64)> {
-    let file = std::fs::File::open(path)
-        .with_context(|| format!("opening {:?} for hashing", path))?;
+    let file =
+        std::fs::File::open(path).with_context(|| format!("opening {:?} for hashing", path))?;
     let size = file
         .metadata()
         .with_context(|| format!("stat {:?}", path))?
@@ -94,7 +94,10 @@ mod tests {
         let b = tmp.path().join("b.bin");
         std::fs::write(&a, b"aaaa").unwrap();
         std::fs::write(&b, b"bbbb").unwrap();
-        assert_ne!(hash_file_blake3(&a).unwrap().0, hash_file_blake3(&b).unwrap().0);
+        assert_ne!(
+            hash_file_blake3(&a).unwrap().0,
+            hash_file_blake3(&b).unwrap().0
+        );
     }
 
     #[test]

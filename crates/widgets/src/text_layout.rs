@@ -74,5 +74,8 @@ pub fn paint_text_left_in_rect_visually_centered(
 
     // Return the screen-space rect of the painted glyphs (useful for
     // debug overlays and positioning sibling content).
-    Rect::from_min_size(origin + mesh.min.to_vec2(), Vec2::new(mesh.width(), mesh.height()))
+    Rect::from_min_size(
+        origin + mesh.min.to_vec2(),
+        Vec2::new(mesh.width(), mesh.height()),
+    )
 }

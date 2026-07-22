@@ -223,12 +223,7 @@ mod tests {
 
         let cfg = ConfigDb::open(&cfg_path).unwrap().into_sqlite_db();
 
-        let result = persist_preferences_overrides(
-            &cfg,
-            Some("/some/secrets.redb"),
-            None,
-            None,
-        );
+        let result = persist_preferences_overrides(&cfg, Some("/some/secrets.redb"), None, None);
 
         assert!(
             result.is_err(),

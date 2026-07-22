@@ -180,11 +180,9 @@ impl ConfigDb {
 
     /// Seed default archive profiles if the table is empty
     fn seed_default_archive_profiles(conn: &Connection) -> Result<()> {
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM archive_profiles",
-            [],
-            |row| row.get(0),
-        )?;
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM archive_profiles", [], |row| {
+            row.get(0)
+        })?;
 
         if count == 0 {
             tracing::info!("[ConfigDb] Seeding default archive profiles");
@@ -310,10 +308,7 @@ pub fn save_title_replacement(
 }
 
 /// Delete a title replacement (system replacements are immune)
-pub fn delete_title_replacement(
-    conn: &mut diesel::SqliteConnection,
-    rule_id: i32,
-) -> Result<()> {
+pub fn delete_title_replacement(conn: &mut diesel::SqliteConnection, rule_id: i32) -> Result<()> {
     use crate::diesel_schema::title_replacements::dsl::*;
 
     diesel::delete(title_replacements.filter(id.eq(rule_id).and(is_system.eq(false))))
@@ -330,8 +325,8 @@ pub fn get_title_filter_settings(
 ) -> Result<DbTitleFilterSettings> {
     let invalid_chars = crate::get_config_diesel(conn, "title_filter.invalid_chars")?;
     let replacement = crate::get_config_diesel(conn, "title_filter.replacement")?;
-    let max_length = crate::get_config_diesel(conn, "title_filter.max_length")?
-        .and_then(|s| s.parse().ok());
+    let max_length =
+        crate::get_config_diesel(conn, "title_filter.max_length")?.and_then(|s| s.parse().ok());
     let trim_whitespace = crate::get_config_diesel(conn, "title_filter.trim_whitespace")?
         .and_then(|s| s.parse().ok());
 

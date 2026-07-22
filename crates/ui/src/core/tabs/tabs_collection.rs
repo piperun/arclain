@@ -177,9 +177,7 @@ impl TabsCollection {
             let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
                 continue;
             };
-            if tab.in_flight_ops.load(Ordering::SeqCst) > 0
-                || tab.pinned.load(Ordering::SeqCst)
-            {
+            if tab.in_flight_ops.load(Ordering::SeqCst) > 0 || tab.pinned.load(Ordering::SeqCst) {
                 skipped += 1;
                 continue;
             }
@@ -206,9 +204,7 @@ impl TabsCollection {
             let Some(tab) = self.tabs.iter().find(|t| t.id == id) else {
                 continue;
             };
-            if tab.in_flight_ops.load(Ordering::SeqCst) > 0
-                || tab.pinned.load(Ordering::SeqCst)
-            {
+            if tab.in_flight_ops.load(Ordering::SeqCst) > 0 || tab.pinned.load(Ordering::SeqCst) {
                 skipped += 1;
                 continue;
             }

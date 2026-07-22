@@ -72,7 +72,6 @@ fn vec_or_default<'de, D: serde::Deserializer<'de>, T: serde::Deserialize<'de>>(
     Ok(opt.unwrap_or_default())
 }
 
-
 impl GameMetadata {
     pub fn from_json(json: &str) -> anyhow::Result<Self> {
         let mut metadata: Self = serde_json::from_str(json)?;

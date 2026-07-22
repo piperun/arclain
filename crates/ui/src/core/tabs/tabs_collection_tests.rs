@@ -135,7 +135,10 @@ fn reorder_moves_tab_to_new_position() {
     // Tab that was at index 0 now at index 2; old index-2 tab still present.
     assert_eq!(col.tabs()[2].id, id_before_at_0);
     assert_ne!(col.tabs()[0].id, id_before_at_0);
-    assert_eq!(col.tabs().iter().filter(|t| t.id == id_before_at_2).count(), 1);
+    assert_eq!(
+        col.tabs().iter().filter(|t| t.id == id_before_at_2).count(),
+        1
+    );
 }
 
 #[test]
@@ -191,7 +194,10 @@ fn close_empty_tab_does_not_populate_recently_closed() {
     let mut col = TabsCollection::new();
     let empty_id = col.open(None);
     col.close(empty_id);
-    assert!(!col.has_recently_closed(), "empty tab should not be remembered");
+    assert!(
+        !col.has_recently_closed(),
+        "empty tab should not be remembered"
+    );
 }
 
 #[test]
@@ -253,7 +259,10 @@ fn close_others_skips_in_flight_tabs() {
     let busy = col.open(Some(PathBuf::from("/tmp/busy.zip")));
     let keep = col.open(Some(PathBuf::from("/tmp/keep.zip")));
     let _idle = col.open(Some(PathBuf::from("/tmp/idle.zip")));
-    col.get(busy).unwrap().in_flight_ops.store(1, Ordering::SeqCst);
+    col.get(busy)
+        .unwrap()
+        .in_flight_ops
+        .store(1, Ordering::SeqCst);
     let skipped = col.close_others(keep);
     assert_eq!(skipped, 1);
     // Busy tab stays alive, idle was closed, keep stayed.

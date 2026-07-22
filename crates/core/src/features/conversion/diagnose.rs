@@ -60,10 +60,9 @@ impl WarningKind {
                 "modinfo addonfor={:?} but no sibling mod has that name",
                 needs
             ),
-            Self::DuplicatePreview { peer_folder, file } => format!(
-                "{} byte-identical to sibling {:?}",
-                file, peer_folder
-            ),
+            Self::DuplicatePreview { peer_folder, file } => {
+                format!("{} byte-identical to sibling {:?}", file, peer_folder)
+            }
         }
     }
 }
@@ -94,9 +93,7 @@ fn top_level_dirs(extract_dir: &Path) -> Result<Vec<String>> {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for entry in fs::read_dir(extract_dir)
-        .with_context(|| format!("Reading {:?}", extract_dir))?
-    {
+    for entry in fs::read_dir(extract_dir).with_context(|| format!("Reading {:?}", extract_dir))? {
         let entry = entry?;
         if !entry.file_type()?.is_dir() {
             continue;
@@ -130,10 +127,7 @@ fn check_missing_screenshots(
     }
 }
 
-fn check_missing_addon_parents(
-    infos: &BTreeMap<String, ModInfo>,
-    out: &mut Vec<ModWarning>,
-) {
+fn check_missing_addon_parents(infos: &BTreeMap<String, ModInfo>, out: &mut Vec<ModWarning>) {
     let name_set: HashSet<String> = infos
         .values()
         .filter_map(|mi| mi.name.as_deref().map(str::to_lowercase))

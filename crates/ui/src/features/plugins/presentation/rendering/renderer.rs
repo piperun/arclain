@@ -183,9 +183,7 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
 
             if let Some(event) = carousel.show(ui) {
                 match event {
-                    CarouselEvent::Previous => {
-                        (ctx.event_callback)(&format!("{}_prev", id), None)
-                    }
+                    CarouselEvent::Previous => (ctx.event_callback)(&format!("{}_prev", id), None),
                     CarouselEvent::Next => (ctx.event_callback)(&format!("{}_next", id), None),
                     CarouselEvent::Select(idx) => {
                         (ctx.event_callback)(&format!("{}_select_{}", id, idx), None)
@@ -262,9 +260,14 @@ fn walk_with_groups<H: UiEventHandler + ?Sized>(
                     end += 1;
                 }
                 let body = &elements[i + 1..end.min(elements.len())];
-                widgets::render_settings_group(ui, ctx, title, description, body, |ui, body, ctx| {
-                    walk_with_groups(ui, body, ctx)
-                });
+                widgets::render_settings_group(
+                    ui,
+                    ctx,
+                    title,
+                    description,
+                    body,
+                    |ui, body, ctx| walk_with_groups(ui, body, ctx),
+                );
                 // Skip past the matched end marker (or to EOL if unbalanced)
                 i = end + 1;
             }

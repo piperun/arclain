@@ -39,10 +39,10 @@ async fn test_health_check_non_200_is_err() {
 
     Mock::given(method("GET"))
         .and(path("/api/v1/health"))
-        .respond_with(
-            ResponseTemplate::new(503)
-                .set_body_raw(r#"{"status":"degraded","version":"0.4.3"}"#, "application/json"),
-        )
+        .respond_with(ResponseTemplate::new(503).set_body_raw(
+            r#"{"status":"degraded","version":"0.4.3"}"#,
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;
@@ -63,9 +63,8 @@ async fn test_get_metadata_found() {
 
     Mock::given(method("GET"))
         .and(path("/api/v1/metadata/dlsite/RJ123456"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                r#"{
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{
                     "id": "dlsite:RJ123456",
                     "source": "dlsite",
                     "title": "Test Game",
@@ -73,9 +72,8 @@ async fn test_get_metadata_found() {
                     "tags": ["RPG"],
                     "extras": {}
                 }"#,
-                "application/json",
-            ),
-        )
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;
@@ -103,20 +101,17 @@ async fn test_get_metadata_not_found_returns_none() {
 
     Mock::given(method("GET"))
         .and(path("/api/v1/metadata/dlsite/NONEXISTENT"))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_raw(
-                r#"{"error":"Not found","code":"NOT_FOUND"}"#,
-                "application/json",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(404).set_body_raw(
+            r#"{"error":"Not found","code":"NOT_FOUND"}"#,
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;
 
     let url = server.uri();
     let result = tokio::task::spawn_blocking(move || {
-        GametaClient::new(ServerConfig { url, api_key: None })
-            .get_metadata("dlsite", "NONEXISTENT")
+        GametaClient::new(ServerConfig { url, api_key: None }).get_metadata("dlsite", "NONEXISTENT")
     })
     .await
     .expect("spawn_blocking panicked");
@@ -134,12 +129,10 @@ async fn test_get_metadata_server_error_is_err() {
 
     Mock::given(method("GET"))
         .and(path("/api/v1/metadata/dlsite/RJ000001"))
-        .respond_with(
-            ResponseTemplate::new(500).set_body_raw(
-                r#"{"error":"Internal server error","code":"INTERNAL"}"#,
-                "application/json",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(500).set_body_raw(
+            r#"{"error":"Internal server error","code":"INTERNAL"}"#,
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;
@@ -171,9 +164,8 @@ async fn test_fetch_metadata() {
     Mock::given(method("POST"))
         .and(path("/api/v1/fetch"))
         .and(body_json(&expected_body))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                r#"{
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{
                     "status": "success",
                     "source": "dlsite",
                     "id": "RJ999999",
@@ -185,9 +177,8 @@ async fn test_fetch_metadata() {
                         "extras": {}
                     }
                 }"#,
-                "application/json",
-            ),
-        )
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;
@@ -225,17 +216,15 @@ async fn test_fetch_metadata_force_flag() {
     Mock::given(method("POST"))
         .and(path("/api/v1/fetch"))
         .and(body_json(&expected_body))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                r#"{
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{
                     "status": "refreshed",
                     "source": "dlsite",
                     "id": "RJ111111",
                     "metadata": null
                 }"#,
-                "application/json",
-            ),
-        )
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;
@@ -261,9 +250,8 @@ async fn test_search_with_source_and_limit() {
         .and(query_param("q", "test"))
         .and(query_param("source", "dlsite"))
         .and(query_param("limit", "10"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                r#"{
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{
                     "query": "test",
                     "source": "dlsite",
                     "results": [
@@ -274,17 +262,19 @@ async fn test_search_with_source_and_limit() {
                         }
                     ]
                 }"#,
-                "application/json",
-            ),
-        )
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;
 
     let url = server.uri();
     let result = tokio::task::spawn_blocking(move || {
-        GametaClient::new(ServerConfig { url, api_key: None })
-            .search("test", Some("dlsite"), Some(10))
+        GametaClient::new(ServerConfig { url, api_key: None }).search(
+            "test",
+            Some("dlsite"),
+            Some(10),
+        )
     })
     .await
     .expect("spawn_blocking panicked");
@@ -305,12 +295,10 @@ async fn test_search_without_optional_params() {
     Mock::given(method("GET"))
         .and(path("/api/v1/search"))
         .and(query_param("q", "hello"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_raw(
-                r#"{"query":"hello","source":null,"results":[]}"#,
-                "application/json",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"query":"hello","source":null,"results":[]}"#,
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;
@@ -354,12 +342,10 @@ async fn test_auth_header_sent_on_get_metadata() {
     Mock::given(method("GET"))
         .and(path("/api/v1/metadata/dlsite/RJ001"))
         .and(bearer_token("my-secret-key"))
-        .respond_with(
-            ResponseTemplate::new(404).set_body_raw(
-                r#"{"error":"Not found","code":"NOT_FOUND"}"#,
-                "application/json",
-            ),
-        )
+        .respond_with(ResponseTemplate::new(404).set_body_raw(
+            r#"{"error":"Not found","code":"NOT_FOUND"}"#,
+            "application/json",
+        ))
         .expect(1)
         .mount(&server)
         .await;

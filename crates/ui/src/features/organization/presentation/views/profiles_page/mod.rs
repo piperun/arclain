@@ -10,11 +10,11 @@
 
 mod add_profile_dialog;
 
-use add_profile_dialog::AddProfileDialog;
-use arclain_core::features::organization::ArchiveProfile;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
 use crate::shared::SharedState;
+use add_profile_dialog::AddProfileDialog;
+use arclain_core::features::organization::ArchiveProfile;
 use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use std::cell::Cell;
@@ -318,9 +318,11 @@ pub fn handle_profiles_action(
     // shows current data on the next frame.
     let mutation_result: Result<(), String> = match action {
         ProfilesAction::LoadProfiles => Ok(()),
-        ProfilesAction::SaveProfile(profile) => arclain_core::save_profile(&mut conn, &profile.to_db())
-            .map(|_| ())
-            .map_err(|e| format!("Failed to save profile: {}", e)),
+        ProfilesAction::SaveProfile(profile) => {
+            arclain_core::save_profile(&mut conn, &profile.to_db())
+                .map(|_| ())
+                .map_err(|e| format!("Failed to save profile: {}", e))
+        }
         ProfilesAction::DeleteProfile(id) => arclain_core::delete_profile(&mut conn, id as i32)
             .map(|_| ())
             .map_err(|e| format!("Failed to delete profile: {}", e)),

@@ -1,7 +1,7 @@
-use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize};
 use super::state::PasswordRulesDialog;
 use super::types::PasswordRule;
 use crate::shared::theme::AppTheme;
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize};
 use eframe::egui;
 
 pub fn render_rule_editor(
@@ -55,7 +55,16 @@ pub fn render_rule_editor(
                     .width(content_width - 240.0)
                     .with_theme_colors(&theme.colors)
                     .show(ui);
-                if ui.add(TextButton::new(format!("{} Test Regex", egui_phosphor::regular::TEST_TUBE), ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
+                if ui
+                    .add(
+                        TextButton::new(
+                            format!("{} Test Regex", egui_phosphor::regular::TEST_TUBE),
+                            ButtonSize::Medium,
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
                     dialog.show_regex_tester = true;
                     dialog.regex_test_pattern = dialog.edit_pattern.clone();
                     dialog.regex_test_results.clear();
@@ -141,7 +150,10 @@ pub fn render_rule_editor(
 
         if dialog.editing_index.is_some()
             && ui
-                .add(TextButton::new("Cancel Edit", ButtonSize::Medium).with_theme_colors(&theme.colors))
+                .add(
+                    TextButton::new("Cancel Edit", ButtonSize::Medium)
+                        .with_theme_colors(&theme.colors),
+                )
                 .clicked()
         {
             dialog.editing_index = None;

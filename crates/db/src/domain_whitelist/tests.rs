@@ -5,8 +5,8 @@ use diesel::Connection;
 use diesel::RunQueryDsl;
 
 fn setup_db() -> diesel::SqliteConnection {
-    let mut conn = diesel::SqliteConnection::establish(":memory:")
-        .expect("Failed to open in-memory SQLite");
+    let mut conn =
+        diesel::SqliteConnection::establish(":memory:").expect("Failed to open in-memory SQLite");
 
     diesel::sql_query(
         "CREATE TABLE domain_whitelist (

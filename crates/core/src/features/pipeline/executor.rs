@@ -3,9 +3,7 @@
 use super::context::PipelineContext;
 use super::hashing::hash_file_blake3_with_progress;
 use super::output_transaction::StagedOutput;
-use super::types::{
-    OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep,
-};
+use super::types::{OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep};
 use anyhow::{Context, Result};
 use arclain_db::{pipeline_output_kind, NewPipelineRun};
 use std::path::{Path, PathBuf};
@@ -115,7 +113,9 @@ pub fn execute_pipeline(
 
 /// Walk the step list for the last Convert step's format so we can predict
 /// the final output extension before extraction begins.
-fn last_convert_format(steps: &[PipelineStep]) -> Option<crate::features::conversion::ConvertFormat> {
+fn last_convert_format(
+    steps: &[PipelineStep],
+) -> Option<crate::features::conversion::ConvertFormat> {
     for step in steps.iter().rev() {
         if let PipelineStep::Convert { format, .. } = step {
             return Some(format.clone());
@@ -151,11 +151,10 @@ fn run_one(
         step_index: 0,
         step_name: "Hashing input".to_string(),
     });
-    let (input_blake3, input_size) =
-        hash_file_blake3_with_progress(input, |percent| {
-            on_progress(PipelineProgress::StepProgress { percent });
-        })
-        .with_context(|| format!("hash input {:?}", input))?;
+    let (input_blake3, input_size) = hash_file_blake3_with_progress(input, |percent| {
+        on_progress(PipelineProgress::StepProgress { percent });
+    })
+    .with_context(|| format!("hash input {:?}", input))?;
     let pipeline_hash = pipeline.config_hash();
 
     // Resolve metadata for this input ONCE (DB lookup) and reuse it for both
@@ -317,9 +316,9 @@ fn run_one(
             }
             Err(e) => {
                 let msg = e.to_string();
-                if let Err(e2) = db.with_connection(|conn| {
-                    Ok(arclain_db::mark_run_failed(conn, id, &msg)?)
-                }) {
+                if let Err(e2) =
+                    db.with_connection(|conn| Ok(arclain_db::mark_run_failed(conn, id, &msg)?))
+                {
                     tracing::warn!("[pipeline] Failed to mark run #{} failed: {}", id, e2);
                 }
             }
@@ -347,10 +346,7 @@ fn run_one_inner(
     let work_dir = temp_root.join(format!(
         "arclain_pipeline_{}_{}",
         std::process::id(),
-        input
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("x")
+        input.file_name().and_then(|n| n.to_str()).unwrap_or("x")
     ));
     std::fs::create_dir_all(&work_dir)
         .with_context(|| format!("Create work dir {:?}", work_dir))?;
@@ -380,15 +376,16 @@ fn run_one_inner(
                 strip_common_prefix,
                 max_depth,
             } => {
-                let report = crate::features::conversion::flatten::flatten_nested_archives_recursive(
-                    &work_dir,
-                    *strip_common_prefix,
-                    *max_depth,
-                    |archive_path, dest_dir| {
-                        let be = (ctx.backend_for)(archive_path)?;
-                        be.extract_all(archive_path, dest_dir, None)
-                    },
-                )?;
+                let report =
+                    crate::features::conversion::flatten::flatten_nested_archives_recursive(
+                        &work_dir,
+                        *strip_common_prefix,
+                        *max_depth,
+                        |archive_path, dest_dir| {
+                            let be = (ctx.backend_for)(archive_path)?;
+                            be.extract_all(archive_path, dest_dir, None)
+                        },
+                    )?;
                 if !report.warnings.is_empty() {
                     on_progress(PipelineProgress::StepWarnings {
                         warnings: report.warnings,
@@ -420,10 +417,8 @@ fn run_one_inner(
                 )
                 .context("Rule plan failed")?;
 
-                crate::features::pipeline::apply_plan::apply_plan_to_workdir(
-                    &plan, &work_dir,
-                )
-                .context("Apply plan failed")?;
+                crate::features::pipeline::apply_plan::apply_plan_to_workdir(&plan, &work_dir)
+                    .context("Apply plan failed")?;
             }
             PipelineStep::Convert {
                 format,
@@ -445,13 +440,11 @@ fn run_one_inner(
     // check above.
     match pipeline.output_artifact {
         OutputArtifact::Archive => {
-            let format =
-                final_format.unwrap_or(crate::features::conversion::ConvertFormat::Zip);
-            let output_path = pipeline.output.resolve_with_metadata(
-                input,
-                format.extension(),
-                output_metadata,
-            );
+            let format = final_format.unwrap_or(crate::features::conversion::ConvertFormat::Zip);
+            let output_path =
+                pipeline
+                    .output
+                    .resolve_with_metadata(input, format.extension(), output_metadata);
 
             on_progress(PipelineProgress::StepStart {
                 step_index: pipeline.steps.len() + 1,
@@ -515,8 +508,7 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
         if file_type.is_dir() {
             copy_dir_recursive(&from, &to)?;
         } else if file_type.is_file() {
-            std::fs::copy(&from, &to)
-                .with_context(|| format!("Copying {:?} to {:?}", from, to))?;
+            std::fs::copy(&from, &to).with_context(|| format!("Copying {:?} to {:?}", from, to))?;
         } else {
             anyhow::bail!(
                 "Folder output contains a symlink or special filesystem node: {}",

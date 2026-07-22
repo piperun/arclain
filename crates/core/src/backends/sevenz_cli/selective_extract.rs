@@ -65,21 +65,34 @@ impl SevenZipCli {
         }
 
         if excluded_count <= FILE_COUNT_THRESHOLD {
-            info!("[7z CLI] Using extract_all with {} exclusions", excluded_count);
+            info!(
+                "[7z CLI] Using extract_all with {} exclusions",
+                excluded_count
+            );
             return self.extract_with_exclude_file(
-                archive, dest, password, progress, &archive_info, &selected_paths,
+                archive,
+                dest,
+                password,
+                progress,
+                &archive_info,
+                &selected_paths,
             );
         }
 
         if selected_count <= FILE_COUNT_THRESHOLD {
-            info!("[7z CLI] Extracting {} files directly on cmd", selected_count);
-            let files: Vec<String> = selected_paths.into_iter().collect();
-            return self.extract_files_with_progress(
-                archive, dest, &files, password, progress, None,
+            info!(
+                "[7z CLI] Extracting {} files directly on cmd",
+                selected_count
             );
+            let files: Vec<String> = selected_paths.into_iter().collect();
+            return self
+                .extract_files_with_progress(archive, dest, &files, password, progress, None);
         }
 
-        info!("[7z CLI] Using include response file for {} entries", selected_count);
+        info!(
+            "[7z CLI] Using include response file for {} entries",
+            selected_count
+        );
         self.extract_with_include_file(archive, dest, password, progress, &selected_paths)
     }
 
@@ -117,7 +130,10 @@ impl SevenZipCli {
         oarg.push(dest.as_os_str());
         args.push(oarg);
         args.push(archive.as_os_str().to_os_string());
-        args.push(OsString::from(format!("-x@{}", excludefile.path().display())));
+        args.push(OsString::from(format!(
+            "-x@{}",
+            excludefile.path().display()
+        )));
 
         report_progress(progress, 0);
         let result = self.run_status(args);
@@ -151,7 +167,10 @@ impl SevenZipCli {
         oarg.push(dest.as_os_str());
         args.push(oarg);
         args.push(archive.as_os_str().to_os_string());
-        args.push(OsString::from(format!("-i@{}", includefile.path().display())));
+        args.push(OsString::from(format!(
+            "-i@{}",
+            includefile.path().display()
+        )));
 
         report_progress(progress, 0);
         let result = self.run_status(args);

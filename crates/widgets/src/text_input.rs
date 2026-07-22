@@ -302,8 +302,7 @@ impl<'a> TextInput<'a> {
         let helper_size = 11.0;
 
         // Resolve colors
-        let (bg_fill, text_color, hint_color, border_color, prefix_color) =
-            self.resolve_colors(ui);
+        let (bg_fill, text_color, hint_color, border_color, prefix_color) = self.resolve_colors(ui);
 
         // Calculate total width
         let total_width = self.width.unwrap_or(ui.available_width());
@@ -349,7 +348,11 @@ impl<'a> TextInput<'a> {
             }
 
             // Calculate slot widths
-            let prefix_width = self.prefix.as_ref().map(|_| icon_size + padding * 2.0).unwrap_or(0.0);
+            let prefix_width = self
+                .prefix
+                .as_ref()
+                .map(|_| icon_size + padding * 2.0)
+                .unwrap_or(0.0);
 
             // Suffix: either custom suffix, or clear button if clearable and has text
             let show_clear = self.clearable && !self.text.is_empty();
@@ -364,10 +367,8 @@ impl<'a> TextInput<'a> {
             let input_width = total_width - prefix_width - suffix_width - padding * 2.0;
 
             // Allocate the full rect first for the frame
-            let (full_rect, _) = ui.allocate_exact_size(
-                egui::vec2(total_width, height),
-                Sense::hover(),
-            );
+            let (full_rect, _) =
+                ui.allocate_exact_size(egui::vec2(total_width, height), Sense::hover());
 
             // Draw background frame
             let corner_radius = 4.0;
@@ -391,58 +392,62 @@ impl<'a> TextInput<'a> {
                 child_ui.allocate_ui_with_layout(
                     egui::vec2(prefix_width, height - 2.0),
                     egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                    |ui| {
-                        match prefix {
-                            SlotContent::Icon(icon) => {
-                                ui.label(
-                                    egui::RichText::new(icon)
-                                        .size(icon_size)
-                                        .color(prefix_color),
-                                );
-                            }
-                            SlotContent::Text(text) => {
-                                ui.label(
-                                    egui::RichText::new(text)
-                                        .size(font_size)
-                                        .color(prefix_color),
-                                );
-                            }
+                    |ui| match prefix {
+                        SlotContent::Icon(icon) => {
+                            ui.label(
+                                egui::RichText::new(icon)
+                                    .size(icon_size)
+                                    .color(prefix_color),
+                            );
+                        }
+                        SlotContent::Text(text) => {
+                            ui.label(
+                                egui::RichText::new(text)
+                                    .size(font_size)
+                                    .color(prefix_color),
+                            );
                         }
                     },
                 );
             }
 
             // Render text input
-            let response = child_ui.allocate_ui_with_layout(
-                egui::vec2(input_width, height - 2.0),
-                egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                |ui| {
-                    let mut edit = TextEdit::singleline(self.text)
-                        .vertical_align(egui::Align::Center)
-                        .desired_width(input_width - padding)
-                        .text_color(text_color)
-                        .frame(false)
-                        .clip_text(true)
-                        .interactive(!self.disabled)
-                        .margin(egui::Margin::symmetric(padding as i8, 0));
+            let response = child_ui
+                .allocate_ui_with_layout(
+                    egui::vec2(input_width, height - 2.0),
+                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                    |ui| {
+                        let mut edit = TextEdit::singleline(self.text)
+                            .vertical_align(egui::Align::Center)
+                            .desired_width(input_width - padding)
+                            .text_color(text_color)
+                            .frame(false)
+                            .clip_text(true)
+                            .interactive(!self.disabled)
+                            .margin(egui::Margin::symmetric(padding as i8, 0));
 
-                    if let Some(hint) = &self.hint {
-                        edit = edit.hint_text(egui::RichText::new(hint).color(hint_color));
-                    }
+                        if let Some(hint) = &self.hint {
+                            edit = edit.hint_text(egui::RichText::new(hint).color(hint_color));
+                        }
 
-                    if self.password {
-                        edit = edit.password(true);
-                    }
+                        if self.password {
+                            edit = edit.password(true);
+                        }
 
-                    if self.monospace {
-                        edit = edit.font(egui::FontSelection::FontId(egui::FontId::monospace(font_size)));
-                    } else {
-                        edit = edit.font(egui::FontSelection::FontId(egui::FontId::proportional(font_size)));
-                    }
+                        if self.monospace {
+                            edit = edit.font(egui::FontSelection::FontId(egui::FontId::monospace(
+                                font_size,
+                            )));
+                        } else {
+                            edit = edit.font(egui::FontSelection::FontId(
+                                egui::FontId::proportional(font_size),
+                            ));
+                        }
 
-                    ui.add(edit)
-                },
-            ).inner;
+                        ui.add(edit)
+                    },
+                )
+                .inner;
             input_response = Some(response);
 
             // Render suffix (custom or built-in)
@@ -490,9 +495,7 @@ impl<'a> TextInput<'a> {
                                 }
                             } else {
                                 ui.label(
-                                    egui::RichText::new(&icon)
-                                        .size(icon_size)
-                                        .color(hint_color),
+                                    egui::RichText::new(&icon).size(icon_size).color(hint_color),
                                 );
                             }
                         }

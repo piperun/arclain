@@ -67,11 +67,7 @@ fn missing_screenshot_empty_field_silent() {
 fn addon_parent_present_no_warning() {
     let tmp = TempDir::new().unwrap();
     make_mod(tmp.path(), "ParentMod", "name=ParentMod\n");
-    make_mod(
-        tmp.path(),
-        "Addon",
-        "name=Addon\naddonfor=ParentMod\n",
-    );
+    make_mod(tmp.path(), "Addon", "name=Addon\naddonfor=ParentMod\n");
     let w = diagnose_mods(tmp.path()).unwrap();
     assert!(w.is_empty());
 }
@@ -99,13 +95,13 @@ fn addon_parent_missing_emits_warning() {
 fn addon_parent_case_insensitive_match() {
     let tmp = TempDir::new().unwrap();
     make_mod(tmp.path(), "ParentMod", "name=ParentMod\n");
-    make_mod(
-        tmp.path(),
-        "Addon",
-        "name=Addon\naddonfor=parentmod\n",
-    );
+    make_mod(tmp.path(), "Addon", "name=Addon\naddonfor=parentmod\n");
     let w = diagnose_mods(tmp.path()).unwrap();
-    assert!(w.is_empty(), "case-insensitive match should not warn: {:?}", w);
+    assert!(
+        w.is_empty(),
+        "case-insensitive match should not warn: {:?}",
+        w
+    );
 }
 
 #[test]
@@ -117,7 +113,10 @@ fn multiple_orphan_addons_one_warning_each() {
     let w = diagnose_mods(tmp.path()).unwrap();
     assert_eq!(w.len(), 3);
     for warning in &w {
-        assert!(matches!(warning.kind, WarningKind::MissingAddonParent { .. }));
+        assert!(matches!(
+            warning.kind,
+            WarningKind::MissingAddonParent { .. }
+        ));
     }
 }
 
@@ -210,8 +209,12 @@ fn mixed_warnings_screenshot_and_addon() {
     );
     let w = diagnose_mods(tmp.path()).unwrap();
     assert_eq!(w.len(), 2);
-    assert!(w.iter().any(|x| matches!(x.kind, WarningKind::MissingScreenshot { .. })));
-    assert!(w.iter().any(|x| matches!(x.kind, WarningKind::MissingAddonParent { .. })));
+    assert!(w
+        .iter()
+        .any(|x| matches!(x.kind, WarningKind::MissingScreenshot { .. })));
+    assert!(w
+        .iter()
+        .any(|x| matches!(x.kind, WarningKind::MissingAddonParent { .. })));
 }
 
 #[test]

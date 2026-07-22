@@ -22,9 +22,21 @@ fn round_trip_preserves_order_and_active() {
     let snap = TabsSnapshot {
         version: 1,
         tabs: vec![
-            TabRestore { id: TabId(1), archive_path: Some(PathBuf::from("/a.zip")), pinned: false },
-            TabRestore { id: TabId(5), archive_path: Some(PathBuf::from("/b.zip")), pinned: false },
-            TabRestore { id: TabId(7), archive_path: None, pinned: false },
+            TabRestore {
+                id: TabId(1),
+                archive_path: Some(PathBuf::from("/a.zip")),
+                pinned: false,
+            },
+            TabRestore {
+                id: TabId(5),
+                archive_path: Some(PathBuf::from("/b.zip")),
+                pinned: false,
+            },
+            TabRestore {
+                id: TabId(7),
+                archive_path: None,
+                pinned: false,
+            },
         ],
         active: TabId(5),
         next_id: 8,
@@ -39,8 +51,16 @@ fn restore_to_collection_recreates_tabs_and_active() {
     let snap = TabsSnapshot {
         version: 1,
         tabs: vec![
-            TabRestore { id: TabId(1), archive_path: Some(PathBuf::from("/a.zip")), pinned: false },
-            TabRestore { id: TabId(2), archive_path: None, pinned: false },
+            TabRestore {
+                id: TabId(1),
+                archive_path: Some(PathBuf::from("/a.zip")),
+                pinned: false,
+            },
+            TabRestore {
+                id: TabId(2),
+                archive_path: None,
+                pinned: false,
+            },
         ],
         active: TabId(2),
         next_id: 3,
@@ -60,8 +80,16 @@ fn restore_with_invalid_active_falls_back_to_first() {
     let snap = TabsSnapshot {
         version: 1,
         tabs: vec![
-            TabRestore { id: TabId(1), archive_path: None, pinned: false },
-            TabRestore { id: TabId(2), archive_path: None, pinned: false },
+            TabRestore {
+                id: TabId(1),
+                archive_path: None,
+                pinned: false,
+            },
+            TabRestore {
+                id: TabId(2),
+                archive_path: None,
+                pinned: false,
+            },
         ],
         active: TabId(99), // not in tabs
         next_id: 3,
@@ -138,8 +166,16 @@ fn restore_applies_pin_state() {
     let snap = TabsSnapshot {
         version: 1,
         tabs: vec![
-            TabRestore { id: TabId(1), archive_path: None, pinned: true },
-            TabRestore { id: TabId(2), archive_path: None, pinned: false },
+            TabRestore {
+                id: TabId(1),
+                archive_path: None,
+                pinned: true,
+            },
+            TabRestore {
+                id: TabId(2),
+                archive_path: None,
+                pinned: false,
+            },
         ],
         active: TabId(1),
         next_id: 3,
@@ -148,7 +184,9 @@ fn restore_applies_pin_state() {
     let pinned_tab = col.get(TabId(1)).unwrap();
     assert!(pinned_tab.pinned.load(std::sync::atomic::Ordering::SeqCst));
     let unpinned_tab = col.get(TabId(2)).unwrap();
-    assert!(!unpinned_tab.pinned.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(!unpinned_tab
+        .pinned
+        .load(std::sync::atomic::Ordering::SeqCst));
 }
 
 #[test]
@@ -158,9 +196,21 @@ fn restore_partitions_pinned_to_front() {
     let snap = TabsSnapshot {
         version: 1,
         tabs: vec![
-            TabRestore { id: TabId(1), archive_path: None, pinned: false },
-            TabRestore { id: TabId(2), archive_path: None, pinned: true },
-            TabRestore { id: TabId(3), archive_path: None, pinned: false },
+            TabRestore {
+                id: TabId(1),
+                archive_path: None,
+                pinned: false,
+            },
+            TabRestore {
+                id: TabId(2),
+                archive_path: None,
+                pinned: true,
+            },
+            TabRestore {
+                id: TabId(3),
+                archive_path: None,
+                pinned: false,
+            },
         ],
         active: TabId(1),
         next_id: 4,

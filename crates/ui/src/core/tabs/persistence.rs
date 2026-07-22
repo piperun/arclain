@@ -72,8 +72,7 @@ pub fn restore_collection(snapshot: TabsSnapshot) -> TabsCollection {
 /// directories if needed.
 pub fn save_collection(col: &TabsCollection, path: &Path) -> Result<()> {
     let snap = snapshot(col);
-    let json = serde_json::to_string_pretty(&snap)
-        .context("serializing TabsSnapshot")?;
+    let json = serde_json::to_string_pretty(&snap).context("serializing TabsSnapshot")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating parent dir {:?}", parent))?;
@@ -86,10 +85,8 @@ pub fn save_collection(col: &TabsCollection, path: &Path) -> Result<()> {
 /// file is missing, unreadable, or malformed. Callers fall back to
 /// `TabsCollection::new()` (single empty tab) on Err.
 pub fn load_collection(path: &Path) -> Result<TabsCollection> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {:?}", path))?;
-    let snap: TabsSnapshot = serde_json::from_str(&content)
-        .context("parsing tabs.json")?;
+    let content = std::fs::read_to_string(path).with_context(|| format!("reading {:?}", path))?;
+    let snap: TabsSnapshot = serde_json::from_str(&content).context("parsing tabs.json")?;
     Ok(restore_collection(snap))
 }
 

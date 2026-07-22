@@ -132,15 +132,10 @@ impl<'a> Widget for Chips<'a> {
         let chip_height = 24.0_f32;
 
         // Pre-layout to size the chip rect.
-        let probe_galley = ui.painter().layout_no_wrap(
-            combined.clone(),
-            font_id.clone(),
-            text_color,
-        );
-        let chip_size = egui::vec2(
-            (probe_galley.size().x + h_pad * 2.0).ceil(),
-            chip_height,
-        );
+        let probe_galley =
+            ui.painter()
+                .layout_no_wrap(combined.clone(), font_id.clone(), text_color);
+        let chip_size = egui::vec2((probe_galley.size().x + h_pad * 2.0).ceil(), chip_height);
         let (rect, response) = ui.allocate_exact_size(
             chip_size,
             if self.clickable {
@@ -158,15 +153,14 @@ impl<'a> Widget for Chips<'a> {
             egui::StrokeKind::Middle,
         );
 
-        let painted_rect =
-            crate::text_layout::paint_text_left_in_rect_visually_centered(
-                ui.painter(),
-                combined,
-                font_id,
-                text_color,
-                rect,
-                h_pad,
-            );
+        let painted_rect = crate::text_layout::paint_text_left_in_rect_visually_centered(
+            ui.painter(),
+            combined,
+            font_id,
+            text_color,
+            rect,
+            h_pad,
+        );
 
         // Standardized debug overlay (widgets::paint_centering_debug) —
         // shows pill rect, painted-text rect, and the (dx, dy) offset

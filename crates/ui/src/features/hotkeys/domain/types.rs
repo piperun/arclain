@@ -95,9 +95,7 @@ pub enum InputKey {
     Mouse(MouseButton),
 }
 
-
 pub use super::keyboard::KeyboardKey;
-
 
 /// A complete hotkey binding (key + modifiers)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

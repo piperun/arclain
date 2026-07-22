@@ -253,12 +253,11 @@ pub fn get_cache_stats(conn: &mut diesel::SqliteConnection) -> Result<CacheStats
         .map_err(|e| anyhow::anyhow!("Failed to count entries: {}", e))?;
 
     // Use raw SQL for sum to avoid type issues
-    let total_size: i64 = diesel::sql_query(
-        "SELECT COALESCE(SUM(size_bytes), 0) as cnt FROM cache_index"
-    )
-    .load::<CountResult>(conn)
-    .map(|rows| rows.first().map(|r| r.cnt).unwrap_or(0))
-    .unwrap_or(0);
+    let total_size: i64 =
+        diesel::sql_query("SELECT COALESCE(SUM(size_bytes), 0) as cnt FROM cache_index")
+            .load::<CountResult>(conn)
+            .map(|rows| rows.first().map(|r| r.cnt).unwrap_or(0))
+            .unwrap_or(0);
 
     // Count entries without product_id
     let entries_without_product_id: i64 = cache_index
@@ -276,7 +275,7 @@ pub fn get_cache_stats(conn: &mut diesel::SqliteConnection) -> Result<CacheStats
 
     // Count entries by type
     let entries_by_type: Vec<(String, i64)> = diesel::sql_query(
-        "SELECT cache_type, COUNT(*) as cnt FROM cache_index GROUP BY cache_type ORDER BY cnt DESC"
+        "SELECT cache_type, COUNT(*) as cnt FROM cache_index GROUP BY cache_type ORDER BY cnt DESC",
     )
     .load::<CacheTypeCount>(conn)
     .map(|rows| rows.into_iter().map(|r| (r.cache_type, r.cnt)).collect())
@@ -294,7 +293,7 @@ pub fn get_cache_stats(conn: &mut diesel::SqliteConnection) -> Result<CacheStats
     let orphaned_entries: i64 = diesel::sql_query(
         "SELECT COUNT(*) as cnt FROM cache_index
          WHERE product_id IS NOT NULL
-         AND product_id NOT IN (SELECT id FROM product_metadata)"
+         AND product_id NOT IN (SELECT id FROM product_metadata)",
     )
     .load::<CountResult>(conn)
     .map(|rows| rows.first().map(|r| r.cnt).unwrap_or(0))
@@ -330,7 +329,7 @@ pub fn delete_orphaned_entries(conn: &mut diesel::SqliteConnection) -> Result<us
     let affected = diesel::sql_query(
         "DELETE FROM cache_index
          WHERE product_id IS NOT NULL
-         AND product_id NOT IN (SELECT id FROM product_metadata)"
+         AND product_id NOT IN (SELECT id FROM product_metadata)",
     )
     .execute(conn)
     .map_err(|e| anyhow::anyhow!("Failed to delete orphaned entries: {}", e))?;
@@ -354,11 +353,9 @@ pub fn delete_old_search_cache(conn: &mut diesel::SqliteConnection, days: i64) -
 
 /// Delete ALL search cache entries (search results are ephemeral, shouldn't be cached)
 pub fn delete_all_search_cache(conn: &mut diesel::SqliteConnection) -> Result<usize> {
-    let affected = diesel::sql_query(
-        "DELETE FROM cache_index WHERE key LIKE '%:search:%'",
-    )
-    .execute(conn)
-    .map_err(|e| anyhow::anyhow!("Failed to delete search cache: {}", e))?;
+    let affected = diesel::sql_query("DELETE FROM cache_index WHERE key LIKE '%:search:%'")
+        .execute(conn)
+        .map_err(|e| anyhow::anyhow!("Failed to delete search cache: {}", e))?;
 
     Ok(affected)
 }
@@ -390,7 +387,7 @@ pub fn migrate_fix_entries(conn: &mut diesel::SqliteConnection) -> Result<(usize
              ELSE cache_type
          END
          WHERE cache_type = 'screenshot'
-         AND (key LIKE '%:html%' OR key LIKE '%:json%' OR key LIKE '%:cover')"
+         AND (key LIKE '%:html%' OR key LIKE '%:json%' OR key LIKE '%:cover')",
     )
     .execute(conn)
     .unwrap_or(0);
@@ -410,7 +407,7 @@ pub fn migrate_fix_entries(conn: &mut diesel::SqliteConnection) -> Result<(usize
          END
          WHERE product_id IS NULL
          AND key LIKE 'dlsite:%'
-         AND key NOT LIKE 'dlsite:search:%'"
+         AND key NOT LIKE 'dlsite:search:%'",
     )
     .execute(conn)
     .unwrap_or(0);

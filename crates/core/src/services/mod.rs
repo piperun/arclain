@@ -18,8 +18,8 @@ pub use config_service::ConfigService;
 pub use library_service::LibraryService;
 pub use manager::Services;
 pub use merge_service::{
-    CompressionLevel, MergeOptions, MergePhase, MergePreview, MergeProgress,
-    MergeProgressCallback, MergeService, OutputFormat,
+    CompressionLevel, MergeOptions, MergePhase, MergePreview, MergeProgress, MergeProgressCallback,
+    MergeService, OutputFormat,
 };
 pub use network_proxy_persistence_service::{
     NetworkProxyPersistenceService, ProxyRecoveryOutcome, ProxySaveOutcome,

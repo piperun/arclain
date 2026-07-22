@@ -2,10 +2,10 @@
 //!
 //! Full-page editor for organization rules with template variable support.
 
+use crate::shared::components::{Form, TemplateVariable, VariableGroup, VariablePicker};
+use crate::shared::theme::AppTheme;
 use arclain_core::features::organization::OrganizationRule;
 use arclain_widgets::{TextInput, ToggleSwitch};
-use crate::shared::components::{Form, VariablePicker, VariableGroup, TemplateVariable};
-use crate::shared::theme::AppTheme;
 use eframe::egui;
 
 /// Standard input field width
@@ -53,10 +53,8 @@ impl RuleEditorState {
 
     /// Add plugin-provided variables
     pub fn add_plugin_variables(&mut self, plugin_name: &str, variables: Vec<TemplateVariable>) {
-        self.variable_picker.add_group(
-            VariableGroup::new(plugin_name)
-                .with_variables(variables)
-        );
+        self.variable_picker
+            .add_group(VariableGroup::new(plugin_name).with_variables(variables));
     }
 }
 
@@ -74,11 +72,9 @@ pub fn render_rule_editor(
     }
 
     // Form content
-    Form::new()
-        .id("rule_editor")
-        .show(ui, theme, |ui| {
-            render_rule_form(ui, theme, state);
-        });
+    Form::new().id("rule_editor").show(ui, theme, |ui| {
+        render_rule_form(ui, theme, state);
+    });
 
     // Handle variable picker dialog
     if let Some(var) = state.variable_picker.show(ui.ctx(), theme) {
@@ -102,11 +98,7 @@ pub fn render_rule_editor(
     RuleEditorAction::None
 }
 
-fn render_rule_form(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    state: &mut RuleEditorState,
-) {
+fn render_rule_form(ui: &mut egui::Ui, theme: &AppTheme, state: &mut RuleEditorState) {
     // Section: Basic Information
     render_section_header(ui, theme, "Basic Information", None);
 
@@ -132,19 +124,20 @@ fn render_rule_form(
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui
-            .add(
-                ToggleSwitch::new(&mut state.rule.is_enabled)
-                    .with_theme_colors(&theme.colors),
-            )
+            .add(ToggleSwitch::new(&mut state.rule.is_enabled).with_theme_colors(&theme.colors))
             .changed()
         {
             state.is_dirty = true;
         }
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new(if state.rule.is_enabled { "Active" } else { "Inactive" })
-                .size(12.0)
-                .color(theme.colors.on_surface_variant),
+            egui::RichText::new(if state.rule.is_enabled {
+                "Active"
+            } else {
+                "Inactive"
+            })
+            .size(12.0)
+            .color(theme.colors.on_surface_variant),
         );
     });
 
@@ -161,7 +154,12 @@ fn render_rule_form(
     );
 
     // Filename pattern
-    let mut pattern = state.rule.trigger.filename_pattern.clone().unwrap_or_default();
+    let mut pattern = state
+        .rule
+        .trigger
+        .filename_pattern
+        .clone()
+        .unwrap_or_default();
     if TextInput::new(&mut pattern)
         .label("Filename Pattern")
         .hint("Regex pattern, e.g. RJ\\d+")
@@ -172,7 +170,11 @@ fn render_rule_form(
         .show(ui)
         .changed()
     {
-        state.rule.trigger.filename_pattern = if pattern.is_empty() { None } else { Some(pattern) };
+        state.rule.trigger.filename_pattern = if pattern.is_empty() {
+            None
+        } else {
+            Some(pattern)
+        };
         state.is_dirty = true;
     }
     ui.add_space(12.0);
@@ -189,7 +191,11 @@ fn render_rule_form(
         .show(ui)
         .changed()
     {
-        state.rule.trigger.has_file = if has_file.is_empty() { None } else { Some(has_file) };
+        state.rule.trigger.has_file = if has_file.is_empty() {
+            None
+        } else {
+            Some(has_file)
+        };
         state.is_dirty = true;
     }
 
@@ -231,7 +237,12 @@ fn render_rule_form(
         ui.add_space(4.0);
         // Input + button row
         ui.horizontal(|ui| {
-            let mut root = state.rule.actions.root_folder.clone().unwrap_or_else(|| "Game".to_string());
+            let mut root = state
+                .rule
+                .actions
+                .root_folder
+                .clone()
+                .unwrap_or_else(|| "Game".to_string());
             if TextInput::new(&mut root)
                 .hint("e.g. {title} or Game")
                 .width(FIELD_WIDTH - 40.0)
@@ -243,11 +254,15 @@ fn render_rule_form(
                 state.is_dirty = true;
             }
 
-            if ui.add(
-                arclain_widgets::IconButton::new(egui_phosphor::regular::BRACKETS_CURLY)
-                    .size(arclain_widgets::IconButtonSize::Medium)
-                    .with_theme_colors(&theme.colors)
-            ).on_hover_text("Insert variable").clicked() {
+            if ui
+                .add(
+                    arclain_widgets::IconButton::new(egui_phosphor::regular::BRACKETS_CURLY)
+                        .size(arclain_widgets::IconButtonSize::Medium)
+                        .with_theme_colors(&theme.colors),
+                )
+                .on_hover_text("Insert variable")
+                .clicked()
+            {
                 state.target_field = Some(RuleField::FolderName);
                 state.variable_picker.open();
             }
@@ -272,15 +287,23 @@ fn render_rule_form(
             .show(ui)
             .changed()
         {
-            state.rule.actions.output_name = if output_name.is_empty() { None } else { Some(output_name) };
+            state.rule.actions.output_name = if output_name.is_empty() {
+                None
+            } else {
+                Some(output_name)
+            };
             state.is_dirty = true;
         }
 
-        if ui.add(
-            arclain_widgets::IconButton::new(egui_phosphor::regular::BRACKETS_CURLY)
-                .size(arclain_widgets::IconButtonSize::Medium)
-                .with_theme_colors(&theme.colors)
-        ).on_hover_text("Insert variable").clicked() {
+        if ui
+            .add(
+                arclain_widgets::IconButton::new(egui_phosphor::regular::BRACKETS_CURLY)
+                    .size(arclain_widgets::IconButtonSize::Medium)
+                    .with_theme_colors(&theme.colors),
+            )
+            .on_hover_text("Insert variable")
+            .clicked()
+        {
             state.target_field = Some(RuleField::ArchiveName);
             state.variable_picker.open();
         }
@@ -293,10 +316,14 @@ fn render_rule_form(
     );
 
     // Copy folder name button
-    let has_folder = state.rule.actions.root_folder.is_some() && state.rule.actions.use_standard_layout;
+    let has_folder =
+        state.rule.actions.root_folder.is_some() && state.rule.actions.use_standard_layout;
     if has_folder {
         ui.add_space(8.0);
-        if ui.small_button("Copy folder name to archive name").clicked() {
+        if ui
+            .small_button("Copy folder name to archive name")
+            .clicked()
+        {
             if let Some(folder) = &state.rule.actions.root_folder {
                 state.rule.actions.output_name = Some(folder.clone());
                 state.is_dirty = true;

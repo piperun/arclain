@@ -60,5 +60,10 @@ pub fn navigate_up(signals: &AppSignals) -> bool {
 /// Reset navigation state (e.g. when opening new archive)
 #[allow(dead_code)]
 pub fn reset_navigation(signals: &AppSignals) {
-    signals.tabs.get().active().navigation.set(NavigationState::new());
+    signals
+        .tabs
+        .get()
+        .active()
+        .navigation
+        .set(NavigationState::new());
 }

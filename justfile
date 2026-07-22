@@ -57,6 +57,14 @@ _test-plugins *args:
 _test-scripts:
     {{python}} -m unittest discover -s scripts -p "test_*.py"
 
+# ─── formatting ───────────────────────────────────────────────────────────
+
+fmt:
+    {{python}} scripts/_format.py
+
+fmt-check:
+    {{python}} scripts/_format.py --check
+
 # ─── release ──────────────────────────────────────────────────────────────
 # `just release` builds plugins, packages the optimized binary, and archives it.
 

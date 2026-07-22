@@ -6,14 +6,16 @@
 use arclain_ui::core::tabs::TabsCollection;
 use arclain_ui::shared::components::drop_overlay::{render_drop_overlay, DropZone};
 use eframe::egui;
-use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
+use egui_kittest::Harness;
 use std::path::PathBuf;
 
 #[test]
 fn overlay_renders_two_zones_when_active_tab_has_archive() {
     let col = TabsCollection::new();
-    col.active().archive_path.set(Some(PathBuf::from("/tmp/x.zip")));
+    col.active()
+        .archive_path
+        .set(Some(PathBuf::from("/tmp/x.zip")));
     let mut harness = Harness::new_ui_state(
         |ui, state: &mut (TabsCollection, Option<DropZone>)| {
             let action = render_drop_overlay(ui, &state.0, Some(egui::pos2(100.0, 100.0)));
@@ -24,7 +26,10 @@ fn overlay_renders_two_zones_when_active_tab_has_archive() {
     harness.run();
     // Verify both zone labels render as queryable widgets.
     assert!(
-        harness.query_all_by_label("Open as new tab").next().is_some(),
+        harness
+            .query_all_by_label("Open as new tab")
+            .next()
+            .is_some(),
         "Open as new tab label should be present"
     );
     assert!(
@@ -47,7 +52,10 @@ fn overlay_renders_one_zone_when_active_tab_is_empty() {
         (col, None::<DropZone>),
     );
     harness.run();
-    assert!(harness.query_all_by_label("Open as new tab").next().is_some());
+    assert!(harness
+        .query_all_by_label("Open as new tab")
+        .next()
+        .is_some());
     // Replace zone hidden because active tab has no archive.
     assert!(
         harness
@@ -64,7 +72,9 @@ fn overlay_shows_ctrl_hint_in_replace_zone() {
     // zone. The hint surfaces the keybinding so users don't need to
     // discover it from docs.
     let col = TabsCollection::new();
-    col.active().archive_path.set(Some(PathBuf::from("/tmp/x.zip")));
+    col.active()
+        .archive_path
+        .set(Some(PathBuf::from("/tmp/x.zip")));
     let mut harness = Harness::new_ui_state(
         |ui, state: &mut (TabsCollection, Option<DropZone>)| {
             let action = render_drop_overlay(ui, &state.0, Some(egui::pos2(100.0, 100.0)));

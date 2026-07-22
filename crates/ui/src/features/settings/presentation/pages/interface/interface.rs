@@ -107,10 +107,8 @@ impl InterfaceSettingsState {
         for (key, value) in self.layout_options.to_map() {
             let _ = service.set_display_option(&key, &value);
         }
-        let _ = service.set_display_option(
-            "show_button_labels",
-            &self.show_button_labels.to_string(),
-        );
+        let _ =
+            service.set_display_option("show_button_labels", &self.show_button_labels.to_string());
 
         self.dirty = false;
     }
@@ -161,100 +159,88 @@ pub fn render_interface_settings(
 
     let mut emitted: Option<InterfaceSettingsAction> = None;
 
-    Form::new()
-        .id("interface_settings")
-        .show(ui, theme, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
+    Form::new().id("interface_settings").show(ui, theme, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(0.0, 16.0);
 
-            // Toolbar section — just the Edit Layout button. Item
-            // editing lives in the dedicated toolbar layout editor.
-            render_section(ui, theme, "Toolbar", |ui| {
-                ui.label(
-                    egui::RichText::new("Customize toolbar button arrangement")
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
-                ui.add_space(8.0);
+        // Toolbar section — just the Edit Layout button. Item
+        // editing lives in the dedicated toolbar layout editor.
+        render_section(ui, theme, "Toolbar", |ui| {
+            ui.label(
+                egui::RichText::new("Customize toolbar button arrangement")
+                    .size(12.0)
+                    .color(theme.colors.on_surface_variant),
+            );
+            ui.add_space(8.0);
 
-                if ui
-                    .add(
-                        TextButton::new(
-                            format!(
-                                "{} Edit Layout",
-                                egui_phosphor::regular::PENCIL_SIMPLE
-                            ),
-                            ButtonSize::Medium,
-                        )
-                        .with_theme_colors(&theme.colors),
+            if ui
+                .add(
+                    TextButton::new(
+                        format!("{} Edit Layout", egui_phosphor::regular::PENCIL_SIMPLE),
+                        ButtonSize::Medium,
                     )
-                    .clicked()
-                {
-                    interface_state.layout_dialog_open = true;
-                }
-            });
-
-            // Context Menu section — visibility toggles backed by the
-            // context_menu_items signal.
-            render_section(ui, theme, "Context Menu", |ui| {
-                let items = shared.signals().context_menu_items.get();
-                if let Some((item_id, visible)) =
-                    sections::context_menu_section::render(ui, theme, &items)
-                {
-                    capture_toggle(
-                        &mut emitted,
-                        UiRegion::ContextMenu,
-                        item_id,
-                        visible,
-                    );
-                }
-            });
-
-            // Info Panel section — visibility toggles backed by the
-            // info_panel_items signal.
-            render_section(ui, theme, "Info Panel", |ui| {
-                let items = shared.signals().info_panel_items.get();
-                if let Some((item_id, visible)) =
-                    sections::info_panel_section::render(ui, theme, &items)
-                {
-                    capture_toggle(
-                        &mut emitted,
-                        UiRegion::InfoPanel,
-                        item_id,
-                        visible,
-                    );
-                }
-            });
-
-            // Layout section — display options.
-            render_section(ui, theme, "Layout", |ui| {
-                sections::layout_section::render(
-                    ui,
-                    theme,
-                    &mut interface_state.layout_options,
-                    &mut interface_state.dirty,
-                );
-            });
-
-            // Header section — display option (show button labels).
-            render_section(ui, theme, "Header", |ui| {
-                ui.label(
-                    egui::RichText::new("Configure header button display")
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
-                ui.add_space(8.0);
-
-                if ui
-                    .checkbox(&mut interface_state.show_button_labels, "Show button labels in header")
-                    .on_hover_text("Display text labels next to icons in header buttons")
-                    .changed()
-                {
-                    interface_state.dirty = true;
-                }
-            });
-
-            ui.add_space(16.0);
+                    .with_theme_colors(&theme.colors),
+                )
+                .clicked()
+            {
+                interface_state.layout_dialog_open = true;
+            }
         });
+
+        // Context Menu section — visibility toggles backed by the
+        // context_menu_items signal.
+        render_section(ui, theme, "Context Menu", |ui| {
+            let items = shared.signals().context_menu_items.get();
+            if let Some((item_id, visible)) =
+                sections::context_menu_section::render(ui, theme, &items)
+            {
+                capture_toggle(&mut emitted, UiRegion::ContextMenu, item_id, visible);
+            }
+        });
+
+        // Info Panel section — visibility toggles backed by the
+        // info_panel_items signal.
+        render_section(ui, theme, "Info Panel", |ui| {
+            let items = shared.signals().info_panel_items.get();
+            if let Some((item_id, visible)) =
+                sections::info_panel_section::render(ui, theme, &items)
+            {
+                capture_toggle(&mut emitted, UiRegion::InfoPanel, item_id, visible);
+            }
+        });
+
+        // Layout section — display options.
+        render_section(ui, theme, "Layout", |ui| {
+            sections::layout_section::render(
+                ui,
+                theme,
+                &mut interface_state.layout_options,
+                &mut interface_state.dirty,
+            );
+        });
+
+        // Header section — display option (show button labels).
+        render_section(ui, theme, "Header", |ui| {
+            ui.label(
+                egui::RichText::new("Configure header button display")
+                    .size(12.0)
+                    .color(theme.colors.on_surface_variant),
+            );
+            ui.add_space(8.0);
+
+            if ui
+                .checkbox(
+                    &mut interface_state.show_button_labels,
+                    "Show button labels in header",
+                )
+                .on_hover_text("Display text labels next to icons in header buttons")
+                .changed()
+            {
+                interface_state.dirty = true;
+            }
+        });
+
+        ui.add_space(16.0);
+    });
 
     // Layout type selection dialog
     if interface_state.layout_dialog_open {

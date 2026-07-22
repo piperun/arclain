@@ -155,8 +155,14 @@ pub fn paint_widget_rect_debug(painter: &Painter, rect: Rect, label: &str, enabl
     let c = rect.center();
     let half = 6.0;
     let cross = Stroke::new(1.0, debug_colors::RECT_CENTER);
-    painter.line_segment([Pos2::new(c.x - half, c.y), Pos2::new(c.x + half, c.y)], cross);
-    painter.line_segment([Pos2::new(c.x, c.y - half), Pos2::new(c.x, c.y + half)], cross);
+    painter.line_segment(
+        [Pos2::new(c.x - half, c.y), Pos2::new(c.x + half, c.y)],
+        cross,
+    );
+    painter.line_segment(
+        [Pos2::new(c.x, c.y - half), Pos2::new(c.x, c.y + half)],
+        cross,
+    );
 
     // Label: "<tag> 123,45 80×24" at top-left, anchored just outside
     // the rect so it doesn't sit on top of the widget's content.
@@ -266,8 +272,7 @@ pub fn paint_text_centering_debug(
     enabled: bool,
 ) {
     let mesh = galley.mesh_bounds;
-    let mesh_screen =
-        Rect::from_min_size(galley_origin + mesh.min.to_vec2(), mesh.size());
+    let mesh_screen = Rect::from_min_size(galley_origin + mesh.min.to_vec2(), mesh.size());
     paint_centering_debug(painter, container, mesh_screen, label, enabled);
 }
 
@@ -303,22 +308,34 @@ pub fn paint_child_in_parent_debug(
 
     // Left gap arrow.
     painter.line_segment(
-        [Pos2::new(parent.left(), mid_y), Pos2::new(child.left(), mid_y)],
+        [
+            Pos2::new(parent.left(), mid_y),
+            Pos2::new(child.left(), mid_y),
+        ],
         gap_stroke,
     );
     // Right.
     painter.line_segment(
-        [Pos2::new(child.right(), mid_y), Pos2::new(parent.right(), mid_y)],
+        [
+            Pos2::new(child.right(), mid_y),
+            Pos2::new(parent.right(), mid_y),
+        ],
         gap_stroke,
     );
     // Top.
     painter.line_segment(
-        [Pos2::new(mid_x, parent.top()), Pos2::new(mid_x, child.top())],
+        [
+            Pos2::new(mid_x, parent.top()),
+            Pos2::new(mid_x, child.top()),
+        ],
         gap_stroke,
     );
     // Bottom.
     painter.line_segment(
-        [Pos2::new(mid_x, child.bottom()), Pos2::new(mid_x, parent.bottom())],
+        [
+            Pos2::new(mid_x, child.bottom()),
+            Pos2::new(mid_x, parent.bottom()),
+        ],
         gap_stroke,
     );
 
@@ -342,8 +359,7 @@ pub fn paint_child_in_parent_debug(
 /// widget background.
 fn paint_label_chip(painter: &Painter, pos: Pos2, anchor: Align2, text: &str) {
     let font = FontId::proportional(10.0);
-    let galley =
-        painter.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
+    let galley = painter.layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
     let size = galley.size();
     let rect_pos = match anchor {
         Align2::LEFT_BOTTOM => Pos2::new(pos.x, pos.y - size.y),

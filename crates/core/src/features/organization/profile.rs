@@ -79,7 +79,9 @@ impl Default for ArchiveProfile {
         Self {
             id: 0,
             name: "Maximum Compression (7z)".to_string(),
-            description: Some("Best compression ratio, slower speed. Uses LZMA2 algorithm.".to_string()),
+            description: Some(
+                "Best compression ratio, slower speed. Uses LZMA2 algorithm.".to_string(),
+            ),
             format: ArchiveFormat::SevenZ,
             compression_level: 9,
             compression_method: Some("LZMA2".to_string()),

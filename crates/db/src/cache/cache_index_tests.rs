@@ -157,8 +157,7 @@ mod diesel_crud {
     use super::*;
 
     fn setup_diesel() -> diesel::SqliteConnection {
-        let mut conn =
-            diesel::SqliteConnection::establish(":memory:").expect("in-memory SQLite");
+        let mut conn = diesel::SqliteConnection::establish(":memory:").expect("in-memory SQLite");
         diesel::sql_query(
             "CREATE TABLE cache_index (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

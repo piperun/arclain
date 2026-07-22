@@ -2,13 +2,15 @@
 //!
 //! Contains settings for extraction, compression, and integrity verification.
 
-use arclain_core::{OutputCollisionPolicy, COLLISION_POLICY_CONFIG_KEY};
-use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ThemedDropdown, ToggleSwitch};
 use crate::features::settings::types::{
     ArchivesSettingsState, ChecksumAlgorithm, ChecksumMode, SettingsAction,
 };
 use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
+use arclain_core::{OutputCollisionPolicy, COLLISION_POLICY_CONFIG_KEY};
+use arclain_widgets::{
+    ButtonSize, TextButton, TextInput, TextInputSize, ThemedDropdown, ToggleSwitch,
+};
 use eframe::egui;
 
 /// Render the Archives settings page

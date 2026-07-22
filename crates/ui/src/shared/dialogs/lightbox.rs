@@ -24,7 +24,11 @@ pub struct LightboxState {
 
 impl LightboxState {
     /// Open the lightbox with the given images
-    pub fn open(images: Vec<(String, Option<String>)>, start_index: usize, title: Option<String>) -> Self {
+    pub fn open(
+        images: Vec<(String, Option<String>)>,
+        start_index: usize,
+        title: Option<String>,
+    ) -> Self {
         let clamped_index = start_index.min(images.len().saturating_sub(1));
         Self {
             show: true,
@@ -133,11 +137,8 @@ pub fn render_lightbox(
         .fixed_pos(egui::pos2(0.0, 0.0))
         .show(ctx, |ui| {
             // Paint dark background
-            ui.painter().rect_filled(
-                screen,
-                0.0,
-                egui::Color32::from_black_alpha(230),
-            );
+            ui.painter()
+                .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(230));
 
             // Allocate the full screen and check for clicks outside the image area
             let overlay_response = ui.allocate_rect(screen, egui::Sense::click());
@@ -149,7 +150,10 @@ pub fn render_lightbox(
 
             let image_area = egui::Rect::from_min_max(
                 egui::pos2(nav_button_width, top_bar_height),
-                egui::pos2(screen.width() - nav_button_width, screen.height() - bottom_bar_height),
+                egui::pos2(
+                    screen.width() - nav_button_width,
+                    screen.height() - bottom_bar_height,
+                ),
             );
 
             // Render the current image
@@ -157,10 +161,14 @@ pub fn render_lightbox(
             if let Some((cache_key, _url)) = state.current_image() {
                 if let Some(cache) = content_cache {
                     if let Ok(Some(bytes)) = cache.get(cache_key) {
-                        if let Some((handle, tex_size)) = load_texture_from_bytes(ctx, cache_key, &bytes) {
+                        if let Some((handle, tex_size)) =
+                            load_texture_from_bytes(ctx, cache_key, &bytes)
+                        {
                             // Scale image to fit within image_area while maintaining aspect ratio
                             let available = image_area.size();
-                            let scale = (available.x / tex_size.x).min(available.y / tex_size.y).min(1.0);
+                            let scale = (available.x / tex_size.x)
+                                .min(available.y / tex_size.y)
+                                .min(1.0);
                             let display_size = egui::vec2(tex_size.x * scale, tex_size.y * scale);
 
                             // Center the image in the available area
@@ -174,7 +182,10 @@ pub fn render_lightbox(
                             ui.painter().image(
                                 handle.id(),
                                 image_rect,
-                                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                                egui::Rect::from_min_max(
+                                    egui::pos2(0.0, 0.0),
+                                    egui::pos2(1.0, 1.0),
+                                ),
                                 egui::Color32::WHITE,
                             );
                         }
@@ -290,7 +301,8 @@ pub fn render_lightbox(
                 if let Some(pos) = overlay_response.interact_pointer_pos() {
                     let on_close_button = close_rect.contains(pos);
                     let on_left_nav = state.images.len() > 1 && pos.x < nav_button_width;
-                    let on_right_nav = state.images.len() > 1 && pos.x > screen.width() - nav_button_width;
+                    let on_right_nav =
+                        state.images.len() > 1 && pos.x > screen.width() - nav_button_width;
                     let on_image = image_rect.contains(pos);
 
                     if !on_close_button && !on_left_nav && !on_right_nav && !on_image {
@@ -329,10 +341,8 @@ fn load_texture_from_bytes(
     let size = egui::vec2(rgba.width() as f32, rgba.height() as f32);
     let pixels = rgba.into_raw();
 
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(
-        [size.x as usize, size.y as usize],
-        &pixels,
-    );
+    let color_image =
+        egui::ColorImage::from_rgba_unmultiplied([size.x as usize, size.y as usize], &pixels);
 
     let handle = ctx.load_texture(
         format!("lightbox_{}", cache_key),
@@ -394,10 +404,7 @@ mod tests {
 
     #[test]
     fn test_lightbox_start_index_clamping() {
-        let images = vec![
-            ("key1".to_string(), None),
-            ("key2".to_string(), None),
-        ];
+        let images = vec![("key1".to_string(), None), ("key2".to_string(), None)];
         // Start index beyond length should be clamped
         let state = LightboxState::open(images, 10, None);
         assert_eq!(state.current_index, 1); // Clamped to last valid index

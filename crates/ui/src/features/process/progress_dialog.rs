@@ -45,10 +45,7 @@ pub fn render(
                 let step_line = format!("Step: {}", state.current_step);
                 Text::new(&step_line).show(ui);
                 ui.add_space(8.0);
-                ui.add(
-                    egui::ProgressBar::new(state.step_percent as f32 / 100.0)
-                        .show_percentage(),
-                );
+                ui.add(egui::ProgressBar::new(state.step_percent as f32 / 100.0).show_percentage());
                 if state.files_failed > 0 {
                     ui.add_space(4.0);
                     let failed_line = format!("{} failed so far", state.files_failed);
@@ -85,7 +82,11 @@ pub fn render(
         },
         |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let btn_label = if state.is_running { "Minimize" } else { "Close" };
+                let btn_label = if state.is_running {
+                    "Minimize"
+                } else {
+                    "Close"
+                };
                 if ui
                     .add(
                         TextButton::new(btn_label, ButtonSize::Small)

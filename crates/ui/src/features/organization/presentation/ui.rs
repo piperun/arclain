@@ -1,5 +1,5 @@
-use crate::features::organization::OrganizerPage;
 use crate::features::organization::presentation::views::{ProfilesPage, RulesPage};
+use crate::features::organization::OrganizerPage;
 
 use crate::shared::SharedState;
 use eframe::egui;

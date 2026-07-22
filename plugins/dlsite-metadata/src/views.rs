@@ -14,8 +14,8 @@
 //! impl now.
 
 use crate::{
-    detect_dlsite_code, format_description, generate_metadata_json,
-    get_cached_dlsite_metadata, STATE,
+    detect_dlsite_code, format_description, generate_metadata_json, get_cached_dlsite_metadata,
+    STATE,
 };
 use archust_plugin_sdk::info;
 
@@ -701,7 +701,8 @@ pub(crate) fn dispatch(
                             info("[DLSite Plugin] Pushing Warning element to UI");
                             elements.push(UiElement::Warning(WarningConfig {
                                 icon: WarningIcon::GlobeX,
-                                message: "This product is geo-blocked. Metadata may be incomplete.".to_string(),
+                                message: "This product is geo-blocked. Metadata may be incomplete."
+                                    .to_string(),
                             }));
                         }
 
@@ -992,7 +993,8 @@ pub(crate) fn dispatch(
                         .unwrap_or(true);
 
                     if need_refresh {
-                        let summaries = archust_plugin_sdk::get_metadata_summaries(filtered_ids.clone());
+                        let summaries =
+                            archust_plugin_sdk::get_metadata_summaries(filtered_ids.clone());
                         let data: Vec<(String, Option<String>, bool)> = summaries
                             .into_iter()
                             .map(|s| (s.id, s.title, s.geo_blocked))
@@ -1087,9 +1089,8 @@ pub(crate) fn dispatch(
                     if is_geo_blocked {
                         content_elements.push(UiElement::Warning(WarningConfig {
                             icon: WarningIcon::GlobeX,
-                            message:
-                                "This product is geo-blocked. Metadata may be incomplete."
-                                    .to_string(),
+                            message: "This product is geo-blocked. Metadata may be incomplete."
+                                .to_string(),
                         }));
                     }
 
@@ -1160,79 +1161,79 @@ pub(crate) fn dispatch(
                     });
 
                     // Use cached images or build new list
-                    let carousel_images: Vec<(String, Option<String>)> =
-                        if let Some(images) = cached_images {
-                            images
-                        } else {
-                            // Build image list (only runs once per entry selection)
-                            let mut images: Vec<(String, Option<String>)> = Vec::new();
-                            let mut seen_urls: std::collections::HashSet<String> =
-                                std::collections::HashSet::new();
+                    let carousel_images: Vec<(String, Option<String>)> = if let Some(images) =
+                        cached_images
+                    {
+                        images
+                    } else {
+                        // Build image list (only runs once per entry selection)
+                        let mut images: Vec<(String, Option<String>)> = Vec::new();
+                        let mut seen_urls: std::collections::HashSet<String> =
+                            std::collections::HashSet::new();
 
-                            // Add cover image first
-                            let cover_key =
-                                gameta_lib::providers::dlsite::cache_keys::cover_key(selected_id);
-                            let cover_url =
-                                scraped.as_ref().and_then(|s| s.cover_image.clone());
+                        // Add cover image first
+                        let cover_key =
+                            gameta_lib::providers::dlsite::cache_keys::cover_key(selected_id);
+                        let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
 
-                            // Show cover if we have a URL or cached bytes
-                            let show_cover = cover_url.is_some()
-                                || archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key);
+                        // Show cover if we have a URL or cached bytes
+                        let show_cover = cover_url.is_some()
+                            || archust_plugin_sdk::arclain::plugin::host::has_data(&cover_key);
 
-                            if show_cover {
-                                if let Some(ref url) = cover_url {
-                                    seen_urls.insert(url.clone());
-                                }
-                                images.push((cover_key, cover_url));
+                        if show_cover {
+                            if let Some(ref url) = cover_url {
+                                seen_urls.insert(url.clone());
                             }
+                            images.push((cover_key, cover_url));
+                        }
 
-                            // Add screenshots: from scraped data URLs, or probe cache as fallback
-                            let has_scraped_screenshots = scraped
-                                .as_ref()
-                                .map(|s| !s.screenshots.is_empty())
-                                .unwrap_or(false);
+                        // Add screenshots: from scraped data URLs, or probe cache as fallback
+                        let has_scraped_screenshots = scraped
+                            .as_ref()
+                            .map(|s| !s.screenshots.is_empty())
+                            .unwrap_or(false);
 
-                            if has_scraped_screenshots {
-                                let scraped_data = scraped.as_ref().unwrap();
-                                for (i, url) in scraped_data.screenshots.iter().enumerate() {
-                                    if !url.is_empty() && !seen_urls.contains(url) {
-                                        let key =
-                                            gameta_lib::providers::dlsite::cache_keys::screenshot_key(
-                                                selected_id, i,
-                                            );
-                                        seen_urls.insert(url.clone());
-                                        images.push((key, Some(url.clone())));
-                                    }
-                                }
-                            } else {
-                                // Fallback: probe content cache by key when DB extras
-                                // doesn't have screenshot URLs (stale migration data)
-                                for i in 0..20 {
+                        if has_scraped_screenshots {
+                            let scraped_data = scraped.as_ref().unwrap();
+                            for (i, url) in scraped_data.screenshots.iter().enumerate() {
+                                if !url.is_empty() && !seen_urls.contains(url) {
                                     let key =
                                         gameta_lib::providers::dlsite::cache_keys::screenshot_key(
                                             selected_id,
                                             i,
                                         );
-                                    if archust_plugin_sdk::arclain::plugin::host::has_data(&key) {
-                                        images.push((key, None));
-                                    } else {
-                                        break;
-                                    }
+                                    seen_urls.insert(url.clone());
+                                    images.push((key, Some(url.clone())));
                                 }
                             }
-
-                            // Only cache non-empty lists (empty = stale, will retry next frame
-                            // after lazy repair has a chance to populate extras)
-                            if !images.is_empty() {
-                                STATE.with(|s| {
-                                    s.borrow_mut()
-                                        .cached_carousel_images
-                                        .insert(selected_id.to_string(), images.clone());
-                                });
+                        } else {
+                            // Fallback: probe content cache by key when DB extras
+                            // doesn't have screenshot URLs (stale migration data)
+                            for i in 0..20 {
+                                let key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(
+                                    selected_id,
+                                    i,
+                                );
+                                if archust_plugin_sdk::arclain::plugin::host::has_data(&key) {
+                                    images.push((key, None));
+                                } else {
+                                    break;
+                                }
                             }
+                        }
 
-                            images
-                        };
+                        // Only cache non-empty lists (empty = stale, will retry next frame
+                        // after lazy repair has a chance to populate extras)
+                        if !images.is_empty() {
+                            STATE.with(|s| {
+                                s.borrow_mut()
+                                    .cached_carousel_images
+                                    .insert(selected_id.to_string(), images.clone());
+                            });
+                        }
+
+                        images
+                    };
 
                     if carousel_images.is_empty() {
                         // Show placeholder if no images
@@ -1413,9 +1414,7 @@ fn push_cached_video_buttons(
     elements: &mut Vec<archust_plugin_sdk::arclain::plugin::ui::UiElement>,
     product_id: &str,
 ) {
-    use archust_plugin_sdk::arclain::plugin::ui::{
-        ButtonConfig, LabelConfig, UiElement,
-    };
+    use archust_plugin_sdk::arclain::plugin::ui::{ButtonConfig, LabelConfig, UiElement};
 
     let video_prefix = format!("dlsite:{}:video:", product_id);
     let cached_video_keys: Vec<String> =

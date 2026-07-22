@@ -317,10 +317,8 @@ fn render_selection_area<R: Region>(
         ui.horizontal(|ui| {
             let prev_btn = ui.add_enabled(
                 can_move_prev,
-                egui::Button::new(
-                    egui::RichText::new(prev_glyph).color(theme.colors.on_surface),
-                )
-                .min_size(egui::vec2(36.0, 36.0)),
+                egui::Button::new(egui::RichText::new(prev_glyph).color(theme.colors.on_surface))
+                    .min_size(egui::vec2(36.0, 36.0)),
             );
             if prev_btn.clicked() && can_move_prev {
                 let prev_idx = visible_sorted[vis_pos - 1].0;
@@ -355,10 +353,8 @@ fn render_selection_area<R: Region>(
 
             let next_btn = ui.add_enabled(
                 can_move_next,
-                egui::Button::new(
-                    egui::RichText::new(next_glyph).color(theme.colors.on_surface),
-                )
-                .min_size(egui::vec2(36.0, 36.0)),
+                egui::Button::new(egui::RichText::new(next_glyph).color(theme.colors.on_surface))
+                    .min_size(egui::vec2(36.0, 36.0)),
             );
             if next_btn.clicked() && can_move_next {
                 let next_idx = visible_sorted[vis_pos + 1].0;

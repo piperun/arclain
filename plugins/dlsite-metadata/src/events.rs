@@ -32,7 +32,9 @@ pub(crate) fn dispatch(
     if id == "__page_init" {
         if let Some(page_id) = &value {
             if page_id.starts_with("dlsite_browser") {
-                return vec![PluginAction::SetPageDisplayName("DLSite Browser".to_string())];
+                return vec![PluginAction::SetPageDisplayName(
+                    "DLSite Browser".to_string(),
+                )];
             }
         }
         return vec![];
@@ -64,11 +66,17 @@ pub(crate) fn dispatch(
     // "Fetch already in progress, ignoring" state until the archive is
     // reopened.
     if let Some(key) = id.strip_prefix("background_fetch_complete:") {
-        info(&format!("[DLSite Plugin] Background fetch complete: {}", key));
+        info(&format!(
+            "[DLSite Plugin] Background fetch complete: {}",
+            key
+        ));
         STATE.with(|s| s.borrow_mut().fetch_in_progress = false);
         if let Some(code) = key.strip_prefix("dlsite:") {
             if let Some((json, scraped)) = get_cached_dlsite_metadata(code) {
-                info(&format!("[DLSite Plugin] Loaded {} from cache after fetch", code));
+                info(&format!(
+                    "[DLSite Plugin] Loaded {} from cache after fetch",
+                    code
+                ));
                 let metadata_json =
                     generate_metadata_json(code, Some(&(json.clone(), scraped.clone())));
                 archust_plugin_sdk::emit_metadata(&metadata_json);
@@ -124,7 +132,10 @@ pub(crate) fn dispatch(
     // or auto-fetch is enabled, the cost is contained to occasional
     // archive opens / button clicks rather than every UI frame.
     if let Some(key) = id.strip_prefix("do_native_fetch:") {
-        info(&format!("[DLSite Plugin] Native fetch requested for {}", key));
+        info(&format!(
+            "[DLSite Plugin] Native fetch requested for {}",
+            key
+        ));
         let code = key.strip_prefix("dlsite:").unwrap_or(key).to_string();
 
         match fetch_dlsite_metadata(&code) {
@@ -192,7 +203,8 @@ pub(crate) fn dispatch(
 
         // Re-use logic to fetch and emit (Data API caches transparently)
         if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
-            let metadata_json = generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
+            let metadata_json =
+                generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
             archust_plugin_sdk::emit_metadata(&metadata_json);
 
             // Download images + videos with progress
@@ -220,7 +232,10 @@ pub(crate) fn dispatch(
                         _ => format!("[{}] {}", code, current_name),
                     };
 
-                    info(&format!("[DLSite Plugin] Renaming archive to: {}", new_name));
+                    info(&format!(
+                        "[DLSite Plugin] Renaming archive to: {}",
+                        new_name
+                    ));
                     match archust_plugin_sdk::rename_archive(&new_name) {
                         Ok(new_path) => {
                             info(&format!(
@@ -229,10 +244,7 @@ pub(crate) fn dispatch(
                             ));
                         }
                         Err(e) => {
-                            info(&format!(
-                                "[DLSite Plugin] Failed to rename archive: {}",
-                                e
-                            ));
+                            info(&format!("[DLSite Plugin] Failed to rename archive: {}", e));
                         }
                     }
                 }
@@ -270,7 +282,9 @@ pub(crate) fn dispatch(
                         state.current_image_index = new_idx;
                     }
                 });
-                return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+                return vec![PluginAction::RefreshPanel(
+                    "Page:dlsite_browser".to_string(),
+                )];
             }
 
             if action_part == "next" {
@@ -287,12 +301,15 @@ pub(crate) fn dispatch(
                         state.current_image_index = new_idx;
                     }
                 });
-                return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+                return vec![PluginAction::RefreshPanel(
+                    "Page:dlsite_browser".to_string(),
+                )];
             }
 
             if action_part.starts_with("select_") {
                 // Direct select by carousel index
-                if let Ok(carousel_idx) = action_part.trim_start_matches("select_").parse::<usize>() {
+                if let Ok(carousel_idx) = action_part.trim_start_matches("select_").parse::<usize>()
+                {
                     STATE.with(|s| {
                         let mut state = s.borrow_mut();
                         // Carousel index 0 = cover (-1), 1+ = sample (carousel_idx - 1)
@@ -302,7 +319,9 @@ pub(crate) fn dispatch(
                             (carousel_idx - 1) as i32
                         };
                     });
-                    return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+                    return vec![PluginAction::RefreshPanel(
+                        "Page:dlsite_browser".to_string(),
+                    )];
                 }
             }
 
@@ -348,7 +367,8 @@ pub(crate) fn dispatch(
                                     let is_cached =
                                         archust_plugin_sdk::arclain::plugin::host::has_data(&key);
 
-                                    let should_include = if is_cached_tab { is_cached } else { true };
+                                    let should_include =
+                                        if is_cached_tab { is_cached } else { true };
 
                                     if should_include {
                                         seen_urls.insert(url.clone());
@@ -551,10 +571,8 @@ pub(crate) fn dispatch(
             match perform_scan_cached_only() {
                 Ok(Some((product_id, json, scraped))) => {
                     info("[DLSite Plugin] Found cached metadata");
-                    let metadata_json = generate_metadata_json(
-                        &product_id,
-                        Some(&(json.clone(), scraped.clone())),
-                    );
+                    let metadata_json =
+                        generate_metadata_json(&product_id, Some(&(json.clone(), scraped.clone())));
                     archust_plugin_sdk::emit_metadata(&metadata_json);
 
                     STATE.with(|state| {
@@ -572,9 +590,10 @@ pub(crate) fn dispatch(
                         STATE.with(|state| {
                             state.borrow_mut().fetch_in_progress = true;
                         });
-                        archust_plugin_sdk::arclain::plugin::host::set_status_message(
-                            &format!("Fetching metadata for {}...", code),
-                        );
+                        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+                            "Fetching metadata for {}...",
+                            code
+                        ));
                         return vec![PluginAction::RequestFetch(format!("dlsite:{}", code))];
                     }
                     info("[DLSite Plugin] No DLSite code detected");
@@ -640,16 +659,21 @@ pub(crate) fn dispatch(
                 s.cached_carousel_images.remove(&entry_id);
                 s.selected_cache_entry = Some(entry_id);
                 s.current_image_index = -1; // Reset to cover when switching entries
-                                             // Note: Keep cached_carousel_images HashMap intact for instant back-navigation
+                                            // Note: Keep cached_carousel_images HashMap intact for instant back-navigation
             });
 
             // Refresh panel to show the new selection and its details
-            return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+            return vec![PluginAction::RefreshPanel(
+                "Page:dlsite_browser".to_string(),
+            )];
         }
         id if id.starts_with("load_details_") => {
             // One-time fetch of details for the selected entry
             let entry_id = id.trim_start_matches("load_details_").to_string();
-            info(&format!("[DLSite Plugin] Loading details for: {}", entry_id));
+            info(&format!(
+                "[DLSite Plugin] Loading details for: {}",
+                entry_id
+            ));
 
             if let Some((json, scraped)) = fetch_dlsite_metadata(&entry_id) {
                 STATE.with(|state| {
@@ -786,7 +810,9 @@ pub(crate) fn dispatch(
                         s.browser_loading = false;
                     });
 
-                    return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+                    return vec![PluginAction::RefreshPanel(
+                        "Page:dlsite_browser".to_string(),
+                    )];
                 }
 
                 // Regular search
@@ -859,7 +885,9 @@ pub(crate) fn dispatch(
             }
 
             // Refresh to show details
-            return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+            return vec![PluginAction::RefreshPanel(
+                "Page:dlsite_browser".to_string(),
+            )];
         }
         id if id.starts_with("apply_metadata_") => {
             let code = id.trim_start_matches("apply_metadata_").to_string();
@@ -900,7 +928,9 @@ pub(crate) fn dispatch(
                 info(&format!("[DLSite Plugin] Cache re-read for: {}", entry_id));
             }
 
-            return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+            return vec![PluginAction::RefreshPanel(
+                "Page:dlsite_browser".to_string(),
+            )];
         }
         // Refetch from network
         id if id.starts_with("refetch_entry_") => {
@@ -958,10 +988,7 @@ pub(crate) fn dispatch(
                     archust_plugin_sdk::show_message("Success", &format!("Refetched {}", entry_id));
                 }
                 None => {
-                    info(&format!(
-                        "[DLSite Plugin] Refetch FAILED for: {}",
-                        entry_id
-                    ));
+                    info(&format!("[DLSite Plugin] Refetch FAILED for: {}", entry_id));
 
                     // Restore from backup if we had data before
                     if let Some((json, scraped)) = backup_data {
@@ -982,10 +1009,7 @@ pub(crate) fn dispatch(
                         });
                         archust_plugin_sdk::show_message(
                             "Warning",
-                            &format!(
-                                "Refetch failed for {}. Restored previous data.",
-                                entry_id
-                            ),
+                            &format!("Refetch failed for {}. Restored previous data.", entry_id),
                         );
                     } else {
                         archust_plugin_sdk::show_message(
@@ -996,7 +1020,9 @@ pub(crate) fn dispatch(
                 }
             }
 
-            return vec![PluginAction::RefreshPanel("Page:dlsite_browser".to_string())];
+            return vec![PluginAction::RefreshPanel(
+                "Page:dlsite_browser".to_string(),
+            )];
         }
         // Select for use - emit metadata and set status message
         id if id.starts_with("select_entry_") => {

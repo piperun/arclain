@@ -10,8 +10,7 @@ impl archust_plugin_sdk::Guest for Component {
             name: "UI Demo Plugin".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             author: "Arclain Team".to_string(),
-            description: "Demonstrates UI capabilities in the sidebar and plugins page"
-                .to_string(),
+            description: "Demonstrates UI capabilities in the sidebar and plugins page".to_string(),
         }
     }
 

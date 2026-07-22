@@ -231,7 +231,9 @@ impl PluginManager {
         // Merge with initial settings to preserve settings for plugins
         // that failed to load or aren't active.
         for (id, settings) in &self.initial_settings {
-            all_settings.entry(id.clone()).or_insert_with(|| settings.clone());
+            all_settings
+                .entry(id.clone())
+                .or_insert_with(|| settings.clone());
         }
 
         all_settings

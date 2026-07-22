@@ -1,7 +1,7 @@
 use super::OrganizePanel;
-use arclain_widgets::ThemedDropdown;
 use crate::shared::components::preview_tree::{self, PreviewFilter};
 use crate::shared::theme::AppTheme;
+use arclain_widgets::ThemedDropdown;
 use eframe::egui::{self, RichText};
 use egui_extras::{Size, StripBuilder};
 
@@ -209,30 +209,21 @@ impl OrganizePanel {
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ThemedDropdown::new("depth_limit", match self.ui_state.depth_limit {
+                    ThemedDropdown::new(
+                        "depth_limit",
+                        match self.ui_state.depth_limit {
                             None => "Depth: All".to_string(),
                             Some(0) => "Depth: Root".to_string(),
                             Some(n) => format!("Depth: {}", n),
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.ui_state.depth_limit, None, "All");
-                            ui.selectable_value(
-                                &mut self.ui_state.depth_limit,
-                                Some(0),
-                                "Root Only",
-                            );
-                            ui.selectable_value(&mut self.ui_state.depth_limit, Some(1), "1 Level");
-                            ui.selectable_value(
-                                &mut self.ui_state.depth_limit,
-                                Some(2),
-                                "2 Levels",
-                            );
-                            ui.selectable_value(
-                                &mut self.ui_state.depth_limit,
-                                Some(3),
-                                "3 Levels",
-                            );
-                        });
+                        },
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.ui_state.depth_limit, None, "All");
+                        ui.selectable_value(&mut self.ui_state.depth_limit, Some(0), "Root Only");
+                        ui.selectable_value(&mut self.ui_state.depth_limit, Some(1), "1 Level");
+                        ui.selectable_value(&mut self.ui_state.depth_limit, Some(2), "2 Levels");
+                        ui.selectable_value(&mut self.ui_state.depth_limit, Some(3), "3 Levels");
+                    });
                 });
             });
 

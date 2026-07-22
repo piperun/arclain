@@ -1,8 +1,8 @@
-use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use crate::features::password_management::dialogs::zip_pass_rules::{
     PasswordRule, PasswordRulesDialog,
 };
 use crate::shared::theme::AppTheme;
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use eframe::egui;
 
 pub fn render_form(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRulesDialog) {
@@ -72,7 +72,16 @@ pub fn render_form(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
                             .width(pattern_width)
                             .with_theme_colors(&theme.colors)
                             .show(ui);
-                        if ui.add(TextButton::new(format!("{} Test Regex", egui_phosphor::regular::TEST_TUBE), ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
+                        if ui
+                            .add(
+                                TextButton::new(
+                                    format!("{} Test Regex", egui_phosphor::regular::TEST_TUBE),
+                                    ButtonSize::Medium,
+                                )
+                                .with_theme_colors(&theme.colors),
+                            )
+                            .clicked()
+                        {
                             dialog.show_regex_tester = true;
                             dialog.regex_test_pattern = dialog.edit_pattern.clone();
                             dialog.regex_test_results.clear();
@@ -168,7 +177,10 @@ pub fn render_form(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
 
                 if dialog.editing_index.is_some()
                     && ui
-                        .add(TextButton::new("Cancel", ButtonSize::Small).with_theme_colors(&theme.colors))
+                        .add(
+                            TextButton::new("Cancel", ButtonSize::Small)
+                                .with_theme_colors(&theme.colors),
+                        )
                         .clicked()
                 {
                     dialog.editing_index = None;

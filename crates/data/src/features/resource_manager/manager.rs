@@ -43,7 +43,11 @@ pub fn validate_image(data: &[u8]) -> ImageValidation {
         ImageValidation::Valid
     } else {
         // Check if it looks like HTML (common error response)
-        if data.len() > 15 && (data.starts_with(b"<!DOCTYPE") || data.starts_with(b"<html") || data.starts_with(b"<HTML")) {
+        if data.len() > 15
+            && (data.starts_with(b"<!DOCTYPE")
+                || data.starts_with(b"<html")
+                || data.starts_with(b"<HTML"))
+        {
             ImageValidation::NotAnImage
         } else {
             ImageValidation::InvalidFormat
@@ -388,32 +392,50 @@ mod tests {
 
     #[test]
     fn validate_image_jpeg() {
-        assert!(matches!(validate_image(&make_valid_jpeg()), ImageValidation::Valid));
+        assert!(matches!(
+            validate_image(&make_valid_jpeg()),
+            ImageValidation::Valid
+        ));
     }
 
     #[test]
     fn validate_image_png() {
-        assert!(matches!(validate_image(&make_valid_png()), ImageValidation::Valid));
+        assert!(matches!(
+            validate_image(&make_valid_png()),
+            ImageValidation::Valid
+        ));
     }
 
     #[test]
     fn validate_image_gif() {
-        assert!(matches!(validate_image(&make_valid_gif()), ImageValidation::Valid));
+        assert!(matches!(
+            validate_image(&make_valid_gif()),
+            ImageValidation::Valid
+        ));
     }
 
     #[test]
     fn validate_image_webp() {
-        assert!(matches!(validate_image(&make_valid_webp()), ImageValidation::Valid));
+        assert!(matches!(
+            validate_image(&make_valid_webp()),
+            ImageValidation::Valid
+        ));
     }
 
     #[test]
     fn validate_image_bmp() {
-        assert!(matches!(validate_image(&make_valid_bmp()), ImageValidation::Valid));
+        assert!(matches!(
+            validate_image(&make_valid_bmp()),
+            ImageValidation::Valid
+        ));
     }
 
     #[test]
     fn validate_image_too_small() {
-        assert!(matches!(validate_image(&[0xFF, 0xD8, 0xFF]), ImageValidation::TooSmall(3)));
+        assert!(matches!(
+            validate_image(&[0xFF, 0xD8, 0xFF]),
+            ImageValidation::TooSmall(3)
+        ));
     }
 
     #[test]
@@ -431,7 +453,10 @@ mod tests {
     #[test]
     fn validate_image_unknown_format() {
         let data = vec![0x00; 200];
-        assert!(matches!(validate_image(&data), ImageValidation::InvalidFormat));
+        assert!(matches!(
+            validate_image(&data),
+            ImageValidation::InvalidFormat
+        ));
     }
 
     // =========================================================================

@@ -36,7 +36,7 @@ impl Default for TestMetadata {
             product_id: "RJ999001".to_string(),
             source: "dlsite".to_string(),
             title: "試験用ゲームあいうえお".to_string(), // kanji + katakana + hiragana
-            creator: Some("テスト作者".to_string()),    // katakana + kanji
+            creator: Some("テスト作者".to_string()),     // katakana + kanji
         }
     }
 }
@@ -163,8 +163,8 @@ fn load_production_password_rules() -> Option<Vec<arclain_db::DbPassRule>> {
     let tmp_redb = tmp.path().join("pass.redb");
     fs::copy(&db_paths.secrets_db, &tmp_redb).expect("Failed to copy production redb to temp");
 
-    let secrets_db =
-        SecretsDb::open(&tmp_redb, &key.as_bytes()).expect("Failed to open temp copy of secrets DB");
+    let secrets_db = SecretsDb::open(&tmp_redb, &key.as_bytes())
+        .expect("Failed to open temp copy of secrets DB");
 
     let rules = secrets_db
         .list_pass_rules()
@@ -294,7 +294,10 @@ fn test_integration_data_full_workflow() {
 
     // Load test metadata from JSON (avoids hardcoding personal data)
     let test_meta = load_test_metadata();
-    info!("Test metadata: product_id={}, title={}", test_meta.product_id, test_meta.title);
+    info!(
+        "Test metadata: product_id={}, title={}",
+        test_meta.product_id, test_meta.title
+    );
 
     // Find the archive file
     let archive_path = fs::read_dir(integration_src)
@@ -506,7 +509,8 @@ fn test_integration_data_full_workflow() {
 
     assert!(
         product_dir.exists(),
-        "Product folder ({}) must exist in output", test_meta.product_id
+        "Product folder ({}) must exist in output",
+        test_meta.product_id
     );
     assert!(game_dir.exists(), "Game folder must exist in output");
     assert!(

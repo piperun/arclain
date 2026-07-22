@@ -154,8 +154,7 @@ mod tests {
     use diesel::RunQueryDsl;
 
     fn setup_db() -> diesel::SqliteConnection {
-        let mut conn =
-            diesel::SqliteConnection::establish(":memory:").expect("in-memory SQLite");
+        let mut conn = diesel::SqliteConnection::establish(":memory:").expect("in-memory SQLite");
         diesel::sql_query(
             "CREATE TABLE ui_items (
                 id TEXT PRIMARY KEY,

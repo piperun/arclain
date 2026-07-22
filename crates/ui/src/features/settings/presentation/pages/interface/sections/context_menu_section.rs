@@ -16,11 +16,7 @@ use eframe::egui;
 /// `sort_order` before rendering; the section never modifies the input
 /// slice. Returns `Some((item_id, new_visible))` if the user toggled
 /// a row this frame.
-pub fn render(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    items: &[UiItem],
-) -> Option<(String, bool)> {
+pub fn render(ui: &mut egui::Ui, theme: &AppTheme, items: &[UiItem]) -> Option<(String, bool)> {
     SectionHeader::new("Menu Items").show(ui, &theme.colors);
 
     ui.label(
@@ -36,11 +32,7 @@ pub fn render(
     let mut emitted: Option<(String, bool)> = None;
 
     for item in sorted_items {
-        let icon = item
-            .icon
-            .as_deref()
-            .map(icon_name_to_char)
-            .unwrap_or("");
+        let icon = item.icon.as_deref().map(icon_name_to_char).unwrap_or("");
         let label = format!("{} {}", icon, item.label);
         // Local mutable mirror of `visible` so the ToggleSwitch widget
         // (which takes `&mut bool`) doesn't fight the signal-owned

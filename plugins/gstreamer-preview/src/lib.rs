@@ -10,10 +10,9 @@ impl archust_plugin_sdk::Guest for Component {
             name: "GStreamer Media Preview".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             author: "Archust Team".to_string(),
-            description:
-                "Provides media file previews and thumbnail generation using GStreamer \
+            description: "Provides media file previews and thumbnail generation using GStreamer \
                  (hybrid WASM/native approach)"
-                    .to_string(),
+                .to_string(),
         }
     }
 

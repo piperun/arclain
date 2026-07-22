@@ -117,7 +117,8 @@ pub fn render_image(
 /// Check if an image texture is already cached in egui (avoids disk I/O)
 pub fn is_texture_cached(ctx: &egui::Context, cache_key: &str) -> bool {
     let texture_id = egui::Id::new(("plugin_image", cache_key));
-    ctx.data(|d| d.get_temp::<egui::TextureHandle>(texture_id)).is_some()
+    ctx.data(|d| d.get_temp::<egui::TextureHandle>(texture_id))
+        .is_some()
 }
 
 /// Render an already-cached texture (fast path - no bytes needed)

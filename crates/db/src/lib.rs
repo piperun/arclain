@@ -60,11 +60,10 @@ pub use archive_profiles::{
 
 mod checksum;
 pub use checksum::{
-    begin_checksum_operation, delete_checksum_operation, get_checksum_algorithm,
-    get_checksum_mode, get_file_checksum, get_merkle_root, get_pending_checksum_operations,
-    set_checksum_algorithm, set_checksum_mode, store_file_checksum, store_merkle_root,
-    update_checksum_operation, ChecksumDb, DbFileChecksum, DbOperation, OpId, OpState, OpType,
-    VerifyMode,
+    begin_checksum_operation, delete_checksum_operation, get_checksum_algorithm, get_checksum_mode,
+    get_file_checksum, get_merkle_root, get_pending_checksum_operations, set_checksum_algorithm,
+    set_checksum_mode, store_file_checksum, store_merkle_root, update_checksum_operation,
+    ChecksumDb, DbFileChecksum, DbOperation, OpId, OpState, OpType, VerifyMode,
 };
 
 mod user_config;
@@ -90,22 +89,15 @@ pub mod library;
 /// Pipeline execution history — records each pipeline run against its input
 /// and pipeline-config hashes, enabling idempotent re-runs and crash recovery.
 pub mod pipeline_runs;
+pub use library::{
+    delete_product_content, get_all_content, get_cover, get_screenshots, save_product_content,
+    CompletenessScore, ContentType, MetadataSource, ProductContent, ProductMetadata,
+};
 pub use pipeline_runs::{
     begin_pipeline_run, ensure_pipeline_runs_table, find_completed_run, flag_stale_in_progress,
-    list_interrupted_since, mark_run_completed, mark_run_failed, output_kind as pipeline_output_kind,
-    status as pipeline_run_status, DbPipelineRun, NewPipelineRun, INTERRUPTED_MARKER,
-};
-pub use library::{
-    delete_product_content,
-    get_all_content,
-    get_cover,
-    get_screenshots,
-    save_product_content,
-    CompletenessScore,
-    ContentType,
-    MetadataSource,
-    ProductContent,
-    ProductMetadata,
+    list_interrupted_since, mark_run_completed, mark_run_failed,
+    output_kind as pipeline_output_kind, status as pipeline_run_status, DbPipelineRun,
+    NewPipelineRun, INTERRUPTED_MARKER,
 };
 
 /// Re-export Connection so dependents don't need rusqlite directly.
@@ -193,9 +185,7 @@ pub fn set_config_diesel(conn: &mut diesel::SqliteConnection, k: &str, v: &str) 
 /// Centralises the boilerplate that previously appeared at ~49 call
 /// sites across 9 db modules. Use as
 /// `query.execute(conn).map_err(diesel_err("insert"))?`.
-pub(crate) fn diesel_err(
-    op: &'static str,
-) -> impl FnOnce(diesel::result::Error) -> anyhow::Error {
+pub(crate) fn diesel_err(op: &'static str) -> impl FnOnce(diesel::result::Error) -> anyhow::Error {
     move |e| anyhow::anyhow!("Diesel {} failed: {}", op, e)
 }
 

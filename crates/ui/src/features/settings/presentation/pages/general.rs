@@ -2,10 +2,10 @@
 //!
 //! Contains the general settings page with appearance and behavior options.
 
-use arclain_widgets::{ThemedDropdown, ToggleSwitch};
 use crate::features::settings::types::{GeneralSettingsState, SettingsAction};
 use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
+use arclain_widgets::{ThemedDropdown, ToggleSwitch};
 use eframe::egui;
 
 /// Render the General settings page
@@ -109,18 +109,19 @@ pub fn render(
                 // Restore tabs on launch toggle
                 {
                     let mut restore = *state.restore_tabs_on_launch.read();
-                    if ui.checkbox(&mut restore, "Restore tabs on launch").changed() {
+                    if ui
+                        .checkbox(&mut restore, "Restore tabs on launch")
+                        .changed()
+                    {
                         *state.restore_tabs_on_launch.write() = restore;
                     }
                 }
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new(
-                        "Re-open the previous session's tabs when the app starts.",
-                    )
-                    .size(11.0)
-                    .italics()
-                    .color(colors.on_surface_variant),
+                    egui::RichText::new("Re-open the previous session's tabs when the app starts.")
+                        .size(11.0)
+                        .italics()
+                        .color(colors.on_surface_variant),
                 );
             })
             .show(ui, &theme.colors);

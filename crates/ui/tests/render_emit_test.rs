@@ -158,9 +158,7 @@ mod interface_settings {
     fn first_render_with_unloaded_state_emits_load_display_options() {
         let mut harness = Harness::new_ui_state(
             |ui, s: &mut Stage| {
-                if let Some(a) =
-                    render_interface_settings(ui, &s.theme, &s.shared, &mut s.state)
-                {
+                if let Some(a) = render_interface_settings(ui, &s.theme, &s.shared, &mut s.state) {
                     s.last_action = Some(a);
                 }
             },
@@ -193,8 +191,7 @@ mod interface_settings {
 
         let mut harness = Harness::new_ui_state(
             |ui, st: &mut Stage| {
-                if let Some(a) =
-                    render_interface_settings(ui, &st.theme, &st.shared, &mut st.state)
+                if let Some(a) = render_interface_settings(ui, &st.theme, &st.shared, &mut st.state)
                 {
                     st.last_action = Some(a);
                 }

@@ -124,7 +124,12 @@ mod tests {
     #[test]
     fn test_matches_trigger_empty_matches_everything() {
         let trigger = RuleTrigger::default();
-        assert!(RuleEngine::matches_trigger(&trigger, "anything.7z", &[], None));
+        assert!(RuleEngine::matches_trigger(
+            &trigger,
+            "anything.7z",
+            &[],
+            None
+        ));
     }
 
     #[test]
@@ -158,18 +163,12 @@ mod tests {
             make_entry("folder/readme.txt", 100, false),
         ];
         assert!(RuleEngine::matches_trigger(
-            &trigger,
-            "test.7z",
-            &entries,
-            None
+            &trigger, "test.7z", &entries, None
         ));
 
         let no_match = vec![make_entry("folder/readme.txt", 100, false)];
         assert!(!RuleEngine::matches_trigger(
-            &trigger,
-            "test.7z",
-            &no_match,
-            None
+            &trigger, "test.7z", &no_match, None
         ));
     }
 
@@ -210,12 +209,7 @@ mod tests {
         ));
 
         // No metadata at all
-        assert!(!RuleEngine::matches_trigger(
-            &trigger,
-            "test.7z",
-            &[],
-            None
-        ));
+        assert!(!RuleEngine::matches_trigger(&trigger, "test.7z", &[], None));
     }
 
     #[test]
@@ -224,12 +218,7 @@ mod tests {
             filename_pattern: Some("[invalid".to_string()),
             ..Default::default()
         };
-        assert!(!RuleEngine::matches_trigger(
-            &trigger,
-            "test.7z",
-            &[],
-            None
-        ));
+        assert!(!RuleEngine::matches_trigger(&trigger, "test.7z", &[], None));
     }
 
     // =========================================================================
@@ -311,10 +300,7 @@ mod tests {
     #[test]
     fn test_expand_variables_no_match_leaves_placeholder() {
         let vars = HashMap::new();
-        assert_eq!(
-            RuleEngine::expand_variables("$unknown", &vars),
-            "$unknown"
-        );
+        assert_eq!(RuleEngine::expand_variables("$unknown", &vars), "$unknown");
     }
 
     // =========================================================================
@@ -518,19 +504,12 @@ mod tests {
             metadata_json: String::new(),
         };
 
-        let plan =
-            RuleEngine::create_plan(&rule, "RJ123456.zip", &[], Some(&meta))
-                .expect("plan should succeed");
+        let plan = RuleEngine::create_plan(&rule, "RJ123456.zip", &[], Some(&meta))
+            .expect("plan should succeed");
 
         assert_eq!(plan.downloads.len(), 2);
-        assert_eq!(
-            plan.downloads[0].cache_key,
-            "dlsite:RJ123456:screenshot_0"
-        );
-        assert_eq!(
-            plan.downloads[1].cache_key,
-            "dlsite:RJ123456:screenshot_1"
-        );
+        assert_eq!(plan.downloads[0].cache_key, "dlsite:RJ123456:screenshot_0");
+        assert_eq!(plan.downloads[1].cache_key, "dlsite:RJ123456:screenshot_1");
     }
 
     /// Non-dlsite sources use a different cache key prefix.
@@ -558,20 +537,14 @@ mod tests {
             tags: vec![],
             release_date: None,
             creator: None,
-            screenshots: vec![
-                ScreenshotData::FilePath("/imgs/screen.png".into()),
-            ],
+            screenshots: vec![ScreenshotData::FilePath("/imgs/screen.png".into())],
             metadata_json: String::new(),
         };
 
-        let plan =
-            RuleEngine::create_plan(&rule, "game.zip", &[], Some(&meta))
-                .expect("plan should succeed");
+        let plan = RuleEngine::create_plan(&rule, "game.zip", &[], Some(&meta))
+            .expect("plan should succeed");
 
         assert_eq!(plan.downloads.len(), 1);
-        assert_eq!(
-            plan.downloads[0].cache_key,
-            "screenshot:12345:0"
-        );
+        assert_eq!(plan.downloads[0].cache_key, "screenshot:12345:0");
     }
 }

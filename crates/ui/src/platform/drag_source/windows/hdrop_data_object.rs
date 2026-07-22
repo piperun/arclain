@@ -178,7 +178,10 @@ impl HDropDataObject {
             tempfile::tempdir().map_err(|e| format!("Failed to create temp dir: {}", e))?;
         let temp_path = temp_dir.path().to_path_buf();
 
-        info!("[hdrop] Created temp dir for pre-HDROP: {}", temp_path.display());
+        info!(
+            "[hdrop] Created temp dir for pre-HDROP: {}",
+            temp_path.display()
+        );
 
         // Build HDROP with just the temp folder
         let hdrop = self.build_hdrop_for_paths(&[temp_path.clone()])?;
@@ -267,7 +270,10 @@ impl HDropDataObject {
             .as_ref()
             .map(|c| c.temp_dir.path().to_path_buf())
             .ok_or("Cache cleared between check and use")?;
-        info!("[hdrop] Starting extraction to temp: {}", temp_dir.display());
+        info!(
+            "[hdrop] Starting extraction to temp: {}",
+            temp_dir.display()
+        );
 
         let file_paths: Vec<String> = self
             .entries

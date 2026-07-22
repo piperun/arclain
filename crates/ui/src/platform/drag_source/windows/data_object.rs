@@ -151,7 +151,10 @@ impl LazyArchiveDataObject {
         progress_tx: Option<Sender<ProgressUpdate>>,
     ) -> Self {
         let common_prefix = Self::compute_common_prefix(&entries);
-        info!("[drag] Computed common prefix: {}", common_prefix.as_deref().unwrap_or("<none>"));
+        info!(
+            "[drag] Computed common prefix: {}",
+            common_prefix.as_deref().unwrap_or("<none>")
+        );
 
         let drag_entries: Vec<DragEntry> = entries
             .iter()
@@ -359,7 +362,9 @@ impl LazyArchiveDataObject {
             // Loser drops temp: another caller raced us to extraction. Our
             // temp_dir falls out of scope here and TempDir::drop cleans up
             // the filesystem. The cache stays pointing at the winner's dir.
-            debug!("[drag] Race detected — other caller already published; discarding our temp dir");
+            debug!(
+                "[drag] Race detected — other caller already published; discarding our temp dir"
+            );
             return Ok(());
         }
         *cache = Some(ExtractionCache {

@@ -110,7 +110,11 @@ impl LibraryService {
 
             tracing::debug!(
                 "[LibraryService] Updating '{}' (score {} → {}, geo_blocked: {} → {})",
-                meta.id, existing_score, new_score, existing.geo_blocked, meta.geo_blocked
+                meta.id,
+                existing_score,
+                new_score,
+                existing.geo_blocked,
+                meta.geo_blocked
             );
         }
 
@@ -295,20 +299,15 @@ mod tests {
             })
             .collect();
 
-        let missing = vec![
-            "dlsite:RJ999998".to_string(),
-            "dlsite:RJ999999".to_string(),
-        ];
+        let missing = vec!["dlsite:RJ999998".to_string(), "dlsite:RJ999999".to_string()];
 
-        let mut requested: Vec<&str> =
-            known.iter().map(String::as_str).collect();
+        let mut requested: Vec<&str> = known.iter().map(String::as_str).collect();
         requested.extend(missing.iter().map(String::as_str));
 
         let got = svc.get_many(&requested).unwrap();
         assert_eq!(got.len(), 5, "should only return the 5 rows that exist");
 
-        let got_ids: std::collections::HashSet<&str> =
-            got.iter().map(|m| m.id.as_str()).collect();
+        let got_ids: std::collections::HashSet<&str> = got.iter().map(|m| m.id.as_str()).collect();
         for k in &known {
             assert!(
                 got_ids.contains(k.as_str()),
@@ -708,7 +707,11 @@ mod tests {
 
         // And the next list call rebuilds with BOTH rows, not just the stale one.
         let fresh = svc.list_by_source(MetadataSource::DLSite).unwrap();
-        assert_eq!(fresh.len(), 2, "next list_by_source must include the concurrent save");
+        assert_eq!(
+            fresh.len(),
+            2,
+            "next list_by_source must include the concurrent save"
+        );
     }
 
     /// Companion test: under a real thread interleaving (no manual

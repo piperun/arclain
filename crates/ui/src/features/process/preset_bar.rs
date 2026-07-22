@@ -56,10 +56,7 @@ pub fn render(
             )
             .clicked()
         {
-            let name = format!(
-                "Preset {}",
-                chrono::Local::now().format("%Y-%m-%d %H:%M")
-            );
+            let name = format!("Preset {}", chrono::Local::now().format("%Y-%m-%d %H:%M"));
             state.presets.push(SavedPreset {
                 name: name.clone(),
                 pipeline: state.pipeline.clone(),

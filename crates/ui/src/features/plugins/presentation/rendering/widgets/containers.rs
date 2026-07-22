@@ -35,13 +35,12 @@ pub fn render_tabs(
                         (egui::Color32::TRANSPARENT, colors.on_surface_variant)
                     };
 
-                    let button = egui::Button::new(
-                        egui::RichText::new(tab).size(13.0).color(text_color),
-                    )
-                    .fill(bg_color)
-                    .stroke(egui::Stroke::NONE)
-                    .corner_radius(6.0)
-                    .min_size(egui::vec2(0.0, 28.0));
+                    let button =
+                        egui::Button::new(egui::RichText::new(tab).size(13.0).color(text_color))
+                            .fill(bg_color)
+                            .stroke(egui::Stroke::NONE)
+                            .corner_radius(6.0)
+                            .min_size(egui::vec2(0.0, 28.0));
 
                     let response = ui.add(button);
 

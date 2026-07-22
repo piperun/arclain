@@ -95,10 +95,14 @@ pub fn resume_process(pid: u32) -> anyhow::Result<()> {
 
 #[cfg(not(target_os = "windows"))]
 pub fn suspend_process(_pid: u32) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("Process suspension not supported on this platform"))
+    Err(anyhow::anyhow!(
+        "Process suspension not supported on this platform"
+    ))
 }
 
 #[cfg(not(target_os = "windows"))]
 pub fn resume_process(_pid: u32) -> anyhow::Result<()> {
-    Err(anyhow::anyhow!("Process resumption not supported on this platform"))
+    Err(anyhow::anyhow!(
+        "Process resumption not supported on this platform"
+    ))
 }

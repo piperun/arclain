@@ -2,13 +2,15 @@
 //!
 //! Contains network and proxy configuration.
 
-use arclain_theme::{spacing, ThemeColors};
-use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use crate::features::settings::types::{
     ConnectionTestResult, ConnectionTestStatus, NetworkSettingsState, SettingsAction,
 };
 use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
+use arclain_theme::{spacing, ThemeColors};
+use arclain_widgets::{
+    ButtonSize, IconButton, IconButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch,
+};
 use eframe::egui;
 
 /// Render the Network settings page
@@ -343,7 +345,12 @@ fn format_result_for_clipboard(result: &ConnectionTestResult) -> String {
 
     for step in &result.steps {
         let status = if step.passed { "✓" } else { "✗" };
-        lines.push(format!("{} {} Test — {}", status, step.name, if step.passed { "passed" } else { "failed" }));
+        lines.push(format!(
+            "{} {} Test — {}",
+            status,
+            step.name,
+            if step.passed { "passed" } else { "failed" }
+        ));
 
         if let Some(msg) = &step.message {
             lines.push(format!("  {}", msg));

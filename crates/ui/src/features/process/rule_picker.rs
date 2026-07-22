@@ -39,10 +39,8 @@ pub fn render(
             }
             if rules.is_empty() {
                 ui.label(
-                    egui::RichText::new(
-                        "No rules configured — see Settings > Organization Rules",
-                    )
-                    .weak(),
+                    egui::RichText::new("No rules configured — see Settings > Organization Rules")
+                        .weak(),
                 );
             }
         });

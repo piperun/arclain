@@ -48,7 +48,7 @@ pub use icon_button::{IconButton, IconButtonSize};
 pub use segmented_control::SegmentedControl;
 pub use selectable_chip::SelectableChip;
 pub use text::{get_theme, pixel_align, set_theme, Text};
-pub use text_input::{TextInput, TextInputSize, TextInputState, TextInputResponse, SlotContent};
+pub use text_input::{SlotContent, TextInput, TextInputResponse, TextInputSize, TextInputState};
 pub use text_layout::{
     layout_text_visually_centered, paint_text_left_in_rect_visually_centered,
     paint_text_visually_centered,

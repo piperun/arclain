@@ -128,7 +128,8 @@ pub fn upload_texture(
 /// Check if a texture is already cached
 pub fn is_texture_cached(ctx: &egui::Context, cache_key: &str) -> bool {
     let texture_id = egui::Id::new(("carousel_image", cache_key));
-    ctx.data(|d| d.get_temp::<egui::TextureHandle>(texture_id)).is_some()
+    ctx.data(|d| d.get_temp::<egui::TextureHandle>(texture_id))
+        .is_some()
 }
 
 /// Get cached texture handle

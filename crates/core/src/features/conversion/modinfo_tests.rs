@@ -96,7 +96,10 @@ fn parse_whitespace_handling() {
 #[test]
 fn parse_addonfor_preserves_case() {
     let tmp = TempDir::new().unwrap();
-    write_modinfo(tmp.path(), "name=Child\naddonfor=Parent: With/Illegal Chars\n");
+    write_modinfo(
+        tmp.path(),
+        "name=Child\naddonfor=Parent: With/Illegal Chars\n",
+    );
     let info = parse(tmp.path()).unwrap();
     // addonfor is NOT sanitized — used for raw lookup against name= values.
     assert_eq!(info.addonfor.as_deref(), Some("Parent: With/Illegal Chars"));

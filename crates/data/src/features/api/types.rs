@@ -323,8 +323,8 @@ mod tests {
 
     #[test]
     fn data_request_with_sources() {
-        let req = DataRequest::new("k")
-            .with_sources([DataSource::Memory, DataSource::ContentCache]);
+        let req =
+            DataRequest::new("k").with_sources([DataSource::Memory, DataSource::ContentCache]);
         assert_eq!(req.sources.len(), 2);
         assert!(req.sources.contains(&DataSource::Memory));
     }

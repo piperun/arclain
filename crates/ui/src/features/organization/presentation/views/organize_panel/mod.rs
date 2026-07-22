@@ -20,10 +20,10 @@ use crate::features::organization::export_dialog::ExportTreeDialog;
 use crate::shared::components::preview_tree::{
     self, build_organized_tree, build_original_tree, PreviewFilter, PreviewTreeState,
 };
-use arclain_core::features::organization::{engine::RuleEngine, ArchiveProfile, OrganizationRule};
-use arclain_core::features::organization::session::OrganizationSession;
-use arclain_core::ArchiveEntry;
 use crate::shared::theme::AppTheme;
+use arclain_core::features::organization::session::OrganizationSession;
+use arclain_core::features::organization::{engine::RuleEngine, ArchiveProfile, OrganizationRule};
+use arclain_core::ArchiveEntry;
 use eframe::egui;
 // std::sync::mpsc::Receiver removed
 // std::time::Instant removed
@@ -91,18 +91,10 @@ impl OrganizePanel {
         profiles: Vec<ArchiveProfile>,
         metadata: Option<arclain_core::features::organization::GameMetadata>,
     ) -> Self {
-        let session = OrganizationSession::new(
-            archive_name,
-            entries,
-            rules,
-            metadata,
-        );
+        let session = OrganizationSession::new(archive_name, entries, rules, metadata);
 
         // Find default profile index
-        let default_profile_index = profiles
-            .iter()
-            .position(|p| p.is_default)
-            .unwrap_or(0);
+        let default_profile_index = profiles.iter().position(|p| p.is_default).unwrap_or(0);
 
         let mut panel = Self {
             session,
@@ -135,7 +127,12 @@ impl OrganizePanel {
             "OrganizePanel::new - {} rules loaded, selected_rule_index={}, selected_rule={}",
             panel.session.rules.len(),
             panel.ui_state.selected_rule_index,
-            panel.session.rules.get(panel.ui_state.selected_rule_index).map(|r| format!("'{}'", r.name)).unwrap_or("None".to_string())
+            panel
+                .session
+                .rules
+                .get(panel.ui_state.selected_rule_index)
+                .map(|r| format!("'{}'", r.name))
+                .unwrap_or("None".to_string())
         );
 
         panel
@@ -158,7 +155,9 @@ impl OrganizePanel {
                 // Build and cache trees
                 // Use self.entries (all archive files) for original tree, NOT plan.moves
                 // Filter out directory entries - only include actual files
-                let original_paths: Vec<String> = self.session.entries
+                let original_paths: Vec<String> = self
+                    .session
+                    .entries
                     .iter()
                     .filter(|e| !e.is_dir) // Only include files, not directory entries
                     .map(|e| e.path.clone())
@@ -335,8 +334,6 @@ impl OrganizePanel {
             ui.add_space(40.0);
         });
     }
-
-
 
     pub fn export_issues_report(
         report: &IntegrityReport,

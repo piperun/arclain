@@ -133,11 +133,8 @@ impl HotkeyManager {
                                 // Don't fire while a focused editor or open
                                 // context menu owns the keyboard — see
                                 // keyboard_hotkey_allowed.
-                                if !keyboard_hotkey_allowed(
-                                    action,
-                                    editor_has_keyboard,
-                                    popup_open,
-                                ) {
+                                if !keyboard_hotkey_allowed(action, editor_has_keyboard, popup_open)
+                                {
                                     continue;
                                 }
 
@@ -273,9 +270,21 @@ mod tests {
         // An open popup / context menu owns the keyboard — not even global
         // shortcuts should fire underneath it.
         let popup_open = true;
-        assert!(!keyboard_hotkey_allowed(HotkeyAction::SelectAll, false, popup_open));
-        assert!(!keyboard_hotkey_allowed(HotkeyAction::OpenSettings, false, popup_open));
-        assert!(!keyboard_hotkey_allowed(HotkeyAction::Search, true, popup_open));
+        assert!(!keyboard_hotkey_allowed(
+            HotkeyAction::SelectAll,
+            false,
+            popup_open
+        ));
+        assert!(!keyboard_hotkey_allowed(
+            HotkeyAction::OpenSettings,
+            false,
+            popup_open
+        ));
+        assert!(!keyboard_hotkey_allowed(
+            HotkeyAction::Search,
+            true,
+            popup_open
+        ));
     }
 
     #[test]

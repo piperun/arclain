@@ -13,8 +13,8 @@ pub struct DbArchiveProfile {
     pub id: Option<i64>,
     pub name: String,
     pub description: Option<String>,
-    pub format: String,              // "7z", "zip"
-    pub compression_level: i32,      // 0-9
+    pub format: String,                     // "7z", "zip"
+    pub compression_level: i32,             // 0-9
     pub compression_method: Option<String>, // "LZMA2", "Deflate", etc.
     pub solid_archive: bool,
     pub encrypt_headers: bool,
@@ -46,9 +46,7 @@ pub struct DbArchiveProfileRow {
 // ============================================================================
 
 /// List all profiles
-pub fn list_profiles(
-    conn: &mut diesel::SqliteConnection,
-) -> Result<Vec<DbArchiveProfile>> {
+pub fn list_profiles(conn: &mut diesel::SqliteConnection) -> Result<Vec<DbArchiveProfile>> {
     use crate::diesel_schema::archive_profiles::dsl::*;
 
     let results = archive_profiles
@@ -158,10 +156,7 @@ pub fn save_profile(
 }
 
 /// Set a profile as the default
-pub fn set_default_profile(
-    conn: &mut diesel::SqliteConnection,
-    profile_id: i32,
-) -> Result<()> {
+pub fn set_default_profile(conn: &mut diesel::SqliteConnection, profile_id: i32) -> Result<()> {
     use crate::diesel_schema::archive_profiles::dsl::*;
 
     // Clear all defaults
@@ -202,8 +197,7 @@ mod tests {
     use diesel::RunQueryDsl;
 
     fn setup_db() -> diesel::SqliteConnection {
-        let mut conn =
-            diesel::SqliteConnection::establish(":memory:").expect("in-memory SQLite");
+        let mut conn = diesel::SqliteConnection::establish(":memory:").expect("in-memory SQLite");
         diesel::sql_query(
             "CREATE TABLE IF NOT EXISTS archive_profiles (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -313,13 +307,33 @@ mod tests {
         let id2 = save_profile(&mut conn, &make_profile("Profile B")).unwrap();
 
         set_default_profile(&mut conn, id1 as i32).unwrap();
-        assert!(get_profile(&mut conn, id1 as i32).unwrap().unwrap().is_default);
-        assert!(!get_profile(&mut conn, id2 as i32).unwrap().unwrap().is_default);
+        assert!(
+            get_profile(&mut conn, id1 as i32)
+                .unwrap()
+                .unwrap()
+                .is_default
+        );
+        assert!(
+            !get_profile(&mut conn, id2 as i32)
+                .unwrap()
+                .unwrap()
+                .is_default
+        );
 
         // Change default
         set_default_profile(&mut conn, id2 as i32).unwrap();
-        assert!(!get_profile(&mut conn, id1 as i32).unwrap().unwrap().is_default);
-        assert!(get_profile(&mut conn, id2 as i32).unwrap().unwrap().is_default);
+        assert!(
+            !get_profile(&mut conn, id1 as i32)
+                .unwrap()
+                .unwrap()
+                .is_default
+        );
+        assert!(
+            get_profile(&mut conn, id2 as i32)
+                .unwrap()
+                .unwrap()
+                .is_default
+        );
     }
 
     #[test]

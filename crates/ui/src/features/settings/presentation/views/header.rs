@@ -14,9 +14,7 @@ pub fn render_header(
     feature: &mut SettingsFeature,
     hotkeys_feature: Option<&crate::features::hotkeys::HotkeysFeature>,
     password_management: Option<&crate::features::password_management::PasswordManagementFeature>,
-    plugins_settings_state: Option<
-        &mut crate::features::plugins::domain::types::PluginsListState,
-    >,
+    plugins_settings_state: Option<&mut crate::features::plugins::domain::types::PluginsListState>,
     shared: &SharedState,
     page: &SettingsPage,
 ) -> Option<SettingsAction> {
@@ -35,8 +33,7 @@ pub fn render_header(
     // get_header_config callable without panicking. The fallback state
     // is throwaway: the Plugins page won't be reachable without
     // PluginsFeature wired in.
-    let mut plugins_fallback =
-        crate::features::plugins::domain::types::PluginsListState::default();
+    let mut plugins_fallback = crate::features::plugins::domain::types::PluginsListState::default();
     let plugins_state_ref: &mut crate::features::plugins::domain::types::PluginsListState =
         plugins_settings_state.unwrap_or(&mut plugins_fallback);
 
@@ -95,7 +92,11 @@ SettingsHeaderConfig::new("Info Panel Layout")
         } else if matches!(page, SettingsPage::EditRule(_)) {
             // Rule Editor - both Cancel and Save in header
             let title = if let SettingsPage::EditRule(id) = page {
-                if *id == 0 { "New Rule" } else { "Edit Rule" }
+                if *id == 0 {
+                    "New Rule"
+                } else {
+                    "Edit Rule"
+                }
             } else {
                 "Edit Rule"
             };

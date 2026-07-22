@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
 use crate::SqliteDb;
+use anyhow::{Context, Result};
 use std::path::Path;
 
 /// Cache database for transient data like metadata cache

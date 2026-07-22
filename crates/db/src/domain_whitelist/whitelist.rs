@@ -161,11 +161,7 @@ pub fn upsert_whitelist_entry(
 }
 
 /// Approve a domain for a plugin (insert-or-update)
-pub fn approve_domain(
-    conn: &mut diesel::SqliteConnection,
-    pid: &str,
-    dom: &str,
-) -> Result<()> {
+pub fn approve_domain(conn: &mut diesel::SqliteConnection, pid: &str, dom: &str) -> Result<()> {
     use crate::diesel_schema::domain_whitelist::dsl::*;
 
     diesel::insert_into(domain_whitelist)
@@ -188,11 +184,7 @@ pub fn approve_domain(
 }
 
 /// Revoke a domain for a plugin
-pub fn revoke_domain(
-    conn: &mut diesel::SqliteConnection,
-    pid: &str,
-    dom: &str,
-) -> Result<()> {
+pub fn revoke_domain(conn: &mut diesel::SqliteConnection, pid: &str, dom: &str) -> Result<()> {
     use crate::diesel_schema::domain_whitelist::dsl::*;
 
     diesel::update(domain_whitelist.filter(plugin_id.eq(pid).and(domain.eq(dom))))
@@ -219,10 +211,7 @@ pub fn delete_whitelist_entry(
 }
 
 /// Delete all entries for a plugin
-pub fn delete_plugin_whitelist(
-    conn: &mut diesel::SqliteConnection,
-    pid: &str,
-) -> Result<()> {
+pub fn delete_plugin_whitelist(conn: &mut diesel::SqliteConnection, pid: &str) -> Result<()> {
     use crate::diesel_schema::domain_whitelist::dsl::*;
 
     diesel::delete(domain_whitelist.filter(plugin_id.eq(pid)))
@@ -252,11 +241,7 @@ pub fn is_domain_approved(
 }
 
 /// Check if a domain exists (approved or pending) for a plugin
-pub fn domain_exists(
-    conn: &mut diesel::SqliteConnection,
-    pid: &str,
-    dom: &str,
-) -> Result<bool> {
+pub fn domain_exists(conn: &mut diesel::SqliteConnection, pid: &str, dom: &str) -> Result<bool> {
     use crate::diesel_schema::domain_whitelist::dsl::*;
     use diesel::result::OptionalExtension;
 

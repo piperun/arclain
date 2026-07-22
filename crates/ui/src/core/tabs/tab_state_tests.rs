@@ -111,7 +111,8 @@ fn display_title_empty_when_no_path() {
 #[test]
 fn display_title_handles_no_extension() {
     let tab = TabState::new(TabId(1));
-    tab.archive_path.set(Some(PathBuf::from("/no/extension/here")));
+    tab.archive_path
+        .set(Some(PathBuf::from("/no/extension/here")));
     assert_eq!(tab.display_title(), "here");
 }
 

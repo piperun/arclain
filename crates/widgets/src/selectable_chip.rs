@@ -100,11 +100,7 @@ impl<'a> SelectableChip<'a> {
                 ui.label(egui::RichText::new(&label).color(text_color));
             });
 
-        let response = ui.interact(
-            chip.response.rect,
-            chip.response.id,
-            egui::Sense::click(),
-        );
+        let response = ui.interact(chip.response.rect, chip.response.id, egui::Sense::click());
 
         #[cfg(debug_assertions)]
         crate::debug::paint_widget_rect_debug(

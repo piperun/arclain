@@ -57,7 +57,9 @@ fn c1_nested_lock_acquisition_can_cycle() {
         thread::sleep(HOLD_DURATION);
         // Now try to take whitelist.write while still holding plugins.read.
         // With B holding whitelist.read, this blocks.
-        whitelist_a.try_write_for(Duration::from_millis(800)).is_some()
+        whitelist_a
+            .try_write_for(Duration::from_millis(800))
+            .is_some()
     });
 
     // Thread B: simulates a hypothetical concurrent path that holds
@@ -122,7 +124,9 @@ fn c1_snapshot_then_release_avoids_cycle() {
             let _plugins_guard = plugins_a.read();
             thread::sleep(HOLD_DURATION);
         }
-        whitelist_a.try_write_for(Duration::from_millis(800)).is_some()
+        whitelist_a
+            .try_write_for(Duration::from_millis(800))
+            .is_some()
     });
 
     let plugins_b = plugins.clone();

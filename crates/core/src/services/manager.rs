@@ -90,7 +90,10 @@ impl Services {
         // can surface them and nothing downstream thinks the work is alive.
         const STALE_THRESHOLD_SECS: i64 = 3600;
         if let Err(e) = dbs.config.with_connection(|conn| {
-            Ok(arclain_db::flag_stale_in_progress(conn, STALE_THRESHOLD_SECS)?)
+            Ok(arclain_db::flag_stale_in_progress(
+                conn,
+                STALE_THRESHOLD_SECS,
+            )?)
         }) {
             tracing::warn!("[services] Failed to sweep stale pipeline runs: {}", e);
         }

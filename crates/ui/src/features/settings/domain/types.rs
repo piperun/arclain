@@ -537,10 +537,7 @@ mod tests {
 
     #[test]
     fn checksum_algorithm_display_name() {
-        assert_eq!(
-            ChecksumAlgorithm::Crc32.display_name(),
-            "CRC32 (fastest)"
-        );
+        assert_eq!(ChecksumAlgorithm::Crc32.display_name(), "CRC32 (fastest)");
         assert_eq!(
             ChecksumAlgorithm::XxHash.display_name(),
             "XXHash (fast, modern)"

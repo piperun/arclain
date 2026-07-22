@@ -93,7 +93,10 @@ fn cancel_button_hides_modal_and_returns_cancelled() {
     harness.run();
     harness.run();
 
-    assert_eq!(harness.state().last_result, CloseTabConfirmResult::Cancelled);
+    assert_eq!(
+        harness.state().last_result,
+        CloseTabConfirmResult::Cancelled
+    );
     assert!(
         !harness.state().state.show,
         "Cancel must hide the modal so the next frame doesn't re-show it"

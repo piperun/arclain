@@ -12,13 +12,13 @@
 
 mod rule_editor;
 
-pub use rule_editor::{RuleEditorAction, RuleEditorState};
-use arclain_core::features::organization::OrganizationRule;
-use arclain_core::OrganizationService;
 use crate::core::SettingsPage;
 use crate::shared::components::item_table::{ItemTable, TableColumn};
 use crate::shared::components::Form;
+use arclain_core::features::organization::OrganizationRule;
+use arclain_core::OrganizationService;
 use arclain_widgets::{ButtonSize, TextButton};
+pub use rule_editor::{RuleEditorAction, RuleEditorState};
 
 /// Intents emitted by `RulesPage`'s render functions. Navigation
 /// intents are translated by the caller into `SettingsAction::NavigateTo`;
@@ -107,109 +107,121 @@ impl RulesPage {
 
         let mut emitted: Option<RulesPageAction> = None;
 
-        Form::new()
-            .id("organization_rules")
-            .show(ui, theme, |ui| {
-                // Page header
-                ui.label(
-                    egui::RichText::new("Organization Rules")
-                        .size(18.0)
-                        .strong()
-                        .color(theme.colors.on_surface),
-                );
-                ui.label(
-                    egui::RichText::new("Manage rules for automatically organizing archives based on metadata.")
-                        .size(12.0)
-                        .color(theme.colors.on_surface_variant),
-                );
-                ui.add_space(12.0);
+        Form::new().id("organization_rules").show(ui, theme, |ui| {
+            // Page header
+            ui.label(
+                egui::RichText::new("Organization Rules")
+                    .size(18.0)
+                    .strong()
+                    .color(theme.colors.on_surface),
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Manage rules for automatically organizing archives based on metadata.",
+                )
+                .size(12.0)
+                .color(theme.colors.on_surface_variant),
+            );
+            ui.add_space(12.0);
 
-                // Header with count and Add button
-                ui.horizontal(|ui| {
-                    if ui.add(TextButton::new(format!("{} Add New Rule", egui_phosphor::regular::PLUS), ButtonSize::Medium).with_theme_colors(&theme.colors)).clicked() {
-                        emitted = Some(RulesPageAction::Navigate(SettingsPage::EditRule(0)));
-                    }
-
-                    if let Some(rules) = &self.rules {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{} rules", rules.len()))
-                                    .size(12.0)
-                                    .color(theme.colors.on_surface_variant),
-                            );
-                        });
-                    }
-                });
-
-                // Error display
-                if let Some(err) = &self.error {
-                    ui.add_space(8.0);
-                    ui.colored_label(egui::Color32::RED, err);
+            // Header with count and Add button
+            ui.horizontal(|ui| {
+                if ui
+                    .add(
+                        TextButton::new(
+                            format!("{} Add New Rule", egui_phosphor::regular::PLUS),
+                            ButtonSize::Medium,
+                        )
+                        .with_theme_colors(&theme.colors),
+                    )
+                    .clicked()
+                {
+                    emitted = Some(RulesPageAction::Navigate(SettingsPage::EditRule(0)));
                 }
 
-                ui.add_space(12.0);
+                if let Some(rules) = &self.rules {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{} rules", rules.len()))
+                                .size(12.0)
+                                .color(theme.colors.on_surface_variant),
+                        );
+                    });
+                }
+            });
 
-                // Table
-                let actions = if let Some(rules) = &self.rules {
-                    let columns = vec![
-                        TableColumn::exact(60.0, "Status"),
-                        TableColumn::resizable(180.0, "Name"),
-                        TableColumn::remainder("Pattern"),
-                        TableColumn::exact(90.0, "Actions").align_right(),
-                    ];
+            // Error display
+            if let Some(err) = &self.error {
+                ui.add_space(8.0);
+                ui.colored_label(egui::Color32::RED, err);
+            }
 
-                    ItemTable::new()
-                        .empty_message("No organization rules configured yet.")
-                        .show(ui, theme, &columns, rules, |rule, idx, row, actions| {
-                            // Status column
-                            row.col(|ui| {
-                                if rule.is_enabled {
-                                    ui.label(
-                                        egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
-                                            .color(theme.colors.primary),
-                                    );
-                                } else {
-                                    ui.label(
-                                        egui::RichText::new(egui_phosphor::regular::X_CIRCLE)
-                                            .color(theme.colors.on_surface_variant),
-                                    );
-                                }
-                            });
+            ui.add_space(12.0);
 
-                            // Name column
-                            row.col(|ui| {
+            // Table
+            let actions = if let Some(rules) = &self.rules {
+                let columns = vec![
+                    TableColumn::exact(60.0, "Status"),
+                    TableColumn::resizable(180.0, "Name"),
+                    TableColumn::remainder("Pattern"),
+                    TableColumn::exact(90.0, "Actions").align_right(),
+                ];
+
+                ItemTable::new()
+                    .empty_message("No organization rules configured yet.")
+                    .show(ui, theme, &columns, rules, |rule, idx, row, actions| {
+                        // Status column
+                        row.col(|ui| {
+                            if rule.is_enabled {
                                 ui.label(
-                                    egui::RichText::new(&rule.name).color(
-                                        if rule.is_enabled {
-                                            theme.colors.on_surface
-                                        } else {
-                                            theme.colors.on_surface_variant
-                                        },
-                                    ),
+                                    egui::RichText::new(egui_phosphor::regular::CHECK_CIRCLE)
+                                        .color(theme.colors.primary),
                                 );
-                            });
+                            } else {
+                                ui.label(
+                                    egui::RichText::new(egui_phosphor::regular::X_CIRCLE)
+                                        .color(theme.colors.on_surface_variant),
+                                );
+                            }
+                        });
 
-                            // Pattern column
-                            row.col(|ui| {
-                                if let Some(pattern) = &rule.trigger.filename_pattern {
-                                    ui.label(
-                                        egui::RichText::new(pattern)
-                                            .family(egui::FontFamily::Monospace)
-                                            .color(theme.colors.on_surface_variant),
-                                    );
-                                } else {
-                                    ui.label(
-                                        egui::RichText::new("—")
-                                            .color(theme.colors.on_surface_variant),
-                                    );
-                                }
-                            });
+                        // Name column
+                        row.col(|ui| {
+                            ui.label(egui::RichText::new(&rule.name).color(if rule.is_enabled {
+                                theme.colors.on_surface
+                            } else {
+                                theme.colors.on_surface_variant
+                            }));
+                        });
 
-                            // Actions column
-                            row.col(|ui| {
-                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Pattern column
+                        row.col(|ui| {
+                            if let Some(pattern) = &rule.trigger.filename_pattern {
+                                ui.label(
+                                    egui::RichText::new(pattern)
+                                        .family(egui::FontFamily::Monospace)
+                                        .color(theme.colors.on_surface_variant),
+                                );
+                            } else {
+                                ui.label(
+                                    egui::RichText::new("—").color(theme.colors.on_surface_variant),
+                                );
+                            }
+                        });
+
+                        // Actions column
+                        row.col(|ui| {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
                                     if ui
-                                        .add(TextButton::new(egui_phosphor::regular::PENCIL, ButtonSize::Small).with_theme_colors(&theme.colors))
+                                        .add(
+                                            TextButton::new(
+                                                egui_phosphor::regular::PENCIL,
+                                                ButtonSize::Small,
+                                            )
+                                            .with_theme_colors(&theme.colors),
+                                        )
                                         .on_hover_text("Edit rule")
                                         .clicked()
                                     {
@@ -217,25 +229,27 @@ impl RulesPage {
                                     }
 
                                     ui.add_space(4.0);
-                                });
-                            });
-                        })
-                } else {
-                    let empty_rules: Vec<OrganizationRule> = Vec::new();
-                    ItemTable::new().show(ui, theme, &[], &empty_rules, |_, _, _, _| {})
-                };
+                                },
+                            );
+                        });
+                    })
+            } else {
+                let empty_rules: Vec<OrganizationRule> = Vec::new();
+                ItemTable::new().show(ui, theme, &[], &empty_rules, |_, _, _, _| {})
+            };
 
-                // Handle deferred edit click → emit Navigate action.
-                if emitted.is_none() {
-                    if let Some(edit_idx) = actions.get_edit() {
-                        if let Some(rules) = &self.rules {
-                            if let Some(rule) = rules.get(*edit_idx) {
-                                emitted = Some(RulesPageAction::Navigate(SettingsPage::EditRule(rule.id)));
-                            }
+            // Handle deferred edit click → emit Navigate action.
+            if emitted.is_none() {
+                if let Some(edit_idx) = actions.get_edit() {
+                    if let Some(rules) = &self.rules {
+                        if let Some(rule) = rules.get(*edit_idx) {
+                            emitted =
+                                Some(RulesPageAction::Navigate(SettingsPage::EditRule(rule.id)));
                         }
                     }
                 }
-            });
+            }
+        });
 
         emitted
     }
@@ -302,17 +316,23 @@ impl RulesPage {
 
     /// Check if the editor has unsaved changes
     pub fn is_editor_dirty(&self) -> bool {
-        self.editor_state.as_ref().map(|s| s.is_dirty).unwrap_or(false)
+        self.editor_state
+            .as_ref()
+            .map(|s| s.is_dirty)
+            .unwrap_or(false)
     }
 
     /// Save the current rule being edited. Called from outside render
     /// (the settings header save button), so this remains a direct
     /// service call rather than going through the action enum.
     pub fn save_editor_rule(&mut self, service: &OrganizationService) -> Result<(), String> {
-        let state = self.editor_state.as_mut()
+        let state = self
+            .editor_state
+            .as_mut()
             .ok_or_else(|| "No rule being edited".to_string())?;
 
-        service.save_domain_rule(&state.rule)
+        service
+            .save_domain_rule(&state.rule)
             .map_err(|e| format!("Failed to save: {}", e))?;
 
         state.is_dirty = false;
@@ -413,8 +433,7 @@ fn load_plugin_variables(
                             .with_example("Circle Name"),
                         TemplateVariable::new("release_date", "Release date")
                             .with_example("2024-01-15"),
-                        TemplateVariable::new("tags", "Product tags")
-                            .with_example("RPG, Fantasy"),
+                        TemplateVariable::new("tags", "Product tags").with_example("RPG, Fantasy"),
                     ]),
             );
         }

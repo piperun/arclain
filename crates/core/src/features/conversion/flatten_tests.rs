@@ -23,7 +23,10 @@ fn test_strip_archive_extension() {
     assert_eq!(strip_archive_extension("mod.rar"), "mod");
     assert_eq!(strip_archive_extension("Patch.Main.zip"), "Patch.Main");
     assert_eq!(strip_archive_extension("mod.RAR"), "mod");
-    assert_eq!(strip_archive_extension("not_archive.pak"), "not_archive.pak");
+    assert_eq!(
+        strip_archive_extension("not_archive.pak"),
+        "not_archive.pak"
+    );
 }
 
 #[test]
@@ -72,11 +75,12 @@ fn test_target_folder_names_prefix_would_empty_name() {
 /// Helper: write a minimal modinfo.ini next to a marker file in the
 /// test extractor, so the post-extract modinfo-rename step has
 /// something to read.
-fn extractor_writes_modinfo(
-    name: &str,
-) -> impl FnMut(&Path, &Path) -> Result<()> + use<'_> {
+fn extractor_writes_modinfo(name: &str) -> impl FnMut(&Path, &Path) -> Result<()> + use<'_> {
     move |_archive: &Path, dest: &Path| {
-        std::fs::write(dest.join("modinfo.ini"), format!("name={}\nversion=1.0\n", name))?;
+        std::fs::write(
+            dest.join("modinfo.ini"),
+            format!("name={}\nversion=1.0\n", name),
+        )?;
         std::fs::write(dest.join("marker"), b"")?;
         Ok(())
     }
@@ -112,12 +116,9 @@ fn test_flatten_modinfo_rename_falls_back_when_target_exists() {
     std::fs::create_dir(tmp.path().join("Existing Mod")).unwrap();
     std::fs::write(tmp.path().join("source_archive.rar"), b"").unwrap();
 
-    let report = flatten_nested_archives(
-        tmp.path(),
-        false,
-        extractor_writes_modinfo("Existing Mod"),
-    )
-    .unwrap();
+    let report =
+        flatten_nested_archives(tmp.path(), false, extractor_writes_modinfo("Existing Mod"))
+            .unwrap();
 
     // Keeps archive-derived name; existing folder is untouched.
     assert_eq!(report.extracted, vec!["source_archive".to_string()]);
@@ -431,7 +432,10 @@ fn test_recursive_flatten_three_levels() {
             break;
         }
     }
-    assert!(found_payload, "payload.txt should have been extracted somewhere");
+    assert!(
+        found_payload,
+        "payload.txt should have been extracted somewhere"
+    );
 }
 
 #[test]
@@ -458,7 +462,10 @@ fn test_max_depth_1_matches_single_pass() {
             break;
         }
     }
-    assert!(found_inner, "inner.zip should remain after a single-pass flatten");
+    assert!(
+        found_inner,
+        "inner.zip should remain after a single-pass flatten"
+    );
 }
 
 #[test]
@@ -546,7 +553,12 @@ fn test_flatten_report_includes_warnings() {
     })
     .unwrap();
 
-    assert_eq!(report.warnings.len(), 1, "expected 1 warning, got {:?}", report.warnings);
+    assert_eq!(
+        report.warnings.len(),
+        1,
+        "expected 1 warning, got {:?}",
+        report.warnings
+    );
     assert_eq!(report.warnings[0].mod_folder, "ModWithMissingPreview");
     assert!(matches!(
         report.warnings[0].kind,
@@ -571,5 +583,9 @@ fn test_flatten_no_warnings_when_clean() {
     })
     .unwrap();
 
-    assert!(report.warnings.is_empty(), "expected no warnings, got {:?}", report.warnings);
+    assert!(
+        report.warnings.is_empty(),
+        "expected no warnings, got {:?}",
+        report.warnings
+    );
 }

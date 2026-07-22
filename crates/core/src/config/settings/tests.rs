@@ -152,11 +152,16 @@ fn test_archive_path_extracted_from_full_path() {
     });
 
     // Should extract filename from full Windows path (hiragana: たなかさん)
-    let result =
-        store.auto_password_for(Some(r"C:\Users\Test\Downloads\[TestSite] たなかさんの冒険.rar"), &vec![]);
+    let result = store.auto_password_for(
+        Some(r"C:\Users\Test\Downloads\[TestSite] たなかさんの冒険.rar"),
+        &vec![],
+    );
     assert_eq!(result, Some("test_pass".to_string()));
 
     // Should also work with Unix paths (kanji + katakana)
-    let result2 = store.auto_password_for(Some("/home/user/downloads/[TestSite] 冒険ゲーム.rar"), &vec![]);
+    let result2 = store.auto_password_for(
+        Some("/home/user/downloads/[TestSite] 冒険ゲーム.rar"),
+        &vec![],
+    );
     assert_eq!(result2, Some("test_pass".to_string()));
 }

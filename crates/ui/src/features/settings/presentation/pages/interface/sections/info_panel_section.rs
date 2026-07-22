@@ -14,11 +14,7 @@ use eframe::egui;
 
 /// Render the info panel configuration section. Returns
 /// `Some((item_id, new_visible))` if the user toggled a row this frame.
-pub fn render(
-    ui: &mut egui::Ui,
-    theme: &AppTheme,
-    items: &[UiItem],
-) -> Option<(String, bool)> {
+pub fn render(ui: &mut egui::Ui, theme: &AppTheme, items: &[UiItem]) -> Option<(String, bool)> {
     SectionHeader::new("Property Groups").show(ui, &theme.colors);
 
     ui.label(

@@ -32,8 +32,7 @@ pub struct PluginManager {
     pub(crate) content_cache: Option<Arc<arclain_data::ContentCache>>,
     pub(crate) resource_manager: Option<Arc<arclain_data::ResourceManager>>,
     pub(crate) async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
-    pub(crate) gameta_client:
-        Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
+    pub(crate) gameta_client: Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
     pub(crate) initial_settings: HashMap<String, HashMap<String, String>>,
     pub(crate) plugin_log_dir: PathBuf,
     /// Channel sender for async event dispatch (non-blocking)
@@ -55,8 +54,7 @@ pub struct PluginManager {
     /// `settings_dirty` flag is still `false` (audit P14). Populated on
     /// first read; refreshed only for the plugins that flipped dirty
     /// since.
-    pub(crate) settings_cache:
-        parking_lot::Mutex<HashMap<String, HashMap<String, String>>>,
+    pub(crate) settings_cache: parking_lot::Mutex<HashMap<String, HashMap<String, String>>>,
 }
 
 impl PluginManager {
@@ -124,9 +122,7 @@ impl PluginManager {
     /// with any concurrent path that holds `whitelist.read()` and
     /// wants `plugins.read()` (parking_lot writer-preference for new
     /// readers).
-    fn instance_snapshot(
-        &self,
-    ) -> Vec<Arc<parking_lot::Mutex<crate::runtime::PluginInstance>>> {
+    fn instance_snapshot(&self) -> Vec<Arc<parking_lot::Mutex<crate::runtime::PluginInstance>>> {
         let plugins = self.plugins.read();
         plugins.values().map(|p| p.instance.clone()).collect()
     }
@@ -219,7 +215,6 @@ impl PluginManager {
             instance.lock().set_gameta_client(Some(client.clone()));
         }
     }
-
 }
 
 #[cfg(test)]

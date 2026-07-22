@@ -138,11 +138,11 @@ mod tests {
     #[test]
     fn test_completeness_score_ratings() {
         let mut m = ProductMetadata::new(MetadataSource::DLSite, "RJ200");
-        m.rating = Some(4.5);        // +2
-        m.rating_count = Some(100);   // +1
-        m.purchase_count = Some(5000);// +1
+        m.rating = Some(4.5); // +2
+        m.rating_count = Some(100); // +1
+        m.purchase_count = Some(5000); // +1
         m.favorite_count = Some(200); // +1
-        m.review_count = Some(50);    // +1
+        m.review_count = Some(50); // +1
         assert_eq!(m.completeness_score(), 6);
     }
 
@@ -192,26 +192,26 @@ mod tests {
             id: "dlsite:RJ600".into(),
             source: MetadataSource::DLSite,
             external_id: "RJ600".into(),
-            title: Some("T".into()),          // 10
+            title: Some("T".into()),           // 10
             creator: Some("C".into()),         // 10
             description: Some("D".into()),     // 5
             release_date: Some("2024".into()), // 2
             price: Some(1000),                 // 1
             currency: None,
-            rating: Some(4.0),                 // 2
-            rating_count: Some(10),            // 1
-            purchase_count: Some(100),         // 1
-            favorite_count: Some(50),          // 1
-            review_count: Some(5),             // 1
-            file_size: Some("1GB".into()),     // 1
-            file_format: Some("ZIP".into()),   // 1
-            age_rating: Some("R-18".into()),   // 2
-            genres: vec!["G1".into()],         // 2
-            tags: vec!["T1".into()],           // 1
-            languages: vec!["JP".into()],      // 1
+            rating: Some(4.0),                          // 2
+            rating_count: Some(10),                     // 1
+            purchase_count: Some(100),                  // 1
+            favorite_count: Some(50),                   // 1
+            review_count: Some(5),                      // 1
+            file_size: Some("1GB".into()),              // 1
+            file_format: Some("ZIP".into()),            // 1
+            age_rating: Some("R-18".into()),            // 2
+            genres: vec!["G1".into()],                  // 2
+            tags: vec!["T1".into()],                    // 1
+            languages: vec!["JP".into()],               // 1
             extras: serde_json::json!({"series": "S"}), // 2
-            raw_api_response: Some("{}".into()), // 5
-            raw_html: Some("<h/>".into()),       // 3
+            raw_api_response: Some("{}".into()),        // 5
+            raw_html: Some("<h/>".into()),              // 3
             geo_blocked: false,
             cached_at: 0,
             updated_at: None,

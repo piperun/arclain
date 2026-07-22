@@ -10,8 +10,8 @@ use crate::metadata_store::MetadataStore;
 use crate::pool::DieselPool;
 use crate::secrets::SecretsDb;
 use crate::secrets_key::SecretsKey;
-use anyhow::{Context, Result};
 use crate::SqliteDb;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Canonical paths for the two databases and optional key-file
@@ -67,8 +67,8 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
         .with_context(|| format!("Failed to open cache database at {:?}", paths.cache_db))?;
 
     // Create Diesel pool for cache
-    let cache_pool = DieselPool::new(&paths.cache_db)
-        .with_context(|| "Failed to create cache database pool")?;
+    let cache_pool =
+        DieselPool::new(&paths.cache_db).with_context(|| "Failed to create cache database pool")?;
 
     // Open secrets database using new module
     let secrets_db = SecretsDb::open(&paths.secrets_db, &key.as_bytes())

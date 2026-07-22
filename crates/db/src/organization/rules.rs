@@ -78,10 +78,7 @@ pub fn delete_rule(conn: &mut diesel::SqliteConnection, rule_id: i32) -> Result<
 }
 
 /// Save a rule (Insert or Update)
-pub fn save_rule(
-    conn: &mut diesel::SqliteConnection,
-    rule: &DbOrganizationRule,
-) -> Result<i64> {
+pub fn save_rule(conn: &mut diesel::SqliteConnection, rule: &DbOrganizationRule) -> Result<i64> {
     use crate::diesel_schema::organization_rules::dsl::*;
 
     if let Some(rule_id) = rule.id {

@@ -78,13 +78,14 @@ pub fn render_ask_each_time_drop_dialog(
                      Subsequent files always open as new tabs regardless of this choice.",
                     primary_name,
                     state.pending_paths.len() - 1,
-                    if state.pending_paths.len() == 2 { "" } else { "s" },
+                    if state.pending_paths.len() == 2 {
+                        ""
+                    } else {
+                        "s"
+                    },
                 )
             };
-            ui.label(
-                egui::RichText::new(&body)
-                    .color(theme.colors.on_surface_variant),
-            );
+            ui.label(egui::RichText::new(&body).color(theme.colors.on_surface_variant));
         },
         |ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

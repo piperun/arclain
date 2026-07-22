@@ -266,9 +266,7 @@ impl ArchiveBackend for SevenZipCli {
                 info!("[7z CLI] No entries to extract");
                 Ok(())
             }
-            Some(refs) => {
-                self.extract_selective(archive, dest, refs, password, progress)
-            }
+            Some(refs) => self.extract_selective(archive, dest, refs, password, progress),
         }
     }
 
@@ -379,10 +377,9 @@ impl ArchiveBackend for SevenZipCli {
             dest.display(),
             files.len()
         );
-        debug!("Profile settings: level={}, method={:?}, solid={}",
-            profile.compression_level,
-            profile.compression_method,
-            profile.solid_archive
+        debug!(
+            "Profile settings: level={}, method={:?}, solid={}",
+            profile.compression_level, profile.compression_method, profile.solid_archive
         );
 
         let mut args = vec![
@@ -439,7 +436,10 @@ impl ArchiveBackend for SevenZipCli {
         }
 
         self.run_status(args)?;
-        info!("Archive created successfully with profile '{}'", profile.name);
+        info!(
+            "Archive created successfully with profile '{}'",
+            profile.name
+        );
         Ok(())
     }
 

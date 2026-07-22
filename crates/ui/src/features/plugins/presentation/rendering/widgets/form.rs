@@ -93,7 +93,15 @@ pub fn render_text_input(
                     // Show Save button if text differs from stored value
                     let is_modified = text != *value;
                     if is_modified {
-                        if ui.add(arclain_widgets::TextButton::new("Save", arclain_widgets::ButtonSize::Small).with_theme_colors(colors)).clicked()
+                        if ui
+                            .add(
+                                arclain_widgets::TextButton::new(
+                                    "Save",
+                                    arclain_widgets::ButtonSize::Small,
+                                )
+                                .with_theme_colors(colors),
+                            )
+                            .clicked()
                             || (response.response.lost_focus()
                                 && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                         {

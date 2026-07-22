@@ -40,7 +40,9 @@ pub fn parse_url(url_str: &str) -> Result<DomainInfo, String> {
     let (tld, effective_domain) = extract_effective_domain(&parts);
 
     // Check for excessive subdomains
-    let subdomain_count = parts.len().saturating_sub(effective_domain.split('.').count());
+    let subdomain_count = parts
+        .len()
+        .saturating_sub(effective_domain.split('.').count());
     if subdomain_count > 3 {
         warnings.push(DomainWarning::ExcessiveSubdomains {
             count: subdomain_count,
@@ -193,6 +195,9 @@ mod tests {
     #[test]
     fn test_ip_address() {
         let info = parse_url("http://192.168.1.1/admin").unwrap();
-        assert!(info.warnings.iter().any(|w| matches!(w, DomainWarning::IpAddress { .. })));
+        assert!(info
+            .warnings
+            .iter()
+            .any(|w| matches!(w, DomainWarning::IpAddress { .. })));
     }
 }

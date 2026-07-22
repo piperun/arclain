@@ -2,12 +2,14 @@
 //!
 //! Settings page for configuring keyboard shortcuts and mouse button bindings.
 
-use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, TextButton};
-use crate::features::hotkeys::{HotkeyAction, HotkeyBinding, HotkeyManager, InputKey, KeyboardKey, Modifiers, MouseButton};
+use crate::features::hotkeys::{
+    HotkeyAction, HotkeyBinding, HotkeyManager, InputKey, KeyboardKey, Modifiers, MouseButton,
+};
 use crate::features::settings::types::SettingsAction;
 use crate::shared::components::settings_form::{Form, SettingsGroup};
 use crate::shared::theme::AppTheme;
 use arclain_theme::ThemeColors;
+use arclain_widgets::{ButtonSize, IconButton, IconButtonSize, TextButton};
 use eframe::egui;
 
 /// State for the Keyboard & Mouse settings page
@@ -211,8 +213,10 @@ fn render_action_row(
                                 ..
                             } => {
                                 if let Some(kb_key) = KeyboardKey::from_egui(*key) {
-                                    let new_binding =
-                                        HotkeyBinding::new(InputKey::Keyboard(kb_key), modifiers.clone());
+                                    let new_binding = HotkeyBinding::new(
+                                        InputKey::Keyboard(kb_key),
+                                        modifiers.clone(),
+                                    );
                                     try_set_binding(state, action, new_binding);
                                 }
                             }

@@ -303,7 +303,10 @@ impl UserConfig {
             )
             .unwrap_or(0);
         if column_exists > 0 {
-            let _ = conn.execute("ALTER TABLE user_config DROP COLUMN last_opened_archive", []);
+            let _ = conn.execute(
+                "ALTER TABLE user_config DROP COLUMN last_opened_archive",
+                [],
+            );
         }
 
         Ok(())

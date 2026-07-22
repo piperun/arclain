@@ -41,79 +41,83 @@ pub fn render_list(ui: &mut egui::Ui, theme: &AppTheme, dialog: &mut PasswordRul
     // Render table using standardized ItemTable component
     let actions = ItemTable::new()
         .empty_message("No password rules configured yet.")
-        .show(ui, theme, &columns, &dialog.rules, |rule, idx, row, actions| {
-            // Enabled column
-            row.col(|ui| {
-                ui.centered_and_justified(|ui| {
-                    let mut enabled = rule.enabled;
-                    if ui
-                        .add(
-                            ToggleSwitch::new(&mut enabled)
-                                .text("ON", "OFF")
-                                .size(40.0, 18.0)
-                                .with_theme_colors(&theme.colors),
-                        )
-                        .changed()
-                    {
-                        enable_toggles.push((idx, enabled));
-                    }
+        .show(
+            ui,
+            theme,
+            &columns,
+            &dialog.rules,
+            |rule, idx, row, actions| {
+                // Enabled column
+                row.col(|ui| {
+                    ui.centered_and_justified(|ui| {
+                        let mut enabled = rule.enabled;
+                        if ui
+                            .add(
+                                ToggleSwitch::new(&mut enabled)
+                                    .text("ON", "OFF")
+                                    .size(40.0, 18.0)
+                                    .with_theme_colors(&theme.colors),
+                            )
+                            .changed()
+                        {
+                            enable_toggles.push((idx, enabled));
+                        }
+                    });
                 });
-            });
 
-            // Name column
-            row.col(|ui| {
-                ui.label(egui::RichText::new(&rule.name).color(
-                    if rule.enabled {
+                // Name column
+                row.col(|ui| {
+                    ui.label(egui::RichText::new(&rule.name).color(if rule.enabled {
                         theme.colors.on_surface
                     } else {
                         theme.colors.on_surface_variant
-                    },
-                ));
-            });
-
-            // Pattern column
-            row.col(|ui| {
-                ui.label(
-                    egui::RichText::new(&rule.pattern)
-                        .family(egui::FontFamily::Monospace)
-                        .color(theme.colors.on_surface_variant),
-                );
-            });
-
-            // Priority column
-            row.col(|ui| {
-                ui.label(
-                    egui::RichText::new(rule.priority.to_string())
-                        .color(theme.colors.on_surface_variant),
-                );
-            });
-
-            // Actions column
-            row.col(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui
-                        .button(egui_phosphor::regular::TRASH)
-                        .on_hover_text("Delete rule")
-                        .clicked()
-                    {
-                        actions.delete(idx);
-                    }
-                    ui.add_space(8.0);
-
-                    let is_editing_this = Some(idx) == dialog.editing_index;
-                    if ui
-                        .add_enabled(
-                            !is_editing_this,
-                            egui::Button::new(egui_phosphor::regular::PENCIL),
-                        )
-                        .on_hover_text("Edit rule")
-                        .clicked()
-                    {
-                        actions.edit(idx);
-                    }
+                    }));
                 });
-            });
-        });
+
+                // Pattern column
+                row.col(|ui| {
+                    ui.label(
+                        egui::RichText::new(&rule.pattern)
+                            .family(egui::FontFamily::Monospace)
+                            .color(theme.colors.on_surface_variant),
+                    );
+                });
+
+                // Priority column
+                row.col(|ui| {
+                    ui.label(
+                        egui::RichText::new(rule.priority.to_string())
+                            .color(theme.colors.on_surface_variant),
+                    );
+                });
+
+                // Actions column
+                row.col(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .button(egui_phosphor::regular::TRASH)
+                            .on_hover_text("Delete rule")
+                            .clicked()
+                        {
+                            actions.delete(idx);
+                        }
+                        ui.add_space(8.0);
+
+                        let is_editing_this = Some(idx) == dialog.editing_index;
+                        if ui
+                            .add_enabled(
+                                !is_editing_this,
+                                egui::Button::new(egui_phosphor::regular::PENCIL),
+                            )
+                            .on_hover_text("Edit rule")
+                            .clicked()
+                        {
+                            actions.edit(idx);
+                        }
+                    });
+                });
+            },
+        );
 
     // Apply deferred actions after immutable borrow ends
     if let Some(idx) = actions.get_delete() {

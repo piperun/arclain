@@ -14,7 +14,9 @@ pub use executor::{execute_pipeline, PipelineProgress};
 pub use presets::{
     builtin_presets, default_presets_path, load_presets, save_presets, PresetsFile, SavedPreset,
 };
-pub use preview::{preview_pipeline, preview_pipeline_with_metadata, PipelinePreview, PreviewEntry};
+pub use preview::{
+    preview_pipeline, preview_pipeline_with_metadata, PipelinePreview, PreviewEntry,
+};
 pub use types::{
     OutputArtifact, OutputCollisionPolicy, OutputIdentity, OutputKind, Pipeline, PipelineInput,
     PipelineOutput, PipelineStep, ProcessPreset, COLLISION_POLICY_CONFIG_KEY,

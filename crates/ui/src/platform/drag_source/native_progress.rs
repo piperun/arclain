@@ -9,15 +9,12 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use windows::core::{GUID, PCWSTR};
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CoUninitialize,
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-};
-use windows::Win32::UI::Shell::{
-    IProgressDialog,
-    PROGDLG_AUTOTIME, PROGDLG_NOMINIMIZE,
-};
 use windows::Win32::Foundation::HWND;
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER,
+    COINIT_APARTMENTTHREADED,
+};
+use windows::Win32::UI::Shell::{IProgressDialog, PROGDLG_AUTOTIME, PROGDLG_NOMINIMIZE};
 
 // CLSID for ProgressDialog - {F8383852-FCD3-11d1-A6B9-006097DF5BD4}
 const CLSID_PROGRESSDIALOG: GUID = GUID::from_u128(0xF8383852_FCD3_11d1_A6B9_006097DF5BD4);
@@ -34,57 +31,63 @@ impl NativeProgressDialog {
         unsafe {
             // Initialize COM for this thread (if not already)
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            
+
             // Create the progress dialog COM object using the CLSID
-            let dialog: IProgressDialog = CoCreateInstance(
-                &CLSID_PROGRESSDIALOG,
-                None,
-                CLSCTX_INPROC_SERVER,
-            ).map_err(|e| format!("Failed to create IProgressDialog: {:?}", e))?;
-            
+            let dialog: IProgressDialog =
+                CoCreateInstance(&CLSID_PROGRESSDIALOG, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|e| format!("Failed to create IProgressDialog: {:?}", e))?;
+
             // Set the title
             let title_wide: Vec<u16> = title.encode_utf16().chain(std::iter::once(0)).collect();
-            dialog.SetTitle(PCWSTR(title_wide.as_ptr()))
+            dialog
+                .SetTitle(PCWSTR(title_wide.as_ptr()))
                 .map_err(|e| format!("Failed to set title: {:?}", e))?;
-            
+
             // Set the line texts
             let line1 = format!("Extracting {} files...", total_files);
             let line1_wide: Vec<u16> = line1.encode_utf16().chain(std::iter::once(0)).collect();
-            dialog.SetLine(1, PCWSTR(line1_wide.as_ptr()), false, None)
+            dialog
+                .SetLine(1, PCWSTR(line1_wide.as_ptr()), false, None)
                 .map_err(|e| format!("Failed to set line 1: {:?}", e))?;
-            
+
             // Start the dialog - this creates the window on the current thread's message pump
             // PROGDLG_AUTOTIME: automatically updates time remaining
             let flags = PROGDLG_AUTOTIME | PROGDLG_NOMINIMIZE;
-            dialog.StartProgressDialog(HWND::default(), None, flags, None)
+            dialog
+                .StartProgressDialog(HWND::default(), None, flags, None)
                 .map_err(|e| format!("Failed to start dialog: {:?}", e))?;
-            
+
             let cancelled = Arc::new(AtomicBool::new(false));
-            
+
             info!("[native_progress] Dialog started");
-            
+
             Ok(Self { dialog, cancelled })
         }
     }
-    
+
     /// Update progress with current file info
     pub fn update(&self, current: u32, total: u32, current_file: &str) {
         unsafe {
             // Set progress (0-100 scale, or we can use actual counts)
             // IProgressDialog::SetProgress takes current and max as u32
             let _ = self.dialog.SetProgress(current, total);
-            
+
             // Update line 2 with current file
-            let line2_wide: Vec<u16> = current_file.encode_utf16().chain(std::iter::once(0)).collect();
-            let _ = self.dialog.SetLine(2, PCWSTR(line2_wide.as_ptr()), true, None);
-            
+            let line2_wide: Vec<u16> = current_file
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let _ = self
+                .dialog
+                .SetLine(2, PCWSTR(line2_wide.as_ptr()), true, None);
+
             // Check if user clicked cancel
             if self.dialog.HasUserCancelled().as_bool() {
                 self.cancelled.store(true, Ordering::SeqCst);
             }
         }
     }
-    
+
     /// Check if the user has clicked Cancel
     pub fn is_cancelled(&self) -> bool {
         unsafe {
@@ -96,12 +99,12 @@ impl NativeProgressDialog {
             }
         }
     }
-    
+
     /// Get the cancellation token for use with extraction
     pub fn cancel_token(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancelled)
     }
-    
+
     /// Close the dialog
     pub fn close(self) {
         unsafe {
@@ -144,13 +147,19 @@ pub fn extract_with_native_progress(
     // For very small file counts, skip the dialog entirely — the COM
     // round-trip + worker-thread setup costs more than the extraction itself.
     if file_count <= 2 {
-        debug!("[native_progress] Small file count ({}), extracting without dialog", file_count);
+        debug!(
+            "[native_progress] Small file count ({}), extracting without dialog",
+            file_count
+        );
         return backend
             .extract_files(archive_path, dest_dir, file_paths, password)
             .map_err(|e| format!("Extraction failed: {}", e));
     }
 
-    info!("[native_progress] Starting extraction of {} files with native dialog", file_count);
+    info!(
+        "[native_progress] Starting extraction of {} files with native dialog",
+        file_count
+    );
 
     // Create the progress dialog (apartment-threaded COM, lives on this
     // thread). If creation fails we still want the extraction to run.
@@ -160,7 +169,10 @@ pub fn extract_with_native_progress(
     ) {
         Ok(d) => Some(d),
         Err(e) => {
-            warn!("[native_progress] Failed to create dialog: {}, continuing without", e);
+            warn!(
+                "[native_progress] Failed to create dialog: {}, continuing without",
+                e
+            );
             None
         }
     };

@@ -105,12 +105,14 @@ impl MetadataStore {
 
     /// Delete orphaned cache entries (entries with product_id not in product_metadata)
     pub fn delete_orphaned_cache_entries(&self) -> Result<usize> {
-        self.pool.with_conn(|conn| cache::delete_orphaned_entries(conn))
+        self.pool
+            .with_conn(|conn| cache::delete_orphaned_entries(conn))
     }
 
     /// Delete search cache entries older than specified days
     pub fn delete_old_search_cache(&self, days: i64) -> Result<usize> {
-        self.pool.with_conn(|conn| cache::delete_old_search_cache(conn, days))
+        self.pool
+            .with_conn(|conn| cache::delete_old_search_cache(conn, days))
     }
 
     /// Fix cache entries: update cache_type and product_id based on key patterns
@@ -120,7 +122,8 @@ impl MetadataStore {
 
     /// Get all content hashes in the cache index
     pub fn get_all_content_hashes(&self) -> Result<Vec<String>> {
-        self.pool.with_conn(|conn| cache::get_all_content_hashes(conn))
+        self.pool
+            .with_conn(|conn| cache::get_all_content_hashes(conn))
     }
 
     /// Delete all search cache entries (search results are ephemeral)

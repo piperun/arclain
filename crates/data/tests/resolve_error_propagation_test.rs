@@ -17,11 +17,7 @@ use std::sync::Arc;
 struct AlwaysNotFound;
 
 impl DataSourceResolver for AlwaysNotFound {
-    fn try_resolve(
-        &self,
-        _key: &str,
-        _request: &DataRequest,
-    ) -> Result<Vec<u8>, ResolveError> {
+    fn try_resolve(&self, _key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
         Err(ResolveError::NotFound)
     }
 }
@@ -30,11 +26,7 @@ impl DataSourceResolver for AlwaysNotFound {
 struct AlwaysIoError(&'static str);
 
 impl DataSourceResolver for AlwaysIoError {
-    fn try_resolve(
-        &self,
-        _key: &str,
-        _request: &DataRequest,
-    ) -> Result<Vec<u8>, ResolveError> {
+    fn try_resolve(&self, _key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
         Err(ResolveError::IoError(self.0.to_string()))
     }
 }
@@ -104,11 +96,7 @@ fn pure_cache_miss_keeps_generic_message() {
 fn ioerror_preferred_over_notconfigured() {
     struct AlwaysNotConfigured;
     impl DataSourceResolver for AlwaysNotConfigured {
-        fn try_resolve(
-            &self,
-            _key: &str,
-            _request: &DataRequest,
-        ) -> Result<Vec<u8>, ResolveError> {
+        fn try_resolve(&self, _key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
             Err(ResolveError::NotConfigured)
         }
     }

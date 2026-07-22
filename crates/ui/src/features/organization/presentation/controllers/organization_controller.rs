@@ -30,7 +30,8 @@ impl<'a> ActionContext<'a> {
                         // We need to clone shared state for the async operation
                         let shared_state = self.shared.clone();
 
-                        let archive_path = self.shared.signals().tabs.get().active().archive_path.get();
+                        let archive_path =
+                            self.shared.signals().tabs.get().active().archive_path.get();
 
                         if let Some(path) = archive_path {
                             // Get selected profile from organizer page UI state
@@ -42,7 +43,10 @@ impl<'a> ActionContext<'a> {
                                 .cloned();
 
                             // Build destination path by changing extension based on profile
-                            let dest_ext = profile.as_ref().map(|p| p.format.extension()).unwrap_or("7z");
+                            let dest_ext = profile
+                                .as_ref()
+                                .map(|p| p.format.extension())
+                                .unwrap_or("7z");
                             let dest_path = path.with_extension(dest_ext);
 
                             // Run asynchronously via ArchiveOperations

@@ -29,9 +29,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
+    tracing_subscriber::fmt().with_env_filter("info").init();
 
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {

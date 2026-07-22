@@ -42,7 +42,8 @@ pub(crate) struct PluginState {
     pub(crate) rename_with_code: bool,
     // Cached carousel images to avoid has_data() calls every frame
     // HashMap<product_id, images> - persists across entry switches
-    pub(crate) cached_carousel_images: std::collections::HashMap<String, Vec<(String, Option<String>)>>,
+    pub(crate) cached_carousel_images:
+        std::collections::HashMap<String, Vec<(String, Option<String>)>>,
     // Cached metadata summaries to avoid DB queries every frame
     // (filtered_ids, summaries) - rebuilt when filter changes
     pub(crate) cached_summaries: Option<(Vec<String>, Vec<(String, Option<String>, bool)>)>,
@@ -85,7 +86,8 @@ pub(crate) fn format_description(text: &str) -> String {
 
     let mut result = s.to_string();
     if is_flat {
-        result = result.replace("■", "\n\n■")
+        result = result
+            .replace("■", "\n\n■")
             .replace("●", "\n●")
             .replace("★", "\n★")
             .replace("・", "\n・");
@@ -118,12 +120,14 @@ pub(crate) fn get_total_image_count(state: &PluginState) -> usize {
         let cover_url = scraped.as_ref().and_then(|s| s.cover_image.clone());
         let has_cover = cover_url.is_some()
             || archust_plugin_sdk::arclain::plugin::host::has_data(
-                &gameta_lib::providers::dlsite::cache_keys::cover_key(product_id)
+                &gameta_lib::providers::dlsite::cache_keys::cover_key(product_id),
             );
         // Count non-empty, non-duplicate screenshot URLs
-        let sample_count = scraped.as_ref()
+        let sample_count = scraped
+            .as_ref()
             .map(|s| {
-                s.screenshots.iter()
+                s.screenshots
+                    .iter()
                     .filter(|url| !url.is_empty())
                     .filter(|url| cover_url.as_ref() != Some(*url)) // Skip if same as cover
                     .count()
@@ -156,16 +160,21 @@ impl archust_plugin_sdk::Guest for Component {
 
     fn init() {
         info("DLSite Metadata plugin initialized");
-        
+
         // Read plugin settings
-        let auto_fetch = archust_plugin_sdk::arclain::plugin::host::get_setting("auto_fetch_enabled")
-            .unwrap_or_else(|| "true".to_string()) == "true";
+        let auto_fetch =
+            archust_plugin_sdk::arclain::plugin::host::get_setting("auto_fetch_enabled")
+                .unwrap_or_else(|| "true".to_string())
+                == "true";
         let enable_cache = archust_plugin_sdk::arclain::plugin::host::get_setting("enable_cache")
-            .unwrap_or_else(|| "true".to_string()) == "true";
+            .unwrap_or_else(|| "true".to_string())
+            == "true";
         let cache_images = archust_plugin_sdk::arclain::plugin::host::get_setting("cache_images")
-            .unwrap_or_else(|| "true".to_string()) == "true";
+            .unwrap_or_else(|| "true".to_string())
+            == "true";
         let cache_videos = archust_plugin_sdk::arclain::plugin::host::get_setting("cache_videos")
-            .unwrap_or_else(|| "false".to_string()) == "true";
+            .unwrap_or_else(|| "false".to_string())
+            == "true";
         let video_quality = archust_plugin_sdk::arclain::plugin::host::get_setting("video_quality")
             .unwrap_or_else(|| "best".to_string());
 
@@ -177,11 +186,12 @@ impl archust_plugin_sdk::Guest for Component {
             s.cache_videos = cache_videos;
             s.video_quality = video_quality;
         });
-        
+
         // NOTE: Auto-load happens when archive is opened, not at init time
     }
 
-    fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition> {
+    fn get_default_rules() -> Vec<archust_plugin_sdk::arclain::plugin::rules::PluginRuleDefinition>
+    {
         use archust_plugin_sdk::arclain::plugin::rules::*;
 
         vec![PluginRuleDefinition {
@@ -215,7 +225,7 @@ impl archust_plugin_sdk::Guest for Component {
     }
 
     fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
-        use archust_plugin_sdk::arclain::plugin::ui::{TopTabConfig, BadgeConfig};
+        use archust_plugin_sdk::arclain::plugin::ui::{BadgeConfig, TopTabConfig};
 
         // Cache count for the badge. `list_cached_entries` is now
         // host-cached (LibraryService caches the SQLite result and
@@ -231,15 +241,17 @@ impl archust_plugin_sdk::Guest for Component {
             icon: "MAGNIFYING_GLASS".to_string(),
             badge: cache_count.map(|count| BadgeConfig {
                 count: if count > 0 { Some(count) } else { None },
-                dot: count == 0,  // Show dot if no count but tab is active
+                dot: count == 0, // Show dot if no count but tab is active
                 color: "blue".to_string(),
             }),
-            priority: 100,  // After host tabs (0-99 reserved for host)
+            priority: 100, // After host tabs (0-99 reserved for host)
         }]
     }
 
-
-    fn on_ui_event(id: String, value: Option<String>) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
+    fn on_ui_event(
+        id: String,
+        value: Option<String>,
+    ) -> Vec<archust_plugin_sdk::arclain::plugin::ui::PluginAction> {
         events::dispatch(id, value)
     }
 }
@@ -254,7 +266,8 @@ pub(crate) fn detect_code_from_archive() -> Option<String> {
 
 /// Fast scan: detect DLSite code + check cache only. Never hits the network.
 /// Used during archive_opened to avoid blocking the UI.
-pub(crate) fn perform_scan_cached_only() -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
+pub(crate) fn perform_scan_cached_only(
+) -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
     use archust_plugin_sdk::{current_archive_info, info, list_archive_files};
 
     let info_data = current_archive_info().ok_or("No archive open")?;
@@ -265,20 +278,27 @@ pub(crate) fn perform_scan_cached_only() -> Result<Option<(String, serde_json::V
 
     let mut checked_codes: Vec<String> = Vec::new();
 
-    let mut check_cached = |code: String| -> Option<(String, serde_json::Value, Option<ScrapedData>)> {
-        if checked_codes.contains(&code) {
-            return None;
-        }
-        checked_codes.push(code.clone());
-        info(&format!("[DLSite Plugin] Found code: {}", code));
+    let mut check_cached =
+        |code: String| -> Option<(String, serde_json::Value, Option<ScrapedData>)> {
+            if checked_codes.contains(&code) {
+                return None;
+            }
+            checked_codes.push(code.clone());
+            info(&format!("[DLSite Plugin] Found code: {}", code));
 
-        if let Some((json, scraped)) = get_cached_dlsite_metadata(&code) {
-            info(&format!("[DLSite Plugin] Using cached metadata for {}", code));
-            return Some((code, json, scraped));
-        }
-        info(&format!("[DLSite Plugin] {} not cached, skipping network fetch", code));
-        None
-    };
+            if let Some((json, scraped)) = get_cached_dlsite_metadata(&code) {
+                info(&format!(
+                    "[DLSite Plugin] Using cached metadata for {}",
+                    code
+                ));
+                return Some((code, json, scraped));
+            }
+            info(&format!(
+                "[DLSite Plugin] {} not cached, skipping network fetch",
+                code
+            ));
+            None
+        };
 
     // 1. Check filename
     if let Some(code) = detect_dlsite_code(&info_data.filename) {
@@ -311,7 +331,9 @@ pub(crate) fn detect_dlsite_code(text: &str) -> Option<String> {
 /// 2. JSON cache (host parses + saves to DB)
 /// 3. HTML cache (host parses + saves to DB)
 /// No WASM-side parsing - all heavy lifting done by host.
-pub(crate) fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
+pub(crate) fn get_cached_dlsite_metadata(
+    product_id: &str,
+) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use archust_plugin_sdk::get_product_metadata;
 
     // Get ProductMetadata from host (handles all parsing on host side)
@@ -326,7 +348,11 @@ pub(crate) fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json
     // Helper to extract a string array from a JSON value
     fn str_array(val: &serde_json::Value) -> Vec<String> {
         val.as_array()
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -372,15 +398,19 @@ pub(crate) fn get_cached_dlsite_metadata(product_id: &str) -> Option<(serde_json
 
 /// Fetch metadata from DLSite network (for new entries or search results)
 /// Uses gameta_lib orchestrator for logic.
-pub(crate) fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Value, Option<ScrapedData>)> {
+pub(crate) fn fetch_dlsite_metadata(
+    product_id: &str,
+) -> Option<(serde_json::Value, Option<ScrapedData>)> {
     use archust_plugin_sdk::{fetch_string_blocking, log_network_activity};
-    use gameta_lib::providers::dlsite::{DlsiteFetchOptions, plan_fetch, FetchStep, parse_html, parse_api_json};
-    
+    use gameta_lib::providers::dlsite::{
+        parse_api_json, parse_html, plan_fetch, DlsiteFetchOptions, FetchStep,
+    };
+
     // Use the orchestrator to plan our fetch
     // We request ALL sources (API + HTML)
     let options = DlsiteFetchOptions::ALL;
     let plan = plan_fetch(product_id, options);
-    
+
     let mut json_data = serde_json::Value::Null;
     let mut scraped_data = None;
     let mut fetch_success = false;
@@ -390,37 +420,48 @@ pub(crate) fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Val
             FetchStep::FetchJson(url) => {
                 let cache_key = gameta_lib::providers::dlsite::cache_keys::json_key(product_id);
                 log_network_activity(&format!("Fetching API: {}", url));
-                
+
                 match fetch_string_blocking(&cache_key, &url) {
                     Ok(body) => {
                         info(&format!("[DEBUG] JSON fetched: {} bytes", body.len()));
-                        log_network_activity(&format!("JSON response ({} bytes): {}...", body.len(), body.chars().take(100).collect::<String>()));
+                        log_network_activity(&format!(
+                            "JSON response ({} bytes): {}...",
+                            body.len(),
+                            body.chars().take(100).collect::<String>()
+                        ));
                         if let Ok(_meta) = parse_api_json(product_id, &body) {
                             info("[DEBUG] JSON parsed successfully");
                             // Store the RAW JSON value for the plugin's (legacy) usage
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body) {
-                                 if let Some(arr) = val.as_array() {
-                                     json_data = arr.first().cloned().unwrap_or(val);
-                                 } else {
-                                     json_data = val;
-                                 }
-                                 fetch_success = true;
-                                 info("[DEBUG] fetch_success = true (JSON)");
+                                if let Some(arr) = val.as_array() {
+                                    json_data = arr.first().cloned().unwrap_or(val);
+                                } else {
+                                    json_data = val;
+                                }
+                                fetch_success = true;
+                                info("[DEBUG] fetch_success = true (JSON)");
                             } else {
                                 // Invalid JSON structure
                                 info("[DEBUG] Failed to parse JSON structure");
-                                log_network_activity("Failed to parse JSON structure. Invalidating cache.");
+                                log_network_activity(
+                                    "Failed to parse JSON structure. Invalidating cache.",
+                                );
                                 archust_plugin_sdk::invalidate_cache(&cache_key);
                             }
                         } else {
                             // Parse failed (empty or invalid API response)
                             info("[DEBUG] parse_api_response failed");
-                            log_network_activity("Failed to parse API response. Invalidating cache.");
+                            log_network_activity(
+                                "Failed to parse API response. Invalidating cache.",
+                            );
                             archust_plugin_sdk::invalidate_cache(&cache_key);
                         }
                     }
                     Err(e) => {
-                        info(&format!("[DEBUG] fetch_string_blocking for JSON FAILED: {}", e));
+                        info(&format!(
+                            "[DEBUG] fetch_string_blocking for JSON FAILED: {}",
+                            e
+                        ));
                     }
                 }
             }
@@ -431,22 +472,28 @@ pub(crate) fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Val
             FetchStep::FetchHtml(url) => {
                 let cache_key = gameta_lib::providers::dlsite::cache_keys::html_key(product_id);
                 log_network_activity(&format!("Fetching HTML: {}", url));
-                
+
                 if let Ok(body) = fetch_string_blocking(&cache_key, &url) {
                     info(&format!("[DEBUG] HTML fetched: {} bytes", body.len()));
                     log_network_activity(&format!("HTML response ({} bytes)", body.len()));
                     scraped_data = parse_html(&body);
                     if let Some(data) = &scraped_data {
-                        info(&format!("[DEBUG] HTML parsed: title={:?}, geo_blocked={}", data.title, data.geo_blocked));
-                        log_network_activity(&format!("HTML parsed: title={:?}, circle={:?}, geo_blocked={}", 
-                            data.title, data.circle, data.geo_blocked));
+                        info(&format!(
+                            "[DEBUG] HTML parsed: title={:?}, geo_blocked={}",
+                            data.title, data.geo_blocked
+                        ));
+                        log_network_activity(&format!(
+                            "HTML parsed: title={:?}, circle={:?}, geo_blocked={}",
+                            data.title, data.circle, data.geo_blocked
+                        ));
                         // If geo-blocked, dump the full HTML for debugging
                         if data.geo_blocked && STATE.with(|s| s.borrow().dump_html_debug) {
                             let timestamp = std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .map(|d| d.as_secs())
                                 .unwrap_or(0);
-                            let filename = format!("dlsite_blocked_{}_{}.html", product_id, timestamp);
+                            let filename =
+                                format!("dlsite_blocked_{}_{}.html", product_id, timestamp);
                             match archust_plugin_sdk::create_file(&filename, body.as_bytes()) {
                                 Ok(path) => {
                                     archust_plugin_sdk::warn(&format!(
@@ -462,7 +509,7 @@ pub(crate) fn fetch_dlsite_metadata(product_id: &str) -> Option<(serde_json::Val
                                 }
                             }
                         }
-                        
+
                         fetch_success = true;
                     } else {
                         // HTML parsing failed (likely no metadata found)
@@ -511,12 +558,17 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
     // Cover image
     if let Some(ref cover_url) = scraped.cover_image {
         let cover_key = gameta_lib::providers::dlsite::cache_keys::cover_key(product_id);
-        archust_plugin_sdk::arclain::plugin::host::set_status_message(
-            &format!("[{}] Downloading cover ({}/{})", product_id, done + 1, total),
-        );
+        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+            "[{}] Downloading cover ({}/{})",
+            product_id,
+            done + 1,
+            total
+        ));
         log_network_activity(&format!("Fetching cover image: {}", cover_url));
 
-        if let Err(e) = archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image) {
+        if let Err(e) =
+            archust_plugin_sdk::fetch_blocking(&cover_key, cover_url, ResourceType::Image)
+        {
             log_network_activity(&format!("Failed to fetch cover image: {}", e));
         }
         done += 1;
@@ -525,9 +577,12 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
     // Screenshots
     for (idx, url) in scraped.screenshots.iter().enumerate() {
         let key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(product_id, idx);
-        archust_plugin_sdk::arclain::plugin::host::set_status_message(
-            &format!("[{}] Downloading screenshot {}/{}", product_id, done + 1, total),
-        );
+        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+            "[{}] Downloading screenshot {}/{}",
+            product_id,
+            done + 1,
+            total
+        ));
         log_network_activity(&format!("Fetching screenshot {}: {}", idx, url));
 
         if let Err(e) = archust_plugin_sdk::fetch_blocking(&key, url, ResourceType::Image) {
@@ -536,9 +591,10 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
         done += 1;
     }
 
-    archust_plugin_sdk::arclain::plugin::host::set_status_message(
-        &format!("[{}] Downloaded {} images", product_id, done),
-    );
+    archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+        "[{}] Downloaded {} images",
+        product_id, done
+    ));
 }
 
 /// Walk `scraped.description_structure` for chobit-embed videos, fetch
@@ -550,11 +606,12 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
 /// like "720" / "480"). Files land in the host's temp dir as
 /// `dlsite_<product_id>_video_<idx>_<resolution>p.mp4`.
 pub(crate) fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData) {
-    use archust_plugin_sdk::{fetch_string_blocking, fetch_to_cache,
-        log_network_activity, ResourceType};
+    use archust_plugin_sdk::{
+        fetch_string_blocking, fetch_to_cache, log_network_activity, ResourceType,
+    };
     use gameta_lib::parsers::chobit::{parse_chobit_embed, ChobitVideoInfo, VideoSource};
-    use gameta_lib::providers::dlsite::cache_keys;
     use gameta_lib::parsers::dlsite::DescriptionSection as Section;
+    use gameta_lib::providers::dlsite::cache_keys;
 
     let (cache_videos, quality_pref) = STATE.with(|s| {
         let st = s.borrow();
@@ -657,10 +714,7 @@ pub(crate) fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData
                 "Cached video {} ({}) under key {}",
                 video_id, chosen.quality_label, video_key,
             )),
-            Err(e) => log_network_activity(&format!(
-                "Failed to cache video {}: {}",
-                video_id, e,
-            )),
+            Err(e) => log_network_activity(&format!("Failed to cache video {}: {}", video_id, e,)),
         }
     }
 
@@ -687,14 +741,13 @@ fn select_video_source<'a>(
     let pref = pref.trim().to_lowercase();
     match pref.as_str() {
         "" | "best" | "high" | "highest" => info.best_quality(),
-        "low" | "lowest" => info.sources.iter().min_by_key(|s| s.resolution.unwrap_or(u32::MAX)),
+        "low" | "lowest" => info
+            .sources
+            .iter()
+            .min_by_key(|s| s.resolution.unwrap_or(u32::MAX)),
         _ => {
             // Accept "720", "720p", " 720 ".
-            let target: Option<u32> = pref
-                .trim_end_matches('p')
-                .trim()
-                .parse::<u32>()
-                .ok();
+            let target: Option<u32> = pref.trim_end_matches('p').trim().parse::<u32>().ok();
             if let Some(target) = target {
                 if let Some(exact) = info.by_resolution(target) {
                     return Some(exact);
@@ -721,7 +774,6 @@ fn select_video_source<'a>(
 
 // Re-export ScrapedData from gameta_lib for convenience
 use gameta_lib::providers::dlsite::ScrapedData;
-
 
 pub(crate) fn generate_metadata_json(
     product_id: &str,
@@ -770,7 +822,11 @@ pub(crate) fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<
             urlencoding::encode(query)
         );
         // Cache key includes section to avoid conflicts between sections
-        let key = format!("dlsite:search:v3:{}:{}", section, urlencoding::encode(query));
+        let key = format!(
+            "dlsite:search:v3:{}:{}",
+            section,
+            urlencoding::encode(query)
+        );
 
         log_network_activity(&format!("Trying {} section ({})", section, section_name));
         log_network_activity(&format!("GET {}", url));
@@ -784,7 +840,11 @@ pub(crate) fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<
         };
 
         // AJAX endpoint returns JSON with search_result HTML
-        log_network_activity(&format!("Received {} bytes response from {}", response.len(), section));
+        log_network_activity(&format!(
+            "Received {} bytes response from {}",
+            response.len(),
+            section
+        ));
 
         // Try to parse as JSON (AJAX endpoint returns JSON with search_result HTML)
         // Fall back to treating response as raw HTML if JSON parsing fails
@@ -807,7 +867,10 @@ pub(crate) fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<
         };
 
         // Debug: save HTML for inspection
-        if let Ok(path) = archust_plugin_sdk::create_file(&format!("dlsite_search_{}_debug.html", section), html.as_bytes()) {
+        if let Ok(path) = archust_plugin_sdk::create_file(
+            &format!("dlsite_search_{}_debug.html", section),
+            html.as_bytes(),
+        ) {
             log_network_activity(&format!("Saved search HTML to: {}", path));
         }
 
@@ -821,18 +884,26 @@ pub(crate) fn search_dlsite(query: &str) -> Vec<(String, String, String, Option<
             return results
                 .into_iter()
                 .take(10)
-                .map(|r| (r.external_id, r.title, r.creator.unwrap_or_else(|| "Unknown".to_string()), r.thumbnail_url))
+                .map(|r| {
+                    (
+                        r.external_id,
+                        r.title,
+                        r.creator.unwrap_or_else(|| "Unknown".to_string()),
+                        r.thumbnail_url,
+                    )
+                })
                 .collect();
         }
 
-        log_network_activity(&format!("No results on {}, trying next section...", section));
+        log_network_activity(&format!(
+            "No results on {}, trying next section...",
+            section
+        ));
     }
 
     log_network_activity("No results found on any DLSite section");
     Vec::new()
 }
-
-
 
 archust_plugin_sdk::export!(Component with_types_in archust_plugin_sdk);
 
@@ -913,7 +984,7 @@ mod tests {
         let data_time = (json_time, None);
         let output_time = generate_metadata_json("RJ123456", Some(&data_time));
         let parsed_time: serde_json::Value = serde_json::from_str(&output_time).unwrap();
-        
+
         assert_eq!(parsed_time["release_date"], "2026-03-06");
     }
 }

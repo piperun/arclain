@@ -46,9 +46,8 @@ impl SecretsService {
         // the user has a copied vault but on-disk config still points at
         // the old one, so the next launch opens the wrong DB.
         let cfg_conn = ConfigDb::open(&paths.config_db)?.into_sqlite_db();
-        cfg_conn.with_connection(|conn| {
-            set_config(conn, "secrets_db_path", &dst.to_string_lossy())
-        })?;
+        cfg_conn
+            .with_connection(|conn| set_config(conn, "secrets_db_path", &dst.to_string_lossy()))?;
 
         // Update paths and reopen if key is available
         paths.secrets_db = dst;
@@ -108,9 +107,7 @@ impl SecretsService {
         // referencing a stale key path while the new vault uses the new key.
         use arclain_db::ConfigDb;
         let cfg_conn = ConfigDb::open(&paths.config_db)?.into_sqlite_db();
-        cfg_conn.with_connection(|conn| {
-            set_config(conn, "key_file_path", new_key_file_path)
-        })?;
+        cfg_conn.with_connection(|conn| set_config(conn, "key_file_path", new_key_file_path))?;
 
         // Update paths
         paths.key_file = Some(PathBuf::from(new_key_file_path));

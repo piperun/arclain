@@ -75,7 +75,9 @@ impl SevenZipCli {
 
         debug!("Spawning 7z with progress: {:?} {:?}", self.exe, argv);
         let mut cmd = Command::new(&self.exe);
-        cmd.args(&argv).stdout(Stdio::piped()).stderr(Stdio::piped());
+        cmd.args(&argv)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         crate::utilities::hide_console(&mut cmd);
         let mut child = cmd.spawn().context("spawning 7z (progress)")?;
 
@@ -238,9 +240,7 @@ impl SevenZipCli {
     {
         debug!("Executing 7-Zip command (status mode): {:?}", self.exe);
         let mut cmd = Command::new(&self.exe);
-        cmd.args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+        cmd.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
         crate::utilities::hide_console(&mut cmd);
         let output = cmd.output().context("spawning 7z")?;
 

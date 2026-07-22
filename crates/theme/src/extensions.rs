@@ -61,16 +61,16 @@ impl ThemeExtensions {
         Self {
             // File-type defaults — Tailwind 400-ish palette for legibility on
             // both light and dark surfaces.
-            file_folder: Color32::from_rgb(251, 191, 36),     // amber-400
-            file_archive: Color32::from_rgb(251, 146, 60),    // orange-400
-            file_image: Color32::from_rgb(74, 222, 128),      // green-400
-            file_video: Color32::from_rgb(248, 113, 113),     // red-400
-            file_audio: Color32::from_rgb(192, 132, 252),     // purple-400
-            file_document: Color32::from_rgb(96, 165, 250),   // blue-400
-            file_pdf: Color32::from_rgb(239, 68, 68),         // red-500
-            file_code: Color32::from_rgb(45, 212, 191),       // teal-400
+            file_folder: Color32::from_rgb(251, 191, 36), // amber-400
+            file_archive: Color32::from_rgb(251, 146, 60), // orange-400
+            file_image: Color32::from_rgb(74, 222, 128),  // green-400
+            file_video: Color32::from_rgb(248, 113, 113), // red-400
+            file_audio: Color32::from_rgb(192, 132, 252), // purple-400
+            file_document: Color32::from_rgb(96, 165, 250), // blue-400
+            file_pdf: Color32::from_rgb(239, 68, 68),     // red-500
+            file_code: Color32::from_rgb(45, 212, 191),   // teal-400
             file_executable: Color32::from_rgb(96, 165, 250), // blue-400
-            file_link: Color32::from_rgb(156, 163, 175),      // gray-400
+            file_link: Color32::from_rgb(156, 163, 175),  // gray-400
             file_other: colors.on_surface_variant,
 
             // Badge colors

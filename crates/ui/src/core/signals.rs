@@ -136,7 +136,6 @@ pub struct AppSignals {
     // other's prompt — the dialog lives on the tab that triggered it.
     // `file_edit_dialog` migrated to `TabState` in the 2026-05-19 audit.
     // Read via `signals.tabs.get().active().file_edit_dialog`.
-
     /// [NEW] Archive Operations context
     // `pending_open_file` migrated to `TabState` in the 2026-05-19 audit.
     // Read via `signals.tabs.get().active().pending_open_file`. The "file
@@ -168,7 +167,6 @@ pub struct AppSignals {
     // `lightbox_state` migrated to `TabState` in the 2026-05-20 audit B2
     // follow-up. Read via `signals.tabs.get().active().lightbox_state`. The
     // lightbox is plugin-driven, and the plugin is tied to a tab.
-
     /// Gameta server connection status — drives the header indicator.
     pub server_status: Signal<ServerConnectionStatus>,
 
@@ -258,9 +256,10 @@ impl<'a> ProgressDialogProxy<'a> {
         }
     }
 
-    fn read(&self, dlgs: &crate::shared::dialogs::ProgressDialogs)
-        -> crate::shared::dialogs::ExtractionProgressDialog
-    {
+    fn read(
+        &self,
+        dlgs: &crate::shared::dialogs::ProgressDialogs,
+    ) -> crate::shared::dialogs::ExtractionProgressDialog {
         match self.kind {
             ProgressKind::Extraction => dlgs.extraction.clone(),
             ProgressKind::Conversion => dlgs.conversion.clone(),
@@ -268,8 +267,11 @@ impl<'a> ProgressDialogProxy<'a> {
         }
     }
 
-    fn write(&self, dlgs: &mut crate::shared::dialogs::ProgressDialogs,
-             new: crate::shared::dialogs::ExtractionProgressDialog) {
+    fn write(
+        &self,
+        dlgs: &mut crate::shared::dialogs::ProgressDialogs,
+        new: crate::shared::dialogs::ExtractionProgressDialog,
+    ) {
         match self.kind {
             ProgressKind::Extraction => dlgs.extraction = new,
             ProgressKind::Conversion => dlgs.conversion = new,
@@ -520,10 +522,7 @@ mod tests {
         assert_eq!(tab.archive_path.get(), Some(path));
 
         tab.current_password.set(Some("password123".to_string()));
-        assert_eq!(
-            tab.current_password.get(),
-            Some("password123".to_string())
-        );
+        assert_eq!(tab.current_password.get(), Some("password123".to_string()));
     }
 
     #[test]

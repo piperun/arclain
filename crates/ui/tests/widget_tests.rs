@@ -46,9 +46,7 @@ fn search_bar_renders_with_hint() {
 fn search_bar_renders_with_custom_width() {
     let mut harness = Harness::new_ui_state(
         |ui, query: &mut String| {
-            ui.add(
-                arclain_ui::shared::components::search_bar::SearchBar::new(query).width(400.0),
-            );
+            ui.add(arclain_ui::shared::components::search_bar::SearchBar::new(query).width(400.0));
         },
         String::new(),
     );
@@ -285,7 +283,10 @@ fn handle_keys_arrows_move_selection_and_flag_navigation() {
     harness.key_press(egui::Key::ArrowDown);
     harness.step();
     assert_eq!(harness.state().0, 1, "ArrowDown advances");
-    assert!(harness.state().1, "ArrowDown flags navigated for scroll-follow");
+    assert!(
+        harness.state().1,
+        "ArrowDown flags navigated for scroll-follow"
+    );
 
     harness.key_press(egui::Key::ArrowDown);
     harness.step();

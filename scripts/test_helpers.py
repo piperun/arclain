@@ -31,11 +31,64 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _package
 import _plugins
 import _ui
+import _format
 import release
 from _package import get_platform, workspace_version
 from _ui import load_rust_log
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+class TestOwnedFormatting(unittest.TestCase):
+    def test_commands_format_only_owned_packages_and_manifests(self):
+        commands = _format.commands(check=True)
+
+        root_command = commands[0]
+        expected_packages = (
+            "arclain_app_fs",
+            "arclain_checksum",
+            "arclain_core",
+            "arclain_data",
+            "arclain_db",
+            "arclain-network",
+            "arclain_plugins",
+            "arclain_signals",
+            "arclain_theme",
+            "arclain_ui",
+            "arclain_widgets",
+        )
+        for package in expected_packages:
+            with self.subTest(package=package):
+                self.assertIn("--package", root_command)
+                package_index = root_command.index("--package")
+                while root_command[package_index + 1] != package:
+                    package_index = root_command.index(
+                        "--package", package_index + 1,
+                    )
+
+        expected_manifests = (
+            "plugin-sdk/Cargo.toml",
+            "plugins/dlsite-metadata/Cargo.toml",
+            "plugins/gstreamer-preview/Cargo.toml",
+            "plugins/ui-demo/Cargo.toml",
+        )
+        command_text = tuple(" ".join(command) for command in commands)
+        for manifest in expected_manifests:
+            with self.subTest(manifest=manifest):
+                self.assertTrue(
+                    any(
+                        f"--manifest-path {manifest}" in command
+                        for command in command_text
+                    ),
+                )
+
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertEqual(command[-2:], ["--", "--check"])
+                self.assertNotIn("--all", command)
+                self.assertFalse(
+                    any(".." in argument or "gameta" in argument for argument in command),
+                )
 
 
 class TestGametaPin(unittest.TestCase):

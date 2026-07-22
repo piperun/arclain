@@ -1,13 +1,10 @@
+use crate::shared::theme::AppTheme;
 use arclain_theme::ButtonVariant;
 use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
-use crate::shared::theme::AppTheme;
 use eframe::egui;
 
 // ================= Password Dialog =================
 pub use crate::features::password_management::domain::types::PasswordDialog;
-
-
-
 
 pub enum PasswordDialogResult {
     Unlock,

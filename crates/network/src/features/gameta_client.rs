@@ -120,10 +120,7 @@ impl GametaClient {
     }
 
     /// Add an `Authorization: Bearer` header if an API key is configured.
-    fn auth(
-        &self,
-        req: reqwest::blocking::RequestBuilder,
-    ) -> reqwest::blocking::RequestBuilder {
+    fn auth(&self, req: reqwest::blocking::RequestBuilder) -> reqwest::blocking::RequestBuilder {
         if let Some(key) = &self.config.api_key {
             req.bearer_auth(key)
         } else {
@@ -158,11 +155,7 @@ impl GametaClient {
     }
 
     /// `GET /api/v1/metadata/{source}/{id}` — returns `None` on 404.
-    pub fn get_metadata(
-        &self,
-        source: &str,
-        id: &str,
-    ) -> Result<Option<MetadataResponse>, String> {
+    pub fn get_metadata(&self, source: &str, id: &str) -> Result<Option<MetadataResponse>, String> {
         let url = self.endpoint(&format!(
             "{}/{}/{}",
             PATH_METADATA_PREFIX,

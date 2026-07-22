@@ -4,10 +4,7 @@
 //! Provides both raw DB type access (DbOrganizationRule) and domain type access (OrganizationRule).
 
 use anyhow::Result;
-use arclain_db::{
-    delete_rule, get_rule, list_rules, save_rule, DbOrganizationRule,
-    DieselPool,
-};
+use arclain_db::{delete_rule, get_rule, list_rules, save_rule, DbOrganizationRule, DieselPool};
 
 // Re-export domain type for convenience
 pub use crate::features::organization::OrganizationRule;
@@ -45,8 +42,7 @@ impl OrganizationService {
 
     /// Delete a rule by ID (only non-system rules)
     pub fn delete_rule(&self, rule_id: i32) -> Result<()> {
-        self.pool
-            .with_conn(|conn| delete_rule(conn, rule_id))
+        self.pool.with_conn(|conn| delete_rule(conn, rule_id))
     }
 
     /// List enabled rules only (raw DB type)
@@ -82,8 +78,8 @@ impl OrganizationService {
 
     /// Get a domain rule by ID
     pub fn get_domain_rule(&self, rule_id: i64) -> Result<Option<OrganizationRule>> {
-        self.pool.with_conn(|conn| {
-            match get_rule(conn, rule_id as i32)? {
+        self.pool
+            .with_conn(|conn| match get_rule(conn, rule_id as i32)? {
                 Some(r) => Ok(Some(OrganizationRule {
                     id: r.id.unwrap_or(0) as i64,
                     name: r.name,
@@ -93,8 +89,7 @@ impl OrganizationService {
                     actions: serde_json::from_str(&r.actions_json).unwrap_or_default(),
                 })),
                 None => Ok(None),
-            }
-        })
+            })
     }
 
     /// Save a domain rule (with JSON serialization)

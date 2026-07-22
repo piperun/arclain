@@ -39,7 +39,9 @@ pub use utilities::{init_logging, FileOpener, OpenStrategy};
 
 // Re-export UI/DB types so consumers don't need to import arclain_db directly
 pub use arclain_db::{ActionType, CacheType, DisplayMode, UiItem, UiRegion, UserConfig};
-pub use arclain_db::{CacheEntry, CompletenessScore, MetadataSource, ProductContent, ProductMetadata};
+pub use arclain_db::{
+    CacheEntry, CompletenessScore, MetadataSource, ProductContent, ProductMetadata,
+};
 
 // Additional db re-exports for the UI / state layer. These were
 // previously imported directly from `arclain_db` across `crates/ui`

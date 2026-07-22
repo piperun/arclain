@@ -232,7 +232,11 @@ impl MergeService {
         }
 
         // Phase 2: Extract to temp directory
-        report_progress(MergePhase::Extracting, 10, "Creating temporary directory...");
+        report_progress(
+            MergePhase::Extracting,
+            10,
+            "Creating temporary directory...",
+        );
         let temp_dir = TempDir::new().context("Failed to create temp directory")?;
         let temp_path = temp_dir.path();
 
@@ -257,7 +261,11 @@ impl MergeService {
         check_cancelled()?;
 
         // Phase 3: Compress to output format
-        report_progress(MergePhase::Compressing, 60, "Compressing to output format...");
+        report_progress(
+            MergePhase::Compressing,
+            60,
+            "Compressing to output format...",
+        );
 
         // Get list of files to compress
         let files_to_compress: Vec<PathBuf> = walkdir::WalkDir::new(temp_path)
@@ -281,12 +289,7 @@ impl MergeService {
         let sevenz_cli = SevenZipCli::detect(None)?;
 
         // Create archive with compression settings
-        self.create_archive_with_options(
-            &sevenz_cli,
-            &output_path,
-            temp_path,
-            &options,
-        )?;
+        self.create_archive_with_options(&sevenz_cli, &output_path, temp_path, &options)?;
 
         check_cancelled()?;
 

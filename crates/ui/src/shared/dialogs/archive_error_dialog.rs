@@ -139,7 +139,8 @@ pub fn classify(err_msg: &str) -> ArchiveErrorKind {
         || m.contains("corrupted")
         || m.contains("Corrupt")
         || m.contains("not a 7z")
-        || m.contains("Wrong password")  // sometimes leaks through here
+        || m.contains("Wrong password")
+    // sometimes leaks through here
     {
         // Note: pure "Wrong password" should be intercepted by
         // is_password_error() upstream and never reach this classifier,
@@ -383,9 +384,7 @@ pub fn render_archive_error_dialog(
                 ),
                 ArchiveErrorKind::FileNotFound => render_not_found_section(ui, theme),
                 ArchiveErrorKind::IsADirectory => render_is_directory_section(ui, theme),
-                ArchiveErrorKind::IoError => {
-                    render_io_error_section(ui, theme, &raw_error)
-                }
+                ArchiveErrorKind::IoError => render_io_error_section(ui, theme, &raw_error),
                 ArchiveErrorKind::CorruptedOrWrongFormat => {
                     render_format_error_section(ui, theme, archive_path.as_deref(), &raw_error)
                 }
@@ -668,7 +667,12 @@ fn render_format_error_section(
     } else {
         "file <path>".to_string()
     };
-    render_command(ui, theme, &file_cmd, "Identify the real format from magic bytes");
+    render_command(
+        ui,
+        theme,
+        &file_cmd,
+        "Identify the real format from magic bytes",
+    );
     ui.add_space(8.0);
     ui.label(
         egui::RichText::new(
@@ -948,10 +952,7 @@ mod tests {
             classify("errno=28 : No space left on device"),
             ArchiveErrorKind::IoError,
         );
-        assert_eq!(
-            classify("os error 28"),
-            ArchiveErrorKind::IoError,
-        );
+        assert_eq!(classify("os error 28"), ArchiveErrorKind::IoError,);
     }
 
     #[test]

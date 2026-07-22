@@ -96,11 +96,11 @@ impl<'a> Widget for ToggleSwitch<'a> {
             let (track_off, track_on, ball_off, ball_on, ring_off, ring_on) =
                 if let Some(colors) = self.theme_colors {
                     (
-                        colors.surface_variant,    // track when off (black #000)
-                        colors.outline,            // track when on (grey #333)
-                        colors.outline,            // ball when off (grey #333, visible!)
-                        colors.primary,            // ball when on (white #FFF)
-                        colors.outline_variant,    // ring when off (subtle #1A1A1A)
+                        colors.surface_variant,           // track when off (black #000)
+                        colors.outline,                   // track when on (grey #333)
+                        colors.outline,                   // ball when off (grey #333, visible!)
+                        colors.primary,                   // ball when on (white #FFF)
+                        colors.outline_variant,           // ring when off (subtle #1A1A1A)
                         Color32::from_rgb(100, 100, 100), // ring when on (medium grey, visible)
                     )
                 } else if visuals.dark_mode {
@@ -216,7 +216,9 @@ impl<'a> Widget for ToggleSwitch<'a> {
             // I expect, and what's its travel range?"
             #[cfg(debug_assertions)]
             {
-                use crate::debug::{debug_colors, paint_widget_rect_debug, ui_debug_guidelines_enabled};
+                use crate::debug::{
+                    debug_colors, paint_widget_rect_debug, ui_debug_guidelines_enabled,
+                };
                 let enabled = self.debug_lines || ui_debug_guidelines_enabled();
                 if enabled {
                     paint_widget_rect_debug(ui.painter(), rect, "toggle", true);

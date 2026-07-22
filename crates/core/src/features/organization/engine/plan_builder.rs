@@ -126,8 +126,13 @@ impl RuleEngine {
             .map(|tpl| Self::expand_variables(tpl, &metadata))
             .unwrap_or_else(|| "Game".to_string());
 
-        let moves =
-            Self::compute_moves(rule, entries, content_root.as_ref(), &metadata, &root_folder);
+        let moves = Self::compute_moves(
+            rule,
+            entries,
+            content_root.as_ref(),
+            &metadata,
+            &root_folder,
+        );
 
         let mut generated_files = Vec::new();
         if let Some(gm) = game_metadata {
@@ -429,10 +434,7 @@ impl RuleEngine {
         downloads
     }
 
-    pub(super) fn expand_variables(
-        template: &str,
-        metadata: &HashMap<String, String>,
-    ) -> String {
+    pub(super) fn expand_variables(template: &str, metadata: &HashMap<String, String>) -> String {
         let mut result = template.to_string();
 
         // Special handling for version prefix " v$version"

@@ -120,8 +120,7 @@ pub fn upload_and_render(
         h
     } else {
         // Upload to GPU (fast - just a memcpy)
-        let color_image =
-            egui::ColorImage::from_rgba_unmultiplied(decoded.size, &decoded.pixels);
+        let color_image = egui::ColorImage::from_rgba_unmultiplied(decoded.size, &decoded.pixels);
         let handle = ctx.load_texture(cache_key, color_image, egui::TextureOptions::default());
 
         // Cache the handle

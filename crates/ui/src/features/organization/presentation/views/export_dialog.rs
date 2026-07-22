@@ -130,7 +130,10 @@ impl ExportTreeDialog {
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
-                    if ui.add(TextButton::new("Cancel", ButtonSize::Small)).clicked() {
+                    if ui
+                        .add(TextButton::new("Cancel", ButtonSize::Small))
+                        .clicked()
+                    {
                         self.close();
                     }
 

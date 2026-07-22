@@ -2,10 +2,10 @@
 //!
 //! Contains settings for encryption, CRC policy, and vault management.
 
-use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ThemedDropdown};
 use crate::features::settings::types::{EncryptedCrcPolicy, SecuritySettingsState, SettingsAction};
 use crate::shared::components::settings_form::{Form, SettingsGroup};
 use crate::shared::theme::AppTheme;
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ThemedDropdown};
 use eframe::egui;
 
 /// Render the Security settings page
@@ -134,25 +134,28 @@ pub fn render(
                 );
                 ui.add_space(8.0);
 
-                ThemedDropdown::new("crc_policy", state.encrypted_crc_policy.read().display_name())
-                    .with_theme_colors(colors)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(
-                            &mut *state.encrypted_crc_policy.write(),
-                            EncryptedCrcPolicy::OnOpen,
-                            EncryptedCrcPolicy::OnOpen.display_name(),
-                        );
-                        ui.selectable_value(
-                            &mut *state.encrypted_crc_policy.write(),
-                            EncryptedCrcPolicy::PromptOnOpen,
-                            EncryptedCrcPolicy::PromptOnOpen.display_name(),
-                        );
-                        ui.selectable_value(
-                            &mut *state.encrypted_crc_policy.write(),
-                            EncryptedCrcPolicy::OnAccess,
-                            EncryptedCrcPolicy::OnAccess.display_name(),
-                        );
-                    });
+                ThemedDropdown::new(
+                    "crc_policy",
+                    state.encrypted_crc_policy.read().display_name(),
+                )
+                .with_theme_colors(colors)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut *state.encrypted_crc_policy.write(),
+                        EncryptedCrcPolicy::OnOpen,
+                        EncryptedCrcPolicy::OnOpen.display_name(),
+                    );
+                    ui.selectable_value(
+                        &mut *state.encrypted_crc_policy.write(),
+                        EncryptedCrcPolicy::PromptOnOpen,
+                        EncryptedCrcPolicy::PromptOnOpen.display_name(),
+                    );
+                    ui.selectable_value(
+                        &mut *state.encrypted_crc_policy.write(),
+                        EncryptedCrcPolicy::OnAccess,
+                        EncryptedCrcPolicy::OnAccess.display_name(),
+                    );
+                });
             })
             .show(ui, &theme.colors);
 
@@ -206,17 +209,11 @@ pub fn render(
         // Info / Error messages using theme colors
         if !state.info.read().is_empty() {
             ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(&*state.info.read())
-                    .color(theme.colors.success),
-            );
+            ui.label(egui::RichText::new(&*state.info.read()).color(theme.colors.success));
         }
         if !state.error.read().is_empty() {
             ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new(&*state.error.read())
-                    .color(theme.colors.error),
-            );
+            ui.label(egui::RichText::new(&*state.error.read()).color(theme.colors.error));
         }
     });
 

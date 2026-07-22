@@ -185,9 +185,7 @@ fn render_input_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Proce
         Some(PipelineInput::Folder(p)) => {
             let folder_line = format!(
                 "Folder: {}",
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default()
+                p.file_name().and_then(|n| n.to_str()).unwrap_or_default()
             );
             Text::new(&folder_line).show(ui);
             let full = p.to_string_lossy().into_owned();
@@ -240,7 +238,10 @@ fn render_pipeline_panel(ui: &mut egui::Ui, shared: &SharedState, state: &mut Pr
             )
             .clicked()
         {
-            state.pipeline.steps.push(PipelineStep::Organize { rule_id: 0 });
+            state
+                .pipeline
+                .steps
+                .push(PipelineStep::Organize { rule_id: 0 });
             any_changed = true;
         }
         if ui
@@ -378,10 +379,7 @@ fn render_preview_panel(
             Text::new(&line).color(shared.theme.colors.error).show(ui);
         }
 
-        let header = format!(
-            "{} file(s) will be processed",
-            state.preview.total_files()
-        );
+        let header = format!("{} file(s) will be processed", state.preview.total_files());
         Text::new(&header).show(ui);
 
         egui::ScrollArea::vertical()
@@ -407,15 +405,12 @@ fn render_preview_panel(
                     if let Some(out) = &entry.expected_output {
                         let out_line = format!(
                             "  ⇒ {}",
-                            out.file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or_default()
+                            out.file_name().and_then(|n| n.to_str()).unwrap_or_default()
                         );
                         Text::new(&out_line).muted().size(11.0).show(ui);
                     }
                     for w in &entry.warnings {
-                        let warn_line =
-                            format!("  {} {}", egui_phosphor::regular::WARNING, w);
+                        let warn_line = format!("  {} {}", egui_phosphor::regular::WARNING, w);
                         Text::new(&warn_line)
                             .color(shared.theme.colors.error)
                             .show(ui);
@@ -435,9 +430,7 @@ fn render_preview_panel(
         PipelineOutput::SameFolder => "Same folder as input".to_string(),
         PipelineOutput::NewFolder(p) => format!(
             "New folder: {}",
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default()
+            p.file_name().and_then(|n| n.to_str()).unwrap_or_default()
         ),
     };
     ThemedDropdown::new("pipeline_output_picker", current_label)
@@ -509,9 +502,8 @@ fn render_preview_panel(
 
     ui.add_space(12.0);
 
-    let can_run = !state.preview.is_empty()
-        && !state.pipeline.steps.is_empty()
-        && !state.is_running;
+    let can_run =
+        !state.preview.is_empty() && !state.pipeline.steps.is_empty() && !state.is_running;
 
     if ui
         .add_enabled(

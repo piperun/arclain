@@ -68,8 +68,7 @@ impl ProcessPageState {
             self.preview_dirty = true;
         }
         if self.preview_dirty {
-            self.preview =
-                arclain_core::preview_pipeline_with_metadata(&self.pipeline, metadata);
+            self.preview = arclain_core::preview_pipeline_with_metadata(&self.pipeline, metadata);
             self.last_previewed_metadata_key = current_key;
             self.preview_dirty = false;
         }
@@ -86,9 +85,7 @@ impl ProcessPageState {
         }
         let count = match config_db {
             Some(db) => db
-                .with_connection(|conn| {
-                    Ok(arclain_core::list_interrupted_since(conn, 0)?.len())
-                })
+                .with_connection(|conn| Ok(arclain_core::list_interrupted_since(conn, 0)?.len()))
                 .unwrap_or(0),
             None => 0,
         };

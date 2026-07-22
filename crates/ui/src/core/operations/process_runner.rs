@@ -1,8 +1,8 @@
 //! UI-side wrapper that spawns the core pipeline executor on the tokio
 //! runtime and routes progress events to the `process_run` signal.
 
-use crate::core::tabs::{OpGuard, TabState};
 use crate::core::signals::ProcessRunState;
+use crate::core::tabs::{OpGuard, TabState};
 use arclain_core::{
     execute_pipeline, OutputCollisionPolicy, Pipeline, PipelineContext, PipelineProgress,
     COLLISION_POLICY_CONFIG_KEY,
@@ -76,57 +76,57 @@ pub fn spawn_run(
                 default_collision_policy: default_policy,
             };
 
-            let result = execute_pipeline(
-                &pipeline,
-                &temp_root,
-                &ctx,
-                |ev| {
-                    let mut s = signal_for_blocking.get();
-                    match ev {
-                        PipelineProgress::FileStart { index, total, name } => {
-                            s.is_running = true;
-                            s.current_file = name;
-                            s.files_total = total;
-                            s.files_done = index;
-                            s.completed = false;
-                        }
-                        PipelineProgress::StepStart { step_name, .. } => {
-                            s.current_step = step_name;
-                            s.step_percent = 0;
-                        }
-                        PipelineProgress::StepProgress { percent } => {
-                            s.step_percent = percent;
-                        }
-                        PipelineProgress::FileComplete { .. } => {
-                            s.files_done += 1;
-                        }
-                        PipelineProgress::FileSkipped { .. } => {
-                            s.files_skipped += 1;
-                        }
-                        PipelineProgress::FileFailed { .. } => {
-                            s.files_failed += 1;
-                        }
-                        PipelineProgress::StepWarnings { warnings } => {
-                            for w in warnings {
-                                s.warnings.push(format!("{}: {}", w.mod_folder, w.kind.human()));
-                            }
-                        }
-                        PipelineProgress::AllComplete { succeeded, skipped, failed } => {
-                            s.is_running = false;
-                            s.completed = true;
-                            s.summary = Some(if skipped > 0 {
-                                format!(
-                                    "Done: {} succeeded, {} skipped (already done), {} failed",
-                                    succeeded, skipped, failed
-                                )
-                            } else {
-                                format!("Done: {} succeeded, {} failed", succeeded, failed)
-                            });
+            let result = execute_pipeline(&pipeline, &temp_root, &ctx, |ev| {
+                let mut s = signal_for_blocking.get();
+                match ev {
+                    PipelineProgress::FileStart { index, total, name } => {
+                        s.is_running = true;
+                        s.current_file = name;
+                        s.files_total = total;
+                        s.files_done = index;
+                        s.completed = false;
+                    }
+                    PipelineProgress::StepStart { step_name, .. } => {
+                        s.current_step = step_name;
+                        s.step_percent = 0;
+                    }
+                    PipelineProgress::StepProgress { percent } => {
+                        s.step_percent = percent;
+                    }
+                    PipelineProgress::FileComplete { .. } => {
+                        s.files_done += 1;
+                    }
+                    PipelineProgress::FileSkipped { .. } => {
+                        s.files_skipped += 1;
+                    }
+                    PipelineProgress::FileFailed { .. } => {
+                        s.files_failed += 1;
+                    }
+                    PipelineProgress::StepWarnings { warnings } => {
+                        for w in warnings {
+                            s.warnings
+                                .push(format!("{}: {}", w.mod_folder, w.kind.human()));
                         }
                     }
-                    signal_for_blocking.set(s);
-                },
-            );
+                    PipelineProgress::AllComplete {
+                        succeeded,
+                        skipped,
+                        failed,
+                    } => {
+                        s.is_running = false;
+                        s.completed = true;
+                        s.summary = Some(if skipped > 0 {
+                            format!(
+                                "Done: {} succeeded, {} skipped (already done), {} failed",
+                                succeeded, skipped, failed
+                            )
+                        } else {
+                            format!("Done: {} succeeded, {} failed", succeeded, failed)
+                        });
+                    }
+                }
+                signal_for_blocking.set(s);
+            });
 
             if let Err(e) = result {
                 let mut s = signal_for_blocking.get();

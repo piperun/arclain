@@ -58,8 +58,8 @@ mod tests {
     #[traced_test]
     #[test]
     fn metadata_validation_discards_escalated_plugin_logs() {
-        let mut host = HostFunctions::new_for_metadata_validation("temp-validation".to_string())
-            .unwrap();
+        let mut host =
+            HostFunctions::new_for_metadata_validation("temp-validation".to_string()).unwrap();
 
         host.impl_log(
             LogLevel::Warn,

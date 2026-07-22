@@ -55,6 +55,7 @@ steps:
       # — cargo-check writes as root, cargo-test reads as runner, EACCES.
       - useradd -m runner
       - chown -R runner:runner /workspace
+      - su runner -c "cd /workspace/codeberg/arclain && python3 scripts/_format.py --check"
       - su runner -c "cd /workspace/codeberg/arclain && cargo check --workspace --locked"
     depends_on: [fetch-gameta]
 

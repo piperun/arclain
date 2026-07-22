@@ -32,7 +32,11 @@ pub fn run_organization_plan(
         // We use the helper from features/organization/operations.rs which handles password retries
         let result =
             crate::features::organization::application::operations::execute_organization_plan(
-                &shared, &plan, &source, &dest, profile.as_ref(),
+                &shared,
+                &plan,
+                &source,
+                &dest,
+                profile.as_ref(),
             );
 
         match result {

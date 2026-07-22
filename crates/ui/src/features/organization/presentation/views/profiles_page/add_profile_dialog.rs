@@ -2,10 +2,10 @@
 //!
 //! Dialog UI for creating and editing archive format profiles.
 
-use arclain_core::features::organization::{ArchiveFormat, ArchiveProfile};
-use arclain_widgets::{TextInput, ThemedDropdown};
 use crate::shared::components::settings_form::SectionHeader;
 use crate::shared::dialogs::{DialogMode, FormDialog, FormDialogConfig, FormDialogResult};
+use arclain_core::features::organization::{ArchiveFormat, ArchiveProfile};
+use arclain_widgets::{TextInput, ThemedDropdown};
 use eframe::egui;
 
 pub struct AddProfileDialog {
@@ -138,7 +138,10 @@ impl AddProfileDialog {
                     .show_ui(ui, |ui| {
                         for format in ArchiveFormat::all() {
                             let selected = profile.format == *format;
-                            if ui.selectable_label(selected, format.display_name()).clicked() {
+                            if ui
+                                .selectable_label(selected, format.display_name())
+                                .clicked()
+                            {
                                 profile.format = *format;
                                 // Update compression method to default for new format
                                 profile.compression_method =
@@ -149,17 +152,20 @@ impl AddProfileDialog {
                 ui.end_row();
 
                 ui.label("Compression Method:");
-                ThemedDropdown::new("method_combo", profile.compression_method.as_deref().unwrap_or("Default"))
-                    .with_theme_colors(&theme.colors)
-                    .width(150.0)
-                    .show_ui(ui, |ui| {
-                        for method in profile.available_compression_methods() {
-                            let selected = profile.compression_method.as_deref() == Some(*method);
-                            if ui.selectable_label(selected, *method).clicked() {
-                                profile.compression_method = Some(method.to_string());
-                            }
+                ThemedDropdown::new(
+                    "method_combo",
+                    profile.compression_method.as_deref().unwrap_or("Default"),
+                )
+                .with_theme_colors(&theme.colors)
+                .width(150.0)
+                .show_ui(ui, |ui| {
+                    for method in profile.available_compression_methods() {
+                        let selected = profile.compression_method.as_deref() == Some(*method);
+                        if ui.selectable_label(selected, *method).clicked() {
+                            profile.compression_method = Some(method.to_string());
                         }
-                    });
+                    }
+                });
                 ui.end_row();
             });
 

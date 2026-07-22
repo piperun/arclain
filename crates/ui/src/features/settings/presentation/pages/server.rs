@@ -2,13 +2,13 @@
 //!
 //! Contains gameta server connection configuration.
 
-use arclain_theme::{spacing, ThemeColors};
-use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use crate::features::settings::types::{
     ServerConnectionStatus, ServerSettingsState, SettingsAction,
 };
 use crate::shared::components::settings_form::{Form, SettingsGroup, SettingsRow};
 use crate::shared::theme::AppTheme;
+use arclain_theme::{spacing, ThemeColors};
+use arclain_widgets::{ButtonSize, TextButton, TextInput, TextInputSize, ToggleSwitch};
 use eframe::egui;
 
 /// Render the Server settings page

@@ -248,7 +248,10 @@ mod tests {
         let id = begin_pipeline_run(&conn, &new_run("abc", "pipe1")).unwrap();
 
         let found = find_completed_run(&conn, "abc", "pipe1").unwrap();
-        assert!(found.is_none(), "in_progress rows don't match completed lookup");
+        assert!(
+            found.is_none(),
+            "in_progress rows don't match completed lookup"
+        );
 
         mark_run_completed(&conn, id, "/tmp/mod.zip", output_kind::ARCHIVE).unwrap();
 
