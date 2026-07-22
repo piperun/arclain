@@ -36,7 +36,7 @@ pub(crate) fn open_plan_metadata_handle(path: &Path) -> std::io::Result<std::fs:
     std::fs::File::open(path)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PreservedPlanMetadata {
     permissions: std::fs::Permissions,
     accessed: std::time::SystemTime,
@@ -82,10 +82,11 @@ impl PreservedPlanMetadata {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct DeferredDirectoryMetadata {
+#[derive(Debug, Clone)]
+pub(crate) struct DeferredPlanMetadata {
     destination: CheckedRelativePath,
     metadata: PreservedPlanMetadata,
+    is_directory: bool,
 }
 
 /// Persist a plan-controlled file without following or replacing an existing
@@ -164,7 +165,7 @@ pub(crate) fn copy_plan_source(
     output_root: &Path,
     destination: &CheckedRelativePath,
     source: &Path,
-    deferred_directories: &mut Vec<DeferredDirectoryMetadata>,
+    deferred_metadata: &mut Vec<DeferredPlanMetadata>,
 ) -> Result<()> {
     let metadata = std::fs::symlink_metadata(source)
         .with_context(|| format!("inspecting organization source {}", source.display()))?;
@@ -187,6 +188,11 @@ pub(crate) fn copy_plan_source(
             Some(&preserved_metadata),
         )
         .with_context(|| format!("copying organization source {}", source.display()))?;
+        deferred_metadata.push(DeferredPlanMetadata {
+            destination: destination.clone(),
+            metadata: preserved_metadata,
+            is_directory: false,
+        });
         return Ok(());
     }
 
@@ -237,43 +243,50 @@ pub(crate) fn copy_plan_source(
             output_root,
             &child_destination,
             &entry.path(),
-            deferred_directories,
+            deferred_metadata,
         )?;
     }
 
-    deferred_directories.push(DeferredDirectoryMetadata {
+    deferred_metadata.push(DeferredPlanMetadata {
         destination: destination.clone(),
         metadata: preserved_metadata,
+        is_directory: true,
     });
 
     Ok(())
 }
 
-/// Apply directory timestamps and permissions only after every planned child
-/// has been populated. Applying deepest-first prevents a read-only ancestor
-/// from blocking a later valid merge. ACLs, extended attributes, and hard-link
-/// identity are not represented by Rust's portable filesystem metadata API.
-pub(crate) fn apply_deferred_directory_metadata(
+/// Reapply file and directory metadata after every planned child has been
+/// populated and after any top-level promotion. Files are applied before
+/// directories; directories are applied deepest-first so a read-only ancestor
+/// cannot block a child. ACLs, extended attributes, and hard-link identity are
+/// not represented by Rust's portable filesystem metadata API. Creation time
+/// is preserved on Windows and macOS, but is not portable on other targets.
+pub(crate) fn apply_deferred_plan_metadata(
     output_root: &Path,
-    deferred_directories: &mut Vec<DeferredDirectoryMetadata>,
+    deferred_metadata: &mut [DeferredPlanMetadata],
 ) -> Result<()> {
-    deferred_directories
-        .sort_by_key(|record| std::cmp::Reverse(record.destination.as_path().components().count()));
+    deferred_metadata.sort_by_key(|record| {
+        (
+            record.is_directory,
+            std::cmp::Reverse(record.destination.as_path().components().count()),
+        )
+    });
 
-    for record in deferred_directories.drain(..) {
+    for record in deferred_metadata {
         let destination = record.destination.resolve_under(output_root)?;
-        let directory = open_plan_metadata_handle(&destination).with_context(|| {
+        let entry = open_plan_metadata_handle(&destination).with_context(|| {
             format!(
-                "opening organization output directory {} for metadata",
+                "opening organization output {} for metadata",
                 destination.display()
             )
         })?;
         record
             .metadata
-            .apply_to_file(&directory, &destination)
+            .apply_to_file(&entry, &destination)
             .with_context(|| {
                 format!(
-                    "preserving organization directory metadata on {}",
+                    "preserving organization metadata on {}",
                     destination.display()
                 )
             })?;
@@ -425,7 +438,7 @@ pub fn execute_organization_plan(
 
     // 2. Move files according to plan
     debug!("Moving files according to plan");
-    let mut deferred_directories = Vec::new();
+    let mut deferred_metadata = Vec::new();
 
     if plan.use_standard_layout {
         // Standard Layout: Smart Flattening
@@ -451,7 +464,7 @@ pub fn execute_organization_plan(
                         &organized_dir,
                         destination,
                         &src_path,
-                        &mut deferred_directories,
+                        &mut deferred_metadata,
                     )?;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -518,8 +531,8 @@ pub fn execute_organization_plan(
         }
     }
 
-    apply_deferred_directory_metadata(&organized_dir, &mut deferred_directories)
-        .context("preserving organized directory metadata")?;
+    apply_deferred_plan_metadata(&organized_dir, &mut deferred_metadata)
+        .context("preserving organized metadata")?;
 
     // 3. Compress organized directory to dest
     debug!("Compressing organized structure to {}", format_name);
