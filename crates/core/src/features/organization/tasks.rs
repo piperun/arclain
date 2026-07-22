@@ -1,13 +1,32 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 
 use super::metadata::{GameMetadata, ScreenshotData};
 use crate::Archive;
 
+fn close_work_dir_preserving_result<T, E>(
+    operation_result: std::result::Result<T, E>,
+    path: &Path,
+    close: impl FnOnce() -> std::io::Result<()>,
+    report: impl FnOnce(&str),
+) -> std::result::Result<T, E> {
+    if let Err(cleanup_error) = close() {
+        let message = format!(
+            "Failed to cleanup owned work directory {}: {} ({:?})",
+            path.display(),
+            cleanup_error,
+            cleanup_error.kind()
+        );
+        report(&message);
+    }
+
+    operation_result
+}
+
 /// A uniquely created temporary work directory with exact RAII ownership.
-pub struct OwnedWorkDir(tempfile::TempDir);
+pub struct OwnedWorkDir(Option<tempfile::TempDir>);
 
 impl OwnedWorkDir {
     /// Atomically create a unique child of `parent` owned by the returned value.
@@ -17,17 +36,45 @@ impl OwnedWorkDir {
             prefix, parent
         );
 
+        if prefix.is_empty()
+            || !prefix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        {
+            anyhow::bail!(
+                "work directory prefix must contain only ASCII letters, digits, '_' or '-': {prefix:?}"
+            );
+        }
+
         std::fs::create_dir_all(parent).context("creating work directory parent")?;
         let owned = tempfile::Builder::new()
             .prefix(prefix)
             .tempdir_in(parent)
             .context("creating unique work directory")?;
         info!("Created work directory: {}", owned.path().display());
-        Ok(Self(owned))
+        Ok(Self(Some(owned)))
     }
 
     pub fn path(&self) -> &Path {
-        self.0.path()
+        self.0
+            .as_ref()
+            .expect("owned work directory is present until drop")
+            .path()
+    }
+}
+
+impl Drop for OwnedWorkDir {
+    fn drop(&mut self) {
+        let Some(owned) = self.0.take() else {
+            return;
+        };
+        let path = owned.path().to_path_buf();
+        let _ = close_work_dir_preserving_result::<(), std::convert::Infallible>(
+            Ok(()),
+            &path,
+            move || owned.close(),
+            |message| error!("{message}"),
+        );
     }
 }
 
@@ -172,7 +219,89 @@ pub fn create_final_archive(archive: &Archive, dest: &Path, root_dir: &Path) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::sync::{mpsc, Arc, Barrier};
+
+    fn sibling_names(parent: &Path) -> BTreeSet<std::ffi::OsString> {
+        std::fs::read_dir(parent)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect()
+    }
+
+    #[test]
+    fn owned_work_directory_rejects_nonportable_prefixes_without_creating_siblings() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        std::fs::create_dir(&parent).unwrap();
+        let sentinel = temp.path().join("sentinel");
+        std::fs::write(&sentinel, b"preserve").unwrap();
+
+        for prefix in [
+            "",
+            "../escape-",
+            "/absolute-",
+            r"..\escape-",
+            r"\absolute-",
+            "C:drive-",
+            r"\\server\share-",
+        ] {
+            let before = sibling_names(temp.path());
+            let result = OwnedWorkDir::new(&parent, prefix);
+            let after = sibling_names(temp.path());
+
+            assert_eq!(
+                after, before,
+                "unsafe prefix {prefix:?} created a sibling outside the parent"
+            );
+            assert!(result.is_err(), "accepted unsafe prefix {prefix:?}");
+        }
+
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn owned_work_directory_accepts_portable_prefixes() {
+        let temp = tempfile::tempdir().unwrap();
+
+        for prefix in ["arc", "arclain_organize", "ARC-123"] {
+            let owned = OwnedWorkDir::new(temp.path(), prefix).unwrap();
+            assert!(owned
+                .path()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(prefix));
+        }
+    }
+
+    #[test]
+    fn cleanup_failure_diagnostic_preserves_the_operation_result() {
+        let path = Path::new(r"C:\test\owned-workspace");
+        let original_result: std::result::Result<(), &str> = Err("original operation failure");
+        let mut diagnostic = None;
+
+        let returned_result = close_work_dir_preserving_result(
+            original_result,
+            path,
+            || {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "permission denied by test",
+                ))
+            },
+            |message| diagnostic = Some(message.to_owned()),
+        );
+
+        assert_eq!(returned_result.unwrap_err(), "original operation failure");
+        assert_eq!(
+            diagnostic.unwrap(),
+            format!(
+                "Failed to cleanup owned work directory {}: permission denied by test (PermissionDenied)",
+                path.display()
+            )
+        );
+    }
 
     #[test]
     fn owned_work_directories_with_the_same_prefix_are_distinct() {
