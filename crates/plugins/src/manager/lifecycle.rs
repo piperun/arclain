@@ -5,7 +5,6 @@ use super::PluginManager;
 use crate::loader::DiscoveredPlugin;
 use crate::types::{PluginError, PluginId, PluginMetadata, Result};
 use parking_lot::Mutex;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{debug, error, info};
 
@@ -51,12 +50,13 @@ impl PluginManager {
             .unwrap_or_default();
 
         // Instantiate the plugin with its host-function state.
-        let mut instance = loaded.instantiate(
+        let mut instance = loaded.instantiate_with_plugin_log_dir(
             capabilities.clone(),
             rate_limit,
             self.library_service.clone(),
             settings,
             self.active_tab_bridge.clone(),
+            &self.plugin_log_dir,
         )?;
 
         // Inject optional services
@@ -180,15 +180,16 @@ impl PluginManager {
         // Load the plugin to get metadata (without full instantiation)
         let loaded = self.loader.load_wasm(&wasm_bytes)?;
 
-        // Create a temporary instance to get metadata
-        let capabilities = Vec::new(); // Empty capabilities for validation
-        let mut temp_instance =
-            loaded.instantiate(capabilities, 60, None, HashMap::new(), None)?;
+        // Metadata validation uses a deferred logger so an untrusted component
+        // cannot write to the global plugin log directory before its ID is
+        // validated.
+        let mut temp_instance = loaded.instantiate_for_metadata_validation()?;
         temp_instance.init()?;
         let metadata = temp_instance.get_metadata()?;
+        let plugin_id = PluginId::parse(metadata.id.clone());
         temp_instance.cleanup()?;
 
-        let plugin_id = PluginId::parse(metadata.id.clone())?;
+        let plugin_id = plugin_id?;
 
         // Check if plugin is already installed
         if self.plugins.read().contains_key(plugin_id.as_str()) {

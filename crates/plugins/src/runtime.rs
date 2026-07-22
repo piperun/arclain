@@ -94,12 +94,47 @@ impl LoadedPlugin {
         settings: HashMap<String, String>,
         active_tab_bridge: Option<Arc<dyn crate::ActiveTabBridge>>,
     ) -> Result<PluginInstance> {
-        let mut host_funcs = HostFunctions::new(
+        let host_funcs = HostFunctions::new(
             self.id.clone(),
             capabilities.into_iter().collect(),
             requests_per_minute,
             settings,
         )?;
+
+        self.instantiate_with_host_functions(host_funcs, library_service, active_tab_bridge)
+    }
+
+    pub(crate) fn instantiate_with_plugin_log_dir(
+        &self,
+        capabilities: Vec<PluginCapability>,
+        requests_per_minute: u32,
+        library_service: Option<Arc<arclain_core::LibraryService>>,
+        settings: HashMap<String, String>,
+        active_tab_bridge: Option<Arc<dyn crate::ActiveTabBridge>>,
+        plugin_log_dir: &Path,
+    ) -> Result<PluginInstance> {
+        let host_funcs = HostFunctions::new_with_plugin_log_dir(
+            self.id.clone(),
+            capabilities.into_iter().collect(),
+            requests_per_minute,
+            settings,
+            plugin_log_dir,
+        )?;
+
+        self.instantiate_with_host_functions(host_funcs, library_service, active_tab_bridge)
+    }
+
+    pub(crate) fn instantiate_for_metadata_validation(&self) -> Result<PluginInstance> {
+        let host_funcs = HostFunctions::new_for_metadata_validation(self.id.clone())?;
+        self.instantiate_with_host_functions(host_funcs, None, None)
+    }
+
+    fn instantiate_with_host_functions(
+        &self,
+        mut host_funcs: HostFunctions,
+        library_service: Option<Arc<arclain_core::LibraryService>>,
+        active_tab_bridge: Option<Arc<dyn crate::ActiveTabBridge>>,
+    ) -> Result<PluginInstance> {
 
         if let Some(lib_svc) = library_service {
             host_funcs.set_library_service(lib_svc);

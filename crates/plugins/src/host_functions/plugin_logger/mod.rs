@@ -34,7 +34,7 @@ const SUMMARY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10)
 /// that never log don't create empty files.
 pub struct PluginLogger {
     plugin_id: PluginId,
-    log_dir: PathBuf,
+    log_dir: Option<PathBuf>,
     byte_cap: u64,
     state: Mutex<LoggerState>,
     bucket: TokenBucket,
@@ -63,7 +63,7 @@ impl PluginLogger {
     pub fn with_byte_cap(plugin_id: &PluginId, log_dir: &Path, byte_cap: u64) -> Self {
         Self {
             plugin_id: plugin_id.clone(),
-            log_dir: log_dir.to_path_buf(),
+            log_dir: Some(log_dir.to_path_buf()),
             byte_cap,
             state: Mutex::new(LoggerState {
                 file: None,
@@ -76,10 +76,34 @@ impl PluginLogger {
         }
     }
 
+    pub(crate) fn deferred(plugin_id: &PluginId) -> Self {
+        Self {
+            plugin_id: plugin_id.clone(),
+            log_dir: None,
+            byte_cap: DEFAULT_DAILY_BYTE_CAP,
+            state: Mutex::new(LoggerState {
+                file: None,
+                file_date: None,
+                bytes_written: 0,
+                dropped_since_summary: 0,
+                last_summary: std::time::Instant::now(),
+            }),
+            bucket: TokenBucket::new(DEFAULT_RATE_PER_SEC, DEFAULT_BURST),
+        }
+    }
+
+    pub(crate) fn is_deferred(&self) -> bool {
+        self.log_dir.is_none()
+    }
+
     /// Write a single log line for this plugin. Returns `true` if the
     /// line was written, `false` if it was dropped (rate limit or size
     /// cap). Adds a trailing newline; callers do not need to.
     pub fn write(&self, message: &str) -> bool {
+        let Some(log_dir) = self.log_dir.as_ref() else {
+            return true;
+        };
+
         if !self.bucket.try_take() {
             self.state.lock().dropped_since_summary += 1;
             return false;
@@ -93,11 +117,9 @@ impl PluginLogger {
 
         // Reopen file on day rollover or first write.
         if s.file_date.as_deref() != Some(&today) {
-            let path = self
-                .log_dir
-                .join(format!("{}-{}.log", self.plugin_id.as_str(), today));
+            let path = log_dir.join(format!("{}-{}.log", self.plugin_id.as_str(), today));
             // Best-effort dir create; if it fails, write fails too.
-            let _ = std::fs::create_dir_all(&self.log_dir);
+            let _ = std::fs::create_dir_all(log_dir);
             match OpenOptions::new().create(true).append(true).open(&path) {
                 Ok(f) => {
                     s.file = Some(f);

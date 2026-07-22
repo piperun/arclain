@@ -33,6 +33,7 @@ pub struct PluginManager {
     pub(crate) gameta_client:
         Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
     pub(crate) initial_settings: HashMap<String, HashMap<String, String>>,
+    pub(crate) plugin_log_dir: PathBuf,
     /// Channel sender for async event dispatch (non-blocking)
     pub(crate) event_sender: std::sync::mpsc::Sender<PluginEvent>,
     /// Handle to the event worker thread
@@ -62,6 +63,18 @@ impl PluginManager {
         plugins_dir: PathBuf,
         initial_settings: HashMap<String, HashMap<String, String>>,
     ) -> Result<Self> {
+        Self::new_with_plugin_log_dir(
+            plugins_dir,
+            initial_settings,
+            arclain_core::utilities::plugin_log_dir(),
+        )
+    }
+
+    pub(crate) fn new_with_plugin_log_dir(
+        plugins_dir: PathBuf,
+        initial_settings: HashMap<String, HashMap<String, String>>,
+        plugin_log_dir: PathBuf,
+    ) -> Result<Self> {
         let loader = PluginLoader::new(plugins_dir)?;
         let plugins = Arc::new(RwLock::new(HashMap::new()));
         let enabled_plugins = Arc::new(RwLock::new(HashMap::new()));
@@ -86,6 +99,7 @@ impl PluginManager {
             async_http_client: None,
             gameta_client: None,
             initial_settings,
+            plugin_log_dir,
             event_sender,
             _event_worker_handle: Some(worker_handle),
             active_tab_bridge: None,

@@ -6,6 +6,10 @@ use tracing::{error, info, warn};
 
 impl HostFunctions {
     pub(super) fn impl_log(&mut self, level: LogLevel, message: String) {
+        if self.plugin_logger.is_deferred() {
+            return;
+        }
+
         // Always escalate ERROR and WARN to arclain.log so operators
         // see them without grepping per-plugin files. INFO/DEBUG/TRACE
         // go to the per-plugin file only.
@@ -43,5 +47,25 @@ impl HostFunctions {
             "[Plugin] Requesting message dialog: {} - {}",
             title, message
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing_test::traced_test;
+
+    #[traced_test]
+    #[test]
+    fn metadata_validation_discards_escalated_plugin_logs() {
+        let mut host = HostFunctions::new_for_metadata_validation("temp-validation".to_string())
+            .unwrap();
+
+        host.impl_log(
+            LogLevel::Warn,
+            "must not reach application logging".to_string(),
+        );
+
+        assert!(!logs_contain("must not reach application logging"));
     }
 }

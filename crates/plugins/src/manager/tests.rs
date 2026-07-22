@@ -29,6 +29,7 @@ fn test_list_plugins_empty() {
 fn install_rejects_exported_unsafe_id_before_filesystem_use() {
     let temp_dir = TempDir::new().unwrap();
     let plugins_dir = temp_dir.path().join("plugins");
+    let external_log_dir = temp_dir.path().join("external-plugin-logs");
     let wasm_path = temp_dir.path().join("unsafe-id.wasm");
     let mut component = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -42,7 +43,12 @@ fn install_rejects_exported_unsafe_id_before_filesystem_use() {
     component[id_offset..id_offset + b"ui-demo".len()].copy_from_slice(b"../evil");
     std::fs::write(&wasm_path, component).unwrap();
 
-    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        plugins_dir.clone(),
+        HashMap::new(),
+        external_log_dir.clone(),
+    )
+    .unwrap();
     let result = manager.install_plugin(&wasm_path);
 
     assert!(
@@ -56,6 +62,10 @@ fn install_rejects_exported_unsafe_id_before_filesystem_use() {
     assert!(
         !plugins_dir.exists() || std::fs::read_dir(&plugins_dir).unwrap().next().is_none(),
         "unsafe id must not create a plugin directory",
+    );
+    assert!(
+        !external_log_dir.exists(),
+        "metadata validation must not write plugin logs before ID validation",
     );
 }
 

@@ -20,6 +20,7 @@ use arclain_data::ResourceManager;
 
 use parking_lot::Mutex;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use wasmtime::component::ResourceTable;
@@ -100,14 +101,51 @@ impl HostFunctions {
     pub fn new(
         plugin_id: String,
         capabilities: std::collections::HashSet<PluginCapability>,
+        requests_per_minute: u32,
+        initial_settings: HashMap<String, String>,
+    ) -> PluginResult<Self> {
+        Self::new_with_plugin_log_dir(
+            plugin_id,
+            capabilities,
+            requests_per_minute,
+            initial_settings,
+            &default_plugin_log_dir(),
+        )
+    }
+
+    pub(crate) fn new_with_plugin_log_dir(
+        plugin_id: String,
+        capabilities: std::collections::HashSet<PluginCapability>,
         _requests_per_minute: u32,
         initial_settings: HashMap<String, String>,
+        plugin_log_dir: &Path,
+    ) -> PluginResult<Self> {
+        Self::build(
+            plugin_id,
+            capabilities,
+            initial_settings,
+            Some(plugin_log_dir),
+        )
+    }
+
+    pub(crate) fn new_for_metadata_validation(plugin_id: String) -> PluginResult<Self> {
+        Self::build(plugin_id, Default::default(), HashMap::new(), None)
+    }
+
+    fn build(
+        plugin_id: String,
+        capabilities: std::collections::HashSet<PluginCapability>,
+        initial_settings: HashMap<String, String>,
+        plugin_log_dir: Option<&Path>,
     ) -> PluginResult<Self> {
         let plugin_id = PluginId::parse(plugin_id)?;
         // Initialize WASI context
         let ctx = WasiCtxBuilder::new().inherit_stdio().inherit_args().build();
 
-        let plugin_logger = Arc::new(PluginLogger::new(&plugin_id, &default_plugin_log_dir()));
+        let plugin_logger = Arc::new(match plugin_log_dir {
+            Some(log_dir) => PluginLogger::new(&plugin_id, log_dir),
+            None => PluginLogger::deferred(&plugin_id),
+        });
         let data_service = DataService::new().with_id(plugin_id.as_str());
 
         Ok(Self {
