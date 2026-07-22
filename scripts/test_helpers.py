@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import tomllib
 import unittest
@@ -241,6 +242,82 @@ class TestPackageFreshness(unittest.TestCase):
             _package.ensure_binary_fresh(binary, [source])
 
 
+class TestPackageArchive(unittest.TestCase):
+    def test_archive_contains_one_package_root_without_nested_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out_root = Path(directory) / "release"
+            package_name = "arclain-1.2.3-linux-x64"
+            package_dir = out_root / package_name
+            package_dir.mkdir(parents=True)
+            (package_dir / "arclain").write_bytes(b"binary")
+
+            archive_path, checksum_path = _package.create_archive(
+                package_dir,
+                out_root,
+                "linux",
+            )
+
+            self.assertEqual(
+                archive_path,
+                out_root / f"{package_name}.tar.gz",
+            )
+            self.assertEqual(
+                checksum_path,
+                out_root / f"{package_name}.tar.gz.sha256",
+            )
+            with tarfile.open(archive_path, "r:gz") as archive:
+                names = archive.getnames()
+
+            self.assertEqual(names.count(package_name), 1)
+            for name in names:
+                self.assertTrue(
+                    name == package_name or name.startswith(f"{package_name}/"),
+                    name,
+                )
+                self.assertFalse(
+                    name.endswith((".tar.gz", ".zip", ".sha256")),
+                    name,
+                )
+
+    def test_archive_replaces_only_its_exact_outputs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out_root = Path(directory) / "release"
+            package_name = "arclain-1.2.3-linux-x64"
+            package_dir = out_root / package_name
+            package_dir.mkdir(parents=True)
+            (package_dir / "arclain").write_bytes(b"binary")
+
+            target_archive = out_root / f"{package_name}.tar.gz"
+            target_checksum = out_root / f"{package_name}.tar.gz.sha256"
+            target_archive.write_bytes(b"stale archive")
+            target_checksum.write_text("stale checksum\n", encoding="utf-8")
+            unrelated_archive = out_root / "arclain-9.9.9-linux-x64.tar.gz"
+            unrelated_checksum = unrelated_archive.with_suffix(
+                unrelated_archive.suffix + ".sha256",
+            )
+            unrelated_archive.write_bytes(b"keep archive")
+            unrelated_checksum.write_text("keep checksum\n", encoding="utf-8")
+
+            archive_path, checksum_path = _package.create_archive(
+                package_dir,
+                out_root,
+                "linux",
+            )
+
+            self.assertEqual(archive_path, target_archive)
+            self.assertEqual(checksum_path, target_checksum)
+            self.assertNotEqual(archive_path.read_bytes(), b"stale archive")
+            self.assertNotEqual(
+                checksum_path.read_text(encoding="utf-8"),
+                "stale checksum\n",
+            )
+            self.assertEqual(unrelated_archive.read_bytes(), b"keep archive")
+            self.assertEqual(
+                unrelated_checksum.read_text(encoding="utf-8"),
+                "keep checksum\n",
+            )
+
+
 class TestReleaseWorkflows(unittest.TestCase):
     def test_headless_ci_runs_all_non_ui_test_targets(self):
         woodpecker = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
@@ -298,6 +375,13 @@ class TestReleaseWorkflows(unittest.TestCase):
             "bundled_dlsite_plugin_loads_against_current_host",
             woodpecker,
         )
+
+    def test_woodpecker_publishes_package_helper_archive_once(self):
+        text = (REPO_ROOT / ".woodpecker.yml").read_text(encoding="utf-8")
+
+        self.assertNotIn("tar -czf", text)
+        self.assertIn("release/arclain-*-linux-x64.tar.gz", text)
+        self.assertIn("release/arclain-*-linux-x64.tar.gz.sha256", text)
 
 
 class TestPluginFetchRouting(unittest.TestCase):

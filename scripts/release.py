@@ -10,7 +10,7 @@ Usage:
     python scripts/release.py clean-plugins
     python scripts/release.py deps [--update | --upgrade [--incompatible]] [--dry-run]
 
-`release` produces an optimized zip under release/.
+`release` produces an optimized platform archive under release/.
 Versioning is NOT done here — run `cog bump --minor` (or similar)
 locally before tagging; this script assumes the version in
 Cargo.toml is already correct for the build.
@@ -22,10 +22,8 @@ under debug/ for fast UI iteration; not meant for distribution.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
-import platform
 import shutil
 import subprocess
 import sys
@@ -98,37 +96,6 @@ def get_version_from_cargo() -> str:
         .get("package", {})
         .get("version", "0.0.0")
     )
-
-
-def get_platform() -> tuple[str, str]:
-    """Returns (os_name, arch) for the current platform."""
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-
-    if system == "darwin":
-        os_name = "macos"
-    elif system == "windows":
-        os_name = "windows"
-    else:
-        os_name = "linux"
-
-    if machine in ("x86_64", "amd64"):
-        arch = "x64"
-    elif machine in ("aarch64", "arm64"):
-        arch = "arm64"
-    else:
-        arch = machine
-
-    return os_name, arch
-
-
-def sha256_file(filepath: Path) -> str:
-    """Calculate SHA256 hash of a file."""
-    sha256 = hashlib.sha256()
-    with open(filepath, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256.update(chunk)
-    return sha256.hexdigest()
 
 
 def have_command(name: str) -> bool:
@@ -245,9 +212,7 @@ def load_rust_log() -> str:
 def _package_build(
     *,
     profile: str,
-    out_root: Path,
     archive_output: bool,
-    label: str,
     version: str,
 ) -> None:
     """Shared build-and-package pipeline used by both `release` and `debug`.
@@ -256,11 +221,7 @@ def _package_build(
     are always built with --release because debug WASM is enormous and the
     runtime difference doesn't matter for testing host UI changes.
 
-    `out_root` is the top-level output dir (e.g. `release/` or `debug/`).
-    Inside it we create `arclain-<version>-<os>-<arch>/` with the binary +
-    plugins, mirroring the release layout.
-
-    `archive_output=True` zips the folder for distribution. Debug builds
+    `archive_output=True` archives the folder for distribution. Debug builds
     skip this since they're not meant for distribution.
     """
     cargo_cmd = ["cargo", "build", "--package", "arclain_ui"]
@@ -273,54 +234,15 @@ def _package_build(
         print("ERROR: Some plugins failed to build.")
         sys.exit(1)
 
-    os_name, arch = get_platform()
-    binary_name = "arclain.exe" if os_name == "windows" else "arclain"
-    src_binary = "arclain_ui.exe" if os_name == "windows" else "arclain_ui"
-
-    pkg_name = f"arclain-{version}-{os_name}-{arch}"
-    pkg_dir = out_root / pkg_name
-
-    print(f"\nPackaging {label} ({pkg_name})...")
-
-    if pkg_dir.exists():
-        shutil.rmtree(pkg_dir)
-    pkg_dir.mkdir(parents=True)
-
-    # cargo profile dir layout: target/release/ for --release,
-    # target/debug/ for the default profile.
-    target_dir = _package.cargo_target_dir(REPO_ROOT)
-    cargo_profile_dir = "release" if profile == "release" else "debug"
-    exe_path = target_dir / cargo_profile_dir / src_binary
-    if not exe_path.exists():
-        print(f"Error: Binary not found at {exe_path}")
-        sys.exit(1)
-    shutil.copy2(exe_path, pkg_dir / binary_name)
-
-    _package.copy_bundled_plugins(pkg_dir / "plugins", PLUGINS_DIR)
-
-    if archive_output:
-        archive_fmt = "zip" if os_name == "windows" else "gztar"
-        archive_base = out_root / pkg_name
-        archive_path = Path(shutil.make_archive(
-            str(archive_base), archive_fmt,
-            root_dir=str(out_root),
-            base_dir=pkg_name,
-        ))
-        checksum = sha256_file(archive_path)
-        checksum_file = archive_path.with_suffix(archive_path.suffix + ".sha256")
-        checksum_file.write_text(f"{checksum}  {archive_path.name}\n")
-        print(f"\n=== {label.capitalize()} Complete ===")
-        print(f"Package:  {archive_path}")
-        print(f"Checksum: {checksum_file}")
-        print(f"Version:  {version}")
-    else:
-        print(f"\n=== {label.capitalize()} Build Complete ===")
-        print(f"Folder:   {pkg_dir}")
-        print(f"Run with: {pkg_dir / binary_name}")
+    _package.package(
+        profile=profile,
+        archive=archive_output,
+        version=version,
+    )
 
 
 def cmd_release(args: argparse.Namespace) -> None:
-    """Full release workflow: optimized build, plugins, zip.
+    """Full release workflow: optimized build, plugins, platform archive.
 
     Versioning happens separately via `cog bump` (run locally before
     tagging) — this script doesn't touch versions. CI invokes us
@@ -339,9 +261,7 @@ def cmd_release(args: argparse.Namespace) -> None:
     print("Building optimized binary + plugins...")
     _package_build(
         profile="release",
-        out_root=REPO_ROOT / "release",
         archive_output=True,
-        label="release",
         version=version,
     )
 
@@ -367,9 +287,7 @@ def cmd_debug(_args: argparse.Namespace) -> None:
     print("Building debug binary + plugins...")
     _package_build(
         profile="debug",
-        out_root=REPO_ROOT / "debug",
         archive_output=False,
-        label="debug",
         version=version,
     )
 

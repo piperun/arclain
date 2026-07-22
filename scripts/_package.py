@@ -194,26 +194,46 @@ def copy_bundled_plugins(
     return copied
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Package arclain binary + plugins.")
-    parser.add_argument(
-        "--profile", required=True, choices=["debug", "release"],
-        help="Cargo profile that was used for the build",
-    )
-    parser.add_argument(
-        "--archive", action="store_true",
-        help="Zip the output folder and write a sha256 sidecar",
-    )
-    parser.add_argument(
-        "--version", default=None,
-        help="Override the version string (default: read from Cargo.toml)",
-    )
-    args = parser.parse_args()
+def create_archive(
+    package_dir: Path,
+    out_root: Path,
+    os_name: str,
+) -> tuple[Path, Path]:
+    """Create one platform archive and its SHA-256 sidecar."""
+    archive_format = "zip" if os_name == "windows" else "gztar"
+    archive_suffix = ".zip" if os_name == "windows" else ".tar.gz"
+    archive_base = out_root / package_dir.name
+    archive_path = out_root / f"{package_dir.name}{archive_suffix}"
+    checksum_path = archive_path.with_suffix(archive_path.suffix + ".sha256")
 
-    version = args.version or workspace_version()
-    out_root = REPO_ROOT / args.profile  # release/ or debug/
-    label = args.profile
+    out_root.mkdir(parents=True, exist_ok=True)
+    archive_path.unlink(missing_ok=True)
+    checksum_path.unlink(missing_ok=True)
 
+    archive_path = Path(
+        shutil.make_archive(
+            str(archive_base),
+            archive_format,
+            root_dir=str(package_dir.parent),
+            base_dir=package_dir.name,
+        ),
+    )
+    checksum = sha256_file(archive_path)
+    checksum_path.write_text(
+        f"{checksum}  {archive_path.name}\n",
+        encoding="utf-8",
+    )
+    return archive_path, checksum_path
+
+
+def package(
+    profile: str,
+    archive: bool,
+    version: str | None = None,
+) -> Path:
+    """Assemble a built profile and optionally create its release archive."""
+    version = version or workspace_version()
+    out_root = REPO_ROOT / profile
     os_name, arch = get_platform()
     binary_name = "arclain.exe" if os_name == "windows" else "arclain"
     src_binary = "arclain_ui.exe" if os_name == "windows" else "arclain_ui"
@@ -221,10 +241,10 @@ def main() -> None:
     pkg_name = f"arclain-{version}-{os_name}-{arch}"
     pkg_dir = out_root / pkg_name
 
-    print(f"Packaging {label} ({pkg_name})...")
+    print(f"Packaging {profile} ({pkg_name})...")
 
     target_dir = cargo_target_dir()
-    cargo_profile_dir = "release" if args.profile == "release" else "debug"
+    cargo_profile_dir = "release" if profile == "release" else "debug"
     exe_path = target_dir / cargo_profile_dir / src_binary
     if not exe_path.exists():
         print(f"ERROR: Binary not found at {exe_path}")
@@ -239,25 +259,37 @@ def main() -> None:
 
     copy_bundled_plugins(pkg_dir / "plugins")
 
-    if args.archive:
-        archive_fmt = "zip" if os_name == "windows" else "gztar"
-        archive_base = out_root / pkg_name
-        archive_path = Path(shutil.make_archive(
-            str(archive_base), archive_fmt,
-            root_dir=str(out_root),
-            base_dir=pkg_name,
-        ))
-        checksum = sha256_file(archive_path)
-        checksum_file = archive_path.with_suffix(archive_path.suffix + ".sha256")
-        checksum_file.write_text(f"{checksum}  {archive_path.name}\n")
-        print(f"\n=== {label.capitalize()} Package Complete ===")
+    if archive:
+        archive_path, checksum_path = create_archive(pkg_dir, out_root, os_name)
+        print(f"\n=== {profile.capitalize()} Package Complete ===")
         print(f"Package:  {archive_path}")
-        print(f"Checksum: {checksum_file}")
+        print(f"Checksum: {checksum_path}")
         print(f"Version:  {version}")
-    else:
-        print(f"\n=== {label.capitalize()} Build Complete ===")
-        print(f"Folder:   {pkg_dir}")
-        print(f"Run with: {pkg_dir / binary_name}")
+        return archive_path
+
+    print(f"\n=== {profile.capitalize()} Build Complete ===")
+    print(f"Folder:   {pkg_dir}")
+    print(f"Run with: {pkg_dir / binary_name}")
+    return pkg_dir
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Package arclain binary + plugins.")
+    parser.add_argument(
+        "--profile", required=True, choices=["debug", "release"],
+        help="Cargo profile that was used for the build",
+    )
+    parser.add_argument(
+        "--archive", action="store_true",
+        help="Archive the output folder and write a sha256 sidecar",
+    )
+    parser.add_argument(
+        "--version", default=None,
+        help="Override the version string (default: read from Cargo.toml)",
+    )
+    args = parser.parse_args()
+
+    package(profile=args.profile, archive=args.archive, version=args.version)
 
 
 if __name__ == "__main__":
