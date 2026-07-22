@@ -17,6 +17,8 @@
 use crate::shared::components::toolbar::ToolbarState;
 use crate::shared::components::tree_panel::TreePanelState;
 use crate::shared::models::file_entry::{sort_entry_indices, FileEntry, SortState};
+use std::collections::HashSet;
+use std::ops::Deref;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,8 +53,32 @@ pub struct BrowserProjectionCache {
     visible_for: SortState,
     visible_filter: String,
     visible: Vec<usize>,
+    visible_generation: u64,
+    selected_revision: u64,
+    selected_for: u64,
+    selected: Vec<usize>,
+    visible_selection_generation: u64,
+    visible_selection_for: u64,
+    visible_selected_count: usize,
     #[cfg(test)]
     rebuilds: usize,
+    #[cfg(test)]
+    selection_work: SelectionWorkCounts,
+}
+
+pub struct BrowserRenderProjection<'a> {
+    pub visible_indices: &'a [usize],
+    pub selected_indices: &'a [usize],
+    pub visible_selected_count: usize,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SelectionWorkCounts {
+    pub selected_rebuilds: usize,
+    pub selected_entry_visits: usize,
+    pub visible_selection_rebuilds: usize,
+    pub visible_entry_visits: usize,
 }
 
 impl BrowserProjectionCache {
@@ -62,6 +88,68 @@ impl BrowserProjectionCache {
         sort: SortState,
         search: &str,
     ) -> &[usize] {
+        self.rebuild_visible_if_needed(snapshot, sort, search);
+        &self.visible
+    }
+
+    pub fn render_projection(
+        &mut self,
+        snapshot: &BrowserEntriesSnapshot,
+        sort: SortState,
+        search: &str,
+        selection: &RevisionedSelection,
+    ) -> BrowserRenderProjection<'_> {
+        self.rebuild_visible_if_needed(snapshot, sort, search);
+        let selection_revision = selection.revision();
+
+        if self.selected_revision != snapshot.revision || self.selected_for != selection_revision {
+            self.selected.clear();
+            self.selected.extend(
+                snapshot
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, entry)| selection.contains(&entry.path).then_some(index)),
+            );
+            self.selected_revision = snapshot.revision;
+            self.selected_for = selection_revision;
+            #[cfg(test)]
+            {
+                self.selection_work.selected_rebuilds += 1;
+                self.selection_work.selected_entry_visits += snapshot.entries.len();
+            }
+        }
+
+        if self.visible_selection_generation != self.visible_generation
+            || self.visible_selection_for != selection_revision
+        {
+            self.visible_selected_count = self
+                .visible
+                .iter()
+                .filter(|index| selection.contains(&snapshot.entries[**index].path))
+                .count();
+            self.visible_selection_generation = self.visible_generation;
+            self.visible_selection_for = selection_revision;
+            #[cfg(test)]
+            {
+                self.selection_work.visible_selection_rebuilds += 1;
+                self.selection_work.visible_entry_visits += self.visible.len();
+            }
+        }
+
+        BrowserRenderProjection {
+            visible_indices: &self.visible,
+            selected_indices: &self.selected,
+            visible_selected_count: self.visible_selected_count,
+        }
+    }
+
+    fn rebuild_visible_if_needed(
+        &mut self,
+        snapshot: &BrowserEntriesSnapshot,
+        sort: SortState,
+        search: &str,
+    ) {
         if self.sorted_revision != snapshot.revision || self.sorted_for != sort {
             self.sorted = (0..snapshot.entries.len()).collect();
             sort_entry_indices(&snapshot.entries, &mut self.sorted, sort);
@@ -86,24 +174,93 @@ impl BrowserProjectionCache {
             self.visible_revision = snapshot.revision;
             self.visible_for = sort;
             self.visible_filter = filter;
+            self.visible_generation = self.visible_generation.wrapping_add(1).max(1);
             #[cfg(test)]
             {
                 self.rebuilds += 1;
             }
         }
-        &self.visible
     }
 
     #[cfg(test)]
     pub(crate) fn rebuild_count(&self) -> usize {
         self.rebuilds
     }
+
+    #[cfg(test)]
+    pub(crate) fn selection_work_counts(&self) -> SelectionWorkCounts {
+        self.selection_work
+    }
+}
+
+/// Renderer-owned selection with an explicit invalidation revision.
+///
+/// Only immutable `HashSet` access is exposed. Every mutating operation
+/// advances `revision`, so projection caches never need to hash or scan the
+/// complete selection merely to detect a change.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RevisionedSelection {
+    paths: HashSet<String>,
+    revision: u64,
+}
+
+impl RevisionedSelection {
+    fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1).max(1);
+    }
+
+    pub fn insert(&mut self, path: String) -> bool {
+        let changed = self.paths.insert(path);
+        if changed {
+            self.bump_revision();
+        }
+        changed
+    }
+
+    pub fn remove(&mut self, path: &str) -> bool {
+        let changed = self.paths.remove(path);
+        if changed {
+            self.bump_revision();
+        }
+        changed
+    }
+
+    pub fn clear(&mut self) -> bool {
+        if self.paths.is_empty() {
+            return false;
+        }
+        self.paths.clear();
+        self.bump_revision();
+        true
+    }
+
+    pub fn extend(&mut self, paths: impl IntoIterator<Item = String>) -> bool {
+        let old_len = self.paths.len();
+        self.paths.extend(paths);
+        let changed = self.paths.len() != old_len;
+        if changed {
+            self.bump_revision();
+        }
+        changed
+    }
+}
+
+impl Deref for RevisionedSelection {
+    type Target = HashSet<String>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.paths
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BrowserViewState {
     /// Renderer-owned paths selected in the current browser projection.
-    pub selection: std::collections::HashSet<String>,
+    pub selection: RevisionedSelection,
     // NOTE: current_path moved to NavigationState signal pre-relocation
     //       for single source of truth; that history is preserved here.
     pub toolbar_state: ToolbarState,
@@ -115,7 +272,6 @@ pub struct BrowserViewState {
 mod tests {
     use super::*;
     use arclain_signals::Signal;
-    use std::collections::HashSet;
     use std::sync::Arc;
 
     fn entry(name: &str) -> FileEntry {
@@ -151,7 +307,10 @@ mod tests {
         entries.update(|snapshot| snapshot.replace(vec![entry("worker-new")]));
         let revision = entries.get().revision;
 
-        view.update(|state| state.selection = HashSet::from(["worker-new".to_string()]));
+        view.update(|state| {
+            state.selection.clear();
+            state.selection.insert("worker-new".to_string());
+        });
 
         let current = entries.get();
         assert_eq!(current.entries[0].name, "worker-new");
@@ -178,5 +337,119 @@ mod tests {
         assert_eq!(cache.rebuild_count(), 2);
         assert_eq!(cache.visible_indices(&snapshot, descending, "a"), &[1]);
         assert_eq!(cache.rebuild_count(), 3);
+    }
+
+    #[test]
+    fn settled_list_projection_does_not_rescan_ten_thousand_visible_entries() {
+        let mut snapshot = BrowserEntriesSnapshot::default();
+        snapshot.replace(
+            (0..10_000)
+                .rev()
+                .map(|index| entry(&format!("entry-{index:05}")))
+                .collect(),
+        );
+        let selection = RevisionedSelection::default();
+        let mut cache = BrowserProjectionCache::default();
+
+        let first_visible_ptr = {
+            let projection =
+                cache.render_projection(&snapshot, SortState::default(), "", &selection);
+            assert_eq!(projection.visible_indices.len(), 10_000);
+            assert_eq!(projection.visible_selected_count, 0);
+            projection.visible_indices.as_ptr()
+        };
+        let first_work = cache.selection_work_counts();
+        assert_eq!(first_work.selected_rebuilds, 1);
+        assert_eq!(first_work.selected_entry_visits, 10_000);
+        assert_eq!(first_work.visible_selection_rebuilds, 1);
+        assert_eq!(first_work.visible_entry_visits, 10_000);
+
+        let second_visible_ptr = {
+            let projection =
+                cache.render_projection(&snapshot, SortState::default(), "", &selection);
+            projection.visible_indices.as_ptr()
+        };
+
+        assert_eq!(first_visible_ptr, second_visible_ptr);
+        assert_eq!(cache.selection_work_counts(), first_work);
+    }
+
+    #[test]
+    fn settled_properties_projection_reuses_selected_indices() {
+        let mut snapshot = BrowserEntriesSnapshot::default();
+        snapshot.replace(
+            (0..10_000)
+                .map(|index| entry(&format!("entry-{index:05}")))
+                .collect(),
+        );
+        let mut selection = RevisionedSelection::default();
+        assert!(selection.insert("entry-05000".to_string()));
+        let mut cache = BrowserProjectionCache::default();
+
+        let first_selected_ptr = {
+            let projection =
+                cache.render_projection(&snapshot, SortState::default(), "", &selection);
+            assert_eq!(projection.selected_indices, &[5_000]);
+            projection.selected_indices.as_ptr()
+        };
+        let first_work = cache.selection_work_counts();
+        assert_eq!(first_work.selected_rebuilds, 1);
+        assert_eq!(first_work.selected_entry_visits, 10_000);
+        assert_eq!(first_work.visible_selection_rebuilds, 1);
+        assert_eq!(first_work.visible_entry_visits, 10_000);
+
+        let second_selected_ptr = {
+            let projection =
+                cache.render_projection(&snapshot, SortState::default(), "", &selection);
+            projection.selected_indices.as_ptr()
+        };
+
+        assert_eq!(first_selected_ptr, second_selected_ptr);
+        assert_eq!(cache.selection_work_counts(), first_work);
+    }
+
+    #[test]
+    fn selection_and_filter_revisions_invalidate_only_their_dependent_work() {
+        let mut snapshot = BrowserEntriesSnapshot::default();
+        snapshot.replace(vec![entry("visible"), entry("hidden")]);
+        let mut selection = RevisionedSelection::default();
+        assert!(selection.insert("hidden".to_string()));
+        let mut cache = BrowserProjectionCache::default();
+
+        let projection =
+            cache.render_projection(&snapshot, SortState::default(), "visible", &selection);
+        assert_eq!(projection.visible_indices, &[0]);
+        assert_eq!(projection.selected_indices, &[1]);
+        assert_eq!(projection.visible_selected_count, 0);
+        let initial = cache.selection_work_counts();
+
+        assert!(selection.insert("visible".to_string()));
+        let projection =
+            cache.render_projection(&snapshot, SortState::default(), "visible", &selection);
+        assert_eq!(projection.visible_selected_count, 1);
+        assert_eq!(projection.selected_indices, &[0, 1]);
+        let after_selection = cache.selection_work_counts();
+        assert_eq!(
+            after_selection.selected_rebuilds,
+            initial.selected_rebuilds + 1
+        );
+        assert_eq!(
+            after_selection.visible_selection_rebuilds,
+            initial.visible_selection_rebuilds + 1
+        );
+
+        let projection =
+            cache.render_projection(&snapshot, SortState::default(), "hidden", &selection);
+        assert_eq!(projection.visible_indices, &[1]);
+        assert_eq!(projection.visible_selected_count, 1);
+        let after_filter = cache.selection_work_counts();
+        assert_eq!(
+            after_filter.selected_rebuilds,
+            after_selection.selected_rebuilds
+        );
+        assert_eq!(
+            after_filter.visible_selection_rebuilds,
+            after_selection.visible_selection_rebuilds + 1
+        );
     }
 }

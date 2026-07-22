@@ -4,6 +4,7 @@
 //! hover-reveal actions, context menus, and selection support.
 
 use super::types::{FileEntry, FileListAction};
+use crate::core::tabs::view_state::RevisionedSelection;
 use crate::shared::theme::AppTheme;
 use arclain_widgets::{pixel_align, ButtonSize, TextButton};
 use eframe::egui;
@@ -23,7 +24,7 @@ pub fn render_grid_view(
     theme: &AppTheme,
     entries: &[FileEntry],
     order: &[usize],
-    selection: &mut std::collections::HashSet<String>,
+    selection: &mut RevisionedSelection,
 ) -> Option<FileListAction> {
     let mut action: Option<FileListAction> = None;
     let available_width = ui.available_width() - 16.0; // account for frame margin
@@ -76,7 +77,7 @@ fn render_card(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     entry: &FileEntry,
-    selection: &mut std::collections::HashSet<String>,
+    selection: &mut RevisionedSelection,
 ) -> Option<FileListAction> {
     let mut action: Option<FileListAction> = None;
 

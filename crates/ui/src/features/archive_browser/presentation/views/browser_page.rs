@@ -1,8 +1,6 @@
 //! Main view for the archive browser feature.
 
-use crate::core::tabs::view_state::{
-    BrowserEntriesSnapshot, BrowserProjectionCache, BrowserViewState,
-};
+use crate::core::tabs::view_state::{BrowserProjectionCache, BrowserViewState};
 use crate::core::tabs::TabState;
 use crate::features::archive_browser::domain::Action;
 use crate::features::archive_browser::presentation::components::file_list;
@@ -29,6 +27,13 @@ pub fn render_archive_browser(
 
     let entries = tab.browser_entries.get();
     let mut view_state = tab.browser_view_state.get();
+    let search_text = shared.signals().search_text.get();
+    let render_projection = projection.render_projection(
+        &entries,
+        view_state.sort_state,
+        &search_text,
+        &view_state.selection,
+    );
 
     // Render tree panel if enabled
     if view_state.toolbar_state.show_tree_panel {
@@ -37,9 +42,13 @@ pub fn render_archive_browser(
 
     // Render properties panel if enabled
     if view_state.toolbar_state.show_properties_panel {
-        if let Some(act) =
-            render_properties_panel(ctx, &view_state, entries.entries.as_ref(), shared, tab)
-        {
+        if let Some(act) = render_properties_panel(
+            ctx,
+            entries.entries.as_ref(),
+            render_projection.selected_indices,
+            shared,
+            tab,
+        ) {
             action = act;
         }
     }
@@ -47,8 +56,9 @@ pub fn render_archive_browser(
     // Render central file list
     render_file_list(
         ctx,
-        &entries,
-        projection,
+        entries.entries.as_ref(),
+        render_projection.visible_indices,
+        render_projection.visible_selected_count,
         &mut view_state,
         shared,
         &mut action,
@@ -139,8 +149,8 @@ fn render_tree_panel(
 
 fn render_properties_panel(
     ctx: &egui::Context,
-    state: &BrowserViewState,
     entries: &[crate::shared::models::file_entry::FileEntry],
+    selected_indices: &[usize],
     shared: &SharedState,
     tab: &TabState,
 ) -> Option<Action> {
@@ -166,12 +176,8 @@ fn render_properties_panel(
 
                 let mut sections: Vec<properties_panel::PanelSection> = Vec::new();
 
-                let selected_entries: Vec<_> = entries
-                    .iter()
-                    .filter(|e| state.selection.contains(&e.path))
-                    .collect();
-                let selected_entry = if selected_entries.len() == 1 {
-                    Some(selected_entries[0])
+                let selected_entry = if selected_indices.len() == 1 {
+                    Some(&entries[selected_indices[0]])
                 } else {
                     None
                 };
@@ -305,8 +311,9 @@ fn render_properties_panel(
 
 fn render_file_list(
     ctx: &egui::Context,
-    snapshot: &BrowserEntriesSnapshot,
-    projection: &mut BrowserProjectionCache,
+    entries: &[crate::shared::models::file_entry::FileEntry],
+    order: &[usize],
+    visible_selected_count: usize,
     state: &mut BrowserViewState,
     shared: &SharedState,
     action: &mut Action,
@@ -315,9 +322,6 @@ fn render_file_list(
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface))
         .show(ctx, |ui| {
             ui.vertical(|ui| {
-                let search_text = shared.signals().search_text.get();
-                let order = projection.visible_indices(snapshot, state.sort_state, &search_text);
-
                 // No outer ScrollArea here — both render_list_view (egui_extras
                 // TableBuilder with body.rows virtualization) and render_grid_view
                 // (ScrollArea::show_rows virtualization) own their own scrolling.
@@ -328,7 +332,7 @@ fn render_file_list(
                     if let Some(file_action) = file_list::render_grid_view(
                         ui,
                         &shared.theme,
-                        snapshot.entries.as_ref(),
+                        entries,
                         order,
                         &mut state.selection,
                     ) {
@@ -337,8 +341,9 @@ fn render_file_list(
                 } else if let Some(file_action) = file_list::render_list_view(
                     ui,
                     &shared.theme,
-                    snapshot.entries.as_ref(),
+                    entries,
                     order,
+                    visible_selected_count,
                     &mut state.selection,
                     state.toolbar_state.columns_locked,
                     &mut state.sort_state,

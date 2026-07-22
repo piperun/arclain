@@ -17,6 +17,7 @@ pub use types::{
     parse_ratio_pct, parse_size_to_bytes, FileEntry, FileListAction, SortColumn, SortState,
 };
 
+use crate::core::tabs::view_state::RevisionedSelection;
 use crate::shared::theme::AppTheme;
 use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
@@ -109,8 +110,8 @@ fn paint_row_selection(
     row_response: &egui::Response,
     list_clip_rect: egui::Rect,
     theme: &AppTheme,
-    row_index: usize,
-    selection_flags: &[bool],
+    prev_selected: bool,
+    next_selected: bool,
 ) {
     let painter = egui::Painter::new(
         row_response.ctx.clone(),
@@ -125,8 +126,6 @@ fn paint_row_selection(
     let fill_color = theme.colors.selection.linear_multiply(0.14);
     painter.rect_filled(fill_rect, 0.0, fill_color);
 
-    let prev_selected = row_index > 0 && selection_flags[row_index - 1];
-    let next_selected = row_index + 1 < selection_flags.len() && selection_flags[row_index + 1];
     let stroke_color = theme.colors.selection.linear_multiply(0.35);
     let stroke = egui::Stroke::new(1.0, stroke_color);
 
@@ -298,7 +297,8 @@ pub fn render_list_view(
     theme: &AppTheme,
     entries: &[FileEntry],
     order: &[usize],
-    selection: &mut std::collections::HashSet<String>,
+    visible_selected_count: usize,
+    selection: &mut RevisionedSelection,
     columns_locked: bool,
     sort: &mut SortState,
 ) -> Option<FileListAction> {
@@ -361,13 +361,9 @@ pub fn render_list_view(
                 .header(28.0, |mut header| {
                     // Select all checkbox
                     header.col(|ui| {
-                        let all_selected = !order.is_empty()
-                            && order
-                                .iter()
-                                .all(|index| selection.contains(&entries[*index].path));
-                        let some_selected = order
-                            .iter()
-                            .any(|index| selection.contains(&entries[*index].path));
+                        let all_selected =
+                            !order.is_empty() && visible_selected_count == order.len();
+                        let some_selected = visible_selected_count > 0;
                         let mut header_check = all_selected;
                         let resp = ui.checkbox(&mut header_check, "");
                         if resp.clicked() {
@@ -470,20 +466,6 @@ pub fn render_list_view(
                             }
                         }
                     }
-
-                    let selection_flags: Vec<bool> = order
-                        .iter()
-                        .map(|index| selection.contains(&entries[*index].path))
-                        .collect();
-
-                    // Pre-collect selected file paths for drag-out (needed because we can't borrow entries during iter_mut)
-                    // Note: Include both files AND folders for drag
-                    let selected_files: Vec<String> = order
-                        .iter()
-                        .map(|index| &entries[*index])
-                        .filter(|e| selection.contains(&e.path))
-                        .map(|e| e.path.clone())
-                        .collect();
 
                     // Virtualized row rendering: body.rows() only invokes
                     // the closure for rows currently in the scroll viewport
@@ -612,12 +594,22 @@ pub fn render_list_view(
 
                             let is_selected = selection.contains(&entry_path);
                             if is_selected {
+                                let prev_selected = row_index
+                                    .checked_sub(1)
+                                    .map(|previous| {
+                                        selection.contains(&entries[order[previous]].path)
+                                    })
+                                    .unwrap_or(false);
+                                let next_selected = order
+                                    .get(row_index + 1)
+                                    .map(|next| selection.contains(&entries[*next].path))
+                                    .unwrap_or(false);
                                 paint_row_selection(
                                     &row_response,
                                     list_clip_rect,
                                     theme,
-                                    row_index,
-                                    &selection_flags,
+                                    prev_selected,
+                                    next_selected,
                                 );
                             }
                             if row_response.hovered() {
@@ -637,10 +629,16 @@ pub fn render_list_view(
                                 // Show grab cursor for visual feedback
                                 row_response.ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
 
-                                // If the dragged row isn't selected, just drag that one
-                                // Otherwise drag all selected entries (uses pre-collected list)
+                                // If the dragged row isn't selected, just drag that one.
+                                // Build the visible selected payload only for the frame where a
+                                // drag actually starts; settled frames perform no full scan.
                                 let files_to_drag: Vec<String> = if is_selected {
-                                    selected_files.clone()
+                                    order
+                                        .iter()
+                                        .map(|index| &entries[*index])
+                                        .filter(|entry| selection.contains(&entry.path))
+                                        .map(|entry| entry.path.clone())
+                                        .collect()
                                 } else {
                                     vec![entry_path.clone()]
                                 };
