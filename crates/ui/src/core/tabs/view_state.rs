@@ -15,8 +15,9 @@
 //! through its core-owned home.
 
 use crate::shared::components::toolbar::ToolbarState;
-use crate::shared::components::tree_panel::TreePanelState;
+use crate::shared::components::tree_panel::{FolderTree, TreePanelState};
 use crate::shared::models::file_entry::{sort_entry_indices, FileEntry, SortState};
+use arclain_core::ArchiveEntry;
 use std::collections::HashSet;
 use std::ops::Deref;
 use std::sync::Arc;
@@ -40,6 +41,43 @@ impl BrowserEntriesSnapshot {
     pub fn replace(&mut self, entries: Vec<FileEntry>) {
         self.revision = self.revision.wrapping_add(1).max(1);
         self.entries = Arc::from(entries);
+    }
+}
+
+/// Renderer-owned archive folder projection for one tab.
+///
+/// Archive entry producers replace the complete `Arc<Vec<ArchiveEntry>>`, so
+/// pointer identity is an O(1) revision key. Normalization, hierarchy building,
+/// and sorting therefore run only after a real entry replacement.
+#[derive(Default)]
+pub struct ArchiveTreeProjectionCache {
+    source: Option<Arc<Vec<ArchiveEntry>>>,
+    tree: FolderTree,
+    rebuilds: usize,
+}
+
+impl ArchiveTreeProjectionCache {
+    pub fn projection(
+        &mut self,
+        entries: &Arc<Vec<ArchiveEntry>>,
+        build: impl FnOnce(&[ArchiveEntry]) -> FolderTree,
+    ) -> &FolderTree {
+        let source_changed = self
+            .source
+            .as_ref()
+            .is_none_or(|source| !Arc::ptr_eq(source, entries));
+
+        if source_changed {
+            self.tree = build(entries.as_slice());
+            self.source = Some(entries.clone());
+            self.rebuilds += 1;
+        }
+
+        &self.tree
+    }
+
+    pub fn rebuild_count(&self) -> usize {
+        self.rebuilds
     }
 }
 
@@ -561,5 +599,35 @@ mod tests {
             &[0],
             "returning to A lost A/same.txt's stable identity"
         );
+    }
+
+    #[test]
+    fn tree_projection_rebuilds_only_when_archive_entry_allocation_changes() {
+        let first = Arc::new(vec![arclain_core::ArchiveEntry {
+            path: "A/file.txt".to_string(),
+            size: 0,
+            packed_size: 0,
+            modified: None,
+            is_dir: false,
+            encrypted: false,
+            crc32: None,
+        }]);
+        let second = Arc::new(vec![arclain_core::ArchiveEntry {
+            path: "B/file.txt".to_string(),
+            ..first[0].clone()
+        }]);
+        let navigation = arclain_core::NavigationState::default();
+        let mut cache = ArchiveTreeProjectionCache::default();
+
+        cache.projection(&first, |entries| {
+            FolderTree::from_folders(&navigation.get_all_folders(entries))
+        });
+        cache.projection(&first, |_| panic!("settled tree projection rebuilt"));
+        assert_eq!(cache.rebuild_count(), 1);
+
+        cache.projection(&second, |entries| {
+            FolderTree::from_folders(&navigation.get_all_folders(entries))
+        });
+        assert_eq!(cache.rebuild_count(), 2);
     }
 }

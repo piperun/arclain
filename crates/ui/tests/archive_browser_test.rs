@@ -2,7 +2,9 @@ use arclain_ui::features::archive_browser::{Action, BrowserController};
 use arclain_ui::features::archive_operations::ArchiveOperationsState;
 use arclain_ui::shared::models::file_entry::FileEntry;
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -293,6 +295,19 @@ fn idle_render_reuses_entry_allocation_without_publishing_state() {
         .collect();
     tab.browser_entries
         .update(|snapshot| snapshot.replace(entries));
+    tab.entries.set(Arc::new(
+        (0..10_000)
+            .map(|index| arclain_core::ArchiveEntry {
+                path: format!("folder-{index:05}/entry.txt"),
+                size: 0,
+                packed_size: 0,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            })
+            .collect(),
+    ));
     let before = tab.browser_entries.get();
 
     let entry_notifications = Arc::new(AtomicUsize::new(0));
@@ -306,9 +321,10 @@ fn idle_render_reuses_entry_allocation_without_publishing_state() {
         view_notifications_for_listener.fetch_add(1, Ordering::SeqCst);
     });
 
-    let mut browser = ArchiveBrowser::new(&shared);
+    let browser = Rc::new(RefCell::new(ArchiveBrowser::new(&shared)));
+    let render_browser = browser.clone();
     let mut harness = Harness::new(move |ctx| {
-        let _ = browser.render(ctx, &shared);
+        let _ = render_browser.borrow_mut().render(ctx, &shared);
     });
     harness.run_steps(2);
 
@@ -316,4 +332,5 @@ fn idle_render_reuses_entry_allocation_without_publishing_state() {
     assert!(Arc::ptr_eq(&before.entries, &after.entries));
     assert_eq!(entry_notifications.load(Ordering::SeqCst), 0);
     assert_eq!(view_notifications.load(Ordering::SeqCst), 0);
+    assert_eq!(browser.borrow().tree_projection_rebuild_count(tab.id), 1);
 }

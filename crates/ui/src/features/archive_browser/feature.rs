@@ -1,6 +1,6 @@
 use super::domain::Action;
 use super::presentation::BrowserController;
-use crate::core::tabs::view_state::BrowserProjectionCache;
+use crate::core::tabs::view_state::{ArchiveTreeProjectionCache, BrowserProjectionCache};
 use crate::core::tabs::TabId;
 use crate::shared::SharedState;
 use eframe::egui;
@@ -8,7 +8,13 @@ use std::collections::{HashMap, HashSet};
 
 pub struct ArchiveBrowser {
     pub controller: BrowserController,
-    projections: HashMap<TabId, BrowserProjectionCache>,
+    projections: HashMap<TabId, ArchiveTabProjectionCache>,
+}
+
+#[derive(Default)]
+struct ArchiveTabProjectionCache {
+    files: BrowserProjectionCache,
+    tree: ArchiveTreeProjectionCache,
 }
 
 impl ArchiveBrowser {
@@ -26,15 +32,27 @@ impl ArchiveBrowser {
         let active = tabs.active().clone();
         let projection = self.projections.entry(active.id).or_default();
         super::presentation::views::browser_page::render_archive_browser(
-            ctx, shared, &active, projection,
+            ctx,
+            shared,
+            &active,
+            &mut projection.files,
+            &mut projection.tree,
         )
+    }
+
+    #[doc(hidden)]
+    pub fn tree_projection_rebuild_count(&self, tab_id: TabId) -> usize {
+        self.projections
+            .get(&tab_id)
+            .map(|projection| projection.tree.rebuild_count())
+            .unwrap_or(0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::tabs::view_state::{BrowserEntriesSnapshot, BrowserProjectionCache};
+    use crate::core::tabs::view_state::BrowserEntriesSnapshot;
     use crate::core::tabs::TabId;
     use crate::shared::models::file_entry::{FileEntry, SortState};
     use std::collections::HashSet;
@@ -48,7 +66,7 @@ mod tests {
         };
         browser
             .projections
-            .insert(tab_id, BrowserProjectionCache::default());
+            .insert(tab_id, ArchiveTabProjectionCache::default());
 
         let mut snapshot = BrowserEntriesSnapshot::default();
         snapshot.replace(vec![FileEntry {
@@ -65,7 +83,7 @@ mod tests {
         }]);
         let sort = SortState::default();
 
-        let cache = browser.projections.get_mut(&tab_id).unwrap();
+        let cache = &mut browser.projections.get_mut(&tab_id).unwrap().files;
         cache.visible_indices(&snapshot, sort, "");
         cache.visible_indices(&snapshot, sort, "");
         assert_eq!(cache.rebuild_count(), 1);

@@ -28,60 +28,72 @@ impl TreeNode {
     }
 }
 
-fn build_tree_structure(folders: &[String]) -> Vec<TreeNode> {
-    let mut root_nodes: Vec<TreeNode> = Vec::new();
-    let mut folder_map: HashMap<String, Vec<String>> = HashMap::new();
+/// Immutable folder hierarchy prepared outside egui's render callbacks.
+///
+/// Building the hierarchy allocates and sorts, so archive-browser renderers
+/// retain one of these per tab and rebuild it only when the archive entry
+/// allocation changes.
+#[derive(Debug, Clone, Default)]
+pub struct FolderTree {
+    roots: Vec<TreeNode>,
+}
 
-    // Build parent-child relationships
-    for folder in folders {
-        if let Some(pos) = folder.rfind('/') {
-            let parent = &folder[..pos];
-            folder_map
-                .entry(parent.to_string())
-                .or_default()
-                .push(folder.clone());
-        } else {
-            // Top-level folder
-            folder_map
-                .entry(String::new())
-                .or_default()
-                .push(folder.clone());
-        }
-    }
+impl FolderTree {
+    pub fn from_folders(folders: &[String]) -> Self {
+        let mut root_nodes: Vec<TreeNode> = Vec::new();
+        let mut folder_map: HashMap<String, Vec<String>> = HashMap::new();
 
-    // Build tree recursively
-    fn build_node(
-        path: &str,
-        folder_map: &HashMap<String, Vec<String>>,
-        indent: usize,
-    ) -> TreeNode {
-        let name = if let Some(pos) = path.rfind('/') {
-            path[pos + 1..].to_string()
-        } else {
-            path.to_string()
-        };
-
-        let mut node = TreeNode::new(name, path.to_string(), indent);
-
-        if let Some(children) = folder_map.get(path) {
-            for child in children {
-                node.children
-                    .push(build_node(child, folder_map, indent + 1));
+        // Build parent-child relationships
+        for folder in folders {
+            if let Some(pos) = folder.rfind('/') {
+                let parent = &folder[..pos];
+                folder_map
+                    .entry(parent.to_string())
+                    .or_default()
+                    .push(folder.clone());
+            } else {
+                // Top-level folder
+                folder_map
+                    .entry(String::new())
+                    .or_default()
+                    .push(folder.clone());
             }
         }
 
-        node.children.sort_by(|a, b| a.name.cmp(&b.name));
-        node
-    }
+        // Build tree recursively
+        fn build_node(
+            path: &str,
+            folder_map: &HashMap<String, Vec<String>>,
+            indent: usize,
+        ) -> TreeNode {
+            let name = if let Some(pos) = path.rfind('/') {
+                path[pos + 1..].to_string()
+            } else {
+                path.to_string()
+            };
 
-    if let Some(top_level) = folder_map.get("") {
-        for folder in top_level {
-            root_nodes.push(build_node(folder, &folder_map, 1));
+            let mut node = TreeNode::new(name, path.to_string(), indent);
+
+            if let Some(children) = folder_map.get(path) {
+                for child in children {
+                    node.children
+                        .push(build_node(child, folder_map, indent + 1));
+                }
+            }
+
+            node.children.sort_by(|a, b| a.name.cmp(&b.name));
+            node
         }
-    }
 
-    root_nodes.sort_by(|a, b| a.name.cmp(&b.name));
-    root_nodes
+        if let Some(top_level) = folder_map.get("") {
+            for folder in top_level {
+                root_nodes.push(build_node(folder, &folder_map, 1));
+            }
+        }
+
+        root_nodes.sort_by(|a, b| a.name.cmp(&b.name));
+        Self { roots: root_nodes }
+    }
 }
 
 pub fn render(
@@ -89,7 +101,7 @@ pub fn render(
     theme: &AppTheme,
     state: &mut TreePanelState,
     archive_name: &str,
-    folders: &[String],
+    tree: &FolderTree,
     current_path: &str,
 ) -> Option<String> {
     let mut navigate_to: Option<String> = None;
@@ -138,9 +150,6 @@ pub fn render(
 
     ui.add_space(8.0);
 
-    // Build tree structure
-    let tree = build_tree_structure(folders);
-
     // Tree view with egui_ltreeview
     egui::ScrollArea::vertical()
         .id_salt("tree_scroll")
@@ -166,7 +175,7 @@ pub fn render(
             }
 
             // Render tree nodes recursively
-            for node in &tree {
+            for node in &tree.roots {
                 if let Some(path) = render_tree_node(ui, theme, state, node, current_path) {
                     navigate_to = Some(path);
                 }

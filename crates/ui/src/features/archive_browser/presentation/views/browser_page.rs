@@ -1,10 +1,12 @@
 //! Main view for the archive browser feature.
 
-use crate::core::tabs::view_state::{BrowserProjectionCache, BrowserViewState};
+use crate::core::tabs::view_state::{
+    ArchiveTreeProjectionCache, BrowserProjectionCache, BrowserViewState,
+};
 use crate::core::tabs::TabState;
 use crate::features::archive_browser::domain::Action;
 use crate::features::archive_browser::presentation::components::file_list;
-use crate::shared::components::tree_panel;
+use crate::shared::components::tree_panel::{self, FolderTree};
 use crate::shared::SharedState;
 use arclain_core::ActionType;
 use arclain_plugins::types::PluginExtensionPoint;
@@ -25,6 +27,7 @@ pub fn render_archive_browser(
     shared: &SharedState,
     tab: &TabState,
     projection: &mut BrowserProjectionCache,
+    tree_projection: &mut ArchiveTreeProjectionCache,
 ) -> Action {
     let mut action = Action::None;
 
@@ -49,7 +52,28 @@ pub fn render_archive_browser(
 
     // Render tree panel if enabled
     if view_state.toolbar_state.show_tree_panel {
-        render_tree_panel(ctx, &mut view_state, shared, tab, &mut action);
+        let archive_name = tab
+            .archive_path
+            .get()
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "archive".to_string());
+        let archive_entries = tab.entries.get();
+        let navigation = tab.navigation.get();
+        let current_path = navigation.current_path.clone();
+        let tree = tree_projection.projection(&archive_entries, |entries| {
+            FolderTree::from_folders(&navigation.get_all_folders(entries))
+        });
+        render_tree_panel(
+            ctx,
+            &mut view_state,
+            shared,
+            &archive_name,
+            tree,
+            &current_path,
+            &mut action,
+        );
     }
 
     // Render properties panel if enabled
@@ -126,33 +150,22 @@ fn render_tree_panel(
     ctx: &egui::Context,
     state: &mut BrowserViewState,
     shared: &SharedState,
-    tab: &TabState,
+    archive_name: &str,
+    tree: &FolderTree,
+    current_path: &str,
     action: &mut Action,
 ) {
     egui::SidePanel::left("tree_panel")
         .exact_width(240.0)
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface_variant))
         .show(ctx, |ui| {
-            let archive_name = tab
-                .archive_path
-                .get()
-                .as_ref()
-                .and_then(|p| p.file_name())
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "archive".to_string());
-
-            let entries = tab.entries.get();
-            let nav = tab.navigation.get();
-            let folders = nav.get_all_folders(&entries);
-            let current_path = nav.current_path.clone();
-
             if let Some(path) = tree_panel::render(
                 ui,
                 &shared.theme,
                 &mut state.tree_state,
-                &archive_name,
-                &folders,
-                &current_path,
+                archive_name,
+                tree,
+                current_path,
             ) {
                 *action = Action::NavigateToPath(path);
             }
