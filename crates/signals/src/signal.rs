@@ -121,7 +121,7 @@ impl<T> Signal<T> {
     /// When the guard is dropped, listeners are notified.
     pub fn write(&self) -> SignalWriteGuard<'_, T> {
         SignalWriteGuard {
-            guard: self.inner.value.write(),
+            guard: Some(self.inner.value.write()),
             signal_inner: &self.inner,
         }
     }
@@ -129,27 +129,33 @@ impl<T> Signal<T> {
 
 /// A write guard that triggers notification when dropped.
 pub struct SignalWriteGuard<'a, T> {
-    guard: parking_lot::RwLockWriteGuard<'a, T>,
+    guard: Option<parking_lot::RwLockWriteGuard<'a, T>>,
     signal_inner: &'a SignalInner<T>,
 }
 
 impl<'a, T> std::ops::Deref for SignalWriteGuard<'a, T> {
     type Target = T;
     fn deref(&self) -> &Self::Target {
-        &*self.guard
+        self.guard
+            .as_deref()
+            .expect("signal write guard released before dereference")
     }
 }
 
 impl<'a, T> std::ops::DerefMut for SignalWriteGuard<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut *self.guard
+        self.guard
+            .as_deref_mut()
+            .expect("signal write guard released before mutable dereference")
     }
 }
 
 impl<'a, T> Drop for SignalWriteGuard<'a, T> {
     fn drop(&mut self) {
-        // Notify listeners on drop.
-        // Snapshot the listener Vec under a brief read guard, then release
+        // Release the value lock before callbacks so they can read the committed value.
+        drop(self.guard.take());
+
+        // Snapshot the listener Vec under a brief read guard, then release it
         // before invoking callbacks (same self-deadlock avoidance as Signal::notify).
         let listeners: Vec<Listener> = {
             let guard = self.signal_inner.listeners.read();
@@ -221,6 +227,8 @@ impl<T: Default> Default for Signal<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     #[test]
     fn test_signal_get_set() {
@@ -271,6 +279,29 @@ mod tests {
 
         assert_eq!(signal.get(), 5);
         assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn write_guard_listener_can_read_committed_value() {
+        let (observed_tx, observed_rx) = mpsc::channel();
+
+        std::thread::spawn(move || {
+            let signal = Signal::new(0);
+            let signal_for_listener = signal.clone();
+            signal.subscribe(move || {
+                observed_tx.send(signal_for_listener.get()).unwrap();
+            });
+
+            let mut guard = signal.write();
+            *guard = 5;
+            drop(guard);
+        });
+
+        assert_eq!(
+            observed_rx.recv_timeout(Duration::from_secs(1)),
+            Ok(5),
+            "write-guard listener could not read the committed signal value"
+        );
     }
 
     #[test]
