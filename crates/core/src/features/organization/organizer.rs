@@ -550,6 +550,55 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[cfg(windows)]
+    fn suppress_automatic_access_time_update_for_test(file: &std::fs::File) {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Foundation::FILETIME;
+        use windows_sys::Win32::Storage::FileSystem::SetFileTime;
+
+        let unchanged = FILETIME {
+            dwLowDateTime: u32::MAX,
+            dwHighDateTime: u32::MAX,
+        };
+        let result = unsafe {
+            SetFileTime(
+                file.as_raw_handle() as _,
+                std::ptr::null(),
+                &unchanged,
+                std::ptr::null(),
+            )
+        };
+        assert_ne!(result, 0, "failed to protect Windows access time");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn preserved_plan_metadata_applies_past_access_time_on_protected_handle() {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("destination");
+        std::fs::create_dir(&destination).unwrap();
+        let initial = std::fs::metadata(&destination).unwrap();
+        let expected_modified = std::time::UNIX_EPOCH + std::time::Duration::from_secs(978_307_200);
+        let expected_accessed = expected_modified + std::time::Duration::from_secs(60);
+        let preserved = PreservedPlanMetadata {
+            permissions: initial.permissions(),
+            accessed: expected_accessed,
+            modified: expected_modified,
+            created: initial.created().unwrap(),
+        };
+
+        // Opening a directory with an old access time can itself advance that
+        // time on NTFS. Protect this handle before restoration, then inspect
+        // through the same handle so the assertion does not mutate its subject.
+        let handle = open_plan_metadata_handle(&destination).unwrap();
+        suppress_automatic_access_time_update_for_test(&handle);
+        preserved.apply_to_file(&handle, &destination).unwrap();
+
+        let restored = handle.metadata().unwrap();
+        assert_eq!(restored.accessed().unwrap(), expected_accessed);
+        assert_eq!(restored.modified().unwrap(), expected_modified);
+    }
+
     #[test]
     fn persist_plan_output_does_not_replace_existing_leaf() {
         let temp = tempfile::tempdir().unwrap();

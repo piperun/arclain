@@ -930,6 +930,11 @@ mod tests {
 
         let output_metadata = fs::metadata(work.join("Out")).unwrap();
         assert_time_close(output_metadata.modified().unwrap(), expected_modified);
+        // On Windows, opening a directory whose access time is this old can
+        // advance it before a fresh metadata handle can observe the restored
+        // value. The production setter is covered through an already-protected
+        // handle in organizer::tests.
+        #[cfg(not(windows))]
         assert_time_close(output_metadata.accessed().unwrap(), expected_accessed);
     }
 
