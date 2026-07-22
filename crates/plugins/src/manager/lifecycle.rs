@@ -180,11 +180,11 @@ impl PluginManager {
         // Load the plugin to get metadata (without full instantiation)
         let loaded = self.loader.load_wasm(&wasm_bytes)?;
 
-        // Metadata validation uses a deferred logger so an untrusted component
-        // cannot write to the global plugin log directory before its ID is
-        // validated.
+        // Metadata validation runs in a restricted host mode. It exposes only
+        // the component's metadata export: plugin init is deferred, WASI does
+        // not inherit process I/O, and every side-effecting host import is
+        // denied or suppressed until the exported ID is validated.
         let mut temp_instance = loaded.instantiate_for_metadata_validation()?;
-        temp_instance.init()?;
         let metadata = temp_instance.get_metadata()?;
         let plugin_id = PluginId::parse(metadata.id.clone());
         temp_instance.cleanup()?;
@@ -206,7 +206,7 @@ impl PluginManager {
         })?;
 
         // Copy WASM file
-        let wasm_dest = plugin_dir.join("plugin.wasm");
+        let wasm_dest = plugin_dir.join(format!("{}.wasm", plugin_id.as_str()));
         fs::copy(wasm_path, &wasm_dest)
             .map_err(|e| PluginError::LoadError(format!("Failed to copy WASM file: {}", e)))?;
 
@@ -235,7 +235,7 @@ http_requests_per_minute = 60
             metadata.author
         );
 
-        let manifest_path = plugin_dir.join("plugin.toml");
+        let manifest_path = plugin_dir.join(format!("{}.toml", plugin_id.as_str()));
         let mut manifest_file = fs::File::create(&manifest_path)
             .map_err(|e| PluginError::LoadError(format!("Failed to create manifest: {}", e)))?;
         manifest_file

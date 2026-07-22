@@ -26,6 +26,14 @@ use std::sync::Arc;
 use wasmtime::component::ResourceTable;
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
 
+const METADATA_VALIDATION_DENIED: &str = "metadata-validation-denied";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HostMode {
+    Normal,
+    MetadataValidation,
+}
+
 /// Per-event context the dispatch worker installs while a plugin's
 /// event handler runs. Carries snapshots of the *originating tab's*
 /// state (archive path, password, entries list, metadata signal),
@@ -42,6 +50,7 @@ pub struct EventContext {
 
 /// State for host functions
 pub struct HostFunctions {
+    mode: HostMode,
     pub plugin_id: PluginId,
     pub async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
     pub capabilities: std::collections::HashSet<PluginCapability>,
@@ -125,11 +134,18 @@ impl HostFunctions {
             capabilities,
             initial_settings,
             Some(plugin_log_dir),
+            HostMode::Normal,
         )
     }
 
     pub(crate) fn new_for_metadata_validation(plugin_id: String) -> PluginResult<Self> {
-        Self::build(plugin_id, Default::default(), HashMap::new(), None)
+        Self::build(
+            plugin_id,
+            Default::default(),
+            HashMap::new(),
+            None,
+            HostMode::MetadataValidation,
+        )
     }
 
     fn build(
@@ -137,10 +153,13 @@ impl HostFunctions {
         capabilities: std::collections::HashSet<PluginCapability>,
         initial_settings: HashMap<String, String>,
         plugin_log_dir: Option<&Path>,
+        mode: HostMode,
     ) -> PluginResult<Self> {
         let plugin_id = PluginId::parse(plugin_id)?;
-        // Initialize WASI context
-        let ctx = WasiCtxBuilder::new().inherit_stdio().inherit_args().build();
+        let ctx = match mode {
+            HostMode::Normal => WasiCtxBuilder::new().inherit_stdio().inherit_args().build(),
+            HostMode::MetadataValidation => WasiCtxBuilder::new().build(),
+        };
 
         let plugin_logger = Arc::new(match plugin_log_dir {
             Some(log_dir) => PluginLogger::new(&plugin_id, log_dir),
@@ -149,6 +168,7 @@ impl HostFunctions {
         let data_service = DataService::new().with_id(plugin_id.as_str());
 
         Ok(Self {
+            mode,
             plugin_id,
             async_http_client: None,
             capabilities,
@@ -169,6 +189,10 @@ impl HostFunctions {
             pending_status_message: Arc::new(Mutex::new(None)),
             plugin_logger,
         })
+    }
+
+    fn is_metadata_validation(&self) -> bool {
+        self.mode == HostMode::MetadataValidation
     }
 
     pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
@@ -330,47 +354,80 @@ impl WasiView for HostFunctions {
 
 impl Host for HostFunctions {
     fn log(&mut self, level: LogLevel, message: String) {
+        if self.is_metadata_validation() {
+            return;
+        }
         self.impl_log(level, message)
     }
 
     fn log_network_activity(&mut self, message: String) {
+        if self.is_metadata_validation() {
+            return;
+        }
         self.impl_log_network_activity(message)
     }
 
     fn get_setting(&mut self, key: String) -> Option<String> {
+        if self.is_metadata_validation() {
+            return None;
+        }
         self.impl_get_setting(key)
     }
 
     fn set_setting(&mut self, key: String, value: String) {
+        if self.is_metadata_validation() {
+            return;
+        }
         self.impl_set_setting(key, value)
     }
 
     fn current_archive_info(&mut self) -> Option<crate::arclain::plugin::host::ArchiveInfo> {
+        if self.is_metadata_validation() {
+            return None;
+        }
         self.impl_current_archive_info()
     }
 
     fn list_archive_files(&mut self) -> std::result::Result<Vec<String>, String> {
+        if self.is_metadata_validation() {
+            return Err(METADATA_VALIDATION_DENIED.to_string());
+        }
         self.impl_list_archive_files()
     }
 
     fn rename_archive(&mut self, new_name: String) -> std::result::Result<String, String> {
+        if self.is_metadata_validation() {
+            return Err(METADATA_VALIDATION_DENIED.to_string());
+        }
         self.impl_rename_archive(new_name)
     }
 
     fn emit_metadata(&mut self, metadata_json: String) {
+        if self.is_metadata_validation() {
+            return;
+        }
         self.impl_emit_metadata(metadata_json)
     }
 
     fn show_message(&mut self, title: String, message: String) {
+        if self.is_metadata_validation() {
+            return;
+        }
         self.impl_show_message(title, message)
     }
 
     fn set_status_message(&mut self, message: String) {
+        if self.is_metadata_validation() {
+            return;
+        }
         // Store the status bar message for the UI to pick up
         *self.pending_status_message.lock() = Some(message);
     }
 
     fn list_cached_entries(&mut self) -> Vec<String> {
+        if self.is_metadata_validation() {
+            return Vec::new();
+        }
         self.impl_list_cached_entries()
     }
 
@@ -378,20 +435,32 @@ impl Host for HostFunctions {
         &mut self,
         ids: Vec<String>,
     ) -> Vec<crate::arclain::plugin::host::MetadataSummary> {
+        if self.is_metadata_validation() {
+            return Vec::new();
+        }
         self.impl_get_metadata_summaries(ids)
     }
 
     fn get_product_metadata(&mut self, product_id: String, source: String) -> Option<String> {
+        if self.is_metadata_validation() {
+            return None;
+        }
         self.impl_get_product_metadata(product_id, source)
     }
 
     // === Data API (unified) ===
     fn request_data(&mut self, request: crate::arclain::plugin::host::DataRequest) -> String {
+        if self.is_metadata_validation() {
+            return METADATA_VALIDATION_DENIED.to_string();
+        }
         let req = self.build_data_request(request);
         self.data_service.request_data(req)
     }
 
     fn fetch_to_cache(&mut self, request: crate::arclain::plugin::host::DataRequest) -> bool {
+        if self.is_metadata_validation() {
+            return false;
+        }
         // Fast path: when we have a URL and both ContentCache and
         // AsyncHttpClient wired up, use the streaming download
         // pipeline. Bytes flow HTTP → .partial → cacache without ever
@@ -481,6 +550,9 @@ impl Host for HostFunctions {
         key: String,
         extension: String,
     ) -> std::result::Result<(), String> {
+        if self.is_metadata_validation() {
+            return Err(METADATA_VALIDATION_DENIED.to_string());
+        }
         // Pull the blob out of the host's content cache.
         let bytes = self
             .data_service
@@ -536,6 +608,13 @@ impl Host for HostFunctions {
     }
 
     fn poll_data(&mut self, request_id: String) -> crate::arclain::plugin::host::DataResult {
+        if self.is_metadata_validation() {
+            return crate::arclain::plugin::host::DataResult {
+                status: crate::arclain::plugin::host::DataStatus::Failed,
+                data: None,
+                error: Some(METADATA_VALIDATION_DENIED.to_string()),
+            };
+        }
         tracing::debug!(
             "[HostFunctions::poll_data] Polling for request_id: {}",
             request_id
@@ -564,14 +643,23 @@ impl Host for HostFunctions {
     }
 
     fn has_data(&mut self, key: String) -> bool {
+        if self.is_metadata_validation() {
+            return false;
+        }
         self.data_service.has_data(&key)
     }
 
     fn get_data(&mut self, key: String) -> Option<Vec<u8>> {
+        if self.is_metadata_validation() {
+            return None;
+        }
         self.data_service.get_data(&key)
     }
 
     fn invalidate_cache(&mut self, key: String) -> bool {
+        if self.is_metadata_validation() {
+            return false;
+        }
         tracing::debug!(
             "[HostFunctions] Cache invalidation requested for key: {}",
             key
@@ -613,6 +701,9 @@ impl Host for HostFunctions {
     }
 
     fn create_file(&mut self, filename: String, content: Vec<u8>) -> Result<String, String> {
+        if self.is_metadata_validation() {
+            return Err(METADATA_VALIDATION_DENIED.to_string());
+        }
         self.impl_create_file(filename, content)
     }
 }
@@ -625,3 +716,91 @@ impl crate::arclain::plugin::rules::Host for HostFunctions {}
 
 // Implement the meta::Host trait (empty - meta interface only defines types)
 impl crate::arclain::plugin::meta::Host for HostFunctions {}
+
+#[cfg(test)]
+mod validation_mode_tests {
+    use super::*;
+    use crate::arclain::plugin::host::{DataRequest, DataSource, DataStatus, ResourceType};
+    use tracing_test::traced_test;
+
+    const FILE_SENTINEL: &str = "arclain-validation-host-boundary-sentinel.txt";
+
+    fn data_request() -> DataRequest {
+        DataRequest {
+            key: "validation-key".to_string(),
+            url: Some("https://example.invalid/validation".to_string()),
+            resource_type: ResourceType::Binary,
+            product_id: Some("validation-product".to_string()),
+            sources: vec![DataSource::Network],
+        }
+    }
+
+    #[traced_test]
+    #[test]
+    fn metadata_validation_denies_every_side_effecting_host_import() {
+        let sentinel = std::env::temp_dir().join(FILE_SENTINEL);
+        assert!(!sentinel.exists(), "test sentinel must start absent");
+
+        let mut host =
+            HostFunctions::new_for_metadata_validation("temp-validation".to_string()).unwrap();
+
+        Host::log(
+            &mut host,
+            LogLevel::Warn,
+            "validation-global-log-sentinel".to_string(),
+        );
+        Host::log_network_activity(&mut host, "validation-network-log-sentinel".to_string());
+        Host::set_setting(&mut host, "persisted".to_string(), "mutation".to_string());
+        Host::emit_metadata(
+            &mut host,
+            r#"{"product_id":"validation-metadata-sentinel"}"#.to_string(),
+        );
+        Host::show_message(
+            &mut host,
+            "validation-show-message-sentinel".to_string(),
+            "must be suppressed".to_string(),
+        );
+        Host::set_status_message(&mut host, "validation-status-sentinel".to_string());
+
+        assert_eq!(Host::get_setting(&mut host, "persisted".to_string()), None);
+        assert!(Host::current_archive_info(&mut host).is_none());
+        assert!(Host::list_archive_files(&mut host).is_err());
+        assert!(Host::rename_archive(&mut host, "renamed.zip".to_string()).is_err());
+        assert!(Host::list_cached_entries(&mut host).is_empty());
+        assert!(Host::get_metadata_summaries(&mut host, vec!["id".to_string()]).is_empty());
+        assert_eq!(
+            Host::get_product_metadata(&mut host, "id".to_string(), "source".to_string()),
+            None,
+        );
+        assert_eq!(
+            Host::request_data(&mut host, data_request()),
+            "metadata-validation-denied"
+        );
+        assert!(!Host::fetch_to_cache(&mut host, data_request()));
+        assert!(Host::play_cached_blob(&mut host, "key".to_string(), "bin".to_string()).is_err());
+
+        let polled = Host::poll_data(&mut host, "request".to_string());
+        assert!(matches!(polled.status, DataStatus::Failed));
+        assert!(polled.data.is_none());
+        assert_eq!(polled.error.as_deref(), Some("metadata-validation-denied"));
+        assert!(!Host::has_data(&mut host, "key".to_string()));
+        assert_eq!(Host::get_data(&mut host, "key".to_string()), None);
+        assert!(!Host::invalidate_cache(&mut host, "key".to_string()));
+        assert!(
+            Host::create_file(&mut host, FILE_SENTINEL.to_string(), b"owned".to_vec()).is_err()
+        );
+
+        assert!(
+            !sentinel.exists(),
+            "validation host must not create temp files"
+        );
+        assert!(host.settings.lock().is_empty());
+        assert!(host.network_log.lock().is_empty());
+        assert!(host.pending_status_message.lock().is_none());
+        assert!(!logs_contain("validation-global-log-sentinel"));
+        assert!(!logs_contain("validation-network-log-sentinel"));
+        assert!(!logs_contain("validation-metadata-sentinel"));
+        assert!(!logs_contain("validation-show-message-sentinel"));
+        assert!(!logs_contain("validation-status-sentinel"));
+    }
+}

@@ -69,6 +69,134 @@ fn install_rejects_exported_unsafe_id_before_filesystem_use() {
     );
 }
 
+#[tracing_test::traced_test]
+#[test]
+fn malicious_metadata_cannot_escape_validation_sandbox_or_run_init() {
+    const METADATA_SENTINEL: &str = "arclain-malicious-metadata-sentinel.txt";
+    const INIT_SENTINEL: &str = "arclain-malicious-init-sentinel.txt";
+
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("application-data").join("plugins");
+    let external_log_dir = temp_dir
+        .path()
+        .join("application-data")
+        .join("logs")
+        .join("plugins");
+    let wasm_path = temp_dir
+        .path()
+        .join("incoming")
+        .join("malicious-metadata.wasm");
+    std::fs::create_dir_all(wasm_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &wasm_path,
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/malicious-metadata/malicious-metadata.wasm"
+        )),
+    )
+    .unwrap();
+
+    let metadata_sentinel = std::env::temp_dir().join(METADATA_SENTINEL);
+    let init_sentinel = std::env::temp_dir().join(INIT_SENTINEL);
+    assert!(
+        !metadata_sentinel.exists(),
+        "metadata sentinel must start absent"
+    );
+    assert!(!init_sentinel.exists(), "init sentinel must start absent");
+
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        plugins_dir.clone(),
+        HashMap::new(),
+        external_log_dir.clone(),
+    )
+    .unwrap();
+    let result = manager.install_plugin(&wasm_path);
+
+    assert!(
+        matches!(result, Err(crate::types::PluginError::InvalidManifest(_))),
+        "metadata retrieval must reach PluginId validation without calling init: {result:?}",
+    );
+    assert!(
+        !metadata_sentinel.exists(),
+        "create-file import escaped validation"
+    );
+    assert!(
+        !init_sentinel.exists(),
+        "validation must not call plugin init"
+    );
+    assert!(
+        !external_log_dir.exists(),
+        "plugin log destination was touched"
+    );
+    assert!(!logs_contain("arclain-malicious-metadata-global-log"));
+    assert!(!logs_contain("arclain-malicious-metadata-show-message"));
+
+    let application_root = temp_dir.path().join("application-data");
+    let entries = std::fs::read_dir(&plugins_dir)
+        .unwrap()
+        .collect::<std::io::Result<Vec<_>>>()
+        .unwrap();
+    assert!(entries.is_empty(), "plugin root must remain empty");
+    let application_entries = std::fs::read_dir(&application_root)
+        .unwrap()
+        .collect::<std::io::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(application_entries.len(), 1, "application root was mutated");
+    assert_eq!(application_entries[0].file_name(), "plugins");
+    let escaped_destination = plugins_dir.join("..").join("evil");
+    assert!(!escaped_destination.exists(), "sibling escape was created");
+    assert!(
+        !plugins_dir.join("evil").exists(),
+        "plugin destination was created"
+    );
+    assert!(!plugins_dir.join("plugin.wasm").exists());
+    assert!(!plugins_dir.join("plugin.toml").exists());
+}
+
+#[test]
+fn valid_install_runs_normal_init_once_after_id_validation() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let plugin_log_dir = temp_dir.path().join("plugin-logs");
+    let wasm_path = temp_dir.path().join("ui-demo.wasm");
+    std::fs::write(
+        &wasm_path,
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../plugins/ui-demo/ui-demo.wasm"
+        )),
+    )
+    .unwrap();
+
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        plugins_dir.clone(),
+        HashMap::new(),
+        plugin_log_dir.clone(),
+    )
+    .unwrap();
+
+    assert_eq!(manager.install_plugin(&wasm_path).unwrap(), "ui-demo");
+    assert!(plugins_dir.join("ui-demo").join("ui-demo.wasm").exists());
+    assert!(plugins_dir.join("ui-demo").join("ui-demo.toml").exists());
+    assert_eq!(manager.list_plugins().len(), 1);
+
+    let log = std::fs::read_to_string(
+        std::fs::read_dir(&plugin_log_dir)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path(),
+    )
+    .unwrap();
+    assert_eq!(
+        log.matches("UI Demo Plugin initialized via Component Model!")
+            .count(),
+        1,
+        "normal plugin init must run exactly once",
+    );
+}
+
 /// Regression test for P5 from `docs/AUDIT_2026-05-03.md`.
 ///
 /// `status_summary()` is the cheap counts-only path the status bar
