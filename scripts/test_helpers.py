@@ -132,8 +132,8 @@ class TestPluginClean(unittest.TestCase):
             (first_plugin / "first-plugin.wasm").write_bytes(b"wasm")
 
             clean_results = [
-                subprocess.CompletedProcess([], 0),
                 subprocess.CompletedProcess([], 17),
+                subprocess.CompletedProcess([], 0),
             ]
             with mock.patch.object(_plugins, "PLUGINS_DIR", plugins_dir), \
                  mock.patch.object(
