@@ -1820,7 +1820,7 @@ mod proxy_routing_atomicity_tests {
             .recv()
             .expect("routing transition did not install unavailable state");
 
-        let (request_sender, request_receiver) = mpsc::sync_channel(0);
+        let (request_sender, request_receiver) = mpsc::channel();
         let request_client = client.clone();
         let request_thread = std::thread::spawn(move || {
             request_sender
