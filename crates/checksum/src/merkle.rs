@@ -81,6 +81,22 @@ fn normalize_components(path: &str) -> String {
     components.join("/")
 }
 
+fn normalize_unc_path(path: &str) -> String {
+    let components: Vec<&str> = path
+        .split('/')
+        .filter(|component| !component.is_empty() && *component != ".")
+        .collect();
+    let authority_length = components.len().min(2);
+    let authority = components[..authority_length].join("/");
+    let tail = normalize_components(&components[authority_length..].join("/"));
+
+    match (authority.is_empty(), tail.is_empty()) {
+        (true, _) => "//".to_string(),
+        (false, true) => format!("//{authority}"),
+        (false, false) => format!("//{authority}/{tail}"),
+    }
+}
+
 fn has_drive_prefix(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
@@ -127,7 +143,11 @@ fn normalize_relative_path(path: &str) -> NormalizedPath {
     } else {
         (PathNamespace::Relative, portable.as_str())
     };
-    let normalized = normalize_components(remainder);
+    let normalized = if namespace == PathNamespace::Unc {
+        normalize_unc_path(remainder)
+    } else {
+        normalize_components(remainder)
+    };
 
     match namespace {
         PathNamespace::Relative if normalized.is_empty() => NormalizedPath {
@@ -144,11 +164,7 @@ fn normalize_relative_path(path: &str) -> NormalizedPath {
         },
         PathNamespace::Unc => NormalizedPath {
             namespace,
-            value: if normalized.is_empty() {
-                "//".to_string()
-            } else {
-                format!("//{normalized}")
-            },
+            value: normalized,
         },
         _ => NormalizedPath {
             namespace,
@@ -411,7 +427,18 @@ impl MerkleTree {
         // Full deserialization would need more data
         let file_count = u32::from_le_bytes(header[1..5].try_into().ok()?) as usize;
         let hash_len = u32::from_le_bytes(header[5..9].try_into().ok()?) as usize;
+        let expected_hash_len = if file_count == 0 {
+            0
+        } else {
+            algorithm.output_size()
+        };
+        if hash_len != expected_hash_len {
+            return None;
+        }
         let hash_end = HEADER_LENGTH.checked_add(hash_len)?;
+        if hash_end != bytes.len() {
+            return None;
+        }
         let hash_bytes = bytes.get(HEADER_LENGTH..hash_end)?.to_vec();
 
         Some(Self {
@@ -622,6 +649,14 @@ mod tests {
         )
     }
 
+    fn serialized_root(algorithm: u8, file_count: u32, root: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![algorithm];
+        bytes.extend_from_slice(&file_count.to_le_bytes());
+        bytes.extend_from_slice(&(root.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(root);
+        bytes
+    }
+
     #[test]
     fn merkle_path_namespace_distinguishes_rooted_paths_from_relative_paths() {
         let relative = tree_for_path("folder/file.txt");
@@ -641,6 +676,29 @@ mod tests {
 
         assert_ne!(relative.root_hash(), slash_unc.root_hash());
         assert_eq!(slash_unc.root_hash(), backslash_unc.root_hash());
+    }
+
+    #[test]
+    fn merkle_unc_namespace_preserves_server_and_share_authority() {
+        let crossing_share_root = tree_for_path("//server/share/../file.txt");
+        let nested_crossing = tree_for_path("//server/share/folder/../../file.txt");
+        let different_share = tree_for_path("//server/file.txt");
+
+        assert_ne!(crossing_share_root.root_hash(), different_share.root_hash());
+        assert_eq!(crossing_share_root.root_hash(), nested_crossing.root_hash());
+        assert_eq!(
+            crossing_share_root.file_paths(),
+            &["//server/share/../file.txt"]
+        );
+    }
+
+    #[test]
+    fn merkle_unc_share_crossing_normalizes_slash_styles_equivalently() {
+        let slash_unc = tree_for_path("//server/share/../file.txt");
+        let backslash_unc = tree_for_path(r"\\server\share\..\file.txt");
+
+        assert_eq!(slash_unc.root_hash(), backslash_unc.root_hash());
+        assert_eq!(slash_unc.file_paths(), backslash_unc.file_paths());
     }
 
     #[test]
@@ -747,6 +805,51 @@ mod tests {
         bytes.extend_from_slice(&u32::MAX.to_le_bytes());
 
         assert_eq!(MerkleTree::from_bytes(&bytes).map(|_| ()), None);
+    }
+
+    #[test]
+    fn from_bytes_rejects_algorithm_specific_root_length_mismatches() {
+        for (algorithm, expected_length) in [(0, 4), (1, 8), (2, 32)] {
+            let short = serialized_root(algorithm, 1, &vec![7; expected_length - 1]);
+            let long = serialized_root(algorithm, 1, &vec![7; expected_length + 1]);
+
+            assert_eq!(MerkleTree::from_bytes(&short).map(|_| ()), None);
+            assert_eq!(MerkleTree::from_bytes(&long).map(|_| ()), None);
+        }
+    }
+
+    #[test]
+    fn from_bytes_rejects_roots_inconsistent_with_file_count() {
+        for (algorithm, expected_length) in [(0, 4), (1, 8), (2, 32)] {
+            let nonempty_without_root = serialized_root(algorithm, 1, &[]);
+            let empty_with_root = serialized_root(algorithm, 0, &vec![7; expected_length]);
+
+            assert_eq!(
+                MerkleTree::from_bytes(&nonempty_without_root).map(|_| ()),
+                None
+            );
+            assert_eq!(MerkleTree::from_bytes(&empty_with_root).map(|_| ()), None);
+        }
+    }
+
+    #[test]
+    fn from_bytes_rejects_trailing_payload_bytes() {
+        let mut bytes = serialized_root(2, 1, &[7; 32]);
+        bytes.push(99);
+
+        assert_eq!(MerkleTree::from_bytes(&bytes).map(|_| ()), None);
+    }
+
+    #[test]
+    fn from_bytes_retains_maximum_count_without_allocating_capabilities() {
+        let bytes = serialized_root(2, u32::MAX, &[7; 32]);
+        let tree = MerkleTree::from_bytes(&bytes).unwrap();
+
+        assert_eq!(tree.file_count(), u32::MAX as usize);
+        assert!(tree.file_paths().is_empty());
+        assert_eq!(tree.get_file_hash(0), None);
+        assert_eq!(tree.get_proof(0), None);
+        assert_eq!(tree.to_bytes(), bytes);
     }
 
     #[test]
