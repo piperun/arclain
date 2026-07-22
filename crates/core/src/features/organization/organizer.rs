@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use tracing::{debug, error, info};
 
 use crate::utilities::CheckedRelativePath;
@@ -313,15 +313,15 @@ pub fn organize_archive(
     );
 
     // Step 1: Create work directory with cleanup guard
-    let (work_dir, _guard) = create_work_directory(temp_dir, "arclain_organize")?;
-    let root_dir = work_dir.join(&metadata.product_id);
+    let work_dir = create_work_directory(temp_dir, "arclain_organize")?;
+    let root_dir = work_dir.path().join(&metadata.product_id);
     std::fs::create_dir_all(&root_dir).context("creating root dir")?;
 
     // Step 2: Verify encryption status
     verify_archive_encryption(archive)?;
 
     // Step 3: Extract archive
-    let extract_temp = extract_archive_to_temp(archive, &work_dir)?;
+    let extract_temp = extract_archive_to_temp(archive, work_dir.path())?;
 
     // Step 4: Organize game content
     organize_game_content(&extract_temp, &root_dir)?;
@@ -360,15 +360,9 @@ pub fn execute_organization_plan(
         format_name
     );
 
-    // Create unique temp directory with short, readable name
-    // Format: arc_<secs>_<pid> (saves ~25 chars vs old format for Windows path limits)
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let work_dir = temp_dir.join(format!("arc_{}_{}", secs, std::process::id()));
-    let source_extracted = work_dir.join("src");
-    let organized_dir = work_dir.join("out");
+    let work_dir = OwnedWorkDir::new(temp_dir, "arc")?;
+    let source_extracted = work_dir.path().join("src");
+    let organized_dir = work_dir.path().join("out");
 
     std::fs::create_dir_all(&source_extracted).context("creating temp source dir")?;
     std::fs::create_dir_all(&organized_dir).context("creating temp organized dir")?;
@@ -408,27 +402,6 @@ pub fn execute_organization_plan(
     for path in &checked_downloads {
         path.resolve_under(&organized_dir)?;
     }
-
-    // RAII cleanup guard - local helper here or reuse from tasks?
-    // We can reuse TempDirGuard but construction is slightly different (we built the path manually here)
-    // So we'll just implement the drop guard locally as before or use the public one if we adapt.
-    // Let's stick to the inline guard for now or construct the public one.
-    // The public TempDirGuard fields are private (default Rust struct visibility).
-    // We should probably rely on `create_work_directory` but the naming scheme here is specific ("arc_...").
-    // Let's just reimplement the simple guard here.
-    struct LocalTempDirGuard {
-        path: PathBuf,
-    }
-    impl Drop for LocalTempDirGuard {
-        fn drop(&mut self) {
-            if let Err(e) = std::fs::remove_dir_all(&self.path) {
-                error!("Failed to cleanup temp dir {}: {}", self.path.display(), e);
-            }
-        }
-    }
-    let _guard = LocalTempDirGuard {
-        path: work_dir.clone(),
-    };
 
     // 1. Extract source
     debug!("Extracting source archive");

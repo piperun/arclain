@@ -1,46 +1,43 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use std::path::{Path, PathBuf};
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 
 use super::metadata::{GameMetadata, ScreenshotData};
 use crate::Archive;
 
-/// RAII guard for temporary directory cleanup
-pub struct TempDirGuard {
-    path: PathBuf,
-}
+/// A uniquely created temporary work directory with exact RAII ownership.
+pub struct OwnedWorkDir(tempfile::TempDir);
 
-impl Drop for TempDirGuard {
-    fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_dir_all(&self.path) {
-            error!("Failed to cleanup temp dir {}: {}", self.path.display(), e);
-        }
+impl OwnedWorkDir {
+    /// Atomically create a unique child of `parent` owned by the returned value.
+    pub fn new(parent: &Path, prefix: &str) -> Result<Self> {
+        debug!(
+            "Creating work directory with prefix '{}' in {:?}",
+            prefix, parent
+        );
+
+        std::fs::create_dir_all(parent).context("creating work directory parent")?;
+        let owned = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(parent)
+            .context("creating unique work directory")?;
+        info!("Created work directory: {}", owned.path().display());
+        Ok(Self(owned))
+    }
+
+    pub fn path(&self) -> &Path {
+        self.0.path()
     }
 }
 
-/// Create a unique temporary work directory
-pub fn create_work_directory(temp_dir: &Path, prefix: &str) -> Result<(PathBuf, TempDirGuard)> {
+/// Create a unique temporary work directory.
+pub fn create_work_directory(temp_dir: &Path, prefix: &str) -> Result<OwnedWorkDir> {
     debug!(
         "Creating work directory with prefix '{}' in {:?}",
         prefix, temp_dir
     );
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-
-    let work_dir = temp_dir.join(format!("{}_{}", prefix, timestamp));
-    std::fs::create_dir_all(&work_dir).context("creating work directory")?;
-
-    info!("Created work directory: {}", work_dir.display());
-
-    let guard = TempDirGuard {
-        path: work_dir.clone(),
-    };
-
-    Ok((work_dir, guard))
+    OwnedWorkDir::new(temp_dir, prefix)
 }
 
 /// Extract archive contents to a temporary directory
@@ -170,4 +167,122 @@ pub fn create_final_archive(archive: &Archive, dest: &Path, root_dir: &Path) -> 
 
     info!("Final archive created successfully: {}", dest_abs.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{mpsc, Arc, Barrier};
+
+    #[test]
+    fn owned_work_directories_with_the_same_prefix_are_distinct() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().to_path_buf();
+        let ready = Arc::new(Barrier::new(3));
+        let release = Arc::new(Barrier::new(3));
+        let (paths, received_paths) = mpsc::channel();
+
+        let workers = (0..2)
+            .map(|_| {
+                let parent = parent.clone();
+                let ready = Arc::clone(&ready);
+                let release = Arc::clone(&release);
+                let paths = paths.clone();
+                std::thread::spawn(move || {
+                    let work_dir = OwnedWorkDir::new(&parent, "arc").unwrap();
+                    paths.send(work_dir.path().to_path_buf()).unwrap();
+                    ready.wait();
+                    release.wait();
+                })
+            })
+            .collect::<Vec<_>>();
+        drop(paths);
+
+        ready.wait();
+        let owned_paths = [
+            received_paths.recv().unwrap(),
+            received_paths.recv().unwrap(),
+        ];
+        assert_ne!(owned_paths[0], owned_paths[1]);
+        assert!(owned_paths.iter().all(|path| path.is_dir()));
+
+        release.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        assert!(owned_paths.iter().all(|path| !path.exists()));
+    }
+
+    #[test]
+    fn dropping_one_owned_work_directory_preserves_its_sibling() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = OwnedWorkDir::new(temp.path(), "arc").unwrap();
+        let second = OwnedWorkDir::new(temp.path(), "arc").unwrap();
+        let first_path = first.path().to_path_buf();
+        let second_path = second.path().to_path_buf();
+
+        drop(first);
+
+        assert!(!first_path.exists());
+        assert!(second_path.is_dir());
+    }
+
+    #[test]
+    fn owned_work_directory_never_adopts_or_deletes_a_predictable_sibling() {
+        let temp = tempfile::tempdir().unwrap();
+        let predictable = temp.path().join(format!(
+            "arc_{}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+            std::process::id()
+        ));
+        std::fs::create_dir(&predictable).unwrap();
+        let sentinel = predictable.join("sentinel");
+        std::fs::write(&sentinel, b"preserve").unwrap();
+
+        let owned = OwnedWorkDir::new(temp.path(), "arc").unwrap();
+        assert_ne!(owned.path(), predictable);
+        drop(owned);
+
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
+    }
+
+    #[test]
+    fn owned_work_directory_cleans_up_after_success_error_and_unwind() {
+        let temp = tempfile::tempdir().unwrap();
+        let sibling = temp.path().join("sibling");
+        std::fs::create_dir(&sibling).unwrap();
+        let sibling_sentinel = sibling.join("sentinel");
+        std::fs::write(&sibling_sentinel, b"preserve").unwrap();
+
+        let success_path = {
+            let owned = OwnedWorkDir::new(temp.path(), "arc").unwrap();
+            let path = owned.path().to_path_buf();
+            std::fs::write(path.join("success"), b"data").unwrap();
+            path
+        };
+
+        let mut error_path = None;
+        let result = (|| -> Result<()> {
+            let owned = OwnedWorkDir::new(temp.path(), "arc")?;
+            error_path = Some(owned.path().to_path_buf());
+            anyhow::bail!("expected test error");
+        })();
+        assert!(result.is_err());
+
+        let mut unwind_path = None;
+        let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let owned = OwnedWorkDir::new(temp.path(), "arc").unwrap();
+            unwind_path = Some(owned.path().to_path_buf());
+            panic!("expected test panic");
+        }));
+        assert!(unwind.is_err());
+
+        assert!(!success_path.exists());
+        assert!(!error_path.unwrap().exists());
+        assert!(!unwind_path.unwrap().exists());
+        assert_eq!(std::fs::read(&sibling_sentinel).unwrap(), b"preserve");
+    }
 }
