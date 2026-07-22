@@ -7,11 +7,13 @@ use tracing::{debug, warn};
 /// Load CJK fonts during app initialization to avoid deadlock.
 /// This should be called from CreationContext, not during update().
 pub fn load_cjk_fonts(ctx: &Context) {
-    let cjk_font = load_system_cjk_font();
-    let fonts = build_font_definitions(cjk_font.as_ref().map(|(bytes, _)| bytes.clone()));
-    ctx.set_fonts(fonts);
+    let (font_bytes, source) = match load_system_cjk_font() {
+        Some((bytes, source)) => (Some(bytes), Some(source)),
+        None => (None, None),
+    };
+    ctx.set_fonts(build_font_definitions(font_bytes));
 
-    if let Some((_, source)) = cjk_font {
+    if let Some(source) = source {
         debug!("Loaded system CJK font from: {}", source);
     } else {
         warn!("No CJK-compatible system font found. Japanese/Chinese characters may not display correctly.");
