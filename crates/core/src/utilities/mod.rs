@@ -35,4 +35,4 @@ pub use time::{unix_seconds, unix_seconds_i64};
 pub use title_filter::{sanitize_title, TitleFilterConfig};
 
 pub mod proxy;
-pub use proxy::{apply_proxy_to_client, resolve_proxy_config};
+pub use proxy::{apply_proxy_to_client, effective_plugin_proxy_map, resolve_proxy_config};

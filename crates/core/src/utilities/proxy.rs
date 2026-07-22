@@ -7,6 +7,25 @@ use arclain_db::{SecretsDb, UserConfig};
 use arclain_network::{features::proxy::ProxyConfig, AsyncHttpClient};
 use std::collections::HashMap;
 
+const DEFAULT_PROXIED_PLUGINS: [&str; 3] = ["dlsite", "dlsite-api", "dlsite-html"];
+
+/// Derive the runtime routing map from persisted settings.
+///
+/// DLSite integrations use the global proxy by default, while an explicit
+/// persisted `false` remains an opt-out. A disabled global proxy always
+/// clears every per-plugin route.
+pub fn effective_plugin_proxy_map(user_config: &UserConfig) -> HashMap<String, bool> {
+    if !user_config.socks5_enabled {
+        return HashMap::new();
+    }
+
+    let mut proxy_map = user_config.get_plugin_proxy_settings();
+    for plugin_id in DEFAULT_PROXIED_PLUGINS {
+        proxy_map.entry(plugin_id.to_string()).or_insert(true);
+    }
+    proxy_map
+}
+
 /// Resolve proxy configuration from UserConfig and SecretsDb
 pub fn resolve_proxy_config(user_config: &UserConfig, secrets: &SecretsDb) -> Option<ProxyConfig> {
     if !user_config.socks5_enabled {
@@ -59,22 +78,7 @@ pub fn apply_proxy_to_client(
         tracing::info!("[Proxy] Enabling {}", config.log_summary());
         client.update_config(Some(config));
 
-        // Enable proxy for specific plugins if configured
-        let mut proxy_map = user_config.get_plugin_proxy_settings();
-
-        // Ensure DLSite variants are covered by default if not strictly disabled?
-        // Current logic enforces them if absent.
-        if !proxy_map.contains_key("dlsite") {
-            proxy_map.insert("dlsite".to_string(), true);
-        }
-        if !proxy_map.contains_key("dlsite-api") {
-            proxy_map.insert("dlsite-api".to_string(), true);
-        }
-        if !proxy_map.contains_key("dlsite-html") {
-            proxy_map.insert("dlsite-html".to_string(), true);
-        }
-
-        client.update_plugin_proxy_map(proxy_map);
+        client.update_plugin_proxy_map(effective_plugin_proxy_map(user_config));
     } else {
         tracing::info!("[Proxy] SOCKS5 proxy disabled");
         client.update_config(None);
@@ -173,5 +177,22 @@ mod tests {
         }
         assert!(diagnostics.contains("<invalid address>"), "{diagnostics}");
         assert!(!client.should_use_proxy_for_plugin("dlsite"));
+    }
+
+    #[test]
+    fn effective_proxy_map_applies_defaults_and_preserves_explicit_overrides() {
+        let mut user_config = UserConfig::default();
+        user_config.socks5_enabled = true;
+        user_config.set_plugin_proxy_enabled("custom", true);
+        user_config.set_plugin_proxy_enabled("dlsite-api", false);
+
+        let enabled = effective_plugin_proxy_map(&user_config);
+        assert_eq!(enabled.get("custom"), Some(&true));
+        assert_eq!(enabled.get("dlsite"), Some(&true));
+        assert_eq!(enabled.get("dlsite-api"), Some(&false));
+        assert_eq!(enabled.get("dlsite-html"), Some(&true));
+
+        user_config.socks5_enabled = false;
+        assert!(effective_plugin_proxy_map(&user_config).is_empty());
     }
 }

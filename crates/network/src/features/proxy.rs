@@ -665,7 +665,12 @@ mod tests {
         fn accept_before(listener: &TcpListener, deadline: Instant) -> TcpStream {
             loop {
                 match listener.accept() {
-                    Ok((stream, _)) => return stream,
+                    Ok((stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("make accepted proxy socket blocking");
+                        return stream;
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         assert!(
                             Instant::now() < deadline,

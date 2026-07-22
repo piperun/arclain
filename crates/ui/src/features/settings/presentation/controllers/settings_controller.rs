@@ -8,6 +8,7 @@ use crate::features::plugins::domain::types::PluginsListState;
 use crate::features::settings::domain::types::{
     ArchivesSettingsState, SecuritySettingsState, ServerSettingsState, SettingsAction,
 };
+use arclain_core::utilities::effective_plugin_proxy_map;
 use arclain_network::features::proxy::ProxyConfig;
 
 use crate::shared::SharedState;
@@ -340,11 +341,7 @@ pub fn handle_action(
                 return;
             }
 
-            let plugin_proxy_map = if socks5_enabled {
-                candidate.get_plugin_proxy_settings()
-            } else {
-                Default::default()
-            };
+            let plugin_proxy_map = effective_plugin_proxy_map(&candidate);
             state.user_config = candidate;
             state.signals.user_config.set(state.user_config.clone());
             drop(state);
@@ -918,6 +915,46 @@ mod tests {
                 .async_http_client
                 .should_use_proxy_for_plugin(PROXY_PLUGIN_ID),
             "re-enabling the global proxy did not restore the persisted per-plugin route"
+        );
+    }
+
+    #[test]
+    fn save_network_reenable_matches_startup_proxy_defaults_and_explicit_overrides() {
+        let fixture = ProxySaveFixture::new();
+        {
+            let mut state = fixture.shared.app_state.lock();
+            state
+                .user_config
+                .set_plugin_proxy_enabled("dlsite-api", false);
+        }
+
+        handle_action(
+            SettingsAction::SaveNetwork {
+                socks5_enabled: true,
+                socks5_address: Some("127.0.0.1:1080".to_string()),
+                socks5_username: None,
+                socks5_password: Some(String::new()),
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            &mut ServerSettingsState::default(),
+            &fixture.shared,
+        );
+
+        let client = &fixture.shared.services.async_http_client;
+        assert!(
+            client.should_use_proxy_for_plugin("dlsite"),
+            "live re-enable omitted the startup default for dlsite"
+        );
+        assert!(
+            !client.should_use_proxy_for_plugin("dlsite-api"),
+            "live re-enable replaced an explicit dlsite-api opt-out"
+        );
+        assert!(
+            client.should_use_proxy_for_plugin("dlsite-html"),
+            "live re-enable omitted the startup default for dlsite-html"
         );
     }
 
