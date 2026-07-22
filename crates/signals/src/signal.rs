@@ -227,8 +227,6 @@ impl<T: Default> Default for Signal<T> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     #[test]
     fn test_signal_get_set() {
@@ -283,25 +281,26 @@ mod tests {
 
     #[test]
     fn write_guard_listener_can_read_committed_value() {
-        let (observed_tx, observed_rx) = mpsc::channel();
-
-        std::thread::spawn(move || {
-            let signal = Signal::new(0);
-            let signal_for_listener = signal.clone();
-            signal.subscribe(move || {
-                observed_tx.send(signal_for_listener.get()).unwrap();
-            });
-
-            let mut guard = signal.write();
-            *guard = 5;
-            drop(guard);
+        let signal = Signal::new(0);
+        let listener_calls = Arc::new(AtomicUsize::new(0));
+        let signal_for_listener = signal.clone();
+        let listener_calls_inner = listener_calls.clone();
+        signal.subscribe(move || {
+            let value = signal_for_listener
+                .inner
+                .value
+                .try_read()
+                .expect("write-guard listener ran while the value lock was held");
+            assert_eq!(*value, 5);
+            listener_calls_inner.fetch_add(1, Ordering::SeqCst);
         });
 
-        assert_eq!(
-            observed_rx.recv_timeout(Duration::from_secs(1)),
-            Ok(5),
-            "write-guard listener could not read the committed signal value"
-        );
+        {
+            let mut guard = signal.write();
+            *guard = 5;
+        }
+
+        assert_eq!(listener_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
