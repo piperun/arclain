@@ -1,4 +1,6 @@
-use crate::features::file_editing::domain::types::{FileEditDialog, FileEditResult};
+use crate::features::file_editing::domain::types::{
+    FileEditDialog, FileEditLoadState, FileEditResult,
+};
 use crate::shared::dialogs::helpers::{show_dimmed_modal, ModalParams};
 use crate::shared::theme::AppTheme;
 use arclain_theme::ButtonVariant;
@@ -14,6 +16,8 @@ pub fn render_file_edit_dialog(
         return None;
     }
     let mut result = None;
+    let load_state = dialog.load_state.clone();
+    let can_save = matches!(load_state, FileEditLoadState::Ready);
 
     let params = ModalParams {
         width_frac: 0.6,
@@ -48,30 +52,63 @@ pub fn render_file_edit_dialog(
                 );
             });
 
-            ui.label(
-                egui::RichText::new("File name")
-                    .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-            TextInput::new(&mut dialog.name_input)
-                .width(content_rect.width())
-                .with_theme_colors(&theme.colors)
-                .show(ui);
+            match &load_state {
+                FileEditLoadState::Ready => {
+                    ui.label(
+                        egui::RichText::new("File name")
+                            .size(12.0)
+                            .color(theme.colors.on_surface_variant),
+                    );
+                    TextInput::new(&mut dialog.name_input)
+                        .width(content_rect.width())
+                        .with_theme_colors(&theme.colors)
+                        .show(ui);
 
-            ui.label(
-                egui::RichText::new("Content")
-                    .size(12.0)
-                    .color(theme.colors.on_surface_variant),
-            );
-            ui.add_sized(
-                [content_rect.width(), content_rect.height() - 140.0],
-                egui::TextEdit::multiline(&mut dialog.content)
-                    .font(egui::TextStyle::Monospace)
-                    .code_editor(),
-            );
+                    ui.label(
+                        egui::RichText::new("Content")
+                            .size(12.0)
+                            .color(theme.colors.on_surface_variant),
+                    );
+                    ui.add_sized(
+                        [content_rect.width(), content_rect.height() - 140.0],
+                        egui::TextEdit::multiline(&mut dialog.content)
+                            .font(egui::TextStyle::Monospace)
+                            .code_editor(),
+                    );
 
-            if !dialog.error.is_empty() {
-                crate::shared::components::error_label(ui, theme, &dialog.error);
+                    if !dialog.error.is_empty() {
+                        crate::shared::components::error_label(ui, theme, &dialog.error);
+                    }
+                }
+                FileEditLoadState::Loading { .. } => {
+                    ui.add_space(48.0);
+                    ui.vertical_centered(|ui| {
+                        ui.spinner();
+                        ui.label(egui::RichText::new("Loading file content…").strong());
+                        ui.label(
+                            egui::RichText::new(&dialog.full_path_in_archive)
+                                .size(11.0)
+                                .color(theme.colors.on_surface_variant),
+                        );
+                    });
+                }
+                FileEditLoadState::Failed(error) => {
+                    ui.add_space(48.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new("Unable to load file")
+                                .strong()
+                                .color(theme.colors.error),
+                        );
+                        crate::shared::components::error_label(ui, theme, error);
+                    });
+                }
+                FileEditLoadState::Idle => {
+                    ui.add_space(48.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label("File content is not ready");
+                    });
+                }
             }
         },
         |ui| {
@@ -81,7 +118,8 @@ pub fn render_file_edit_dialog(
                     height: 32.0,
                 };
                 if ui
-                    .add(
+                    .add_enabled(
+                        can_save,
                         TextButton::new("Save", dialog_btn_size)
                             .variant(ButtonVariant::Primary)
                             .with_theme_colors(&theme.colors),
@@ -104,7 +142,7 @@ pub fn render_file_edit_dialog(
         },
     );
 
-    if want_save {
+    if want_save && can_save {
         result = Some(FileEditResult::Save {
             new_name: dialog.name_input.clone(),
             content: dialog.content.clone(),

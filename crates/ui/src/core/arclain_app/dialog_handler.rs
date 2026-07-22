@@ -22,6 +22,10 @@
 //! signal lives. Closing a tab now cleanly drops its in-flight dialog
 //! state with the tab.
 //!
+//! File editing additionally has worker-published load results. Its renderer
+//! writes back only actual UI changes and merges them against the current
+//! request state so a stale frame cannot overwrite a newer completion.
+//!
 //! The 3 `status_bar.set_if_changed` calls in this file fire *after*
 //! an action handler runs (post-action mutation), not during render —
 //! those are also correct controller-pattern uses.
@@ -188,6 +192,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     // Render File Edit Dialog (now per-tab — read from active tab)
     let active_tab_for_edit = app.shared_state.signals().tabs.get().active().clone();
     let mut edit_dialog = active_tab_for_edit.file_edit_dialog.get();
+    let edit_dialog_before_render = edit_dialog.clone();
     if let Some(result) = crate::features::file_editing::render_file_edit_dialog(
         ctx,
         &app.shared_state.theme,
@@ -255,9 +260,11 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             }
         }
     }
-    active_tab_for_edit
-        .file_edit_dialog
-        .set_if_changed(edit_dialog);
+    if edit_dialog != edit_dialog_before_render {
+        active_tab_for_edit
+            .file_edit_dialog
+            .update(|current| current.apply_rendered_snapshot(edit_dialog));
+    }
 
     // Render Close-Tab Confirmation Modal
     {

@@ -1,12 +1,22 @@
+use arclain_ui::features::archive_browser::application::file_ops_service::{
+    ArchiveFileIo, DeleteListResult,
+};
+use arclain_ui::features::archive_browser::application::FileOpsService;
 use arclain_ui::features::archive_browser::{Action, BrowserController};
 use arclain_ui::features::archive_operations::ArchiveOperationsState;
+use arclain_ui::features::file_editing::domain::types::{FileEditDialog, FileEditLoadState};
 use arclain_ui::shared::models::file_entry::FileEntry;
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::thread;
+use std::time::{Duration, Instant};
 
 mod common;
 use common::TestContext;
@@ -37,6 +47,414 @@ impl HandleAction for TestContext {
             &self.egui_ctx,
         );
     }
+}
+
+struct BlockingDeleteIo {
+    started: Sender<()>,
+    gate: StdMutex<Receiver<()>>,
+}
+
+impl ArchiveFileIo for BlockingDeleteIo {
+    fn delete_and_list(
+        &self,
+        _archive: &Path,
+        _paths: &[String],
+    ) -> anyhow::Result<DeleteListResult> {
+        self.started.send(()).unwrap();
+        self.gate.lock().unwrap().recv().unwrap();
+        Ok(DeleteListResult {
+            archive_entries: Arc::new(vec![archive_entry("updated.txt")]),
+            browser_entries: vec![file_entry("updated.txt")],
+        })
+    }
+
+    fn read_text(&self, _archive: &Path, _path: &str) -> anyhow::Result<String> {
+        unreachable!("delete fake must not service text reads")
+    }
+}
+
+struct BlockingReadIo {
+    started: Sender<String>,
+    gate: StdMutex<Receiver<()>>,
+    content: String,
+}
+
+struct OrderedDeleteIo {
+    calls: AtomicUsize,
+    in_flight: AtomicUsize,
+    max_in_flight: AtomicUsize,
+    started: Sender<String>,
+    first_gate: StdMutex<Receiver<()>>,
+    second_gate: StdMutex<Receiver<()>>,
+}
+
+impl ArchiveFileIo for OrderedDeleteIo {
+    fn delete_and_list(
+        &self,
+        _archive: &Path,
+        paths: &[String],
+    ) -> anyhow::Result<DeleteListResult> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let now_in_flight = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max_in_flight
+            .fetch_max(now_in_flight, Ordering::SeqCst);
+        self.started.send(paths[0].clone()).unwrap();
+
+        if call == 0 {
+            self.first_gate.lock().unwrap().recv().unwrap();
+        } else {
+            self.second_gate.lock().unwrap().recv().unwrap();
+        }
+
+        self.in_flight.fetch_sub(1, Ordering::SeqCst);
+        let published_name = if call == 0 {
+            "after-first.txt"
+        } else {
+            "after-second.txt"
+        };
+        Ok(DeleteListResult {
+            archive_entries: Arc::new(vec![archive_entry(published_name)]),
+            browser_entries: vec![file_entry(published_name)],
+        })
+    }
+
+    fn read_text(&self, _archive: &Path, _path: &str) -> anyhow::Result<String> {
+        unreachable!("delete fake must not service text reads")
+    }
+}
+
+impl ArchiveFileIo for BlockingReadIo {
+    fn delete_and_list(
+        &self,
+        _archive: &Path,
+        _paths: &[String],
+    ) -> anyhow::Result<DeleteListResult> {
+        unreachable!("read fake must not service delete jobs")
+    }
+
+    fn read_text(&self, _archive: &Path, path: &str) -> anyhow::Result<String> {
+        self.started.send(path.to_string()).unwrap();
+        self.gate.lock().unwrap().recv().unwrap();
+        Ok(self.content.clone())
+    }
+}
+
+fn archive_entry(path: &str) -> arclain_core::ArchiveEntry {
+    arclain_core::ArchiveEntry {
+        path: path.to_string(),
+        size: 1,
+        packed_size: 1,
+        modified: None,
+        is_dir: false,
+        encrypted: false,
+        crc32: None,
+    }
+}
+
+fn file_entry(path: &str) -> FileEntry {
+    FileEntry {
+        name: path.to_string(),
+        path: path.to_string(),
+        archive_path: path.to_string(),
+        size: "1 B".to_string(),
+        compressed: "1 B".to_string(),
+        ratio: "100%".to_string(),
+        modified: String::new(),
+        crc32: String::new(),
+        encrypted: false,
+        is_folder: false,
+    }
+}
+
+fn wait_until(message: &str, predicate: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !predicate() {
+        assert!(Instant::now() < deadline, "{message}");
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn archive_file_jobs_delete_returns_before_io_and_updates_origin_tab() {
+    let ctx = TestContext::new();
+    let shared = ctx.shared.clone();
+    let origin = shared.signals().tabs.get().active().clone();
+    origin.archive_path.set(Some(PathBuf::from("origin.zip")));
+    origin
+        .entries
+        .set(Arc::new(vec![archive_entry("original.txt")]));
+    origin
+        .browser_entries
+        .update(|snapshot| snapshot.replace(vec![file_entry("original.txt")]));
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (gate_tx, gate_rx) = mpsc::channel();
+    let io = Arc::new(BlockingDeleteIo {
+        started: started_tx,
+        gate: StdMutex::new(gate_rx),
+    });
+    let (returned_tx, returned_rx) = mpsc::channel();
+    let caller_shared = shared.clone();
+    let caller_origin = origin.clone();
+    let caller = thread::spawn(move || {
+        FileOpsService.delete_files_with_io(
+            &caller_shared,
+            caller_origin,
+            vec!["original.txt".to_string()],
+            io,
+        );
+        returned_tx.send(()).unwrap();
+    });
+
+    returned_rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("delete_files_with_io blocked its caller on archive I/O");
+    started_rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("delete worker did not reach fake I/O");
+    caller.join().unwrap();
+
+    let mut tabs = shared.signals().tabs.get();
+    tabs.open(Some(PathBuf::from("other.zip")));
+    let other = tabs.active().clone();
+    other
+        .entries
+        .set(Arc::new(vec![archive_entry("other.txt")]));
+    other
+        .browser_entries
+        .update(|snapshot| snapshot.replace(vec![file_entry("other.txt")]));
+    shared.signals().tabs.set(tabs);
+
+    gate_tx.send(()).unwrap();
+    wait_until("delete completion did not update its origin", || {
+        origin.entries.get()[0].path == "updated.txt"
+    });
+
+    assert_eq!(origin.browser_entries.get().entries[0].name, "updated.txt");
+    assert_eq!(other.entries.get()[0].path, "other.txt");
+    assert_eq!(other.browser_entries.get().entries[0].name, "other.txt");
+}
+
+#[test]
+fn archive_file_jobs_serialized_deletes_publish_before_next_edit_runs() {
+    let ctx = TestContext::new();
+    let shared = ctx.shared.clone();
+    let origin = shared.signals().tabs.get().active().clone();
+    origin.archive_path.set(Some(PathBuf::from("origin.zip")));
+    origin
+        .entries
+        .set(Arc::new(vec![archive_entry("before.txt")]));
+    origin
+        .browser_entries
+        .update(|snapshot| snapshot.replace(vec![file_entry("before.txt")]));
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (first_gate_tx, first_gate_rx) = mpsc::channel();
+    let (second_gate_tx, second_gate_rx) = mpsc::channel();
+    let io = Arc::new(OrderedDeleteIo {
+        calls: AtomicUsize::new(0),
+        in_flight: AtomicUsize::new(0),
+        max_in_flight: AtomicUsize::new(0),
+        started: started_tx,
+        first_gate: StdMutex::new(first_gate_rx),
+        second_gate: StdMutex::new(second_gate_rx),
+    });
+
+    FileOpsService.delete_files_with_io(
+        &shared,
+        origin.clone(),
+        vec!["first.txt".to_string()],
+        io.clone(),
+    );
+    assert_eq!(
+        started_rx.recv_timeout(Duration::from_millis(500)).unwrap(),
+        "first.txt"
+    );
+
+    FileOpsService.delete_files_with_io(
+        &shared,
+        origin.clone(),
+        vec!["second.txt".to_string()],
+        io.clone(),
+    );
+    wait_until("second delete was not scheduled", || {
+        origin.in_flight_ops.load(Ordering::SeqCst) == 2
+    });
+    assert!(
+        started_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "the second backend edit overlapped the blocked first edit"
+    );
+
+    first_gate_tx.send(()).unwrap();
+    assert_eq!(
+        started_rx.recv_timeout(Duration::from_millis(500)).unwrap(),
+        "second.txt"
+    );
+    let first_published_before_second = origin.entries.get()[0].path == "after-first.txt";
+
+    second_gate_tx.send(()).unwrap();
+    wait_until("serialized deletes did not complete", || {
+        origin.in_flight_ops.load(Ordering::SeqCst) == 0
+    });
+
+    assert_eq!(io.max_in_flight.load(Ordering::SeqCst), 1);
+    assert!(
+        first_published_before_second,
+        "the first edit released serialization before publishing its snapshot"
+    );
+    assert_eq!(origin.entries.get()[0].path, "after-second.txt");
+    assert_eq!(
+        origin.browser_entries.get().entries[0].name,
+        "after-second.txt"
+    );
+}
+
+#[test]
+fn archive_file_jobs_text_read_returns_before_io_and_updates_origin_tab() {
+    let ctx = TestContext::new();
+    let shared = ctx.shared.clone();
+    let origin = shared.signals().tabs.get().active().clone();
+    origin.archive_path.set(Some(PathBuf::from("origin.zip")));
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (gate_tx, gate_rx) = mpsc::channel();
+    let io = Arc::new(BlockingReadIo {
+        started: started_tx,
+        gate: StdMutex::new(gate_rx),
+        content: "origin content".to_string(),
+    });
+    let (returned_tx, returned_rx) = mpsc::channel();
+    let caller_shared = shared.clone();
+    let caller_origin = origin.clone();
+    let caller = thread::spawn(move || {
+        FileOpsService.read_text_with_io(
+            &caller_shared,
+            caller_origin,
+            "origin.txt".to_string(),
+            io,
+        );
+        returned_tx.send(()).unwrap();
+    });
+
+    returned_rx
+        .recv_timeout(Duration::from_millis(500))
+        .expect("read_text_with_io blocked its caller on archive I/O");
+    assert!(matches!(
+        origin.file_edit_dialog.get().load_state,
+        FileEditLoadState::Loading { .. }
+    ));
+    assert_eq!(
+        started_rx.recv_timeout(Duration::from_millis(500)).unwrap(),
+        "origin.txt"
+    );
+    caller.join().unwrap();
+
+    let mut tabs = shared.signals().tabs.get();
+    tabs.open(Some(PathBuf::from("other.zip")));
+    let other = tabs.active().clone();
+    other.file_edit_dialog.update(|dialog| {
+        dialog.show = true;
+        dialog.full_path_in_archive = "other.txt".to_string();
+        dialog.content = "other content".to_string();
+    });
+    shared.signals().tabs.set(tabs);
+
+    gate_tx.send(()).unwrap();
+    wait_until("text completion did not update its origin", || {
+        matches!(
+            origin.file_edit_dialog.get().load_state,
+            FileEditLoadState::Ready
+        )
+    });
+
+    assert_eq!(origin.file_edit_dialog.get().content, "origin content");
+    assert_eq!(other.file_edit_dialog.get().content, "other content");
+}
+
+#[test]
+fn archive_file_jobs_stale_text_completion_cannot_overwrite_newer_read() {
+    let ctx = TestContext::new();
+    let shared = ctx.shared.clone();
+    let origin = shared.signals().tabs.get().active().clone();
+    origin.archive_path.set(Some(PathBuf::from("origin.zip")));
+
+    let (started_tx, started_rx) = mpsc::channel();
+    let (gate_a_tx, gate_a_rx) = mpsc::channel();
+    FileOpsService.read_text_with_io(
+        &shared,
+        origin.clone(),
+        "a.txt".to_string(),
+        Arc::new(BlockingReadIo {
+            started: started_tx.clone(),
+            gate: StdMutex::new(gate_a_rx),
+            content: "stale A".to_string(),
+        }),
+    );
+    assert_eq!(
+        started_rx.recv_timeout(Duration::from_millis(500)).unwrap(),
+        "a.txt"
+    );
+
+    let (gate_b_tx, gate_b_rx) = mpsc::channel();
+    FileOpsService.read_text_with_io(
+        &shared,
+        origin.clone(),
+        "b.txt".to_string(),
+        Arc::new(BlockingReadIo {
+            started: started_tx,
+            gate: StdMutex::new(gate_b_rx),
+            content: "fresh B".to_string(),
+        }),
+    );
+    assert_eq!(
+        started_rx.recv_timeout(Duration::from_millis(500)).unwrap(),
+        "b.txt"
+    );
+
+    gate_b_tx.send(()).unwrap();
+    wait_until("newer text read did not complete", || {
+        origin.file_edit_dialog.get().content == "fresh B"
+    });
+    assert_eq!(origin.file_edit_dialog.get().full_path_in_archive, "b.txt");
+
+    gate_a_tx.send(()).unwrap();
+    wait_until("older text read did not finish", || {
+        origin.in_flight_ops.load(Ordering::SeqCst) == 0
+    });
+
+    let dialog = origin.file_edit_dialog.get();
+    assert_eq!(dialog.full_path_in_archive, "b.txt");
+    assert_eq!(dialog.content, "fresh B");
+    assert_eq!(dialog.original_content, "fresh B");
+    assert_eq!(dialog.load_state, FileEditLoadState::Ready);
+}
+
+#[test]
+fn archive_file_jobs_ready_text_survives_stale_rendered_loading_snapshot() {
+    let mut current = FileEditDialog {
+        show: true,
+        full_path_in_archive: "entry.txt".to_string(),
+        name_input: "entry.txt".to_string(),
+        content: "worker content".to_string(),
+        original_content: "worker content".to_string(),
+        error: String::new(),
+        load_state: FileEditLoadState::Ready,
+    };
+    let rendered_before_completion = FileEditDialog {
+        show: true,
+        full_path_in_archive: "entry.txt".to_string(),
+        name_input: "entry.txt".to_string(),
+        content: String::new(),
+        original_content: String::new(),
+        error: String::new(),
+        load_state: FileEditLoadState::Loading { request_id: 7 },
+    };
+
+    current.apply_rendered_snapshot(rendered_before_completion);
+
+    assert_eq!(current.content, "worker content");
+    assert_eq!(current.original_content, "worker content");
+    assert_eq!(current.load_state, FileEditLoadState::Ready);
 }
 
 // --- Logic Tests ---

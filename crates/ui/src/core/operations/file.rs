@@ -27,56 +27,6 @@ pub fn add_files(state: &Arc<Mutex<AppState>>, status_info: &mut status_bar::Sta
     }
 }
 
-/// Delete selected files from the archive
-///
-/// Post 2026-05-20 Tier 2 (item 6) audit: dropped the `archive_info`
-/// mutable parameter — the per-tab `Computed<ArchiveInfo>` re-derives
-/// from the refreshed `entries` signal after `list_archive` runs.
-pub fn delete_selected(
-    state: &Arc<Mutex<AppState>>,
-    selected_paths: &[String],
-    status_info: &mut status_bar::StatusBarInfo,
-) {
-    // The caller derives stable archive-root paths from the immutable browser
-    // snapshot and current search on the delete click, so hidden search results
-    // cannot leak into a destructive operation.
-    let (full_paths, archive_opt) = {
-        let st = state.lock();
-        let tab = st.signals.tabs.get().active().clone();
-        (selected_paths.to_vec(), tab.archive_path.get())
-    };
-
-    if full_paths.is_empty() {
-        status_info.message = "No files selected".to_string();
-        return;
-    }
-
-    if let Some(archive) = archive_opt {
-        let res = { state.lock().delete_files(&archive, &full_paths) };
-        if let Err(e) = res {
-            status_info.message = format!("Delete failed: {}", e);
-            return;
-        }
-        // Refresh listing
-        let mut st = state.lock();
-        let active_id = st.signals.tabs.get().active_id();
-        if let Some(a) = st.signals.tabs.get().active().archive_path.get() {
-            if st.list_archive(&a, active_id).is_ok() {
-                drop(st);
-
-                // We need to reload archive data - call the archive_operations module
-                use crate::core::operations::archive;
-                archive::load_archive_data(
-                    state,
-                    &mut Default::default(), // password_dialog placeholder
-                    &mut None,               // pending_archive_path placeholder
-                    status_info,
-                );
-            }
-        }
-    }
-}
-
 /// Derive the exact file paths affected by a toolbar delete action.
 ///
 /// Selection may intentionally outlive a search filter, but destructive

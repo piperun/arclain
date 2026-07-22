@@ -229,7 +229,6 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 }
                 if actions.delete_selected {
                     let t = shared_state.signals().tabs.get().active().clone();
-                    let mut status_info = shared_state.signals().status_bar.get();
                     let entries = t.browser_entries.get();
                     let view_state = t.browser_view_state.get();
                     let search_text = shared_state.signals().search_text.get();
@@ -239,16 +238,11 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &search_text,
                     );
 
-                    // archive_info parameter dropped post 2026-05-20 Tier 2
-                    // item 6 — Computed derives it from the underlying
-                    // signals after list_archive refreshes them.
-                    operations::file::delete_selected(
-                        &app.shared_state.app_state,
-                        &selected_paths,
-                        &mut status_info,
+                    crate::features::archive_browser::application::FileOpsService.delete_files(
+                        &shared_state,
+                        t,
+                        selected_paths,
                     );
-
-                    shared_state.signals().status_bar.set(status_info);
                 }
                 if actions.convert_to_7z {
                     // Navigate to Process page pre-populated with a Convert step.

@@ -57,10 +57,12 @@ impl BrowserController {
                 self.handle_open_archive_in_tab(shared, archive_path);
             }
             Action::EditFile(file) => {
-                self.file_ops.edit_file(shared, &file);
+                let origin = shared.signals().tabs.get().active().clone();
+                self.file_ops.read_text(shared, origin, file);
             }
             Action::DeleteFile(file) => {
-                self.file_ops.delete_file(shared, &file);
+                let origin = shared.signals().tabs.get().active().clone();
+                self.file_ops.delete_files(shared, origin, vec![file]);
             }
             Action::Organize => {
                 self.handle_organize(shared, organization_feature, page_navigator);

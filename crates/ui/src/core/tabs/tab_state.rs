@@ -9,10 +9,9 @@ use arclain_core::archive::NavigationState;
 use arclain_core::features::organization::GameMetadata;
 use arclain_core::ArchiveEntry;
 use arclain_signals::{Computed, Signal};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -68,6 +67,13 @@ pub struct TabState {
     /// signal value in O(1), but only archive/navigation workers replace it.
     pub browser_entries: Signal<BrowserEntriesSnapshot>,
     pub browser_view_state: Signal<BrowserViewState>,
+    /// Serializes archive-rewriting file jobs for this tab. Backends commonly
+    /// rewrite the whole archive for deletion, so overlapping edits must not
+    /// race each other even though they run off the UI thread.
+    pub archive_edit_lock: Arc<Mutex<()>>,
+    /// Monotonic request key for text reads in this tab. Only the newest
+    /// matching request may publish into `file_edit_dialog`.
+    pub file_request_seq: AtomicU64,
     pub page_display_name: Signal<Option<String>>,
     pub active_toolbar: Signal<ToolbarContext>,
     /// When a file is double-clicked in this tab's archive list, the
@@ -202,6 +208,8 @@ impl TabState {
                 .with_name("browser_entries"),
             browser_view_state: Signal::new(BrowserViewState::default())
                 .with_name("browser_view_state"),
+            archive_edit_lock: Arc::new(Mutex::new(())),
+            file_request_seq: AtomicU64::new(0),
             page_display_name: Signal::new(None).with_name("page_display_name"),
             active_toolbar: Signal::new(ToolbarContext::Archive).with_name("active_toolbar"),
             pending_open_file: Signal::new(None).with_name("pending_open_file"),
