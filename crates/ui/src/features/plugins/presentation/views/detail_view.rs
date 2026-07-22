@@ -19,6 +19,13 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+fn plugin_proxy_toggle_value(user_config: &UserConfig, plugin_id: &str) -> bool {
+    effective_plugin_proxy_map(user_config)
+        .get(plugin_id)
+        .copied()
+        .unwrap_or(false)
+}
+
 fn persist_plugin_proxy_setting(
     user_config: &mut UserConfig,
     plugin_id: &str,
@@ -165,11 +172,7 @@ pub fn render(
         // Proxy Settings
         let proxy_enabled = {
             let app = app_state.lock();
-            app.user_config
-                .get_plugin_proxy_settings()
-                .get(&plugin_info.id)
-                .cloned()
-                .unwrap_or(false)
+            plugin_proxy_toggle_value(&app.user_config, &plugin_info.id)
         };
         let mut proxy_toggle_val = proxy_enabled;
 
@@ -589,6 +592,28 @@ mod tests {
     use arclain_core::UserConfig;
     use arclain_plugins::types::PluginAction;
     use arclain_widgets::Toaster;
+
+    #[test]
+    fn plugin_proxy_toggle_uses_inherited_dlsite_defaults() {
+        let mut config = UserConfig::new();
+        config.socks5_enabled = true;
+
+        assert!(plugin_proxy_toggle_value(&config, "dlsite"));
+        assert!(plugin_proxy_toggle_value(&config, "dlsite-api"));
+        assert!(plugin_proxy_toggle_value(&config, "dlsite-html"));
+        assert!(!plugin_proxy_toggle_value(&config, "custom"));
+    }
+
+    #[test]
+    fn plugin_proxy_toggle_preserves_explicit_overrides() {
+        let mut config = UserConfig::new();
+        config.socks5_enabled = true;
+        config.set_plugin_proxy_enabled("dlsite-api", false);
+        config.set_plugin_proxy_enabled("custom", true);
+
+        assert!(!plugin_proxy_toggle_value(&config, "dlsite-api"));
+        assert!(plugin_proxy_toggle_value(&config, "custom"));
+    }
 
     #[test]
     fn plugin_proxy_update_preserves_effective_defaults_and_overrides() {
