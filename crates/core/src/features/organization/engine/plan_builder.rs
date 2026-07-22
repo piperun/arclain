@@ -11,7 +11,7 @@ use super::tree::TreeNode;
 use super::{OrganizationPlan, PendingDownload, RuleEngine};
 use crate::features::organization::{OrganizationRule, RuleTrigger};
 use crate::ArchiveEntry;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -144,7 +144,7 @@ impl RuleEngine {
             .clone()
             .unwrap_or_else(|| "Game".to_string());
 
-        Ok(OrganizationPlan {
+        let plan = OrganizationPlan {
             rule_name: rule.name.clone(),
             root_folder,
             root_folder_template,
@@ -153,7 +153,10 @@ impl RuleEngine {
             downloads,
             use_standard_layout: rule.actions.use_standard_layout,
             resolved_variables: metadata,
-        })
+        };
+        plan.validate_paths()
+            .context("organization plan path validation")?;
+        Ok(plan)
     }
 
     /// Build the variable map used for expanding `$name` placeholders

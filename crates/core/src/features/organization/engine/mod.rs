@@ -43,6 +43,53 @@ pub struct OrganizationPlan {
     pub resolved_variables: HashMap<String, String>,
 }
 
+impl OrganizationPlan {
+    /// Validate every filesystem path carried by this plan before it reaches
+    /// an execution boundary.
+    pub fn validate_paths(&self) -> anyhow::Result<()> {
+        use anyhow::Context;
+        use std::collections::HashSet;
+
+        crate::utilities::CheckedRelativePath::new(&self.root_folder)
+            .context("invalid organization root_folder")?;
+
+        let mut destinations = HashSet::new();
+        for (source, destination) in &self.moves {
+            crate::utilities::CheckedRelativePath::new(source)
+                .with_context(|| format!("invalid move source {source:?}"))?;
+            let destination = crate::utilities::CheckedRelativePath::new(destination)
+                .with_context(|| format!("invalid move destination {destination:?}"))?;
+            if !destinations.insert(destination.as_path().to_path_buf()) {
+                anyhow::bail!(
+                    "duplicate organization destination {:?}",
+                    destination.as_path()
+                );
+            }
+        }
+
+        for (path, _) in &self.generated_files {
+            let path = crate::utilities::CheckedRelativePath::new(path)
+                .with_context(|| format!("invalid generated file path {path:?}"))?;
+            if !destinations.insert(path.as_path().to_path_buf()) {
+                anyhow::bail!("duplicate organization destination {:?}", path.as_path());
+            }
+        }
+
+        for download in &self.downloads {
+            let destination = crate::utilities::CheckedRelativePath::new(&download.dest_path)
+                .with_context(|| format!("invalid download path {:?}", download.dest_path))?;
+            if !destinations.insert(destination.as_path().to_path_buf()) {
+                anyhow::bail!(
+                    "duplicate organization destination {:?}",
+                    destination.as_path()
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
 pub struct RuleEngine;
 
 #[cfg(test)]
@@ -335,6 +382,24 @@ mod tests {
     // =========================================================================
     // screenshot cache keys (regression)
     // =========================================================================
+
+    #[test]
+    fn create_plan_rejects_escaping_root_folder() {
+        let rule = OrganizationRule {
+            name: "unsafe".into(),
+            actions: RuleActions {
+                root_folder: Some("../outside".into()),
+                use_standard_layout: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let error = RuleEngine::create_plan(&rule, "game.zip", &[], None).unwrap_err();
+        let error = format!("{error:#}");
+
+        assert!(error.contains("root_folder"), "unexpected error: {error}");
+    }
 
     /// Regression: screenshot cache keys must use `gm.product_id` directly
     /// so they match the keys produced by the gameta server cache.

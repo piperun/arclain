@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
 
+use crate::utilities::CheckedRelativePath;
 use crate::Archive;
 
 // Re-export items to maintain API compatibility
@@ -67,6 +68,8 @@ pub fn execute_organization_plan(
     temp_dir: &Path,
     profile: Option<&super::ArchiveProfile>,
 ) -> Result<()> {
+    plan.validate_paths()?;
+
     let format_name = profile.map(|p| p.format.display_name()).unwrap_or("7z");
     info!(
         "Executing organization plan '{}' for archive {} (output: {})",
@@ -87,6 +90,42 @@ pub fn execute_organization_plan(
 
     std::fs::create_dir_all(&source_extracted).context("creating temp source dir")?;
     std::fs::create_dir_all(&organized_dir).context("creating temp organized dir")?;
+
+    let root_folder = CheckedRelativePath::new(&plan.root_folder)?;
+    root_folder.resolve_under(&organized_dir)?;
+    let checked_moves = plan
+        .moves
+        .iter()
+        .map(|(source, destination)| {
+            Ok((
+                CheckedRelativePath::new(source)?,
+                CheckedRelativePath::new(destination)?,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let checked_generated = plan
+        .generated_files
+        .iter()
+        .map(|(path, _)| CheckedRelativePath::new(path))
+        .collect::<Result<Vec<_>>>()?;
+    let checked_downloads = plan
+        .downloads
+        .iter()
+        .map(|download| CheckedRelativePath::new(&download.dest_path))
+        .collect::<Result<Vec<_>>>()?;
+
+    // Reject static symlinked parents in a pre-existing work directory before
+    // extraction or organization mutates it.
+    for (source, destination) in &checked_moves {
+        source.resolve_under(&source_extracted)?;
+        destination.resolve_under(&organized_dir)?;
+    }
+    for path in &checked_generated {
+        path.resolve_under(&organized_dir)?;
+    }
+    for path in &checked_downloads {
+        path.resolve_under(&organized_dir)?;
+    }
 
     // RAII cleanup guard - local helper here or reuse from tasks?
     // We can reuse TempDirGuard but construction is slightly different (we built the path manually here)
@@ -121,9 +160,10 @@ pub fn execute_organization_plan(
     if plan.use_standard_layout {
         // Standard Layout: Smart Flattening
         // We ignore explicit moves for game content and use the flattener
-        let root_folder = organized_dir.join(&plan.root_folder);
-        let game_dir = root_folder.join("Game");
+        let game_path = CheckedRelativePath::new(format!("{}/Game", plan.root_folder))?;
+        let game_dir = game_path.resolve_under(&organized_dir)?;
         std::fs::create_dir_all(&game_dir)?;
+        let game_dir = game_path.resolve_under(&organized_dir)?;
 
         debug!(
             "Using Standard Layout - Flattening game content to {:?}",
@@ -132,19 +172,24 @@ pub fn execute_organization_plan(
         super::flatten::find_and_flatten_game_content(&source_extracted, &game_dir)?;
     } else {
         // Legacy/Custom Layout: Explicit moves
-        for (src_rel, dst_rel) in &plan.moves {
-            let src_path = source_extracted.join(src_rel);
-            let dst_path = organized_dir.join(dst_rel);
+        for ((src_rel, _), (source, destination)) in plan.moves.iter().zip(&checked_moves) {
+            let src_path = source.resolve_under(&source_extracted)?;
+            let dst_path = destination.resolve_under(&organized_dir)?;
 
             if src_path.exists() {
                 if let Some(parent) = dst_path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
+                let src_path = source.resolve_under(&source_extracted)?;
+                let dst_path = destination.resolve_under(&organized_dir)?;
                 // Use copy instead of rename to avoid issues if we want to keep source for some reason
                 // (though we delete it later). Rename is faster but cross-device issues might occur if temp is weird.
                 // Since it's all in temp, rename should be fine.
-                std::fs::rename(&src_path, &dst_path)
-                    .or_else(|_| std::fs::copy(&src_path, &dst_path).map(|_| ()))?;
+                if std::fs::rename(&src_path, &dst_path).is_err() {
+                    let src_path = source.resolve_under(&source_extracted)?;
+                    let dst_path = destination.resolve_under(&organized_dir)?;
+                    std::fs::copy(&src_path, &dst_path)?;
+                }
             } else {
                 debug!("Source file not found (maybe directory?): {}", src_rel);
             }
@@ -153,11 +198,12 @@ pub fn execute_organization_plan(
 
     // 2b. Write generated files (e.g. metadata.json)
     debug!("Writing generated files");
-    for (rel_path, content) in &plan.generated_files {
-        let dst_path = organized_dir.join(rel_path);
+    for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
+        let dst_path = checked_path.resolve_under(&organized_dir)?;
         if let Some(parent) = dst_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
+        let dst_path = checked_path.resolve_under(&organized_dir)?;
         std::fs::write(&dst_path, content)?;
     }
 
@@ -169,8 +215,8 @@ pub fn execute_organization_plan(
             .user_agent("Arclain/1.0")
             .build()?;
 
-        for download in &plan.downloads {
-            let dst_path = organized_dir.join(&download.dest_path);
+        for (download, checked_path) in plan.downloads.iter().zip(&checked_downloads) {
+            let dst_path = checked_path.resolve_under(&organized_dir)?;
             if let Some(parent) = dst_path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -180,6 +226,7 @@ pub fn execute_organization_plan(
                 Ok(resp) => {
                     if resp.status().is_success() {
                         if let Ok(bytes) = resp.bytes() {
+                            let dst_path = checked_path.resolve_under(&organized_dir)?;
                             if let Err(e) = std::fs::write(&dst_path, bytes) {
                                 error!(
                                     "Failed to write downloaded file {}: {}",
