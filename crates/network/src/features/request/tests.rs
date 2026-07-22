@@ -1,26 +1,54 @@
 use crate::features::proxy::ProxyConfig;
-use crate::features::request::client::{parse_content_range_total, RequestCompletion};
+use crate::features::request::client::{parse_content_range, ContentRange, RequestCompletion};
 use crate::features::whitelist::DomainWhitelist;
-use crate::AsyncHttpClient;
+use crate::{AsyncHttpClient, StreamingDownload};
 use crate::{HttpRequest, HttpResponse, RequestStatus};
+use std::io::{Read, Write};
+use std::net::TcpListener;
 
 #[test]
-fn parse_content_range_total_handles_normal_response() {
-    assert_eq!(parse_content_range_total("bytes 0-999/1000"), Some(1000));
-    assert_eq!(parse_content_range_total("bytes 500-999/1000"), Some(1000));
+fn parse_content_range_accepts_exact_known_ranges() {
+    assert_eq!(
+        parse_content_range("bytes 0-999/1000"),
+        Some(ContentRange {
+            start: 0,
+            end: 999,
+            total: 1000,
+        })
+    );
+    assert_eq!(
+        parse_content_range("bytes 500-999/1000"),
+        Some(ContentRange {
+            start: 500,
+            end: 999,
+            total: 1000,
+        })
+    );
 }
 
 #[test]
-fn parse_content_range_total_handles_unknown_total() {
-    // RFC 7233 §4.2: `*` means total length is unknown.
-    assert_eq!(parse_content_range_total("bytes 0-999/*"), None);
-}
-
-#[test]
-fn parse_content_range_total_rejects_garbage() {
-    assert_eq!(parse_content_range_total("not a range header"), None);
-    assert_eq!(parse_content_range_total(""), None);
-    assert_eq!(parse_content_range_total("bytes 0-999/abc"), None);
+fn parse_content_range_rejects_non_exact_or_impossible_ranges() {
+    for header in [
+        "not a range header",
+        "",
+        "bytes 0-999/abc",
+        "bytes 0-999/*",
+        "items 0-999/1000",
+        "Bytes 0-999/1000",
+        "bytes 0-999 /1000",
+        " bytes 0-999/1000",
+        "bytes 0-999/1000 ",
+        "bytes 999-0/1000",
+        "bytes 0-1000/1000",
+        "bytes 0-0/0",
+        "bytes +0-9/10",
+    ] {
+        assert_eq!(
+            parse_content_range(header),
+            None,
+            "unexpectedly accepted {header:?}"
+        );
+    }
 }
 use std::sync::Arc;
 use std::time::Duration;
@@ -40,6 +68,62 @@ async fn wait_for_request(client: &AsyncHttpClient, id: &crate::RequestId) -> Re
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+fn raw_http_response(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
+    let mut response = format!("HTTP/1.1 {status}\r\nConnection: close\r\n").into_bytes();
+    for (name, value) in headers {
+        response.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    response.extend_from_slice(b"\r\n");
+    response.extend_from_slice(body);
+    response
+}
+
+fn spawn_raw_http_server(response: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
+    let address = listener.local_addr().expect("loopback server address");
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept streaming request");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("set request read timeout");
+
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = stream.read(&mut buffer).expect("read streaming request");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+        }
+
+        stream.write_all(&response).expect("write raw response");
+        stream.flush().expect("flush raw response");
+    });
+    (format!("http://{address}/range"), server)
+}
+
+async fn execute_raw_streaming_response(
+    response: Vec<u8>,
+    start_byte: Option<u64>,
+) -> (Result<StreamingDownload, String>, Vec<u8>) {
+    let (url, server) = spawn_raw_http_server(response);
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut buffer = Vec::new();
+        let result = client.blocking_get_streaming(&url, false, &mut buffer, start_byte, None);
+        (result, buffer)
+    })
+    .await
+    .expect("streaming worker did not panic");
+
+    server.join().expect("loopback server did not panic");
+    result
 }
 
 #[tokio::test]
@@ -637,4 +721,112 @@ async fn streaming_range_request_reports_partial() {
     assert_eq!(buf.len(), 500);
     // total_size comes from Content-Range, not Content-Length, on 206.
     assert_eq!(info.total_size, Some(1000));
+}
+
+#[tokio::test]
+async fn streaming_range_request_preserves_full_response_fallback() {
+    let mock_server = MockServer::start().await;
+    let body = b"complete replacement body".to_vec();
+    Mock::given(method("GET"))
+        .and(path("/range-fallback"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let url = format!("{}/range-fallback", mock_server.uri());
+
+    let (info, buffer) = tokio::task::spawn_blocking(move || {
+        let mut buffer = Vec::new();
+        let info = client
+            .blocking_get_streaming(&url, false, &mut buffer, Some(5), None)
+            .expect("200 range fallback succeeded");
+        (info, buffer)
+    })
+    .await
+    .unwrap();
+
+    assert!(!info.was_partial, "200 fallback must replace partial data");
+    assert_eq!(info.bytes_written, body.len() as u64);
+    assert_eq!(info.total_size, Some(body.len() as u64));
+    assert_eq!(buffer, body);
+}
+
+#[tokio::test]
+async fn partial_response_rejects_invalid_headers_before_writing() {
+    for (label, content_range, start_byte) in [
+        ("wrong start", "bytes 4-8/10", Some(5)),
+        ("invalid unit", "items 5-9/10", Some(5)),
+        ("end before start", "bytes 5-4/10", Some(5)),
+        ("total does not exceed end", "bytes 5-9/9", Some(5)),
+    ] {
+        let response = raw_http_response(
+            "206 Partial Content",
+            &[("Content-Range", content_range), ("Content-Length", "5")],
+            b"abcde",
+        );
+        let (result, buffer) = execute_raw_streaming_response(response, start_byte).await;
+
+        assert!(result.is_err(), "{label} header unexpectedly succeeded");
+        assert!(
+            buffer.is_empty(),
+            "{label} header wrote bytes before validation"
+        );
+    }
+}
+
+#[tokio::test]
+async fn partial_response_requires_content_range_before_writing() {
+    let response = raw_http_response("206 Partial Content", &[("Content-Length", "5")], b"abcde");
+    let (result, buffer) = execute_raw_streaming_response(response, Some(5)).await;
+
+    assert!(result.is_err());
+    assert!(buffer.is_empty(), "missing Content-Range wrote body bytes");
+}
+
+#[tokio::test]
+async fn partial_response_requires_a_requested_range_before_writing() {
+    let response = raw_http_response(
+        "206 Partial Content",
+        &[("Content-Range", "bytes 0-4/10"), ("Content-Length", "5")],
+        b"abcde",
+    );
+    let (result, buffer) = execute_raw_streaming_response(response, None).await;
+
+    assert!(result.is_err());
+    assert!(buffer.is_empty(), "unexpected 206 wrote body bytes");
+}
+
+#[tokio::test]
+async fn partial_response_rejects_mismatched_content_length_before_writing() {
+    let response = raw_http_response(
+        "206 Partial Content",
+        &[("Content-Range", "bytes 5-9/10"), ("Content-Length", "4")],
+        b"abcd",
+    );
+    let (result, buffer) = execute_raw_streaming_response(response, Some(5)).await;
+
+    assert!(result.is_err());
+    assert!(
+        buffer.is_empty(),
+        "mismatched Content-Length wrote body bytes"
+    );
+}
+
+#[tokio::test]
+async fn partial_response_rejects_a_truncated_body() {
+    let response = raw_http_response(
+        "206 Partial Content",
+        &[
+            ("Content-Range", "bytes 5-9/10"),
+            ("Transfer-Encoding", "chunked"),
+        ],
+        b"3\r\nabc\r\n0\r\n\r\n",
+    );
+    let (result, buffer) = execute_raw_streaming_response(response, Some(5)).await;
+
+    assert!(result.is_err(), "truncated range unexpectedly succeeded");
+    assert_eq!(buffer, b"abc", "streamed bytes should remain observable");
 }

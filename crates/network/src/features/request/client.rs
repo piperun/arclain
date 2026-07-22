@@ -41,17 +41,31 @@ pub struct StreamingDownload {
     pub total_size: Option<u64>,
 }
 
-/// Parse the total-size component of an HTTP `Content-Range` header.
-/// Format is `bytes <start>-<end>/<total>` or `bytes <start>-<end>/*`
-/// when the total is unknown. Returns `None` for unknown / unparsable.
-pub(super) fn parse_content_range_total(header: &str) -> Option<u64> {
-    // Strip optional "bytes " prefix, then split on "/".
-    let trimmed = header.trim_start_matches("bytes ").trim();
-    let total_part = trimmed.rsplit('/').next()?;
-    if total_part == "*" {
-        return None;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ContentRange {
+    pub(super) start: u64,
+    pub(super) end: u64,
+    pub(super) total: u64,
+}
+
+/// Parse the exact `bytes <start>-<end>/<total>` form used by a 206
+/// response. Unknown totals and impossible ranges are not safe for resume.
+pub(super) fn parse_content_range(header: &str) -> Option<ContentRange> {
+    fn parse_decimal(value: &str) -> Option<u64> {
+        if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+            return None;
+        }
+        value.parse().ok()
     }
-    total_part.parse::<u64>().ok()
+
+    let value = header.strip_prefix("bytes ")?;
+    let (bounds, total) = value.split_once('/')?;
+    let (start, end) = bounds.split_once('-')?;
+    let start = parse_decimal(start)?;
+    let end = parse_decimal(end)?;
+    let total = parse_decimal(total)?;
+
+    (end >= start && total > end).then_some(ContentRange { start, end, total })
 }
 
 /// State-carrying completion signal for one asynchronous request.
@@ -600,6 +614,51 @@ impl AsyncHttpClient {
             // body; caller has to discard any prior partial bytes.
             let was_partial = status.as_u16() == 206;
 
+            // A malformed or mismatched partial response must be rejected
+            // before its first body byte reaches the caller's append sink.
+            let content_range = if was_partial {
+                let requested_start = start.ok_or_else(|| {
+                    "Server returned 206 Partial Content without a Range request".to_string()
+                })?;
+                let header = response
+                    .headers()
+                    .get("content-range")
+                    .ok_or_else(|| "206 response is missing Content-Range".to_string())?
+                    .to_str()
+                    .map_err(|_| "206 response has an invalid Content-Range header".to_string())?;
+                let range = parse_content_range(header).ok_or_else(|| {
+                    format!("206 response has an invalid Content-Range: {header}")
+                })?;
+                if range.start != requested_start {
+                    return Err(format!(
+                        "206 response starts at byte {}, but byte {} was requested",
+                        range.start, requested_start
+                    ));
+                }
+
+                let declared_length = range.end - range.start + 1;
+                if let Some(header) = response.headers().get("content-length") {
+                    let content_length = header
+                        .to_str()
+                        .map_err(|_| {
+                            "206 response has an invalid Content-Length header".to_string()
+                        })?
+                        .parse::<u64>()
+                        .map_err(|_| {
+                            "206 response has an invalid Content-Length header".to_string()
+                        })?;
+                    if content_length != declared_length {
+                        return Err(format!(
+                            "206 Content-Length {content_length} does not match declared range length {declared_length}"
+                        ));
+                    }
+                }
+
+                Some(range)
+            } else {
+                None
+            };
+
             let etag = response
                 .headers()
                 .get("etag")
@@ -613,12 +672,8 @@ impl AsyncHttpClient {
             // Content-Length is the length of THIS response; for 206 it's
             // the remaining bytes from start_byte, not the resource size.
             // Total size comes from Content-Range when present.
-            let total_size = if was_partial {
-                response
-                    .headers()
-                    .get("content-range")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(parse_content_range_total)
+            let total_size = if let Some(range) = content_range {
+                Some(range.total)
             } else {
                 response
                     .headers()
@@ -638,9 +693,19 @@ impl AsyncHttpClient {
                     .map_err(|e| format!("Writer failed: {}", e))?;
                 total_written += chunk.len() as u64;
             }
+
             writer
                 .flush()
                 .map_err(|e| format!("Writer flush failed: {}", e))?;
+
+            if let Some(range) = content_range {
+                let declared_length = range.end - range.start + 1;
+                if total_written != declared_length {
+                    return Err(format!(
+                        "206 response body contained {total_written} bytes, but Content-Range declared {declared_length}"
+                    ));
+                }
+            }
 
             Ok(StreamingDownload {
                 bytes_written: total_written,
