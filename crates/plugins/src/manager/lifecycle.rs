@@ -154,7 +154,7 @@ impl PluginManager {
     /// 1. Load and validate the plugin from the .wasm file
     /// 2. Extract metadata and create a manifest
     /// 3. Create a directory in plugins/ with the plugin ID
-    /// 4. Copy the .wasm file and create plugin.toml
+    /// 4. Copy `<id>.wasm` and create `<id>.toml`
     /// 5. Load the plugin into the manager
     pub fn install_plugin(&mut self, wasm_path: &std::path::Path) -> Result<String> {
         use std::fs;

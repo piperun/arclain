@@ -1,6 +1,84 @@
 use super::*;
 use tempfile::TempDir;
 
+const VALIDATION_CHILD_ENV: &str = "ARCLAIN_PLUGIN_VALIDATION_CHILD_6A21";
+const VALIDATION_CHILD_TEST: &str =
+    "manager::tests::malicious_metadata_cannot_escape_validation_sandbox_or_run_init";
+const WASI_STDOUT_SENTINEL: &str = "ARCLAIN_VALIDATION_WASI_STDOUT_SENTINEL_7F3B";
+const WASI_STDERR_SENTINEL: &str = "ARCLAIN_VALIDATION_WASI_STDERR_SENTINEL_8C4D";
+
+struct CapturedChild {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+}
+
+fn run_validation_child() -> CapturedChild {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(std::env::current_exe().expect("test binary path must resolve"))
+        .arg(VALIDATION_CHILD_TEST)
+        .arg("--exact")
+        .arg("--nocapture")
+        .env(VALIDATION_CHILD_ENV, "child")
+        .env("ARCLAIN_WASI_ENV_MUST_NOT_LEAK_91D2", "sentinel")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("validation child process must spawn");
+
+    let mut child_stdout = child.stdout.take().expect("child stdout must be piped");
+    let mut child_stderr = child.stderr.take().expect("child stderr must be piped");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        child_stdout
+            .read_to_end(&mut bytes)
+            .expect("child stdout must remain readable");
+        bytes
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        child_stderr
+            .read_to_end(&mut bytes)
+            .expect("child stderr must remain readable");
+        bytes
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let stdout = stdout_reader.join().unwrap_or_default();
+                let stderr = stderr_reader.join().unwrap_or_default();
+                panic!(
+                    "validation child exceeded 30 seconds and was terminated\nstdout:\n{}\nstderr:\n{}",
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr),
+                );
+            }
+            Err(error) => panic!("failed to query validation child status: {error}"),
+        }
+    };
+
+    CapturedChild {
+        status,
+        stdout: stdout_reader
+            .join()
+            .expect("child stdout reader must terminate"),
+        stderr: stderr_reader
+            .join()
+            .expect("child stderr reader must terminate"),
+    }
+}
+
 #[test]
 fn test_plugin_manager_creation() {
     let temp_dir = TempDir::new().unwrap();
@@ -72,6 +150,26 @@ fn install_rejects_exported_unsafe_id_before_filesystem_use() {
 #[tracing_test::traced_test]
 #[test]
 fn malicious_metadata_cannot_escape_validation_sandbox_or_run_init() {
+    if std::env::var_os(VALIDATION_CHILD_ENV).is_none() {
+        let child = run_validation_child();
+        let stdout = String::from_utf8_lossy(&child.stdout);
+        let stderr = String::from_utf8_lossy(&child.stderr);
+
+        assert!(
+            !stdout.contains(WASI_STDOUT_SENTINEL),
+            "validation component reached inherited process stdout:\n{stdout}",
+        );
+        assert!(
+            !stderr.contains(WASI_STDERR_SENTINEL),
+            "validation component reached inherited process stderr:\n{stderr}",
+        );
+        assert!(
+            child.status.success(),
+            "validation child failed; args/environment may have leaked\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        );
+        return;
+    }
+
     const METADATA_SENTINEL: &str = "arclain-malicious-metadata-sentinel.txt";
     const INIT_SENTINEL: &str = "arclain-malicious-init-sentinel.txt";
 
@@ -114,7 +212,7 @@ fn malicious_metadata_cannot_escape_validation_sandbox_or_run_init() {
 
     assert!(
         matches!(result, Err(crate::types::PluginError::InvalidManifest(_))),
-        "metadata retrieval must reach PluginId validation without calling init: {result:?}",
+        "metadata retrieval must hide args/environment, skip init, and reach invalid PluginId rejection: {result:?}",
     );
     assert!(
         !metadata_sentinel.exists(),
