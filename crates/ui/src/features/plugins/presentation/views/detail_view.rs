@@ -206,7 +206,7 @@ pub fn render(
                             app.signals.user_config.set(app.user_config.clone());
                             drop(app);
                             if let Some(client) = &http_client {
-                                client.update_plugin_proxy_map(proxy_map);
+                                client.apply_plugin_proxy_map(proxy_map);
                             }
                             needs_refresh = true;
                         }

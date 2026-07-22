@@ -974,7 +974,7 @@ mod tests {
         );
         client.replace_plugin_manifest_domains(plugin_id, &["1.1.1.1".to_string()]);
         if proxy_address.is_some() {
-            client.update_plugin_proxy_map(HashMap::from([(plugin_id.to_string(), true)]));
+            client.apply_plugin_proxy_map(HashMap::from([(plugin_id.to_string(), true)]));
         }
         client
     }

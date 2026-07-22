@@ -201,10 +201,26 @@ pub(crate) struct PendingEntry {
     completion: RequestCompletion,
 }
 
+struct ProxyRuntimeState {
+    proxy_config: Option<ProxyConfig>,
+    plugin_proxy_map: HashMap<String, bool>,
+    client_proxied: reqwest::Client,
+}
+
+impl ProxyRuntimeState {
+    fn new(proxy_config: Option<ProxyConfig>, plugin_proxy_map: HashMap<String, bool>) -> Self {
+        let client_proxied = AsyncHttpClient::build_client(proxy_config.clone());
+        Self {
+            proxy_config,
+            plugin_proxy_map,
+            client_proxied,
+        }
+    }
+}
+
 struct PluginRequestContext {
-    plugin_proxy_map: RwLock<HashMap<String, bool>>,
+    proxy_runtime: RwLock<ProxyRuntimeState>,
     plugin_policies: RwLock<HashMap<String, PluginNetworkPolicy>>,
-    proxy_config: RwLock<Option<ProxyConfig>>,
     rate_limiter: RwLock<RateLimiter>,
     whitelist: Arc<RwLock<DomainWhitelist>>,
     #[cfg(test)]
@@ -341,14 +357,27 @@ impl PluginRequestContext {
             });
         }
 
-        let use_proxy = *self
-            .plugin_proxy_map
-            .read()
-            .get(plugin_id)
-            .unwrap_or(&false);
+        let proxy_config = {
+            let runtime = self.proxy_runtime.read();
+            if *runtime.plugin_proxy_map.get(plugin_id).unwrap_or(&false) {
+                Some(
+                    runtime
+                        .proxy_config
+                        .as_ref()
+                        .filter(|config| config.enabled)
+                        .cloned()
+                        .ok_or_else(|| HttpError::RequestFailed {
+                            message: "plugin is configured to use a proxy, but no enabled proxy is configured"
+                                .to_string(),
+                        })?,
+                )
+            } else {
+                None
+            }
+        };
         Ok(AuthorizedPluginTarget {
             url,
-            use_proxy,
+            proxy_config,
             resolved,
         })
     }
@@ -364,23 +393,7 @@ impl PluginRequestContext {
             url::Host::Ipv4(address) => address.to_string(),
             url::Host::Ipv6(address) => address.to_string(),
         };
-        let proxy_config = if target.use_proxy {
-            let config = self
-                .proxy_config
-                .read()
-                .as_ref()
-                .filter(|config| config.enabled)
-                .cloned()
-                .ok_or_else(|| HttpError::RequestFailed {
-                    message:
-                        "plugin is configured to use a proxy, but no enabled proxy is configured"
-                            .to_string(),
-                })?;
-            Some(config)
-        } else {
-            None
-        };
-        let proxy_resolved = target.use_proxy.then(|| {
+        let proxy_resolved = target.proxy_config.is_some().then(|| {
             target
                 .resolved
                 .iter()
@@ -405,7 +418,7 @@ impl PluginRequestContext {
         let mut builder =
             AsyncHttpClient::client_builder().resolve_to_addrs(&host, pinned_addresses);
 
-        if let Some(config) = proxy_config {
+        if let Some(config) = target.proxy_config.as_ref() {
             let proxy = config
                 .create_pinned_proxy()
                 .map_err(|message| HttpError::RequestFailed { message })?;
@@ -504,11 +517,9 @@ impl PluginRequestContext {
 /// Async HTTP client with security features
 pub struct AsyncHttpClient {
     /// Client for direct connections (no proxy)
-    client_direct: RwLock<reqwest::Client>,
-    /// Client for proxied connections (uses ProxyConfig if enabled)
-    client_proxied: RwLock<reqwest::Client>,
+    client_direct: reqwest::Client,
 
-    /// Map of plugin_id -> use_proxy
+    /// Checked request policy plus the atomically applied proxy runtime.
     plugin_context: Arc<PluginRequestContext>,
     /// Pending requests
     pending: Arc<Mutex<HashMap<RequestId, PendingEntry>>>,
@@ -526,15 +537,12 @@ impl AsyncHttpClient {
         proxy_config: Option<ProxyConfig>,
     ) -> Self {
         let client_direct = Self::build_client(None);
-        let client_proxied = Self::build_client(proxy_config.clone());
 
         Self {
-            client_direct: RwLock::new(client_direct),
-            client_proxied: RwLock::new(client_proxied),
+            client_direct,
             plugin_context: Arc::new(PluginRequestContext {
-                plugin_proxy_map: RwLock::new(HashMap::new()),
+                proxy_runtime: RwLock::new(ProxyRuntimeState::new(proxy_config, HashMap::new())),
                 plugin_policies: RwLock::new(HashMap::new()),
-                proxy_config: RwLock::new(proxy_config),
                 rate_limiter: RwLock::new(RateLimiter::default()),
                 whitelist,
                 #[cfg(test)]
@@ -549,12 +557,20 @@ impl AsyncHttpClient {
         }
     }
 
-    /// Update client configuration (e.g. proxy settings)
-    pub fn update_config(&self, proxy_config: Option<ProxyConfig>) {
-        let new_proxied = Self::build_client(proxy_config.clone());
-        *self.client_proxied.write() = new_proxied;
-        *self.plugin_context.proxy_config.write() = proxy_config;
-        info!("AsyncHttpClient proxied configuration updated");
+    /// Atomically replace the proxy transport and effective plugin routing.
+    ///
+    /// Building the derived host client happens before the write lock is
+    /// acquired. Readers therefore observe either the complete previous state
+    /// or the complete replacement, never a new transport with an old route
+    /// map (or vice versa).
+    pub fn apply_proxy_routing(
+        &self,
+        proxy_config: Option<ProxyConfig>,
+        plugin_proxy_map: HashMap<String, bool>,
+    ) {
+        let replacement = ProxyRuntimeState::new(proxy_config, plugin_proxy_map);
+        *self.plugin_context.proxy_runtime.write() = replacement;
+        info!("AsyncHttpClient proxy routing updated");
     }
 
     /// Register the network capability and request budget for a plugin.
@@ -604,17 +620,18 @@ impl AsyncHttpClient {
             .unwrap_or(0)
     }
 
-    /// Update the plugin proxy map
-    pub fn update_plugin_proxy_map(&self, map: HashMap<String, bool>) {
-        *self.plugin_context.plugin_proxy_map.write() = map;
+    /// Atomically replace only per-plugin routing while retaining transport.
+    pub fn apply_plugin_proxy_map(&self, map: HashMap<String, bool>) {
+        self.plugin_context.proxy_runtime.write().plugin_proxy_map = map;
     }
 
     /// Check if a plugin should use the proxy
     pub fn should_use_proxy_for_plugin(&self, plugin_id: &str) -> bool {
         *self
             .plugin_context
-            .plugin_proxy_map
+            .proxy_runtime
             .read()
+            .plugin_proxy_map
             .get(plugin_id)
             .unwrap_or(&false)
     }
@@ -763,9 +780,13 @@ impl AsyncHttpClient {
 
         // Clone what we need for the async task
         let client = if use_proxy {
-            self.client_proxied.read().clone()
+            self.plugin_context
+                .proxy_runtime
+                .read()
+                .client_proxied
+                .clone()
         } else {
-            self.client_direct.read().clone()
+            self.client_direct.clone()
         };
 
         let request_id = id.clone();
@@ -1009,9 +1030,13 @@ impl AsyncHttpClient {
         F: FnOnce(&StreamingResponseMetadata) -> Result<(), String>,
     {
         let client = if use_proxy {
-            self.client_proxied.read().clone()
+            self.plugin_context
+                .proxy_runtime
+                .read()
+                .client_proxied
+                .clone()
         } else {
-            self.client_direct.read().clone()
+            self.client_direct.clone()
         };
         let url_owned = url.to_string();
         let start = start_byte;
@@ -1121,9 +1146,13 @@ impl AsyncHttpClient {
     /// This uses block_on to wait for the async request to complete.
     pub fn blocking_get(&self, url: &str, use_proxy: bool) -> Result<Vec<u8>, String> {
         let client = if use_proxy {
-            self.client_proxied.read().clone()
+            self.plugin_context
+                .proxy_runtime
+                .read()
+                .client_proxied
+                .clone()
         } else {
-            self.client_direct.read().clone()
+            self.client_direct.clone()
         };
         let url = url.to_string();
 
@@ -1587,5 +1616,186 @@ mod dlsite_url_tests {
             .expect("redirect target request was not received");
         assert!(!redirected.headers.contains_key("cookie"));
         assert!(!redirected.headers.contains_key("referer"));
+    }
+}
+
+#[cfg(test)]
+mod proxy_routing_atomicity_tests {
+    use super::{AsyncHttpClient, ProxyRuntimeState};
+    use crate::features::proxy::ProxyConfig;
+    use crate::features::request::PluginNetworkPolicy;
+    use crate::features::whitelist::DomainWhitelist;
+    use crate::{HttpRequest, RequestStatus};
+    use parking_lot::RwLock;
+    use std::collections::HashMap;
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::runtime::Handle;
+
+    async fn observe_one_socks_connect(listener: TcpListener) -> std::net::SocketAddr {
+        let (mut socket, _) = listener.accept().await.expect("accept SOCKS5 client");
+        let mut greeting = [0_u8; 3];
+        socket
+            .read_exact(&mut greeting)
+            .await
+            .expect("read SOCKS5 greeting");
+        assert_eq!(greeting, [0x05, 0x01, 0x00]);
+        socket
+            .write_all(&[0x05, 0x00])
+            .await
+            .expect("select SOCKS5 no-auth");
+
+        let mut prefix = [0_u8; 4];
+        socket
+            .read_exact(&mut prefix)
+            .await
+            .expect("read SOCKS5 CONNECT prefix");
+        assert_eq!(&prefix[..3], &[0x05, 0x01, 0x00]);
+        assert_eq!(prefix[3], 0x01, "checked routing must use pinned IPv4");
+        let mut address = [0_u8; 4];
+        socket
+            .read_exact(&mut address)
+            .await
+            .expect("read SOCKS5 destination address");
+        let mut port = [0_u8; 2];
+        socket
+            .read_exact(&mut port)
+            .await
+            .expect("read SOCKS5 destination port");
+        socket
+            .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await
+            .expect("acknowledge SOCKS5 CONNECT");
+
+        std::net::SocketAddr::new(address.into(), u16::from_be_bytes(port))
+    }
+
+    async fn assert_overlapping_enable_never_reaches_direct(
+        initial_proxy: Option<ProxyConfig>,
+        initial_map: HashMap<String, bool>,
+    ) {
+        const PLUGIN_ID: &str = "routing-race-plugin";
+        const TARGET_HOST: &str = "routing-race.test";
+
+        let direct_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct sentinel");
+        let direct_address = direct_listener
+            .local_addr()
+            .expect("direct sentinel address");
+        let proxy_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind SOCKS5 sentinel");
+        let proxy_address = proxy_listener.local_addr().expect("SOCKS5 address");
+        let proxy_observer = tokio::spawn(observe_one_socks_connect(proxy_listener));
+
+        let whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
+        whitelist.write().approve(PLUGIN_ID, TARGET_HOST);
+        let client = Arc::new(AsyncHttpClient::new(
+            Handle::current(),
+            whitelist,
+            initial_proxy.clone(),
+        ));
+        client.configure_plugin(
+            PLUGIN_ID,
+            PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 60,
+            },
+        );
+        client.allow_special_plugin_addresses_for_test();
+        client.set_plugin_dns_answers_for_test(TARGET_HOST, vec![vec![direct_address]]);
+        client.apply_proxy_routing(initial_proxy, initial_map);
+
+        let enabled_proxy = ProxyConfig {
+            enabled: true,
+            address: proxy_address.to_string(),
+            username: None,
+            password: None,
+        };
+        let enabled_map = HashMap::from([(PLUGIN_ID.to_string(), true)]);
+        let (installed_sender, installed_receiver) = mpsc::sync_channel(0);
+        let (release_sender, release_receiver) = mpsc::sync_channel(0);
+        let transition_client = client.clone();
+        let transition = std::thread::spawn(move || {
+            let replacement = ProxyRuntimeState::new(Some(enabled_proxy), enabled_map);
+            let mut runtime = transition_client.plugin_context.proxy_runtime.write();
+            *runtime = replacement;
+            installed_sender
+                .send(())
+                .expect("announce installed routing state");
+            release_receiver
+                .recv()
+                .expect("receive routing-state release");
+        });
+        installed_receiver
+            .recv()
+            .expect("routing transition did not install state");
+
+        let request = client
+            .request_for_plugin(
+                PLUGIN_ID,
+                HttpRequest::get(format!(
+                    "http://{TARGET_HOST}:{}/resource",
+                    direct_address.port()
+                ))
+                .with_timeout(Duration::from_secs(1)),
+            )
+            .expect("checked request should start");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while client.plugin_dns_lookup_count_for_test(TARGET_HOST) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("checked request did not reach authorization");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), direct_listener.accept())
+                .await
+                .is_err(),
+            "checked request escaped directly while routing activation was locked"
+        );
+
+        release_sender.send(()).expect("release routing transition");
+        transition.join().expect("routing transition panicked");
+        let destination = tokio::time::timeout(Duration::from_secs(2), proxy_observer)
+            .await
+            .expect("checked request never reached SOCKS5")
+            .expect("SOCKS5 observer panicked");
+        assert_eq!(destination, direct_address);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), direct_listener.accept())
+                .await
+                .is_err(),
+            "checked request reached the direct target after proxy activation"
+        );
+        assert!(
+            matches!(
+                client.await_complete(&request).await,
+                Some(RequestStatus::Failed(_))
+            ),
+            "sentinel SOCKS5 connection should close before an HTTP response"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn global_proxy_enable_is_atomic_with_checked_request_routing() {
+        assert_overlapping_enable_never_reaches_direct(None, HashMap::new()).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn per_plugin_proxy_opt_in_is_atomic_with_checked_request_routing() {
+        assert_overlapping_enable_never_reaches_direct(
+            Some(ProxyConfig {
+                enabled: true,
+                address: "127.0.0.1:9".to_string(),
+                username: None,
+                password: None,
+            }),
+            HashMap::from([("routing-race-plugin".to_string(), false)]),
+        )
+        .await;
     }
 }

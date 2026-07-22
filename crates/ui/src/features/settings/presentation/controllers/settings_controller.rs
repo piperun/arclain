@@ -328,11 +328,7 @@ pub fn handle_action(
             shared
                 .services
                 .async_http_client
-                .update_config(Some(config.clone()));
-            shared
-                .services
-                .async_http_client
-                .update_plugin_proxy_map(plugin_proxy_map);
+                .apply_proxy_routing(Some(config.clone()), plugin_proxy_map);
             log_saved_proxy_configuration(&config);
             tracing::info!("Network settings saved");
         }
@@ -539,15 +535,15 @@ mod tests {
             let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
             let mut services = Services::new(runtime);
             services.core.config_service = Some(config_service.clone());
-            services.async_http_client.update_config(Some(ProxyConfig {
-                enabled: previous.socks5_enabled,
-                address: previous.socks5_address.clone().unwrap(),
-                username: previous.socks5_username.clone(),
-                password: Some(previous_password.clone()),
-            }));
-            services
-                .async_http_client
-                .update_plugin_proxy_map(previous.get_plugin_proxy_settings());
+            services.async_http_client.apply_proxy_routing(
+                Some(ProxyConfig {
+                    enabled: previous.socks5_enabled,
+                    address: previous.socks5_address.clone().unwrap(),
+                    username: previous.socks5_username.clone(),
+                    password: Some(previous_password.clone()),
+                }),
+                previous.get_plugin_proxy_settings(),
+            );
 
             let signals = AppSignals::new();
             signals.user_config.set(previous.clone());
@@ -565,13 +561,19 @@ mod tests {
                 pending_plugin_events: Vec::new(),
                 signals: signals.clone(),
             };
+            let services = Arc::new(services);
+            let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
+                services.plugin_manager.clone(),
+                services.tokio_runtime.clone(),
+            );
             let shared = SharedState {
                 app_state: Arc::new(Mutex::new(app_state)),
-                services: Arc::new(services),
+                services,
                 theme: AppTheme::new(false),
                 toaster: Arc::new(Mutex::new(Toaster::new())),
                 refresh_requests: Arc::new(Mutex::new(Vec::new())),
                 pending_plugin_actions: Arc::new(Mutex::new(Vec::new())),
+                plugin_ui_jobs,
                 signals,
             };
 
@@ -902,7 +904,7 @@ mod tests {
             .shared
             .services
             .async_http_client
-            .update_plugin_proxy_map(Default::default());
+            .apply_plugin_proxy_map(Default::default());
         assert!(
             !fixture
                 .shared

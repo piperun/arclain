@@ -56,8 +56,7 @@ pub fn resolve_proxy_config(user_config: &UserConfig, secrets: &SecretsDb) -> Op
 }
 
 fn clear_proxy_transport(client: &AsyncHttpClient, user_config: &UserConfig) {
-    client.update_config(None);
-    client.update_plugin_proxy_map(effective_plugin_proxy_map(user_config));
+    client.apply_proxy_routing(None, effective_plugin_proxy_map(user_config));
 }
 
 /// Apply proxy configuration to the HTTP client
@@ -79,9 +78,7 @@ pub fn apply_proxy_to_client(
         }
 
         tracing::info!("[Proxy] Enabling {}", config.log_summary());
-        client.update_config(Some(config));
-
-        client.update_plugin_proxy_map(effective_plugin_proxy_map(user_config));
+        client.apply_proxy_routing(Some(config), effective_plugin_proxy_map(user_config));
     } else {
         if user_config.socks5_enabled {
             tracing::warn!(

@@ -327,20 +327,21 @@ async fn plugin_policy_socks_connector_sends_the_pinned_ip_not_the_hostname() {
             .unwrap();
     });
 
+    let proxy_config = ProxyConfig {
+        enabled: true,
+        address: proxy_address.to_string(),
+        username: None,
+        password: None,
+    };
     let client = AsyncHttpClient::new(
         Handle::current(),
         Arc::new(parking_lot::RwLock::new(DomainWhitelist::default())),
-        Some(ProxyConfig {
-            enabled: true,
-            address: proxy_address.to_string(),
-            username: None,
-            password: None,
-        }),
+        Some(proxy_config.clone()),
     );
     let pinned_ip = "93.184.216.34".parse().unwrap();
     let target = AuthorizedPluginTarget {
         url: url::Url::parse("http://pinned.example/resource").unwrap(),
-        use_proxy: true,
+        proxy_config: Some(proxy_config),
         resolved: vec![std::net::SocketAddr::new(pinned_ip, 80)],
     };
     let pinned_client = client
@@ -382,7 +383,7 @@ async fn assert_proxied_ipv6_literal_fails_closed(url: &str) {
         }),
     );
     configure_enabled_plugin(&client, "plugin-a", 60);
-    client.update_plugin_proxy_map(std::collections::HashMap::from([(
+    client.apply_plugin_proxy_map(std::collections::HashMap::from([(
         "plugin-a".to_string(),
         true,
     )]));
@@ -513,7 +514,7 @@ async fn plugin_policy_public_ipv6_literal_builds_a_direct_pinned_target_without
                 expected_port,
             )]
         );
-        assert!(!target.use_proxy);
+        assert!(target.proxy_config.is_none());
         client
             .build_pinned_plugin_client(&target)
             .expect("build direct public IPv6 client");
@@ -587,7 +588,7 @@ async fn plugin_policy_proxy_selection_fails_closed_without_an_enabled_proxy() {
         configure_enabled_plugin(&client, "plugin-a", 60);
         client.allow_special_plugin_addresses_for_test();
         client.set_plugin_dns_answers_for_test("proxy-required.test", vec![vec![address]]);
-        client.update_plugin_proxy_map(std::collections::HashMap::from([(
+        client.apply_plugin_proxy_map(std::collections::HashMap::from([(
             "plugin-a".to_string(),
             true,
         )]));
@@ -653,7 +654,12 @@ async fn pinned_plugin_client_rejects_proxy_address_userinfo_without_leaking_sec
     );
     let target = AuthorizedPluginTarget {
         url: url::Url::parse("http://pinned.example/resource").unwrap(),
-        use_proxy: true,
+        proxy_config: Some(ProxyConfig {
+            enabled: true,
+            address: format!("{ADDRESS_USER}:{ADDRESS_PASSWORD}@{proxy_address}"),
+            username: Some(DIRECT_USER.to_string()),
+            password: Some(DIRECT_PASSWORD.to_string()),
+        }),
         resolved: vec!["93.184.216.34:80".parse().unwrap()],
     };
 
@@ -1320,7 +1326,7 @@ async fn test_proxy_application_failure() {
     // Enable proxy for test plugin
     let mut map = std::collections::HashMap::new();
     map.insert("test-plugin".to_string(), true);
-    client.update_plugin_proxy_map(map);
+    client.apply_plugin_proxy_map(map.clone());
 
     // Use request_for_plugin to trigger proxy usage
     // Note: This relies on whitelist check passing. MockServer usually binds to 127.0.0.1.
@@ -1383,7 +1389,7 @@ async fn test_runtime_config_update() {
     // Configure test plugin to use proxy (when enabled)
     let mut map = std::collections::HashMap::new();
     map.insert("test-plugin".to_string(), true);
-    client.update_plugin_proxy_map(map);
+    client.apply_plugin_proxy_map(map.clone());
 
     // 1. A plugin explicitly routed through a proxy must fail closed when no
     // proxy is configured.
@@ -1406,7 +1412,7 @@ async fn test_runtime_config_update() {
         username: None,
         password: None,
     };
-    client.update_config(Some(proxy_config));
+    client.apply_proxy_routing(Some(proxy_config), map.clone());
 
     // 3. Verify request now fails (because "test-plugin" is mapped to true)
     let id = client
@@ -1428,7 +1434,7 @@ async fn test_runtime_config_update() {
         address: "127.0.0.1:0".to_string(),
         ..Default::default()
     };
-    client.update_config(Some(direct_config));
+    client.apply_proxy_routing(Some(direct_config), map);
 
     // 5. Verify a disabled proxy does not silently become a direct request.
     let id = client
@@ -1445,7 +1451,7 @@ async fn test_runtime_config_update() {
 
     // 6. Explicitly route the plugin directly, then host-only direct behavior
     // remains available.
-    client.update_plugin_proxy_map(std::collections::HashMap::from([(
+    client.apply_plugin_proxy_map(std::collections::HashMap::from([(
         "test-plugin".to_string(),
         false,
     )]));

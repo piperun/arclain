@@ -18,7 +18,7 @@ pub struct PluginNetworkPolicy {
 /// A plugin target whose URL and resolved addresses passed policy checks.
 pub(crate) struct AuthorizedPluginTarget {
     pub(crate) url: Url,
-    pub(crate) use_proxy: bool,
+    pub(crate) proxy_config: Option<crate::features::proxy::ProxyConfig>,
     pub(crate) resolved: Vec<SocketAddr>,
 }
 

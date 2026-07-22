@@ -179,7 +179,7 @@ impl AppState {
         // initialization fails before the proxy credentials can be loaded.
         services
             .async_http_client
-            .update_plugin_proxy_map(effective_plugin_proxy_map(&me.user_config));
+            .apply_proxy_routing(None, effective_plugin_proxy_map(&me.user_config));
         info!("Initialized HTTP client proxy settings");
 
         // Open Databases and Init Services

@@ -234,7 +234,7 @@ mod tests {
         let mut services = Services::new(runtime);
         services
             .async_http_client
-            .update_plugin_proxy_map(crate::utilities::effective_plugin_proxy_map(&config));
+            .apply_plugin_proxy_map(crate::utilities::effective_plugin_proxy_map(&config));
 
         let error = services.init_db_services(&dbs, &paths).unwrap_err();
 
