@@ -9,6 +9,7 @@
 //! - DLsite code detection
 //! - Password matching
 
+pub mod checked_relative_path;
 pub mod checksum_service;
 
 pub mod dlsite;
@@ -19,6 +20,8 @@ pub mod process;
 pub mod time;
 pub mod title_filter;
 
+#[allow(unused_imports)] // Internal boundary for archive and plan consumers.
+pub(crate) use checked_relative_path::CheckedRelativePath;
 pub use checksum_service::{ChecksumService, RecoveryAction, VerifyResult};
 pub use dlsite::{detect_dlsite_code, has_dlsite_code};
 pub use file_opener::{FileOpener, OpenStrategy};
