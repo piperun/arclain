@@ -50,3 +50,5 @@ nul
 # Python bytecode cache (scripts/ helpers + tests)
 __pycache__/
 *.pyc
+.docs-vault.json
+.worktrees/
