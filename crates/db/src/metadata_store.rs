@@ -1,7 +1,7 @@
 use crate::cache;
 use crate::library;
 use crate::{DieselPool, SqliteDb};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 /// The MetadataStore manages persistent metadata storage.
@@ -20,9 +20,14 @@ pub struct MetadataStore {
 }
 
 impl MetadataStore {
-    pub fn new(db: SqliteDb, pool: DieselPool, root_path: PathBuf, db_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        db: SqliteDb,
+        pool: DieselPool,
+        root_path: PathBuf,
+        db_path: Option<PathBuf>,
+    ) -> Result<Self> {
         // Run schema migration (old arclain → gameta format)
-        if let Err(e) = db.with_connection(|conn| {
+        db.with_connection(|conn| {
             match library::migration::migrate_to_gameta_schema(conn, db_path.as_deref())? {
                 library::migration::MigrationResult::NotNeeded => {}
                 library::migration::MigrationResult::Migrated { total, converted } => {
@@ -34,24 +39,19 @@ impl MetadataStore {
                 }
             }
             Ok(())
-        }) {
-            tracing::error!("Failed to run schema migration: {}", e);
-        }
+        })
+        .context("migrate product_metadata schema")?;
 
         // Ensure gameta product_metadata table exists (idempotent)
-        if let Err(e) = db.with_connection(|conn| {
-            library::migration::ensure_gameta_product_metadata_schema(conn)
-        }) {
-            tracing::error!("Failed to ensure product_metadata schema: {}", e);
-        }
+        db.with_connection(|conn| library::migration::ensure_gameta_product_metadata_schema(conn))
+            .context("ensure product_metadata schema")?;
 
         // Initialize product_content table (arclain-specific, not in gameta)
-        if let Err(e) = db.with_connection(|conn| {
+        db.with_connection(|conn| {
             conn.execute_batch(library::content::CREATE_TABLE_SQL)?;
             Ok(())
-        }) {
-            tracing::error!("Failed to init ProductContent schema: {}", e);
-        }
+        })
+        .context("initialize product_content schema")?;
 
         // Drop legacy table if it exists
         if let Err(e) = db.with_connection(|conn| {
@@ -82,7 +82,7 @@ impl MetadataStore {
             }
         }
 
-        store
+        Ok(store)
     }
 
     pub fn db(&self) -> &SqliteDb {

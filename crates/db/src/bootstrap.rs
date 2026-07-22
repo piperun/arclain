@@ -86,7 +86,13 @@ pub fn open_databases(paths: &DbPaths, key: &SecretsKey) -> Result<ConfigDbs> {
                 .unwrap_or(Path::new("."))
                 .join("metadata"),
             Some(paths.cache_db.clone()),
-        ),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to initialize metadata store at {:?}",
+                paths.cache_db
+            )
+        })?,
         config_pool,
         cache_pool,
     })

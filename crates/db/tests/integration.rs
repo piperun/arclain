@@ -108,7 +108,8 @@ mod store_tests {
             pool,
             temp_dir.path().to_path_buf(),
             Some(db_path),
-        );
+        )
+        .unwrap();
 
         // Store should be constructed without errors (schema init, migration)
     }
@@ -127,7 +128,8 @@ mod store_tests {
                 pool,
                 temp_dir.path().to_path_buf(),
                 Some(db_path.clone()),
-            );
+            )
+            .unwrap();
         }
 
         // Second session — should not error on re-opening
@@ -139,7 +141,8 @@ mod store_tests {
                 pool,
                 temp_dir.path().to_path_buf(),
                 Some(db_path),
-            );
+            )
+            .unwrap();
         }
     }
 
@@ -156,7 +159,8 @@ mod store_tests {
             pool,
             temp_dir.path().to_path_buf(),
             Some(db_path),
-        );
+        )
+        .unwrap();
 
         // Cache operations should work after construction
         let stats = store.get_cache_stats();
@@ -165,5 +169,75 @@ mod store_tests {
         let hashes = store.get_all_content_hashes();
         assert!(hashes.is_ok());
         assert!(hashes.unwrap().is_empty());
+    }
+
+    #[test]
+    fn metadata_store_aborts_when_recognized_legacy_schema_is_invalid() {
+        let temp_dir = setup_temp_dir();
+        let db_path = temp_dir.path().join("invalid_legacy.db");
+        let sqlite_db = SqliteDb::open(&db_path).unwrap();
+        let pool = DieselPool::new(&db_path).unwrap();
+
+        // `genres_json` is what recognizes the old schema. Deliberately omit
+        // columns the legacy row reader requires so migration must fail before
+        // its transactional destructive work begins.
+        sqlite_db
+            .with_connection(|conn| {
+                conn.execute_batch(
+                    "CREATE TABLE product_metadata (
+                        id TEXT PRIMARY KEY,
+                        source TEXT NOT NULL,
+                        external_id TEXT NOT NULL,
+                        genres_json TEXT,
+                        cached_at TEXT NOT NULL
+                    );
+                    INSERT INTO product_metadata (
+                        id, source, external_id, genres_json, cached_at
+                    ) VALUES (
+                        'legacy:invalid', 'legacy', 'invalid', '[]',
+                        '2024-01-01T00:00:00Z'
+                    );",
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let result = MetadataStore::new(
+            sqlite_db.clone(),
+            pool,
+            temp_dir.path().to_path_buf(),
+            Some(db_path),
+        );
+        assert!(
+            result.is_err(),
+            "MetadataStore::new must abort when a recognized legacy schema cannot migrate"
+        );
+        let error = match result {
+            Ok(_) => unreachable!("constructor success was asserted above"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("migrate product_metadata schema"),
+            "migration context missing from constructor error: {error:#}"
+        );
+
+        sqlite_db
+            .with_connection(|conn| {
+                let row: (String, String) =
+                    conn.query_row("SELECT id, cached_at FROM product_metadata", [], |row| {
+                        Ok((row.get(0)?, row.get(1)?))
+                    })?;
+                assert_eq!(
+                    row,
+                    (
+                        "legacy:invalid".to_string(),
+                        "2024-01-01T00:00:00Z".to_string()
+                    )
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 }
