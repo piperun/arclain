@@ -41,7 +41,7 @@ impl EncryptedCrcPolicy {
 }
 
 /// Actions that can be triggered from settings pages
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum SettingsAction {
     /// Save security settings
     SaveSecurity {
@@ -106,6 +106,107 @@ pub enum SettingsAction {
     NavigateTo(crate::core::navigation::SettingsPage),
     /// Save the currently edited organization rule
     SaveEditedRule,
+}
+
+fn redacted_optional(value: &Option<String>) -> Option<&'static str> {
+    value.as_ref().map(|_| "[REDACTED]")
+}
+
+impl std::fmt::Debug for SettingsAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SaveSecurity {
+                key_file_path,
+                secrets_db_path,
+                encrypted_crc_policy,
+            } => f
+                .debug_struct("SaveSecurity")
+                .field("key_file_path", key_file_path)
+                .field("secrets_db_path", secrets_db_path)
+                .field("encrypted_crc_policy", encrypted_crc_policy)
+                .finish(),
+            Self::MoveVault { dest_path } => f
+                .debug_struct("MoveVault")
+                .field("dest_path", dest_path)
+                .finish(),
+            Self::RekeyVault { new_key_file_path } => f
+                .debug_struct("RekeyVault")
+                .field("new_key_file_path", new_key_file_path)
+                .finish(),
+            Self::SavePasswordRules { rules } => f
+                .debug_struct("SavePasswordRules")
+                .field("rules_count", &rules.len())
+                .finish_non_exhaustive(),
+            Self::SaveArchives { temp_dir } => f
+                .debug_struct("SaveArchives")
+                .field("temp_dir", temp_dir)
+                .finish(),
+            Self::InstallPlugin { wasm_path } => f
+                .debug_struct("InstallPlugin")
+                .field("wasm_path", wasm_path)
+                .finish(),
+            Self::ClearCacheIndex => f.write_str("ClearCacheIndex"),
+            Self::ClearCacheContent => f.write_str("ClearCacheContent"),
+            Self::GarbageCollectCache => f.write_str("GarbageCollectCache"),
+            Self::CleanOldSearchCache => f.write_str("CleanOldSearchCache"),
+            Self::MigrateCacheEntries => f.write_str("MigrateCacheEntries"),
+            Self::SaveGeneral {
+                open_nested_in_new_tab,
+                drop_behavior,
+                restore_tabs_on_launch,
+            } => f
+                .debug_struct("SaveGeneral")
+                .field("open_nested_in_new_tab", open_nested_in_new_tab)
+                .field("drop_behavior", drop_behavior)
+                .field("restore_tabs_on_launch", restore_tabs_on_launch)
+                .finish(),
+            Self::SaveNetwork {
+                socks5_enabled,
+                socks5_address,
+                socks5_username,
+                socks5_password,
+            } => f
+                .debug_struct("SaveNetwork")
+                .field("socks5_enabled", socks5_enabled)
+                .field("socks5_address", &redacted_optional(socks5_address))
+                .field("socks5_username", &redacted_optional(socks5_username))
+                .field("socks5_password", &redacted_optional(socks5_password))
+                .finish(),
+            Self::TestNetwork {
+                socks5_enabled,
+                socks5_address,
+                socks5_username,
+                socks5_password,
+            } => f
+                .debug_struct("TestNetwork")
+                .field("socks5_enabled", socks5_enabled)
+                .field("socks5_address", &redacted_optional(socks5_address))
+                .field("socks5_username", &redacted_optional(socks5_username))
+                .field("socks5_password", &redacted_optional(socks5_password))
+                .finish(),
+            Self::SaveKeyboardMouse { bindings } => f
+                .debug_struct("SaveKeyboardMouse")
+                .field("bindings", bindings)
+                .finish(),
+            Self::SaveServer {
+                enabled,
+                url,
+                api_key,
+            } => f
+                .debug_struct("SaveServer")
+                .field("enabled", enabled)
+                .field("url", url)
+                .field("api_key", &redacted_optional(api_key))
+                .finish(),
+            Self::TestServer { url, api_key } => f
+                .debug_struct("TestServer")
+                .field("url", url)
+                .field("api_key", &redacted_optional(api_key))
+                .finish(),
+            Self::NavigateTo(page) => f.debug_tuple("NavigateTo").field(page).finish(),
+            Self::SaveEditedRule => f.write_str("SaveEditedRule"),
+        }
+    }
 }
 
 use arclain_signals::Signal;
@@ -308,6 +409,72 @@ impl ChecksumAlgorithm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_action_debug_redacts_proxy_credentials() {
+        const ADDRESS_USER: &str = "proxy-address-user-b064";
+        const ADDRESS_PASSWORD: &str = "proxy-address-password-e912";
+        const USERNAME: &str = "proxy-debug-user-2e91";
+        const PASSWORD: &str = "proxy-debug-password-7a43";
+
+        for action in [
+            SettingsAction::SaveNetwork {
+                socks5_enabled: true,
+                socks5_address: Some(format!(
+                    "{ADDRESS_USER}:{ADDRESS_PASSWORD}@proxy.example:1080"
+                )),
+                socks5_username: Some(USERNAME.to_string()),
+                socks5_password: Some(PASSWORD.to_string()),
+            },
+            SettingsAction::TestNetwork {
+                socks5_enabled: true,
+                socks5_address: Some("proxy.example:1080".to_string()),
+                socks5_username: Some(USERNAME.to_string()),
+                socks5_password: Some(PASSWORD.to_string()),
+            },
+        ] {
+            let diagnostic = format!("{action:?}");
+            for credential in [ADDRESS_USER, ADDRESS_PASSWORD, USERNAME, PASSWORD] {
+                assert!(
+                    !diagnostic.contains(credential),
+                    "credential leaked: {diagnostic}"
+                );
+            }
+            assert!(diagnostic.contains("[REDACTED]"));
+        }
+    }
+
+    #[test]
+    fn settings_action_debug_redacts_other_secret_bearing_variants() {
+        const RULE_PASSWORD: &str = "rule-password-b129";
+        const API_KEY: &str = "server-api-key-d605";
+        let actions = [
+            SettingsAction::SavePasswordRules {
+                rules: vec![PasswordRule {
+                    name: "rule".to_string(),
+                    pattern: ".*".to_string(),
+                    password: RULE_PASSWORD.to_string(),
+                    priority: 1,
+                    enabled: true,
+                }],
+            },
+            SettingsAction::SaveServer {
+                enabled: true,
+                url: Some("https://server.example".to_string()),
+                api_key: Some(API_KEY.to_string()),
+            },
+            SettingsAction::TestServer {
+                url: "https://server.example".to_string(),
+                api_key: Some(API_KEY.to_string()),
+            },
+        ];
+
+        for action in actions {
+            let diagnostic = format!("{action:?}");
+            assert!(!diagnostic.contains(RULE_PASSWORD));
+            assert!(!diagnostic.contains(API_KEY));
+        }
+    }
 
     // =========================================================================
     // EncryptedCrcPolicy

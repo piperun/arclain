@@ -30,6 +30,22 @@ fn test_encrypt_decrypt() {
 }
 
 #[test]
+fn remove_secret_deletes_an_existing_value_and_is_idempotent() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("secrets.redb");
+    let db = SecretsDb::open(&db_path, &test_key()).unwrap();
+
+    db.set_secret("proxy:socks5", "remove-me").unwrap();
+    assert!(db.get_secret("proxy:socks5").unwrap().is_some());
+
+    db.remove_secret("proxy:socks5").unwrap();
+    assert!(db.get_secret("proxy:socks5").unwrap().is_none());
+
+    db.remove_secret("proxy:socks5").unwrap();
+    assert!(db.get_secret("proxy:socks5").unwrap().is_none());
+}
+
+#[test]
 fn test_crud_completeness() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("secrets.redb");

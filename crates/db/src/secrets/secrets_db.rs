@@ -228,6 +228,19 @@ impl SecretsDb {
             Ok(())
         })
     }
+
+    /// Remove a generic secret. Missing keys are treated as already removed.
+    pub fn remove_secret(&self, key: &str) -> Result<()> {
+        self.db.with_connection(|conn| {
+            let write_txn = conn.begin_write()?;
+            {
+                let mut table = write_txn.open_table(METADATA_TABLE)?;
+                table.remove(key)?;
+            }
+            write_txn.commit()?;
+            Ok(())
+        })
+    }
 }
 
 /// Internal structure for encrypted storage (includes password)

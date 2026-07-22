@@ -15,7 +15,7 @@ use std::path::PathBuf;
 /// User configuration settings stored in the database.
 ///
 /// This replaces the old config.json file-based storage.
-#[derive(Debug, Clone, Default, QueryableByName)]
+#[derive(Clone, Default, QueryableByName)]
 #[diesel(table_name = crate::diesel_schema::user_config)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct UserConfig {
@@ -90,6 +90,39 @@ pub struct UserConfig {
     /// Whether to restore the previous tab session on launch.
     /// Default: true (tabs.json is loaded on startup if it exists).
     pub restore_tabs_on_launch: bool,
+}
+
+impl std::fmt::Debug for UserConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let socks5_address = self.socks5_address.as_ref().map(|_| "[REDACTED]");
+        let socks5_username = self.socks5_username.as_ref().map(|_| "[REDACTED]");
+
+        f.debug_struct("UserConfig")
+            .field("id", &self.id)
+            .field("vault_path", &self.vault_path)
+            .field("cache_directory", &self.cache_directory)
+            .field("temp_dir", &self.temp_dir)
+            .field("sevenzip_path", &self.sevenzip_path)
+            .field("transfer_dir", &self.transfer_dir)
+            .field("backend_mode", &self.backend_mode)
+            .field("open_nested_in_new_tab", &self.open_nested_in_new_tab)
+            .field("enabled_plugins", &self.enabled_plugins)
+            .field("plugin_order", &self.plugin_order)
+            .field("plugin_visibility", &self.plugin_visibility)
+            .field("plugin_settings", &self.plugin_settings)
+            .field("toolbar_order", &self.toolbar_order)
+            .field("info_panel_order", &self.info_panel_order)
+            .field("socks5_address", &socks5_address)
+            .field("socks5_enabled", &self.socks5_enabled)
+            .field("socks5_username", &socks5_username)
+            .field("plugin_proxy_settings", &self.plugin_proxy_settings)
+            .field("hotkey_bindings", &self.hotkey_bindings)
+            .field("gameta_server_enabled", &self.gameta_server_enabled)
+            .field("gameta_server_url", &self.gameta_server_url)
+            .field("drop_behavior", &self.drop_behavior)
+            .field("restore_tabs_on_launch", &self.restore_tabs_on_launch)
+            .finish()
+    }
 }
 
 // rusqlite-side CRUD — replaces the four methods the old

@@ -256,11 +256,11 @@ pub fn handle_action(
             socks5_username,
             socks5_password,
         } => {
-            let mut config = ProxyConfig {
+            let config = ProxyConfig {
                 enabled: socks5_enabled,
                 address: socks5_address.clone().unwrap_or_default(),
                 username: socks5_username.clone(),
-                password: socks5_password,
+                password: socks5_password.filter(|password| !password.is_empty()),
             };
             if let Err(message) = config.validate_for_storage() {
                 tracing::warn!(
@@ -274,41 +274,81 @@ pub fn handle_action(
                 return;
             }
 
+            let Some(config_svc) = shared.services.config_service.as_ref() else {
+                tracing::error!("[SaveNetwork] ConfigService is unavailable");
+                shared
+                    .toaster
+                    .lock()
+                    .error("Network settings were not saved: configuration storage is unavailable");
+                return;
+            };
+
             let mut state = shared.app_state.lock();
-            state.user_config.socks5_enabled = socks5_enabled;
-            state.user_config.socks5_address = socks5_address.clone();
-            state.user_config.socks5_username = socks5_username.clone();
+            let Some(dbs) = state.dbs.as_ref() else {
+                tracing::error!("[SaveNetwork] SecretsDb is unavailable");
+                shared.toaster.lock().error(
+                    "Network settings were not saved: encrypted secrets storage is unavailable",
+                );
+                return;
+            };
+
+            let previous_password = match dbs.secrets.get_secret("proxy:socks5") {
+                Ok(password) => password,
+                Err(error) => {
+                    tracing::error!(
+                        "[SaveNetwork] Failed to read previous proxy password: {error}"
+                    );
+                    shared.toaster.lock().error(
+                        "Network settings were not saved: the previous proxy password could not be read",
+                    );
+                    return;
+                }
+            };
+
+            let password_result = match config.password.as_deref() {
+                Some(password) => dbs.secrets.set_secret("proxy:socks5", password),
+                None => dbs.secrets.remove_secret("proxy:socks5"),
+            };
+            if let Err(error) = password_result {
+                tracing::error!("[SaveNetwork] Failed to persist proxy password: {error}");
+                shared.toaster.lock().error(
+                    "Network settings were not saved: the proxy password could not be persisted",
+                );
+                return;
+            }
+
+            let mut candidate = state.user_config.clone();
+            candidate.socks5_enabled = socks5_enabled;
+            candidate.socks5_address = socks5_address;
+            candidate.socks5_username = socks5_username;
+
+            if let Err(error) = config_svc.save_user_config(&candidate) {
+                let rollback_result = match previous_password.as_deref() {
+                    Some(password) => dbs.secrets.set_secret("proxy:socks5", password),
+                    None => dbs.secrets.remove_secret("proxy:socks5"),
+                };
+                if let Err(rollback_error) = rollback_result {
+                    tracing::error!(
+                        "[SaveNetwork] Failed to restore proxy password after config save failure: {rollback_error}"
+                    );
+                }
+                tracing::error!("[SaveNetwork] Failed to save network settings: {error}");
+                shared
+                    .toaster
+                    .lock()
+                    .error("Network settings were not saved: configuration persistence failed");
+                return;
+            }
+
+            state.user_config = candidate;
             state.signals.user_config.set(state.user_config.clone());
-
-            // Handle password via secrets DB (not yet in ConfigService)
-            if let Some(ref dbs) = state.dbs {
-                if let Some(pwd) = &config.password {
-                    if let Err(e) = dbs.secrets.set_secret("proxy:socks5", pwd) {
-                        tracing::error!("Failed to save proxy password: {}", e);
-                    }
-                } else {
-                    // Try to load existing
-                    if let Ok(Some(existing)) = dbs.secrets.get_secret("proxy:socks5") {
-                        config.password = Some(existing.to_string());
-                    }
-                }
-            }
-
-            // Save config via ConfigService. Log only the redacted summary,
-            // never the direct password, which lives only in SecretsDb.
-            if let Some(ref config_svc) = shared.services.config_service {
-                match config_svc.save_user_config(&state.user_config) {
-                    Ok(_) => log_saved_proxy_configuration(&config),
-                    Err(e) => {
-                        tracing::error!("[SaveNetwork] Failed to save network settings: {}", e);
-                    }
-                }
-            }
+            drop(state);
 
             shared
                 .services
                 .async_http_client
-                .update_config(Some(config));
+                .update_config(Some(config.clone()));
+            log_saved_proxy_configuration(&config);
             tracing::info!("Network settings saved");
         }
         SettingsAction::TestNetwork {
@@ -552,8 +592,9 @@ mod tests {
         }
 
         fn assert_previous_settings_unchanged(&self) {
+            self.assert_previous_non_secret_settings_unchanged();
+
             let state = self.shared.app_state.lock();
-            assert_proxy_fields_eq(&state.user_config, &self.previous, "app state");
             let secret = state
                 .dbs
                 .as_ref()
@@ -563,6 +604,11 @@ mod tests {
                 .expect("read proxy secret")
                 .expect("previous proxy secret remains");
             assert_eq!(&*secret, self.previous_password.as_str());
+        }
+
+        fn assert_previous_non_secret_settings_unchanged(&self) {
+            let state = self.shared.app_state.lock();
+            assert_proxy_fields_eq(&state.user_config, &self.previous, "app state");
             drop(state);
 
             let signal = self.shared.signals.user_config.get();
@@ -742,7 +788,7 @@ mod tests {
 
     #[traced_test]
     #[test]
-    fn save_network_accepts_blank_disabled_proxy() {
+    fn save_network_accepts_blank_disabled_proxy_and_removes_password() {
         let fixture = ProxySaveFixture::new();
 
         handle_action(
@@ -750,7 +796,7 @@ mod tests {
                 socks5_enabled: false,
                 socks5_address: Some(String::new()),
                 socks5_username: None,
-                socks5_password: None,
+                socks5_password: Some(String::new()),
             },
             &mut SecuritySettingsState::default(),
             &mut ArchivesSettingsState::default(),
@@ -770,9 +816,8 @@ mod tests {
             .unwrap()
             .secrets
             .get_secret("proxy:socks5")
-            .unwrap()
             .unwrap();
-        assert_eq!(&*secret, fixture.previous_password.as_str());
+        assert!(secret.is_none(), "blank password did not remove the secret");
         drop(state);
 
         let persisted = fixture.config_service.get_user_config().unwrap();
@@ -782,5 +827,83 @@ mod tests {
         assert!(!format!("{:?}", fixture.shared.toaster.lock()).contains("Error"));
         assert!(!logs_contain("Refusing to save invalid proxy"));
         assert!(logs_contain("Network settings saved"));
+    }
+
+    #[traced_test]
+    #[test]
+    fn config_persistence_failure_rolls_back_secret_and_does_not_apply() {
+        const NEW_PASSWORD: &str = "new-proxy-password-4b65";
+        let fixture = ProxySaveFixture::new();
+        {
+            let state = fixture.shared.app_state.lock();
+            state
+                .dbs
+                .as_ref()
+                .unwrap()
+                .config
+                .with_connection(|connection| {
+                    connection.execute_batch(
+                        "CREATE TRIGGER reject_proxy_config_save
+                         BEFORE INSERT ON user_config
+                         BEGIN
+                             SELECT RAISE(ABORT, 'injected proxy config failure');
+                         END;",
+                    )?;
+                    Ok(())
+                })
+                .expect("install failing config trigger");
+        }
+
+        handle_action(
+            SettingsAction::SaveNetwork {
+                socks5_enabled: true,
+                socks5_address: Some("127.0.0.1:1081".to_string()),
+                socks5_username: Some("new-proxy-user-9c17".to_string()),
+                socks5_password: Some(NEW_PASSWORD.to_string()),
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            &mut ServerSettingsState::default(),
+            &fixture.shared,
+        );
+
+        fixture.assert_previous_settings_unchanged();
+        fixture.assert_previous_runtime_proxy_unchanged();
+        let diagnostics = format!("{:?}", fixture.shared.toaster.lock());
+        assert!(diagnostics.contains("Network settings were not saved"));
+        assert!(!diagnostics.contains(NEW_PASSWORD));
+        assert!(!logs_contain(NEW_PASSWORD));
+    }
+
+    #[traced_test]
+    #[test]
+    fn unavailable_secrets_db_does_not_persist_or_apply_proxy() {
+        const NEW_PASSWORD: &str = "unavailable-db-password-8f32";
+        let fixture = ProxySaveFixture::new();
+        fixture.shared.app_state.lock().dbs = None;
+
+        handle_action(
+            SettingsAction::SaveNetwork {
+                socks5_enabled: false,
+                socks5_address: Some(String::new()),
+                socks5_username: None,
+                socks5_password: Some(NEW_PASSWORD.to_string()),
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            &mut ServerSettingsState::default(),
+            &fixture.shared,
+        );
+
+        fixture.assert_previous_non_secret_settings_unchanged();
+        fixture.assert_previous_runtime_proxy_unchanged();
+        let diagnostics = format!("{:?}", fixture.shared.toaster.lock());
+        assert!(diagnostics.contains("Network settings were not saved"));
+        assert!(!diagnostics.contains(NEW_PASSWORD));
+        assert!(!logs_contain(NEW_PASSWORD));
     }
 }

@@ -58,6 +58,27 @@ fn test_load_creates_default() {
 }
 
 #[test]
+fn debug_redacts_proxy_credentials() {
+    const ADDRESS_USER: &str = "config-address-user-a81f";
+    const ADDRESS_PASSWORD: &str = "config-address-password-c42d";
+    const USERNAME: &str = "config-proxy-user-e73b";
+    let mut config = UserConfig::new();
+    config.socks5_address = Some(format!(
+        "{ADDRESS_USER}:{ADDRESS_PASSWORD}@proxy.example:1080"
+    ));
+    config.socks5_username = Some(USERNAME.to_string());
+
+    let diagnostic = format!("{config:?}");
+    for credential in [ADDRESS_USER, ADDRESS_PASSWORD, USERNAME] {
+        assert!(
+            !diagnostic.contains(credential),
+            "proxy credential leaked: {diagnostic}"
+        );
+    }
+    assert!(diagnostic.contains("[REDACTED]"));
+}
+
+#[test]
 fn test_save_and_load() {
     let mut conn = setup_diesel_conn();
 
