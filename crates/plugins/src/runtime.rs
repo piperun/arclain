@@ -22,6 +22,23 @@ const EPOCH_TICK_INTERVAL: Duration = Duration::from_millis(10);
 const MAX_UI_ELEMENTS: usize = 10_000;
 const MAX_ACTIONS: usize = 1_024;
 const MAX_SERIALIZED_RESULT_BYTES: usize = 1024 * 1024;
+// Measured from the largest host-side representations permitted by the current
+// WIT result shapes: layout 2,568,576 bytes, top tabs 3,256,216 bytes, rules
+// 2,535,880 bytes, and actions 1,155,072 bytes. Eight MiB leaves more than 2x
+// headroom without retaining Wasmtime's unsafe 128 MiB default.
+const HOSTCALL_FUEL_BYTES: usize = 8 * 1024 * 1024;
+// Wasmtime 47.0.1 keeps this error type private, so classification is pinned to
+// the exact static root-cause text from component/func/options.rs.
+const WASMTIME_47_HOSTCALL_FUEL_EXHAUSTED: &str =
+    "too much data is being copied between the host and the guest: fuel allocated for hostcalls has been exhausted";
+// Wasmtime's ResourceLimiter count errors are likewise private. Keep these
+// locked-version strings exact so unrelated guest errors cannot be mistaken for
+// terminal quota failures or leak engine details through PluginError.
+const WASMTIME_47_INSTANCE_COUNT_EXCEEDED: &str =
+    "resource limit exceeded: instance count too high at 33";
+const WASMTIME_47_MEMORY_COUNT_EXCEEDED: &str =
+    "resource limit exceeded: memory count too high at 5";
+const WASMTIME_47_TABLE_COUNT_EXCEEDED: &str = "resource limit exceeded: table count too high at 9";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum QuotaViolation {
@@ -80,25 +97,77 @@ fn validate_serialized_result<T: Serialize + ?Sized>(
 fn validate_layout_result(
     layout: &crate::types::PluginLayout,
 ) -> std::result::Result<(), ResultValidationError> {
-    let mut pending = Vec::new();
+    fn charge_work(
+        total: &mut usize,
+        additional: usize,
+        limit: usize,
+    ) -> std::result::Result<(), ResultValidationError> {
+        *total = total
+            .checked_add(additional)
+            .ok_or(ResultValidationError::Quota(QuotaViolation::Result))?;
+        if *total > limit {
+            return Err(ResultValidationError::Quota(QuotaViolation::Result));
+        }
+        Ok(())
+    }
+
+    fn charge_elements(
+        roots: &[crate::types::PluginUiElement],
+        work: &mut usize,
+    ) -> std::result::Result<(), ResultValidationError> {
+        use crate::types::PluginUiElement;
+
+        let mut stack = vec![roots.iter()];
+        while let Some(element) = stack.last_mut().and_then(Iterator::next) {
+            charge_work(work, 1, MAX_UI_ELEMENTS)?;
+            match element {
+                PluginUiElement::RadioGroup { options, .. }
+                | PluginUiElement::Dropdown { options, .. } => {
+                    charge_work(work, options.len(), MAX_UI_ELEMENTS)?;
+                }
+                PluginUiElement::Tabs { tabs, .. } => {
+                    charge_work(work, tabs.len(), MAX_UI_ELEMENTS)?;
+                }
+                PluginUiElement::ListContainer { items, .. } => stack.push(items.iter()),
+                PluginUiElement::TagChips { tags, max_display } => {
+                    let display_limit = max_display
+                        .map(|limit| usize::try_from(limit).unwrap_or(usize::MAX))
+                        .unwrap_or(tags.len());
+                    let visible = display_limit.min(tags.len());
+                    let overflow_label = usize::from(visible < tags.len());
+                    charge_work(work, visible, MAX_UI_ELEMENTS)?;
+                    charge_work(work, overflow_label, MAX_UI_ELEMENTS)?;
+                }
+                PluginUiElement::Toolbar { buttons } => {
+                    charge_work(work, buttons.len(), MAX_UI_ELEMENTS)?;
+                }
+                PluginUiElement::Carousel { images, .. } => {
+                    charge_work(work, images.len(), MAX_UI_ELEMENTS)?;
+                }
+                PluginUiElement::KeyValueList { items, .. }
+                | PluginUiElement::MetadataGrid { items, .. } => {
+                    charge_work(work, items.len(), MAX_UI_ELEMENTS)?;
+                }
+                _ => {}
+            }
+
+            while stack.last().is_some_and(|elements| elements.len() == 0) {
+                stack.pop();
+            }
+        }
+        Ok(())
+    }
+
+    let mut work = 0usize;
     match layout {
-        crate::types::PluginLayout::Single { elements } => pending.extend(elements),
+        crate::types::PluginLayout::Single { elements } => {
+            charge_elements(elements, &mut work)?;
+        }
         crate::types::PluginLayout::Split {
             sidebar, content, ..
         } => {
-            pending.extend(sidebar);
-            pending.extend(content);
-        }
-    }
-
-    let mut element_count = 0usize;
-    while let Some(element) = pending.pop() {
-        element_count = element_count.saturating_add(1);
-        if element_count > MAX_UI_ELEMENTS {
-            return Err(ResultValidationError::Quota(QuotaViolation::Result));
-        }
-        if let crate::types::PluginUiElement::ListContainer { items, .. } = element {
-            pending.extend(items);
+            charge_elements(sidebar, &mut work)?;
+            charge_elements(content, &mut work)?;
         }
     }
 
@@ -108,8 +177,19 @@ fn validate_layout_result(
 fn validate_actions_result(
     actions: &[crate::types::PluginAction],
 ) -> std::result::Result<(), ResultValidationError> {
-    if actions.len() > MAX_ACTIONS {
-        return Err(ResultValidationError::Quota(QuotaViolation::Result));
+    let mut work = 0usize;
+    for action in actions {
+        work = work
+            .checked_add(1)
+            .ok_or(ResultValidationError::Quota(QuotaViolation::Result))?;
+        if let crate::types::PluginAction::OpenLightbox { images, .. } = action {
+            work = work
+                .checked_add(images.len())
+                .ok_or(ResultValidationError::Quota(QuotaViolation::Result))?;
+        }
+        if work > MAX_ACTIONS {
+            return Err(ResultValidationError::Quota(QuotaViolation::Result));
+        }
     }
     validate_serialized_result(actions)
 }
@@ -144,6 +224,22 @@ fn resource_quota_reason(error: &wasmtime::Error) -> Option<&'static str> {
             wasmtime::Trap::Interrupt => Some("plugin execution deadline exceeded"),
             _ => None,
         };
+    }
+
+    match error.root_cause().to_string().as_str() {
+        WASMTIME_47_HOSTCALL_FUEL_EXHAUSTED => {
+            return Some("plugin hostcall data quota exceeded");
+        }
+        WASMTIME_47_INSTANCE_COUNT_EXCEEDED => {
+            return Some("plugin instance quota exceeded");
+        }
+        WASMTIME_47_MEMORY_COUNT_EXCEEDED => {
+            return Some("plugin memory quota exceeded");
+        }
+        WASMTIME_47_TABLE_COUNT_EXCEEDED => {
+            return Some("plugin table quota exceeded");
+        }
+        _ => {}
     }
 
     error
@@ -199,6 +295,7 @@ fn new_plugin_store(
     host_functions: HostFunctions,
 ) -> Result<Store<HostFunctions>> {
     let mut store = Store::new(engine, host_functions);
+    store.set_hostcall_fuel(HOSTCALL_FUEL_BYTES);
     store.limiter(|host| &mut host.store_limiter);
     prepare_export_quota(&mut store)
         .map_err(|_| PluginError::WasmError("failed to configure plugin fuel quota".to_string()))?;
@@ -731,21 +828,239 @@ impl PluginInstance {
 mod resource_limit_tests {
     use super::*;
 
-    fn instantiate_resource_fixture(
+    #[cfg(any(windows, target_os = "linux"))]
+    const LARGE_LIFT_BYTES: usize = 120 * 1024 * 1024;
+    #[cfg(any(windows, target_os = "linux"))]
+    const HOSTCALL_MEMORY_CHILD: &str = "ARCLAIN_HOSTCALL_MEMORY_CHILD";
+    type ByteListLift = wasmtime::component::TypedFunc<(), (Vec<u8>,)>;
+
+    fn instantiate_byte_list_fixture(
         runtime: &WasmRuntime,
-        core_module: &str,
-    ) -> anyhow::Result<()> {
+        byte_len: usize,
+    ) -> anyhow::Result<(Store<HostFunctions>, ByteListLift)> {
+        let memory_pages = (byte_len + 8).div_ceil(64 * 1024);
+        let length_bytes = (byte_len as u32).to_le_bytes();
+        let encoded_length = length_bytes
+            .iter()
+            .map(|byte| format!("\\{byte:02x}"))
+            .collect::<String>();
         let component = Component::new(
             &runtime.engine,
             format!(
-                "(component (core module $fixture {core_module}) (core instance $instance (instantiate $fixture)))"
+                r#"
+                    (component
+                        (core module $fixture
+                            (memory (export "memory") {memory_pages})
+                            (data (i32.const 0) "\08\00\00\00{encoded_length}")
+                            (func (export "lift") (result i32)
+                                i32.const 0))
+                        (core instance $instance (instantiate $fixture))
+                        (alias core export $instance "memory" (core memory $memory))
+                        (alias core export $instance "lift" (core func $lift))
+                        (type $bytes (list u8))
+                        (type $lift-type (func (result $bytes)))
+                        (func (export "lift") (type $lift-type)
+                            (canon lift (core func $lift) (memory $memory))))
+                "#,
             ),
         )?;
-        let host = HostFunctions::new_for_metadata_validation("resource-limit-test".to_string())?;
+        let host = HostFunctions::new_for_metadata_validation("hostcall-lift-test".to_string())?;
         let mut store = new_plugin_store(&runtime.engine, host)?;
+        let instance = Linker::new(&runtime.engine).instantiate(&mut store, &component)?;
+        let lift = instance.get_typed_func::<(), (Vec<u8>,)>(&mut store, "lift")?;
+        Ok((store, lift))
+    }
+
+    #[cfg(windows)]
+    fn current_working_set_bytes() -> usize {
+        use std::ffi::c_void;
+
+        #[repr(C)]
+        struct ProcessMemoryCounters {
+            cb: u32,
+            page_fault_count: u32,
+            peak_working_set_size: usize,
+            working_set_size: usize,
+            quota_peak_paged_pool_usage: usize,
+            quota_paged_pool_usage: usize,
+            quota_peak_non_paged_pool_usage: usize,
+            quota_non_paged_pool_usage: usize,
+            pagefile_usage: usize,
+            peak_pagefile_usage: usize,
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetCurrentProcess() -> *mut c_void;
+        }
+        #[link(name = "psapi")]
+        extern "system" {
+            fn GetProcessMemoryInfo(
+                process: *mut c_void,
+                counters: *mut ProcessMemoryCounters,
+                size: u32,
+            ) -> i32;
+        }
+
+        let mut counters = ProcessMemoryCounters {
+            cb: std::mem::size_of::<ProcessMemoryCounters>() as u32,
+            page_fault_count: 0,
+            peak_working_set_size: 0,
+            working_set_size: 0,
+            quota_peak_paged_pool_usage: 0,
+            quota_paged_pool_usage: 0,
+            quota_peak_non_paged_pool_usage: 0,
+            quota_non_paged_pool_usage: 0,
+            pagefile_usage: 0,
+            peak_pagefile_usage: 0,
+        };
+        // SAFETY: both functions are called with the current process pseudo-handle
+        // and a correctly sized writable PROCESS_MEMORY_COUNTERS buffer.
+        let succeeded = unsafe {
+            GetProcessMemoryInfo(
+                GetCurrentProcess(),
+                &mut counters,
+                std::mem::size_of::<ProcessMemoryCounters>() as u32,
+            )
+        };
+        assert_ne!(succeeded, 0, "GetProcessMemoryInfo must succeed");
+        counters.working_set_size
+    }
+
+    #[cfg(target_os = "linux")]
+    fn current_working_set_bytes() -> usize {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let rss_kib = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmRSS:"))
+            .and_then(|value| value.split_whitespace().next())
+            .and_then(|value| value.parse::<usize>().ok())
+            .expect("/proc/self/status must contain VmRSS");
+        rss_kib * 1024
+    }
+
+    fn instantiate_resource_fixture(
+        runtime: &WasmRuntime,
+        core_module: &str,
+    ) -> wasmtime::Result<()> {
+        let component = Component::new(&runtime.engine, resource_fixture_wat(core_module))?;
+        let host = HostFunctions::new_for_metadata_validation("resource-limit-test".to_string())
+            .expect("test plugin ID must be valid");
+        let mut store =
+            new_plugin_store(&runtime.engine, host).expect("test store configuration must succeed");
         let linker = Linker::new(&runtime.engine);
         linker.instantiate(&mut store, &component)?;
         Ok(())
+    }
+
+    fn instantiate_core_instance_fixture(
+        runtime: &WasmRuntime,
+        count: usize,
+    ) -> wasmtime::Result<()> {
+        let component = Component::new(&runtime.engine, core_instance_fixture_wat(count))?;
+        let host = HostFunctions::new_for_metadata_validation("instance-limit-test".to_string())
+            .expect("test plugin ID must be valid");
+        let mut store =
+            new_plugin_store(&runtime.engine, host).expect("test store configuration must succeed");
+        Linker::new(&runtime.engine).instantiate(&mut store, &component)?;
+        Ok(())
+    }
+
+    fn resource_fixture_wat(core_module: &str) -> String {
+        format!(
+            "(component (core module $fixture {core_module}) (core instance $instance (instantiate $fixture)))"
+        )
+    }
+
+    fn core_instance_fixture_wat(count: usize) -> String {
+        let instances = "(core instance (instantiate $fixture))".repeat(count);
+        format!("(component (core module $fixture) {instances})")
+    }
+
+    fn push_u32_leb(bytes: &mut Vec<u8>, mut value: usize) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            bytes.push(byte);
+            if value == 0 {
+                return;
+            }
+        }
+    }
+
+    fn read_u32_leb(bytes: &[u8], cursor: &mut usize) -> usize {
+        let mut value = 0usize;
+        let mut shift = 0usize;
+        loop {
+            let byte = bytes[*cursor];
+            *cursor += 1;
+            value |= usize::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return value;
+            }
+            shift += 7;
+        }
+    }
+
+    fn plugin_with_extra_core_instances(
+        base: &[u8],
+        core_module: &[u8],
+        instance_count: usize,
+    ) -> Vec<u8> {
+        const COMPONENT_HEADER_BYTES: usize = 8;
+        const CORE_MODULE_SECTION: u8 = 1;
+        const CORE_INSTANCE_SECTION: u8 = 2;
+
+        let mut cursor = COMPONENT_HEADER_BYTES;
+        let mut module_index = 0usize;
+        while cursor < base.len() {
+            let section_id = base[cursor];
+            cursor += 1;
+            let section_len = read_u32_leb(base, &mut cursor);
+            if section_id == CORE_MODULE_SECTION {
+                module_index += 1;
+            }
+            cursor += section_len;
+        }
+        assert_eq!(cursor, base.len());
+
+        let mut bytes = base.to_vec();
+        bytes.push(CORE_MODULE_SECTION);
+        push_u32_leb(&mut bytes, core_module.len());
+        bytes.extend_from_slice(core_module);
+
+        let mut instances = Vec::new();
+        push_u32_leb(&mut instances, instance_count);
+        for _ in 0..instance_count {
+            instances.push(0x00);
+            push_u32_leb(&mut instances, module_index);
+            instances.push(0x00);
+        }
+        bytes.push(CORE_INSTANCE_SECTION);
+        push_u32_leb(&mut bytes, instances.len());
+        bytes.extend(instances);
+        bytes
+    }
+
+    fn loaded_binary_fixture(runtime: &WasmRuntime, id: &str, bytes: &[u8]) -> LoadedPlugin {
+        LoadedPlugin {
+            id: id.to_string(),
+            component: Component::from_binary(&runtime.engine, bytes).unwrap(),
+            engine: runtime.engine.clone(),
+            epoch_ticker: runtime.epoch_ticker.clone(),
+            _path: std::path::PathBuf::from("<resource-limit-test>"),
+        }
+    }
+
+    fn assert_unavailable_reason(result: Result<PluginInstance>, expected: &str) {
+        match result {
+            Err(PluginError::Unavailable(reason)) => assert_eq!(reason, expected),
+            Err(error) => panic!("expected redacted unavailable error, got {error}"),
+            Ok(_) => panic!("resource-limit fixture unexpectedly instantiated"),
+        }
     }
 
     #[test]
@@ -756,6 +1071,171 @@ mod resource_limit_tests {
         store
             .set_fuel(1)
             .expect("every runtime store must support fuel metering");
+    }
+
+    // Working-set telemetry is deliberately OS-specific; functional boundary
+    // coverage for hostcall fuel remains platform-independent below.
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn hostcall_fuel_prevents_large_prevalidation_lift_allocation() {
+        if std::env::var_os(HOSTCALL_MEMORY_CHILD).is_some() {
+            let runtime = WasmRuntime::new().unwrap();
+            let (mut store, lift) =
+                instantiate_byte_list_fixture(&runtime, LARGE_LIFT_BYTES).unwrap();
+            let before = current_working_set_bytes();
+            let lifted = lift.call(&mut store, ()).ok();
+            std::hint::black_box(&lifted);
+            let delta = current_working_set_bytes().saturating_sub(before);
+            println!(
+                "ARCLAIN_HOSTCALL_MEASUREMENT lifted={} rss_delta={delta}",
+                lifted.is_some()
+            );
+            return;
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runtime::resource_limit_tests::hostcall_fuel_prevents_large_prevalidation_lift_allocation",
+                "--nocapture",
+            ])
+            .env(HOSTCALL_MEMORY_CHILD, "1")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let measurement = stdout
+            .lines()
+            .find(|line| line.contains("ARCLAIN_HOSTCALL_MEASUREMENT"))
+            .unwrap_or_else(|| panic!("child did not report memory measurement:\n{stdout}"));
+        let lifted = measurement.contains("lifted=true");
+        let delta = measurement
+            .split("rss_delta=")
+            .nth(1)
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap();
+
+        assert!(
+            !lifted && delta < 32 * 1024 * 1024,
+            "a 120 MiB guest result was lifted before validation: {measurement}"
+        );
+    }
+
+    #[test]
+    fn configured_hostcall_fuel_covers_measured_current_wit_shapes() {
+        use crate::arclain::plugin::rules::PluginRuleDefinition as WitRule;
+        use crate::arclain::plugin::ui::{
+            KeyValuePair as WitKeyValuePair, ListItemConfig as WitListItem,
+            PluginAction as WitAction, ToolbarButtonConfig as WitToolbarButton,
+            TopTabConfig as WitTopTab, UiElement as WitUiElement,
+        };
+
+        const DOCUMENTED_HOSTCALL_FUEL_BYTES: usize = 8 * 1024 * 1024;
+
+        fn max_serialized_list_len<T: Serialize>(minimum_item: &T) -> usize {
+            let item_bytes = serde_json::to_vec(minimum_item).unwrap().len();
+            (MAX_SERIALIZED_RESULT_BYTES - 2) / (item_bytes + 1) + 1
+        }
+
+        let largest_ui_allocation = [
+            std::mem::size_of::<WitUiElement>(),
+            std::mem::size_of::<WitListItem>(),
+            std::mem::size_of::<WitToolbarButton>(),
+            std::mem::size_of::<WitKeyValuePair>(),
+            std::mem::size_of::<(String, Option<String>)>(),
+            std::mem::size_of::<String>(),
+        ]
+        .into_iter()
+        .max()
+        .unwrap();
+        let layout_bytes =
+            MAX_SERIALIZED_RESULT_BYTES + MAX_UI_ELEMENTS.saturating_mul(largest_ui_allocation);
+
+        let action_bytes = MAX_SERIALIZED_RESULT_BYTES
+            + MAX_ACTIONS.saturating_mul(
+                std::mem::size_of::<WitAction>() + std::mem::size_of::<(String, Option<String>)>(),
+            );
+
+        let minimum_tab = crate::types::TopTabConfig {
+            id: String::new(),
+            label: String::new(),
+            icon: String::new(),
+            badge: None,
+            priority: 0,
+        };
+        let top_tab_bytes = MAX_SERIALIZED_RESULT_BYTES
+            + max_serialized_list_len(&minimum_tab)
+                .saturating_mul(std::mem::size_of::<WitTopTab>());
+
+        let minimum_rule = arclain_core::OrganizationRule::default();
+        let rule_bytes = MAX_SERIALIZED_RESULT_BYTES
+            + max_serialized_list_len(&minimum_rule).saturating_mul(std::mem::size_of::<WitRule>());
+
+        let worst_shape_bytes = [layout_bytes, action_bytes, top_tab_bytes, rule_bytes]
+            .into_iter()
+            .max()
+            .unwrap();
+        assert!(
+            worst_shape_bytes <= DOCUMENTED_HOSTCALL_FUEL_BYTES,
+            "current WIT host shape needs {worst_shape_bytes} bytes of hostcall fuel"
+        );
+
+        let runtime = WasmRuntime::new().unwrap();
+        let host =
+            HostFunctions::new_for_metadata_validation("hostcall-budget".to_string()).unwrap();
+        let store = new_plugin_store(&runtime.engine, host).unwrap();
+        assert_eq!(
+            store.hostcall_fuel(),
+            DOCUMENTED_HOSTCALL_FUEL_BYTES,
+            "production stores must use the measured current-WIT hostcall budget; estimates: layout={layout_bytes}, actions={action_bytes}, tabs={top_tab_bytes}, rules={rule_bytes}"
+        );
+    }
+
+    #[test]
+    fn hostcall_fuel_accepts_exact_boundary_and_terminally_rejects_one_over() {
+        let runtime = WasmRuntime::new().unwrap();
+        let (mut exact_store, exact_lift) =
+            instantiate_byte_list_fixture(&runtime, HOSTCALL_FUEL_BYTES).unwrap();
+        let exact = exact_lift.call(&mut exact_store, ()).unwrap().0;
+        assert_eq!(exact.len(), HOSTCALL_FUEL_BYTES);
+
+        let (mut over_store, over_lift) =
+            instantiate_byte_list_fixture(&runtime, HOSTCALL_FUEL_BYTES + 1).unwrap();
+        let mut availability = InstanceAvailability::default();
+        let call_entries = std::sync::atomic::AtomicUsize::new(0);
+        let first = call_with_quotas(
+            &mut over_store,
+            &mut availability,
+            |store| {
+                call_entries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                over_lift.call(store, ()).map(|_| ())
+            },
+            |_| Ok(()),
+            PluginError::ExecutionError,
+        )
+        .unwrap_err();
+        let second = call_with_quotas(
+            &mut over_store,
+            &mut availability,
+            |store| {
+                call_entries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                over_lift.call(store, ()).map(|_| ())
+            },
+            |_| Ok(()),
+            PluginError::ExecutionError,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            first,
+            PluginError::Unavailable(ref reason)
+                if reason == "plugin hostcall data quota exceeded"
+        ));
+        assert!(matches!(second, PluginError::Unavailable(_)));
+        assert_eq!(call_entries.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            availability.reason(),
+            Some("plugin hostcall data quota exceeded")
+        );
     }
 
     #[test]
@@ -824,6 +1304,207 @@ mod resource_limit_tests {
     }
 
     #[test]
+    fn every_rendered_layout_collection_counts_boundary_and_one_over() {
+        use crate::types::{KeyValuePair, PluginLayout, PluginUiElement, ToolbarButton};
+
+        let strings = |count| vec![String::new(); count];
+        let toolbar_buttons = |count| {
+            vec![
+                ToolbarButton {
+                    id: String::new(),
+                    label: String::new(),
+                    icon: None,
+                    primary: false,
+                    spacer_before: false,
+                };
+                count
+            ]
+        };
+        let pairs = |count| {
+            vec![
+                KeyValuePair {
+                    key: String::new(),
+                    value: String::new(),
+                };
+                count
+            ]
+        };
+        let images = |count| vec![(String::new(), None); count];
+        let single = |element| PluginLayout::Single {
+            elements: vec![element],
+        };
+
+        let cases = vec![
+            (
+                "radio options",
+                single(PluginUiElement::RadioGroup {
+                    id: String::new(),
+                    label: String::new(),
+                    options: strings(MAX_UI_ELEMENTS - 1),
+                    selected: String::new(),
+                }),
+                single(PluginUiElement::RadioGroup {
+                    id: String::new(),
+                    label: String::new(),
+                    options: strings(MAX_UI_ELEMENTS),
+                    selected: String::new(),
+                }),
+            ),
+            (
+                "dropdown options",
+                single(PluginUiElement::Dropdown {
+                    id: String::new(),
+                    label: String::new(),
+                    options: strings(MAX_UI_ELEMENTS - 1),
+                    selected: String::new(),
+                }),
+                single(PluginUiElement::Dropdown {
+                    id: String::new(),
+                    label: String::new(),
+                    options: strings(MAX_UI_ELEMENTS),
+                    selected: String::new(),
+                }),
+            ),
+            (
+                "tabs",
+                single(PluginUiElement::Tabs {
+                    id: String::new(),
+                    tabs: strings(MAX_UI_ELEMENTS - 1),
+                    selected: String::new(),
+                }),
+                single(PluginUiElement::Tabs {
+                    id: String::new(),
+                    tabs: strings(MAX_UI_ELEMENTS),
+                    selected: String::new(),
+                }),
+            ),
+            (
+                "toolbar buttons",
+                single(PluginUiElement::Toolbar {
+                    buttons: toolbar_buttons(MAX_UI_ELEMENTS - 1),
+                }),
+                single(PluginUiElement::Toolbar {
+                    buttons: toolbar_buttons(MAX_UI_ELEMENTS),
+                }),
+            ),
+            (
+                "carousel images",
+                single(PluginUiElement::Carousel {
+                    id: String::new(),
+                    images: images(MAX_UI_ELEMENTS - 1),
+                    current_index: 0,
+                    max_height: None,
+                    thumbnail_height: None,
+                    enable_lightbox: true,
+                }),
+                single(PluginUiElement::Carousel {
+                    id: String::new(),
+                    images: images(MAX_UI_ELEMENTS),
+                    current_index: 0,
+                    max_height: None,
+                    thumbnail_height: None,
+                    enable_lightbox: true,
+                }),
+            ),
+            (
+                "key-value list items",
+                single(PluginUiElement::KeyValueList {
+                    items: pairs(MAX_UI_ELEMENTS - 1),
+                    columns: None,
+                }),
+                single(PluginUiElement::KeyValueList {
+                    items: pairs(MAX_UI_ELEMENTS),
+                    columns: None,
+                }),
+            ),
+            (
+                "metadata grid items",
+                single(PluginUiElement::MetadataGrid {
+                    items: pairs(MAX_UI_ELEMENTS - 1),
+                    columns: None,
+                }),
+                single(PluginUiElement::MetadataGrid {
+                    items: pairs(MAX_UI_ELEMENTS),
+                    columns: None,
+                }),
+            ),
+            (
+                "tag chips",
+                single(PluginUiElement::TagChips {
+                    tags: strings(MAX_UI_ELEMENTS - 1),
+                    max_display: None,
+                }),
+                single(PluginUiElement::TagChips {
+                    tags: strings(MAX_UI_ELEMENTS),
+                    max_display: None,
+                }),
+            ),
+        ];
+
+        for (name, exact, over) in cases {
+            assert!(
+                validate_layout_result(&exact).is_ok(),
+                "{name} must accept the exact rendered-work boundary"
+            );
+            assert!(
+                matches!(
+                    validate_layout_result(&over),
+                    Err(ResultValidationError::Quota(QuotaViolation::Result))
+                ),
+                "{name} must reject one rendered work item over"
+            );
+        }
+    }
+
+    #[test]
+    fn tag_chip_work_matches_visible_tags_plus_overflow_label() {
+        let layout = crate::types::PluginLayout::Single {
+            elements: vec![crate::types::PluginUiElement::TagChips {
+                tags: vec![String::new(); MAX_UI_ELEMENTS + 1],
+                max_display: Some(0),
+            }],
+        };
+
+        assert!(
+            validate_layout_result(&layout).is_ok(),
+            "zero visible tags render one element plus the +N-more label"
+        );
+    }
+
+    #[test]
+    fn split_nested_layout_combines_all_rendered_work() {
+        use crate::types::{PluginLayout, PluginUiElement, ToolbarButton};
+
+        let layout = |button_count| PluginLayout::Split {
+            sidebar: vec![PluginUiElement::ListContainer {
+                id: String::new(),
+                items: vec![PluginUiElement::Separator; 4_998],
+                max_height: None,
+                empty_message: None,
+            }],
+            content: vec![PluginUiElement::Toolbar {
+                buttons: vec![
+                    ToolbarButton {
+                        id: String::new(),
+                        label: String::new(),
+                        icon: None,
+                        primary: false,
+                        spacer_before: false,
+                    };
+                    button_count
+                ],
+            }],
+            sidebar_width: None,
+        };
+
+        assert!(validate_layout_result(&layout(5_000)).is_ok());
+        assert!(matches!(
+            validate_layout_result(&layout(5_001)),
+            Err(ResultValidationError::Quota(QuotaViolation::Result))
+        ));
+    }
+
+    #[test]
     fn action_limit_accepts_boundary_and_rejects_one_over() {
         let exact = vec![crate::types::PluginAction::None; MAX_ACTIONS];
         let over = vec![crate::types::PluginAction::None; MAX_ACTIONS + 1];
@@ -831,6 +1512,23 @@ mod resource_limit_tests {
         assert!(validate_actions_result(&exact).is_ok());
         assert!(matches!(
             validate_actions_result(&over),
+            Err(ResultValidationError::Quota(QuotaViolation::Result))
+        ));
+    }
+
+    #[test]
+    fn lightbox_images_share_the_action_work_budget() {
+        let action = |image_count| {
+            vec![crate::types::PluginAction::OpenLightbox {
+                images: vec![(String::new(), None); image_count],
+                start_index: 0,
+                title: None,
+            }]
+        };
+
+        assert!(validate_actions_result(&action(MAX_ACTIONS - 1)).is_ok());
+        assert!(matches!(
+            validate_actions_result(&action(MAX_ACTIONS)),
             Err(ResultValidationError::Quota(QuotaViolation::Result))
         ));
     }
@@ -890,32 +1588,114 @@ mod resource_limit_tests {
 
     #[test]
     fn core_instance_limit_accepts_compatibility_boundary_and_rejects_one_over() {
-        fn instantiate_core_instances(runtime: &WasmRuntime, count: usize) -> anyhow::Result<()> {
-            let instances = "(core instance (instantiate $fixture))".repeat(count);
-            let component = Component::new(
-                &runtime.engine,
-                format!("(component (core module $fixture) {instances})"),
-            )?;
-            let host =
-                HostFunctions::new_for_metadata_validation("instance-limit-test".to_string())?;
-            let mut store = new_plugin_store(&runtime.engine, host)?;
-            Linker::new(&runtime.engine).instantiate(&mut store, &component)?;
-            Ok(())
-        }
-
         let runtime = WasmRuntime::new().unwrap();
-        instantiate_core_instances(&runtime, crate::host_functions::MAX_CORE_INSTANCES)
+        instantiate_core_instance_fixture(&runtime, crate::host_functions::MAX_CORE_INSTANCES)
             .expect("the compatibility-safe core-instance boundary must remain available");
         assert!(
-            instantiate_core_instances(&runtime, crate::host_functions::MAX_CORE_INSTANCES + 1)
-                .is_err(),
+            instantiate_core_instance_fixture(
+                &runtime,
+                crate::host_functions::MAX_CORE_INSTANCES + 1
+            )
+            .is_err(),
             "a core instance above the compatibility boundary must be rejected"
         );
     }
 
     #[test]
+    fn locked_wasmtime_resource_count_causes_are_redacted_quota_errors() {
+        let runtime = WasmRuntime::new().unwrap();
+        let instance = instantiate_core_instance_fixture(
+            &runtime,
+            crate::host_functions::MAX_CORE_INSTANCES + 1,
+        )
+        .unwrap_err();
+        let memory = instantiate_resource_fixture(&runtime, &"(memory 1)".repeat(5)).unwrap_err();
+        let table =
+            instantiate_resource_fixture(&runtime, &"(table 1 funcref)".repeat(9)).unwrap_err();
+
+        assert_eq!(
+            instance.root_cause().to_string(),
+            "resource limit exceeded: instance count too high at 33"
+        );
+        assert_eq!(
+            memory.root_cause().to_string(),
+            "resource limit exceeded: memory count too high at 5"
+        );
+        assert_eq!(
+            table.root_cause().to_string(),
+            "resource limit exceeded: table count too high at 9"
+        );
+        assert_eq!(
+            resource_quota_reason(&instance),
+            Some("plugin instance quota exceeded")
+        );
+        assert_eq!(
+            resource_quota_reason(&memory),
+            Some("plugin memory quota exceeded")
+        );
+        assert_eq!(
+            resource_quota_reason(&table),
+            Some("plugin table quota exceeded")
+        );
+    }
+
+    #[test]
+    fn resource_count_errors_are_redacted_in_both_plugin_instantiation_modes() {
+        let runtime = WasmRuntime::new().unwrap();
+        let base = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../plugins/ui-demo/ui-demo.wasm"
+        ));
+        const EMPTY_CORE_MODULE: &[u8] = b"\0asm\x01\0\0\0";
+        // ui-demo already owns one linear memory and two tables. These modules
+        // take the real plugin to Wasmtime's first rejected totals (5 and 9).
+        const FOUR_MEMORY_CORE_MODULE: &[u8] =
+            b"\0asm\x01\0\0\0\x05\x09\x04\0\x01\0\x01\0\x01\0\x01";
+        const SEVEN_TABLE_CORE_MODULE: &[u8] = b"\0asm\x01\0\0\0\x04\x16\x07\x70\0\x01\x70\0\x01\x70\0\x01\x70\0\x01\x70\0\x01\x70\0\x01\x70\0\x01";
+        let fixtures = [
+            (
+                "instance-count",
+                plugin_with_extra_core_instances(
+                    base,
+                    EMPTY_CORE_MODULE,
+                    crate::host_functions::MAX_CORE_INSTANCES + 1,
+                ),
+                "plugin instance quota exceeded",
+            ),
+            (
+                "memory-count",
+                plugin_with_extra_core_instances(base, FOUR_MEMORY_CORE_MODULE, 1),
+                "plugin memory quota exceeded",
+            ),
+            (
+                "table-count",
+                plugin_with_extra_core_instances(base, SEVEN_TABLE_CORE_MODULE, 1),
+                "plugin table quota exceeded",
+            ),
+        ];
+        let plugin_log_dir = tempfile::tempdir().unwrap();
+
+        for (id, bytes, expected) in fixtures {
+            let loaded = loaded_binary_fixture(&runtime, id, &bytes);
+            assert_unavailable_reason(
+                loaded.instantiate_with_plugin_log_dir(
+                    vec![],
+                    10,
+                    None,
+                    HashMap::new(),
+                    None,
+                    plugin_log_dir.path(),
+                ),
+                expected,
+            );
+            assert_unavailable_reason(loaded.instantiate_for_metadata_validation(), expected);
+        }
+    }
+
+    #[test]
     fn bundled_components_instantiate_with_the_compatibility_safe_core_instance_limit() {
         let runtime = WasmRuntime::new().unwrap();
+        let plugin_log_dir = tempfile::tempdir().unwrap();
         for (id, bytes) in [
             (
                 "ui-demo",
@@ -934,9 +1714,22 @@ mod resource_limit_tests {
                 .as_slice(),
             ),
         ] {
-            let mut instance = runtime
+            let loaded = runtime
                 .load_module_from_bytes(id.to_string(), bytes)
-                .unwrap()
+                .unwrap();
+            loaded
+                .instantiate_with_plugin_log_dir(
+                    vec![],
+                    10,
+                    None,
+                    HashMap::new(),
+                    None,
+                    plugin_log_dir.path(),
+                )
+                .unwrap_or_else(|error| {
+                    panic!("{id} must instantiate normally under all quotas: {error}")
+                });
+            let mut instance = loaded
                 .instantiate_for_metadata_validation()
                 .unwrap_or_else(|error| panic!("{id} must fit the core-instance quota: {error}"));
             instance
