@@ -495,6 +495,7 @@ mod tests {
         config_service: Arc<ConfigService>,
         previous: UserConfig,
         previous_password: String,
+        proxy_listener: TcpListener,
         _temp: TempDir,
     }
 
@@ -517,14 +518,15 @@ mod tests {
                 config_connection,
             ));
 
-            let unavailable_proxy = TcpListener::bind("127.0.0.1:0")
-                .expect("reserve previous proxy address")
+            let proxy_listener =
+                TcpListener::bind("127.0.0.1:0").expect("reserve previous proxy address");
+            let proxy_address = proxy_listener
                 .local_addr()
                 .expect("read previous proxy address");
             let previous_password = "previous-proxy-password-4e7a".to_string();
             let mut previous = UserConfig::new();
             previous.socks5_enabled = true;
-            previous.socks5_address = Some(unavailable_proxy.to_string());
+            previous.socks5_address = Some(proxy_address.to_string());
             previous.socks5_username = Some("previous-proxy-user-2c8f".to_string());
             previous.set_plugin_proxy_enabled(PROXY_PLUGIN_ID, true);
             config_service
@@ -578,6 +580,7 @@ mod tests {
                 config_service,
                 previous,
                 previous_password,
+                proxy_listener,
                 _temp: temp,
             }
         }
@@ -612,6 +615,13 @@ mod tests {
         }
 
         fn assert_previous_runtime_proxy_unchanged(&self) {
+            let proxy = self
+                .proxy_listener
+                .try_clone()
+                .expect("clone reserved proxy listener");
+            proxy
+                .set_nonblocking(true)
+                .expect("make proxy sentinel nonblocking");
             let target = TcpListener::bind("127.0.0.1:0").expect("bind direct HTTP sentinel");
             target
                 .set_nonblocking(true)
@@ -619,11 +629,35 @@ mod tests {
             let target_address = target.local_addr().expect("read HTTP sentinel address");
             let reached_directly = Arc::new(AtomicBool::new(false));
             let reached_on_thread = reached_directly.clone();
+            let reached_proxy = Arc::new(AtomicBool::new(false));
+            let proxy_reached_on_thread = reached_proxy.clone();
             let request_finished = Arc::new(AtomicBool::new(false));
-            let finished_on_thread = request_finished.clone();
-            let server = std::thread::spawn(move || {
+            let proxy_finished_on_thread = request_finished.clone();
+            let proxy_server = std::thread::spawn(move || {
                 let deadline = Instant::now() + Duration::from_secs(1);
-                while !finished_on_thread.load(Ordering::SeqCst) && Instant::now() < deadline {
+                while !proxy_finished_on_thread.load(Ordering::SeqCst)
+                    && Instant::now() < deadline
+                {
+                    match proxy.accept() {
+                        Ok((mut socket, _)) => {
+                            proxy_reached_on_thread.store(true, Ordering::SeqCst);
+                            let _ = socket.write_all(&[0x05, 0xff]);
+                            return;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("proxy sentinel accept failed: {error}"),
+                    }
+                }
+            });
+
+            let target_finished_on_thread = request_finished.clone();
+            let target_server = std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while !target_finished_on_thread.load(Ordering::SeqCst)
+                    && Instant::now() < deadline
+                {
                     match target.accept() {
                         Ok((mut socket, _)) => {
                             reached_on_thread.store(true, Ordering::SeqCst);
@@ -650,9 +684,14 @@ mod tests {
                 true,
             );
             request_finished.store(true, Ordering::SeqCst);
-            server.join().expect("HTTP sentinel thread panicked");
+            proxy_server.join().expect("proxy sentinel thread panicked");
+            target_server.join().expect("HTTP sentinel thread panicked");
 
-            assert!(result.is_err(), "invalid save disabled the previous proxy");
+            assert!(result.is_err(), "invalid save made the request succeed");
+            assert!(
+                reached_proxy.load(Ordering::SeqCst),
+                "invalid save replaced the previous runtime proxy configuration"
+            );
             assert!(
                 !reached_directly.load(Ordering::SeqCst),
                 "invalid save replaced the previous runtime proxy with a direct client"
@@ -1058,6 +1097,23 @@ mod tests {
                 .as_ref()
                 .map(|value| value.as_str()),
             Some("invalid-marker")
+        );
+    }
+
+    #[test]
+    fn proxy_fixture_retains_exclusive_ownership_of_runtime_proxy_port() {
+        let fixture = ProxySaveFixture::new();
+        let proxy_address: std::net::SocketAddr = fixture
+            .previous
+            .socks5_address
+            .as_deref()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        assert!(
+            TcpListener::bind(proxy_address).is_err(),
+            "fixture released its proxy port for reuse by a later sentinel"
         );
     }
 }
