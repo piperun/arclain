@@ -44,6 +44,7 @@ pub fn render_header(
                 plugins_state_ref,
                 page,
                 &install_clicked,
+                &shared.image_assets,
             )
         } else if *page == SettingsPage::ToolbarLayout {
             // Toolbar Layout Page header

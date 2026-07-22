@@ -6,6 +6,7 @@
 use crate::features::plugins::domain::types::PluginsListState;
 use crate::features::settings::domain::types::SettingsAction;
 
+use crate::shared::image_assets::{ImageAssetStore, ImageOwner};
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use eframe::egui;
@@ -23,6 +24,7 @@ pub fn render(
     content_cache: Option<Arc<arclain_core::ContentCache>>,
 ) -> Option<SettingsAction> {
     let action = None;
+    let selected_before_render = state.selected_plugin.clone();
 
     if state.selected_plugin.is_some() {
         // Detail View
@@ -47,6 +49,14 @@ pub fn render(
         crate::features::plugins::presentation::views::list_view::render(ui, theme, state);
     }
 
+    if state.selected_plugin != selected_before_render {
+        if let (Some(shared), Some(previous_plugin_id)) = (shared, selected_before_render) {
+            shared
+                .image_assets
+                .release_owner(&ImageOwner::plugin_settings(previous_plugin_id));
+        }
+    }
+
     action
 }
 
@@ -55,6 +65,7 @@ pub fn get_header_config<'a>(
     state: &'a mut PluginsListState,
     page: &crate::core::SettingsPage,
     install_clicked_cell: &'a std::cell::Cell<bool>,
+    image_assets: &'a ImageAssetStore,
 ) -> crate::features::settings::presentation::views::header_config::SettingsHeaderConfig<'a> {
     use crate::features::settings::presentation::views::header_config::SettingsHeaderConfig;
 
@@ -62,6 +73,7 @@ pub fn get_header_config<'a>(
     if let Some(plugin_id) = state.selected_plugin.clone() {
         if let Some(plugin) = state.plugins.iter().find(|p| &p.id == &plugin_id) {
             let selected_plugin = &mut state.selected_plugin;
+            let image_owner = ImageOwner::plugin_settings(&plugin_id);
 
             let mut config = SettingsHeaderConfig::new(&plugin.name)
                 .sub_description(format!(
@@ -70,7 +82,8 @@ pub fn get_header_config<'a>(
                     plugin.author.as_deref().unwrap_or("Unknown")
                 ))
                 .has_changes(false) // Plugin settings save immediately, no Save button needed
-                .on_back(|| {
+                .on_back(move || {
+                    image_assets.release_owner(&image_owner);
                     *selected_plugin = None;
                 });
 

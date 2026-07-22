@@ -3,9 +3,9 @@
 //! event for selection, but the cell values themselves aren't editable.
 
 use super::super::context::{RenderContext, UiEventHandler};
-use super::super::image::try_render_image;
+use super::super::image::{maybe_trigger_fetch, render_texture, resolve_texture};
 use crate::shared::components::settings_form::SectionHeader;
-use crate::shared::image_fetcher::trigger_image_fetch;
+use crate::shared::image_assets::ImageAssetState;
 use arclain_plugins::types::WarningIcon;
 use arclain_widgets::Chips;
 use eframe::egui;
@@ -147,10 +147,6 @@ pub fn render_list_item(
     }
 }
 
-/// Re-fetch a failed image at most every this often. Avoids hammering
-/// a flaky CDN every frame for an image that just isn't available.
-const IMAGE_FETCH_RETRY_INTERVAL_SECS: u64 = 30;
-
 /// Render a 48px-square thumbnail tied to a content-cache key.
 ///
 /// Three states:
@@ -166,55 +162,19 @@ fn render_list_item_thumbnail(
     key: &str,
     image_url: &Option<String>,
 ) {
-    let Some(cache) = ctx.content_cache else {
-        return;
-    };
     let colors = ctx.colors;
-
-    match cache.get(key) {
-        Ok(Some(bytes)) => {
-            if try_render_image(ui, key, &bytes, Some(48.0)).is_none() {
-                // Decode failed — drop the bad entry and re-trigger.
-                tracing::debug!("Deleting corrupt cache entry: {}", key);
-                let _ = cache.remove(key);
-                ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
-                if let (Some(url), Some(shared)) = (image_url, ctx.shared_state) {
-                    trigger_image_fetch(
-                        shared,
-                        ctx.plugin_id.map(|s| s.to_string()),
-                        url.clone(),
-                        key.to_string(),
-                        ui.ctx().clone(),
-                    );
-                }
-            }
-        }
-        _ => {
-            ui.add(egui::Spinner::new().size(16.0).color(colors.primary));
-            if let (Some(url), Some(shared)) = (image_url, ctx.shared_state) {
-                let fetch_id = egui::Id::new(("fetch", key));
-                let now = std::time::Instant::now();
-                let fetch_started: Option<std::time::Instant> = ui.data(|d| d.get_temp(fetch_id));
-
-                let should_fetch = match fetch_started {
-                    None => true,
-                    Some(started) => {
-                        now.duration_since(started).as_secs() > IMAGE_FETCH_RETRY_INTERVAL_SECS
-                    }
-                };
-
-                if should_fetch {
-                    ui.data_mut(|d| d.insert_temp(fetch_id, now));
-                    trigger_image_fetch(
-                        shared,
-                        ctx.plugin_id.map(|s| s.to_string()),
-                        url.clone(),
-                        key.to_string(),
-                        ui.ctx().clone(),
-                    );
-                }
-            }
-        }
+    let (state, texture) = resolve_texture(ui, ctx, key);
+    if let Some(texture) = texture {
+        render_texture(ui, &texture, Some(48.0));
+        return;
+    }
+    ui.label(
+        egui::RichText::new("…")
+            .size(16.0)
+            .color(colors.on_surface_variant),
+    );
+    if matches!(state, ImageAssetState::Failed(_)) {
+        maybe_trigger_fetch(ui, ctx, key, image_url.as_deref());
     }
 }
 

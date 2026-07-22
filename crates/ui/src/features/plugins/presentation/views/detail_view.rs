@@ -7,6 +7,7 @@ use crate::features::plugins::domain::types::PluginsListState;
 use crate::features::plugins::presentation::rendering as ui;
 
 use crate::shared::components::Form;
+use crate::shared::image_assets::ImageOwner;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_core::utilities::effective_plugin_proxy_map;
@@ -48,7 +49,7 @@ pub fn render(
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
-    content_cache: Option<&Arc<arclain_core::ContentCache>>,
+    _content_cache: Option<&Arc<arclain_core::ContentCache>>,
 ) -> bool {
     let mut needs_refresh = false;
 
@@ -233,7 +234,6 @@ pub fn render(
                     theme,
                     &plugin_info.id,
                     shared,
-                    content_cache,
                     &mut state.cached_main_layout,
                 );
             }
@@ -361,7 +361,6 @@ fn render_plugin_ui(
     theme: &AppTheme,
     plugin_id: &str,
     shared: &SharedState,
-    content_cache: Option<&Arc<arclain_core::ContentCache>>,
     cached_main_layout: &mut Option<(String, Arc<arclain_plugins::types::PluginLayout>)>,
 ) {
     let origin_tab = shared.signals().tabs.get().active_id();
@@ -416,14 +415,15 @@ fn render_plugin_ui(
                 }) as ui::UiEventCallback;
 
                 let mut render = |elements: &[arclain_plugins::types::PluginUiElement]| {
-                    ui::render_ui_elements(
+                    let image_owner = ImageOwner::plugin_settings(plugin_id);
+                    ui::render_ui_elements_owned(
                         ui,
                         elements,
                         &mut event_callback,
                         &theme.colors,
-                        content_cache,
                         Some(shared),
                         Some(plugin_id),
+                        Some(&image_owner),
                     );
                 };
                 match ui_elements.as_ref() {

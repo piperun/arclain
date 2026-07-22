@@ -3,18 +3,238 @@
 mod common;
 
 use arclain_core::UserConfig;
-use arclain_plugins::PluginManager;
+use arclain_plugins::{types::PluginAction, PluginManager};
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::features::plugins::application::{
     process_plugin_ui_results, request_plugin_snapshot, PluginUiJobs, PluginUiRequest,
     PluginUiResult,
 };
-use arclain_ui::features::plugins::domain::types::SnapshotStatus;
+use arclain_ui::features::plugins::domain::types::{
+    PluginInfo, PluginStatus, PluginsListState, SnapshotStatus,
+};
 use arclain_ui::features::plugins::PluginsFeature;
+use arclain_ui::shared::image_assets::{ImageAssetState, ImageOwner};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
+
+fn wait_for_image_failure(shared: &arclain_ui::shared::SharedState, key: &str) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !matches!(
+        shared.image_assets.state(key),
+        Some(ImageAssetState::Failed(_))
+    ) {
+        assert!(Instant::now() < deadline, "image worker did not finish");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn plugin_page_close_releases_its_exact_image_owner() {
+    let shared = common::create_test_shared_state();
+    let origin_tab = shared.signals().tabs.get().active_id();
+    let owner = ImageOwner::plugin_page("plugin", "page", origin_tab);
+    let key = "page-close-image";
+    let mut dialog_state = shared.signals().plugin_dialog_state.get();
+    dialog_state.open_page("plugin", "page", origin_tab);
+    shared.signals().plugin_dialog_state.set(dialog_state);
+    shared
+        .image_assets
+        .request(owner, key, eframe::egui::Context::default());
+    wait_for_image_failure(&shared, key);
+
+    let mut callback = arclain_ui::features::plugins::presentation::controllers::plugin_controller::create_page_callback(
+        &shared,
+        "plugin".to_string(),
+        origin_tab,
+    );
+    callback("__page_close", None);
+
+    assert!(
+        !shared.image_assets.contains(key),
+        "page close left its image owner alive until incidental reconciliation"
+    );
+}
+
+#[test]
+fn plugin_dialog_close_releases_its_exact_image_owner() {
+    let shared = common::create_test_shared_state();
+    let origin_tab = shared.signals().tabs.get().active_id();
+    let owner = ImageOwner::plugin_dialog("plugin", "dialog", origin_tab);
+    let key = "dialog-close-image";
+    let mut dialog_state = shared.signals().plugin_dialog_state.get();
+    dialog_state.open_dialog("plugin", "dialog", origin_tab);
+    shared.signals().plugin_dialog_state.set(dialog_state);
+    shared
+        .image_assets
+        .request(owner, key, eframe::egui::Context::default());
+    wait_for_image_failure(&shared, key);
+
+    let mut callback = arclain_ui::features::plugins::presentation::controllers::plugin_controller::create_dialog_callback(
+        &shared,
+        "plugin".to_string(),
+        origin_tab,
+    );
+    callback("__dialog_close", None);
+
+    assert!(
+        !shared.image_assets.contains(key),
+        "dialog close left its image owner alive until incidental reconciliation"
+    );
+}
+
+#[test]
+fn plugin_dialog_native_window_close_releases_its_exact_image_owner() {
+    use egui_kittest::{kittest::Queryable as _, Harness};
+
+    let shared = common::create_test_shared_state();
+    let origin_tab = shared.signals().tabs.get().active_id();
+    let owner = ImageOwner::plugin_dialog("plugin", "dialog", origin_tab);
+    let key = "dialog-native-window-close-image";
+    let mut dialog_state = shared.signals().plugin_dialog_state.get();
+    dialog_state.open_dialog("plugin", "dialog", origin_tab);
+    shared.signals().plugin_dialog_state.set(dialog_state);
+    shared
+        .image_assets
+        .request(owner, key, eframe::egui::Context::default());
+    wait_for_image_failure(&shared, key);
+
+    let render_shared = shared.clone();
+    let mut harness = Harness::builder()
+        .with_size(eframe::egui::vec2(800.0, 600.0))
+        .build(move |ctx| {
+            arclain_ui::features::plugins::presentation::views::rendering::render_dialog(
+                ctx,
+                &render_shared,
+            );
+        });
+    harness.get_by_label("Close window").click();
+    harness.step();
+
+    assert!(
+        !shared.signals().plugin_dialog_state.get().has_open_dialog(),
+        "native window close must close dialog state"
+    );
+    assert!(
+        !shared.image_assets.contains(key),
+        "native window close left its image owner alive until another frame"
+    );
+}
+
+#[test]
+fn plugin_close_dialog_action_releases_its_exact_image_owner() {
+    let shared = common::create_test_shared_state();
+    let origin_tab = shared.signals().tabs.get().active_id();
+    let owner = ImageOwner::plugin_dialog("plugin", "dialog", origin_tab);
+    let key = "dialog-action-close-image";
+    let mut dialog_state = shared.signals().plugin_dialog_state.get();
+    dialog_state.open_dialog("plugin", "dialog", origin_tab);
+    shared
+        .image_assets
+        .request(owner, key, eframe::egui::Context::default());
+    wait_for_image_failure(&shared, key);
+
+    let mut toaster = arclain_widgets::Toaster::new();
+    arclain_ui::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
+        vec![PluginAction::CloseDialog],
+        "plugin",
+        &mut dialog_state,
+        &mut toaster,
+        None,
+        None,
+        Some(&shared),
+    );
+
+    assert!(
+        !shared.image_assets.contains(key),
+        "plugin CloseDialog action left its image owner alive"
+    );
+}
+
+#[test]
+fn plugin_settings_back_releases_the_selected_plugins_image_owner() {
+    let shared = common::create_test_shared_state();
+    let owner = ImageOwner::plugin_settings("plugin");
+    let key = "plugin-settings-back-image";
+    let mut state = PluginsListState {
+        plugins: vec![PluginInfo {
+            id: "plugin".to_string(),
+            name: "Plugin".to_string(),
+            version: "1.0.0".to_string(),
+            author: None,
+            description: None,
+            capabilities: Vec::new(),
+            enabled: true,
+            loaded: true,
+            status: PluginStatus::Ready,
+            error: None,
+            visibility: HashMap::new(),
+        }],
+        selected_plugin: Some("plugin".to_string()),
+        ..PluginsListState::default()
+    };
+    shared
+        .image_assets
+        .request(owner, key, eframe::egui::Context::default());
+    wait_for_image_failure(&shared, key);
+
+    let install_clicked = std::cell::Cell::new(false);
+    {
+        let mut config =
+            arclain_ui::features::plugins::presentation::pages::plugins_page::get_header_config(
+                &mut state,
+                &arclain_ui::core::SettingsPage::Plugins,
+                &install_clicked,
+                &shared.image_assets,
+            );
+        config
+            .on_back
+            .take()
+            .expect("detail header must have a back action")();
+    }
+
+    assert_eq!(state.selected_plugin, None);
+    assert!(
+        !shared.image_assets.contains(key),
+        "settings back left the selected plugin image owner alive"
+    );
+}
+
+#[test]
+fn plugin_settings_selection_change_releases_the_previous_image_owner() {
+    let shared = common::create_test_shared_state();
+    let owner = ImageOwner::plugin_settings("removed-plugin");
+    let key = "plugin-settings-selection-change-image";
+    let mut state = PluginsListState {
+        selected_plugin: Some("removed-plugin".to_string()),
+        ..PluginsListState::default()
+    };
+    shared
+        .image_assets
+        .request(owner, key, eframe::egui::Context::default());
+    wait_for_image_failure(&shared, key);
+
+    let ctx = eframe::egui::Context::default();
+    let _ = ctx.run(eframe::egui::RawInput::default(), |ctx| {
+        eframe::egui::CentralPanel::default().show(ctx, |ui| {
+            arclain_ui::features::plugins::presentation::pages::plugins_page::render(
+                ui,
+                &shared.theme,
+                &mut state,
+                &shared.app_state,
+                Some(&shared),
+                None,
+            );
+        });
+    });
+
+    assert_eq!(state.selected_plugin, None);
+    assert!(
+        !shared.image_assets.contains(key),
+        "settings selection change left the previous plugin image owner alive"
+    );
+}
 
 #[test]
 fn request_returns_while_manager_is_blocked_and_duplicate_is_coalesced() {

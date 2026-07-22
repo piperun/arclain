@@ -713,6 +713,14 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // Render toast notifications (always on top) & Plugin Dialog & Logs
     crate::core::arclain_app::dialog_handler::render_overlays(app, ctx);
 
+    // Image surfaces mark their owner while rendering. Reconcile after every
+    // surface and overlay has had a chance to render so textures disappear as
+    // soon as their page, settings view, or lightbox is no longer active.
+    let active_image_owners = app.shared_state.image_assets.take_active_owners();
+    app.shared_state
+        .image_assets
+        .retain_owners(&active_image_owners);
+
     // Debug HUD — frame-time + FPS, plus egui's built-in debug_on_hover.
     // No-op when EGUI_UI_DEBUG_GUIDELINES isn't set. Painted last so it
     // sits on top of every panel including the overlays above.

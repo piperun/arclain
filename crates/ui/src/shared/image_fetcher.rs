@@ -8,7 +8,9 @@
 //! `shared/` makes both the carousel and the plugin renderer call into
 //! a peer-or-down location instead of crossing the boundary.
 //!
-//! No behaviour change vs the pre-move version. Audit
+//! Successful writes notify the shared image-asset state machine, which
+//! performs its cache read and decode on the blocking pool and repaints once
+//! the decoded pixels are ready. Audit
 //! `docs/audits/2026-05-19-dependencies.md` §2 (shared/→features/
 //! leak class).
 
@@ -18,8 +20,8 @@ use arclain_network::{HttpRequest, RequestStatus};
 use eframe::egui;
 
 /// Spawn a background fetch for `url`, caching the response bytes at
-/// `key` in the `content_cache` service on success and requesting an
-/// egui repaint when bytes land. No-ops if `SharedState` doesn't have
+/// `key` in the `content_cache` service on success and notifying the shared
+/// image-asset store. No-ops if `SharedState` doesn't have
 /// a `content_cache` wired (e.g. early-init / test contexts).
 ///
 /// `plugin_id`, when `Some`, routes the HTTP request through the
@@ -36,6 +38,7 @@ pub fn trigger_image_fetch(
     if let Some(cache) = &shared.services.content_cache {
         let client = client.clone();
         let cache = cache.clone();
+        let image_assets = shared.image_assets.clone();
         // Use runtime handle
         let runtime = &shared.services.tokio_runtime;
 
@@ -72,8 +75,9 @@ pub fn trigger_image_fetch(
                                 cache.put(&key, &resp.body, CacheType::Screenshot, None, Some(&url))
                             {
                                 tracing::warn!("Failed to cache image {}: {}", key, e);
+                            } else {
+                                image_assets.cache_ready(&key, ctx.clone());
                             }
-                            ctx.request_repaint();
                         } else {
                             tracing::warn!(
                                 "Invalid image response for {}: status={}, size={}, content_type={:?}",

@@ -20,10 +20,9 @@ pub use image_view::ImageView;
 pub use nav_button::{NavButton, NavButtonStyle};
 pub use thumbnail_strip::{ThumbnailStrip, ThumbnailStripStyle};
 
+use crate::shared::image_assets::ImageOwner;
 use crate::shared::{theme::ThemeColors, SharedState};
-use arclain_core::ContentCache;
 use eframe::egui;
-use std::sync::Arc;
 
 /// Events emitted by the carousel
 #[derive(Debug, Clone, PartialEq)]
@@ -69,9 +68,9 @@ pub struct Carousel<'a> {
     current_index: usize,
     config: CarouselConfig,
     colors: Option<&'a ThemeColors>,
-    content_cache: Option<&'a Arc<ContentCache>>,
     shared_state: Option<&'a SharedState>,
     plugin_id: Option<&'a str>,
+    image_owner: Option<&'a ImageOwner>,
 }
 
 impl<'a> Carousel<'a> {
@@ -82,9 +81,9 @@ impl<'a> Carousel<'a> {
             current_index,
             config: CarouselConfig::default(),
             colors: None,
-            content_cache: None,
             shared_state: None,
             plugin_id: None,
+            image_owner: None,
         }
     }
 
@@ -113,8 +112,8 @@ impl<'a> Carousel<'a> {
         self
     }
 
-    pub fn content_cache(mut self, cache: &'a Arc<ContentCache>) -> Self {
-        self.content_cache = Some(cache);
+    pub fn image_owner(mut self, owner: Option<&'a ImageOwner>) -> Self {
+        self.image_owner = owner;
         self
     }
 
@@ -212,7 +211,7 @@ impl<'a> Carousel<'a> {
                 let image_event = ImageView::new(cache_key)
                     .image_url(image_url.as_deref())
                     .colors(colors)
-                    .content_cache(self.content_cache)
+                    .image_owner(self.image_owner)
                     .shared_state(self.shared_state)
                     .plugin_id(self.plugin_id)
                     .enable_lightbox(self.config.enable_lightbox)
@@ -288,7 +287,7 @@ impl<'a> Carousel<'a> {
                     .style(ThumbnailStripStyle::default().height(self.config.thumbnail_height))
                     .max_width(strip_width)
                     .colors(colors)
-                    .content_cache(self.content_cache)
+                    .image_owner(self.image_owner)
                     .shared_state(self.shared_state)
                     .plugin_id(self.plugin_id)
                     .show_at(ui, strip_rect);

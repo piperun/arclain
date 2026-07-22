@@ -3,6 +3,7 @@
 use super::context::{RenderContext, UiEventHandler};
 use super::{image, layout, widgets};
 use crate::shared::components::carousel::{Carousel, CarouselEvent};
+use crate::shared::image_assets::ImageOwner;
 use crate::shared::{theme::ThemeColors, SharedState};
 use arclain_core::ContentCache;
 use arclain_plugins::types::PluginUiElement;
@@ -15,16 +16,40 @@ pub fn render_ui_element<'a, H: UiEventHandler + ?Sized>(
     element: &PluginUiElement,
     event_callback: &'a mut H,
     colors: &'a ThemeColors,
-    content_cache: Option<&'a Arc<ContentCache>>,
+    _content_cache: Option<&'a Arc<ContentCache>>,
     shared_state: Option<&'a SharedState>,
     plugin_id: Option<&'a str>,
 ) {
+    let image_owner = plugin_id.map(ImageOwner::plugin_settings);
+    render_ui_element_owned(
+        ui,
+        element,
+        event_callback,
+        colors,
+        shared_state,
+        plugin_id,
+        image_owner.as_ref(),
+    );
+}
+
+fn render_ui_element_owned<'a, H: UiEventHandler + ?Sized>(
+    ui: &mut egui::Ui,
+    element: &PluginUiElement,
+    event_callback: &'a mut H,
+    colors: &'a ThemeColors,
+    shared_state: Option<&'a SharedState>,
+    plugin_id: Option<&'a str>,
+    image_owner: Option<&'a ImageOwner>,
+) {
+    if let (Some(shared), Some(owner)) = (shared_state, image_owner) {
+        shared.image_assets.mark_owner_active(owner.clone());
+    }
     let mut ctx = RenderContext {
         event_callback,
         colors,
-        content_cache,
         shared_state,
         plugin_id,
+        image_owner,
     };
     render_recursive(ui, element, &mut ctx);
 }
@@ -169,17 +194,14 @@ fn render_recursive<H: UiEventHandler + ?Sized>(
             thumbnail_height,
             enable_lightbox,
         } => {
-            let mut carousel = Carousel::new(id, images, *current_index)
+            let carousel = Carousel::new(id, images, *current_index)
                 .main_height(max_height.unwrap_or(300.0))
                 .thumbnail_height(thumbnail_height.unwrap_or(60.0))
                 .enable_lightbox(*enable_lightbox)
                 .colors(ctx.colors)
                 .shared_state(ctx.shared_state)
-                .plugin_id(ctx.plugin_id);
-
-            if let Some(cache) = ctx.content_cache {
-                carousel = carousel.content_cache(cache);
-            }
+                .plugin_id(ctx.plugin_id)
+                .image_owner(ctx.image_owner);
 
             if let Some(event) = carousel.show(ui) {
                 match event {
@@ -215,16 +237,40 @@ pub fn render_ui_elements<'a, H: UiEventHandler + ?Sized>(
     elements: &[PluginUiElement],
     event_callback: &'a mut H,
     colors: &'a ThemeColors,
-    content_cache: Option<&'a Arc<ContentCache>>,
+    _content_cache: Option<&'a Arc<ContentCache>>,
     shared_state: Option<&'a SharedState>,
     plugin_id: Option<&'a str>,
 ) {
+    let image_owner = plugin_id.map(ImageOwner::plugin_settings);
+    render_ui_elements_owned(
+        ui,
+        elements,
+        event_callback,
+        colors,
+        shared_state,
+        plugin_id,
+        image_owner.as_ref(),
+    );
+}
+
+pub fn render_ui_elements_owned<'a, H: UiEventHandler + ?Sized>(
+    ui: &mut egui::Ui,
+    elements: &[PluginUiElement],
+    event_callback: &'a mut H,
+    colors: &'a ThemeColors,
+    shared_state: Option<&'a SharedState>,
+    plugin_id: Option<&'a str>,
+    image_owner: Option<&'a ImageOwner>,
+) {
+    if let (Some(shared), Some(owner)) = (shared_state, image_owner) {
+        shared.image_assets.mark_owner_active(owner.clone());
+    }
     let mut ctx = RenderContext {
         event_callback,
         colors,
-        content_cache,
         shared_state,
         plugin_id,
+        image_owner,
     };
     walk_with_groups(ui, elements, &mut ctx);
 }

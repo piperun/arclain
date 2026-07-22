@@ -4,6 +4,7 @@
 //! extracted from arclain_app.rs to keep feature logic self-contained.
 
 use crate::shared::components::Form;
+use crate::shared::image_assets::ImageOwner;
 use crate::shared::SharedState;
 use eframe::egui;
 use std::sync::Arc;
@@ -51,6 +52,8 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
     };
 
     if let Some((plugin_id, dialog_id, origin_tab)) = dialog_info {
+        let image_owner =
+            ImageOwner::plugin_dialog(plugin_id.clone(), dialog_id.clone(), origin_tab);
         let target =
             crate::features::plugins::application::PluginUiTarget::Dialog(dialog_id.clone());
         let is_stale = shared
@@ -92,14 +95,14 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
 
 
                 let mut render = |elements: &[arclain_plugins::types::PluginUiElement]| {
-                    super::ui::render_ui_elements(
+                    super::ui::render_ui_elements_owned(
                         ui,
                         elements,
                         &mut callback,
                         &shared.theme.colors,
-                        None,
                         Some(shared),
                         Some(&plugin_id),
+                        Some(&image_owner),
                     );
                 };
                 match dialog_elements.as_ref() {
@@ -118,6 +121,7 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
             let mut dialog_state = shared.signals().plugin_dialog_state.get();
             dialog_state.close_dialog();
             shared.signals().plugin_dialog_state.set(dialog_state);
+            shared.image_assets.release_owner(&image_owner);
         }
     }
 }
@@ -138,6 +142,7 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
     let Some((plugin_id, page_id, origin_tab)) = page_info else {
         return false;
     };
+    let image_owner = ImageOwner::plugin_page(plugin_id.clone(), page_id.clone(), origin_tab);
 
     // Queue __page_init once for this page generation. The worker
     // captures the origin tab; stale generations are ignored when
@@ -233,8 +238,6 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
 
 
             use arclain_plugins::types::PluginLayout;
-            let content_cache = shared.services.content_cache.clone();
-
             match page_layout.as_ref() {
                 PluginLayout::Single { elements } => {
                     // Wrap in Form to provide ScrollArea (fixes cutoff bug)
@@ -242,14 +245,14 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                         .id(format!("plugin_page_single_{}", page_id))
                         .margin(16.0)
                         .show(ui, &shared.theme, |ui| {
-                            super::ui::render_ui_elements(
+                            super::ui::render_ui_elements_owned(
                                 ui,
                                 &elements,
                                 &mut callback,
                                 &shared.theme.colors,
-                                content_cache.as_ref(),
                                 Some(shared),
                                 Some(&plugin_id),
+                                Some(&image_owner),
                             );
                         });
                 }
@@ -269,14 +272,14 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                                     egui::ScrollArea::vertical()
                                         .id_salt(format!("plugin_split_sidebar_scroll_{}", page_id))
                                         .show(ui, |ui| {
-                                            super::ui::render_ui_elements(
+                                            super::ui::render_ui_elements_owned(
                                                 ui,
                                                 &sidebar,
                                                 &mut callback,
                                                 &shared.theme.colors,
-                                                content_cache.as_ref(),
                                                 Some(shared),
                                                 Some(&plugin_id),
+                                                Some(&image_owner),
                                             );
                                         });
                                 });
@@ -285,14 +288,14 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
                                 egui::ScrollArea::vertical()
                                     .id_salt(format!("plugin_split_content_scroll_{}", page_id))
                                     .show(ui, |ui| {
-                                        super::ui::render_ui_elements(
+                                        super::ui::render_ui_elements_owned(
                                             ui,
                                             &content,
                                             &mut callback,
                                             &shared.theme.colors,
-                                            content_cache.as_ref(),
                                             Some(shared),
                                             Some(&plugin_id),
+                                            Some(&image_owner),
                                         );
                                     });
                             });

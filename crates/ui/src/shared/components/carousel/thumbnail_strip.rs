@@ -1,9 +1,8 @@
 //! Thumbnail strip component for carousel
 
-use crate::shared::{async_image, theme::ThemeColors, SharedState};
-use arclain_core::ContentCache;
+use crate::shared::image_assets::{ImageAssetState, ImageOwner};
+use crate::shared::{theme::ThemeColors, SharedState};
 use eframe::egui;
-use std::sync::Arc;
 
 /// Style configuration for thumbnail strip
 #[derive(Clone)]
@@ -52,9 +51,9 @@ pub struct ThumbnailStrip<'a> {
     style: ThumbnailStripStyle,
     max_width: f32,
     colors: Option<&'a ThemeColors>,
-    content_cache: Option<&'a Arc<ContentCache>>,
     shared_state: Option<&'a SharedState>,
     plugin_id: Option<&'a str>,
+    image_owner: Option<&'a ImageOwner>,
 }
 
 impl<'a> ThumbnailStrip<'a> {
@@ -66,9 +65,9 @@ impl<'a> ThumbnailStrip<'a> {
             style: ThumbnailStripStyle::default(),
             max_width: 500.0,
             colors: None,
-            content_cache: None,
             shared_state: None,
             plugin_id: None,
+            image_owner: None,
         }
     }
 
@@ -87,8 +86,8 @@ impl<'a> ThumbnailStrip<'a> {
         self
     }
 
-    pub fn content_cache(mut self, cache: Option<&'a Arc<ContentCache>>) -> Self {
-        self.content_cache = cache;
+    pub fn image_owner(mut self, owner: Option<&'a ImageOwner>) -> Self {
+        self.image_owner = owner;
         self
     }
 
@@ -191,40 +190,27 @@ impl<'a> ThumbnailStrip<'a> {
         let ctx = ui.ctx();
         let painter = ui.painter();
 
-        // 1. Check GPU texture cache
-        if async_image::is_texture_cached(ctx, cache_key) {
-            if let Some(handle) = async_image::get_texture_handle(ctx, cache_key) {
-                paint_image_centered(painter, &handle, rect);
+        let state = if let (Some(shared), Some(owner)) = (self.shared_state, self.image_owner) {
+            let state = shared
+                .image_assets
+                .request(owner.clone(), cache_key, ctx.clone());
+            let texture = match state {
+                ImageAssetState::Decoded => shared.image_assets.upload_ready(cache_key, ctx),
+                ImageAssetState::Uploaded => shared.image_assets.get_texture(owner, cache_key),
+                ImageAssetState::Loading | ImageAssetState::Failed(_) => None,
+            };
+            if let Some(texture) = texture {
+                paint_image_centered(painter, &texture, rect);
                 return;
             }
-        }
+            state
+        } else {
+            ImageAssetState::Failed("image asset store is unavailable".to_string())
+        };
 
-        // 2. Check if async decode completed
-        if let Some(decoded) = async_image::get_decoded(ctx, cache_key) {
-            let handle = async_image::upload_texture(ctx, cache_key, &decoded);
-            paint_image_centered(painter, &handle, rect);
-            return;
-        }
-
-        // 3. Decode in progress
-        if async_image::is_decoding(ctx, cache_key) {
-            painter.text(
-                rect.center(),
-                egui::Align2::CENTER_CENTER,
-                "⟳",
-                egui::FontId::proportional(12.0),
-                colors.on_surface_variant,
-            );
-            ctx.request_repaint();
-            return;
-        }
-
-        // 4. Start decode from cache
-        if let Some(cache) = self.content_cache {
-            if let Ok(Some(bytes)) = cache.get(cache_key) {
-                async_image::request_decode(ctx, cache_key, bytes);
-            } else if let (Some(u), Some(shared)) = (url, self.shared_state) {
-                // 5. Cache miss — fetch the image. Throttle to once / 30s
+        if matches!(state, ImageAssetState::Failed(_)) {
+            if let (Some(u), Some(shared)) = (url, self.shared_state) {
+                // Cache miss — fetch the image. Throttle to once / 30s
                 //    per cache_key so we don't spam the network every frame.
                 let fetch_id = egui::Id::new(("thumb_fetch", cache_key));
                 let now = std::time::Instant::now();

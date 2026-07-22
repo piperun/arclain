@@ -133,7 +133,7 @@ impl Panel {
         ui: &mut egui::Ui,
         theme: &AppTheme,
         shared: Option<&SharedState>,
-        content_cache: Option<&Arc<arclain_core::ContentCache>>,
+        _content_cache: Option<&Arc<arclain_core::ContentCache>>,
     ) {
         for body in &self.body {
             match body {
@@ -227,14 +227,19 @@ impl Panel {
                         },
                     );
 
-                    ui::render_ui_elements(
+                    let image_owner = origin_tab.map(|tab_id| {
+                        crate::shared::image_assets::ImageOwner::plugin_panel(
+                            plugin_id, &self.id, tab_id,
+                        )
+                    });
+                    ui::render_ui_elements_owned(
                         ui,
                         elements,
                         &mut callback,
                         &theme.colors,
-                        content_cache,
                         shared,
                         Some(plugin_id.as_str()),
+                        image_owner.as_ref(),
                     );
                 }
             }

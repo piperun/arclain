@@ -30,6 +30,7 @@ use super::ArclainApp;
 use crate::core::operations;
 use crate::features::password_management;
 use crate::shared::dialogs;
+use crate::shared::image_assets::ImageOwner;
 use eframe::egui;
 
 pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
@@ -674,17 +675,19 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
 
     // Render lightbox if open (now per-tab — read from active tab)
     let active_tab_for_lightbox = app.shared_state.signals().tabs.get().active().clone();
+    let lightbox_owner = ImageOwner::Lightbox(active_tab_for_lightbox.id);
     let mut lightbox_state = active_tab_for_lightbox.lightbox_state.get();
     if lightbox_state.show {
         let result = dialogs::render_lightbox(
             ctx,
             &app.shared_state.theme,
             &mut lightbox_state,
-            app.shared_state.services.content_cache.as_ref(),
+            &app.shared_state.image_assets,
+            &lightbox_owner,
         );
         match result {
             dialogs::LightboxResult::Closed => {
-                // State already closed in render function
+                app.shared_state.image_assets.release_owner(&lightbox_owner);
             }
             dialogs::LightboxResult::ImageChanged(_index) => {
                 // Could notify plugin if needed

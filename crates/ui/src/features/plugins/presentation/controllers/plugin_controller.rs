@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::features::plugins::domain::state::PluginDialogState;
 use crate::shared::dialogs::LightboxState;
+use crate::shared::image_assets::ImageOwner;
 
 /// Context for processing plugin actions that need signal access
 pub struct ActionContext<'a> {
@@ -60,7 +61,7 @@ pub fn process_plugin_actions(
 pub fn process_action(
     action: PluginAction,
     plugin_id: &str,
-    _dialog_state: &mut PluginDialogState,
+    dialog_state: &mut PluginDialogState,
     toaster: &mut Toaster,
     refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
     ctx: &ActionContext,
@@ -94,7 +95,17 @@ pub fn process_action(
         PluginAction::CloseDialog => {
             // Close the current dialog
             tracing::debug!("Plugin {} requested dialog close", plugin_id);
-            _dialog_state.close_dialog();
+            let image_owner =
+                dialog_state
+                    .open_dialog
+                    .as_ref()
+                    .map(|(plugin_id, dialog_id, tab_id)| {
+                        ImageOwner::plugin_dialog(plugin_id, dialog_id, *tab_id)
+                    });
+            dialog_state.close_dialog();
+            if let (Some(shared), Some(owner)) = (ctx.shared_state, image_owner) {
+                shared.image_assets.release_owner(&owner);
+            }
         }
 
         PluginAction::CopyToClipboard { text } => {
@@ -179,8 +190,17 @@ pub fn create_dialog_callback(
     Box::new(move |element_id: &str, value: Option<String>| {
         if element_id == "__dialog_close" {
             let mut ds = dialog_signal.get();
+            let image_owner = ds
+                .open_dialog
+                .as_ref()
+                .map(|(plugin_id, dialog_id, tab_id)| {
+                    ImageOwner::plugin_dialog(plugin_id, dialog_id, *tab_id)
+                });
             ds.close_dialog();
             dialog_signal.set(ds);
+            if let Some(owner) = image_owner {
+                shared_owned.image_assets.release_owner(&owner);
+            }
             return;
         }
 
@@ -223,9 +243,15 @@ pub fn create_page_callback(
     Box::new(move |element_id: &str, value: Option<String>| {
         if element_id == "__page_close" {
             let mut ds = dialog_signal.get();
+            let image_owner = ds.current_page().map(|(plugin_id, page_id, tab_id)| {
+                ImageOwner::plugin_page(plugin_id, page_id, tab_id)
+            });
             ds.close_page();
             page_display_name_signal.set(None);
             dialog_signal.set(ds);
+            if let Some(owner) = image_owner {
+                shared_owned.image_assets.release_owner(&owner);
+            }
             return;
         }
 

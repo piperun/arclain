@@ -21,6 +21,7 @@ use arclain_ui::core::navigation::PageNavigator;
 use arclain_ui::core::services::Services;
 use arclain_ui::core::state::AppState;
 use arclain_ui::features::organization::OrganizationFeature;
+use arclain_ui::shared::image_assets::ImageAssetStore;
 use arclain_ui::shared::theme::AppTheme;
 use arclain_ui::shared::SharedState;
 use arclain_widgets::Toaster;
@@ -64,6 +65,7 @@ pub fn create_test_shared_state() -> SharedState {
         services.plugin_manager.clone(),
         services.tokio_runtime.clone(),
     );
+    let image_assets = ImageAssetStore::without_cache(services.tokio_runtime.clone());
     SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,
@@ -71,6 +73,7 @@ pub fn create_test_shared_state() -> SharedState {
         toaster: Arc::new(Mutex::new(Toaster::new())),
         refresh_requests: Arc::new(Mutex::new(Vec::new())),
         plugin_ui_jobs,
+        image_assets,
         signals,
     }
 }
@@ -173,6 +176,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         services.plugin_manager.clone(),
         services.tokio_runtime.clone(),
     );
+    let image_assets = ImageAssetStore::without_cache(services.tokio_runtime.clone());
     let shared = SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,
@@ -180,6 +184,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         toaster: Arc::new(Mutex::new(Toaster::new())),
         refresh_requests: Arc::new(Mutex::new(Vec::new())),
         plugin_ui_jobs,
+        image_assets,
         signals,
     };
 

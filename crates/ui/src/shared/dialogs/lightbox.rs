@@ -2,10 +2,9 @@
 //!
 //! Provides a modal image viewer with keyboard navigation and overlay controls.
 
+use crate::shared::image_assets::{ImageAssetState, ImageAssetStore, ImageOwner};
 use crate::shared::theme::AppTheme;
-use arclain_core::ContentCache;
 use eframe::egui;
-use std::sync::Arc;
 
 /// State for the full-screen image lightbox
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -96,7 +95,8 @@ pub fn render_lightbox(
     ctx: &egui::Context,
     theme: &AppTheme,
     state: &mut LightboxState,
-    content_cache: Option<&Arc<ContentCache>>,
+    image_assets: &ImageAssetStore,
+    owner: &ImageOwner,
 ) -> LightboxResult {
     if !state.show || state.images.is_empty() {
         return LightboxResult::None;
@@ -159,47 +159,43 @@ pub fn render_lightbox(
             // Render the current image
             let mut image_rect = egui::Rect::NOTHING;
             if let Some((cache_key, _url)) = state.current_image() {
-                if let Some(cache) = content_cache {
-                    if let Ok(Some(bytes)) = cache.get(cache_key) {
-                        if let Some((handle, tex_size)) =
-                            load_texture_from_bytes(ctx, cache_key, &bytes)
-                        {
-                            // Scale image to fit within image_area while maintaining aspect ratio
-                            let available = image_area.size();
-                            let scale = (available.x / tex_size.x)
-                                .min(available.y / tex_size.y)
-                                .min(1.0);
-                            let display_size = egui::vec2(tex_size.x * scale, tex_size.y * scale);
-
-                            // Center the image in the available area
-                            let image_pos = egui::pos2(
-                                image_area.center().x - display_size.x / 2.0,
-                                image_area.center().y - display_size.y / 2.0,
-                            );
-                            image_rect = egui::Rect::from_min_size(image_pos, display_size);
-
-                            // Paint the image
-                            ui.painter().image(
-                                handle.id(),
-                                image_rect,
-                                egui::Rect::from_min_max(
-                                    egui::pos2(0.0, 0.0),
-                                    egui::pos2(1.0, 1.0),
-                                ),
-                                egui::Color32::WHITE,
-                            );
-                        }
+                let asset_state = image_assets.request(owner.clone(), cache_key, ctx.clone());
+                let texture = match asset_state {
+                    ImageAssetState::Decoded => image_assets.upload_ready(cache_key, ctx),
+                    ImageAssetState::Uploaded => image_assets.get_texture(owner, cache_key),
+                    ImageAssetState::Loading | ImageAssetState::Failed(_) => None,
+                };
+                if let Some(handle) = texture {
+                    let texture_size = handle.size_vec2();
+                    let available = image_area.size();
+                    let scale = (available.x / texture_size.x)
+                        .min(available.y / texture_size.y)
+                        .min(1.0);
+                    let display_size = texture_size * scale;
+                    let image_pos = egui::pos2(
+                        image_area.center().x - display_size.x / 2.0,
+                        image_area.center().y - display_size.y / 2.0,
+                    );
+                    image_rect = egui::Rect::from_min_size(image_pos, display_size);
+                    ui.painter().image(
+                        handle.id(),
+                        image_rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                } else {
+                    let message = if matches!(asset_state, ImageAssetState::Failed(_)) {
+                        "Failed to load image"
                     } else {
-                        // Loading state
-                        let center = image_area.center();
-                        ui.painter().text(
-                            center,
-                            egui::Align2::CENTER_CENTER,
-                            "Loading...",
-                            egui::FontId::proportional(16.0),
-                            theme.colors.on_surface,
-                        );
-                    }
+                        "Loading..."
+                    };
+                    ui.painter().text(
+                        image_area.center(),
+                        egui::Align2::CENTER_CENTER,
+                        message,
+                        egui::FontId::proportional(16.0),
+                        theme.colors.on_surface,
+                    );
                 }
             }
 
@@ -318,42 +314,6 @@ pub fn render_lightbox(
     }
 
     result
-}
-
-/// Load a texture from raw bytes, returning the handle and original size
-fn load_texture_from_bytes(
-    ctx: &egui::Context,
-    cache_key: &str,
-    bytes: &[u8],
-) -> Option<(egui::TextureHandle, egui::Vec2)> {
-    let texture_id = egui::Id::new(("lightbox_image", cache_key));
-
-    // Check if texture is already loaded
-    let existing: Option<(egui::TextureHandle, egui::Vec2)> = ctx.data(|d| d.get_temp(texture_id));
-
-    if let Some(cached) = existing {
-        return Some(cached);
-    }
-
-    // Try to decode the image
-    let img = image::load_from_memory(bytes).ok()?;
-    let rgba = img.to_rgba8();
-    let size = egui::vec2(rgba.width() as f32, rgba.height() as f32);
-    let pixels = rgba.into_raw();
-
-    let color_image =
-        egui::ColorImage::from_rgba_unmultiplied([size.x as usize, size.y as usize], &pixels);
-
-    let handle = ctx.load_texture(
-        format!("lightbox_{}", cache_key),
-        color_image,
-        egui::TextureOptions::default(),
-    );
-
-    // Cache for future frames
-    ctx.data_mut(|d| d.insert_temp(texture_id, (handle.clone(), size)));
-
-    Some((handle, size))
 }
 
 #[cfg(test)]

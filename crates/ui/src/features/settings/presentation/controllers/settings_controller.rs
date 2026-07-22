@@ -543,6 +543,9 @@ mod tests {
                 services.plugin_manager.clone(),
                 services.tokio_runtime.clone(),
             );
+            let image_assets = crate::shared::image_assets::ImageAssetStore::without_cache(
+                services.tokio_runtime.clone(),
+            );
             let shared = SharedState {
                 app_state: Arc::new(Mutex::new(app_state)),
                 services,
@@ -550,6 +553,7 @@ mod tests {
                 toaster: Arc::new(Mutex::new(Toaster::new())),
                 refresh_requests: Arc::new(Mutex::new(Vec::new())),
                 plugin_ui_jobs,
+                image_assets,
                 signals,
             };
 

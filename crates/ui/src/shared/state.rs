@@ -1,6 +1,7 @@
 use crate::core::signals::AppSignals;
 use crate::core::AppState;
 use crate::platform::detect_dark_mode;
+use crate::shared::image_assets::ImageAssetStore;
 use crate::shared::theme::{load_cjk_fonts, AppTheme};
 use arclain_widgets::Toaster;
 use parking_lot::Mutex;
@@ -16,6 +17,8 @@ pub struct SharedState {
     /// Panel refresh requests from plugins (extension point names to refresh)
     pub refresh_requests: Arc<Mutex<Vec<String>>>,
     pub plugin_ui_jobs: crate::features::plugins::application::PluginUiJobs,
+    /// Shared cached-image state machine used by every image renderer.
+    pub image_assets: ImageAssetStore,
     /// Direct access to signals without locking AppState
     pub signals: AppSignals,
 }
@@ -58,6 +61,10 @@ impl SharedState {
                 })
             }
         });
+        let image_assets = services.content_cache.as_ref().map_or_else(
+            || ImageAssetStore::without_cache(services.tokio_runtime.clone()),
+            |cache| ImageAssetStore::new(cache.clone(), services.tokio_runtime.clone()),
+        );
         let shared = Self {
             app_state: app_state.clone(),
             services,
@@ -65,6 +72,7 @@ impl SharedState {
             toaster: Arc::new(Mutex::new(Toaster::new())),
             refresh_requests: Arc::new(Mutex::new(Vec::new())),
             plugin_ui_jobs,
+            image_assets,
             signals: signals.clone(),
         };
 

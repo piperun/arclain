@@ -1,19 +1,18 @@
 //! Main image view component for carousel
 
 use super::CarouselEvent;
-use crate::shared::{async_image, theme::ThemeColors, SharedState};
-use arclain_core::ContentCache;
+use crate::shared::image_assets::{ImageAssetState, ImageOwner};
+use crate::shared::{theme::ThemeColors, SharedState};
 use eframe::egui;
-use std::sync::Arc;
 
 /// Main image display widget
 pub struct ImageView<'a> {
     cache_key: &'a str,
     image_url: Option<&'a str>,
     colors: Option<&'a ThemeColors>,
-    content_cache: Option<&'a Arc<ContentCache>>,
     shared_state: Option<&'a SharedState>,
     plugin_id: Option<&'a str>,
+    image_owner: Option<&'a ImageOwner>,
     enable_lightbox: bool,
 }
 
@@ -23,9 +22,9 @@ impl<'a> ImageView<'a> {
             cache_key,
             image_url: None,
             colors: None,
-            content_cache: None,
             shared_state: None,
             plugin_id: None,
+            image_owner: None,
             enable_lightbox: true,
         }
     }
@@ -35,8 +34,8 @@ impl<'a> ImageView<'a> {
         self
     }
 
-    pub fn content_cache(mut self, cache: Option<&'a Arc<ContentCache>>) -> Self {
-        self.content_cache = cache;
+    pub fn image_owner(mut self, owner: Option<&'a ImageOwner>) -> Self {
+        self.image_owner = owner;
         self
     }
 
@@ -111,69 +110,55 @@ impl<'a> ImageView<'a> {
         let ctx = ui.ctx();
         let painter = ui.painter();
 
-        // 1. Check GPU texture cache
-        if async_image::is_texture_cached(ctx, self.cache_key) {
-            if let Some(handle) = async_image::get_texture_handle(ctx, self.cache_key) {
-                paint_image_centered(painter, &handle, rect);
+        let state = if let (Some(shared), Some(owner)) = (self.shared_state, self.image_owner) {
+            let state = shared
+                .image_assets
+                .request(owner.clone(), self.cache_key, ctx.clone());
+            let texture = match state {
+                ImageAssetState::Decoded => shared.image_assets.upload_ready(self.cache_key, ctx),
+                ImageAssetState::Uploaded => shared.image_assets.get_texture(owner, self.cache_key),
+                ImageAssetState::Loading | ImageAssetState::Failed(_) => None,
+            };
+            if let Some(texture) = texture {
+                paint_image_centered(painter, &texture, rect);
                 return true;
             }
-        }
+            state
+        } else {
+            ImageAssetState::Failed("image asset store is unavailable".to_string())
+        };
 
-        // 2. Check if async decode completed
-        if let Some(decoded) = async_image::get_decoded(ctx, self.cache_key) {
-            let handle = async_image::upload_texture(ctx, self.cache_key, &decoded);
-            paint_image_centered(painter, &handle, rect);
-            return true;
-        }
-
-        // 3. Decode in progress
-        if async_image::is_decoding(ctx, self.cache_key) {
-            render_loading(painter, rect, colors);
-            ctx.request_repaint();
-            return false;
-        }
-
-        // 4. Decode failed
-        if async_image::decode_failed(ctx, self.cache_key) {
-            render_error(painter, rect, colors);
-            return false;
-        }
-
-        // 5. Start decode from cache
-        if let Some(cache) = self.content_cache {
-            if let Ok(Some(bytes)) = cache.get(self.cache_key) {
-                async_image::request_decode(ctx, self.cache_key, bytes);
-                render_loading(painter, rect, colors);
-                ctx.request_repaint();
-                return false;
-            }
-        }
-
-        // 6. Cache miss — kick off a network fetch if we have a URL +
+        // Cache miss or corrupt bytes — kick off a network fetch if we have a URL +
         //    SharedState. Throttled to once per 30s per cache_key (so we
         //    don't fire the same fetch every frame). The plugin emits the
         //    URL in its Carousel config; we just need to act on it.
-        if let (Some(url), Some(shared)) = (self.image_url, self.shared_state) {
-            let fetch_id = egui::Id::new(("carousel_fetch", self.cache_key));
-            let now = std::time::Instant::now();
-            let last_fired: Option<std::time::Instant> = ctx.data(|d| d.get_temp(fetch_id));
-            let should_fetch = match last_fired {
-                None => true,
-                Some(t) => now.duration_since(t).as_secs() > 30,
-            };
-            if should_fetch {
-                ctx.data_mut(|d| d.insert_temp(fetch_id, now));
-                crate::shared::image_fetcher::trigger_image_fetch(
-                    shared,
-                    self.plugin_id.map(|s| s.to_string()),
-                    url.to_string(),
-                    self.cache_key.to_string(),
-                    ctx.clone(),
-                );
+        if matches!(state, ImageAssetState::Failed(_)) {
+            if let (Some(url), Some(shared)) = (self.image_url, self.shared_state) {
+                let fetch_id = egui::Id::new(("carousel_fetch", self.cache_key));
+                let now = std::time::Instant::now();
+                let last_fired: Option<std::time::Instant> = ctx.data(|d| d.get_temp(fetch_id));
+                let should_fetch = match last_fired {
+                    None => true,
+                    Some(t) => now.duration_since(t).as_secs() > 30,
+                };
+                if should_fetch {
+                    ctx.data_mut(|d| d.insert_temp(fetch_id, now));
+                    crate::shared::image_fetcher::trigger_image_fetch(
+                        shared,
+                        self.plugin_id.map(|s| s.to_string()),
+                        url.to_string(),
+                        self.cache_key.to_string(),
+                        ctx.clone(),
+                    );
+                }
             }
         }
 
-        render_loading(painter, rect, colors);
+        if matches!(state, ImageAssetState::Failed(_)) && self.image_url.is_none() {
+            render_error(painter, rect, colors);
+        } else {
+            render_loading(painter, rect, colors);
+        }
         false
     }
 
