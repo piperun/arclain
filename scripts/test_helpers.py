@@ -120,6 +120,36 @@ class TestPluginVersions(unittest.TestCase):
                 self.assertEqual(manifest_version, cargo_version, plugin)
 
 
+class TestPluginClean(unittest.TestCase):
+    def test_clean_returns_failure_after_cleaning_every_plugin(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plugins_dir = Path(directory) / "plugins"
+            first_plugin = plugins_dir / "first-plugin"
+            second_plugin = plugins_dir / "second-plugin"
+            for plugin_dir in (first_plugin, second_plugin):
+                plugin_dir.mkdir(parents=True)
+                (plugin_dir / "Cargo.toml").write_text("[package]\n")
+            (first_plugin / "first-plugin.wasm").write_bytes(b"wasm")
+
+            clean_results = [
+                subprocess.CompletedProcess([], 0),
+                subprocess.CompletedProcess([], 17),
+            ]
+            with mock.patch.object(_plugins, "PLUGINS_DIR", plugins_dir), \
+                 mock.patch.object(
+                     _plugins.subprocess,
+                     "run",
+                     side_effect=clean_results,
+                 ) as run:
+                clean_status = _plugins.clean()
+
+            self.assertEqual(clean_status, 1, f"clean_status={clean_status}")
+            self.assertFalse((first_plugin / "first-plugin.wasm").exists())
+            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_args_list[0].kwargs["cwd"], first_plugin)
+            self.assertEqual(run.call_args_list[1].kwargs["cwd"], second_plugin)
+
+
 class TestReleaseDelegation(unittest.TestCase):
     def test_release_delegates_plugin_build_and_packaging_once(self):
         args = argparse.Namespace(skip_tests=True)

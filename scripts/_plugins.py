@@ -86,6 +86,7 @@ def clean() -> int:
     print(f"  Removed {removed} .wasm file(s)")
 
     print("\nRunning cargo clean in each plugin...")
+    failures: list[str] = []
     for plugin_dir in sorted(PLUGINS_DIR.iterdir()):
         if not plugin_dir.is_dir() or not (plugin_dir / "Cargo.toml").exists():
             continue
@@ -96,8 +97,12 @@ def clean() -> int:
         )
         if result.returncode != 0:
             print(f"    WARNING: cargo clean failed for {plugin_dir.name}")
+            failures.append(plugin_dir.name)
 
     print("\nClean complete.")
+    if failures:
+        print(f"WARNING: failed plugin cleans: {', '.join(failures)}")
+        return 1
     return 0
 
 
