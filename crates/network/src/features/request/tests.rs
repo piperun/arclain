@@ -1,6 +1,9 @@
 use crate::features::proxy::ProxyConfig;
 use crate::features::rate_limiting::RateLimiter;
-use crate::features::request::client::{parse_content_range, ContentRange, RequestCompletion};
+use crate::features::request::client::{
+    parse_content_range, read_buffered_response_with_limit, ContentRange, RequestCompletion,
+    MAX_PLUGIN_BUFFERED_RESPONSE_BYTES,
+};
 use crate::features::request::plugin_policy::{
     validate_plugin_url, validate_redirect_target, validate_resolved_addresses,
     AuthorizedPluginTarget, MAX_PLUGIN_REDIRECTS,
@@ -970,6 +973,156 @@ async fn plugin_policy_checked_blocking_get_uses_the_pinned_executor() {
 
     assert_eq!(body, b"checked");
     assert_eq!(client.plugin_dns_lookup_count_for_test("buffered.test"), 1);
+}
+
+async fn spawn_chunked_response_server(
+    body_length: usize,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind chunked response server");
+    let address = listener.local_addr().expect("chunked server address");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept buffered request");
+        let mut request = Vec::new();
+        let mut request_chunk = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket
+                .read(&mut request_chunk)
+                .await
+                .expect("read buffered request");
+            assert!(
+                read > 0,
+                "connection closed before buffered request headers"
+            );
+            request.extend_from_slice(&request_chunk[..read]);
+        }
+
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .expect("write chunked response headers");
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut remaining = body_length;
+        while remaining > 0 {
+            let length = remaining.min(chunk.len());
+            if socket
+                .write_all(format!("{length:x}\r\n").as_bytes())
+                .await
+                .is_err()
+                || socket.write_all(&chunk[..length]).await.is_err()
+                || socket.write_all(b"\r\n").await.is_err()
+            {
+                return;
+            }
+            remaining -= length;
+        }
+        let _ = socket.write_all(b"0\r\n\r\n").await;
+    });
+    (address, server)
+}
+
+#[tokio::test]
+async fn buffered_response_reader_accepts_chunked_body_at_exact_limit() {
+    const TEST_LIMIT: usize = 8;
+    let (address, server) = spawn_chunked_response_server(TEST_LIMIT).await;
+    let response = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("build boundary response client")
+        .get(format!("http://{address}/boundary"))
+        .send()
+        .await
+        .expect("request boundary-sized response");
+
+    let body = read_buffered_response_with_limit(response, TEST_LIMIT)
+        .await
+        .expect("boundary-sized response should be accepted");
+    server.await.expect("chunked response server panicked");
+
+    assert_eq!(body, vec![b'x'; TEST_LIMIT]);
+}
+
+#[tokio::test]
+async fn checked_async_plugin_request_rejects_oversized_chunked_body() {
+    let (address, server) =
+        spawn_chunked_response_server(MAX_PLUGIN_BUFFERED_RESPONSE_BYTES + 1).await;
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "oversized.test");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("oversized.test", vec![vec![address]]);
+    let url = format!("http://oversized.test:{}/chunked", address.port());
+
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(url))
+        .expect("checked oversized request should start");
+    let status = wait_for_request(&client, &id).await;
+    server.await.expect("chunked response server panicked");
+
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("buffered response limit")),
+        "oversized chunked plugin response was not rejected"
+    );
+}
+
+#[tokio::test]
+async fn checked_blocking_plugin_request_rejects_oversized_content_length_before_body() {
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind declared-length response server");
+    let address = listener
+        .local_addr()
+        .expect("declared-length server address");
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept buffered request");
+        let mut request = Vec::new();
+        let mut request_chunk = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket
+                .read(&mut request_chunk)
+                .await
+                .expect("read buffered request");
+            assert!(
+                read > 0,
+                "connection closed before buffered request headers"
+            );
+            request.extend_from_slice(&request_chunk[..read]);
+        }
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    MAX_PLUGIN_BUFFERED_RESPONSE_BYTES + 1
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write oversized Content-Length");
+    });
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "declared.test");
+    let client = Arc::new(AsyncHttpClient::new(Handle::current(), whitelist, None));
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("declared.test", vec![vec![address]]);
+    let url = format!("http://declared.test:{}/declared", address.port());
+
+    let result =
+        tokio::task::spawn_blocking(move || client.blocking_get_for_plugin("plugin-a", &url))
+            .await
+            .expect("checked buffered worker panicked");
+    server.await.expect("declared-length server panicked");
+
+    let error = result.expect_err("oversized declared response should be rejected");
+    assert!(
+        error.to_string().contains("buffered response limit"),
+        "oversized declared response failed for the wrong reason: {error}"
+    );
 }
 
 #[tokio::test]

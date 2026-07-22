@@ -27,6 +27,13 @@ use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
 
+/// Maximum response body retained in memory for a checked plugin request.
+///
+/// Larger resources must use the checked streaming API. This matches the
+/// resource manager's default 50 MiB ceiling without coupling the network
+/// crate back to its downstream data consumer.
+pub(super) const MAX_PLUGIN_BUFFERED_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
+
 /// Result of a streaming download.
 ///
 /// `bytes_written` is the count of bytes successfully written to the
@@ -1165,13 +1172,7 @@ impl AsyncHttpClient {
                     message: format!("HTTP error: {}", response.status()),
                 });
             }
-            response
-                .bytes()
-                .await
-                .map(|body| body.to_vec())
-                .map_err(|error| HttpError::RequestFailed {
-                    message: format!("Failed to read body: {error}"),
-                })
+            read_buffered_response_with_limit(response, MAX_PLUGIN_BUFFERED_RESPONSE_BYTES).await
         })
     }
 
@@ -1234,6 +1235,62 @@ impl AsyncHttpClient {
                 .map_err(|e| format!("Failed to read body: {}", e))
         })
     }
+}
+
+fn buffered_response_limit_error(limit: usize) -> HttpError {
+    HttpError::RequestFailed {
+        message: format!("plugin response body exceeds the {limit}-byte buffered response limit"),
+    }
+}
+
+fn reserve_buffered_response_capacity(
+    body: &mut Vec<u8>,
+    required_length: usize,
+    limit: usize,
+) -> Result<(), HttpError> {
+    if required_length <= body.capacity() {
+        return Ok(());
+    }
+
+    let doubled_capacity = body.capacity().saturating_mul(2).min(limit);
+    let target_capacity = doubled_capacity.max(required_length);
+    body.try_reserve_exact(target_capacity - body.len())
+        .map_err(|_| HttpError::RequestFailed {
+            message: "Failed to allocate buffered response body".to_string(),
+        })
+}
+
+pub(super) async fn read_buffered_response_with_limit(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, HttpError> {
+    let limit_u64 = u64::try_from(limit).map_err(|_| buffered_response_limit_error(limit))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit_u64)
+    {
+        return Err(buffered_response_limit_error(limit));
+    }
+
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| HttpError::RequestFailed {
+            message: format!("Failed to read body: {error}"),
+        })?
+    {
+        let next_length = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or_else(|| buffered_response_limit_error(limit))?;
+        if next_length > limit {
+            return Err(buffered_response_limit_error(limit));
+        }
+        reserve_buffered_response_capacity(&mut body, next_length, limit)?;
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 async fn write_streaming_response_with_metadata<W, F>(
@@ -1393,19 +1450,19 @@ async fn response_to_status(response: reqwest::Response, request_id: &RequestId)
         .collect();
     let content_type = headers.get("content-type").cloned();
 
-    match response.bytes().await {
+    match read_buffered_response_with_limit(response, MAX_PLUGIN_BUFFERED_RESPONSE_BYTES).await {
         Ok(body) => {
             info!("Request {} completed: {} bytes", request_id.0, body.len());
             RequestStatus::Ready(HttpResponse {
                 status_code,
                 headers,
-                body: body.to_vec(),
+                body,
                 content_type,
             })
         }
         Err(error) => {
             warn!("Request {} body error: {}", request_id.0, error);
-            RequestStatus::Failed(format!("Failed to read body: {error}"))
+            RequestStatus::Failed(error.to_string())
         }
     }
 }
