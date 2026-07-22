@@ -12,7 +12,6 @@
 
 use crate::shared::SharedState;
 use arclain_core::{UiItem, UiRegion, UiService};
-use arclain_plugins::manager::PluginManager;
 use arclain_signals::Signal;
 use std::marker::PhantomData;
 
@@ -42,10 +41,7 @@ pub trait Region: Sized + 'static {
     /// Walk enabled plugins, inject any items they contribute for this
     /// region into `state.items`. Returns `true` if any items were
     /// added (so the editor can mark itself dirty).
-    fn sync_plugin_items(
-        state: &mut LayoutEditorState<Self>,
-        manager: &PluginManager,
-    ) -> bool;
+    fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool;
 
     /// Filter rule for items shown in the user-facing picker. Used to
     /// hide internal items (e.g. `info.plugin_metadata` in the info
@@ -149,7 +145,6 @@ pub fn handle_layout_editor_action<R: Region>(
     state: &mut LayoutEditorState<R>,
     action: LayoutEditorAction,
     shared: &SharedState,
-    plugin_manager: Option<&PluginManager>,
 ) {
     match action {
         LayoutEditorAction::SyncItems => {
@@ -177,10 +172,8 @@ pub fn handle_layout_editor_action<R: Region>(
                 state.loaded = true;
             }
 
-            if let Some(manager) = plugin_manager {
-                if R::sync_plugin_items(state, manager) {
-                    state.dirty = true;
-                }
+            if R::sync_plugin_items(state, shared) {
+                state.dirty = true;
             }
         }
     }

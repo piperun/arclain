@@ -20,17 +20,28 @@ pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context)
             requests.len(),
             requests
         );
+        shared_state.plugin_ui_jobs.invalidate_all_layouts();
+        let dialog_signal = shared_state.signals().plugin_dialog_state.clone();
+        let mut dialog_state = dialog_signal.get();
+        dialog_state.invalidate_dialog_layout();
+        dialog_state.invalidate_page_layout();
+        dialog_signal.set(dialog_state);
         requests.clear();
         ctx.request_repaint();
     }
 }
 
 /// Bind signals to egui context for automatic repaint
-pub fn bind_signals_once(app_state: &Arc<Mutex<AppState>>, ctx: &egui::Context, bound: &mut bool) {
+pub fn bind_signals_once(shared: &SharedState, ctx: &egui::Context, bound: &mut bool) {
     if !*bound {
-        let state = app_state.lock();
+        let state = shared.app_state.lock();
         state.signals.bind_to_context(ctx);
         drop(state);
+        let signal_context = arclain_signals::SignalContext::new(ctx.clone());
+        signal_context.bind_named(
+            shared.plugin_ui_jobs.completion_signal(),
+            "plugin_ui_completion_epoch",
+        );
         *bound = true;
         tracing::info!("Signals bound to egui context");
     }
@@ -207,8 +218,7 @@ pub fn process_extraction_progress(
                             .pending_open_after_unlock
                             .set(progress.requested_file_path.clone());
 
-                        *status_message =
-                            "Archive contents are password-protected".to_string();
+                        *status_message = "Archive contents are password-protected".to_string();
                     } else {
                         *status_message = format!("Extraction failed: {}", error);
                     }
@@ -261,10 +271,7 @@ pub fn process_extraction_progress(
 /// Falls through `load_archive_into_tab`, so the encryption path
 /// (password dialog show) and auto-bind ctx-repaint behave the same
 /// as a top-level archive open.
-fn open_nested_archive_in_tab(
-    shared_state: &SharedState,
-    archive_path: &std::path::Path,
-) {
+fn open_nested_archive_in_tab(shared_state: &SharedState, archive_path: &std::path::Path) {
     let signals = shared_state.signals();
     let user_config = signals.user_config.get();
     let open_in_new_tab = user_config.open_nested_in_new_tab;
@@ -336,10 +343,7 @@ fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String)
 /// exists, replaces the default single-tab collection and spawns background
 /// loads for every tab that had an archive open. Missing files surface
 /// through the existing status-bar error path — no special toast in v1.
-pub fn restore_tabs_on_launch(
-    app_state: &Arc<Mutex<AppState>>,
-    signals: &AppSignals,
-) {
+pub fn restore_tabs_on_launch(app_state: &Arc<Mutex<AppState>>, signals: &AppSignals) {
     let user_config = signals.user_config.get();
     if !user_config.restore_tabs_on_launch {
         return;
@@ -418,7 +422,14 @@ pub fn update_window_title(
     ctx: &egui::Context,
 ) {
     let title = {
-        if let Some(path) = shared_state.signals().tabs.get().active().archive_path.get() {
+        if let Some(path) = shared_state
+            .signals()
+            .tabs
+            .get()
+            .active()
+            .archive_path
+            .get()
+        {
             path.file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "Arclain".to_string())

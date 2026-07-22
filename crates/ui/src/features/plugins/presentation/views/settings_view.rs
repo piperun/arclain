@@ -7,22 +7,18 @@ use crate::features::settings::domain::types::SettingsAction;
 
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_plugins::PluginManager;
 use eframe::egui;
 
 /// Render the Plugins settings page
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
 ) -> Option<SettingsAction> {
-    // Update plugin list from manager if available
-    if let Some(manager) = plugin_manager {
-        let state = app_state.lock();
-        plugins_state.update_from_manager(manager, &state.user_config);
+    if let Some(shared) = shared {
+        crate::features::plugins::application::request_plugin_snapshot(shared, plugins_state);
     }
 
     // Extract content_cache from services (no lock needed)
@@ -34,7 +30,6 @@ pub fn render(
     crate::features::plugins::presentation::pages::plugins_page::render(
         ui,
         theme,
-        plugin_manager,
         plugins_state,
         app_state,
         shared,

@@ -9,7 +9,6 @@ use crate::features::plugins::domain::types::PluginsListState;
 
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_plugins::PluginManager;
 use eframe::egui;
 
 // Re-export types for backwards compatibility
@@ -62,7 +61,6 @@ pub fn render_password_rules_settings(
 pub fn render_plugins_settings(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    plugin_manager: Option<&PluginManager>,
     plugins_state: &mut PluginsListState,
     app_state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
@@ -70,7 +68,6 @@ pub fn render_plugins_settings(
     crate::features::plugins::presentation::views::render_plugins_settings(
         ui,
         theme,
-        plugin_manager,
         plugins_state,
         app_state,
         shared,
@@ -108,9 +105,6 @@ pub struct SettingsContentBorrows<'a> {
     pub rules_page: Option<&'a mut crate::features::organization::presentation::views::RulesPage>,
     pub profiles_page:
         Option<&'a mut crate::features::organization::presentation::views::ProfilesPage>,
-
-    // Plugin manager (immutable borrow from the PluginManager mutex guard)
-    pub plugin_manager: Option<&'a PluginManager>,
 }
 
 /// Render the appropriate settings content based on the current page
@@ -136,7 +130,6 @@ pub fn render_settings_content(
         keyboard_mouse_state,
         rules_page,
         profiles_page,
-        plugin_manager,
     } = borrows;
 
     match page {
@@ -200,11 +193,14 @@ pub fn render_settings_content(
                                     return Some(SettingsAction::NavigateTo(page));
                                 }
                                 other => {
+                                    let user_config = shared_state.signals().user_config.get();
+                                    let plugins =
+                                        shared_state.plugin_ui_jobs.plugin_snapshot(&user_config);
                                     crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                         rp,
                                         other,
                                         org_service,
-                                        plugin_manager,
+                                        plugins.as_deref().map(Vec::as_slice),
                                     );
                                 }
                             }
@@ -222,14 +218,7 @@ pub fn render_settings_content(
         }
         SettingsPage::Plugins => {
             if let Some(plugins_state) = plugins_state {
-                render_plugins_settings(
-                    ui,
-                    theme,
-                    plugin_manager,
-                    plugins_state,
-                    app_state,
-                    shared,
-                )
+                render_plugins_settings(ui, theme, plugins_state, app_state, shared)
             } else {
                 ui.label("Plugins feature not available.");
                 None
@@ -248,7 +237,6 @@ pub fn render_settings_content(
                         toolbar_layout_state,
                         action,
                         shared_state,
-                        plugin_manager,
                     );
                 }
             }
@@ -267,7 +255,6 @@ pub fn render_settings_content(
                         info_panel_layout_state,
                         action,
                         shared_state,
-                        plugin_manager,
                     );
                 }
             }
@@ -301,11 +288,13 @@ pub fn render_settings_content(
                     if let Some(org_service) = shared_state.services.organization_service.as_ref() {
                         let output = rp.render_edit_rule(ui, theme, *rule_id);
                         if let Some(data_action) = output.data_action {
+                            let user_config = shared_state.signals().user_config.get();
+                            let plugins = shared_state.plugin_ui_jobs.plugin_snapshot(&user_config);
                             crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                 rp,
                                 data_action,
                                 org_service,
-                                plugin_manager,
+                                plugins.as_deref().map(Vec::as_slice),
                             );
                         }
                         if let Some(editor_action) = output.editor_action {
@@ -313,7 +302,9 @@ pub fn render_settings_content(
                             match editor_action {
                                 RuleEditorAction::Saved | RuleEditorAction::Cancelled => {
                                     // Navigate back to organization rules list
-                                    return Some(SettingsAction::NavigateTo(SettingsPage::OrganizationRules));
+                                    return Some(SettingsAction::NavigateTo(
+                                        SettingsPage::OrganizationRules,
+                                    ));
                                 }
                                 RuleEditorAction::None => {}
                             }

@@ -336,7 +336,7 @@ pub fn handle_rules_page_action(
     page: &mut RulesPage,
     action: RulesPageAction,
     service: &OrganizationService,
-    plugin_manager: Option<&arclain_plugins::PluginManager>,
+    plugins: Option<&[crate::features::plugins::domain::types::PluginInfo]>,
 ) {
     match action {
         RulesPageAction::Navigate(_) => {
@@ -375,8 +375,8 @@ pub fn handle_rules_page_action(
             };
 
             // Load plugin-provided variables.
-            if let Some(pm) = plugin_manager {
-                load_plugin_variables(&mut editor_state, pm);
+            if let Some(plugins) = plugins {
+                load_plugin_variables(&mut editor_state, plugins);
             }
 
             page.editor_state = Some(editor_state);
@@ -389,17 +389,17 @@ pub fn handle_rules_page_action(
 /// Called from the dispatcher when initializing the editor.
 fn load_plugin_variables(
     editor_state: &mut RuleEditorState,
-    plugin_manager: &arclain_plugins::PluginManager,
+    plugins: &[crate::features::plugins::domain::types::PluginInfo],
 ) {
     use crate::shared::components::{TemplateVariable, VariableGroup};
 
     // Query each loaded plugin for template variables.
-    for plugin in plugin_manager.list_plugins() {
+    for plugin in plugins {
         // Check if plugin provides template variables. This would be via
         // a trait or capability query; for now, add DLSite variables if
         // that plugin is loaded.
-        if plugin.manifest.plugin.name.to_lowercase().contains("dlsite")
-            || plugin.manifest.plugin.name.to_lowercase().contains("rj")
+        if plugin.name.to_lowercase().contains("dlsite")
+            || plugin.name.to_lowercase().contains("rj")
         {
             editor_state.variable_picker.add_group(
                 VariableGroup::new("DLSite")

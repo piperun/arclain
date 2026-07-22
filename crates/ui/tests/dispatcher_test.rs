@@ -95,10 +95,10 @@ mod profiles_page {
 mod rules_page {
     use arclain_core::OrganizationService;
     use arclain_db::DieselPool;
+    use arclain_ui::core::navigation::SettingsPage;
     use arclain_ui::features::organization::presentation::views::rules_page::{
         handle_rules_page_action, RulesPage, RulesPageAction,
     };
-    use arclain_ui::core::navigation::SettingsPage;
 
     /// Empty in-memory pool: the schema isn't applied, so any real
     /// query returns Err. Suitable for testing dispatcher error
@@ -199,11 +199,7 @@ mod process_page {
         let shared = create_test_shared_state();
         let mut state = ProcessPageState::default();
 
-        handle_process_action(
-            &mut state,
-            ProcessAction::LoadInterruptedCount,
-            &shared,
-        );
+        handle_process_action(&mut state, ProcessAction::LoadInterruptedCount, &shared);
 
         assert_eq!(
             state.interrupted_run_count,
@@ -218,11 +214,7 @@ mod process_page {
         let mut state = ProcessPageState::default();
         state.interrupted_run_count = Some(7); // pretend a prior load happened
 
-        handle_process_action(
-            &mut state,
-            ProcessAction::LoadInterruptedCount,
-            &shared,
-        );
+        handle_process_action(&mut state, ProcessAction::LoadInterruptedCount, &shared);
 
         assert_eq!(
             state.interrupted_run_count,
@@ -236,11 +228,7 @@ mod process_page {
         let shared = create_test_shared_state();
         let mut state = ProcessPageState::default();
 
-        handle_process_action(
-            &mut state,
-            ProcessAction::LoadOrganizationRules,
-            &shared,
-        );
+        handle_process_action(&mut state, ProcessAction::LoadOrganizationRules, &shared);
 
         let cache = state
             .cached_org_rules
@@ -291,12 +279,7 @@ mod layout_editor {
         let shared = create_test_shared_state();
         let mut state = ToolbarLayoutState::default();
 
-        handle_toolbar_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
 
         assert!(
             state.loaded,
@@ -310,12 +293,7 @@ mod layout_editor {
         let shared = create_test_shared_state();
         let mut state = InfoPanelLayoutState::default();
 
-        handle_info_panel_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_info_panel_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
 
         assert!(state.loaded);
         assert!(state.items.is_empty());
@@ -329,17 +307,9 @@ mod layout_editor {
         // Sync with empty signal and no plugin manager should be a
         // graceful no-op for dirty (loaded=true, items=empty, dirty
         // stays false).
-        handle_toolbar_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
 
-        assert!(
-            !state.dirty,
-            "no-op sync must not mark the editor dirty"
-        );
+        assert!(!state.dirty, "no-op sync must not mark the editor dirty");
     }
 
     #[test]
@@ -383,10 +353,7 @@ mod interface_settings {
         // With ui_service=None the dispatcher's early-return path
         // fires; load_from_service is never called and `loaded`
         // stays false.
-        assert!(
-            !state.loaded,
-            "no ui_service → loader must short-circuit"
-        );
+        assert!(!state.loaded, "no ui_service → loader must short-circuit");
     }
 
     #[test]
@@ -550,11 +517,7 @@ mod profiles_page_happy {
             .unwrap()
             .id;
 
-        handle_profiles_action(
-            &mut page,
-            ProfilesAction::DeleteProfile(id_alpha),
-            &shared,
-        );
+        handle_profiles_action(&mut page, ProfilesAction::DeleteProfile(id_alpha), &shared);
 
         let after = page.profiles().unwrap();
         assert_eq!(user_names(after), vec!["beta".to_string()]);
@@ -712,11 +675,7 @@ mod process_page_happy {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         let mut state = ProcessPageState::default();
 
-        handle_process_action(
-            &mut state,
-            ProcessAction::LoadOrganizationRules,
-            &shared,
-        );
+        handle_process_action(&mut state, ProcessAction::LoadOrganizationRules, &shared);
 
         let cache = state
             .cached_org_rules
@@ -733,11 +692,7 @@ mod process_page_happy {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         let mut state = ProcessPageState::default();
 
-        handle_process_action(
-            &mut state,
-            ProcessAction::LoadInterruptedCount,
-            &shared,
-        );
+        handle_process_action(&mut state, ProcessAction::LoadInterruptedCount, &shared);
 
         assert_eq!(
             state.interrupted_run_count,
@@ -765,12 +720,7 @@ mod layout_editor_happy {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         let mut state = ToolbarLayoutState::default();
 
-        handle_toolbar_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
 
         assert!(state.loaded, "sync flips loaded=true");
         assert!(
@@ -788,12 +738,7 @@ mod layout_editor_happy {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         let mut state = InfoPanelLayoutState::default();
 
-        handle_info_panel_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_info_panel_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
 
         assert!(state.loaded);
         assert!(
@@ -812,12 +757,7 @@ mod layout_editor_happy {
         let mut state = ToolbarLayoutState::default();
 
         // First sync to populate from signal.
-        handle_toolbar_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
         let baseline_len = state.items.len();
         assert!(baseline_len > 0);
 
@@ -828,12 +768,7 @@ mod layout_editor_happy {
 
         // Sync again. With dirty=true, signal-side data must NOT be
         // re-applied; user's local edit survives.
-        handle_toolbar_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
 
         assert_eq!(state.items.len(), edited_len, "dirty edit preserved");
         assert!(state.dirty, "dirty flag persists across syncs");
@@ -849,12 +784,7 @@ mod layout_editor_happy {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         let mut state = ToolbarLayoutState::default();
 
-        handle_toolbar_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
         let baseline_len = state.items.len();
         assert!(baseline_len > 0);
 
@@ -865,12 +795,7 @@ mod layout_editor_happy {
         updated.pop();
         shared.signals().toolbar_items.set(updated);
 
-        handle_toolbar_layout_action(
-            &mut state,
-            LayoutEditorAction::SyncItems,
-            &shared,
-            None,
-        );
+        handle_toolbar_layout_action(&mut state, LayoutEditorAction::SyncItems, &shared);
 
         assert_eq!(
             state.items.len(),
@@ -1043,20 +968,17 @@ mod interface_settings_happy {
         let (_tmp, shared) = create_test_shared_state_with_dbs();
         let ui_service = shared.services.ui_service.as_ref().unwrap().clone();
 
-        let initial = ui_service
-            .list_items(UiRegion::ContextMenu)
-            .expect("list");
+        let initial = ui_service.list_items(UiRegion::ContextMenu).expect("list");
         let victim = initial
             .into_iter()
             .next()
             .expect("seeded context-menu items present");
         let target_id = victim.id.clone();
         let started_visible = victim.visible;
-        shared.signals().context_menu_items.set(
-            ui_service
-                .list_items(UiRegion::ContextMenu)
-                .unwrap(),
-        );
+        shared
+            .signals()
+            .context_menu_items
+            .set(ui_service.list_items(UiRegion::ContextMenu).unwrap());
 
         let mut state = InterfaceSettingsState::default();
         handle_interface_settings_action(
@@ -1111,4 +1033,3 @@ mod interface_settings_happy {
         );
     }
 }
-

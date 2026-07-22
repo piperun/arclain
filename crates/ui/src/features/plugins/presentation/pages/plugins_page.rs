@@ -8,7 +8,6 @@ use crate::features::settings::domain::types::SettingsAction;
 
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_plugins::PluginManager;
 use eframe::egui;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -18,7 +17,6 @@ use std::sync::Arc;
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    plugin_manager: Option<&PluginManager>,
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
@@ -31,7 +29,6 @@ pub fn render(
         let needs_refresh = crate::features::plugins::presentation::views::detail_view::render(
             ui,
             theme,
-            plugin_manager,
             state,
             app_state,
             shared,
@@ -39,9 +36,9 @@ pub fn render(
         );
 
         if needs_refresh {
-            if let Some(manager) = plugin_manager {
-                let state_lock = app_state.lock();
-                state.update_from_manager(manager, &state_lock.user_config);
+            state.invalidate_snapshot();
+            if let Some(shared) = shared {
+                crate::features::plugins::application::request_plugin_snapshot(shared, state);
             }
         }
     } else {

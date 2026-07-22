@@ -11,7 +11,6 @@ use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_core::utilities::effective_plugin_proxy_map;
 use arclain_core::UserConfig;
-use arclain_plugins::PluginManager;
 use arclain_widgets::toggle_switch::ToggleSwitch;
 use arclain_widgets::Chips;
 use eframe::egui;
@@ -46,13 +45,13 @@ fn persist_plugin_proxy_setting(
 pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    plugin_manager: Option<&PluginManager>,
     state: &mut PluginsListState,
     app_state: &Arc<Mutex<crate::core::AppState>>,
     shared: Option<&SharedState>,
     content_cache: Option<&Arc<arclain_core::ContentCache>>,
 ) -> bool {
     let mut needs_refresh = false;
+    let mut main_layout_stale = false;
 
     // Drain any plugin actions that background `send_ui_event` threads
     // pushed since the last render. Without this, the actions sit in
@@ -63,7 +62,8 @@ pub fn render(
     // targeting `MainPage`. If present, invalidate `cached_main_layout`
     // so the next render fetches a fresh layout (audit P4 invalidation).
     if let Some(shared) = shared {
-        invalidate_main_layout_on_refresh_panel(state, &shared.pending_plugin_actions);
+        main_layout_stale =
+            invalidate_main_layout_on_refresh_panel(state, &shared.pending_plugin_actions);
 
         let mut toaster = shared.toaster.lock();
         let dialog_signal = shared.signals().plugin_dialog_state.clone();
@@ -136,34 +136,13 @@ pub fn render(
                     ))
                     .changed()
                 {
-                    if let Some(mgr) = plugin_manager {
-                        let res = if enabled {
-                            mgr.enable_plugin(&plugin_info.id)
-                        } else {
-                            mgr.disable_plugin(&plugin_info.id)
-                        };
-
-                        if res.is_ok() {
-                            let mut app = app_state.lock();
-                            let mut enabled_list = app.user_config.get_enabled_plugins();
-                            if enabled {
-                                if !enabled_list.contains(&plugin_info.id) {
-                                    enabled_list.push(plugin_info.id.clone());
-                                }
-                            } else {
-                                enabled_list.retain(|id| id != &plugin_info.id);
-                            }
-                            app.user_config.set_enabled_plugins(&enabled_list);
-
-                            if let Some(ref cfg_svc) = config_service {
-                                let res: anyhow::Result<()> =
-                                    cfg_svc.save_user_config(&app.user_config);
-                                if let Err(e) = res {
-                                    tracing::error!("Failed to save user config: {}", e);
-                                }
-                            }
-                            needs_refresh = true;
-                        }
+                    if let Some(shared) = shared {
+                        shared.plugin_ui_jobs.request(
+                            crate::features::plugins::application::PluginUiRequest::SetEnabled {
+                                plugin_id: plugin_info.id.clone(),
+                                enabled,
+                            },
+                        );
                     }
                 }
             })
@@ -276,23 +255,30 @@ pub fn render(
         crate::shared::components::settings_form::SectionHeader::new("Plugin Configuration")
             .show(ui, &theme.colors);
 
-        if let Some(manager) = plugin_manager {
-            if plugin_info.loaded {
+        if plugin_info.loaded {
+            if let Some(shared) = shared {
+                let origin_tab = Some(shared.signals().tabs.get().active_id());
+                if main_layout_stale {
+                    shared.plugin_ui_jobs.invalidate_layout(
+                        &plugin_info.id,
+                        &crate::features::plugins::application::PluginUiTarget::MainPage,
+                        origin_tab,
+                    );
+                }
                 render_plugin_ui(
                     ui,
                     theme,
-                    manager,
                     &plugin_info.id,
                     shared,
                     content_cache,
                     &mut state.cached_main_layout,
                 );
-            } else {
-                ui.label(
-                    egui::RichText::new("Plugin is not loaded.")
-                        .color(theme.colors.on_surface_variant),
-                );
             }
+        } else {
+            ui.label(
+                egui::RichText::new("Plugin is not loaded.")
+                    .color(theme.colors.on_surface_variant),
+            );
         }
     });
 
@@ -410,19 +396,11 @@ fn render_domain_row(
 fn render_plugin_ui(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    manager: &PluginManager,
     plugin_id: &str,
-    shared: Option<&SharedState>,
+    shared: &SharedState,
     content_cache: Option<&Arc<arclain_core::ContentCache>>,
-    cached_main_layout: &mut Option<(String, arclain_plugins::types::PluginLayout)>,
+    cached_main_layout: &mut Option<(String, Arc<arclain_plugins::types::PluginLayout>)>,
 ) {
-    // Render path requires a SharedState (the dispatcher pulls
-    // services + sink from it). Returning early if absent matches the
-    // pre-refactor behavior.
-    if shared.is_none() {
-        return;
-    }
-
     // Audit P4: cached_main_layout serves the layout for the
     // currently-selected plugin. Fetch fresh only when the cache is
     // empty or holds a different plugin's layout. Re-fetches happen
@@ -437,22 +415,17 @@ fn render_plugin_ui(
         cached_main_layout
             .as_ref()
             .map(|(_, layout)| Ok(layout.clone()))
-    } else if let Some(instance_arc) = manager.get_plugin_instance(plugin_id) {
-        if let Some(mut instance) = instance_arc.try_lock() {
-            let res = instance.get_ui_layout(
-                arclain_plugins::types::PluginExtensionPoint::MainPage,
-            );
-            if let Ok(ref layout) = res {
-                *cached_main_layout = Some((plugin_id.to_string(), layout.clone()));
-            }
-            Some(res)
-        } else {
-            None // Busy
-        }
     } else {
-        Some(Err(arclain_plugins::types::PluginError::NotFound(
-            plugin_id.to_string(),
-        )))
+        let origin_tab = Some(shared.signals().tabs.get().active_id());
+        let layout = shared.plugin_ui_jobs.layout(
+            plugin_id,
+            crate::features::plugins::application::PluginUiTarget::MainPage,
+            origin_tab,
+        );
+        if let Some(Ok(ref layout)) = layout {
+            *cached_main_layout = Some((plugin_id.to_string(), layout.clone()));
+        }
+        layout
     };
 
     match ui_result {
@@ -467,9 +440,7 @@ fn render_plugin_ui(
                 // Render path requires a SharedState — render_plugin_ui
                 // returned earlier above when shared is None. Cloning a
                 // SharedState is just refcount bumps; no allocations.
-                let shared_clone = shared
-                    .expect("render_plugin_ui requires SharedState")
-                    .clone();
+                let shared_clone = shared.clone();
 
                 let mut event_callback = Box::new(move |id: &str, value: Option<String>| {
                     crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
@@ -480,25 +451,35 @@ fn render_plugin_ui(
                     );
                 }) as ui::UiEventCallback;
 
-                let flat_elements = ui_elements.flatten();
-                ui::render_ui_elements(
-                    ui,
-                    &flat_elements,
-                    &mut event_callback,
-                    &theme.colors,
-                    content_cache,
-                    shared,
-                    Some(plugin_id),
-                );
+                let mut render = |elements: &[arclain_plugins::types::PluginUiElement]| {
+                    ui::render_ui_elements(
+                        ui,
+                        elements,
+                        &mut event_callback,
+                        &theme.colors,
+                        content_cache,
+                        Some(shared),
+                        Some(plugin_id),
+                    );
+                };
+                match ui_elements.as_ref() {
+                    arclain_plugins::types::PluginLayout::Single { elements } => render(elements),
+                    arclain_plugins::types::PluginLayout::Split {
+                        sidebar, content, ..
+                    } => {
+                        render(sidebar);
+                        render(content);
+                    }
+                }
                 // Actions pushed by the spawned thread are now visible to
                 // `drain_pending_plugin_actions` on the NEXT render of this
                 // panel. Toasts, RefreshPanel, etc. propagate within ~1
                 // frame instead of being silently dropped.
             }
         }
-        Some(Err(e)) => {
+        Some(Err(error)) => {
             ui.label(
-                egui::RichText::new(format!("Error loading UI: {}", e)).color(theme.colors.error),
+                egui::RichText::new(format!("Plugin UI error: {error}")).color(theme.colors.error),
             );
         }
         None => {
@@ -535,7 +516,7 @@ pub(crate) fn invalidate_main_layout_on_plugin_change(state: &mut PluginsListSta
 pub(crate) fn invalidate_main_layout_on_refresh_panel(
     state: &mut PluginsListState,
     pending: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
-) {
+) -> bool {
     let needs_invalidation = {
         let pending = pending.lock();
         pending.iter().any(|(_, action)| {
@@ -549,6 +530,7 @@ pub(crate) fn invalidate_main_layout_on_refresh_panel(
     if needs_invalidation {
         state.cached_main_layout = None;
     }
+    needs_invalidation
 }
 
 /// Drain a queue of plugin actions into `process_plugin_actions`.
@@ -599,6 +581,7 @@ mod tests {
         config.socks5_enabled = true;
 
         assert!(plugin_proxy_toggle_value(&config, "dlsite"));
+        assert!(plugin_proxy_toggle_value(&config, "dlsite-metadata"));
         assert!(plugin_proxy_toggle_value(&config, "dlsite-api"));
         assert!(plugin_proxy_toggle_value(&config, "dlsite-html"));
         assert!(!plugin_proxy_toggle_value(&config, "custom"));
@@ -705,14 +688,7 @@ mod tests {
         let mut toaster = Toaster::new();
         let mut dialog_state = PluginDialogState::default();
 
-        drain_pending_plugin_actions(
-            &pending,
-            &mut toaster,
-            &mut dialog_state,
-            None,
-            None,
-            None,
-        );
+        drain_pending_plugin_actions(&pending, &mut toaster, &mut dialog_state, None, None, None);
 
         assert!(pending.lock().is_empty());
     }
@@ -730,7 +706,7 @@ mod tests {
         state.selected_plugin = Some("plugin_b".to_string());
         state.cached_main_layout = Some((
             "plugin_a".to_string(),
-            arclain_plugins::types::PluginLayout::default(),
+            Arc::new(arclain_plugins::types::PluginLayout::default()),
         ));
 
         invalidate_main_layout_on_plugin_change(&mut state);
@@ -748,7 +724,7 @@ mod tests {
         state.selected_plugin = Some("plugin_a".to_string());
         state.cached_main_layout = Some((
             "plugin_a".to_string(),
-            arclain_plugins::types::PluginLayout::default(),
+            Arc::new(arclain_plugins::types::PluginLayout::default()),
         ));
 
         invalidate_main_layout_on_plugin_change(&mut state);
@@ -768,7 +744,7 @@ mod tests {
         state.selected_plugin = Some("plugin_a".to_string());
         state.cached_main_layout = Some((
             "plugin_a".to_string(),
-            arclain_plugins::types::PluginLayout::default(),
+            Arc::new(arclain_plugins::types::PluginLayout::default()),
         ));
         let pending: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
             Arc::new(Mutex::new(vec![(
@@ -794,7 +770,7 @@ mod tests {
         state.selected_plugin = Some("plugin_a".to_string());
         state.cached_main_layout = Some((
             "plugin_a".to_string(),
-            arclain_plugins::types::PluginLayout::default(),
+            Arc::new(arclain_plugins::types::PluginLayout::default()),
         ));
         let pending: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
             Arc::new(Mutex::new(vec![(

@@ -107,9 +107,7 @@ impl SettingsFeature {
 
             ServerSettingsState {
                 enabled: Signal::new(user_config.gameta_server_enabled),
-                url: Signal::new(
-                    user_config.gameta_server_url.clone().unwrap_or_default(),
-                ),
+                url: Signal::new(user_config.gameta_server_url.clone().unwrap_or_default()),
                 api_key: Signal::new(api_key),
                 connection_status: Signal::new(ServerConnectionStatus::Idle),
             }
@@ -140,9 +138,11 @@ impl SettingsFeature {
             return; // Already bound
         }
         let ctx_network = ctx.clone();
-        self.network_state.connection_test_status.subscribe(move || {
-            ctx_network.request_repaint();
-        });
+        self.network_state
+            .connection_test_status
+            .subscribe(move || {
+                ctx_network.request_repaint();
+            });
         let ctx_server = ctx.clone();
         self.server_state.connection_status.subscribe(move || {
             ctx_server.request_repaint();
@@ -169,7 +169,11 @@ impl SettingsFeature {
         match page {
             SettingsPage::General => {
                 let stored_drop = arclain_core::DropBehavior::from_str(
-                    state.user_config.drop_behavior.as_deref().unwrap_or("new_tab"),
+                    state
+                        .user_config
+                        .drop_behavior
+                        .as_deref()
+                        .unwrap_or("new_tab"),
                 );
                 *self.general_state.open_nested_in_new_tab.read()
                     != state.user_config.open_nested_in_new_tab
@@ -236,7 +240,8 @@ impl SettingsFeature {
         self.bind_signals(ui.ctx());
 
         // Sync rule editor dirty state for header
-        self.rule_editor_dirty = rules_page.as_ref()
+        self.rule_editor_dirty = rules_page
+            .as_ref()
             .map(|rp| rp.is_editor_dirty())
             .unwrap_or(false);
 
@@ -289,7 +294,9 @@ impl SettingsFeature {
                             match rp.save_editor_rule(org_service) {
                                 Ok(()) => {
                                     rp.mark_saved_and_clear();
-                                    content_nav_target = Some(crate::core::AppPage::Settings(SettingsPage::OrganizationRules));
+                                    content_nav_target = Some(crate::core::AppPage::Settings(
+                                        SettingsPage::OrganizationRules,
+                                    ));
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to save rule: {}", e);
@@ -324,9 +331,6 @@ impl SettingsFeature {
                                 content_nav_target = Some(crate::core::AppPage::Settings(target));
                             }
                         } else {
-                            let pm_arc_opt = shared.services.plugin_manager.clone();
-                            let pm_guard = pm_arc_opt.as_ref().map(|m| m.lock());
-
                             let content_borrows = SettingsContentBorrows {
                                 general: &mut self.general_state,
                                 security: &mut self.security_state,
@@ -347,7 +351,6 @@ impl SettingsFeature {
                                     .map(|h| &mut h.keyboard_mouse_state),
                                 rules_page,
                                 profiles_page,
-                                plugin_manager: pm_guard.as_deref(),
                             };
                             let act = render_settings_content(
                                 ui,
@@ -399,9 +402,7 @@ impl SettingsFeature {
         &mut self,
         action: SettingsAction,
         shared: &SharedState,
-        plugins_state: Option<
-            &mut crate::features::plugins::domain::types::PluginsListState,
-        >,
+        plugins_state: Option<&mut crate::features::plugins::domain::types::PluginsListState>,
     ) {
         crate::features::settings::presentation::controllers::settings_controller::handle_action(
             action,

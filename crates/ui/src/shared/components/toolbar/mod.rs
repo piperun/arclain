@@ -1,7 +1,5 @@
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_plugins::manager::PluginManager;
-use arclain_plugins::types::PluginExtensionPoint;
 use eframe::egui;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -26,7 +24,6 @@ pub fn render(
     has_selection: bool,
     _has_metadata: bool,
     config: Option<&ToolbarConfig>,
-    plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
     shared: Option<&SharedState>,
     plugin_renderer: PluginToolbarRenderer<'_>,
     plugin_dispatcher: PluginEventDispatcher<'_>,
@@ -39,24 +36,21 @@ pub fn render(
     // dispatcher below.
     let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
 
-    // Pre-fetch plugin elements. Uses try_lock so a worker thread
-    // holding the instance for a long-running event (e.g. DLSite
-    // fetch) doesn't freeze the UI. On contention this plugin's
-    // toolbar buttons are skipped for the current frame and reappear
-    // once the lock releases.
+    // Render consumes worker-populated snapshots only. Missing
+    // snapshots/layouts queue one coalesced background request and
+    // appear after the completion signal repaints the UI.
     let mut plugin_elements = HashMap::new();
-    if let Some(manager_arc) = plugin_manager {
-        let manager = manager_arc.lock();
-        let plugins = manager.list_plugins();
-        for plugin in plugins.iter().filter(|p| p.enabled) {
-            let pid = plugin.id.clone();
-            if let Some(Some(layout)) = manager.try_with_plugin_instance(&pid, |instance| {
-                instance
-                    .get_ui_layout(PluginExtensionPoint::PluginButton)
-                    .ok()
-            }) {
-                if let Some(layout) = layout {
-                    plugin_elements.insert(pid, layout.flatten());
+    if let Some(shared) = shared {
+        let user_config = shared.signals().user_config.get();
+        let origin_tab = Some(shared.signals().tabs.get().active_id());
+        if let Some(plugins) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) {
+            for plugin in plugins.iter().filter(|plugin| plugin.enabled) {
+                if let Some(Ok(layout)) = shared.plugin_ui_jobs.layout(
+                    &plugin.id,
+                    crate::features::plugins::application::PluginUiTarget::PluginButton,
+                    origin_tab,
+                ) {
+                    plugin_elements.insert(plugin.id.clone(), layout.as_ref().clone().flatten());
                 }
             }
         }
@@ -171,13 +165,14 @@ pub fn render(
     if let Some(shared) = shared {
         let dialog_signal = shared.signals().plugin_dialog_state.clone();
         let mut dialog_state = dialog_signal.get();
+        let origin_tab = shared.signals().tabs.get().active_id();
 
         let dialog_sigs = dialog_signals.lock();
         for (plugin_id, dialog_id) in dialog_sigs.iter() {
             if dialog_id == "__close" {
                 dialog_state.close_dialog();
             } else {
-                dialog_state.open_dialog(plugin_id, dialog_id);
+                dialog_state.open_dialog(plugin_id, dialog_id, origin_tab);
             }
         }
 

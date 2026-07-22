@@ -5,11 +5,8 @@
 use super::panel::{Panel, PanelBody, PanelHeader};
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
-use parking_lot::Mutex;
-use std::sync::Arc;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PropertyGroup {
@@ -35,16 +32,9 @@ pub fn render(
     ui: &mut egui::Ui,
     theme: &AppTheme,
     sections: &[PanelSection],
-    plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
     shared: Option<&SharedState>,
 ) -> PropertiesPanelAction {
     let action = PropertiesPanelAction::None;
-
-    // Collect actions from plugin UI events
-    let collected_actions: Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
-        Arc::new(Mutex::new(Vec::new()));
-    let dialog_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
-    let page_signals: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Extract content_cache from services (no lock needed)
     let content_cache = shared.and_then(|s| s.services.content_cache.clone());
@@ -62,78 +52,37 @@ pub fn render(
                         .with_header(PanelHeader::new(&group.title))
                         .with_body(PanelBody::Properties(group.properties.clone()));
 
-                    panel.render(ui, theme, None, shared, content_cache.as_ref());
+                    panel.render(ui, theme, shared, content_cache.as_ref());
                 }
                 PanelSection::Plugin {
                     plugin_id,
                     elements,
                 } => {
-                    if let Some(manager_arc) = plugin_manager {
-                        // Get plugin name from cached metadata (not instance.get_metadata which can fail)
-                        let plugin_name = {
-                            let manager = manager_arc.lock();
-                            manager
-                                .get_plugin_metadata(plugin_id)
-                                .map(|m| m.name)
-                                .unwrap_or_else(|| "Plugin".to_string())
-                        };
+                    let plugin_name = shared
+                        .and_then(|shared| {
+                            let config = shared.signals().user_config.get();
+                            shared.plugin_ui_jobs.plugin_snapshot(&config)
+                        })
+                        .and_then(|plugins| {
+                            plugins
+                                .iter()
+                                .find(|plugin| plugin.id == *plugin_id)
+                                .map(|plugin| plugin.name.clone())
+                        })
+                        .unwrap_or_else(|| "Plugin".to_string());
 
-                        // Use standardized Panel for plugin sections
-                        let panel = Panel::new(format!("plugin_{}", plugin_id))
-                            .with_header(PanelHeader::new(plugin_name))
-                            .with_body(PanelBody::PluginUI {
-                                plugin_id: plugin_id.clone(),
-                                elements: elements.clone(),
-                            });
+                    let panel = Panel::new(format!("plugin_{}", plugin_id))
+                        .with_header(PanelHeader::new(plugin_name))
+                        .with_body(PanelBody::PluginUI {
+                            plugin_id: plugin_id.clone(),
+                            elements: elements.clone(),
+                        });
 
-                        panel.render(ui, theme, Some(manager_arc), shared, content_cache.as_ref());
-                    }
+                    panel.render(ui, theme, shared, content_cache.as_ref());
                 }
             }
         }
     });
-
-    // Process collected plugin actions
-    if let Some(shared) = shared {
-        let actions = collected_actions.lock();
-        let mut toaster = shared.toaster.lock();
-        let dialog_signal = shared.signals().plugin_dialog_state.clone();
-        let mut dialog_state = dialog_signal.get();
-        // lightbox_state is per-tab now (post 2026-05-20 audit B2 follow-up)
-        let active_tab = shared.signals().tabs.get().active().clone();
-
-        for (plugin_id, plugin_action) in actions.iter() {
-            crate::features::plugins::presentation::controllers::plugin_controller::process_plugin_actions(
-                vec![plugin_action.clone()],
-                plugin_id,
-                &mut dialog_state,
-                &mut toaster,
-                Some(&shared.refresh_requests),
-                Some(&active_tab.lightbox_state),
-                Some(shared),
-            );
-        }
-
-        let signals = dialog_signals.lock();
-        for (plugin_id, dialog_id) in signals.iter() {
-            if dialog_id == "__close" {
-                dialog_state.close_dialog();
-            } else {
-                dialog_state.open_dialog(plugin_id, dialog_id);
-            }
-        }
-
-        let page_sigs = page_signals.lock();
-        for (plugin_id, page_id) in page_sigs.iter() {
-            if page_id == "__close" {
-                dialog_state.close_page();
-            } else {
-                dialog_state.open_page(plugin_id, page_id);
-            }
-        }
-
-        dialog_signal.set(dialog_state);
-    }
 
     action
 }

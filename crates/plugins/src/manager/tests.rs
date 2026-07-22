@@ -434,6 +434,53 @@ fn p3_top_tabs_cache_populates_and_invalidates() {
     );
 }
 
+#[test]
+fn top_tabs_wait_for_a_busy_enabled_plugin_instead_of_returning_partial_results() {
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let temp_dir = TempDir::new().unwrap();
+    let wasm_path = temp_dir.path().join("ui-demo.wasm");
+    std::fs::write(
+        &wasm_path,
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../plugins/ui-demo/ui-demo.wasm"
+        )),
+    )
+    .unwrap();
+
+    let mut manager = PluginManager::new(temp_dir.path().join("plugins"), HashMap::new()).unwrap();
+    manager.install_plugin(&wasm_path).unwrap();
+    let manager = Arc::new(manager);
+    let instance = manager
+        .get_plugin_instance("ui-demo")
+        .expect("installed plugin must expose its instance");
+    let instance_guard = instance.lock();
+
+    let worker_manager = manager.clone();
+    let (sender, receiver) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        sender
+            .send(worker_manager.get_all_top_tabs())
+            .expect("test receiver must remain connected");
+    });
+
+    assert!(
+        matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ),
+        "a complete snapshot must wait for a busy enabled plugin",
+    );
+
+    drop(instance_guard);
+    let _tabs = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .expect("top-tab aggregation must finish after the instance unlocks");
+    worker.join().unwrap();
+}
+
 /// `enable_plugin` / `disable_plugin` should drop the cache so the
 /// next render picks up the new set of enabled plugins.
 #[test]

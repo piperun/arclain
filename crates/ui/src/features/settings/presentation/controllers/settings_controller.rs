@@ -31,17 +31,13 @@ fn log_saved_proxy_configuration(config: &ProxyConfig) {
 
 /// Handle a settings action, mutating the appropriate state.
 ///
-/// `plugins_state` is optional because most call sites don't carry the
-/// PluginsFeature borrow (e.g. `dialog_handler.rs` invokes this only for
-/// `SavePasswordRules`). Plugin-touching actions like `InstallPlugin`
-/// degrade gracefully when the borrow isn't supplied — the install
-/// still happens, the on-screen list just won't refresh until the
-/// page is re-entered.
+/// `plugins_state` remains optional because most call sites don't carry
+/// the PluginsFeature borrow (for example, password-rule dialogs).
 pub fn handle_action(
     action: SettingsAction,
     security_state: &mut SecuritySettingsState,
     archives_state: &mut ArchivesSettingsState,
-    plugins_state: Option<&mut PluginsListState>,
+    _plugins_state: Option<&mut PluginsListState>,
     network_state: &mut crate::features::settings::domain::types::NetworkSettingsState,
     server_state: &mut ServerSettingsState,
 
@@ -133,27 +129,11 @@ pub fn handle_action(
             }
         }
         SettingsAction::InstallPlugin { wasm_path } => {
-            // Get plugin_manager from services (no lock needed)
-            if let Some(manager) = &shared.services.plugin_manager {
-                let mut mgr = manager.lock();
-                match mgr.install_plugin(std::path::Path::new(&wasm_path)) {
-                    Ok(id) => {
-                        tracing::info!("Successfully installed plugin: {}", id);
-                        // Refresh list — only when the caller supplied a
-                        // PluginsFeature borrow. If absent (e.g. action
-                        // dispatched from a path that doesn't carry it),
-                        // skip the refresh; the page will reload from the
-                        // manager next time it's entered.
-                        if let Some(plugins_state) = plugins_state {
-                            let state = shared.app_state.lock();
-                            plugins_state.update_from_manager(&mgr, &state.user_config);
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to install plugin: {}", e);
-                    }
-                }
-            }
+            shared.plugin_ui_jobs.request(
+                crate::features::plugins::application::PluginUiRequest::Install {
+                    wasm_path: std::path::PathBuf::from(wasm_path),
+                },
+            );
         }
         SettingsAction::ClearCacheIndex => {
             let mut state = shared.app_state.lock();
@@ -441,10 +421,7 @@ pub fn handle_action(
 
                 match client.health() {
                     Ok(resp) => {
-                        let msg = format!(
-                            "gameta server v{} is reachable",
-                            resp.version
-                        );
+                        let msg = format!("gameta server v{} is reachable", resp.version);
                         status_signal.set(ServerConnectionStatus::Connected(msg));
                     }
                     Err(e) => {
@@ -637,8 +614,7 @@ mod tests {
             let proxy_finished_on_thread = request_finished.clone();
             let proxy_server = std::thread::spawn(move || {
                 let deadline = Instant::now() + Duration::from_secs(1);
-                while !proxy_finished_on_thread.load(Ordering::SeqCst)
-                    && Instant::now() < deadline
+                while !proxy_finished_on_thread.load(Ordering::SeqCst) && Instant::now() < deadline
                 {
                     match proxy.accept() {
                         Ok((mut socket, _)) => {
@@ -657,8 +633,7 @@ mod tests {
             let target_finished_on_thread = request_finished.clone();
             let target_server = std::thread::spawn(move || {
                 let deadline = Instant::now() + Duration::from_secs(1);
-                while !target_finished_on_thread.load(Ordering::SeqCst)
-                    && Instant::now() < deadline
+                while !target_finished_on_thread.load(Ordering::SeqCst) && Instant::now() < deadline
                 {
                     match target.accept() {
                         Ok((mut socket, _)) => {
@@ -864,13 +839,11 @@ mod tests {
     #[test]
     fn save_network_disable_clears_runtime_plugin_proxy_map() {
         let fixture = ProxySaveFixture::new();
-        assert!(
-            fixture
-                .shared
-                .services
-                .async_http_client
-                .should_use_proxy_for_plugin(PROXY_PLUGIN_ID)
-        );
+        assert!(fixture
+            .shared
+            .services
+            .async_http_client
+            .should_use_proxy_for_plugin(PROXY_PLUGIN_ID));
 
         handle_action(
             SettingsAction::SaveNetwork {
@@ -905,13 +878,11 @@ mod tests {
             .services
             .async_http_client
             .apply_plugin_proxy_map(Default::default());
-        assert!(
-            !fixture
-                .shared
-                .services
-                .async_http_client
-                .should_use_proxy_for_plugin(PROXY_PLUGIN_ID)
-        );
+        assert!(!fixture
+            .shared
+            .services
+            .async_http_client
+            .should_use_proxy_for_plugin(PROXY_PLUGIN_ID));
 
         handle_action(
             SettingsAction::SaveNetwork {

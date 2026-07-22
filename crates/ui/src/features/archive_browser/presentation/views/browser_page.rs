@@ -9,7 +9,6 @@ use crate::features::archive_browser::presentation::components::file_list;
 use crate::shared::components::tree_panel::{self, FolderTree};
 use crate::shared::SharedState;
 use arclain_core::ActionType;
-use arclain_plugins::types::PluginExtensionPoint;
 use arclain_signals::Signal;
 use eframe::egui;
 
@@ -269,43 +268,16 @@ fn render_properties_panel(
                         _ => {
                             if item.action_type == ActionType::Plugin {
                                 if let Some(plugin_id) = &item.action_data {
-                                    if let Some(manager_arc) = &shared.services.plugin_manager {
-                                        let manager = manager_arc.lock();
-
-                                        // Documented MVU exception:
-                                        // lock-free poll of the plugin
-                                        // runtime from render. Same
-                                        // rationale as the cache-dance
-                                        // pattern in
-                                        // features/plugins/presentation/views/rendering.rs
-                                        // — plugin events can block
-                                        // for seconds inside WASM
-                                        // (e.g. dlsite-metadata's
-                                        // synchronous HTTP), so a
-                                        // blocking lock here would
-                                        // freeze the UI whenever a
-                                        // worker is mid-event. On
-                                        // try-lock contention we skip
-                                        // this plugin's panel section
-                                        // for this frame; it reappears
-                                        // next frame.
-                                        let elements = match manager.try_with_plugin_instance(
-                                            plugin_id,
-                                            |instance| {
-                                                instance
-                                                    .get_ui_layout(PluginExtensionPoint::Panel)
-                                                    .unwrap_or_default()
-                                            },
-                                        ) {
-                                            Some(Some(layout)) => layout,
-                                            _ => Default::default(),
-                                        };
-
-                                        if !elements.is_empty() {
-                                            let flat = elements.flatten();
+                                    let origin_tab = Some(shared.signals().tabs.get().active_id());
+                                    if let Some(Ok(layout)) = shared.plugin_ui_jobs.layout(
+                                        plugin_id,
+                                        crate::features::plugins::application::PluginUiTarget::Panel,
+                                        origin_tab,
+                                    ) {
+                                        if !layout.is_empty() {
                                             sections.push(properties_panel::PanelSection::Plugin {
                                                 plugin_id: plugin_id.clone(),
-                                                elements: flat,
+                                                elements: layout.as_ref().clone().flatten(),
                                             });
                                         }
                                     }
@@ -315,13 +287,10 @@ fn render_properties_panel(
                     }
                 }
 
-                let plugin_manager = shared.services.plugin_manager.clone();
-
                 let panel_action = properties_panel::render(
                     ui,
                     &shared.theme,
                     &sections,
-                    plugin_manager.as_ref(),
                     Some(shared),
                 );
 

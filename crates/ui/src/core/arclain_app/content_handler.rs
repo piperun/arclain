@@ -84,13 +84,17 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
                                     // intents here.
                                 }
                                 other => {
-                                    let pm_guard =
-                                        app.shared_state.services.plugin_manager.as_ref().map(|m| m.lock());
+                                    let user_config =
+                                        app.shared_state.signals().user_config.get();
+                                    let plugins = app
+                                        .shared_state
+                                        .plugin_ui_jobs
+                                        .plugin_snapshot(&user_config);
                                     crate::features::organization::presentation::views::rules_page::handle_rules_page_action(
                                         &mut app.organization_feature.rules_page,
                                         other,
                                         org_service,
-                                        pm_guard.as_deref(),
+                                        plugins.as_deref().map(Vec::as_slice),
                                     );
                                 }
                             }
@@ -102,15 +106,15 @@ pub fn render_content(app: &mut ArclainApp, ctx: &egui::Context) {
             }
             AppPage::Logs => {
                 egui::CentralPanel::default().show(ctx, |ui| {
-                    let network_logs = if let Some(manager) = &app.shared_state.services.plugin_manager {
-                        manager.lock().get_network_log()
-                    } else {
-                        Vec::new()
-                    };
+                    let network_logs = app
+                        .shared_state
+                        .plugin_ui_jobs
+                        .network_log()
+                        .unwrap_or_default();
 
                     crate::shared::components::logs_page::LogsPage::render_page(
                         ui,
-                        &network_logs,
+                        network_logs.as_ref(),
                         &mut app.logs_page_state,
                         &app.shared_state.theme.colors,
                     );

@@ -8,10 +8,8 @@ use crate::features::plugins::presentation::rendering as ui;
 
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
-use arclain_plugins::manager::PluginManager;
 use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
-use parking_lot::Mutex;
 use std::sync::Arc;
 
 /// Panel header configuration
@@ -78,7 +76,6 @@ impl Panel {
         &self,
         ui: &mut egui::Ui,
         theme: &AppTheme,
-        plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
         shared: Option<&SharedState>,
         content_cache: Option<&Arc<arclain_core::ContentCache>>,
     ) {
@@ -92,7 +89,7 @@ impl Panel {
             ui.set_min_width(ui.available_width());
             self.render_header(ui, theme);
             ui.add_space(8.0);
-            self.render_body(ui, theme, plugin_manager, shared, content_cache);
+            self.render_body(ui, theme, shared, content_cache);
         });
     }
 
@@ -135,7 +132,6 @@ impl Panel {
         &self,
         ui: &mut egui::Ui,
         theme: &AppTheme,
-        plugin_manager: Option<&Arc<Mutex<PluginManager>>>,
         shared: Option<&SharedState>,
         content_cache: Option<&Arc<arclain_core::ContentCache>>,
     ) {
@@ -188,89 +184,55 @@ impl Panel {
                     plugin_id,
                     elements,
                 } => {
-                    if let Some(manager_arc) = plugin_manager {
-                        // Quick check that the plugin instance still
-                        // exists; the dispatcher does the same lookup
-                        // again on its background thread, but rendering
-                        // an empty panel for a missing plugin is the
-                        // right thing to do here.
-                        let instance_exists = {
-                            let manager = manager_arc.lock();
-                            manager.get_plugin_instance(plugin_id).is_some()
-                        };
+                    let pid = plugin_id.clone();
+                    let dialog_signal = shared.map(|s| s.signals().plugin_dialog_state.clone());
+                    let origin_tab = shared.map(|s| s.signals().tabs.get().active_id());
+                    let shared_owned = shared.cloned();
 
-                        if instance_exists {
-                            let pid = plugin_id.clone();
+                    let mut callback: ui::UiEventCallback = Box::new(
+                        move |element_id: &str, value: Option<String>| {
+                            if element_id.starts_with("__page_open:") {
+                                if let (Some(signal), Some(origin_tab)) =
+                                    (dialog_signal.as_ref(), origin_tab)
+                                {
+                                    let page_id = element_id.trim_start_matches("__page_open:");
+                                    let mut ds = signal.get();
+                                    ds.open_page(&pid, page_id, origin_tab);
+                                    signal.set(ds);
+                                }
+                                return;
+                            }
+                            if element_id.starts_with("__dialog_open:") {
+                                if let (Some(signal), Some(origin_tab)) =
+                                    (dialog_signal.as_ref(), origin_tab)
+                                {
+                                    let dialog_id = element_id.trim_start_matches("__dialog_open:");
+                                    let mut ds = signal.get();
+                                    ds.open_dialog(&pid, dialog_id, origin_tab);
+                                    signal.set(ds);
+                                }
+                                return;
+                            }
+                            if let Some(ref shared) = shared_owned {
+                                crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
+                                    shared,
+                                    pid.clone(),
+                                    element_id.to_string(),
+                                    value,
+                                );
+                            }
+                        },
+                    );
 
-                            // Get dialog state for navigation
-                            let dialog_signal =
-                                shared.map(|s| s.signals().plugin_dialog_state.clone());
-                            let shared_owned = shared.cloned();
-
-                            let mut callback: ui::UiEventCallback =
-                                Box::new(move |element_id: &str, value: Option<String>| {
-                                    // Handle page navigation (UI-state only)
-                                    if element_id.starts_with("__page_open:") {
-                                        if let Some(ref signal) = dialog_signal {
-                                            let page_id =
-                                                element_id.trim_start_matches("__page_open:");
-                                            let mut ds = signal.get();
-                                            ds.open_page(&pid, page_id);
-                                            signal.set(ds);
-                                        }
-                                        return;
-                                    }
-
-                                    // Handle dialog open (UI-state only)
-                                    if element_id.starts_with("__dialog_open:") {
-                                        if let Some(ref signal) = dialog_signal {
-                                            let dialog_id =
-                                                element_id.trim_start_matches("__dialog_open:");
-                                            let mut ds = signal.get();
-                                            ds.open_dialog(&pid, dialog_id);
-                                            signal.set(ds);
-                                        }
-                                        return;
-                                    }
-
-                                    // Plugin event — async dispatch so
-                                    // the WASM call doesn't block the
-                                    // UI thread.
-                                    if let Some(ref s) = shared_owned {
-                                        crate::features::plugins::presentation::dispatch::dispatch_plugin_event(
-                                            s,
-                                            pid.clone(),
-                                            element_id.to_string(),
-                                            value,
-                                        );
-                                    }
-                                });
-
-                            ui::render_ui_elements(
-                                ui,
-                                elements,
-                                &mut callback,
-                                &theme.colors,
-                                content_cache,
-                                shared,
-                                Some(plugin_id.as_str()),
-                            );
-                        }
-                    } else {
-                        // No plugin manager - just render elements without event handling
-                        let mut callback: ui::UiEventCallback =
-                            Box::new(|_id: &str, _val: Option<String>| {});
-
-                        ui::render_ui_elements(
-                            ui,
-                            elements,
-                            &mut callback,
-                            &theme.colors,
-                            content_cache,
-                            shared,
-                            None,
-                        );
-                    }
+                    ui::render_ui_elements(
+                        ui,
+                        elements,
+                        &mut callback,
+                        &theme.colors,
+                        content_cache,
+                        shared,
+                        Some(plugin_id.as_str()),
+                    );
                 }
             }
         }

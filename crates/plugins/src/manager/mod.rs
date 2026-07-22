@@ -9,10 +9,12 @@
 mod dispatch;
 mod lifecycle;
 mod queries;
+mod snapshot;
 mod types;
 
-pub use types::{PluginListItem, PluginStatusSummary};
+pub use snapshot::EnabledPluginSnapshot;
 use types::ManagedPlugin;
+pub use types::{PluginListItem, PluginStatusSummary};
 
 use crate::loader::PluginLoader;
 use crate::types::{PluginEvent, Result};

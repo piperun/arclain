@@ -100,8 +100,7 @@ pub fn render_header_panel(
                 })
                 .collect();
             let active_entries = col.active().entries.get();
-            let active_paths: Vec<&str> =
-                active_entries.iter().map(|e| e.path.as_str()).collect();
+            let active_paths: Vec<&str> = active_entries.iter().map(|e| e.path.as_str()).collect();
             let active_code = tab_summaries
                 .iter()
                 .find(|s| s.active)
@@ -186,20 +185,15 @@ pub fn render_tab_bar_panel(
                 source: None,
             }];
 
-            // Collect plugin tabs from services (no lock needed)
-            {
-                if let Some(plugin_manager) = &shared_state.services.plugin_manager {
-                    if let Some(pm) = plugin_manager.try_lock() {
-                        for (plugin_id, tab_config) in pm.get_all_top_tabs() {
-                            tabs.push(components::top_tab_bar::TopTab {
-                                id: tab_config.id.clone(),
-                                label: tab_config.label,
-                                icon: tab_config.icon,
-                                badge: tab_config.badge,
-                                source: Some(plugin_id),
-                            });
-                        }
-                    }
+            if let Some((_, top_tabs)) = shared_state.plugin_ui_jobs.chrome_snapshot() {
+                for (plugin_id, tab_config) in top_tabs.iter() {
+                    tabs.push(components::top_tab_bar::TopTab {
+                        id: tab_config.id.clone(),
+                        label: tab_config.label.clone(),
+                        icon: tab_config.icon.clone(),
+                        badge: tab_config.badge.clone(),
+                        source: Some(plugin_id.clone()),
+                    });
                 }
             }
 
@@ -274,16 +268,14 @@ pub fn render_status_bar_panel(
             // Status bar only needs counts. Use the cheap status_summary
             // path so we don't clone every plugin's manifest per frame
             // (audit finding P5).
-            let plugin_info = if let Some(manager) = &shared_state.services.plugin_manager {
-                let summary = manager.lock().status_summary();
-                Some(components::status_bar::PluginStatusInfo {
+            let plugin_info = shared_state
+                .plugin_ui_jobs
+                .chrome_snapshot()
+                .map(|(summary, _)| components::status_bar::PluginStatusInfo {
                     total_plugins: summary.total,
                     enabled_plugins: summary.enabled,
                     has_metadata,
-                })
-            } else {
-                None
-            };
+                });
 
             // The current "selected" item is whatever metadata the
             // host has stored from the most recent emit_metadata call.

@@ -38,8 +38,6 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 let toolbar_config = components::toolbar::ToolbarConfig::new(
                     app.shared_state.signals().toolbar_items.get(),
                 );
-                let plugin_manager = app.shared_state.services.plugin_manager.clone();
-
                 let mut view_state = tab.browser_view_state.get();
 
                 // Plugin-rendering bridge: shared/ doesn't know about
@@ -101,7 +99,6 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     has_selection,
                     has_metadata,
                     Some(&toolbar_config),
-                    plugin_manager.as_ref(),
                     Some(&app.shared_state),
                     &mut plugin_renderer,
                     &mut plugin_dispatcher,

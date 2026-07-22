@@ -13,9 +13,6 @@
 //! a regression and should be replaced with this helper.
 
 use crate::shared::SharedState;
-use arclain_plugins::PluginManager;
-use parking_lot::Mutex;
-use std::sync::Arc;
 
 /// Fire-and-forget plugin event dispatch.
 ///
@@ -98,39 +95,4 @@ pub fn dispatch_plugin_event(
     tokio_runtime.spawn(async move {
         let _ = tokio::task::spawn_blocking(work).await;
     });
-}
-
-/// Synchronous-when-possible variant for code paths that *must* see
-/// the actions before the next paint (e.g. opening a plugin page
-/// where the breadcrumb display name action must apply this frame).
-///
-/// Returns `true` if the event ran (lock was free). Returns `false`
-/// if the instance lock was held by a worker (e.g. mid-fetch); the
-/// caller should leave whatever flag triggered the dispatch SET so
-/// the next frame retries — that way the UI doesn't freeze waiting
-/// for a long-running plugin event to finish, but the action still
-/// runs eventually.
-pub fn dispatch_plugin_event_blocking(
-    manager: &PluginManager,
-    plugin_id: &str,
-    event_id: &str,
-    value: Option<String>,
-    sink: &Arc<Mutex<Vec<(String, arclain_plugins::types::PluginAction)>>>,
-) -> bool {
-    let Some(instance_arc) = manager.get_plugin_instance(plugin_id) else {
-        return true; // No instance to dispatch to — treat as "done".
-    };
-    let Some(mut instance) = instance_arc.try_lock() else {
-        // Worker thread is mid-event (e.g. holding the lock during a
-        // DLSite fetch). Bail rather than freeze the UI; caller
-        // retries on the next frame.
-        return false;
-    };
-    if let Ok(actions) = instance.send_ui_event(event_id, value) {
-        let mut s = sink.lock();
-        for a in actions {
-            s.push((plugin_id.to_string(), a));
-        }
-    }
-    true
 }

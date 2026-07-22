@@ -6,72 +6,38 @@
 use crate::shared::components::Form;
 use crate::shared::SharedState;
 use eframe::egui;
+use std::sync::Arc;
 
 /// Layout shown while we wait for the plugin instance lock to free up
 /// (e.g. during a long-running DLSite fetch holding the lock on a
 /// worker thread). Rendered only when there is no cached layout to
 /// show in its place; if a previous layout exists we keep showing it
 /// until the next refetch succeeds.
-fn loading_placeholder_layout() -> arclain_plugins::types::PluginLayout {
+fn message_layout(message: impl Into<String>) -> Arc<arclain_plugins::types::PluginLayout> {
     use arclain_plugins::types::{PluginLayout, PluginUiElement};
-    PluginLayout::Single {
+    Arc::new(PluginLayout::Single {
         elements: vec![PluginUiElement::Label {
-            text: "Loading plugin UI…".to_string(),
+            text: message.into(),
             bold: false,
             size: None,
         }],
-    }
+    })
 }
 
-// =============================================================================
-// Documented doctrine exception: lock-free plugin runtime polling
-// =============================================================================
-//
-// The MVU doctrine says "render must not call services / DB / IO."
-// This module deliberately violates that rule by calling
-// `try_with_plugin_instance` (a WASM-runtime call) from inside the
-// render path. The reason: plugin events go through WASM that can
-// block for *seconds* — dlsite-metadata in particular does
-// synchronous HTTP from inside the plugin sandbox. A blocking lock
-// on the plugin manager during render would freeze the entire UI
-// whenever a worker thread was mid-fetch.
-//
-// The pattern below is a deliberate workaround:
-//   1. The "real" layout lives in `signals().plugin_dialog_state`
-//      as `cached_dialog_layout`. Render reads it cheap.
-//   2. When the cache is stale or missing, render attempts a
-//      *non-blocking* `try_lock` via `try_with_plugin_instance`.
-//      If the lock is free: fetch fresh layout, update cache.
-//      If contended: keep showing what we had + `request_repaint`
-//      for next frame.
-//
-// The conversion options considered (see MVU doctrine memory):
-//   * Pure MVU (emit FetchLayout action): adds 1-2 frames of latency
-//     every refresh — visibly worse UX for the same lock-contention
-//     problem.
-//   * Background reactor: architecturally cleanest but requires a
-//     new cross-thread coordination pattern we don't use elsewhere
-//     yet, plus per-dialog cancellation, lifecycle, etc. Worth doing
-//     only if the reactor pattern earns reuse elsewhere first.
-//
-// Until either of those becomes worth the cost, the lock-free poll
-// stays — documented as a deliberate exception, not as drift.
+fn loading_placeholder_layout() -> Arc<arclain_plugins::types::PluginLayout> {
+    message_layout("Loading plugin UI…")
+}
 
-/// Try to fetch the layout for a plugin extension point without
-/// blocking the UI thread. Returns the layout if the lock was free,
-/// `None` if a worker thread is mid-event and we should keep using
-/// whatever the caller has cached.
-fn try_fetch_layout(
+/// Return cached layout data or queue one worker request.
+fn cached_or_request_layout(
     shared: &SharedState,
     plugin_id: &str,
-    point: arclain_plugins::types::PluginExtensionPoint,
-) -> Option<arclain_plugins::types::PluginLayout> {
-    let pm_arc = shared.services.plugin_manager.as_ref()?;
-    let pm = pm_arc.lock();
-    pm.try_with_plugin_instance(plugin_id, |instance| {
-        instance.get_ui_layout(point).unwrap_or_default()
-    })
-    .flatten()
+    target: crate::features::plugins::application::PluginUiTarget,
+    origin_tab: crate::core::tabs::TabId,
+) -> Option<Result<Arc<arclain_plugins::types::PluginLayout>, Arc<str>>> {
+    shared
+        .plugin_ui_jobs
+        .layout(plugin_id, target, Some(origin_tab))
 }
 
 /// Render an open plugin dialog as a modal overlay
@@ -84,50 +50,32 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
         (dialog_info, cached)
     };
 
-    if let Some((plugin_id, dialog_id)) = dialog_info {
-        // Resolve which layout to render this frame:
-        //   - cache + not stale → use cache directly (cheap path)
-        //   - cache + stale     → try refetch; on success replace
-        //                         cache, on busy keep stale visible
-        //                         so the user doesn't see a blank
-        //                         dialog while the worker is mid-event
-        //   - no cache          → try fetch; on success cache it,
-        //                         on busy show "Loading…" placeholder
-        let is_stale = shared.signals().plugin_dialog_state.get().cached_dialog_layout_stale;
-        let dialog_elements = match (cached_layout, is_stale) {
-            (Some(layout), false) => layout,
-            (Some(stale), true) => {
-                if let Some(fresh) = try_fetch_layout(
-                    shared,
-                    &plugin_id,
-                    arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()),
-                ) {
-                    let mut ds = shared.signals().plugin_dialog_state.get();
-                    ds.cached_dialog_layout = Some(fresh.clone());
-                    ds.cached_dialog_layout_stale = false;
-                    shared.signals().plugin_dialog_state.set(ds);
-                    fresh
-                } else {
-                    ctx.request_repaint();
-                    stale
-                }
+    if let Some((plugin_id, dialog_id, origin_tab)) = dialog_info {
+        let target =
+            crate::features::plugins::application::PluginUiTarget::Dialog(dialog_id.clone());
+        let is_stale = shared
+            .signals()
+            .plugin_dialog_state
+            .get()
+            .cached_dialog_layout_stale;
+        if is_stale {
+            shared
+                .plugin_ui_jobs
+                .invalidate_layout(&plugin_id, &target, Some(origin_tab));
+            let mut state = shared.signals().plugin_dialog_state.get();
+            state.cached_dialog_layout_stale = false;
+            shared.signals().plugin_dialog_state.set(state);
+        }
+        let dialog_elements = match cached_or_request_layout(shared, &plugin_id, target, origin_tab)
+        {
+            Some(Ok(fresh)) => {
+                let mut state = shared.signals().plugin_dialog_state.get();
+                state.cached_dialog_layout = Some(fresh.clone());
+                shared.signals().plugin_dialog_state.set(state);
+                fresh
             }
-            (None, _) => match try_fetch_layout(
-                shared,
-                &plugin_id,
-                arclain_plugins::types::PluginExtensionPoint::Dialog(dialog_id.clone()),
-            ) {
-                Some(fresh) => {
-                    let mut ds = shared.signals().plugin_dialog_state.get();
-                    ds.cached_dialog_layout = Some(fresh.clone());
-                    shared.signals().plugin_dialog_state.set(ds);
-                    fresh
-                }
-                None => {
-                    ctx.request_repaint();
-                    loading_placeholder_layout()
-                }
-            },
+            Some(Err(error)) => message_layout(format!("Plugin UI error: {error}")),
+            None => cached_layout.unwrap_or_else(loading_placeholder_layout),
         };
 
         // Render modal dialog
@@ -143,16 +91,26 @@ pub fn render_dialog(ctx: &egui::Context, shared: &SharedState) {
                     crate::features::plugins::presentation::controllers::plugin_controller::create_dialog_callback(shared, plugin_id.clone());
 
 
-                let flat_elements = dialog_elements.flatten();
-                super::ui::render_ui_elements(
-                    ui,
-                    &flat_elements,
-                    &mut callback,
-                    &shared.theme.colors,
-                    None,
-                    Some(shared),
-                    Some(&plugin_id),
-                );
+                let mut render = |elements: &[arclain_plugins::types::PluginUiElement]| {
+                    super::ui::render_ui_elements(
+                        ui,
+                        elements,
+                        &mut callback,
+                        &shared.theme.colors,
+                        None,
+                        Some(shared),
+                        Some(&plugin_id),
+                    );
+                };
+                match dialog_elements.as_ref() {
+                    arclain_plugins::types::PluginLayout::Single { elements } => render(elements),
+                    arclain_plugins::types::PluginLayout::Split {
+                        sidebar, content, ..
+                    } => {
+                        render(sidebar);
+                        render(content);
+                    }
+                }
             });
 
         // If window was closed via X button
@@ -172,127 +130,72 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
         let dialog_state = shared.signals().plugin_dialog_state.get();
         let page_info = dialog_state
             .current_page()
-            .map(|(p, d)| (p.to_string(), d.to_string()));
+            .map(|(plugin, page, origin_tab)| (plugin.to_string(), page.to_string(), origin_tab));
         let cached = dialog_state.cached_page_layout.clone();
         (page_info, cached)
     };
 
-    let Some((plugin_id, page_id)) = page_info else {
+    let Some((plugin_id, page_id, origin_tab)) = page_info else {
         return false;
     };
 
-    // Send __page_init event if this page was just opened (for SetPageDisplayName etc).
-    //
-    // This path uses the BLOCKING dispatch variant because any
-    // `SetPageDisplayName` action returned has to be applied to the
-    // breadcrumb signal BEFORE this same frame paints the breadcrumb.
-    // Pushing into shared.pending_plugin_actions and waiting for the
-    // next render would render once with the wrong title.
+    // Queue __page_init once for this page generation. The worker
+    // captures the origin tab; stale generations are ignored when
+    // results are applied before the next render.
+    if let Some((request_id, pending_plugin, pending_page, origin_tab)) = shared
+        .signals()
+        .plugin_dialog_state
+        .get()
+        .pending_page_init()
+        .map(|(id, plugin, page, origin_tab)| {
+            (id, plugin.to_string(), page.to_string(), origin_tab)
+        })
     {
-        let needs_init = shared.signals().plugin_dialog_state.get().page_needs_init;
-        if needs_init {
-            if let Some(pm_arc) = &shared.services.plugin_manager {
-                use parking_lot::Mutex as PlMutex;
-                use std::sync::Arc as StdArc;
-                let local_sink: StdArc<PlMutex<Vec<(String, arclain_plugins::types::PluginAction)>>> =
-                    StdArc::new(PlMutex::new(Vec::new()));
-                let pm = pm_arc.lock();
-                let ran = crate::features::plugins::presentation::dispatch::dispatch_plugin_event_blocking(
-                    &pm,
-                    &plugin_id,
-                    "__page_init",
-                    Some(page_id.clone()),
-                    &local_sink,
-                );
-                drop(pm); // Release lock before processing actions
-
-                // Only clear page_needs_init when the dispatch actually
-                // ran. If it bailed because a worker was mid-event we
-                // leave the flag set so the next frame retries — and
-                // request_repaint to make sure the next frame happens
-                // soon (otherwise repaint may not fire until input).
-                if ran {
-                    let actions: Vec<arclain_plugins::types::PluginAction> = local_sink
-                        .lock()
-                        .drain(..)
-                        .map(|(_, a)| a)
-                        .collect();
-                    let mut ds = shared.signals().plugin_dialog_state.get();
-                    ds.page_needs_init = false;
-                    if !actions.is_empty() {
-                        let mut toaster = shared.toaster.lock();
-                        let render_tab = shared.signals().tabs.get().active().clone();
-                        let ctx = crate::features::plugins::presentation::controllers::plugin_controller::ActionContext {
-                            // lightbox_state is per-tab now (post 2026-05-20 audit B2 follow-up)
-                            lightbox_signal: Some(&render_tab.lightbox_state),
-                            page_display_name_signal: Some(&render_tab.page_display_name),
-                            shared_state: Some(shared),
-                        };
-                        for action in actions {
-                            crate::features::plugins::presentation::controllers::plugin_controller::process_action(
-                                action,
-                                &plugin_id,
-                                &mut ds,
-                                &mut toaster,
-                                None,
-                                &ctx,
-                            );
-                        }
-                    }
-                    shared.signals().plugin_dialog_state.set(ds);
-                } else {
-                    ctx.request_repaint();
-                }
-            }
-        }
+        shared.plugin_ui_jobs.request_with_id(
+            request_id,
+            crate::features::plugins::application::PluginUiRequest::PageInit {
+                plugin_id: pending_plugin,
+                page_id: pending_page,
+                origin_tab,
+            },
+        );
     }
 
-    // Resolve the page layout for this frame. Same three-case shape
-    // as render_dialog above:
-    //   - cache + not stale → use cache directly
-    //   - cache + stale     → try refetch; keep stale on contention
-    //                         so the user doesn't see the page blank
-    //                         out while a worker is mid-event (e.g.
-    //                         clicking Refetch while a fetch is
-    //                         already running)
-    //   - no cache          → try fetch; on busy show "Loading…"
-    //                         placeholder (e.g. drop-archive
-    //                         auto-fetch with the DLSite tab open)
-    let is_stale = shared.signals().plugin_dialog_state.get().cached_page_layout_stale;
-    let page_layout = match (cached_layout, is_stale) {
-        (Some(layout), false) => layout,
-        (Some(stale), true) => {
-            if let Some(fresh) = try_fetch_layout(
-                shared,
-                &plugin_id,
-                arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()),
-            ) {
-                let mut ds = shared.signals().plugin_dialog_state.get();
-                ds.cached_page_layout = Some(fresh.clone());
-                ds.cached_page_layout_stale = false;
-                shared.signals().plugin_dialog_state.set(ds);
+    // Do not cache a pre-init layout. Once the matching initialization
+    // result is applied it invalidates this exact page key and the next
+    // frame queues the first valid layout read.
+    let page_layout_ready = shared
+        .signals()
+        .plugin_dialog_state
+        .get()
+        .page_layout_ready();
+    let is_stale = shared
+        .signals()
+        .plugin_dialog_state
+        .get()
+        .cached_page_layout_stale;
+    let target = crate::features::plugins::application::PluginUiTarget::Page(page_id.clone());
+    if page_layout_ready && is_stale {
+        shared
+            .plugin_ui_jobs
+            .invalidate_layout(&plugin_id, &target, Some(origin_tab));
+        let mut state = shared.signals().plugin_dialog_state.get();
+        state.cached_page_layout_stale = false;
+        shared.signals().plugin_dialog_state.set(state);
+    }
+    let page_layout = if page_layout_ready {
+        match cached_or_request_layout(shared, &plugin_id, target, origin_tab) {
+            Some(Ok(fresh)) => {
+                let mut state = shared.signals().plugin_dialog_state.get();
+                state.cached_page_layout = Some(fresh.clone());
+                shared.signals().plugin_dialog_state.set(state);
                 fresh
-            } else {
-                ctx.request_repaint();
-                stale
             }
+            Some(Err(error)) => message_layout(format!("Plugin UI error: {error}")),
+            None => cached_layout.unwrap_or_else(loading_placeholder_layout),
         }
-        (None, _) => match try_fetch_layout(
-            shared,
-            &plugin_id,
-            arclain_plugins::types::PluginExtensionPoint::Page(page_id.clone()),
-        ) {
-            Some(fresh) => {
-                let mut ds = shared.signals().plugin_dialog_state.get();
-                ds.cached_page_layout = Some(fresh.clone());
-                shared.signals().plugin_dialog_state.set(ds);
-                fresh
-            }
-            None => {
-                ctx.request_repaint();
-                loading_placeholder_layout()
-            }
-        },
+    } else {
+        cached_layout.unwrap_or_else(loading_placeholder_layout)
     };
 
     // Get display name from signal, fallback to page_id
@@ -300,9 +203,8 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
         .signals()
         .tabs
         .get()
-        .active()
-        .page_display_name
-        .get()
+        .get(origin_tab)
+        .and_then(|tab| tab.page_display_name.get())
         .unwrap_or_else(|| page_id.clone());
 
     // Render as full page content
@@ -324,13 +226,13 @@ pub fn render_page(ctx: &egui::Context, shared: &SharedState) -> bool {
             ui.separator();
 
             // Set up callback for page events
-            let mut callback = crate::features::plugins::presentation::controllers::plugin_controller::create_page_callback(shared, plugin_id.clone());
+            let mut callback = crate::features::plugins::presentation::controllers::plugin_controller::create_page_callback(shared, plugin_id.clone(), origin_tab);
 
 
             use arclain_plugins::types::PluginLayout;
             let content_cache = shared.services.content_cache.clone();
 
-            match page_layout {
+            match page_layout.as_ref() {
                 PluginLayout::Single { elements } => {
                     // Wrap in Form to provide ScrollArea (fixes cutoff bug)
                     Form::new()

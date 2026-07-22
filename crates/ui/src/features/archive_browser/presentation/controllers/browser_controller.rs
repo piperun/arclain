@@ -189,16 +189,18 @@ impl BrowserController {
         shared: &SharedState,
     ) -> Vec<arclain_core::features::organization::OrganizationRule> {
         let mut rules = Vec::new();
-        let dlsite_enabled = if let Some(manager) = &shared.services.plugin_manager {
-            let mgr = manager.lock();
-            mgr.list_plugins().iter().any(|p| {
-                (p.id.eq_ignore_ascii_case("dlsite")
-                    || p.id.eq_ignore_ascii_case("dlsite-metadata"))
-                    && p.enabled
+        let user_config = shared.signals().user_config.get();
+        let dlsite_enabled = shared
+            .plugin_ui_jobs
+            .plugin_snapshot(&user_config)
+            .map(|plugins| {
+                plugins.iter().any(|p| {
+                    (p.id.eq_ignore_ascii_case("dlsite")
+                        || p.id.eq_ignore_ascii_case("dlsite-metadata"))
+                        && p.enabled
+                })
             })
-        } else {
-            false
-        };
+            .unwrap_or(false);
 
         let state = shared.app_state.lock();
         if let Some(dbs) = &state.dbs {

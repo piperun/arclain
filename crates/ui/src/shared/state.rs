@@ -23,6 +23,7 @@ pub struct SharedState {
     /// detail view, dialog/page callbacks, toolbar, panel — can write
     /// to one shared sink.
     pub pending_plugin_actions: Arc<Mutex<Vec<(String, PluginAction)>>>,
+    pub plugin_ui_jobs: crate::features::plugins::application::PluginUiJobs,
     /// Direct access to signals without locking AppState
     pub signals: AppSignals,
 }
@@ -43,6 +44,28 @@ impl SharedState {
         let app_state = Arc::new(Mutex::new(app_state_inner));
         let services = Arc::new(services);
 
+        let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
+            services.plugin_manager.clone(),
+            services.tokio_runtime.clone(),
+        )
+        .with_origin_context_provider({
+            let signals = signals.clone();
+            move |tab_id| {
+                let tabs = signals.tabs.get();
+                let tab = tabs.get(tab_id)?.clone();
+                drop(tabs);
+                Some(arclain_plugins::host_functions::EventContext {
+                    archive_path: tab
+                        .archive_path
+                        .get()
+                        .map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                    password: tab.current_password.get(),
+                    entries: tab.entries.get(),
+                    metadata_signal: tab.metadata.clone(),
+                })
+            }
+        });
         let shared = Self {
             app_state: app_state.clone(),
             services,
@@ -50,6 +73,7 @@ impl SharedState {
             toaster: Arc::new(Mutex::new(Toaster::new())),
             refresh_requests: Arc::new(Mutex::new(Vec::new())),
             pending_plugin_actions: Arc::new(Mutex::new(Vec::new())),
+            plugin_ui_jobs,
             signals: signals.clone(),
         };
 

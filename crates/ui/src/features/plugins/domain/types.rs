@@ -2,6 +2,19 @@
 
 use arclain_plugins::types::PluginLayout;
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+static NEXT_PLUGIN_UI_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RequestId(pub u64);
+
+impl RequestId {
+    pub(crate) fn next() -> Self {
+        Self(NEXT_PLUGIN_UI_REQUEST_ID.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 /// UI representation of a plugin
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,6 +57,14 @@ pub enum PluginStatus {
     Running,
     /// Plugin encountered an error
     Error,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SnapshotStatus {
+    #[default]
+    Idle,
+    Pending,
+    Ready,
 }
 
 impl PluginStatus {
@@ -89,7 +110,26 @@ pub struct PluginsListState {
     /// the plugin sends a `RefreshPanel` action targeting `MainPage`.
     /// Without this, every render frame issued a WASM
     /// `get_ui_layout(MainPage)` call into the plugin (audit P4).
-    pub cached_main_layout: Option<(String, PluginLayout)>,
+    pub cached_main_layout: Option<(String, Arc<PluginLayout>)>,
+    pub snapshot_status: SnapshotStatus,
+    pub snapshot_request_id: Option<RequestId>,
+}
+
+impl PluginsListState {
+    pub fn invalidate_snapshot(&mut self) {
+        self.snapshot_status = SnapshotStatus::Idle;
+        self.snapshot_request_id = None;
+    }
+
+    pub fn apply_snapshot(&mut self, request_id: RequestId, plugins: Vec<PluginInfo>) -> bool {
+        if self.snapshot_request_id != Some(request_id) {
+            return false;
+        }
+        self.plugins = plugins;
+        self.snapshot_status = SnapshotStatus::Ready;
+        self.snapshot_request_id = None;
+        true
+    }
 }
 
 impl PluginsListState {

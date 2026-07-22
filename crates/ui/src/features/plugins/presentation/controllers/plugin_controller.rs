@@ -16,6 +16,7 @@ use crate::shared::dialogs::LightboxState;
 pub struct ActionContext<'a> {
     pub lightbox_signal: Option<&'a Signal<LightboxState>>,
     pub page_display_name_signal: Option<&'a Signal<Option<String>>>,
+    pub metadata_signal: Option<&'a Signal<Option<serde_json::Value>>>,
     pub shared_state: Option<&'a crate::shared::SharedState>,
 }
 
@@ -38,10 +39,18 @@ pub fn process_plugin_actions(
     let ctx = ActionContext {
         lightbox_signal,
         page_display_name_signal: None,
+        metadata_signal: None,
         shared_state,
     };
     for action in actions {
-        process_action(action, plugin_id, dialog_state, toaster, refresh_requests, &ctx);
+        process_action(
+            action,
+            plugin_id,
+            dialog_state,
+            toaster,
+            refresh_requests,
+            &ctx,
+        );
     }
 }
 
@@ -125,11 +134,7 @@ pub fn process_action(
 
         PluginAction::SetPageDisplayName { name } => {
             // Set the display name for the current plugin page
-            tracing::debug!(
-                "Plugin {} set page display name to '{}'",
-                plugin_id,
-                name
-            );
+            tracing::debug!("Plugin {} set page display name to '{}'", plugin_id, name);
             if let Some(signal) = ctx.page_display_name_signal {
                 signal.set(Some(name));
             }
@@ -139,7 +144,7 @@ pub fn process_action(
             // Async background fetch — host handles on tokio runtime
             tracing::info!("Plugin {} requested background fetch: {}", plugin_id, key);
             if let Some(shared) = ctx.shared_state {
-                spawn_background_fetch(shared, &plugin_id, &key);
+                spawn_background_fetch(shared, &plugin_id, &key, ctx.metadata_signal.cloned());
             }
         }
     }
@@ -190,9 +195,16 @@ pub fn create_dialog_callback(
 pub fn create_page_callback(
     shared: &crate::shared::SharedState,
     plugin_id: String,
+    origin_tab: crate::core::tabs::TabId,
 ) -> Box<dyn FnMut(&str, Option<String>)> {
     let dialog_signal = shared.signals().plugin_dialog_state.clone();
-    let page_display_name_signal = shared.signals().tabs.get().active().page_display_name.clone();
+    let tabs = shared.signals().tabs.get();
+    let page_display_name_signal = tabs
+        .get(origin_tab)
+        .unwrap_or_else(|| tabs.active())
+        .page_display_name
+        .clone();
+    drop(tabs);
     let shared_owned = shared.clone();
     let pid = plugin_id;
 
@@ -207,7 +219,7 @@ pub fn create_page_callback(
 
         if let Some(new_page_id) = element_id.strip_prefix("__page_open:") {
             let mut ds = dialog_signal.get();
-            ds.open_page(&pid, new_page_id);
+            ds.open_page(&pid, new_page_id, origin_tab);
             page_display_name_signal.set(None);
             dialog_signal.set(ds);
             return;
@@ -238,6 +250,7 @@ fn spawn_background_fetch(
     shared: &crate::shared::SharedState,
     plugin_id: &str,
     key: &str,
+    origin_metadata: Option<Signal<Option<serde_json::Value>>>,
 ) {
     // Parse "source:id" format
     let parts: Vec<&str> = key.splitn(2, ':').collect();
@@ -248,7 +261,8 @@ fn spawn_background_fetch(
     };
 
     let plugin_id_owned = plugin_id.to_string();
-    let metadata_signal = shared.signals().tabs.get().active().metadata.clone();
+    let metadata_signal =
+        origin_metadata.unwrap_or_else(|| shared.signals().tabs.get().active().metadata.clone());
 
     // Send fetch-completion event back to the plugin. Called when the gameta
     // server succeeds; the plugin clears its in_progress flag in response.
@@ -384,9 +398,7 @@ fn spawn_background_fetch(
             spawn_native_dispatch(dispatch_native, &id_for_log, notifier).await;
         });
     } else {
-        tracing::warn!(
-            "[BackgroundFetch] no plugin manager available, dropping fetch request"
-        );
+        tracing::warn!("[BackgroundFetch] no plugin manager available, dropping fetch request");
         let notify_plugin = make_complete_notifier();
         notify_plugin(false);
     }

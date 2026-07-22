@@ -18,11 +18,12 @@ mod render;
 use crate::shared::theme::AppTheme;
 use crate::shared::SharedState;
 use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion};
-use arclain_plugins::manager::PluginManager;
-use arclain_plugins::types::{PluginExtensionPoint, PluginUiElement};
+use arclain_plugins::types::PluginUiElement;
 use eframe::egui;
 
-pub use editor::{handle_layout_editor_action, Axis, LayoutEditorAction, LayoutEditorState, Region};
+pub use editor::{
+    handle_layout_editor_action, Axis, LayoutEditorAction, LayoutEditorState, Region,
+};
 
 /// Per-tab state for the Toolbar Layout editor.
 pub type ToolbarLayoutState = LayoutEditorState<ToolbarRegion>;
@@ -40,36 +41,34 @@ impl Region for ToolbarRegion {
     const REGION: UiRegion = UiRegion::Toolbar;
     const AXIS: Axis = Axis::Horizontal;
 
-    fn sync_plugin_items(
-        state: &mut LayoutEditorState<Self>,
-        manager: &PluginManager,
-    ) -> bool {
-        let enabled_plugins: Vec<_> = manager
-            .list_plugins()
+    fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
+        let user_config = shared.signals().user_config.get();
+        let Some(snapshot) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) else {
+            return false;
+        };
+        let enabled_plugins: Vec<_> = snapshot
             .iter()
             .filter(|p| p.enabled)
-            .map(|p| (p.id.clone(), p.manifest.plugin.name.clone()))
+            .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
+        let origin_tab = Some(shared.signals().tabs.get().active_id());
 
         let mut changed = false;
 
         for (plugin_id, plugin_name) in enabled_plugins {
-            // try_lock: if a worker is mid-fetch we skip this plugin
-            // and pick it up next frame.
-            let elements = match manager.try_with_plugin_instance(&plugin_id, |instance| {
-                instance
-                    .get_ui_layout(PluginExtensionPoint::PluginButton)
-                    .unwrap_or_default()
-            }) {
-                Some(Some(layout)) => layout,
-                _ => Default::default(),
+            let Some(Ok(elements)) = shared.plugin_ui_jobs.layout(
+                &plugin_id,
+                crate::features::plugins::application::PluginUiTarget::PluginButton,
+                origin_tab,
+            ) else {
+                continue;
             };
 
             if elements.is_empty() {
                 continue;
             }
 
-            for element in elements.flatten() {
+            for element in elements.as_ref().clone().flatten() {
                 if let PluginUiElement::Button {
                     id: btn_id, label, ..
                 } = element
@@ -160,32 +159,29 @@ impl Region for InfoPanelRegion {
     const REGION: UiRegion = UiRegion::InfoPanel;
     const AXIS: Axis = Axis::Vertical;
 
-    fn sync_plugin_items(
-        state: &mut LayoutEditorState<Self>,
-        manager: &PluginManager,
-    ) -> bool {
-        let enabled_plugins: Vec<_> = manager
-            .list_plugins()
+    fn sync_plugin_items(state: &mut LayoutEditorState<Self>, shared: &SharedState) -> bool {
+        let user_config = shared.signals().user_config.get();
+        let Some(snapshot) = shared.plugin_ui_jobs.plugin_snapshot(&user_config) else {
+            return false;
+        };
+        let enabled_plugins: Vec<_> = snapshot
             .iter()
             .filter(|p| p.enabled)
-            .map(|p| (p.id.clone(), p.manifest.plugin.name.clone()))
+            .map(|p| (p.id.clone(), p.name.clone()))
             .collect();
+        let origin_tab = Some(shared.signals().tabs.get().active_id());
 
         let mut changed = false;
 
         for (plugin_id, plugin_name) in enabled_plugins {
-            // Probe whether the plugin contributes a panel section. As
-            // with the toolbar sync, we try_lock and skip on contention.
-            let has_info_panel = match manager.try_with_plugin_instance(&plugin_id, |instance| {
-                if let Ok(elements) = instance.get_ui_layout(PluginExtensionPoint::Panel) {
-                    !elements.is_empty()
-                } else {
-                    false
-                }
-            }) {
-                Some(Some(v)) => v,
-                _ => false,
+            let Some(Ok(layout)) = shared.plugin_ui_jobs.layout(
+                &plugin_id,
+                crate::features::plugins::application::PluginUiTarget::Panel,
+                origin_tab,
+            ) else {
+                continue;
             };
+            let has_info_panel = !layout.is_empty();
 
             if !has_info_panel {
                 continue;
@@ -248,16 +244,14 @@ pub fn handle_toolbar_layout_action(
     state: &mut ToolbarLayoutState,
     action: LayoutEditorAction,
     shared: &SharedState,
-    plugin_manager: Option<&PluginManager>,
 ) {
-    handle_layout_editor_action::<ToolbarRegion>(state, action, shared, plugin_manager)
+    handle_layout_editor_action::<ToolbarRegion>(state, action, shared)
 }
 
 pub fn handle_info_panel_layout_action(
     state: &mut InfoPanelLayoutState,
     action: LayoutEditorAction,
     shared: &SharedState,
-    plugin_manager: Option<&PluginManager>,
 ) {
-    handle_layout_editor_action::<InfoPanelRegion>(state, action, shared, plugin_manager)
+    handle_layout_editor_action::<InfoPanelRegion>(state, action, shared)
 }

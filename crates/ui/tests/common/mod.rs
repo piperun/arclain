@@ -60,6 +60,10 @@ pub fn create_test_shared_state() -> SharedState {
 
     let signals = app_state.signals.clone();
 
+    let plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
+        services.plugin_manager.clone(),
+        services.tokio_runtime.clone(),
+    );
     SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,
@@ -67,6 +71,7 @@ pub fn create_test_shared_state() -> SharedState {
         toaster: Arc::new(Mutex::new(Toaster::new())),
         refresh_requests: Arc::new(Mutex::new(Vec::new())),
         pending_plugin_actions: Arc::new(Mutex::new(Vec::new())),
+        plugin_ui_jobs,
         signals,
     }
 }
@@ -165,6 +170,10 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         signals.context_menu_items.set(items);
     }
 
+    let plugin_ui_jobs = arclain_ui::features::plugins::application::PluginUiJobs::new(
+        services.plugin_manager.clone(),
+        services.tokio_runtime.clone(),
+    );
     let shared = SharedState {
         app_state: Arc::new(Mutex::new(app_state)),
         services,
@@ -172,6 +181,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         toaster: Arc::new(Mutex::new(Toaster::new())),
         refresh_requests: Arc::new(Mutex::new(Vec::new())),
         pending_plugin_actions: Arc::new(Mutex::new(Vec::new())),
+        plugin_ui_jobs,
         signals,
     };
 

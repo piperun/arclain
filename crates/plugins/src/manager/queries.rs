@@ -1,13 +1,13 @@
 //! Query methods for plugin manager
 
 use super::types::PluginListItem;
-use super::PluginManager;
+use super::{EnabledPluginSnapshot, PluginManager};
 use crate::runtime::PluginInstance;
 use crate::types::{PluginError, PluginMetadata, Result};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, info};
+use tracing::info;
 
 impl PluginManager {
     /// Enable a plugin (interior mutability safe)
@@ -110,39 +110,28 @@ impl PluginManager {
             return cached;
         }
 
-        let mut all_tabs = Vec::new();
-        let plugins = self.plugins.read();
-        let enabled = self.enabled_plugins.read();
-
-        for (plugin_id, plugin) in plugins.iter() {
-            // Only get tabs from enabled plugins
-            if !enabled.get(plugin_id).copied().unwrap_or(false) {
-                continue;
-            }
-
-            // Try to get tabs from the plugin
-            if let Some(mut instance) = plugin.instance.try_lock() {
-                match instance.get_top_tabs() {
-                    Ok(tabs) => {
-                        for tab in tabs {
-                            all_tabs.push((plugin_id.clone(), tab));
-                        }
-                    }
-                    Err(e) => {
-                        debug!("Failed to get top tabs from {}: {:?}", plugin_id, e);
-                    }
-                }
-            }
-        }
-        drop(plugins);
-        drop(enabled);
-
-        // Sort by priority (lower = first)
-        all_tabs.sort_by(|a, b| a.1.priority.cmp(&b.1.priority));
+        let all_tabs = self.enabled_plugin_snapshot().get_all_top_tabs();
         // Cache the sorted output so subsequent renders just clone from
         // cache without re-sorting or re-querying any plugin.
         *self.cached_top_tabs.lock() = Some(all_tabs.clone());
         all_tabs
+    }
+
+    /// Clone enabled plugin IDs and instance handles into a detached value.
+    ///
+    /// Callers that wrap `PluginManager` in an outer mutex should construct
+    /// this snapshot while holding that mutex, then drop the guard before
+    /// calling plugin instance methods on the returned value.
+    pub fn enabled_plugin_snapshot(&self) -> EnabledPluginSnapshot {
+        let plugins = self.plugins.read();
+        let enabled = self.enabled_plugins.read();
+        let snapshot = plugins
+            .iter()
+            .filter(|(plugin_id, _)| enabled.get(plugin_id.as_str()).copied().unwrap_or(false))
+            .map(|(plugin_id, plugin)| (plugin_id.clone(), plugin.instance.clone()))
+            .collect();
+
+        EnabledPluginSnapshot::new(snapshot)
     }
 
     /// Get a thread-safe handle to a plugin instance.
@@ -202,22 +191,7 @@ impl PluginManager {
 
     /// Get aggregated network logs from all enabled plugins
     pub fn get_network_log(&self) -> Vec<(std::time::SystemTime, String)> {
-        let mut all_logs = Vec::new();
-        // Use read lock
-        let plugins = self.plugins.read();
-
-        for plugin in plugins.values() {
-            if plugin.enabled {
-                // Acquire instance lock
-                let instance = plugin.instance.lock();
-                let logs = instance.get_network_log();
-                all_logs.extend(logs);
-            }
-        }
-
-        // Sort by time
-        all_logs.sort_by(|a, b| a.0.cmp(&b.0));
-        all_logs
+        self.enabled_plugin_snapshot().get_network_log()
     }
 
     /// Get a snapshot of all plugin settings for persistence.

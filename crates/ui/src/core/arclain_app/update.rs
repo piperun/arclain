@@ -35,7 +35,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
     // `AppSignals` on each call. See `arclain_plugins::active_tab`
     // and `crate::shared::active_tab_bridge`.
     app_lifecycle::process_refresh_requests(&app.shared_state, ctx);
-    app_lifecycle::bind_signals_once(&app.shared_state.app_state, ctx, &mut app._signals_bound);
+    app_lifecycle::bind_signals_once(&app.shared_state, ctx, &mut app._signals_bound);
+    crate::features::plugins::application::process_plugin_ui_results(
+        &app.shared_state,
+        &mut app.plugins_feature,
+    );
 
     // Apply theme only once on init or when dark_mode changes (prevent continuous repaint loop)
     let current_dark_mode = app.shared_state.theme.dark_mode;
@@ -517,7 +521,8 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             // Open plugin page
             let mut dialog_state = app.shared_state.signals().plugin_dialog_state.get();
             dialog_state.page_stack.clear();
-            dialog_state.open_page(&plugin_id, &tab_id);
+            let origin_tab = app.shared_state.signals().tabs.get().active_id();
+            dialog_state.open_page(&plugin_id, &tab_id, origin_tab);
             app.shared_state
                 .signals()
                 .plugin_dialog_state

@@ -24,17 +24,16 @@ impl PluginsFeature {
     }
 
     pub fn render(&mut self, ctx: &egui::Context, shared: &SharedState) {
-        let manager_arc = shared.services.plugin_manager.clone();
         let content_cache = shared.services.content_cache.clone();
+        crate::features::plugins::application::request_plugin_snapshot(
+            shared,
+            &mut self.list_state,
+        );
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            let guard = manager_arc.as_ref().map(|m| m.lock());
-            let manager_ref = guard.as_deref();
-
             plugins_page::render(
                 ui,
                 &shared.theme,
-                manager_ref,
                 &mut self.list_state,
                 &shared.app_state,
                 Some(shared),
