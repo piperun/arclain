@@ -3,7 +3,8 @@
 //! Handles initialization, connection pooling, and dependency injection.
 
 use crate::services::{
-    CacheService, ConfigService, LibraryService, OrganizationService, UiService,
+    CacheService, ConfigService, LibraryService, NetworkProxyPersistenceService,
+    OrganizationService, ProxyRecoveryOutcome, UiService,
 };
 use anyhow::Result;
 use arclain_db::{DbPaths, SqliteDb};
@@ -99,6 +100,15 @@ impl Services {
             dbs.config_pool.clone(),
             arclain_db::DbConnection::open(&paths.config_db)?,
         ));
+        match NetworkProxyPersistenceService::new(&config_svc, &dbs.secrets).recover_pending()? {
+            ProxyRecoveryOutcome::NoPendingUpdate => {}
+            ProxyRecoveryOutcome::RolledBack => {
+                tracing::warn!("[services] Rolled back an interrupted proxy settings update");
+            }
+            ProxyRecoveryOutcome::Finalized => {
+                tracing::info!("[services] Finalized an interrupted proxy settings update");
+            }
+        }
 
         // Cache Service
         let cache_svc = Arc::new(CacheService::new(dbs.cache_pool.clone()));
@@ -187,5 +197,50 @@ impl Services {
         self.cache_dir = cache_dir;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::services::ConfigService;
+    use arclain_db::{open_databases, DbConnection, SecretsKey, UserConfig};
+
+    #[test]
+    fn init_db_services_rejects_corrupt_proxy_marker_before_proxy_application() {
+        let temp = tempfile::tempdir().unwrap();
+        let paths = DbPaths {
+            config_db: temp.path().join("config.sqlite"),
+            cache_db: temp.path().join("metadata.sqlite"),
+            secrets_db: temp.path().join("secrets.redb"),
+            key_file: None,
+        };
+        let dbs = open_databases(&paths, &SecretsKey::generate()).unwrap();
+        let connection = DbConnection::open(&paths.config_db).unwrap();
+        UserConfig::ensure_table(&connection).unwrap();
+        let config_service = ConfigService::from_connection(dbs.config_pool.clone(), connection);
+        let mut config = UserConfig::new();
+        config.socks5_enabled = true;
+        config.socks5_address = Some("127.0.0.1:1080".to_string());
+        config_service.save_user_config(&config).unwrap();
+        dbs.secrets
+            .set_secret("proxy:socks5", "proxy-password")
+            .unwrap();
+        dbs.secrets
+            .set_secret("journal:proxy-settings", "invalid-marker")
+            .unwrap();
+
+        let runtime = Arc::new(tokio::runtime::Runtime::new().unwrap());
+        let mut services = Services::new(runtime);
+        services
+            .async_http_client
+            .update_plugin_proxy_map(crate::utilities::effective_plugin_proxy_map(&config));
+
+        let error = services.init_db_services(&dbs, &paths).unwrap_err();
+
+        assert!(error.to_string().contains("pending proxy update marker"));
+        assert!(services
+            .async_http_client
+            .should_use_proxy_for_plugin("dlsite"));
     }
 }

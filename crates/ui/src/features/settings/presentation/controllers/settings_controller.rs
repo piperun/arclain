@@ -8,6 +8,7 @@ use crate::features::plugins::domain::types::PluginsListState;
 use crate::features::settings::domain::types::{
     ArchivesSettingsState, SecuritySettingsState, ServerSettingsState, SettingsAction,
 };
+use arclain_core::services::{NetworkProxyPersistenceService, ProxySaveOutcome};
 use arclain_core::utilities::effective_plugin_proxy_map;
 use arclain_network::features::proxy::ProxyConfig;
 
@@ -285,60 +286,38 @@ pub fn handle_action(
             };
 
             let mut state = shared.app_state.lock();
-            let Some(dbs) = state.dbs.as_ref() else {
-                tracing::error!("[SaveNetwork] SecretsDb is unavailable");
-                shared.toaster.lock().error(
-                    "Network settings were not saved: encrypted secrets storage is unavailable",
-                );
-                return;
-            };
-
-            let previous_password = match dbs.secrets.get_secret("proxy:socks5") {
-                Ok(password) => password,
-                Err(error) => {
-                    tracing::error!(
-                        "[SaveNetwork] Failed to read previous proxy password: {error}"
-                    );
-                    shared.toaster.lock().error(
-                        "Network settings were not saved: the previous proxy password could not be read",
-                    );
-                    return;
-                }
-            };
-
-            let password_result = match config.password.as_deref() {
-                Some(password) => dbs.secrets.set_secret("proxy:socks5", password),
-                None => dbs.secrets.remove_secret("proxy:socks5"),
-            };
-            if let Err(error) = password_result {
-                tracing::error!("[SaveNetwork] Failed to persist proxy password: {error}");
-                shared.toaster.lock().error(
-                    "Network settings were not saved: the proxy password could not be persisted",
-                );
-                return;
-            }
-
             let mut candidate = state.user_config.clone();
             candidate.socks5_enabled = socks5_enabled;
             candidate.socks5_address = socks5_address;
             candidate.socks5_username = socks5_username;
 
-            if let Err(error) = config_svc.save_user_config(&candidate) {
-                let rollback_result = match previous_password.as_deref() {
-                    Some(password) => dbs.secrets.set_secret("proxy:socks5", password),
-                    None => dbs.secrets.remove_secret("proxy:socks5"),
-                };
-                if let Err(rollback_error) = rollback_result {
-                    tracing::error!(
-                        "[SaveNetwork] Failed to restore proxy password after config save failure: {rollback_error}"
+            let save_result = {
+                let Some(dbs) = state.dbs.as_ref() else {
+                    tracing::error!("[SaveNetwork] SecretsDb is unavailable");
+                    shared.toaster.lock().error(
+                        "Network settings were not saved: encrypted secrets storage is unavailable",
                     );
+                    return;
+                };
+                NetworkProxyPersistenceService::new(config_svc, &dbs.secrets)
+                    .save(&candidate, config.password.as_deref())
+            };
+            let outcome = match save_result {
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    tracing::error!("[SaveNetwork] Failed to save network settings: {error}");
+                    shared
+                        .toaster
+                        .lock()
+                        .error("Network settings were not saved: configuration persistence failed");
+                    return;
                 }
-                tracing::error!("[SaveNetwork] Failed to save network settings: {error}");
-                shared
-                    .toaster
-                    .lock()
-                    .error("Network settings were not saved: configuration persistence failed");
-                return;
+            };
+
+            if outcome == ProxySaveOutcome::CommittedPendingFinalize {
+                tracing::warn!(
+                    "[SaveNetwork] Network settings committed; journal cleanup will retry at startup"
+                );
             }
 
             let plugin_proxy_map = effective_plugin_proxy_map(&candidate);
@@ -1034,5 +1013,51 @@ mod tests {
         assert!(diagnostics.contains("Network settings were not saved"));
         assert!(!diagnostics.contains(NEW_PASSWORD));
         assert!(!logs_contain(NEW_PASSWORD));
+    }
+
+    #[test]
+    fn pending_proxy_marker_blocks_new_save_before_mutation() {
+        let fixture = ProxySaveFixture::new();
+        {
+            let state = fixture.shared.app_state.lock();
+            state
+                .dbs
+                .as_ref()
+                .unwrap()
+                .secrets
+                .set_secret("journal:proxy-settings", "invalid-marker")
+                .unwrap();
+        }
+
+        handle_action(
+            SettingsAction::SaveNetwork {
+                socks5_enabled: true,
+                socks5_address: Some("127.0.0.1:1081".to_string()),
+                socks5_username: Some("new-user".to_string()),
+                socks5_password: Some("new-password".to_string()),
+            },
+            &mut SecuritySettingsState::default(),
+            &mut ArchivesSettingsState::default(),
+            None,
+            &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
+            &mut ServerSettingsState::default(),
+            &fixture.shared,
+        );
+
+        fixture.assert_previous_settings_unchanged();
+        fixture.assert_previous_runtime_proxy_unchanged();
+        let state = fixture.shared.app_state.lock();
+        assert_eq!(
+            state
+                .dbs
+                .as_ref()
+                .unwrap()
+                .secrets
+                .get_secret("journal:proxy-settings")
+                .unwrap()
+                .as_ref()
+                .map(|value| value.as_str()),
+            Some("invalid-marker")
+        );
     }
 }
