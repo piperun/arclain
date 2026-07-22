@@ -2,8 +2,14 @@
 
 use super::HostFunctions;
 use crate::types::PluginCapability;
+use arclain_core::utilities::rename_no_replace;
+use std::io;
 use std::path::Path;
-use tracing::info;
+use tracing::{error, info};
+
+#[cfg(test)]
+#[path = "archive_tests.rs"]
+mod tests;
 
 impl HostFunctions {
     pub(super) fn impl_current_archive_info(
@@ -85,13 +91,26 @@ impl HostFunctions {
 
         let new_path = parent.join(&safe_name);
 
-        // Check if target already exists
-        if new_path.exists() && new_path != path {
-            return Err(format!("A file named '{}' already exists", safe_name));
+        if new_path == path {
+            return Ok(current_path);
         }
 
-        // Perform the rename
-        std::fs::rename(&path, &new_path).map_err(|e| format!("Failed to rename: {}", e))?;
+        // `exists()` followed by `rename()` is racy, and `std::fs::rename`
+        // replaces an existing file on supported desktop platforms. Use the
+        // platform's atomic no-replace rename primitive instead.
+        if let Err(rename_error) = rename_no_replace(path, &new_path) {
+            error!(
+                error = %rename_error,
+                source = %path.display(),
+                destination = %new_path.display(),
+                "Failed to rename archive without replacing the destination"
+            );
+            return if rename_error.kind() == io::ErrorKind::AlreadyExists {
+                Err(format!("A file named '{}' already exists", safe_name))
+            } else {
+                Err("Failed to rename archive safely".to_string())
+            };
+        }
 
         // Push the new path back through the bridge so the active
         // tab's `archive_path` signal reflects the rename — listeners

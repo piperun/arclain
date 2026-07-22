@@ -1,4 +1,5 @@
 use super::types::OutputArtifact;
+use crate::utilities::rename_no_replace;
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -100,7 +101,7 @@ impl StagedOutput {
     pub(super) fn commit(self) -> Result<PathBuf> {
         self.commit_with_hooks(
             |from, to| std::fs::rename(from, to),
-            |from, to| rename_noreplace(from, to),
+            |from, to| rename_no_replace(from, to),
             |_| Ok(()),
             |root| root.close().map_err(Into::into),
             |message| tracing::warn!("{message}"),
@@ -265,66 +266,6 @@ impl Drop for DestinationLock {
             registry.remove(&self.key);
         }
     }
-}
-
-#[cfg(any(
-    target_os = "linux",
-    target_os = "android",
-    target_vendor = "apple",
-    target_os = "redox"
-))]
-fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
-    rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        from,
-        rustix::fs::CWD,
-        to,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(std::io::Error::from)
-}
-
-#[cfg(windows)]
-fn rename_noreplace(from: &Path, to: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-
-    let from = from
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let to = to
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-
-    // MoveFileExW only replaces a destination when MOVEFILE_REPLACE_EXISTING
-    // is set. Both paths are siblings, so this remains a same-volume rename.
-    // SAFETY: both vectors are NUL-terminated UTF-16 paths, remain alive for
-    // the call, and MoveFileExW only reads through their pointers.
-    let moved = unsafe {
-        windows_sys::Win32::Storage::FileSystem::MoveFileExW(from.as_ptr(), to.as_ptr(), 0)
-    };
-    if moved == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(any(
-    windows,
-    target_os = "linux",
-    target_os = "android",
-    target_vendor = "apple",
-    target_os = "redox"
-)))]
-fn rename_noreplace(_from: &Path, _to: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "atomic no-replace rename is unavailable on this target",
-    ))
 }
 
 fn close_transaction_root<T>(
@@ -503,7 +444,7 @@ mod tests {
         std::fs::write(staged.artifact_path(), b"replacement").unwrap();
         let result = staged.commit_with_hooks(
             |from, to| std::fs::rename(from, to),
-            |from, to| rename_noreplace(from, to),
+            |from, to| rename_no_replace(from, to),
             |destination| {
                 std::fs::write(destination, b"concurrent-arrival")?;
                 Ok(())
@@ -524,7 +465,7 @@ mod tests {
         std::fs::create_dir(staged.artifact_path()).unwrap();
         let result = staged.commit_with_hooks(
             |from, to| std::fs::rename(from, to),
-            |from, to| rename_noreplace(from, to),
+            |from, to| rename_no_replace(from, to),
             |destination| {
                 std::fs::create_dir(destination)?;
                 Ok(())
@@ -547,7 +488,7 @@ mod tests {
         std::fs::write(staged.artifact_path(), b"replacement").unwrap();
         let result = staged.commit_with_hooks(
             |from, to| std::fs::rename(from, to),
-            |from, to| rename_noreplace(from, to),
+            |from, to| rename_no_replace(from, to),
             |destination| {
                 std::fs::write(destination, b"concurrent-arrival")?;
                 Ok(())
@@ -586,7 +527,7 @@ mod tests {
         let first_thread = std::thread::spawn(move || {
             first.commit_with_hooks(
                 |from, to| std::fs::rename(from, to),
-                |from, to| rename_noreplace(from, to),
+                |from, to| rename_no_replace(from, to),
                 |_| {
                     first_entered_tx.send(()).unwrap();
                     release_first_rx.recv().unwrap();
@@ -610,7 +551,7 @@ mod tests {
             second_started_tx.send(()).unwrap();
             second.commit_with_hooks(
                 |from, to| std::fs::rename(from, to),
-                |from, to| rename_noreplace(from, to),
+                |from, to| rename_no_replace(from, to),
                 |_| {
                     second_entered_tx.send(()).unwrap();
                     Ok(())
@@ -648,7 +589,7 @@ mod tests {
 
         let result = staged.commit_with_hooks(
             |from, to| std::fs::rename(from, to),
-            |from, to| rename_noreplace(from, to),
+            |from, to| rename_no_replace(from, to),
             |_| Ok(()),
             |_root| anyhow::bail!("injected cleanup failure"),
             |message| diagnostics.borrow_mut().push(message),
@@ -676,7 +617,7 @@ mod tests {
         let error = staged
             .commit_with_hooks(
                 |from, to| std::fs::rename(from, to),
-                |from, to| rename_noreplace(from, to),
+                |from, to| rename_no_replace(from, to),
                 |_| Ok(()),
                 |_root| anyhow::bail!("injected cleanup failure"),
                 |message| diagnostics.borrow_mut().push(message),
