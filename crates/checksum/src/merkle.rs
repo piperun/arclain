@@ -3,15 +3,76 @@
 use crate::algorithm::Algorithm;
 use crate::hasher::{FileHashResult, Hash};
 
+const MERKLE_ENCODING_VERSION: u8 = 1;
+const LEAF_DOMAIN: &[u8] = b"arclain-merkle-leaf";
+const NODE_DOMAIN: &[u8] = b"arclain-merkle-node";
+
+fn algorithm_tag(algorithm: Algorithm) -> u8 {
+    match algorithm {
+        Algorithm::Crc32 => 0,
+        Algorithm::XxHash => 1,
+        Algorithm::Sha256 => 2,
+    }
+}
+
+fn append_length_prefixed(encoded: &mut Vec<u8>, field: &[u8]) {
+    encoded.extend_from_slice(&(field.len() as u64).to_le_bytes());
+    encoded.extend_from_slice(field);
+}
+
+fn hash_encoded(encoded: &[u8], algorithm: Algorithm) -> Hash {
+    let bytes = match algorithm {
+        Algorithm::Crc32 => crc32fast::hash(encoded).to_le_bytes().to_vec(),
+        Algorithm::XxHash => xxhash_rust::xxh3::xxh3_64(encoded).to_le_bytes().to_vec(),
+        Algorithm::Sha256 => {
+            use sha2::{Digest, Sha256};
+            Sha256::digest(encoded).to_vec()
+        }
+    };
+
+    Hash::new(algorithm, bytes)
+}
+
+fn normalize_relative_path(path: &str) -> String {
+    let mut components = Vec::new();
+    for component in path.split(['/', '\\']) {
+        match component {
+            "" | "." => {}
+            ".." => match components.last() {
+                Some(previous) if *previous != ".." => {
+                    components.pop();
+                }
+                _ => components.push(component),
+            },
+            _ => components.push(component),
+        }
+    }
+    components.join("/")
+}
+
+fn hash_leaf(normalized_path: &str, file: &FileHashResult, algorithm: Algorithm) -> Hash {
+    let mut encoded = Vec::new();
+    append_length_prefixed(&mut encoded, LEAF_DOMAIN);
+    encoded.push(MERKLE_ENCODING_VERSION);
+    encoded.push(algorithm_tag(algorithm));
+    append_length_prefixed(&mut encoded, normalized_path.as_bytes());
+    encoded.extend_from_slice(&file.size.to_le_bytes());
+    encoded.push(algorithm_tag(file.hash.algorithm));
+    append_length_prefixed(&mut encoded, &file.hash.bytes);
+    hash_encoded(&encoded, algorithm)
+}
+
 /// A Merkle tree for efficient file integrity verification
 #[derive(Debug, Clone)]
 pub struct MerkleTree {
     /// Root hash of the tree
     root: Hash,
-    /// All nodes in the tree, indexed by level then position
-    /// Level 0 = leaves (file hashes), Level N = root
+    /// Identity commitment nodes, indexed by level then position.
+    /// Level 0 binds normalized path, size, and content hash; level N is root.
     nodes: Vec<Vec<Hash>>,
-    /// Original file paths (in order of leaves)
+    /// Original content hashes in the same sorted order as `file_paths`.
+    content_hashes: Vec<Hash>,
+    /// Normalized relative file paths (in order of leaves)
     file_paths: Vec<String>,
     /// Algorithm used
     algorithm: Algorithm,
@@ -27,24 +88,43 @@ impl MerkleTree {
     /// archive that's 50k+ extra `Hash` clones plus 50k+ `String`
     /// clones for paths.
     ///
-    /// Now we sort an index permutation, materialise leaves and paths
-    /// exactly once each, and borrow each level back out of `nodes`
-    /// instead of cloning it into a parallel `current_level`.
+    /// Now we normalize and sort an index permutation, materialise identity
+    /// leaves and public content hashes exactly once each, and borrow each
+    /// level back out of `nodes` instead of cloning it into a parallel
+    /// `current_level`.
     pub fn from_file_hashes(files: &[FileHashResult], algorithm: Algorithm) -> Self {
         if files.is_empty() {
             return Self::empty(algorithm);
         }
 
-        // Sort by path via an index permutation — no payload clones
-        // just to reorder.
-        let mut indices: Vec<usize> = (0..files.len()).collect();
-        indices.sort_by(|&a, &b| files[a].relative_path.cmp(&files[b].relative_path));
-
-        let file_paths: Vec<String> = indices
+        // Normalize before sorting so equivalent path spellings produce the
+        // same tree on every platform. Identity fields break ties so even
+        // duplicate normalized paths remain input-order independent.
+        let mut entries: Vec<(usize, String)> = files
             .iter()
-            .map(|&i| files[i].relative_path.clone())
+            .enumerate()
+            .map(|(index, file)| (index, normalize_relative_path(&file.relative_path)))
             .collect();
-        let leaves: Vec<Hash> = indices.iter().map(|&i| files[i].hash.clone()).collect();
+        entries.sort_by(|(a, a_path), (b, b_path)| {
+            a_path
+                .cmp(b_path)
+                .then_with(|| files[*a].size.cmp(&files[*b].size))
+                .then_with(|| {
+                    algorithm_tag(files[*a].hash.algorithm)
+                        .cmp(&algorithm_tag(files[*b].hash.algorithm))
+                })
+                .then_with(|| files[*a].hash.bytes.cmp(&files[*b].hash.bytes))
+        });
+
+        let file_paths: Vec<String> = entries.iter().map(|(_, path)| path.clone()).collect();
+        let content_hashes: Vec<Hash> = entries
+            .iter()
+            .map(|(index, _)| files[*index].hash.clone())
+            .collect();
+        let leaves: Vec<Hash> = entries
+            .iter()
+            .map(|(index, path)| hash_leaf(path, &files[*index], algorithm))
+            .collect();
 
         // `nodes[0]` owns the leaves; subsequent levels are appended.
         // `current_idx` indexes the level we're folding, so the loop
@@ -66,6 +146,7 @@ impl MerkleTree {
         Self {
             root,
             nodes,
+            content_hashes,
             file_paths,
             algorithm,
         }
@@ -76,6 +157,7 @@ impl MerkleTree {
         Self {
             root: Hash::new(algorithm, vec![]),
             nodes: vec![],
+            content_hashes: vec![],
             file_paths: vec![],
             algorithm,
         }
@@ -98,28 +180,15 @@ impl MerkleTree {
 
     /// Combine two hashes into a parent hash
     fn combine_hashes(left: &Hash, right: &Hash, algorithm: Algorithm) -> Hash {
-        let mut combined = Vec::with_capacity(left.bytes.len() + right.bytes.len());
-        combined.extend_from_slice(&left.bytes);
-        combined.extend_from_slice(&right.bytes);
-
-        let result_bytes = match algorithm {
-            Algorithm::Crc32 => {
-                let hash = crc32fast::hash(&combined);
-                hash.to_le_bytes().to_vec()
-            }
-            Algorithm::XxHash => {
-                let hash = xxhash_rust::xxh3::xxh3_64(&combined);
-                hash.to_le_bytes().to_vec()
-            }
-            Algorithm::Sha256 => {
-                use sha2::{Digest, Sha256};
-                let mut hasher = Sha256::new();
-                hasher.update(&combined);
-                hasher.finalize().to_vec()
-            }
-        };
-
-        Hash::new(algorithm, result_bytes)
+        let mut encoded = Vec::new();
+        append_length_prefixed(&mut encoded, NODE_DOMAIN);
+        encoded.push(MERKLE_ENCODING_VERSION);
+        encoded.push(algorithm_tag(algorithm));
+        encoded.push(algorithm_tag(left.algorithm));
+        append_length_prefixed(&mut encoded, &left.bytes);
+        encoded.push(algorithm_tag(right.algorithm));
+        append_length_prefixed(&mut encoded, &right.bytes);
+        hash_encoded(&encoded, algorithm)
     }
 
     /// Get the root hash
@@ -144,12 +213,12 @@ impl MerkleTree {
 
     /// Get hash for a specific file by index
     pub fn get_file_hash(&self, index: usize) -> Option<&Hash> {
-        self.nodes.first()?.get(index)
+        self.content_hashes.get(index)
     }
 
     /// Get the proof path for a specific file (for partial verification)
     pub fn get_proof(&self, file_index: usize) -> Option<Vec<Hash>> {
-        if file_index >= self.file_paths.len() {
+        if file_index >= self.content_hashes.len() || self.nodes.is_empty() {
             return None;
         }
 
@@ -223,7 +292,8 @@ impl MerkleTree {
 
         Some(Self {
             root: Hash::new(algorithm, hash_bytes),
-            nodes: vec![], // Not stored in simple mode
+            nodes: vec![],          // Not stored in simple mode
+            content_hashes: vec![], // Not stored in simple mode
             file_paths: vec!["".to_string(); file_count],
             algorithm,
         })
@@ -233,6 +303,38 @@ impl MerkleTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
+
+    fn append_test_field(encoded: &mut Vec<u8>, field: &[u8]) {
+        encoded.extend_from_slice(&(field.len() as u64).to_le_bytes());
+        encoded.extend_from_slice(field);
+    }
+
+    fn expected_sha256_leaf(path: &str, size: u64, content_hash: &Hash) -> Hash {
+        let mut encoded = Vec::new();
+        append_test_field(&mut encoded, b"arclain-merkle-leaf");
+        encoded.push(1);
+        encoded.push(2);
+        append_test_field(&mut encoded, path.as_bytes());
+        encoded.extend_from_slice(&size.to_le_bytes());
+        encoded.push(2);
+        append_test_field(&mut encoded, &content_hash.bytes);
+
+        Hash::new(Algorithm::Sha256, Sha256::digest(&encoded).to_vec())
+    }
+
+    fn expected_sha256_node(left: &Hash, right: &Hash) -> Hash {
+        let mut encoded = Vec::new();
+        append_test_field(&mut encoded, b"arclain-merkle-node");
+        encoded.push(1);
+        encoded.push(2);
+        encoded.push(2);
+        append_test_field(&mut encoded, &left.bytes);
+        encoded.push(2);
+        append_test_field(&mut encoded, &right.bytes);
+
+        Hash::new(Algorithm::Sha256, Sha256::digest(&encoded).to_vec())
+    }
 
     fn make_test_files() -> Vec<FileHashResult> {
         vec![
@@ -274,6 +376,116 @@ mod tests {
     }
 
     #[test]
+    fn merkle_root_commits_to_relative_path() {
+        let original = vec![FileHashResult {
+            relative_path: "before.txt".to_string(),
+            hash: Hash::new(Algorithm::Sha256, vec![7; 32]),
+            size: 42,
+        }];
+        let mut renamed = original.clone();
+        renamed[0].relative_path = "after.txt".to_string();
+
+        let original_tree = MerkleTree::from_file_hashes(&original, Algorithm::Sha256);
+        let renamed_tree = MerkleTree::from_file_hashes(&renamed, Algorithm::Sha256);
+
+        assert_ne!(original_tree.root_hash(), renamed_tree.root_hash());
+    }
+
+    #[test]
+    fn merkle_root_commits_to_file_size() {
+        let original = vec![FileHashResult {
+            relative_path: "file.txt".to_string(),
+            hash: Hash::new(Algorithm::Sha256, vec![7; 32]),
+            size: 42,
+        }];
+        let mut resized = original.clone();
+        resized[0].size = 43;
+
+        let original_tree = MerkleTree::from_file_hashes(&original, Algorithm::Sha256);
+        let resized_tree = MerkleTree::from_file_hashes(&resized, Algorithm::Sha256);
+
+        assert_ne!(original_tree.root_hash(), resized_tree.root_hash());
+    }
+
+    #[test]
+    fn sha256_leaf_encoding_is_versioned_and_domain_separated() {
+        let content_hash = Hash::new(Algorithm::Sha256, vec![7; 32]);
+        let files = vec![FileHashResult {
+            relative_path: "file.txt".to_string(),
+            hash: content_hash.clone(),
+            size: 42,
+        }];
+
+        let tree = MerkleTree::from_file_hashes(&files, Algorithm::Sha256);
+
+        assert_eq!(
+            tree.root_hash(),
+            &expected_sha256_leaf("file.txt", 42, &content_hash)
+        );
+    }
+
+    #[test]
+    fn sha256_node_encoding_is_versioned_and_domain_separated() {
+        let files = vec![
+            FileHashResult {
+                relative_path: "a.txt".to_string(),
+                hash: Hash::new(Algorithm::Sha256, vec![1; 32]),
+                size: 1,
+            },
+            FileHashResult {
+                relative_path: "b.txt".to_string(),
+                hash: Hash::new(Algorithm::Sha256, vec![2; 32]),
+                size: 2,
+            },
+        ];
+        let left = expected_sha256_leaf("a.txt", 1, &files[0].hash);
+        let right = expected_sha256_leaf("b.txt", 2, &files[1].hash);
+
+        let tree = MerkleTree::from_file_hashes(&files, Algorithm::Sha256);
+
+        assert_eq!(tree.root_hash(), &expected_sha256_node(&left, &right));
+    }
+
+    #[test]
+    fn merkle_normalizes_relative_path_components() {
+        let canonical = vec![FileHashResult {
+            relative_path: "folder/file.txt".to_string(),
+            hash: Hash::new(Algorithm::Sha256, vec![7; 32]),
+            size: 42,
+        }];
+        let mut alternate = canonical.clone();
+        alternate[0].relative_path = "folder\\sub/.././file.txt".to_string();
+
+        let canonical_tree = MerkleTree::from_file_hashes(&canonical, Algorithm::Sha256);
+        let alternate_tree = MerkleTree::from_file_hashes(&alternate, Algorithm::Sha256);
+
+        assert_eq!(canonical_tree.root_hash(), alternate_tree.root_hash());
+        assert_eq!(alternate_tree.file_paths(), &["folder/file.txt"]);
+    }
+
+    #[test]
+    fn merkle_sorts_by_normalized_relative_path() {
+        let files = vec![
+            FileHashResult {
+                relative_path: "z/../b.txt".to_string(),
+                hash: Hash::new(Algorithm::Crc32, vec![2; 4]),
+                size: 2,
+            },
+            FileHashResult {
+                relative_path: "a.txt".to_string(),
+                hash: Hash::new(Algorithm::Crc32, vec![1; 4]),
+                size: 1,
+            },
+        ];
+
+        let tree = MerkleTree::from_file_hashes(&files, Algorithm::Crc32);
+
+        assert_eq!(tree.file_paths(), &["a.txt", "b.txt"]);
+        assert_eq!(tree.get_file_hash(0), Some(&files[1].hash));
+        assert_eq!(tree.get_file_hash(1), Some(&files[0].hash));
+    }
+
+    #[test]
     fn test_merkle_tree_verify_file() {
         let files = make_test_files();
         let tree = MerkleTree::from_file_hashes(&files, Algorithm::Crc32);
@@ -295,6 +507,18 @@ mod tests {
 
         assert_eq!(tree.root_hash(), restored.root_hash());
         assert_eq!(tree.file_count(), restored.file_count());
+    }
+
+    #[test]
+    fn deserialized_root_only_tree_does_not_claim_content_or_proof_data() {
+        let files = make_test_files();
+        let tree = MerkleTree::from_file_hashes(&files, Algorithm::Crc32);
+        let restored = MerkleTree::from_bytes(&tree.to_bytes()).unwrap();
+
+        assert_eq!(restored.file_count(), files.len());
+        assert_eq!(restored.get_file_hash(0), None);
+        assert!(!restored.verify_file(0, &files[0].hash));
+        assert_eq!(restored.get_proof(0), None);
     }
 
     #[test]
