@@ -8,7 +8,9 @@
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileEntry {
     pub name: String, // Display name (basename only)
-    pub path: String, // Full path within archive (for operations)
+    pub path: String, // Path relative to the displayed folder (for navigation)
+    /// Stable archive-root-relative identity copied from the original listing.
+    pub archive_path: String,
     pub size: String,
     pub compressed: String,
     pub ratio: String,

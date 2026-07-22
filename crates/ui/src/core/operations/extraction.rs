@@ -8,16 +8,17 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 
-/// Extract a set of files (named by their basename within the current
-/// navigation folder) from the active tab's archive.
+/// Extract a set of files identified by archive-root-relative paths from the
+/// active tab's archive.
 ///
-/// Callers pre-compute the list of names — either by filtering the
+/// Callers pre-compute the list of paths — either by filtering the
 /// active tab's `browser_entries` against `browser_view_state.selection`
-/// (toolbar "Extract" button), or by passing a single name from a
+/// (toolbar "Extract" button), or by passing a single path from a
 /// per-row action (file_ops_service::extract). This function used to
 /// read selection itself, but coupling it to `BrowserViewState.selection`
 /// meant a single-row extract had to mutate global selection — ugly.
-/// Names-as-parameter keeps the boundary clean.
+/// Paths-as-parameter keeps the boundary clean and preserves identity across
+/// archive navigation.
 pub fn extract_selected(
     state: &Arc<Mutex<AppState>>,
     selected_files: &[String],
@@ -43,16 +44,7 @@ pub fn extract_selected(
             return;
         }
 
-        // Build full paths using navigation prefix
-        let nav = tab.navigation.get();
-        let full_paths: Vec<String> = if !nav.current_path.is_empty() {
-            selected_files
-                .iter()
-                .map(|f| format!("{}/{}", nav.current_path, f))
-                .collect()
-        } else {
-            selected_files.to_vec()
-        };
+        let full_paths = selected_files.to_vec();
 
         let archive_clone = archive.clone();
         let backend = st.fallback_backend.clone();

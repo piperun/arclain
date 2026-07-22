@@ -37,25 +37,13 @@ pub fn delete_selected(
     selected_paths: &[String],
     status_info: &mut status_bar::StatusBarInfo,
 ) {
-    // Build full paths using the current navigation prefix. The caller derives
-    // this explicit selection from the immutable browser snapshot and current
-    // search on the delete click, so hidden search results cannot leak into a
-    // destructive operation.
+    // The caller derives stable archive-root paths from the immutable browser
+    // snapshot and current search on the delete click, so hidden search results
+    // cannot leak into a destructive operation.
     let (full_paths, archive_opt) = {
         let st = state.lock();
         let tab = st.signals.tabs.get().active().clone();
-        let prefix = tab.navigation.get().current_path.clone();
-        let fulls: Vec<String> = selected_paths
-            .iter()
-            .map(|path| {
-                if prefix.is_empty() {
-                    path.clone()
-                } else {
-                    format!("{prefix}/{path}")
-                }
-            })
-            .collect();
-        (fulls, tab.archive_path.get())
+        (selected_paths.to_vec(), tab.archive_path.get())
     };
 
     if full_paths.is_empty() {
@@ -104,10 +92,10 @@ pub(crate) fn selected_file_paths_for_search(
         .iter()
         .filter(|entry| {
             !entry.is_folder
-                && selection.contains(&entry.path)
+                && selection.contains(&entry.archive_path)
                 && (filter.is_empty() || entry.name.to_lowercase().contains(&filter))
         })
-        .map(|entry| entry.path.clone())
+        .map(|entry| entry.archive_path.clone())
         .collect()
 }
 
@@ -119,6 +107,7 @@ mod tests {
         FileEntry {
             name: name.to_string(),
             path: name.to_string(),
+            archive_path: name.to_string(),
             size: "0 B".to_string(),
             compressed: "0 B".to_string(),
             ratio: "0%".to_string(),
@@ -131,22 +120,25 @@ mod tests {
 
     #[test]
     fn filtered_delete_emits_only_visible_selected_file_paths() {
-        let entries = vec![
+        let mut entries = vec![
             entry("visible.txt", false),
             entry("hidden.txt", false),
             entry("visible-folder", true),
         ];
+        entries[0].archive_path = "A/visible.txt".to_string();
+        entries[1].archive_path = "A/hidden.txt".to_string();
+        entries[2].archive_path = "A/visible-folder".to_string();
         let mut selection = RevisionedSelection::default();
         selection.extend([
-            "visible.txt".to_string(),
-            "hidden.txt".to_string(),
-            "visible-folder".to_string(),
+            "A/visible.txt".to_string(),
+            "A/hidden.txt".to_string(),
+            "A/visible-folder".to_string(),
         ]);
 
         let paths = selected_file_paths_for_search(&entries, &selection, " visible ");
 
-        assert_eq!(paths, vec!["visible.txt"]);
-        assert!(selection.contains("hidden.txt"));
+        assert_eq!(paths, vec!["A/visible.txt"]);
+        assert!(selection.contains("A/hidden.txt"));
     }
 
     #[test]

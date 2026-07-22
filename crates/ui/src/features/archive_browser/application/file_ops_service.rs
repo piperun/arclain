@@ -60,11 +60,11 @@ impl FileOpsService {
         ops_state: &mut ArchiveOperationsState,
         file: &str,
     ) {
-        // Per-row extract: we have the file's basename directly and
+        // Per-row extract receives the stable archive-root path and
         // bypass selection entirely. extract_selected now takes a
-        // list of names so we just hand it `[file]` — no need to
+        // list of paths so we just hand it `[file]` — no need to
         // synthesize a FileEntry or mutate the user's selection.
-        let selected_names = vec![file.to_string()];
+        let selected_paths = vec![file.to_string()];
 
         // extraction_dialog is per-tab now (post 2026-05-20 B3 reframed
         // slice 2). The extract call here originates from a row in the
@@ -76,7 +76,7 @@ impl FileOpsService {
 
         operations::extraction::extract_selected(
             &shared.app_state,
-            &selected_names,
+            &selected_paths,
             &mut dialog,
             &mut ops_state.extraction_rx,
             &mut ops_state.extraction_child,
@@ -129,18 +129,7 @@ impl FileOpsService {
         }
     }
 
-    pub fn copy_path(
-        &self,
-        egui_ctx: &egui::Context,
-        signals: &crate::core::signals::AppSignals,
-        file: &str,
-    ) {
-        let nav = signals.tabs.get().active().navigation.get();
-        let full_path = if nav.current_path.is_empty() {
-            file.to_string()
-        } else {
-            format!("{}/{}", nav.current_path, file)
-        };
-        egui_ctx.copy_text(full_path);
+    pub fn copy_path(&self, egui_ctx: &egui::Context, file: &str) {
+        egui_ctx.copy_text(file.to_string());
     }
 }

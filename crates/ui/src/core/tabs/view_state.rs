@@ -106,13 +106,16 @@ impl BrowserProjectionCache {
 
         if self.selected_revision != snapshot.revision || self.selected_for != selection_revision {
             self.selected.clear();
-            self.selected.extend(
-                snapshot
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, entry)| selection.contains(&entry.path).then_some(index)),
-            );
+            self.selected
+                .extend(
+                    snapshot
+                        .entries
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, entry)| {
+                            selection.contains(&entry.archive_path).then_some(index)
+                        }),
+                );
             self.selected_revision = snapshot.revision;
             self.selected_for = selection_revision;
             #[cfg(test)]
@@ -128,7 +131,7 @@ impl BrowserProjectionCache {
             self.visible_selected_count = self
                 .visible
                 .iter()
-                .filter(|index| selection.contains(&snapshot.entries[**index].path))
+                .filter(|index| selection.contains(&snapshot.entries[**index].archive_path))
                 .count();
             self.visible_selection_generation = self.visible_generation;
             self.visible_selection_for = selection_revision;
@@ -296,6 +299,7 @@ mod tests {
         FileEntry {
             name: name.to_string(),
             path: name.to_string(),
+            archive_path: name.to_string(),
             size: "0 B".to_string(),
             compressed: "0 B".to_string(),
             ratio: "0%".to_string(),
@@ -304,6 +308,12 @@ mod tests {
             encrypted: false,
             is_folder: false,
         }
+    }
+
+    fn entry_at(name: &str, archive_path: &str) -> FileEntry {
+        let mut entry = entry(name);
+        entry.archive_path = archive_path.to_string();
+        entry
     }
 
     #[test]
@@ -517,5 +527,39 @@ mod tests {
         assert_ne!(cloned.revision(), cloned_revision);
         assert!(!std::ptr::eq(&*original, &*cloned));
         assert!(!original.contains("new-entry"));
+    }
+
+    #[test]
+    fn same_basename_in_other_folder_does_not_reuse_selection_identity() {
+        let mut selection = RevisionedSelection::default();
+        assert!(selection.insert("A/same.txt".to_string()));
+        let mut snapshot = BrowserEntriesSnapshot::default();
+        let mut cache = BrowserProjectionCache::default();
+
+        snapshot.replace(vec![entry_at("same.txt", "A/same.txt")]);
+        assert_eq!(
+            cache
+                .render_projection(&snapshot, SortState::default(), "", &selection)
+                .selected_indices,
+            &[0]
+        );
+
+        snapshot.replace(vec![entry_at("same.txt", "B/same.txt")]);
+        assert!(
+            cache
+                .render_projection(&snapshot, SortState::default(), "", &selection)
+                .selected_indices
+                .is_empty(),
+            "navigating to B falsely selected B/same.txt"
+        );
+
+        snapshot.replace(vec![entry_at("same.txt", "A/same.txt")]);
+        assert_eq!(
+            cache
+                .render_projection(&snapshot, SortState::default(), "", &selection)
+                .selected_indices,
+            &[0],
+            "returning to A lost A/same.txt's stable identity"
+        );
     }
 }

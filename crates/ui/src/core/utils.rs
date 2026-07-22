@@ -33,6 +33,13 @@ pub fn format_size(bytes: u64) -> String {
 }
 
 pub fn convert_to_file_entry(entry: &arclain_core::ArchiveEntry) -> FileEntry {
+    convert_to_file_entry_with_archive_path(entry, &entry.path)
+}
+
+pub fn convert_to_file_entry_with_archive_path(
+    entry: &arclain_core::ArchiveEntry,
+    archive_path: &str,
+) -> FileEntry {
     let ratio = if entry.size > 0 {
         format!("{}%", (entry.packed_size * 100 / entry.size))
     } else {
@@ -48,6 +55,7 @@ pub fn convert_to_file_entry(entry: &arclain_core::ArchiveEntry) -> FileEntry {
     FileEntry {
         name,
         path: entry.path.clone(),
+        archive_path: archive_path.to_string(),
         size: format_size(entry.size),
         compressed: format_size(entry.packed_size),
         ratio,
@@ -209,5 +217,23 @@ mod tests {
         let fe = convert_to_file_entry(&entry);
         assert!(fe.encrypted);
         assert_eq!(fe.ratio, "80%");
+    }
+
+    #[test]
+    fn convert_to_file_entry_preserves_explicit_archive_root_path() {
+        let entry = arclain_core::ArchiveEntry {
+            path: "same.txt".to_string(),
+            size: 1,
+            packed_size: 1,
+            modified: None,
+            is_dir: false,
+            encrypted: false,
+            crc32: None,
+        };
+
+        let file_entry = convert_to_file_entry_with_archive_path(&entry, "A/same.txt");
+
+        assert_eq!(file_entry.path, "same.txt");
+        assert_eq!(file_entry.archive_path, "A/same.txt");
     }
 }

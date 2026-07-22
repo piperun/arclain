@@ -3,6 +3,7 @@
 //! Renders files and folders as responsive vertical cards with file type icons,
 //! hover-reveal actions, context menus, and selection support.
 
+use super::archive_action;
 use super::types::{FileEntry, FileListAction};
 use crate::core::tabs::view_state::RevisionedSelection;
 use crate::shared::theme::AppTheme;
@@ -91,7 +92,7 @@ fn render_card(
     }
 
     let hovered = response.hovered();
-    let selected = selection.contains(&entry.path);
+    let selected = selection.contains(&entry.archive_path);
 
     // ── Background ──────────────────────────────────────────────
     let bg = if selected {
@@ -207,6 +208,8 @@ fn render_card(
 
     // ── Context menu (same as list view) ────────────────────────
     let entry_name = entry.name.clone();
+    let entry_path = entry.path.clone();
+    let archive_path = entry.archive_path.clone();
     let is_folder = entry.is_folder;
 
     response.context_menu(|ui| {
@@ -215,9 +218,9 @@ fn render_card(
             .clicked()
         {
             if is_folder {
-                action = Some(FileListAction::Navigate(entry_name.clone()));
+                action = Some(FileListAction::Navigate(entry_path.clone()));
             } else {
-                action = Some(FileListAction::Open(entry_name.clone()));
+                action = Some(archive_action(entry, FileListAction::Open));
             }
             ui.close();
         }
@@ -228,7 +231,7 @@ fn render_card(
             )
             .clicked()
         {
-            action = Some(FileListAction::Extract(entry_name.clone()));
+            action = Some(archive_action(entry, FileListAction::Extract));
             ui.close();
         }
         if ui
@@ -238,7 +241,7 @@ fn render_card(
             )
             .clicked()
         {
-            action = Some(FileListAction::ExtractTo(entry_name.clone()));
+            action = Some(archive_action(entry, FileListAction::ExtractTo));
             ui.close();
         }
         ui.separator();
@@ -249,7 +252,7 @@ fn render_card(
             )
             .clicked()
         {
-            action = Some(FileListAction::CopyPath(entry_name.clone()));
+            action = Some(archive_action(entry, FileListAction::CopyPath));
             ui.close();
         }
         ui.separator();
@@ -260,7 +263,7 @@ fn render_card(
             )
             .clicked()
         {
-            action = Some(FileListAction::ShowProperties(entry_name.clone()));
+            action = Some(archive_action(entry, FileListAction::ShowProperties));
             ui.close();
         }
         ui.separator();
@@ -271,14 +274,14 @@ fn render_card(
             )
             .clicked()
         {
-            action = Some(FileListAction::Edit(entry_name.clone()));
+            action = Some(archive_action(entry, FileListAction::Edit));
             ui.close();
         }
         if ui
             .add(TextButton::new("🗑️  Delete", ButtonSize::Medium).with_theme_colors(&theme.colors))
             .clicked()
         {
-            action = Some(FileListAction::Delete(entry_name.clone()));
+            action = Some(archive_action(entry, FileListAction::Delete));
             ui.close();
         }
     });
@@ -286,18 +289,18 @@ fn render_card(
     // ── Interactions ────────────────────────────────────────────
     if response.drag_started() {
         response.ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
-        action = Some(FileListAction::DragStarted(vec![entry.name.clone()]));
+        action = Some(FileListAction::DragStarted(vec![archive_path.clone()]));
     } else if response.double_clicked() {
         if entry.is_folder {
-            action = Some(FileListAction::Navigate(entry.name.clone()));
+            action = Some(FileListAction::Navigate(entry_path.clone()));
         } else {
-            action = Some(FileListAction::Open(entry.name.clone()));
+            action = Some(archive_action(entry, FileListAction::Open));
         }
     } else if response.clicked() {
-        if selection.contains(&entry.path) {
-            selection.remove(&entry.path);
+        if selection.contains(&entry.archive_path) {
+            selection.remove(&entry.archive_path);
         } else {
-            selection.insert(entry.path.clone());
+            selection.insert(entry.archive_path.clone());
         }
     }
 

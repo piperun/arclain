@@ -91,6 +91,7 @@ fn test_show_properties_action() {
         snapshot.replace(vec![FileEntry {
             name: "test.txt".to_string(),
             path: "test.txt".to_string(),
+            archive_path: "test.txt".to_string(),
             size: "100".to_string(),
             compressed: "50".to_string(),
             ratio: "50%".to_string(),
@@ -242,6 +243,7 @@ fn test_ui_render_sanity() {
         snapshot.replace(vec![FileEntry {
             name: "test_ui_file.txt".to_string(),
             path: "test_ui_file.txt".to_string(),
+            archive_path: "test_ui_file.txt".to_string(),
             size: "100".to_string(),
             compressed: "50".to_string(),
             ratio: "50%".to_string(),
@@ -279,6 +281,7 @@ fn idle_render_reuses_entry_allocation_without_publishing_state() {
         .map(|index| FileEntry {
             name: format!("entry-{index:05}.txt"),
             path: format!("entry-{index:05}.txt"),
+            archive_path: format!("entry-{index:05}.txt"),
             size: "0 B".to_string(),
             compressed: "0 B".to_string(),
             ratio: "0%".to_string(),

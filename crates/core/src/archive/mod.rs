@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 pub use handle::Archive;
 pub use info::{ArchiveEntry, ArchiveInfo, ArchiveKind};
-pub use multipart::{is_multipart_archive, detect_multipart, MultiPartArchive, MultiPartFormat};
-pub use navigation::NavigationState;
+pub use multipart::{detect_multipart, is_multipart_archive, MultiPartArchive, MultiPartFormat};
+pub use navigation::{NavigationState, VisibleArchiveEntry};
 
 /// Reference to an archive entry for extraction
 ///

@@ -213,7 +213,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                     .filter(|entry| {
                         filter.is_empty() || entry.name.to_lowercase().contains(&filter)
                     })
-                    .map(|entry| entry.path.clone())
+                    .map(|entry| entry.archive_path.clone())
                     .collect();
                 sel_tab.browser_view_state.update(|s| {
                     s.selection.extend(paths);

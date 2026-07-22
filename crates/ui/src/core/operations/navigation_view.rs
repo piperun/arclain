@@ -4,7 +4,7 @@
 
 use crate::core::signals::AppSignals;
 use crate::core::tabs::{TabId, TabState};
-use crate::core::utils::convert_to_file_entry;
+use crate::core::utils::convert_to_file_entry_with_archive_path;
 use std::sync::Arc;
 use tracing::info;
 
@@ -36,7 +36,7 @@ fn refresh_view_entries_for(tab: &Arc<TabState>) {
         all_entries.len()
     );
 
-    let filtered_arch_entries = nav.filter_entries(&all_entries);
+    let filtered_arch_entries = nav.filter_entries_with_archive_paths(&all_entries);
 
     info!(
         "refresh_view_entries: got {} entries for path '{}'",
@@ -46,7 +46,7 @@ fn refresh_view_entries_for(tab: &Arc<TabState>) {
 
     let entries = filtered_arch_entries
         .iter()
-        .map(convert_to_file_entry)
+        .map(|item| convert_to_file_entry_with_archive_path(&item.entry, &item.archive_path))
         .collect::<Vec<_>>();
 
     tab.browser_entries

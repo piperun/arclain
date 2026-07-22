@@ -77,21 +77,19 @@ impl BrowserController {
                 });
             }
             Action::CopyPath(file) => {
-                self.file_ops.copy_path(egui_ctx, shared.signals(), &file);
+                self.file_ops.copy_path(egui_ctx, &file);
             }
             Action::ShowProperties(file) => {
-                // Set selection to JUST this file. Selection is
-                // path-keyed in a HashSet now (see FileEntry docs);
-                // matching by name keeps the old semantics where the
-                // "show properties" toolbar action highlights the
-                // single entry whose name matches.
+                // Set selection to just this archive entry. Display-relative
+                // paths are not unique across folders, so action payloads and
+                // selection both use the stable archive-root path.
                 let tab = shared.signals().tabs.get().active().clone();
                 let entries = tab.browser_entries.get();
                 tab.browser_view_state.update(|s| {
                     s.toolbar_state.show_properties_panel = true;
                     s.selection.clear();
-                    if let Some(entry) = entries.entries.iter().find(|e| e.name == file) {
-                        s.selection.insert(entry.path.clone());
+                    if let Some(entry) = entries.entries.iter().find(|e| e.archive_path == file) {
+                        s.selection.insert(entry.archive_path.clone());
                     }
                 });
             }

@@ -12,6 +12,18 @@ pub struct NavigationState {
     pub forward_stack: Vec<String>,
 }
 
+/// One visible navigation row together with its stable archive-root path.
+///
+/// `entry.path` is relative to the currently displayed folder so it can be
+/// used for labels and folder navigation. `archive_path` preserves the
+/// normalized path from the original archive listing for identity and file
+/// operations.
+#[derive(Debug, Clone)]
+pub struct VisibleArchiveEntry {
+    pub entry: ArchiveEntry,
+    pub archive_path: String,
+}
+
 impl NavigationState {
     pub fn new() -> Self {
         Self {
@@ -140,6 +152,16 @@ impl NavigationState {
     }
 
     pub fn filter_entries(&self, entries: &[ArchiveEntry]) -> Vec<ArchiveEntry> {
+        self.filter_entries_with_archive_paths(entries)
+            .into_iter()
+            .map(|item| item.entry)
+            .collect()
+    }
+
+    pub fn filter_entries_with_archive_paths(
+        &self,
+        entries: &[ArchiveEntry],
+    ) -> Vec<VisibleArchiveEntry> {
         let normalized_current = self.current_path.replace('\\', "/");
         let prefix = if normalized_current.is_empty() {
             String::new()
@@ -147,7 +169,7 @@ impl NavigationState {
             format!("{}/", normalized_current)
         };
 
-        let items: Vec<ArchiveEntry> = entries
+        let items: Vec<VisibleArchiveEntry> = entries
             .iter()
             .filter_map(|e| {
                 let normalized_path = e.path.replace('\\', "/");
@@ -155,20 +177,26 @@ impl NavigationState {
                 if self.current_path.is_empty() {
                     if !normalized_path.contains('/') {
                         let mut entry = e.clone();
-                        entry.path = normalized_path;
-                        return Some(entry);
+                        entry.path = normalized_path.clone();
+                        return Some(VisibleArchiveEntry {
+                            entry,
+                            archive_path: normalized_path,
+                        });
                     }
 
                     if let Some(pos) = normalized_path.find('/') {
                         let folder = normalized_path[..pos].to_string();
-                        return Some(ArchiveEntry {
-                            path: folder,
-                            size: 0,
-                            packed_size: 0,
-                            modified: None,
-                            is_dir: true,
-                            encrypted: false,
-                            crc32: None,
+                        return Some(VisibleArchiveEntry {
+                            archive_path: folder.clone(),
+                            entry: ArchiveEntry {
+                                path: folder,
+                                size: 0,
+                                packed_size: 0,
+                                modified: None,
+                                is_dir: true,
+                                encrypted: false,
+                                crc32: None,
+                            },
                         });
                     }
 
@@ -182,19 +210,26 @@ impl NavigationState {
                     if !relative.contains('/') {
                         let mut entry = e.clone();
                         entry.path = relative.to_string();
-                        return Some(entry);
+                        return Some(VisibleArchiveEntry {
+                            entry,
+                            archive_path: normalized_path,
+                        });
                     }
 
                     if let Some(pos) = relative.find('/') {
                         let folder = relative[..pos].to_string();
-                        return Some(ArchiveEntry {
-                            path: folder,
-                            size: 0,
-                            packed_size: 0,
-                            modified: None,
-                            is_dir: true,
-                            encrypted: false,
-                            crc32: None,
+                        let archive_path = normalized_path[..prefix.len() + pos].to_string();
+                        return Some(VisibleArchiveEntry {
+                            archive_path,
+                            entry: ArchiveEntry {
+                                path: folder,
+                                size: 0,
+                                packed_size: 0,
+                                modified: None,
+                                is_dir: true,
+                                encrypted: false,
+                                crc32: None,
+                            },
                         });
                     }
 
@@ -207,31 +242,25 @@ impl NavigationState {
 
         use std::collections::BTreeMap;
 
-        let mut map: BTreeMap<String, ArchiveEntry> = BTreeMap::new();
-        for entry in items {
-            map.entry(entry.path.clone())
+        let mut map: BTreeMap<String, VisibleArchiveEntry> = BTreeMap::new();
+        for item in items {
+            map.entry(item.entry.path.clone())
                 .and_modify(|existing| {
-                    if existing.modified.is_none() && entry.modified.is_some() {
-                        *existing = entry.clone();
+                    if existing.entry.modified.is_none() && item.entry.modified.is_some() {
+                        *existing = item.clone();
                     }
                 })
-                .or_insert(entry);
+                .or_insert(item);
         }
 
-        let mut result: Vec<ArchiveEntry> = map.into_values().collect();
+        let mut result: Vec<VisibleArchiveEntry> = map.into_values().collect();
 
-        for entry in result.iter_mut().filter(|e| e.is_dir) {
-            let full_path = if normalized_current.is_empty() {
-                entry.path.clone()
-            } else {
-                format!("{}/{}", normalized_current, entry.path)
-            };
+        for item in result.iter_mut().filter(|item| item.entry.is_dir) {
+            let (size, packed) = Self::compute_folder_totals(entries, &item.archive_path);
+            item.entry.size = size;
+            item.entry.packed_size = packed;
 
-            let (size, packed) = Self::compute_folder_totals(entries, &full_path);
-            entry.size = size;
-            entry.packed_size = packed;
-
-            entry.crc32 = Self::compute_folder_crc(entries, &full_path);
+            item.entry.crc32 = Self::compute_folder_crc(entries, &item.archive_path);
         }
 
         result
@@ -504,5 +533,28 @@ mod tests {
         assert!(paths.contains(&"Game.exe"));
         assert!(paths.contains(&"data"));
         assert!(!paths.contains(&"readme.txt"));
+    }
+
+    #[test]
+    fn test_filter_entries_preserves_archive_root_paths() {
+        let mut nav = NavigationState::new();
+        nav.set_current_path("game");
+        let entries = vec![
+            make_entry("game\\Game.exe", false),
+            make_entry("game/data/file.dat", false),
+        ];
+
+        let filtered = nav.filter_entries_with_archive_paths(&entries);
+        let executable = filtered
+            .iter()
+            .find(|item| item.entry.path == "Game.exe")
+            .unwrap();
+        let data = filtered
+            .iter()
+            .find(|item| item.entry.path == "data")
+            .unwrap();
+
+        assert_eq!(executable.archive_path, "game/Game.exe");
+        assert_eq!(data.archive_path, "game/data");
     }
 }

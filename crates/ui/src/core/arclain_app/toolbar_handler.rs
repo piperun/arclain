@@ -181,20 +181,18 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     let mut status_info = shared_state.signals().status_bar.get();
                     let mut dialog = active_tab.extraction_dialog().get();
 
-                    // Compute the list of names to extract from the
+                    // Compute the archive-root paths to extract from the
                     // active tab's selection. Selection lives in the
-                    // path-keyed HashSet on BrowserViewState; the
-                    // backend wants basenames (the navigation prefix
-                    // is added inside extract_selected).
-                    let selected_names: Vec<String> = entries
+                    // archive-path-keyed HashSet on BrowserViewState.
+                    let selected_paths: Vec<String> = entries
                         .entries
                         .iter()
-                        .filter(|e| view_state.selection.contains(&e.path))
-                        .map(|e| e.name.clone())
+                        .filter(|e| view_state.selection.contains(&e.archive_path))
+                        .map(|e| e.archive_path.clone())
                         .collect();
                     operations::extraction::extract_selected(
                         &app.shared_state.app_state,
-                        &selected_names,
+                        &selected_paths,
                         &mut dialog,
                         &mut ops_state.extraction_rx,
                         &mut ops_state.extraction_child,

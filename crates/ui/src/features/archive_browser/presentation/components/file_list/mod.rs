@@ -23,6 +23,13 @@ use arclain_widgets::{ButtonSize, TextButton};
 use eframe::egui;
 use egui_extras::{Column, TableBuilder};
 
+fn archive_action(
+    entry: &FileEntry,
+    create: impl FnOnce(String) -> FileListAction,
+) -> FileListAction {
+    create(entry.archive_path.clone())
+}
+
 // ================= List View (sortable + select-all) =================
 
 fn header_sort_label(
@@ -156,8 +163,7 @@ fn paint_row_selection(
 fn row_context_menu(
     row_response: &egui::Response,
     theme: &AppTheme,
-    entry_path: &str,
-    is_folder: bool,
+    entry: &FileEntry,
 ) -> Option<FileListAction> {
     let mut picked: Option<FileListAction> = None;
 
@@ -167,45 +173,45 @@ fn row_context_menu(
 
     row_response.context_menu(|ui| {
         if menu_btn(ui, "📂  Open").clicked() {
-            picked = Some(if is_folder {
-                FileListAction::Navigate(entry_path.to_string())
+            picked = Some(if entry.is_folder {
+                FileListAction::Navigate(entry.path.clone())
             } else {
-                FileListAction::Open(entry_path.to_string())
+                archive_action(entry, FileListAction::Open)
             });
             ui.close();
         }
         ui.separator();
         if menu_btn(ui, "📦  Extract").clicked() {
-            picked = Some(FileListAction::Extract(entry_path.to_string()));
+            picked = Some(archive_action(entry, FileListAction::Extract));
             ui.close();
         }
         if menu_btn(ui, "📁  Extract To...").clicked() {
-            picked = Some(FileListAction::ExtractTo(entry_path.to_string()));
+            picked = Some(archive_action(entry, FileListAction::ExtractTo));
             ui.close();
         }
         ui.separator();
         if menu_btn(ui, "📋  Copy Path").clicked() {
-            picked = Some(FileListAction::CopyPath(entry_path.to_string()));
+            picked = Some(archive_action(entry, FileListAction::CopyPath));
             ui.close();
         }
         ui.separator();
         if menu_btn(ui, "ℹ️  Properties").clicked() {
-            picked = Some(FileListAction::ShowProperties(entry_path.to_string()));
+            picked = Some(archive_action(entry, FileListAction::ShowProperties));
             ui.close();
         }
         ui.separator();
         if ui
             .add_enabled(
-                !is_folder,
+                !entry.is_folder,
                 TextButton::new("✏️  Edit", ButtonSize::Medium).with_theme_colors(&theme.colors),
             )
             .clicked()
         {
-            picked = Some(FileListAction::Edit(entry_path.to_string()));
+            picked = Some(archive_action(entry, FileListAction::Edit));
             ui.close();
         }
         if menu_btn(ui, "🗑️  Delete").clicked() {
-            picked = Some(FileListAction::Delete(entry_path.to_string()));
+            picked = Some(archive_action(entry, FileListAction::Delete));
             ui.close();
         }
     });
@@ -458,11 +464,11 @@ pub fn render_list_view(
                     if let Some(v) = apply_select_all.take() {
                         if v {
                             for index in order {
-                                selection.insert(entries[*index].path.clone());
+                                selection.insert(entries[*index].archive_path.clone());
                             }
                         } else {
                             for index in order {
-                                selection.remove(&entries[*index].path);
+                                selection.remove(&entries[*index].archive_path);
                             }
                         }
                     }
@@ -478,6 +484,7 @@ pub fn render_list_view(
                         let entry = &entries[order[row_index]];
                         let entry_name = entry.name.clone();
                         let entry_path = entry.path.clone();
+                        let archive_path = entry.archive_path.clone();
                         let is_folder = entry.is_folder;
 
                         {
@@ -488,15 +495,15 @@ pub fn render_list_view(
 
                             row.col(|ui| {
                                 // egui::checkbox needs a `&mut bool`; selection
-                                // lives in a HashSet keyed by path so we use
-                                // a local bool synced both ways.
-                                let mut checked = selection.contains(&entry_path);
+                                // lives in a HashSet keyed by stable archive
+                                // path, so we use a local bool synced both ways.
+                                let mut checked = selection.contains(&archive_path);
                                 let response = ui.checkbox(&mut checked, "");
                                 if response.clicked() {
                                     if checked {
-                                        selection.insert(entry_path.clone());
+                                        selection.insert(archive_path.clone());
                                     } else {
-                                        selection.remove(&entry_path);
+                                        selection.remove(&archive_path);
                                     }
                                 }
                                 checkbox_clicked = response.clicked();
@@ -575,7 +582,7 @@ pub fn render_list_view(
                                     if edit_clicked {
                                         action_clicked = true;
                                         pending_row_action =
-                                            Some(FileListAction::Edit(entry_path.clone()));
+                                            Some(archive_action(entry, FileListAction::Edit));
                                     }
 
                                     let del_clicked = ui
@@ -585,24 +592,24 @@ pub fn render_list_view(
                                     if del_clicked {
                                         action_clicked = true;
                                         pending_row_action =
-                                            Some(FileListAction::Delete(entry_path.clone()));
+                                            Some(archive_action(entry, FileListAction::Delete));
                                     }
                                 });
                             });
 
                             let row_response = row.response();
 
-                            let is_selected = selection.contains(&entry_path);
+                            let is_selected = selection.contains(&archive_path);
                             if is_selected {
                                 let prev_selected = row_index
                                     .checked_sub(1)
                                     .map(|previous| {
-                                        selection.contains(&entries[order[previous]].path)
+                                        selection.contains(&entries[order[previous]].archive_path)
                                     })
                                     .unwrap_or(false);
                                 let next_selected = order
                                     .get(row_index + 1)
-                                    .map(|next| selection.contains(&entries[*next].path))
+                                    .map(|next| selection.contains(&entries[*next].archive_path))
                                     .unwrap_or(false);
                                 paint_row_selection(
                                     &row_response,
@@ -618,8 +625,7 @@ pub fn render_list_view(
                                     .set_cursor_icon(egui::CursorIcon::PointingHand);
                             }
 
-                            if let Some(menu_action) =
-                                row_context_menu(&row_response, theme, &entry_path, is_folder)
+                            if let Some(menu_action) = row_context_menu(&row_response, theme, entry)
                             {
                                 action = Some(menu_action);
                             }
@@ -636,11 +642,11 @@ pub fn render_list_view(
                                     order
                                         .iter()
                                         .map(|index| &entries[*index])
-                                        .filter(|entry| selection.contains(&entry.path))
-                                        .map(|entry| entry.path.clone())
+                                        .filter(|entry| selection.contains(&entry.archive_path))
+                                        .map(|entry| entry.archive_path.clone())
                                         .collect()
                                 } else {
-                                    vec![entry_path.clone()]
+                                    vec![archive_path.clone()]
                                 };
                                 if !files_to_drag.is_empty() {
                                     action = Some(FileListAction::DragStarted(files_to_drag));
@@ -649,15 +655,15 @@ pub fn render_list_view(
                                 if is_folder {
                                     action = Some(FileListAction::Navigate(entry_path.clone()));
                                 } else {
-                                    action = Some(FileListAction::Open(entry_path.clone()));
+                                    action = Some(archive_action(entry, FileListAction::Open));
                                 }
                             } else if !checkbox_clicked && !action_clicked && row_response.clicked()
                             {
                                 // Toggle selection in the HashSet
-                                if selection.contains(&entry_path) {
-                                    selection.remove(&entry_path);
+                                if selection.contains(&archive_path) {
+                                    selection.remove(&archive_path);
                                 } else {
-                                    selection.insert(entry_path.clone());
+                                    selection.insert(archive_path.clone());
                                 }
                             }
 
@@ -672,4 +678,31 @@ pub fn render_list_view(
         });
 
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn row_delete_action_uses_stable_archive_root_path() {
+        let entry = FileEntry {
+            name: "same.txt".to_string(),
+            path: "same.txt".to_string(),
+            archive_path: "A/same.txt".to_string(),
+            size: "1 B".to_string(),
+            compressed: "1 B".to_string(),
+            ratio: "0%".to_string(),
+            modified: String::new(),
+            crc32: String::new(),
+            encrypted: false,
+            is_folder: false,
+        };
+        let action = archive_action(&entry, FileListAction::Delete);
+
+        assert!(matches!(
+            &action,
+            FileListAction::Delete(path) if path == "A/same.txt"
+        ));
+    }
 }

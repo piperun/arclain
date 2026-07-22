@@ -54,6 +54,7 @@ mod tests {
         snapshot.replace(vec![FileEntry {
             name: "entry".to_string(),
             path: "entry".to_string(),
+            archive_path: "entry".to_string(),
             size: "0 B".to_string(),
             compressed: "0 B".to_string(),
             ratio: "0%".to_string(),
