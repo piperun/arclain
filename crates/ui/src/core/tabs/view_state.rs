@@ -51,7 +51,7 @@ pub struct BrowserProjectionCache {
     sorted: Vec<usize>,
     visible_revision: u64,
     visible_for: SortState,
-    visible_filter: String,
+    visible_search: String,
     visible: Vec<usize>,
     visible_generation: u64,
     selected_revision: u64,
@@ -62,6 +62,8 @@ pub struct BrowserProjectionCache {
     visible_selected_count: usize,
     #[cfg(test)]
     rebuilds: usize,
+    #[cfg(test)]
+    normalizations: usize,
     #[cfg(test)]
     selection_work: SelectionWorkCounts,
 }
@@ -157,11 +159,16 @@ impl BrowserProjectionCache {
             self.sorted_for = sort;
         }
 
-        let filter = search.trim().to_lowercase();
+        let search = search.trim();
         if self.visible_revision != snapshot.revision
             || self.visible_for != sort
-            || self.visible_filter != filter
+            || self.visible_search != search
         {
+            #[cfg(test)]
+            {
+                self.normalizations += 1;
+            }
+            let filter = search.to_lowercase();
             self.visible.clear();
             self.visible
                 .extend(self.sorted.iter().copied().filter(|index| {
@@ -173,7 +180,8 @@ impl BrowserProjectionCache {
                 }));
             self.visible_revision = snapshot.revision;
             self.visible_for = sort;
-            self.visible_filter = filter;
+            self.visible_search.clear();
+            self.visible_search.push_str(search);
             self.visible_generation = self.visible_generation.wrapping_add(1).max(1);
             #[cfg(test)]
             {
@@ -185,6 +193,11 @@ impl BrowserProjectionCache {
     #[cfg(test)]
     pub(crate) fn rebuild_count(&self) -> usize {
         self.rebuilds
+    }
+
+    #[cfg(test)]
+    pub(crate) fn normalization_count(&self) -> usize {
+        self.normalizations
     }
 
     #[cfg(test)]
@@ -345,6 +358,29 @@ mod tests {
     }
 
     #[test]
+    fn settled_nonempty_filter_is_normalized_only_once() {
+        let mut snapshot = BrowserEntriesSnapshot::default();
+        snapshot.replace(vec![entry("Alpha"), entry("beta")]);
+        let mut cache = BrowserProjectionCache::default();
+
+        assert_eq!(
+            cache.visible_indices(&snapshot, SortState::default(), " ALP "),
+            &[0]
+        );
+        assert_eq!(cache.normalization_count(), 1);
+
+        assert_eq!(
+            cache.visible_indices(&snapshot, SortState::default(), "ALP"),
+            &[0]
+        );
+        assert_eq!(
+            cache.normalization_count(),
+            1,
+            "settled frame normalized and allocated the unchanged filter"
+        );
+    }
+
+    #[test]
     fn settled_list_projection_does_not_rescan_ten_thousand_visible_entries() {
         let mut snapshot = BrowserEntriesSnapshot::default();
         snapshot.replace(
@@ -461,9 +497,7 @@ mod tests {
     #[test]
     fn revisioned_selection_clone_shares_storage_until_mutation() {
         let mut original = RevisionedSelection::default();
-        assert!(original.extend(
-            (0..10_000).map(|index| format!("entry-{index:05}"))
-        ));
+        assert!(original.extend((0..10_000).map(|index| format!("entry-{index:05}"))));
         let mut cloned = original.clone();
 
         assert!(
