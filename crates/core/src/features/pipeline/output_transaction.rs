@@ -59,17 +59,10 @@ impl StagedOutput {
                 parent.display()
             )
         })?;
-        let lock_key = destination_lock_key(
-            &canonical_parent.join(
-                destination
-                    .file_name()
-                    .expect("destination final component was validated"),
-            ),
-        );
 
         Ok(Self {
             destination: destination.to_path_buf(),
-            lock_key,
+            lock_key: canonical_parent,
             root: Some(root),
             artifact,
             replace_existing,
@@ -137,6 +130,10 @@ impl StagedOutput {
         close: impl FnMut(tempfile::TempDir) -> Result<()>,
         diagnostic: impl FnMut(String),
     ) -> Result<PathBuf> {
+        // Filesystem case and Unicode equivalence cannot be normalized
+        // portably. Serialize Arclain's short commit/rollback phase by the
+        // canonical parent directory instead; staging remains concurrent,
+        // while atomic no-replace renames protect against external arrivals.
         let destination_lock = DestinationLock::acquire(self.lock_key.clone());
         let _destination_guard = destination_lock.mutex.lock();
         let mut committed_destination = None;
@@ -268,16 +265,6 @@ impl Drop for DestinationLock {
             registry.remove(&self.key);
         }
     }
-}
-
-#[cfg(windows)]
-fn destination_lock_key(path: &Path) -> PathBuf {
-    PathBuf::from(path.as_os_str().to_string_lossy().to_lowercase())
-}
-
-#[cfg(not(windows))]
-fn destination_lock_key(path: &Path) -> PathBuf {
-    path.to_path_buf()
 }
 
 #[cfg(any(
@@ -438,6 +425,41 @@ mod tests {
                     .is_some_and(|name| name.starts_with(".arclain-output-"))
             })
             .collect()
+    }
+
+    #[test]
+    fn same_parent_case_and_unicode_aliases_share_the_commit_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = StagedOutput::new(&temp.path().join("Game-Σ.zip"), false).unwrap();
+        let second = StagedOutput::new(&temp.path().join("game-ς.zip"), false).unwrap();
+
+        let first_lock = DestinationLock::acquire(first.lock_key.clone());
+        let second_lock = DestinationLock::acquire(second.lock_key.clone());
+        let _first_guard = first_lock.mutex.lock();
+
+        assert!(
+            second_lock.mutex.try_lock().is_none(),
+            "same-parent output aliases must not overlap their commit guards; keys were {:?} and {:?}",
+            first.lock_key,
+            second.lock_key
+        );
+    }
+
+    #[test]
+    fn different_canonical_parents_do_not_share_the_commit_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = StagedOutput::new(&temp.path().join("first/game.zip"), false).unwrap();
+        let second = StagedOutput::new(&temp.path().join("second/game.zip"), false).unwrap();
+
+        assert_ne!(first.lock_key, second.lock_key);
+        let first_lock = DestinationLock::acquire(first.lock_key.clone());
+        let second_lock = DestinationLock::acquire(second.lock_key.clone());
+        let _first_guard = first_lock.mutex.lock();
+
+        assert!(
+            second_lock.mutex.try_lock().is_some(),
+            "different canonical parent directories must not share a commit lock"
+        );
     }
 
     /// Deterministically model POSIX rename semantics on every test platform:
