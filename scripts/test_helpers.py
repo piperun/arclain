@@ -194,6 +194,32 @@ class TestOwnedFormatting(unittest.TestCase):
         self.assertEqual(step.count(cargo_command), 1)
         self.assertLess(step.index(format_command), step.index(cargo_command))
 
+    def test_woodpecker_future_incompat_check_uses_rust_1_97(self):
+        lines = (REPO_ROOT / ".woodpecker.yml").read_text(
+            encoding="utf-8",
+        ).splitlines()
+        step_start = lines.index("  cargo-check:")
+        step_end = lines.index("  cargo-test:")
+        step = lines[step_start:step_end]
+        images = [line for line in step if line.startswith("    image:")]
+        workspace_command = (
+            '      - su runner -c "cd /workspace/codeberg/arclain && '
+            'cargo check --workspace --locked"'
+        )
+        future_incompat_command = (
+            '      - su runner -c "cd /workspace/codeberg/arclain && '
+            "RUSTFLAGS='-Dfuture-incompatible' cargo check "
+            '-p arclain_theme -p arclain_widgets --locked"'
+        )
+
+        self.assertEqual(images, ["    image: rust:1.97"])
+        self.assertEqual(step.count(workspace_command), 1)
+        self.assertEqual(step.count(future_incompat_command), 1)
+        self.assertLess(
+            step.index(workspace_command),
+            step.index(future_incompat_command),
+        )
+
 
 class TestGametaPin(unittest.TestCase):
     VERSION = "=0.5.0"

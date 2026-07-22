@@ -42,7 +42,7 @@ steps:
   # ── Tests on every push + tag ───────────────────────────────────────
 
   cargo-check:
-    image: rust:1.94
+    image: rust:1.97
     when:
       - event: [push, tag]
     commands:
