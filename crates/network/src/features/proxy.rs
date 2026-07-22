@@ -17,6 +17,50 @@ pub struct ConnectionTestResult {
     pub country: Option<String>,
 }
 
+const INVALID_PROXY_AUTHORITY: &str = "address must contain only a host and a non-zero port";
+
+struct ParsedProxyAuthority {
+    url: url::Url,
+    authority: String,
+}
+
+fn parse_proxy_authority(address: &str) -> Result<ParsedProxyAuthority, &'static str> {
+    if address.is_empty()
+        || address.trim() != address
+        || address
+            .chars()
+            .any(|character| matches!(character, '@' | '/' | '\\' | '?' | '#'))
+    {
+        return Err(INVALID_PROXY_AUTHORITY);
+    }
+
+    let url =
+        url::Url::parse(&format!("socks5h://{address}")).map_err(|_| INVALID_PROXY_AUTHORITY)?;
+    if !url.username().is_empty()
+        || url.password().is_some()
+        || !matches!(url.path(), "" | "/")
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(INVALID_PROXY_AUTHORITY);
+    }
+
+    let host = match url.host().ok_or(INVALID_PROXY_AUTHORITY)? {
+        url::Host::Domain(domain) => domain.to_string(),
+        url::Host::Ipv4(address) => address.to_string(),
+        url::Host::Ipv6(address) => format!("[{address}]"),
+    };
+    let port = url
+        .port()
+        .filter(|port| *port != 0)
+        .ok_or(INVALID_PROXY_AUTHORITY)?;
+
+    Ok(ParsedProxyAuthority {
+        url,
+        authority: format!("{host}:{port}"),
+    })
+}
+
 /// Proxy configuration
 #[derive(Clone, Default)]
 pub struct ProxyConfig {
@@ -28,10 +72,11 @@ pub struct ProxyConfig {
 
 impl fmt::Debug for ProxyConfig {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let address = self.diagnostic_address();
         formatter
             .debug_struct("ProxyConfig")
             .field("enabled", &self.enabled)
-            .field("address", &self.address)
+            .field("address", &address)
             .field("username", &self.username.as_ref().map(|_| "[REDACTED]"))
             .field("password", &self.password.as_ref().map(|_| "[REDACTED]"))
             .finish()
@@ -39,6 +84,16 @@ impl fmt::Debug for ProxyConfig {
 }
 
 impl ProxyConfig {
+    fn parsed_authority(&self) -> Result<ParsedProxyAuthority, &'static str> {
+        parse_proxy_authority(&self.address)
+    }
+
+    fn diagnostic_address(&self) -> String {
+        self.parsed_authority()
+            .map(|parsed| parsed.authority)
+            .unwrap_or_else(|_| "<invalid address>".to_string())
+    }
+
     /// Credential-free status text suitable for logs and diagnostics.
     pub fn log_summary(&self) -> String {
         let enabled = if self.enabled { "enabled" } else { "disabled" };
@@ -47,11 +102,7 @@ impl ProxyConfig {
         } else {
             "unauthenticated"
         };
-        let address = if self.address.trim().is_empty() {
-            "<empty address>"
-        } else {
-            &self.address
-        };
+        let address = self.diagnostic_address();
         format!("{enabled} SOCKS5 proxy at {address} ({authentication})")
     }
 
@@ -59,13 +110,15 @@ impl ProxyConfig {
     /// diagnostic surface. The returned string must only be passed to
     /// `reqwest`.
     fn proxy_url(&self) -> Result<String, String> {
-        let mut url = url::Url::parse(&format!("socks5h://{}", self.address)).map_err(|_| {
-            format!(
-                "Invalid SOCKS5 address '{}': {}",
-                self.address,
-                self.log_summary()
-            )
-        })?;
+        let mut url = self
+            .parsed_authority()
+            .map_err(|reason| {
+                format!(
+                    "Invalid SOCKS5 address for {}: {reason}",
+                    self.log_summary()
+                )
+            })?
+            .url;
 
         if let (Some(username), Some(password)) = (&self.username, &self.password) {
             url.set_username(username)
@@ -89,7 +142,7 @@ impl ProxyConfig {
     /// silent-disable bug. Use [`ProxyConfig::validate`] when the
     /// distinction matters (e.g. saving user-entered settings).
     pub fn to_proxy(&self) -> Option<reqwest::Proxy> {
-        if !self.enabled || self.address.is_empty() {
+        if !self.enabled || self.address.trim().is_empty() {
             tracing::debug!("[ProxyConfig] Skipping {}", self.log_summary());
             return None;
         }
@@ -118,9 +171,6 @@ impl ProxyConfig {
         if !self.enabled {
             return Ok(());
         }
-        if self.address.trim().is_empty() {
-            return Err(format!("Invalid {}: address is empty", self.log_summary()));
-        }
         self.create_proxy().map(|_| ())
     }
 
@@ -136,9 +186,22 @@ impl ProxyConfig {
         );
 
         // Try to resolve the proxy hostname to see if DNS works
-        if self.enabled && !self.address.is_empty() {
+        if self.enabled {
+            let authority = match self.parsed_authority() {
+                Ok(parsed) => parsed.authority,
+                Err(reason) => {
+                    let message = format!("Invalid {}: {reason}", self.log_summary());
+                    tracing::warn!("[test_connection] {}", message);
+                    result.steps.push(ConnectionTestStep {
+                        name: test_name.to_string(),
+                        passed: false,
+                        message: Some(message),
+                    });
+                    return result;
+                }
+            };
             tracing::info!("[test_connection] Resolving proxy hostname...");
-            match tokio::net::lookup_host(&self.address).await {
+            match tokio::net::lookup_host(&authority).await {
                 Ok(addrs) => {
                     let addrs: Vec<_> = addrs.collect();
                     let ip_str = addrs
@@ -165,7 +228,7 @@ impl ProxyConfig {
 
             // Try direct TCP connection to the proxy
             tracing::info!("[test_connection] Attempting direct TCP connection to proxy...");
-            match tokio::net::TcpStream::connect(&self.address).await {
+            match tokio::net::TcpStream::connect(&authority).await {
                 Ok(stream) => {
                     tracing::info!(
                         "[test_connection] Direct TCP connection succeeded! Local: {:?}, Peer: {:?}",
@@ -301,14 +364,20 @@ impl ProxyConfig {
 mod tests {
     use super::*;
     use std::fmt::Write as _;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
     use tracing::field::{Field, Visit};
     use tracing::span::{Attributes, Id, Record};
     use tracing::{Event, Metadata, Subscriber};
 
     const USERNAME_SECRET: &str = "proxy-username-secret-7e1f";
     const PASSWORD_SECRET: &str = "proxy-password-secret-9a4c";
+    const ADDRESS_USERNAME_SECRET: &str = "address-username-secret-3b8d";
+    const ADDRESS_PASSWORD_SECRET: &str = "address-password-secret-5c2a";
 
     fn authenticated_config(address: &str) -> ProxyConfig {
         ProxyConfig {
@@ -319,6 +388,12 @@ mod tests {
         }
     }
 
+    fn embedded_userinfo_config() -> ProxyConfig {
+        authenticated_config(&format!(
+            "{ADDRESS_USERNAME_SECRET}:{ADDRESS_PASSWORD_SECRET}@proxy.example:1080"
+        ))
+    }
+
     fn assert_credentials_redacted(text: &str) {
         assert!(
             !text.contains(USERNAME_SECRET),
@@ -327,6 +402,14 @@ mod tests {
         assert!(
             !text.contains(PASSWORD_SECRET),
             "password leaked in {text:?}"
+        );
+        assert!(
+            !text.contains(ADDRESS_USERNAME_SECRET),
+            "address username leaked in {text:?}"
+        );
+        assert!(
+            !text.contains(ADDRESS_PASSWORD_SECRET),
+            "address password leaked in {text:?}"
         );
     }
 
@@ -440,7 +523,8 @@ mod tests {
         });
 
         assert_credentials_redacted(&events);
-        assert!(events.contains("not a valid host:1080"));
+        assert!(events.contains("<invalid address>"));
+        assert!(!events.contains("not a valid host:1080"));
         assert!(events.contains("authenticated"));
     }
 
@@ -452,8 +536,174 @@ mod tests {
             .expect_err("invalid proxy address should be rejected");
 
         assert_credentials_redacted(&error);
-        assert!(error.contains("not a valid host:1080"));
+        assert!(error.contains("<invalid address>"));
+        assert!(!error.contains("not a valid host:1080"));
         assert!(error.contains("authenticated"));
+    }
+
+    #[test]
+    fn proxy_address_userinfo_is_redacted_from_debug() {
+        let debug = format!("{:?}", embedded_userinfo_config());
+
+        assert_credentials_redacted(&debug);
+        assert!(debug.contains("<invalid address>"));
+        assert_eq!(debug.matches("[REDACTED]").count(), 2);
+    }
+
+    #[test]
+    fn proxy_address_userinfo_is_redacted_from_log_summary() {
+        let summary = embedded_userinfo_config().log_summary();
+
+        assert_credentials_redacted(&summary);
+        assert_eq!(
+            summary,
+            "enabled SOCKS5 proxy at <invalid address> (authenticated)"
+        );
+    }
+
+    #[test]
+    fn proxy_address_userinfo_is_rejected_without_echoing_it() {
+        let error = embedded_userinfo_config()
+            .validate()
+            .expect_err("userinfo must not be accepted as a proxy address");
+
+        assert_credentials_redacted(&error);
+        assert!(error.contains("<invalid address>"));
+        assert!(error.contains("authenticated"));
+    }
+
+    #[test]
+    fn proxy_address_userinfo_is_redacted_from_captured_tracing() {
+        let config = embedded_userinfo_config();
+        let capture = EventCapture::default();
+        let proxy = tracing::subscriber::with_default(capture.clone(), || config.to_proxy());
+        let events = capture.output();
+
+        assert_credentials_redacted(&events);
+        assert!(events.contains("<invalid address>"));
+        assert!(proxy.is_none());
+    }
+
+    #[test]
+    fn proxy_validation_requires_a_strict_host_and_port_authority() {
+        for address in [
+            "user:password@proxy.example:1080",
+            "proxy.example:1080/path",
+            "proxy.example:1080?query",
+            "proxy.example:1080#fragment",
+            "socks5h://proxy.example:1080",
+            "proxy.example",
+            "proxy.example:",
+            "proxy.example:0",
+        ] {
+            let config = ProxyConfig {
+                enabled: true,
+                address: address.to_string(),
+                ..Default::default()
+            };
+            assert!(
+                config.validate().is_err(),
+                "non-authority proxy address was accepted: {address:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_validation_preserves_supported_host_and_port_authorities() {
+        for address in ["proxy.example:1080", "127.0.0.1:9050", "[2001:db8::1]:1080"] {
+            let config = ProxyConfig {
+                enabled: true,
+                address: address.to_string(),
+                ..Default::default()
+            };
+            assert!(
+                config.validate().is_ok(),
+                "supported proxy authority was rejected: {address:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn failed_socks_handshake_and_invalid_address_never_expose_credentials() {
+        fn accept_before(listener: &TcpListener, deadline: Instant) -> TcpStream {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _)) => return stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            Instant::now() < deadline,
+                            "timed out waiting for proxy client"
+                        );
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("proxy listener failed: {error}"),
+                }
+            }
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local SOCKS listener");
+        listener
+            .set_nonblocking(true)
+            .expect("make SOCKS listener nonblocking");
+        let address = listener.local_addr().expect("read SOCKS listener address");
+        let server = thread::spawn(move || {
+            drop(accept_before(
+                &listener,
+                Instant::now() + Duration::from_secs(5),
+            ));
+
+            let mut socks = accept_before(&listener, Instant::now() + Duration::from_secs(5));
+            socks
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set SOCKS read timeout");
+            let mut greeting_header = [0_u8; 2];
+            socks
+                .read_exact(&mut greeting_header)
+                .expect("read SOCKS greeting header");
+            assert_eq!(greeting_header[0], 0x05, "unexpected SOCKS version");
+            let mut methods = vec![0_u8; usize::from(greeting_header[1])];
+            socks
+                .read_exact(&mut methods)
+                .expect("read SOCKS authentication methods");
+            socks
+                .write_all(&[0x05, 0xff])
+                .expect("reject SOCKS authentication methods");
+        });
+
+        let valid = authenticated_config(&address.to_string());
+        let embedded = embedded_userinfo_config();
+        let capture = EventCapture::default();
+        let (handshake_result, embedded_result) =
+            tracing::subscriber::with_default(capture.clone(), || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build test runtime");
+                (
+                    runtime.block_on(valid.test_connection()),
+                    runtime.block_on(embedded.test_connection()),
+                )
+            });
+        server.join().expect("SOCKS listener thread panicked");
+
+        assert!(
+            handshake_result
+                .steps
+                .iter()
+                .any(|step| step.name == "SOCKS5" && !step.passed),
+            "failed SOCKS handshake was not reported: {handshake_result:?}"
+        );
+        assert!(
+            embedded_result.steps.iter().any(|step| !step.passed),
+            "invalid embedded userinfo was not reported: {embedded_result:?}"
+        );
+
+        let diagnostics = format!(
+            "{}\n{handshake_result:?}\n{embedded_result:?}",
+            capture.output()
+        );
+        assert_credentials_redacted(&diagnostics);
+        assert!(diagnostics.contains("<invalid address>"));
     }
 
     #[test]
