@@ -1,10 +1,547 @@
 use crate::features::proxy::ProxyConfig;
+use crate::features::rate_limiting::RateLimiter;
 use crate::features::request::client::{parse_content_range, ContentRange, RequestCompletion};
+use crate::features::request::plugin_policy::{
+    validate_plugin_url, validate_redirect_target, validate_resolved_addresses,
+    AuthorizedPluginTarget, MAX_PLUGIN_REDIRECTS,
+};
+use crate::features::request::PluginNetworkPolicy;
 use crate::features::whitelist::DomainWhitelist;
 use crate::{AsyncHttpClient, StreamingDownload};
-use crate::{HttpRequest, HttpResponse, RequestStatus};
+use crate::{HttpError, HttpRequest, HttpResponse, RequestStatus};
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener as TokioTcpListener;
+
+#[test]
+fn plugin_policy_rejects_non_http_credentials_fragments_and_missing_hosts() {
+    for url in [
+        "ftp://example.com/file",
+        "file:///etc/passwd",
+        "https://user@example.com/",
+        "https://user:password@example.com/",
+        "https://example.com/page#fragment",
+        "https://",
+    ] {
+        assert!(
+            validate_plugin_url(url).is_err(),
+            "plugin URL validation accepted {url:?}"
+        );
+    }
+
+    assert!(validate_plugin_url("https://example.com/path?q=1").is_ok());
+}
+
+#[test]
+fn plugin_policy_rejects_private_documentation_and_special_addresses() {
+    for address in [
+        "0.0.0.0",
+        "10.0.0.1",
+        "100.64.0.1",
+        "127.0.0.1",
+        "169.254.169.254",
+        "172.16.0.1",
+        "192.0.0.1",
+        "192.0.2.1",
+        "192.31.196.1",
+        "192.52.193.1",
+        "192.88.99.1",
+        "192.168.1.1",
+        "192.175.48.1",
+        "198.18.0.1",
+        "198.51.100.1",
+        "203.0.113.1",
+        "224.0.0.1",
+        "240.0.0.1",
+        "255.255.255.255",
+        "::",
+        "::1",
+        "::ffff:127.0.0.1",
+        "::ffff:8.8.8.8",
+        "64:ff9b::1",
+        "64:ff9b:1::1",
+        "100::1",
+        "2001::1",
+        "2001:2::1",
+        "2001:db8::1",
+        "2001:20::1",
+        "2002::1",
+        "2620:4f:8000::1",
+        "fc00::1",
+        "fe80::1",
+        "fec0::1",
+        "ff00::1",
+    ] {
+        let address = address.parse().expect("valid test IP address");
+        assert!(
+            validate_resolved_addresses(&[address]).is_err(),
+            "plugin address validation accepted {address}"
+        );
+    }
+
+    for address in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+        let address = address.parse().expect("valid public test IP address");
+        assert!(
+            validate_resolved_addresses(&[address]).is_ok(),
+            "plugin address validation rejected public address {address}"
+        );
+    }
+}
+
+#[test]
+fn plugin_policy_rejects_an_entire_mixed_dns_answer() {
+    let answers = [
+        "93.184.216.34".parse().unwrap(),
+        "127.0.0.1".parse().unwrap(),
+    ];
+
+    assert!(validate_resolved_addresses(&answers).is_err());
+    assert!(validate_resolved_addresses(&[]).is_err());
+}
+
+#[test]
+fn plugin_policy_zero_rpm_denies_and_limits_are_isolated_per_plugin() {
+    let limiter = RateLimiter::new(60);
+
+    assert!(!limiter.try_acquire_with_limit("plugin-a\0example.com", 0));
+    assert!(limiter.try_acquire_with_limit("plugin-a\0example.com", 1));
+    assert!(!limiter.try_acquire_with_limit("plugin-a\0example.com", 1));
+    assert!(limiter.try_acquire_with_limit("plugin-b\0example.com", 1));
+}
+
+#[test]
+fn plugin_policy_redirect_targets_join_relative_and_repeat_syntax_checks() {
+    let current = validate_plugin_url("https://example.com/a/start").unwrap();
+    let relative = validate_redirect_target(&current, "../next?q=1").unwrap();
+    assert_eq!(relative.as_str(), "https://example.com/next?q=1");
+
+    for location in [
+        "ftp://example.com/file",
+        "https://user@example.com/secret",
+        "/next#fragment",
+        "https://",
+    ] {
+        assert!(
+            validate_redirect_target(&current, location).is_err(),
+            "redirect validation accepted {location:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn plugin_policy_requires_registered_enabled_network_capability() {
+    let client = AsyncHttpClient::new(
+        Handle::current(),
+        Arc::new(parking_lot::RwLock::new(DomainWhitelist::default())),
+        None,
+    );
+    let request = HttpRequest::get("https://example.com/");
+
+    assert!(matches!(
+        client.request_for_plugin("missing", request.clone()),
+        Err(HttpError::PluginNetworkNotConfigured { .. })
+    ));
+
+    client.configure_plugin(
+        "disabled",
+        PluginNetworkPolicy {
+            network_enabled: false,
+            requests_per_minute: 60,
+        },
+    );
+    assert!(matches!(
+        client.request_for_plugin("disabled", request),
+        Err(HttpError::PluginNetworkDisabled { .. })
+    ));
+}
+
+#[tokio::test]
+async fn plugin_policy_socks_connector_sends_the_pinned_ip_not_the_hostname() {
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind SOCKS5 listener");
+    let proxy_address = listener.local_addr().expect("SOCKS5 listener address");
+    let (address_sender, address_receiver) = tokio::sync::oneshot::channel();
+
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept SOCKS5 client");
+        let mut greeting = [0_u8; 3];
+        socket
+            .read_exact(&mut greeting)
+            .await
+            .expect("read SOCKS5 greeting");
+        assert_eq!(greeting, [0x05, 0x01, 0x00]);
+        socket
+            .write_all(&[0x05, 0x00])
+            .await
+            .expect("select SOCKS5 no-auth");
+
+        let mut request = [0_u8; 4];
+        socket
+            .read_exact(&mut request)
+            .await
+            .expect("read SOCKS5 CONNECT prefix");
+        assert_eq!(&request[..3], &[0x05, 0x01, 0x00]);
+        let atyp = request[3];
+        let destination = match atyp {
+            0x01 => {
+                let mut octets = [0_u8; 4];
+                socket.read_exact(&mut octets).await.unwrap();
+                std::net::IpAddr::V4(octets.into())
+            }
+            0x04 => {
+                let mut octets = [0_u8; 16];
+                socket.read_exact(&mut octets).await.unwrap();
+                std::net::IpAddr::V6(octets.into())
+            }
+            0x03 => {
+                let length = socket.read_u8().await.unwrap() as usize;
+                let mut hostname = vec![0_u8; length];
+                socket.read_exact(&mut hostname).await.unwrap();
+                panic!(
+                    "SOCKS5 connector leaked hostname {:?} instead of using pinned DNS",
+                    String::from_utf8_lossy(&hostname)
+                );
+            }
+            other => panic!("unexpected SOCKS5 address type {other:#x}"),
+        };
+        let mut port = [0_u8; 2];
+        socket.read_exact(&mut port).await.unwrap();
+        let _ = address_sender.send((atyp, destination, u16::from_be_bytes(port)));
+
+        // The HTTP result is irrelevant; acknowledge CONNECT then close.
+        socket
+            .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+            .await
+            .unwrap();
+    });
+
+    let client = AsyncHttpClient::new(
+        Handle::current(),
+        Arc::new(parking_lot::RwLock::new(DomainWhitelist::default())),
+        Some(ProxyConfig {
+            enabled: true,
+            address: proxy_address.to_string(),
+            username: None,
+            password: None,
+        }),
+    );
+    let pinned_ip = "93.184.216.34".parse().unwrap();
+    let target = AuthorizedPluginTarget {
+        url: url::Url::parse("http://pinned.example/resource").unwrap(),
+        use_proxy: true,
+        resolved: vec![std::net::SocketAddr::new(pinned_ip, 80)],
+    };
+    let pinned_client = client
+        .build_pinned_plugin_client(&target)
+        .expect("build pinned SOCKS5 plugin client");
+
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        pinned_client.get(target.url.clone()).send(),
+    )
+    .await;
+    let (atyp, destination, port) = address_receiver
+        .await
+        .expect("SOCKS5 listener did not observe CONNECT");
+    assert_eq!(atyp, 0x01);
+    assert_eq!(destination, pinned_ip);
+    assert_eq!(port, 80);
+    server.await.expect("SOCKS5 listener task panicked");
+}
+
+fn configure_enabled_plugin(client: &AsyncHttpClient, plugin_id: &str, rpm: u32) {
+    client.configure_plugin(
+        plugin_id,
+        PluginNetworkPolicy {
+            network_enabled: true,
+            requests_per_minute: rpm,
+        },
+    );
+}
+
+#[tokio::test]
+async fn plugin_policy_rejects_mixed_dns_answers_even_when_whitelisted() {
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "example.com");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist.clone(), None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.set_plugin_dns_answers_for_test(
+        "example.com",
+        vec![vec![
+            "93.184.216.34:443".parse().unwrap(),
+            "127.0.0.1:443".parse().unwrap(),
+        ]],
+    );
+
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get("https://example.com/"))
+        .expect("checked request should start asynchronously");
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("unsafe address")),
+        "mixed DNS answer was not rejected: {status:?}"
+    );
+    assert_eq!(client.plugin_dns_lookup_count_for_test("example.com"), 1);
+}
+
+#[tokio::test]
+async fn plugin_policy_pins_the_single_authorized_dns_resolution() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/pinned"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("pinned"))
+        .mount(&server)
+        .await;
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "pinned.test");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist.clone(), None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test(
+        "pinned.test",
+        vec![
+            vec![*server.address()],
+            vec!["127.0.0.2:9".parse().unwrap()],
+        ],
+    );
+
+    let url = format!("http://pinned.test:{}/pinned", server.address().port());
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(url))
+        .expect("checked request should start");
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Ready(ref response) if response.status_code == 200),
+        "pinned request failed: {status:?}"
+    );
+    assert_eq!(
+        client.plugin_dns_lookup_count_for_test("pinned.test"),
+        1,
+        "the HTTP connector performed a second plugin-target DNS resolution"
+    );
+}
+
+#[tokio::test]
+async fn plugin_policy_reauthorizes_redirects_and_strips_cross_origin_secrets() {
+    let server = MockServer::start().await;
+    let final_url = format!("http://final.test:{}/final", server.address().port());
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(ResponseTemplate::new(302).append_header("Location", final_url.as_str()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/final"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "start.test");
+    whitelist.write().approve("plugin-a", "final.test");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("start.test", vec![vec![*server.address()]]);
+    client.set_plugin_dns_answers_for_test("final.test", vec![vec![*server.address()]]);
+
+    let start_url = format!("http://start.test:{}/start", server.address().port());
+    let request = HttpRequest::get(start_url)
+        .with_header("Authorization", "Bearer plugin-secret")
+        .with_header("Cookie", "session=plugin-secret")
+        .with_header("X-Plugin-Trace", "kept");
+    let id = client
+        .request_for_plugin("plugin-a", request)
+        .expect("checked redirect request should start");
+    let status = wait_for_request(&client, &id).await;
+    assert!(matches!(status, RequestStatus::Ready(_)), "{status:?}");
+
+    let requests = server.received_requests().await.unwrap();
+    let start = requests
+        .iter()
+        .find(|request| request.url.path() == "/start")
+        .expect("initial request was not received");
+    let final_request = requests
+        .iter()
+        .find(|request| request.url.path() == "/final")
+        .expect("redirect request was not received");
+    assert!(start.headers.contains_key("authorization"));
+    assert!(start.headers.contains_key("cookie"));
+    assert!(!final_request.headers.contains_key("authorization"));
+    assert!(!final_request.headers.contains_key("cookie"));
+    assert!(final_request.headers.contains_key("x-plugin-trace"));
+    assert_eq!(client.plugin_dns_lookup_count_for_test("start.test"), 1);
+    assert_eq!(client.plugin_dns_lookup_count_for_test("final.test"), 1);
+}
+
+#[tokio::test]
+async fn plugin_policy_rejects_an_unapproved_redirect_after_resolving_it() {
+    let server = MockServer::start().await;
+    let blocked_url = format!("http://blocked.test:{}/blocked", server.address().port());
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(ResponseTemplate::new(302).append_header("Location", blocked_url.as_str()))
+        .mount(&server)
+        .await;
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "start.test");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist.clone(), None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("start.test", vec![vec![*server.address()]]);
+    client.set_plugin_dns_answers_for_test("blocked.test", vec![vec![*server.address()]]);
+
+    let start_url = format!("http://start.test:{}/start", server.address().port());
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(start_url))
+        .expect("checked redirect request should start");
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("not whitelisted")),
+        "unapproved redirect was not rejected: {status:?}"
+    );
+    assert_eq!(client.plugin_dns_lookup_count_for_test("blocked.test"), 1);
+    assert!(whitelist
+        .read()
+        .get_pending()
+        .iter()
+        .any(|entry| entry.plugin_id == "plugin-a" && entry.domain == "blocked.test"));
+}
+
+#[tokio::test]
+async fn plugin_policy_follows_five_redirects_and_rejects_the_sixth() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/loop"))
+        .respond_with(ResponseTemplate::new(302).append_header("Location", "/loop"))
+        .mount(&server)
+        .await;
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "loop.test");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test(
+        "loop.test",
+        vec![vec![*server.address()]; MAX_PLUGIN_REDIRECTS + 1],
+    );
+
+    let url = format!("http://loop.test:{}/loop", server.address().port());
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(url))
+        .expect("checked redirect request should start");
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("redirect limit")),
+        "redirect cap was not enforced: {status:?}"
+    );
+    assert_eq!(
+        client.plugin_dns_lookup_count_for_test("loop.test"),
+        MAX_PLUGIN_REDIRECTS + 1
+    );
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        MAX_PLUGIN_REDIRECTS + 1
+    );
+}
+
+#[tokio::test]
+async fn plugin_policy_checked_blocking_get_uses_the_pinned_executor() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/buffered"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"checked"))
+        .mount(&server)
+        .await;
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "buffered.test");
+    let client = Arc::new(AsyncHttpClient::new(Handle::current(), whitelist, None));
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("buffered.test", vec![vec![*server.address()]]);
+    let url = format!("http://buffered.test:{}/buffered", server.address().port());
+    let worker_client = client.clone();
+
+    let body = tokio::task::spawn_blocking(move || {
+        worker_client.blocking_get_for_plugin("plugin-a", &url)
+    })
+    .await
+    .expect("checked buffered worker panicked")
+    .expect("checked buffered request failed");
+
+    assert_eq!(body, b"checked");
+    assert_eq!(client.plugin_dns_lookup_count_for_test("buffered.test"), 1);
+}
+
+#[tokio::test]
+async fn plugin_policy_checked_streaming_get_uses_the_pinned_executor() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/stream"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(b"streamed"))
+        .mount(&server)
+        .await;
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "stream.test");
+    let client = Arc::new(AsyncHttpClient::new(Handle::current(), whitelist, None));
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("stream.test", vec![vec![*server.address()]]);
+    let url = format!("http://stream.test:{}/stream", server.address().port());
+    let worker_client = client.clone();
+
+    let (download, bytes) = tokio::task::spawn_blocking(move || {
+        let mut bytes = Vec::new();
+        let download = worker_client
+            .blocking_get_streaming_for_plugin("plugin-a", &url, &mut bytes, None, None);
+        (download, bytes)
+    })
+    .await
+    .expect("checked streaming worker panicked");
+    let download = download.expect("checked streaming request failed");
+
+    assert_eq!(bytes, b"streamed");
+    assert_eq!(download.bytes_written, 8);
+    assert!(!download.was_partial);
+    assert_eq!(client.plugin_dns_lookup_count_for_test("stream.test"), 1);
+}
+
+#[tokio::test]
+async fn plugin_policy_preserves_dlsite_cdn_path_normalization() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/images/RJ361000/RJ361000_img.jpg"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "dlsite.jp");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("img.dlsite.jp", vec![vec![*server.address()]]);
+    let url = format!(
+        "http://img.dlsite.jp:{}/images/RJ00361000/RJ361000_img.jpg",
+        server.address().port()
+    );
+
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(url))
+        .expect("checked DLSite request should start");
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Ready(ref response) if response.status_code == 200),
+        "DLSite CDN path normalization was lost: {status:?}"
+    );
+}
 
 #[test]
 fn parse_content_range_accepts_exact_known_ranges() {
@@ -174,6 +711,14 @@ async fn test_proxy_application_failure() {
     };
 
     let client = AsyncHttpClient::new(handle, whitelist, Some(proxy_config));
+    client.configure_plugin(
+        "test-plugin",
+        PluginNetworkPolicy {
+            network_enabled: true,
+            requests_per_minute: 60,
+        },
+    );
+    client.allow_special_plugin_addresses_for_test();
 
     // Enable proxy for test plugin
     let mut map = std::collections::HashMap::new();
@@ -229,6 +774,14 @@ async fn test_runtime_config_update() {
 
     // Start Direct
     let client = AsyncHttpClient::new(handle.clone(), whitelist.clone(), None);
+    client.configure_plugin(
+        "test-plugin",
+        PluginNetworkPolicy {
+            network_enabled: true,
+            requests_per_minute: 60,
+        },
+    );
+    client.allow_special_plugin_addresses_for_test();
 
     // Configure test plugin to use proxy (when enabled)
     let mut map = std::collections::HashMap::new();
@@ -495,7 +1048,10 @@ async fn await_complete_clones_ready_response_only_for_its_return_value() {
     let handle = Handle::current();
     let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
     let client = AsyncHttpClient::new(handle, whitelist, None);
-    let id = client.request(HttpRequest::get(&format!("{}/large-await", mock_server.uri())));
+    let id = client.request(HttpRequest::get(&format!(
+        "{}/large-await",
+        mock_server.uri()
+    )));
     let completion = client
         .completion_for_test(&id)
         .expect("new request has a completion cell");
@@ -609,7 +1165,11 @@ async fn p19_cancel_removes_entry_from_pending_map() {
     let ids: Vec<_> = (0..5)
         .map(|_| client.request(HttpRequest::get(&format!("{}/leak", mock_server.uri()))))
         .collect();
-    assert_eq!(client.pending_total(), 5, "all 5 requests should be tracked");
+    assert_eq!(
+        client.pending_total(),
+        5,
+        "all 5 requests should be tracked"
+    );
 
     // Cancel each. Pre-fix this would have left 5 Cancelled entries
     // sitting in the map; post-fix the map empties.

@@ -108,6 +108,32 @@ impl RateLimiter {
         }
     }
 
+    /// Atomically acquire from a caller-supplied budget for an isolated scope.
+    ///
+    /// Plugin callers use a `plugin_id + NUL + effective_domain` scope so one
+    /// plugin cannot consume another plugin's allowance for the same domain.
+    pub fn try_acquire_with_limit(&self, scope: &str, limit: u32) -> bool {
+        let scope = scope.to_lowercase();
+        let mut history = self.history.lock();
+        let now = Instant::now();
+        let window_start = now - self.window;
+        let queue = history.entry(scope).or_default();
+
+        while queue
+            .front()
+            .is_some_and(|timestamp| *timestamp < window_start)
+        {
+            queue.pop_front();
+        }
+
+        if queue.len() >= limit as usize {
+            return false;
+        }
+
+        queue.push_back(now);
+        true
+    }
+
     /// Get remaining requests allowed for a domain
     pub fn remaining(&self, domain: &str) -> u32 {
         let domain_lower = domain.to_lowercase();

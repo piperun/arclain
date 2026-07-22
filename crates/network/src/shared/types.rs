@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 /// HTTP methods supported
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +47,12 @@ impl HttpResponse {
 /// Errors that can occur during HTTP operations
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum HttpError {
+    #[error("Plugin network policy is not registered: {plugin_id}")]
+    PluginNetworkNotConfigured { plugin_id: String },
+
+    #[error("Network capability is disabled for plugin: {plugin_id}")]
+    PluginNetworkDisabled { plugin_id: String },
+
     #[error("Domain not whitelisted: {domain}")]
     DomainNotWhitelisted { domain: String },
 
@@ -57,6 +64,18 @@ pub enum HttpError {
 
     #[error("Invalid URL: {reason}")]
     InvalidUrl { reason: String },
+
+    #[error("DNS resolution failed for {host}: {reason}")]
+    DnsResolutionFailed { host: String, reason: String },
+
+    #[error("DNS resolution returned an unsafe address: {address}")]
+    UnsafeResolvedAddress { address: IpAddr },
+
+    #[error("Plugin redirect limit exceeded")]
+    RedirectLimitExceeded,
+
+    #[error("Pinned resolution is unavailable: {reason}")]
+    PinnedResolutionUnavailable { reason: String },
 
     #[error("Security warning: {message}")]
     SecurityWarning { message: String },

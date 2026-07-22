@@ -2,7 +2,12 @@
 //!
 //! Non-blocking HTTP client that manages requests asynchronously.
 
+use super::plugin_policy::{
+    validate_plugin_url, validate_redirect_target, validate_resolved_addresses,
+    AuthorizedPluginTarget, MAX_PLUGIN_REDIRECTS,
+};
 use super::types::{HttpRequest, RequestId, RequestStatus};
+use super::PluginNetworkPolicy;
 use crate::features::rate_limiting::RateLimiter;
 use crate::features::security::{analyze_url, DomainInfo};
 use crate::features::whitelist::{AccessCheck, DomainWhitelist};
@@ -10,9 +15,14 @@ use crate::shared::{HttpError, HttpMethod, HttpResponse};
 
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
-use std::sync::Arc;
+#[cfg(test)]
+use std::collections::VecDeque;
+use std::net::{IpAddr, SocketAddr};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -174,6 +184,290 @@ pub(crate) struct PendingEntry {
     completion: RequestCompletion,
 }
 
+struct PluginRequestContext {
+    plugin_proxy_map: RwLock<HashMap<String, bool>>,
+    plugin_policies: RwLock<HashMap<String, PluginNetworkPolicy>>,
+    proxy_config: RwLock<Option<ProxyConfig>>,
+    rate_limiter: RwLock<RateLimiter>,
+    whitelist: Arc<RwLock<DomainWhitelist>>,
+    #[cfg(test)]
+    allow_special_addresses: AtomicBool,
+    #[cfg(test)]
+    dns_answers: RwLock<HashMap<String, VecDeque<Vec<SocketAddr>>>>,
+    #[cfg(test)]
+    dns_lookup_counts: Mutex<HashMap<String, usize>>,
+}
+
+impl PluginRequestContext {
+    fn registered_policy(&self, plugin_id: &str) -> Result<PluginNetworkPolicy, HttpError> {
+        let policy = self
+            .plugin_policies
+            .read()
+            .get(plugin_id)
+            .copied()
+            .ok_or_else(|| HttpError::PluginNetworkNotConfigured {
+                plugin_id: plugin_id.to_string(),
+            })?;
+        if !policy.network_enabled {
+            return Err(HttpError::PluginNetworkDisabled {
+                plugin_id: plugin_id.to_string(),
+            });
+        }
+        Ok(policy)
+    }
+
+    async fn resolve_host(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, HttpError> {
+        #[cfg(test)]
+        {
+            let normalized_host = host.to_ascii_lowercase();
+            if self.dns_answers.read().contains_key(&normalized_host) {
+                *self
+                    .dns_lookup_counts
+                    .lock()
+                    .entry(normalized_host.clone())
+                    .or_default() += 1;
+                let mut answers = self.dns_answers.write();
+                let sequence = answers
+                    .get_mut(&normalized_host)
+                    .expect("checked test DNS entry disappeared");
+                let mut resolved = if sequence.len() > 1 {
+                    sequence.pop_front().expect("non-empty test DNS sequence")
+                } else {
+                    sequence.front().cloned().unwrap_or_default()
+                };
+                for address in &mut resolved {
+                    address.set_port(port);
+                }
+                return Ok(resolved);
+            }
+        }
+
+        tokio::net::lookup_host((host, port))
+            .await
+            .map(|addresses| addresses.collect())
+            .map_err(|error| HttpError::DnsResolutionFailed {
+                host: host.to_string(),
+                reason: error.to_string(),
+            })
+    }
+
+    async fn authorize_target(
+        &self,
+        plugin_id: &str,
+        url: url::Url,
+    ) -> Result<AuthorizedPluginTarget, HttpError> {
+        let policy = self.registered_policy(plugin_id)?;
+        let url = validate_plugin_url(url.as_str())?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| HttpError::InvalidUrl {
+                reason: "plugin URL has no host".to_string(),
+            })?
+            .to_ascii_lowercase();
+        let port = url
+            .port_or_known_default()
+            .ok_or_else(|| HttpError::InvalidUrl {
+                reason: "plugin URL has no usable port".to_string(),
+            })?;
+        let resolved = if let Ok(address) = host.parse::<IpAddr>() {
+            vec![SocketAddr::new(address, port)]
+        } else {
+            self.resolve_host(&host, port).await?
+        };
+        let resolved_ips: Vec<IpAddr> = resolved.iter().map(|address| address.ip()).collect();
+        #[cfg(test)]
+        let allow_special = self.allow_special_addresses.load(Ordering::Relaxed);
+        #[cfg(not(test))]
+        let allow_special = false;
+        if !allow_special {
+            validate_resolved_addresses(&resolved_ips)?;
+        } else if resolved.is_empty() {
+            return Err(HttpError::DnsResolutionFailed {
+                host,
+                reason: "resolver returned no addresses".to_string(),
+            });
+        }
+
+        let domain_info =
+            analyze_url(url.as_str()).map_err(|reason| HttpError::InvalidUrl { reason })?;
+        let access = self
+            .whitelist
+            .read()
+            .check(plugin_id, &domain_info.effective_domain);
+        match access {
+            AccessCheck::Allowed => {}
+            AccessCheck::NeedsApproval => {
+                return Err(HttpError::DomainNeedsApproval {
+                    domain: domain_info.effective_domain,
+                });
+            }
+            AccessCheck::NotWhitelisted => {
+                self.whitelist
+                    .write()
+                    .add_pending(plugin_id, &domain_info.effective_domain);
+                return Err(HttpError::DomainNotWhitelisted {
+                    domain: domain_info.effective_domain,
+                });
+            }
+        }
+
+        let scope = format!("{plugin_id}\0{}", domain_info.effective_domain);
+        if !self
+            .rate_limiter
+            .read()
+            .try_acquire_with_limit(&scope, policy.requests_per_minute)
+        {
+            return Err(HttpError::RateLimited {
+                domain: domain_info.effective_domain,
+            });
+        }
+
+        let use_proxy = *self
+            .plugin_proxy_map
+            .read()
+            .get(plugin_id)
+            .unwrap_or(&false);
+        Ok(AuthorizedPluginTarget {
+            url,
+            use_proxy,
+            resolved,
+        })
+    }
+
+    fn build_pinned_client(
+        &self,
+        target: &AuthorizedPluginTarget,
+    ) -> Result<reqwest::Client, HttpError> {
+        let host = target.url.host_str().ok_or_else(|| HttpError::InvalidUrl {
+            reason: "plugin URL has no host".to_string(),
+        })?;
+        let mut builder =
+            AsyncHttpClient::client_builder().resolve_to_addrs(host, &target.resolved);
+
+        if target.use_proxy {
+            if let Some(config) = self
+                .proxy_config
+                .read()
+                .as_ref()
+                .filter(|config| config.enabled)
+            {
+                let mut proxy_url = url::Url::parse(&format!("socks5://{}", config.address))
+                    .map_err(|error| HttpError::RequestFailed {
+                        message: format!("invalid SOCKS5 proxy configuration: {error}"),
+                    })?;
+                if let (Some(username), Some(password)) = (&config.username, &config.password) {
+                    proxy_url
+                        .set_username(username)
+                        .map_err(|_| HttpError::RequestFailed {
+                            message: "invalid SOCKS5 proxy username".to_string(),
+                        })?;
+                    proxy_url.set_password(Some(password)).map_err(|_| {
+                        HttpError::RequestFailed {
+                            message: "invalid SOCKS5 proxy password".to_string(),
+                        }
+                    })?;
+                }
+                let proxy = reqwest::Proxy::all(proxy_url.as_str()).map_err(|error| {
+                    HttpError::RequestFailed {
+                        message: format!("invalid SOCKS5 proxy configuration: {error}"),
+                    }
+                })?;
+                builder = builder.proxy(proxy);
+            }
+        }
+
+        builder.build().map_err(|error| HttpError::RequestFailed {
+            message: format!("failed to build pinned plugin HTTP client: {error}"),
+        })
+    }
+
+    async fn execute(
+        &self,
+        plugin_id: &str,
+        request: HttpRequest,
+    ) -> Result<reqwest::Response, HttpError> {
+        let initial_url = if request.url.contains("img.dlsite.jp") {
+            fix_dlsite_cdn_folder(&request.url)
+        } else {
+            request.url.clone()
+        };
+        let mut url = validate_plugin_url(&initial_url)?;
+        let mut method = request.method;
+        let mut headers = request.headers;
+        let mut body = request.body;
+        let mut redirects_followed = 0;
+
+        loop {
+            let target = self.authorize_target(plugin_id, url).await?;
+            let client = self.build_pinned_client(&target)?;
+            let mut builder = match method {
+                HttpMethod::Get => client.get(target.url.clone()),
+                HttpMethod::Post => client.post(target.url.clone()),
+                HttpMethod::Put => client.put(target.url.clone()),
+                HttpMethod::Delete => client.delete(target.url.clone()),
+            };
+            if is_dlsite_url(target.url.as_str()) {
+                builder = inject_dlsite_browser_headers(builder);
+            }
+            for (name, value) in &headers {
+                builder = builder.header(name, value);
+            }
+            if let Some(request_body) = body.clone() {
+                builder = builder.body(request_body);
+            }
+
+            let response = builder
+                .timeout(request.timeout)
+                .send()
+                .await
+                .map_err(|error| {
+                    if error.is_timeout() {
+                        HttpError::Timeout
+                    } else {
+                        HttpError::RequestFailed {
+                            message: error.to_string(),
+                        }
+                    }
+                })?;
+
+            if !matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+                return Ok(response);
+            }
+            let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+                return Ok(response);
+            };
+            if redirects_followed >= MAX_PLUGIN_REDIRECTS {
+                return Err(HttpError::RedirectLimitExceeded);
+            }
+            let location = location.to_str().map_err(|_| HttpError::InvalidUrl {
+                reason: "redirect Location is not valid text".to_string(),
+            })?;
+            let next_url = validate_redirect_target(&target.url, location)?;
+
+            if target.url.origin() != next_url.origin() {
+                headers.retain(|name, _| {
+                    !name.eq_ignore_ascii_case("authorization")
+                        && !name.eq_ignore_ascii_case("cookie")
+                });
+            }
+            if response.status().as_u16() == 303
+                || (matches!(response.status().as_u16(), 301 | 302) && method == HttpMethod::Post)
+            {
+                method = HttpMethod::Get;
+                body = None;
+                headers.retain(|name, _| {
+                    !name.eq_ignore_ascii_case("content-length")
+                        && !name.eq_ignore_ascii_case("content-type")
+                        && !name.eq_ignore_ascii_case("transfer-encoding")
+                });
+            }
+
+            redirects_followed += 1;
+            url = next_url;
+        }
+    }
+}
+
 /// Async HTTP client with security features
 pub struct AsyncHttpClient {
     /// Client for direct connections (no proxy)
@@ -182,12 +476,7 @@ pub struct AsyncHttpClient {
     client_proxied: RwLock<reqwest::Client>,
 
     /// Map of plugin_id -> use_proxy
-    plugin_proxy_map: Arc<RwLock<HashMap<String, bool>>>,
-
-    /// Rate limiter
-    rate_limiter: RwLock<RateLimiter>,
-    /// Domain whitelist
-    whitelist: Arc<RwLock<DomainWhitelist>>,
+    plugin_context: Arc<PluginRequestContext>,
     /// Pending requests
     pending: Arc<Mutex<HashMap<RequestId, PendingEntry>>>,
     /// Tokio runtime handle
@@ -204,14 +493,24 @@ impl AsyncHttpClient {
         proxy_config: Option<ProxyConfig>,
     ) -> Self {
         let client_direct = Self::build_client(None);
-        let client_proxied = Self::build_client(proxy_config);
+        let client_proxied = Self::build_client(proxy_config.clone());
 
         Self {
             client_direct: RwLock::new(client_direct),
             client_proxied: RwLock::new(client_proxied),
-            plugin_proxy_map: Arc::new(RwLock::new(HashMap::new())),
-            rate_limiter: RwLock::new(RateLimiter::default()),
-            whitelist,
+            plugin_context: Arc::new(PluginRequestContext {
+                plugin_proxy_map: RwLock::new(HashMap::new()),
+                plugin_policies: RwLock::new(HashMap::new()),
+                proxy_config: RwLock::new(proxy_config),
+                rate_limiter: RwLock::new(RateLimiter::default()),
+                whitelist,
+                #[cfg(test)]
+                allow_special_addresses: AtomicBool::new(false),
+                #[cfg(test)]
+                dns_answers: RwLock::new(HashMap::new()),
+                #[cfg(test)]
+                dns_lookup_counts: Mutex::new(HashMap::new()),
+            }),
             pending: Arc::new(Mutex::new(HashMap::new())),
             runtime,
         }
@@ -219,19 +518,58 @@ impl AsyncHttpClient {
 
     /// Update client configuration (e.g. proxy settings)
     pub fn update_config(&self, proxy_config: Option<ProxyConfig>) {
-        let new_proxied = Self::build_client(proxy_config);
+        let new_proxied = Self::build_client(proxy_config.clone());
         *self.client_proxied.write() = new_proxied;
+        *self.plugin_context.proxy_config.write() = proxy_config;
         info!("AsyncHttpClient proxied configuration updated");
+    }
+
+    /// Register the network capability and request budget for a plugin.
+    pub fn configure_plugin(&self, plugin_id: &str, policy: PluginNetworkPolicy) {
+        self.plugin_context
+            .plugin_policies
+            .write()
+            .insert(plugin_id.to_string(), policy);
+    }
+
+    #[cfg(test)]
+    pub(super) fn allow_special_plugin_addresses_for_test(&self) {
+        self.plugin_context
+            .allow_special_addresses
+            .store(true, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_plugin_dns_answers_for_test(
+        &self,
+        host: &str,
+        answers: Vec<Vec<SocketAddr>>,
+    ) {
+        self.plugin_context
+            .dns_answers
+            .write()
+            .insert(host.to_ascii_lowercase(), answers.into_iter().collect());
+    }
+
+    #[cfg(test)]
+    pub(super) fn plugin_dns_lookup_count_for_test(&self, host: &str) -> usize {
+        self.plugin_context
+            .dns_lookup_counts
+            .lock()
+            .get(&host.to_ascii_lowercase())
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Update the plugin proxy map
     pub fn update_plugin_proxy_map(&self, map: HashMap<String, bool>) {
-        *self.plugin_proxy_map.write() = map;
+        *self.plugin_context.plugin_proxy_map.write() = map;
     }
 
     /// Check if a plugin should use the proxy
     pub fn should_use_proxy_for_plugin(&self, plugin_id: &str) -> bool {
         *self
+            .plugin_context
             .plugin_proxy_map
             .read()
             .get(plugin_id)
@@ -239,7 +577,7 @@ impl AsyncHttpClient {
     }
 
     fn build_client(proxy_config: Option<ProxyConfig>) -> reqwest::Client {
-        let mut builder = reqwest::Client::builder().user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        let mut builder = Self::client_builder();
 
         if let Some(proxy) = proxy_config.and_then(|c| c.to_proxy()) {
             builder = builder.proxy(proxy);
@@ -248,15 +586,36 @@ impl AsyncHttpClient {
         builder.build().expect("Failed to create HTTP client")
     }
 
+    fn client_builder() -> reqwest::ClientBuilder {
+        reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    }
+
+    #[cfg(test)]
+    pub(super) fn build_pinned_plugin_client(
+        &self,
+        target: &AuthorizedPluginTarget,
+    ) -> Result<reqwest::Client, HttpError> {
+        self.plugin_context.build_pinned_client(target)
+    }
+
     /// Update the whitelist
     pub fn update_whitelist(&self, whitelist: DomainWhitelist) {
-        *self.whitelist.write() = whitelist;
+        *self.plugin_context.whitelist.write() = whitelist;
     }
 
     /// Approve a domain for a plugin
     pub fn approve_domain(&self, plugin_id: &str, domain: &str) {
-        self.whitelist.write().approve(plugin_id, domain);
-        info!("Auto-approved domain '{}' for plugin '{}'", domain, plugin_id);
+        self.plugin_context
+            .whitelist
+            .write()
+            .approve(plugin_id, domain);
+        info!(
+            "Auto-approved domain '{}' for plugin '{}'",
+            domain, plugin_id
+        );
     }
 
     /// Analyze a URL for security issues (without making a request)
@@ -270,72 +629,40 @@ impl AsyncHttpClient {
         plugin_id: &str,
         request: HttpRequest,
     ) -> Result<RequestId, HttpError> {
-        // Analyze URL
-        let domain_info =
-            analyze_url(&request.url).map_err(|e| HttpError::InvalidUrl { reason: e })?;
+        self.plugin_context.registered_policy(plugin_id)?;
+        validate_plugin_url(&request.url)?;
+        Ok(self.start_plugin_request(plugin_id.to_string(), request))
+    }
 
-        // Check whitelist first to allow user-approved deviations (e.g. IPs)
-        let whitelist = self.whitelist.read();
-        let access = whitelist.check(plugin_id, &domain_info.effective_domain);
-        drop(whitelist);
+    fn start_plugin_request(&self, plugin_id: String, request: HttpRequest) -> RequestId {
+        let id = RequestId::new();
+        let completion = RequestCompletion::new(RequestStatus::Pending);
+        self.pending.lock().insert(
+            id.clone(),
+            PendingEntry {
+                completion: completion.clone(),
+            },
+        );
+        let context = self.plugin_context.clone();
+        let request_id = id.clone();
 
-        // If not explicitly allowed, enforce strict security checks
-        if access != AccessCheck::Allowed {
-            if domain_info.has_critical_warnings() {
-                let warnings: Vec<String> = domain_info
-                    .warnings
-                    .iter()
-                    .map(|w| w.description())
-                    .collect();
-                return Err(HttpError::SecurityWarning {
-                    message: warnings.join("; "),
-                });
-            }
-        }
+        self.runtime.spawn(async move {
+            completion.set(RequestStatus::InProgress);
+            let status = match context.execute(&plugin_id, request).await {
+                Ok(response) => response_to_status(response, &request_id).await,
+                Err(error) => RequestStatus::Failed(error.to_string()),
+            };
+            completion.set(status);
+        });
 
-        match access {
-            AccessCheck::Allowed => {}
-            AccessCheck::NeedsApproval => {
-                return Err(HttpError::DomainNeedsApproval {
-                    domain: domain_info.effective_domain,
-                });
-            }
-            AccessCheck::NotWhitelisted => {
-                // Add to pending for user approval
-                self.whitelist
-                    .write()
-                    .add_pending(plugin_id, &domain_info.effective_domain);
-                return Err(HttpError::DomainNotWhitelisted {
-                    domain: domain_info.effective_domain,
-                });
-            }
-        }
-
-        // Check rate limit
-        let rate_limiter = self.rate_limiter.read();
-        if !rate_limiter.try_acquire(&domain_info.effective_domain) {
-            return Err(HttpError::RateLimited {
-                domain: domain_info.effective_domain,
-            });
-        }
-        drop(rate_limiter);
-
-        // Determine if proxy should be used
-        let use_proxy = *self
-            .plugin_proxy_map
-            .read()
-            .get(plugin_id)
-            .unwrap_or(&false);
-
-        // Start the request
-        Ok(self.start_request(request, use_proxy))
+        id
     }
 
     /// Start a request without plugin restrictions (for host use)
     pub fn request(&self, request: HttpRequest) -> RequestId {
         // Check rate limit (still applies for courtesy)
         if let Ok(domain_info) = analyze_url(&request.url) {
-            let rate_limiter = self.rate_limiter.read();
+            let rate_limiter = self.plugin_context.rate_limiter.read();
             if !rate_limiter.try_acquire(&domain_info.effective_domain) {
                 warn!("Rate limit exceeded for {}", domain_info.effective_domain);
             }
@@ -545,7 +872,8 @@ impl AsyncHttpClient {
 
     /// Set rate limit for a domain
     pub fn set_rate_limit(&self, domain: &str, requests_per_minute: u32) {
-        self.rate_limiter
+        self.plugin_context
+            .rate_limiter
             .write()
             .set_limit(domain, requests_per_minute);
     }
@@ -604,144 +932,64 @@ impl AsyncHttpClient {
                 req = req.header("If-Match", etag);
             }
 
-            let mut response = req
+            let response = req
                 .timeout(crate::DEFAULT_REQUEST_TIMEOUT)
                 .send()
                 .await
                 .map_err(|e| format!("Request failed: {}", e))?;
+            write_streaming_response(response, writer, start).await
+        })
+    }
 
-            let status = response.status();
-            if !status.is_success() {
-                return Err(format!("HTTP error: {}", status));
-            }
-            // 206 → server honored the range. 200 → server returned full
-            // body; caller has to discard any prior partial bytes.
-            let was_partial = status.as_u16() == 206;
+    /// Checked streaming GET for a plugin. Every redirect uses the same
+    /// capability, DNS pinning, whitelist, and rate-limit authorization path.
+    pub fn blocking_get_streaming_for_plugin<W: std::io::Write>(
+        &self,
+        plugin_id: &str,
+        url: &str,
+        writer: &mut W,
+        start_byte: Option<u64>,
+        if_match: Option<&str>,
+    ) -> Result<StreamingDownload, HttpError> {
+        let mut request = HttpRequest::get(url);
+        if let Some(start) = start_byte {
+            request = request.with_header("Range", format!("bytes={start}-"));
+        }
+        if let Some(etag) = if_match {
+            request = request.with_header("If-Match", etag);
+        }
 
-            // A malformed or mismatched partial response must be rejected
-            // before its first body byte reaches the caller's append sink.
-            let content_range = if was_partial {
-                let requested_start = start.ok_or_else(|| {
-                    "Server returned 206 Partial Content without a Range request".to_string()
-                })?;
-                let header = response
-                    .headers()
-                    .get("content-range")
-                    .ok_or_else(|| "206 response is missing Content-Range".to_string())?
-                    .to_str()
-                    .map_err(|_| "206 response has an invalid Content-Range header".to_string())?;
-                let range = parse_content_range(header).ok_or_else(|| {
-                    format!("206 response has an invalid Content-Range: {header}")
-                })?;
-                if range.start != requested_start {
-                    return Err(format!(
-                        "206 response starts at byte {}, but byte {} was requested",
-                        range.start, requested_start
-                    ));
-                }
-
-                let declared_length = range.end - range.start + 1;
-                if let Some(header) = response.headers().get("content-length") {
-                    let content_length = header
-                        .to_str()
-                        .map_err(|_| {
-                            "206 response has an invalid Content-Length header".to_string()
-                        })?
-                        .parse::<u64>()
-                        .map_err(|_| {
-                            "206 response has an invalid Content-Length header".to_string()
-                        })?;
-                    if content_length != declared_length {
-                        return Err(format!(
-                            "206 Content-Length {content_length} does not match declared range length {declared_length}"
-                        ));
-                    }
-                }
-
-                Some(range)
-            } else {
-                None
-            };
-
-            let etag = response
-                .headers()
-                .get("etag")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            let last_modified = response
-                .headers()
-                .get("last-modified")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string());
-            // Content-Length is the length of THIS response; for 206 it's
-            // the remaining bytes from start_byte, not the resource size.
-            // Total size comes from Content-Range when present.
-            let total_size = if let Some(range) = content_range {
-                Some(range.total)
-            } else {
-                response
-                    .headers()
-                    .get("content-length")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-            };
-
-            let declared_length = content_range.map(|range| range.end - range.start + 1);
-            let mut total_written: u64 = 0;
-            while let Some(chunk) = response
-                .chunk()
+        self.runtime.block_on(async {
+            let response = self.plugin_context.execute(plugin_id, request).await?;
+            write_streaming_response(response, writer, start_byte)
                 .await
-                .map_err(|e| format!("Failed to read body chunk: {}", e))?
-            {
-                let chunk_length = u64::try_from(chunk.len())
-                    .map_err(|_| "Response body chunk is too large to count".to_string())?;
-                let next_total = total_written
-                    .checked_add(chunk_length)
-                    .ok_or_else(|| "Response body byte count overflowed".to_string())?;
-                if let Some(declared_length) = declared_length {
-                    let remaining = declared_length.checked_sub(total_written).ok_or_else(|| {
-                        "Written partial response length exceeded Content-Range".to_string()
-                    })?;
-                    if chunk_length > remaining {
-                        let safe_length = usize::try_from(remaining).map_err(|_| {
-                            "Remaining Content-Range length does not fit this platform".to_string()
-                        })?;
-                        if safe_length > 0 {
-                            writer
-                                .write_all(&chunk[..safe_length])
-                                .map_err(|e| format!("Writer failed: {}", e))?;
-                        }
-                        return Err(format!(
-                            "206 response body exceeds Content-Range: chunk has {chunk_length} bytes with only {remaining} remaining"
-                        ));
-                    }
-                }
+                .map_err(|message| HttpError::RequestFailed { message })
+        })
+    }
 
-                writer
-                    .write_all(&chunk)
-                    .map_err(|e| format!("Writer failed: {}", e))?;
-                total_written = next_total;
+    /// Checked buffered GET for a plugin.
+    pub fn blocking_get_for_plugin(
+        &self,
+        plugin_id: &str,
+        url: &str,
+    ) -> Result<Vec<u8>, HttpError> {
+        self.runtime.block_on(async {
+            let response = self
+                .plugin_context
+                .execute(plugin_id, HttpRequest::get(url))
+                .await?;
+            if !response.status().is_success() {
+                return Err(HttpError::RequestFailed {
+                    message: format!("HTTP error: {}", response.status()),
+                });
             }
-
-            writer
-                .flush()
-                .map_err(|e| format!("Writer flush failed: {}", e))?;
-
-            if let Some(declared_length) = declared_length {
-                if total_written != declared_length {
-                    return Err(format!(
-                        "206 response body contained {total_written} bytes, but Content-Range declared {declared_length}"
-                    ));
-                }
-            }
-
-            Ok(StreamingDownload {
-                bytes_written: total_written,
-                was_partial,
-                etag,
-                last_modified,
-                total_size,
-            })
+            response
+                .bytes()
+                .await
+                .map(|body| body.to_vec())
+                .map_err(|error| HttpError::RequestFailed {
+                    message: format!("Failed to read body: {error}"),
+                })
         })
     }
 
@@ -802,6 +1050,161 @@ impl AsyncHttpClient {
     }
 }
 
+async fn write_streaming_response<W: std::io::Write>(
+    mut response: reqwest::Response,
+    writer: &mut W,
+    requested_start: Option<u64>,
+) -> Result<StreamingDownload, String> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP error: {status}"));
+    }
+    let was_partial = status.as_u16() == 206;
+    let content_range = if was_partial {
+        let requested_start = requested_start.ok_or_else(|| {
+            "Server returned 206 Partial Content without a Range request".to_string()
+        })?;
+        let header = response
+            .headers()
+            .get("content-range")
+            .ok_or_else(|| "206 response is missing Content-Range".to_string())?
+            .to_str()
+            .map_err(|_| "206 response has an invalid Content-Range header".to_string())?;
+        let range = parse_content_range(header)
+            .ok_or_else(|| format!("206 response has an invalid Content-Range: {header}"))?;
+        if range.start != requested_start {
+            return Err(format!(
+                "206 response starts at byte {}, but byte {} was requested",
+                range.start, requested_start
+            ));
+        }
+
+        let declared_length = range.end - range.start + 1;
+        if let Some(header) = response.headers().get("content-length") {
+            let content_length = header
+                .to_str()
+                .map_err(|_| "206 response has an invalid Content-Length header".to_string())?
+                .parse::<u64>()
+                .map_err(|_| "206 response has an invalid Content-Length header".to_string())?;
+            if content_length != declared_length {
+                return Err(format!(
+                    "206 Content-Length {content_length} does not match declared range length {declared_length}"
+                ));
+            }
+        }
+        Some(range)
+    } else {
+        None
+    };
+
+    let etag = response
+        .headers()
+        .get("etag")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let last_modified = response
+        .headers()
+        .get("last-modified")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let total_size = if let Some(range) = content_range {
+        Some(range.total)
+    } else {
+        response
+            .headers()
+            .get("content-length")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+    };
+    let declared_length = content_range.map(|range| range.end - range.start + 1);
+    let mut total_written = 0_u64;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Failed to read body chunk: {error}"))?
+    {
+        let chunk_length = u64::try_from(chunk.len())
+            .map_err(|_| "Response body chunk is too large to count".to_string())?;
+        let next_total = total_written
+            .checked_add(chunk_length)
+            .ok_or_else(|| "Response body byte count overflowed".to_string())?;
+        if let Some(declared_length) = declared_length {
+            let remaining = declared_length.checked_sub(total_written).ok_or_else(|| {
+                "Written partial response length exceeded Content-Range".to_string()
+            })?;
+            if chunk_length > remaining {
+                let safe_length = usize::try_from(remaining).map_err(|_| {
+                    "Remaining Content-Range length does not fit this platform".to_string()
+                })?;
+                if safe_length > 0 {
+                    writer
+                        .write_all(&chunk[..safe_length])
+                        .map_err(|error| format!("Writer failed: {error}"))?;
+                }
+                return Err(format!(
+                    "206 response body exceeds Content-Range: chunk has {chunk_length} bytes with only {remaining} remaining"
+                ));
+            }
+        }
+
+        writer
+            .write_all(&chunk)
+            .map_err(|error| format!("Writer failed: {error}"))?;
+        total_written = next_total;
+    }
+
+    writer
+        .flush()
+        .map_err(|error| format!("Writer flush failed: {error}"))?;
+    if let Some(declared_length) = declared_length {
+        if total_written != declared_length {
+            return Err(format!(
+                "206 response body contained {total_written} bytes, but Content-Range declared {declared_length}"
+            ));
+        }
+    }
+
+    Ok(StreamingDownload {
+        bytes_written: total_written,
+        was_partial,
+        etag,
+        last_modified,
+        total_size,
+    })
+}
+
+async fn response_to_status(response: reqwest::Response, request_id: &RequestId) -> RequestStatus {
+    let status_code = response.status().as_u16();
+    let headers: HashMap<String, String> = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.to_string(), value.to_string()))
+        })
+        .collect();
+    let content_type = headers.get("content-type").cloned();
+
+    match response.bytes().await {
+        Ok(body) => {
+            info!("Request {} completed: {} bytes", request_id.0, body.len());
+            RequestStatus::Ready(HttpResponse {
+                status_code,
+                headers,
+                body: body.to_vec(),
+                content_type,
+            })
+        }
+        Err(error) => {
+            warn!("Request {} body error: {}", request_id.0, error);
+            RequestStatus::Failed(format!("Failed to read body: {error}"))
+        }
+    }
+}
+
 /// Fix DLSite CDN URLs with incorrectly-padded folder names.
 /// Folder digit count should match the product ID digit count.
 /// e.g., /RJ00361000/RJ360420_ -> /RJ361000/RJ360420_ (6 digits like product)
@@ -847,10 +1250,7 @@ fn fix_dlsite_cdn_folder(url: &str) -> String {
 
                             if old_folder != new_folder {
                                 let fixed_url = url.replacen(&old_folder, &new_folder, 1);
-                                debug!(
-                                    "Fixed DLSite CDN folder: {} -> {}",
-                                    old_folder, new_folder
-                                );
+                                debug!("Fixed DLSite CDN folder: {} -> {}", old_folder, new_folder);
                                 return fixed_url;
                             }
                         }
@@ -901,12 +1301,16 @@ mod dlsite_url_tests {
 
     #[test]
     fn matches_dlsite_com() {
-        assert!(is_dlsite_url("https://www.dlsite.com/maniax/work/=/product_id/RJ123.html"));
+        assert!(is_dlsite_url(
+            "https://www.dlsite.com/maniax/work/=/product_id/RJ123.html"
+        ));
     }
 
     #[test]
     fn matches_dlsite_jp() {
-        assert!(is_dlsite_url("https://img.dlsite.jp/modpub/images2/work/.../img.jpg"));
+        assert!(is_dlsite_url(
+            "https://img.dlsite.jp/modpub/images2/work/.../img.jpg"
+        ));
     }
 
     #[test]
