@@ -236,13 +236,20 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     let t = shared_state.signals().tabs.get().active().clone();
                     let mut status_info = shared_state.signals().status_bar.get();
                     let entries = t.browser_entries.get();
+                    let view_state = t.browser_view_state.get();
+                    let search_text = shared_state.signals().search_text.get();
+                    let selected_paths = operations::file::selected_file_paths_for_search(
+                        entries.entries.as_ref(),
+                        &view_state.selection,
+                        &search_text,
+                    );
 
                     // archive_info parameter dropped post 2026-05-20 Tier 2
                     // item 6 — Computed derives it from the underlying
                     // signals after list_archive refreshes them.
                     operations::file::delete_selected(
                         &app.shared_state.app_state,
-                        entries.entries.as_ref(),
+                        &selected_paths,
                         &mut status_info,
                     );
 

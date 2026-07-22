@@ -1,3 +1,4 @@
+use crate::core::tabs::view_state::RevisionedSelection;
 use crate::core::AppState;
 use crate::shared::components::status_bar;
 use crate::shared::models::file_entry::FileEntry;
@@ -33,24 +34,24 @@ pub fn add_files(state: &Arc<Mutex<AppState>>, status_info: &mut status_bar::Sta
 /// from the refreshed `entries` signal after `list_archive` runs.
 pub fn delete_selected(
     state: &Arc<Mutex<AppState>>,
-    entries: &[FileEntry],
+    selected_paths: &[String],
     status_info: &mut status_bar::StatusBarInfo,
 ) {
-    // Build full paths using current navigation prefix; skip folders for delete
+    // Build full paths using the current navigation prefix. The caller derives
+    // this explicit selection from the immutable browser snapshot and current
+    // search on the delete click, so hidden search results cannot leak into a
+    // destructive operation.
     let (full_paths, archive_opt) = {
         let st = state.lock();
         let tab = st.signals.tabs.get().active().clone();
         let prefix = tab.navigation.get().current_path.clone();
-        // Selection lives in a path-keyed HashSet now (see FileEntry).
-        let selection = tab.browser_view_state.get().selection;
-        let fulls: Vec<String> = entries
+        let fulls: Vec<String> = selected_paths
             .iter()
-            .filter(|e| selection.contains(&e.path) && !e.is_folder)
-            .map(|e| {
+            .map(|path| {
                 if prefix.is_empty() {
-                    e.name.clone()
+                    path.clone()
                 } else {
-                    format!("{}/{}", prefix, e.name)
+                    format!("{prefix}/{path}")
                 }
             })
             .collect();
@@ -85,5 +86,85 @@ pub fn delete_selected(
                 );
             }
         }
+    }
+}
+
+/// Derive the exact file paths affected by a toolbar delete action.
+///
+/// Selection may intentionally outlive a search filter, but destructive
+/// toolbar actions apply only to selected rows visible under the current
+/// search. Folder rows retain the existing non-deletable behavior.
+pub(crate) fn selected_file_paths_for_search(
+    entries: &[FileEntry],
+    selection: &RevisionedSelection,
+    search: &str,
+) -> Vec<String> {
+    let filter = search.trim().to_lowercase();
+    entries
+        .iter()
+        .filter(|entry| {
+            !entry.is_folder
+                && selection.contains(&entry.path)
+                && (filter.is_empty() || entry.name.to_lowercase().contains(&filter))
+        })
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, is_folder: bool) -> FileEntry {
+        FileEntry {
+            name: name.to_string(),
+            path: name.to_string(),
+            size: "0 B".to_string(),
+            compressed: "0 B".to_string(),
+            ratio: "0%".to_string(),
+            modified: String::new(),
+            crc32: String::new(),
+            encrypted: false,
+            is_folder,
+        }
+    }
+
+    #[test]
+    fn filtered_delete_emits_only_visible_selected_file_paths() {
+        let entries = vec![
+            entry("visible.txt", false),
+            entry("hidden.txt", false),
+            entry("visible-folder", true),
+        ];
+        let mut selection = RevisionedSelection::default();
+        selection.extend([
+            "visible.txt".to_string(),
+            "hidden.txt".to_string(),
+            "visible-folder".to_string(),
+        ]);
+
+        let paths = selected_file_paths_for_search(&entries, &selection, " visible ");
+
+        assert_eq!(paths, vec!["visible.txt"]);
+        assert!(selection.contains("hidden.txt"));
+    }
+
+    #[test]
+    fn unfiltered_delete_emits_every_selected_file_path() {
+        let entries = vec![
+            entry("first.txt", false),
+            entry("second.txt", false),
+            entry("folder", true),
+        ];
+        let mut selection = RevisionedSelection::default();
+        selection.extend([
+            "first.txt".to_string(),
+            "second.txt".to_string(),
+            "folder".to_string(),
+        ]);
+
+        let paths = selected_file_paths_for_search(&entries, &selection, "  ");
+
+        assert_eq!(paths, vec!["first.txt", "second.txt"]);
     }
 }
