@@ -830,3 +830,27 @@ async fn partial_response_rejects_a_truncated_body() {
     assert!(result.is_err(), "truncated range unexpectedly succeeded");
     assert_eq!(buffer, b"abc", "streamed bytes should remain observable");
 }
+
+#[tokio::test]
+async fn partial_response_never_writes_past_the_declared_range() {
+    let response = raw_http_response(
+        "206 Partial Content",
+        &[
+            ("Content-Range", "bytes 5-9/10"),
+            ("Transfer-Encoding", "chunked"),
+        ],
+        b"7\r\nabcdefg\r\n0\r\n\r\n",
+    );
+    let (result, buffer) = execute_raw_streaming_response(response, Some(5)).await;
+
+    let error = result.expect_err("overlong range unexpectedly succeeded");
+    assert_eq!(buffer.len(), 5, "writer crossed the declared byte count");
+    assert_eq!(
+        buffer, b"abcde",
+        "bytes beyond the declared range reached the writer"
+    );
+    assert!(
+        error.contains("exceeds Content-Range"),
+        "unclear overlong-range error: {error}"
+    );
+}

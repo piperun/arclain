@@ -569,6 +569,10 @@ impl AsyncHttpClient {
     /// server returns 412 Precondition Failed when the resource has
     /// changed since the partial download started.
     ///
+    /// If a partial response sends more bytes than its declared range,
+    /// this writes only the safe prefix through the declared boundary and
+    /// returns an error without flushing the caller-owned writer.
+    ///
     /// For use from background threads only (uses `block_on`).
     pub fn blocking_get_streaming<W: std::io::Write>(
         &self,
@@ -682,24 +686,48 @@ impl AsyncHttpClient {
                     .and_then(|s| s.parse::<u64>().ok())
             };
 
+            let declared_length = content_range.map(|range| range.end - range.start + 1);
             let mut total_written: u64 = 0;
             while let Some(chunk) = response
                 .chunk()
                 .await
                 .map_err(|e| format!("Failed to read body chunk: {}", e))?
             {
+                let chunk_length = u64::try_from(chunk.len())
+                    .map_err(|_| "Response body chunk is too large to count".to_string())?;
+                let next_total = total_written
+                    .checked_add(chunk_length)
+                    .ok_or_else(|| "Response body byte count overflowed".to_string())?;
+                if let Some(declared_length) = declared_length {
+                    let remaining = declared_length.checked_sub(total_written).ok_or_else(|| {
+                        "Written partial response length exceeded Content-Range".to_string()
+                    })?;
+                    if chunk_length > remaining {
+                        let safe_length = usize::try_from(remaining).map_err(|_| {
+                            "Remaining Content-Range length does not fit this platform".to_string()
+                        })?;
+                        if safe_length > 0 {
+                            writer
+                                .write_all(&chunk[..safe_length])
+                                .map_err(|e| format!("Writer failed: {}", e))?;
+                        }
+                        return Err(format!(
+                            "206 response body exceeds Content-Range: chunk has {chunk_length} bytes with only {remaining} remaining"
+                        ));
+                    }
+                }
+
                 writer
                     .write_all(&chunk)
                     .map_err(|e| format!("Writer failed: {}", e))?;
-                total_written += chunk.len() as u64;
+                total_written = next_total;
             }
 
             writer
                 .flush()
                 .map_err(|e| format!("Writer flush failed: {}", e))?;
 
-            if let Some(range) = content_range {
-                let declared_length = range.end - range.start + 1;
+            if let Some(declared_length) = declared_length {
                 if total_written != declared_length {
                     return Err(format!(
                         "206 response body contained {total_written} bytes, but Content-Range declared {declared_length}"
