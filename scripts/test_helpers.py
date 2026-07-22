@@ -40,55 +40,159 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class TestOwnedFormatting(unittest.TestCase):
-    def test_commands_format_only_owned_packages_and_manifests(self):
-        commands = _format.commands(check=True)
-
-        root_command = commands[0]
-        expected_packages = (
-            "arclain_app_fs",
-            "arclain_checksum",
-            "arclain_core",
-            "arclain_data",
-            "arclain_db",
-            "arclain-network",
-            "arclain_plugins",
-            "arclain_signals",
-            "arclain_theme",
-            "arclain_ui",
-            "arclain_widgets",
-        )
-        for package in expected_packages:
-            with self.subTest(package=package):
-                self.assertIn("--package", root_command)
-                package_index = root_command.index("--package")
-                while root_command[package_index + 1] != package:
-                    package_index = root_command.index(
-                        "--package", package_index + 1,
-                    )
-
-        expected_manifests = (
-            "plugin-sdk/Cargo.toml",
+    ROOT_COMMAND = [
+        "cargo",
+        "fmt",
+        "--package",
+        "arclain_app_fs",
+        "--package",
+        "arclain_checksum",
+        "--package",
+        "arclain_core",
+        "--package",
+        "arclain_data",
+        "--package",
+        "arclain_db",
+        "--package",
+        "arclain-network",
+        "--package",
+        "arclain_plugins",
+        "--package",
+        "arclain_signals",
+        "--package",
+        "arclain_theme",
+        "--package",
+        "arclain_ui",
+        "--package",
+        "arclain_widgets",
+    ]
+    MANIFEST_COMMANDS = [
+        ["cargo", "fmt", "--manifest-path", "plugin-sdk/Cargo.toml"],
+        [
+            "cargo",
+            "fmt",
+            "--manifest-path",
             "plugins/dlsite-metadata/Cargo.toml",
+        ],
+        [
+            "cargo",
+            "fmt",
+            "--manifest-path",
             "plugins/gstreamer-preview/Cargo.toml",
-            "plugins/ui-demo/Cargo.toml",
-        )
-        command_text = tuple(" ".join(command) for command in commands)
-        for manifest in expected_manifests:
-            with self.subTest(manifest=manifest):
-                self.assertTrue(
-                    any(
-                        f"--manifest-path {manifest}" in command
-                        for command in command_text
-                    ),
-                )
+        ],
+        ["cargo", "fmt", "--manifest-path", "plugins/ui-demo/Cargo.toml"],
+    ]
 
-        for command in commands:
-            with self.subTest(command=command):
-                self.assertEqual(command[-2:], ["--", "--check"])
-                self.assertNotIn("--all", command)
-                self.assertFalse(
-                    any(".." in argument or "gameta" in argument for argument in command),
-                )
+    def _expected_commands(self, *, check: bool) -> list[list[str]]:
+        commands = [self.ROOT_COMMAND.copy()]
+        commands.extend(command.copy() for command in self.MANIFEST_COMMANDS)
+        if check:
+            for command in commands:
+                command.extend(("--", "--check"))
+        return commands
+
+    def test_commands_are_exact_in_check_mode(self):
+        self.assertEqual(
+            _format.commands(check=True),
+            self._expected_commands(check=True),
+        )
+
+    def test_commands_are_exact_in_write_mode(self):
+        self.assertEqual(
+            _format.commands(check=False),
+            self._expected_commands(check=False),
+        )
+
+    def test_write_mode_runs_every_command_from_repo_root(self):
+        expected = self._expected_commands(check=False)
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(
+            _format.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            status = _format.format_owned(check=False)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            run.call_args_list,
+            [mock.call(command, cwd=REPO_ROOT) for command in expected],
+        )
+
+    def test_check_mode_runs_every_command_from_repo_root(self):
+        expected = self._expected_commands(check=True)
+        completed = subprocess.CompletedProcess([], 0)
+        with mock.patch.object(
+            _format.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            status = _format.format_owned(check=True)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            run.call_args_list,
+            [mock.call(command, cwd=REPO_ROOT) for command in expected],
+        )
+
+    def test_execution_stops_on_first_nonzero_status(self):
+        expected = self._expected_commands(check=True)
+        results = (
+            subprocess.CompletedProcess(expected[0], 0),
+            subprocess.CompletedProcess(expected[1], 23),
+            subprocess.CompletedProcess(expected[2], 0),
+        )
+        with mock.patch.object(
+            _format.subprocess,
+            "run",
+            side_effect=results,
+        ) as run:
+            status = _format.format_owned(check=True)
+
+        self.assertEqual(status, 23)
+        self.assertEqual(
+            run.call_args_list,
+            [
+                mock.call(expected[0], cwd=REPO_ROOT),
+                mock.call(expected[1], cwd=REPO_ROOT),
+            ],
+        )
+
+    def test_justfile_has_exact_format_recipes(self):
+        lines = (REPO_ROOT / "justfile").read_text(encoding="utf-8").splitlines()
+        fmt_index = lines.index("fmt:")
+        self.assertEqual(
+            lines[fmt_index:fmt_index + 5],
+            [
+                "fmt:",
+                "    {{python}} scripts/_format.py",
+                "",
+                "fmt-check:",
+                "    {{python}} scripts/_format.py --check",
+            ],
+        )
+        self.assertEqual(lines.count("fmt:"), 1)
+        self.assertEqual(lines.count("fmt-check:"), 1)
+
+    def test_woodpecker_checks_format_before_workspace(self):
+        lines = (REPO_ROOT / ".woodpecker.yml").read_text(
+            encoding="utf-8",
+        ).splitlines()
+        step_start = lines.index("  cargo-check:")
+        step_end = lines.index("  cargo-test:")
+        step = lines[step_start:step_end]
+        format_command = (
+            '      - su runner -c "cd /workspace/codeberg/arclain && '
+            'python3 scripts/_format.py --check"'
+        )
+        cargo_command = (
+            '      - su runner -c "cd /workspace/codeberg/arclain && '
+            'cargo check --workspace --locked"'
+        )
+
+        self.assertEqual(step.count(format_command), 1)
+        self.assertEqual(step.count(cargo_command), 1)
+        self.assertLess(step.index(format_command), step.index(cargo_command))
 
 
 class TestGametaPin(unittest.TestCase):
