@@ -57,7 +57,7 @@ impl OrganizationPlan {
             path.as_path()
                 .to_string_lossy()
                 .replace('\\', "/")
-                .to_lowercase()
+                .to_uppercase()
         };
         let mut destinations = HashSet::new();
         for (source, destination) in &self.moves {
@@ -436,6 +436,44 @@ mod tests {
                 url: "https://example.invalid/cover.jpg".into(),
                 dest_path: "mygame/cover.jpg".into(),
                 cache_key: "cover".into(),
+                cached: false,
+            }],
+            use_standard_layout: false,
+            resolved_variables: Default::default(),
+        };
+
+        assert!(plan.validate_paths().is_err());
+    }
+
+    #[test]
+    fn validate_paths_rejects_unicode_sigma_collision() {
+        let plan = OrganizationPlan {
+            rule_name: "unsafe".into(),
+            root_folder: "MyGame".into(),
+            root_folder_template: "MyGame".into(),
+            moves: vec![("game.exe".into(), "MyGame/σ.bin".into())],
+            generated_files: vec![("mygame/ς.BIN".into(), "generated".into())],
+            downloads: vec![],
+            use_standard_layout: false,
+            resolved_variables: Default::default(),
+        };
+
+        assert!(plan.validate_paths().is_err());
+    }
+
+    #[test]
+    fn validate_paths_rejects_uppercase_expansion_collision() {
+        let plan = OrganizationPlan {
+            rule_name: "unsafe".into(),
+            root_folder: "MyGame".into(),
+            root_folder_template: "MyGame".into(),
+            moves: vec![("game.exe".into(), "MyGame/straße.bin".into())],
+            generated_files: vec![],
+            downloads: vec![PendingDownload {
+                product_id: None,
+                url: "https://example.invalid/output".into(),
+                dest_path: "mygame/STRASSE.BIN".into(),
+                cache_key: "output".into(),
                 cached: false,
             }],
             use_standard_layout: false,
