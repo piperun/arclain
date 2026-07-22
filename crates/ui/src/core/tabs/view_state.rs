@@ -200,7 +200,7 @@ impl BrowserProjectionCache {
 /// complete selection merely to detect a change.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RevisionedSelection {
-    paths: HashSet<String>,
+    paths: Arc<HashSet<String>>,
     revision: u64,
 }
 
@@ -214,38 +214,43 @@ impl RevisionedSelection {
     }
 
     pub fn insert(&mut self, path: String) -> bool {
-        let changed = self.paths.insert(path);
-        if changed {
-            self.bump_revision();
+        if self.paths.contains(&path) {
+            return false;
         }
-        changed
+        Arc::make_mut(&mut self.paths).insert(path);
+        self.bump_revision();
+        true
     }
 
     pub fn remove(&mut self, path: &str) -> bool {
-        let changed = self.paths.remove(path);
-        if changed {
-            self.bump_revision();
+        if !self.paths.contains(path) {
+            return false;
         }
-        changed
+        Arc::make_mut(&mut self.paths).remove(path);
+        self.bump_revision();
+        true
     }
 
     pub fn clear(&mut self) -> bool {
         if self.paths.is_empty() {
             return false;
         }
-        self.paths.clear();
+        Arc::make_mut(&mut self.paths).clear();
         self.bump_revision();
         true
     }
 
     pub fn extend(&mut self, paths: impl IntoIterator<Item = String>) -> bool {
-        let old_len = self.paths.len();
-        self.paths.extend(paths);
-        let changed = self.paths.len() != old_len;
-        if changed {
-            self.bump_revision();
+        let additions = paths
+            .into_iter()
+            .filter(|path| !self.paths.contains(path))
+            .collect::<Vec<_>>();
+        if additions.is_empty() {
+            return false;
         }
-        changed
+        Arc::make_mut(&mut self.paths).extend(additions);
+        self.bump_revision();
+        true
     }
 }
 
@@ -451,5 +456,32 @@ mod tests {
             after_filter.visible_selection_rebuilds,
             after_selection.visible_selection_rebuilds + 1
         );
+    }
+
+    #[test]
+    fn revisioned_selection_clone_shares_storage_until_mutation() {
+        let mut original = RevisionedSelection::default();
+        assert!(original.extend(
+            (0..10_000).map(|index| format!("entry-{index:05}"))
+        ));
+        let mut cloned = original.clone();
+
+        assert!(
+            std::ptr::eq(&*original, &*cloned),
+            "cloning renderer state copied the complete selected-path set"
+        );
+
+        let cloned_revision = cloned.revision();
+        assert!(!cloned.insert("entry-00000".to_string()));
+        assert_eq!(cloned.revision(), cloned_revision);
+        assert!(
+            std::ptr::eq(&*original, &*cloned),
+            "a no-op selection mutation detached shared storage"
+        );
+
+        assert!(cloned.insert("new-entry".to_string()));
+        assert_ne!(cloned.revision(), cloned_revision);
+        assert!(!std::ptr::eq(&*original, &*cloned));
+        assert!(!original.contains("new-entry"));
     }
 }
