@@ -99,7 +99,7 @@ impl LoadedPlugin {
             capabilities.into_iter().collect(),
             requests_per_minute,
             settings,
-        );
+        )?;
 
         if let Some(lib_svc) = library_service {
             host_funcs.set_library_service(lib_svc);

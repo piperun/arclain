@@ -14,7 +14,7 @@ pub use plugin_logger::PluginLogger;
 
 use crate::active_tab::ActiveTabBridge;
 use crate::arclain::plugin::host::{Host, LogLevel};
-use crate::types::PluginCapability;
+use crate::types::{PluginCapability, PluginId, Result as PluginResult};
 use arclain_data::DataService;
 use arclain_data::ResourceManager;
 
@@ -41,7 +41,7 @@ pub struct EventContext {
 
 /// State for host functions
 pub struct HostFunctions {
-    pub plugin_id: String,
+    pub plugin_id: PluginId,
     pub async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
     pub capabilities: std::collections::HashSet<PluginCapability>,
     pub settings: Arc<Mutex<HashMap<String, String>>>,
@@ -102,17 +102,16 @@ impl HostFunctions {
         capabilities: std::collections::HashSet<PluginCapability>,
         _requests_per_minute: u32,
         initial_settings: HashMap<String, String>,
-    ) -> Self {
+    ) -> PluginResult<Self> {
+        let plugin_id = PluginId::parse(plugin_id)?;
         // Initialize WASI context
         let ctx = WasiCtxBuilder::new().inherit_stdio().inherit_args().build();
 
-        let plugin_logger = Arc::new(PluginLogger::new(
-            &plugin_id,
-            &default_plugin_log_dir(),
-        ));
+        let plugin_logger = Arc::new(PluginLogger::new(&plugin_id, &default_plugin_log_dir()));
+        let data_service = DataService::new().with_id(plugin_id.as_str());
 
-        Self {
-            plugin_id: plugin_id.clone(),
+        Ok(Self {
+            plugin_id,
             async_http_client: None,
             capabilities,
             settings: Arc::new(Mutex::new(initial_settings)),
@@ -124,14 +123,14 @@ impl HostFunctions {
 
             resource_manager: None,
 
-            data_service: DataService::new().with_id(&plugin_id),
+            data_service,
             table: ResourceTable::new(),
             ctx,
             active_tab: None,
             event_context: None,
             pending_status_message: Arc::new(Mutex::new(None)),
             plugin_logger,
-        }
+        })
     }
 
     pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
@@ -211,12 +210,12 @@ impl HostFunctions {
 
         let mut req = DataRequest::new(&request.key)
             .with_type(resource_type)
-            .with_plugin_id(&self.plugin_id);
+            .with_plugin_id(self.plugin_id.as_str());
 
         tracing::debug!(
             "[HostFunctions::build_data_request] key='{}' plugin_id='{}' url={:?}",
             request.key,
-            self.plugin_id,
+            self.plugin_id.as_str(),
             request.url,
         );
 
@@ -374,7 +373,7 @@ impl Host for HostFunctions {
             self.async_http_client.as_ref(),
         ) {
             let key = request.key.clone();
-            let use_proxy = http_client.should_use_proxy_for_plugin(&self.plugin_id);
+            let use_proxy = http_client.should_use_proxy_for_plugin(self.plugin_id.as_str());
             let cache_type = match request.resource_type {
                 crate::arclain::plugin::host::ResourceType::Binary => {
                     arclain_db::CacheType::Other

@@ -1,4 +1,5 @@
 use super::{Clock, PluginLogger, TokenBucket};
+use crate::types::PluginId;
 use parking_lot::Mutex;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -46,6 +47,10 @@ fn temp_log_dir() -> PathBuf {
     p
 }
 
+fn plugin_id(value: &str) -> PluginId {
+    PluginId::parse(value).unwrap()
+}
+
 #[test]
 fn token_bucket_allows_burst_up_to_capacity() {
     let clock = Arc::new(MockClock::new());
@@ -86,7 +91,8 @@ fn token_bucket_refills_at_configured_rate() {
 #[test]
 fn logger_writes_to_per_plugin_dated_file() {
     let dir = temp_log_dir();
-    let logger = PluginLogger::new("dlsite-metadata", &dir);
+    let plugin_id = plugin_id("dlsite-metadata");
+    let logger = PluginLogger::new(&plugin_id, &dir);
 
     logger.write("hello from plugin");
 
@@ -102,8 +108,10 @@ fn logger_writes_to_per_plugin_dated_file() {
 #[test]
 fn logger_isolates_plugins_into_different_files() {
     let dir = temp_log_dir();
-    let a = PluginLogger::new("plugin-a", &dir);
-    let b = PluginLogger::new("plugin-b", &dir);
+    let a_id = plugin_id("plugin-a");
+    let b_id = plugin_id("plugin-b");
+    let a = PluginLogger::new(&a_id, &dir);
+    let b = PluginLogger::new(&b_id, &dir);
 
     a.write("from A");
     b.write("from B");
@@ -126,7 +134,8 @@ use tracing_test::traced_test;
 #[test]
 fn logger_emits_summary_when_drops_accumulate() {
     let dir = temp_log_dir();
-    let logger = PluginLogger::with_byte_cap("noisy", &dir, 100);
+    let plugin_id = plugin_id("noisy");
+    let logger = PluginLogger::with_byte_cap(&plugin_id, &dir, 100);
 
     // Drop a bunch of lines (most fail the byte cap after the first
     // few are written).
@@ -150,7 +159,8 @@ fn logger_emits_summary_when_drops_accumulate() {
 fn logger_drops_lines_after_byte_cap() {
     let dir = temp_log_dir();
     // 1 KiB cap so we hit it fast in test
-    let logger = PluginLogger::with_byte_cap("capper", &dir, 1024);
+    let plugin_id = plugin_id("capper");
+    let logger = PluginLogger::with_byte_cap(&plugin_id, &dir, 1024);
 
     let line = "x".repeat(100); // ~120 bytes per line incl. timestamp
     let mut accepted = 0;

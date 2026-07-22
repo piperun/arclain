@@ -25,6 +25,40 @@ fn test_list_plugins_empty() {
     assert_eq!(manager.list_plugins().len(), 0);
 }
 
+#[test]
+fn install_rejects_exported_unsafe_id_before_filesystem_use() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let wasm_path = temp_dir.path().join("unsafe-id.wasm");
+    let mut component = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../plugins/ui-demo/ui-demo.wasm"
+    ))
+    .to_vec();
+    let id_offset = component
+        .windows(b"ui-demo".len())
+        .position(|window| window == b"ui-demo")
+        .expect("bundled component should export ui-demo metadata");
+    component[id_offset..id_offset + b"ui-demo".len()].copy_from_slice(b"../evil");
+    std::fs::write(&wasm_path, component).unwrap();
+
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    let result = manager.install_plugin(&wasm_path);
+
+    assert!(
+        matches!(result, Err(crate::types::PluginError::InvalidManifest(_))),
+        "expected unsafe exported id to be rejected, got {result:?}",
+    );
+    assert!(
+        !plugins_dir.parent().unwrap().join("evil").exists(),
+        "unsafe id must not create a sibling directory",
+    );
+    assert!(
+        !plugins_dir.exists() || std::fs::read_dir(&plugins_dir).unwrap().next().is_none(),
+        "unsafe id must not create a plugin directory",
+    );
+}
+
 /// Regression test for P5 from `docs/AUDIT_2026-05-03.md`.
 ///
 /// `status_summary()` is the cheap counts-only path the status bar

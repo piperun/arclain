@@ -1,7 +1,7 @@
 //! Plugin discovery and loading
 
 use crate::runtime::{LoadedPlugin, WasmRuntime};
-use crate::types::{PluginError, PluginInfo, PluginManifest, Result};
+use crate::types::{PluginError, PluginId, PluginInfo, PluginManifest, Result};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
@@ -144,12 +144,7 @@ impl PluginLoader {
 
     /// Validate a plugin manifest
     pub fn validate_manifest(&self, manifest: &PluginManifest) -> Result<()> {
-        // Check required fields
-        if manifest.plugin.id.is_empty() {
-            return Err(PluginError::InvalidManifest(
-                "Plugin ID is empty".to_string(),
-            ));
-        }
+        PluginId::parse(manifest.plugin.id.clone())?;
 
         if manifest.plugin.name.is_empty() {
             return Err(PluginError::InvalidManifest(
@@ -160,19 +155,6 @@ impl PluginLoader {
         if manifest.plugin.version.is_empty() {
             return Err(PluginError::InvalidManifest(
                 "Plugin version is empty".to_string(),
-            ));
-        }
-
-        // Validate ID format (alphanumeric and hyphens only)
-        if !manifest
-            .plugin
-            .id
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        {
-            return Err(PluginError::InvalidManifest(
-                "Plugin ID must contain only alphanumeric characters, hyphens, and underscores"
-                    .to_string(),
             ));
         }
 

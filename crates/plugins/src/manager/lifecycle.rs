@@ -3,7 +3,7 @@
 use super::types::ManagedPlugin;
 use super::PluginManager;
 use crate::loader::DiscoveredPlugin;
-use crate::types::{PluginError, PluginMetadata, Result};
+use crate::types::{PluginError, PluginId, PluginMetadata, Result};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -188,10 +188,10 @@ impl PluginManager {
         let metadata = temp_instance.get_metadata()?;
         temp_instance.cleanup()?;
 
-        let plugin_id = metadata.id.clone();
+        let plugin_id = PluginId::parse(metadata.id.clone())?;
 
         // Check if plugin is already installed
-        if self.plugins.read().contains_key(&plugin_id) {
+        if self.plugins.read().contains_key(plugin_id.as_str()) {
             return Err(PluginError::LoadError(format!(
                 "Plugin '{}' is already installed",
                 plugin_id
@@ -199,7 +199,7 @@ impl PluginManager {
         }
 
         // Create plugin directory
-        let plugin_dir = self.plugins_dir().join(&plugin_id);
+        let plugin_dir = plugin_id.join_under(self.plugins_dir());
         fs::create_dir_all(&plugin_dir).map_err(|e| {
             PluginError::LoadError(format!("Failed to create plugin directory: {}", e))
         })?;
@@ -227,7 +227,11 @@ http_requests = false
 [rate_limits]
 http_requests_per_minute = 60
 "#,
-            metadata.id, metadata.name, metadata.version, metadata.description, metadata.author
+            plugin_id.as_str(),
+            metadata.name,
+            metadata.version,
+            metadata.description,
+            metadata.author
         );
 
         let manifest_path = plugin_dir.join("plugin.toml");
@@ -243,7 +247,7 @@ http_requests_per_minute = 60
         let discovered = self.loader.discover_plugins()?;
         let plugin_info = discovered
             .iter()
-            .find(|p| p.manifest.plugin.id == plugin_id)
+            .find(|p| p.manifest.plugin.id == plugin_id.as_str())
             .ok_or_else(|| {
                 PluginError::LoadError("Failed to discover newly installed plugin".to_string())
             })?;
@@ -252,6 +256,6 @@ http_requests_per_minute = 60
         self.load_plugin(plugin_info)?;
 
         info!("Plugin '{}' installed and loaded successfully", plugin_id);
-        Ok(plugin_id)
+        Ok(plugin_id.as_str().to_owned())
     }
 }

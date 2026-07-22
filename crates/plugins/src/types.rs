@@ -2,6 +2,56 @@
 
 use arclain_core::ArchiveKind;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// A plugin identity that is safe to use as a portable filename component.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct PluginId(String);
+
+impl PluginId {
+    /// Parse a plugin identity accepted by every supported filesystem.
+    pub fn parse(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        let base_name = value
+            .split('.')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_uppercase();
+        let reserved = matches!(base_name.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+            || (base_name.len() == 4
+                && (base_name.starts_with("COM") || base_name.starts_with("LPT"))
+                && matches!(base_name.as_bytes()[3], b'1'..=b'9'));
+        let portable = !value.is_empty()
+            && value != "."
+            && value != ".."
+            && !reserved
+            && !value.ends_with('.')
+            && !value.ends_with(' ')
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+
+        portable.then_some(Self(value)).ok_or_else(|| {
+            PluginError::InvalidManifest(
+                "Plugin ID must be one ASCII filename component using [A-Za-z0-9_-] and must not be a Windows reserved name".into(),
+            )
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn join_under(&self, root: &Path) -> PathBuf {
+        root.join(&self.0)
+    }
+}
+
+impl std::fmt::Display for PluginId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
 
 /// Plugin metadata describing the plugin's identity and capabilities
 #[derive(Debug, Clone, Serialize, Deserialize)]

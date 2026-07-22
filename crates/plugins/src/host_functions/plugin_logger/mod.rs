@@ -5,6 +5,7 @@
 //! own logs. Drop policy is silent + periodic summary written to
 //! arclain.log every `SUMMARY_INTERVAL`.
 
+use crate::types::PluginId;
 use parking_lot::Mutex;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -32,7 +33,7 @@ const SUMMARY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10)
 /// `HostFunctions`. Lazy-opens the log file on first write so plugins
 /// that never log don't create empty files.
 pub struct PluginLogger {
-    plugin_id: String,
+    plugin_id: PluginId,
     log_dir: PathBuf,
     byte_cap: u64,
     state: Mutex<LoggerState>,
@@ -55,13 +56,13 @@ struct LoggerState {
 }
 
 impl PluginLogger {
-    pub fn new(plugin_id: &str, log_dir: &Path) -> Self {
+    pub fn new(plugin_id: &PluginId, log_dir: &Path) -> Self {
         Self::with_byte_cap(plugin_id, log_dir, DEFAULT_DAILY_BYTE_CAP)
     }
 
-    pub fn with_byte_cap(plugin_id: &str, log_dir: &Path, byte_cap: u64) -> Self {
+    pub fn with_byte_cap(plugin_id: &PluginId, log_dir: &Path, byte_cap: u64) -> Self {
         Self {
-            plugin_id: plugin_id.to_string(),
+            plugin_id: plugin_id.clone(),
             log_dir: log_dir.to_path_buf(),
             byte_cap,
             state: Mutex::new(LoggerState {
@@ -94,7 +95,7 @@ impl PluginLogger {
         if s.file_date.as_deref() != Some(&today) {
             let path = self
                 .log_dir
-                .join(format!("{}-{}.log", self.plugin_id, today));
+                .join(format!("{}-{}.log", self.plugin_id.as_str(), today));
             // Best-effort dir create; if it fails, write fails too.
             let _ = std::fs::create_dir_all(&self.log_dir);
             match OpenOptions::new().create(true).append(true).open(&path) {

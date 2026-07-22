@@ -28,6 +28,7 @@ mod tests {
             0,
             HashMap::new(),
         )
+        .unwrap()
     }
 
     /// Regression test for P14 from `docs/AUDIT_2026-05-03.md`.

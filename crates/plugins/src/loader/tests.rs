@@ -55,3 +55,23 @@ fn test_invalid_manifest() {
 
     assert!(loader.validate_manifest(&manifest).is_err());
 }
+
+#[test]
+fn plugin_id_is_one_portable_non_reserved_component() {
+    for invalid in [
+        "", ".", "..", "a/b", "a\\b", "C:", "CON", "con.txt", "NUL", "COM1", "LPT9", "name.",
+        "name ", "café", "рlugin",
+    ] {
+        assert!(
+            crate::types::PluginId::parse(invalid).is_err(),
+            "accepted unsafe plugin id {invalid:?}",
+        );
+    }
+
+    for valid in ["dlsite-metadata", "ui_demo", "Plugin2"] {
+        assert_eq!(
+            crate::types::PluginId::parse(valid).unwrap().as_str(),
+            valid
+        );
+    }
+}
