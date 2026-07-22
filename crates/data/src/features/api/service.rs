@@ -38,6 +38,8 @@ struct PendingRequest {
     result: Option<DataResult>,
 }
 
+type ResolverSnapshot = Vec<(DataSource, Arc<dyn DataSourceResolver>)>;
+
 impl DataApiState {
     fn new() -> Self {
         Self {
@@ -83,6 +85,22 @@ impl DataService {
         self.resolvers.write().insert(source, resolver);
     }
 
+    fn snapshot_resolvers<'a>(
+        &self,
+        sources: impl IntoIterator<Item = &'a DataSource>,
+    ) -> ResolverSnapshot {
+        let resolvers = self.resolvers.read();
+        sources
+            .into_iter()
+            .filter_map(|source| {
+                resolvers
+                    .get(source)
+                    .cloned()
+                    .map(|resolver| (*source, resolver))
+            })
+            .collect()
+    }
+
     /// Set the default source chain
     pub fn set_default_chain(&mut self, chain: SourceChain) {
         self.default_chain = chain;
@@ -95,8 +113,8 @@ impl DataService {
         key: &str,
         data: &[u8],
     ) -> Result<(), crate::features::resolver::ResolveError> {
-        let resolvers = self.resolvers.read();
-        if let Some(resolver) = resolvers.get(&source) {
+        let resolver = self.resolvers.read().get(&source).cloned();
+        if let Some(resolver) = resolver {
             // Create a dummy request for the context
             let request = DataRequest::new(key);
             resolver.try_store(key, data, &request)
@@ -118,7 +136,7 @@ impl DataService {
             request.key, sources
         );
 
-        let resolvers = self.resolvers.read();
+        let resolvers = self.snapshot_resolvers(sources);
 
         // Track real (non-NotFound) failures so they can be surfaced to
         // callers. Cache misses are uninteresting, but I/O errors from
@@ -127,37 +145,33 @@ impl DataService {
         // the generic "No source could provide data" message.
         let mut io_errors: Vec<(DataSource, String)> = Vec::new();
 
-        for source in sources {
-            if let Some(resolver) = resolvers.get(source) {
-                match resolver.try_resolve(&request.key, request) {
-                    Ok(data) => {
-                        debug!(
-                            "[DataService] Resolved '{}' from {:?} ({} bytes)",
-                            request.key,
-                            source,
-                            data.len()
-                        );
+        for (source, resolver) in &resolvers {
+            match resolver.try_resolve(&request.key, request) {
+                Ok(data) => {
+                    debug!(
+                        "[DataService] Resolved '{}' from {:?} ({} bytes)",
+                        request.key,
+                        source,
+                        data.len()
+                    );
 
-                        // If data came from network, try to store to earlier sources
-                        if *source == DataSource::Network {
-                            self.store_to_caches(&request.key, &data, request, sources);
-                        }
+                    // If data came from network, try to store to earlier sources
+                    if *source == DataSource::Network {
+                        self.store_to_caches(&request.key, &data, request, &resolvers);
+                    }
 
-                        return DataResult::ready(data);
-                    }
-                    Err(e) => {
-                        debug!(
-                            "[DataService] Source {:?} failed for '{}': {}",
-                            source, request.key, e
-                        );
-                        if let crate::features::resolver::ResolveError::IoError(msg) = &e {
-                            io_errors.push((*source, msg.clone()));
-                        }
-                        continue;
-                    }
+                    return DataResult::ready(data);
                 }
-            } else {
-                debug!("[DataService] No resolver registered for {:?}", source);
+                Err(e) => {
+                    debug!(
+                        "[DataService] Source {:?} failed for '{}': {}",
+                        source, request.key, e
+                    );
+                    if let crate::features::resolver::ResolveError::IoError(msg) = &e {
+                        io_errors.push((*source, msg.clone()));
+                    }
+                    continue;
+                }
             }
         }
 
@@ -183,7 +197,7 @@ impl DataService {
         key: &str,
         data: &[u8],
         request: &DataRequest,
-        sources: &SourceChain,
+        resolvers: &ResolverSnapshot,
     ) {
         // Don't cache search results - they're ephemeral and change over time
         if key.contains(":search:") {
@@ -191,23 +205,19 @@ impl DataService {
             return;
         }
 
-        let resolvers = self.resolvers.read();
-
-        for source in sources {
+        for (source, resolver) in resolvers {
             // Only store to cache sources, not network
             if *source == DataSource::Network {
                 continue;
             }
 
-            if let Some(resolver) = resolvers.get(source) {
-                if let Err(e) = resolver.try_store(key, data, request) {
-                    debug!(
-                        "[DataService] Failed to store '{}' to {:?}: {}",
-                        key, source, e
-                    );
-                } else {
-                    debug!("[DataService] Stored '{}' to {:?}", key, source);
-                }
+            if let Err(e) = resolver.try_store(key, data, request) {
+                debug!(
+                    "[DataService] Failed to store '{}' to {:?}: {}",
+                    key, source, e
+                );
+            } else {
+                debug!("[DataService] Stored '{}' to {:?}", key, source);
             }
         }
     }
@@ -246,19 +256,18 @@ impl DataService {
 
     /// Check if data exists in any registered cache
     pub fn has_data(&self, key: &str) -> bool {
-        let resolvers = self.resolvers.read();
-
-        // Check cache sources only
-        for source in [
+        let sources = [
             DataSource::MetadataStore,
             DataSource::ContentCache,
             DataSource::Memory,
-        ] {
-            if let Some(resolver) = resolvers.get(&source) {
-                let dummy_request = DataRequest::new(key);
-                if resolver.has(key, &dummy_request) {
-                    return true;
-                }
+        ];
+        let resolvers = self.snapshot_resolvers(&sources);
+
+        // Check cache sources only
+        for (_, resolver) in resolvers {
+            let dummy_request = DataRequest::new(key);
+            if resolver.has(key, &dummy_request) {
+                return true;
             }
         }
 
