@@ -11,6 +11,8 @@ use crate::shared::{HttpError, HttpMethod, HttpResponse};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 use tracing::{debug, info, warn};
@@ -56,16 +58,37 @@ pub(super) fn parse_content_range_total(header: &str) -> Option<u64> {
 #[derive(Debug, Clone)]
 pub(super) struct RequestCompletion {
     sender: watch::Sender<RequestStatus>,
+    #[cfg(test)]
+    status_clone_count: Arc<AtomicUsize>,
 }
 
 impl RequestCompletion {
     pub(super) fn new(initial: RequestStatus) -> Self {
         let (sender, _receiver) = watch::channel(initial);
-        Self { sender }
+        Self {
+            sender,
+            #[cfg(test)]
+            status_clone_count: Arc::new(AtomicUsize::new(0)),
+        }
     }
 
     pub(super) fn status(&self) -> RequestStatus {
+        #[cfg(test)]
+        self.status_clone_count.fetch_add(1, Ordering::Relaxed);
         self.sender.borrow().clone()
+    }
+
+    fn is_complete(&self) -> bool {
+        self.sender.borrow().is_complete()
+    }
+
+    fn is_pending(&self) -> bool {
+        self.sender.borrow().is_pending()
+    }
+
+    #[cfg(test)]
+    pub(super) fn status_clone_count(&self) -> usize {
+        self.status_clone_count.load(Ordering::Relaxed)
     }
 
     pub(super) fn set(&self, status: RequestStatus) {
@@ -78,12 +101,15 @@ impl RequestCompletion {
         });
     }
 
-    pub(super) async fn wait(&self) -> RequestStatus {
+    pub(super) async fn wait(&self) {
         let mut receiver = self.sender.subscribe();
         loop {
-            let status = receiver.borrow_and_update().clone();
-            if status.is_complete() {
-                return status;
+            let is_complete = {
+                let status = receiver.borrow_and_update();
+                status.is_complete()
+            };
+            if is_complete {
+                return;
             }
             receiver
                 .changed()
@@ -416,10 +442,11 @@ impl AsyncHttpClient {
     /// Take the response (removes from pending)
     pub fn take_response(&self, id: &RequestId) -> Option<RequestStatus> {
         let mut pending = self.pending.lock();
-        if let Some(entry) = pending.get(id) {
-            if entry.completion.status().is_complete() {
-                return pending.remove(id).map(|entry| entry.completion.status());
-            }
+        let is_complete = pending
+            .get(id)
+            .is_some_and(|entry| entry.completion.is_complete());
+        if is_complete {
+            return pending.remove(id).map(|entry| entry.completion.status());
         }
         None
     }
@@ -446,7 +473,7 @@ impl AsyncHttpClient {
         self.pending
             .lock()
             .values()
-            .filter(|entry| entry.completion.status().is_pending())
+            .filter(|entry| entry.completion.is_pending())
             .count()
     }
 
@@ -457,6 +484,14 @@ impl AsyncHttpClient {
     /// "in-flight" semantic.
     pub fn pending_total(&self) -> usize {
         self.pending.lock().len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn completion_for_test(&self, id: &RequestId) -> Option<RequestCompletion> {
+        self.pending
+            .lock()
+            .get(id)
+            .map(|entry| entry.completion.clone())
     }
 
     /// Set rate limit for a domain

@@ -302,10 +302,11 @@ async fn terminal_state_sent_before_wait_is_still_observed() {
     let completion = RequestCompletion::new(RequestStatus::Pending);
     completion.set(RequestStatus::Failed("finished-before-wait".into()));
 
-    let status = tokio::time::timeout(Duration::from_millis(100), completion.wait())
+    tokio::time::timeout(Duration::from_millis(100), completion.wait())
         .await
         .expect("stored completion must not wait for another edge");
 
+    let status = completion.status();
     assert!(
         matches!(status, RequestStatus::Failed(ref message) if message == "finished-before-wait")
     );
@@ -320,10 +321,95 @@ async fn completion_during_waiter_setup_is_not_lost() {
     // future but before that future gets its first poll.
     completion.set(RequestStatus::Failed("during-setup".into()));
 
-    let status = tokio::time::timeout(Duration::from_millis(100), waiter)
+    tokio::time::timeout(Duration::from_millis(100), waiter)
         .await
         .expect("completion during waiter setup must be stored");
+    let status = completion.status();
     assert!(matches!(status, RequestStatus::Failed(ref message) if message == "during-setup"));
+}
+
+#[tokio::test]
+async fn internal_completion_checks_do_not_clone_ready_response_bodies() {
+    let mock_server = MockServer::start().await;
+    let body = vec![0x5a; 1024 * 1024];
+    Mock::given(method("GET"))
+        .and(path("/large-completion"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let id = client.request(HttpRequest::get(&format!(
+        "{}/large-completion",
+        mock_server.uri()
+    )));
+    let completion = client
+        .completion_for_test(&id)
+        .expect("new request has a completion cell");
+
+    tokio::time::timeout(Duration::from_secs(2), completion.wait())
+        .await
+        .expect("request should complete");
+    assert_eq!(
+        completion.status_clone_count(),
+        0,
+        "waiting for a terminal state must not clone the response body"
+    );
+
+    assert_eq!(client.pending_count(), 0);
+    assert_eq!(
+        completion.status_clone_count(),
+        0,
+        "pending_count must inspect status by reference"
+    );
+
+    let taken = client
+        .take_response(&id)
+        .expect("terminal response remains available");
+    assert!(matches!(
+        taken,
+        RequestStatus::Ready(ref response) if response.body.len() == body.len()
+    ));
+    assert_eq!(
+        completion.status_clone_count(),
+        1,
+        "take_response should clone only the owned value returned publicly"
+    );
+}
+
+#[tokio::test]
+async fn await_complete_clones_ready_response_only_for_its_return_value() {
+    let mock_server = MockServer::start().await;
+    let body = vec![0xa5; 1024 * 1024];
+    Mock::given(method("GET"))
+        .and(path("/large-await"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+        .mount(&mock_server)
+        .await;
+
+    let handle = Handle::current();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    let client = AsyncHttpClient::new(handle, whitelist, None);
+    let id = client.request(HttpRequest::get(&format!("{}/large-await", mock_server.uri())));
+    let completion = client
+        .completion_for_test(&id)
+        .expect("new request has a completion cell");
+
+    let status = client
+        .await_complete(&id)
+        .await
+        .expect("request remains publicly tracked");
+    assert!(matches!(
+        status,
+        RequestStatus::Ready(ref response) if response.body.len() == body.len()
+    ));
+    assert_eq!(
+        completion.status_clone_count(),
+        1,
+        "await_complete should clone only its owned return value"
+    );
 }
 
 #[tokio::test]
