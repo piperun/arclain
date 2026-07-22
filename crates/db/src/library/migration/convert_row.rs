@@ -11,7 +11,7 @@
 //! buried under 200 lines of column-by-column shaping.
 
 use anyhow::{Context, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, Row};
 
 /// Intermediate struct for reading old arclain rows
 pub(super) struct OldRow {
@@ -61,52 +61,65 @@ pub(super) fn read_old_rows(conn: &Connection) -> Result<Vec<OldRow>> {
          FROM product_metadata",
     )?;
 
-    let rows = stmt.query_map([], |row| {
-        Ok(OldRow {
-            id: row.get(0)?,
-            source: row.get(1)?,
-            external_id: row.get(2)?,
-            title: row.get(3).ok(),
-            creator: row.get(4).ok(),
-            description: row.get(5).ok(),
-            release_date: row.get(6).ok(),
-            price: row.get(7).ok(),
-            currency: row.get(8).ok(),
-            rating: row.get(9).ok(),
-            rating_count: row.get(10).ok(),
-            purchase_count: row.get(11).ok(),
-            favorite_count: row.get(12).ok(),
-            review_count: row.get(13).ok(),
-            file_size: row.get(14).ok(),
-            file_format: row.get(15).ok(),
-            age_rating: row.get(16).ok(),
-            genres_json: row.get(17).ok(),
-            tags_json: row.get(18).ok(),
-            languages_json: row.get(19).ok(),
-            product_formats_json: row.get(20).ok(),
-            series_name: row.get(21).ok(),
-            illustrator: row.get(22).ok(),
-            voice_actors_json: row.get(23).ok(),
-            miscellaneous: row.get(24).ok(),
-            update_info: row.get(25).ok(),
-            rankings_json: row.get(26).ok(),
-            extras_json: row.get(27).ok(),
-            raw_api_response: row.get(28).ok(),
-            raw_html: row.get(29).ok(),
-            geo_blocked: row.get(30).ok(),
-            cached_at: row.get(31)?,
-            updated_at: row.get(32).ok(),
-        })
-    })?;
-
+    let mut rows = stmt.query([])?;
     let mut result = Vec::new();
-    for row in rows {
-        result.push(row.context("Failed to read old row")?);
+    while let Some(row) = rows.next()? {
+        let id: String = row.get(0).context("read legacy product metadata row id")?;
+        let row_id = id.clone();
+        let old = read_old_row(row, id)
+            .with_context(|| format!("read legacy product_metadata row {row_id:?}"))?;
+        result.push(old);
     }
     Ok(result)
 }
 
+fn read_old_row(row: &Row<'_>, id: String) -> rusqlite::Result<OldRow> {
+    Ok(OldRow {
+        id,
+        source: row.get(1)?,
+        external_id: row.get(2)?,
+        title: row.get::<_, Option<String>>(3)?,
+        creator: row.get::<_, Option<String>>(4)?,
+        description: row.get::<_, Option<String>>(5)?,
+        release_date: row.get::<_, Option<String>>(6)?,
+        price: row.get::<_, Option<i64>>(7)?,
+        currency: row.get::<_, Option<String>>(8)?,
+        rating: row.get::<_, Option<f64>>(9)?,
+        rating_count: row.get::<_, Option<i64>>(10)?,
+        purchase_count: row.get::<_, Option<i64>>(11)?,
+        favorite_count: row.get::<_, Option<i64>>(12)?,
+        review_count: row.get::<_, Option<i64>>(13)?,
+        file_size: row.get::<_, Option<String>>(14)?,
+        file_format: row.get::<_, Option<String>>(15)?,
+        age_rating: row.get::<_, Option<String>>(16)?,
+        genres_json: row.get::<_, Option<String>>(17)?,
+        tags_json: row.get::<_, Option<String>>(18)?,
+        languages_json: row.get::<_, Option<String>>(19)?,
+        product_formats_json: row.get::<_, Option<String>>(20)?,
+        series_name: row.get::<_, Option<String>>(21)?,
+        illustrator: row.get::<_, Option<String>>(22)?,
+        voice_actors_json: row.get::<_, Option<String>>(23)?,
+        miscellaneous: row.get::<_, Option<String>>(24)?,
+        update_info: row.get::<_, Option<String>>(25)?,
+        rankings_json: row.get::<_, Option<String>>(26)?,
+        extras_json: row.get::<_, Option<String>>(27)?,
+        raw_api_response: row.get::<_, Option<String>>(28)?,
+        raw_html: row.get::<_, Option<String>>(29)?,
+        geo_blocked: row.get::<_, Option<bool>>(30)?,
+        cached_at: row.get(31)?,
+        updated_at: row.get::<_, Option<String>>(32)?,
+    })
+}
+
 pub(super) fn convert_and_insert(conn: &Connection, old: &OldRow) -> Result<()> {
+    validate_json(&old.genres_json, "genres_json", &old.id)?;
+    validate_json(&old.tags_json, "tags_json", &old.id)?;
+    validate_json(&old.languages_json, "languages_json", &old.id)?;
+    validate_json(&old.product_formats_json, "product_formats_json", &old.id)?;
+    validate_json(&old.voice_actors_json, "voice_actors_json", &old.id)?;
+    validate_json(&old.rankings_json, "rankings_json", &old.id)?;
+    validate_json(&old.extras_json, "extras_json", &old.id)?;
+
     // Normalize source: "itch" → "itchio" (gameta convention)
     let source = normalize_source(&old.source);
 
@@ -123,14 +136,18 @@ pub(super) fn convert_and_insert(conn: &Connection, old: &OldRow) -> Result<()> 
     let languages = &old.languages_json;
 
     // Merge DLSite-specific fields into extras
-    let extras = build_extras(old);
+    let extras = build_extras(old)?;
 
     // Convert geo_blocked: Option<bool> → integer 0/1
     let geo_blocked: i32 = old.geo_blocked.unwrap_or(false) as i32;
 
     // Convert timestamps: ISO 8601 → Unix timestamp
-    let cached_at = parse_iso_to_unix(&old.cached_at).unwrap_or(0);
-    let updated_at = old.updated_at.as_ref().and_then(|s| parse_iso_to_unix(s));
+    let cached_at = required_timestamp(&old.cached_at, "cached_at", &old.id)?;
+    let updated_at = old
+        .updated_at
+        .as_deref()
+        .map(|value| required_timestamp(value, "updated_at", &old.id))
+        .transpose()?;
 
     conn.execute(
         "INSERT OR REPLACE INTO product_metadata (
@@ -181,12 +198,12 @@ fn normalize_source(source: &str) -> String {
 }
 
 /// Build the extras JSON by merging old extras_json with DLSite-specific fields
-fn build_extras(old: &OldRow) -> Option<String> {
-    let mut extras: serde_json::Map<String, serde_json::Value> = old
-        .extras_json
-        .as_ref()
-        .and_then(|s| serde_json::from_str(s).ok())
-        .unwrap_or_default();
+fn build_extras(old: &OldRow) -> Result<Option<String>> {
+    let mut extras: serde_json::Map<String, serde_json::Value> = match &old.extras_json {
+        Some(value) => serde_json::from_str(value)
+            .with_context(|| format!("row {:?} has invalid extras_json object", old.id))?,
+        None => serde_json::Map::new(),
+    };
 
     // Merge DLSite-specific fields into extras
     if let Some(ref v) = old.series_name {
@@ -202,14 +219,14 @@ fn build_extras(old: &OldRow) -> Option<String> {
         );
     }
     if let Some(ref v) = old.voice_actors_json {
-        if let Ok(arr) = serde_json::from_str::<serde_json::Value>(v) {
-            extras.insert("voice_actors".to_string(), arr);
-        }
+        let value = serde_json::from_str(v)
+            .with_context(|| format!("row {:?} has invalid voice_actors_json", old.id))?;
+        extras.insert("voice_actors".to_string(), value);
     }
     if let Some(ref v) = old.product_formats_json {
-        if let Ok(arr) = serde_json::from_str::<serde_json::Value>(v) {
-            extras.insert("product_formats".to_string(), arr);
-        }
+        let value = serde_json::from_str(v)
+            .with_context(|| format!("row {:?} has invalid product_formats_json", old.id))?;
+        extras.insert("product_formats".to_string(), value);
     }
     if let Some(ref v) = old.miscellaneous {
         extras.insert(
@@ -224,23 +241,32 @@ fn build_extras(old: &OldRow) -> Option<String> {
         );
     }
     if let Some(ref v) = old.rankings_json {
-        if let Ok(arr) = serde_json::from_str::<serde_json::Value>(v) {
-            extras.insert("rankings".to_string(), arr);
-        }
+        let value = serde_json::from_str(v)
+            .with_context(|| format!("row {:?} has invalid rankings_json", old.id))?;
+        extras.insert("rankings".to_string(), value);
     }
 
     if extras.is_empty() {
-        None
+        Ok(None)
     } else {
-        serde_json::to_string(&extras).ok()
+        serde_json::to_string(&extras)
+            .context("serialize converted product metadata extras")
+            .map(Some)
     }
 }
 
-/// Parse ISO 8601 / RFC 3339 string to Unix timestamp
-fn parse_iso_to_unix(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|dt| dt.timestamp())
+fn validate_json(value: &Option<String>, field: &str, row_id: &str) -> Result<()> {
+    if let Some(value) = value {
+        serde_json::from_str::<serde_json::Value>(value)
+            .with_context(|| format!("row {row_id:?} has invalid {field}"))?;
+    }
+    Ok(())
+}
+
+fn required_timestamp(value: &str, field: &str, row_id: &str) -> Result<i64> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .with_context(|| format!("row {row_id:?} has invalid {field}"))
+        .map(|date| date.timestamp())
 }
 
 #[cfg(test)]
@@ -248,15 +274,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_iso_to_unix() {
+    fn test_required_timestamp() {
         assert_eq!(
-            parse_iso_to_unix("2024-01-01T00:00:00+00:00"),
-            Some(1704067200)
+            required_timestamp("2024-01-01T00:00:00+00:00", "cached_at", "row").unwrap(),
+            1704067200
         );
         assert_eq!(
-            parse_iso_to_unix("2024-01-01T00:00:00Z"),
-            Some(1704067200)
+            required_timestamp("2024-01-01T00:00:00Z", "cached_at", "row").unwrap(),
+            1704067200
         );
-        assert_eq!(parse_iso_to_unix("invalid"), None);
+        assert!(required_timestamp("invalid", "cached_at", "row").is_err());
     }
 }

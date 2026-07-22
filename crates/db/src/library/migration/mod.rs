@@ -16,7 +16,8 @@ mod convert_row;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use convert_row::{convert_and_insert, read_old_rows};
 
@@ -60,17 +61,10 @@ pub fn migrate_to_gameta_schema(
 
     tracing::info!("[Migration] Old arclain schema detected, migrating to gameta format...");
 
-    // Back up the database file before the destructive DROP TABLE. If the
-    // backup fails we abort the migration — the user can fix the cause
-    // (full disk, perms, stale .bak path) and retry.
+    // Back up the live database before destructive work. SQLite's online
+    // backup API includes committed WAL frames that a raw file copy misses.
     if let Some(path) = db_path {
-        let backup_path = path.with_extension("sqlite.bak");
-        std::fs::copy(path, &backup_path).with_context(|| {
-            format!(
-                "Failed to create migration backup at {:?}; refusing to proceed with destructive schema migration",
-                backup_path,
-            )
-        })?;
+        let backup_path = backup_database(conn, path)?;
         tracing::info!("[Migration] Backup created at {}", backup_path.display());
     }
 
@@ -79,43 +73,78 @@ pub fn migrate_to_gameta_schema(
     let total = old_rows.len();
     tracing::info!("[Migration] Read {} rows from old schema", total);
 
+    let transaction = conn
+        .unchecked_transaction()
+        .context("begin library schema migration transaction")?;
+
     // Drop old table, indexes, and any leftover cr-sqlite triggers
-    // (cr-sqlite was removed but its triggers persist in existing databases)
-    let triggers: Vec<String> = conn
-        .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")?
-        .query_map([], |row| row.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
+    // (cr-sqlite was removed but its triggers persist in existing databases).
+    let triggers: Vec<String> = {
+        let mut statement = transaction
+            .prepare("SELECT name FROM sqlite_master WHERE type='trigger'")
+            .context("enumerate legacy product metadata triggers")?;
+        let triggers = statement
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .context("read legacy product metadata trigger names")?;
+        triggers
+    };
     for trigger in &triggers {
-        let _ = conn.execute_batch(&format!("DROP TRIGGER IF EXISTS \"{}\"", trigger));
+        let quoted_trigger = trigger.replace('"', "\"\"");
+        transaction
+            .execute_batch(&format!("DROP TRIGGER IF EXISTS \"{quoted_trigger}\""))
+            .with_context(|| format!("drop legacy trigger {trigger:?}"))?;
     }
-    conn.execute_batch(
-        "DROP TABLE IF EXISTS product_metadata;
-         DROP INDEX IF EXISTS idx_product_source;
-         DROP INDEX IF EXISTS idx_product_external;",
-    )?;
+    transaction
+        .execute_batch(
+            "DROP TABLE IF EXISTS product_metadata;
+             DROP INDEX IF EXISTS idx_product_source;
+             DROP INDEX IF EXISTS idx_product_external;",
+        )
+        .context("drop legacy product metadata schema")?;
 
     // Create new table with gameta schema
-    conn.execute_batch(NEW_SCHEMA_SQL)?;
+    transaction
+        .execute_batch(NEW_SCHEMA_SQL)
+        .context("create gameta product metadata schema")?;
 
-    // Convert and insert each row
-    let mut converted = 0;
+    // Conversion, destructive DDL, and every insert commit as one unit.
     for row in &old_rows {
-        match convert_and_insert(conn, row) {
-            Ok(()) => converted += 1,
-            Err(e) => {
-                tracing::warn!("[Migration] Failed to convert row '{}': {}", row.id, e);
-            }
-        }
+        convert_and_insert(&transaction, row)
+            .with_context(|| format!("convert legacy product_metadata row {:?}", row.id))?;
+    }
+    transaction
+        .commit()
+        .context("commit library schema migration")?;
+
+    tracing::info!("[Migration] Complete: {}/{} rows migrated", total, total);
+
+    Ok(MigrationResult::Migrated {
+        total,
+        converted: total,
+    })
+}
+
+fn backup_database(conn: &Connection, db_path: &Path) -> Result<PathBuf> {
+    use rusqlite::backup::Backup;
+
+    let backup_path = db_path.with_extension("sqlite.bak");
+    let mut destination = Connection::open(&backup_path)
+        .with_context(|| format!("open migration backup {}", backup_path.display()))?;
+    let backup = Backup::new(conn, &mut destination).context("initialize SQLite online backup")?;
+    backup
+        .run_to_completion(64, Duration::from_millis(10), None)
+        .context("copy live SQLite database through backup API")?;
+    drop(backup);
+
+    let integrity: String = destination
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .context("verify migration backup")?;
+    if integrity != "ok" {
+        anyhow::bail!("migration backup integrity check failed: {integrity}");
     }
 
-    tracing::info!(
-        "[Migration] Complete: {}/{} rows migrated",
-        converted,
-        total
-    );
-
-    Ok(MigrationResult::Migrated { total, converted })
+    Ok(backup_path)
 }
 
 /// Ensure the gameta product_metadata table exists.
@@ -310,7 +339,10 @@ mod tests {
         let extras: serde_json::Value = serde_json::from_str(row.4.as_ref().unwrap()).unwrap();
         assert_eq!(extras["series_name"], "Test Series");
         assert_eq!(extras["illustrator"], "Test Illustrator");
-        assert_eq!(extras["voice_actors"], serde_json::json!(["Actor1", "Actor2"]));
+        assert_eq!(
+            extras["voice_actors"],
+            serde_json::json!(["Actor1", "Actor2"])
+        );
 
         // geo_blocked converted to integer
         assert_eq!(row.5, 1);
@@ -372,6 +404,68 @@ mod tests {
         assert_eq!(geo_blocked, 0); // NULL → false → 0
     }
 
+    #[test]
+    fn migration_backup_contains_committed_wal_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        let db_path = temp.path().join("library.sqlite");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        create_old_schema(&conn);
+        conn.execute(
+            "INSERT INTO product_metadata (id, source, external_id, cached_at) \
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params!["dlsite:RJWAL", "dlsite", "RJWAL", "2024-01-01T00:00:00Z"],
+        )
+        .unwrap();
+
+        migrate_to_gameta_schema(&conn, Some(&db_path)).unwrap();
+
+        let backup = Connection::open(db_path.with_extension("sqlite.bak")).unwrap();
+        let count: i64 = backup
+            .query_row(
+                "SELECT COUNT(*) FROM product_metadata WHERE id = 'dlsite:RJWAL'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "backup omitted a committed WAL row");
+    }
+
+    #[test]
+    fn invalid_row_aborts_and_rolls_back_the_entire_migration() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_old_schema(&conn);
+        conn.execute(
+            "INSERT INTO product_metadata (id, source, external_id, cached_at) \
+             VALUES ('good', 'dlsite', 'GOOD', '2024-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO product_metadata (id, source, external_id, genres_json, cached_at) \
+             VALUES ('bad', 'dlsite', 'BAD', '[not-json', 'not-a-timestamp')",
+            [],
+        )
+        .unwrap();
+
+        let error = match migrate_to_gameta_schema(&conn, None) {
+            Ok(_) => panic!("migration accepted a malformed legacy row"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("bad"), "row id missing from error: {error}");
+        assert!(
+            has_old_schema(&conn).unwrap(),
+            "legacy schema was not rolled back"
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM product_metadata", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 2, "migration committed only a subset of rows");
+    }
+
     /// Regression test for C4 from `docs/AUDIT_2026-05-03.md`.
     ///
     /// Pre-fix, `migrate_to_gameta_schema` only logged a warning when the
@@ -381,8 +475,8 @@ mod tests {
     /// fix the cause (full disk, perms, stale .bak path) and retry.
     ///
     /// Force the backup to fail by pre-creating `<db>.sqlite.bak` as a
-    /// directory — `std::fs::copy` fails cross-platform when the
-    /// destination is a directory. Assert the function returns `Err`,
+    /// directory, which SQLite cannot open as a destination database. Assert
+    /// the function returns `Err`,
     /// the backup directory is untouched, and the original schema is
     /// preserved (the destructive DROP TABLE didn't run).
     #[test]
@@ -391,8 +485,7 @@ mod tests {
         let db_path = temp.path().join("library.sqlite");
         let backup_path = temp.path().join("library.sqlite.bak");
 
-        // Make the backup destination be a directory: fs::copy(file, dir)
-        // fails on every supported platform.
+        // Make the backup destination a directory so SQLite cannot open it.
         std::fs::create_dir(&backup_path).unwrap();
 
         // Set up an old-schema DB with one row.
