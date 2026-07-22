@@ -51,11 +51,15 @@ jobs:
 
       - name: Clone gameta (path-dep sibling, from codeberg)
         # gameta isn't mirrored to GitHub, so we always fetch it
-        # from its codeberg origin. Tracks master rather than a
-        # pinned ref because the cargo path-dep doesn't record a
-        # version — if/when arclain starts pinning a specific
-        # gameta commit (e.g. via git-dep), mirror that here.
-        run: git clone --depth 1 https://codeberg.org/0xdev/gameta.git codeberg/gameta
+        # from its codeberg origin at the revision audited alongside
+        # the exact gameta package version in the Cargo manifests.
+        run: |
+          git clone --no-checkout https://codeberg.org/0xdev/gameta.git codeberg/gameta
+          git -C codeberg/gameta fetch --depth 1 origin d0932514ff6277dcef067d8e9dcfe1d5dbfe358b
+          git -C codeberg/gameta checkout --detach FETCH_HEAD
+          if ((git -C codeberg/gameta rev-parse HEAD) -ne "d0932514ff6277dcef067d8e9dcfe1d5dbfe358b") {
+            throw "gameta checkout did not resolve to the audited revision"
+          }
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable

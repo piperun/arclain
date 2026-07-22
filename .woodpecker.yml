@@ -6,9 +6,9 @@
 # Hence `workspace.path: codeberg/arclain` below — keeps the relative
 # paths in crates/{core,db,plugins}/Cargo.toml resolvable in CI.
 #
-# Gameta is a public Codeberg repo, so the `fetch-gameta` step clones
-# it unauthenticated (no token required). When gameta's API stabilises
-# we can migrate to a normal cargo git-dep and remove this scaffolding.
+# Gameta is a public Codeberg repo, so the `fetch-gameta` step fetches
+# its audited revision unauthenticated (no token required). When gameta's
+# API stabilises we can migrate to a cargo git-dep and remove this scaffolding.
 
 workspace:
   base: /workspace
@@ -33,7 +33,10 @@ steps:
       - event: [push, tag]
     commands:
       - cd ..
-      - git clone --depth 1 https://codeberg.org/0xdev/gameta.git gameta
+      - git clone --no-checkout https://codeberg.org/0xdev/gameta.git gameta
+      - git -C gameta fetch --depth 1 origin d0932514ff6277dcef067d8e9dcfe1d5dbfe358b
+      - git -C gameta checkout --detach FETCH_HEAD
+      - test "$(git -C gameta rev-parse HEAD)" = "d0932514ff6277dcef067d8e9dcfe1d5dbfe358b"
       - ls -la gameta
 
   # ── Tests on every push + tag ───────────────────────────────────────

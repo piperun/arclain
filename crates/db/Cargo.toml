@@ -26,8 +26,8 @@ tracing.workspace = true
 chrono.workspace = true
 
 # External gameta dependencies (https://codeberg.org/0xdev/gameta)
-gameta_core = { path = "../../../../codeberg/gameta/gameta_core" }
-gameta_database = { path = "../../../../codeberg/gameta/gameta_database" }
+gameta_core = { path = "../../../../codeberg/gameta/gameta_core", version = "=0.5.0" }
+gameta_database = { path = "../../../../codeberg/gameta/gameta_database", version = "=0.5.0" }
 
 [dev-dependencies]
 tempfile.workspace = true

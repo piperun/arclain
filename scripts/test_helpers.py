@@ -35,6 +35,76 @@ from _ui import load_rust_log
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+class TestGametaPin(unittest.TestCase):
+    VERSION = "=0.5.0"
+    REVISION = "d0932514ff6277dcef067d8e9dcfe1d5dbfe358b"
+
+    def test_gameta_dependencies_and_ci_checkouts_are_pinned(self):
+        manifests = (
+            "crates/core/Cargo.toml",
+            "crates/db/Cargo.toml",
+            "crates/plugins/Cargo.toml",
+            "plugins/dlsite-metadata/Cargo.toml",
+        )
+        for relative_path in manifests:
+            with self.subTest(manifest=relative_path):
+                with (REPO_ROOT / relative_path).open("rb") as handle:
+                    dependencies = tomllib.load(handle)["dependencies"]
+                gameta_dependencies = {
+                    name: dependency
+                    for name, dependency in dependencies.items()
+                    if name.startswith("gameta_")
+                }
+                self.assertTrue(gameta_dependencies, relative_path)
+                for name, dependency in gameta_dependencies.items():
+                    self.assertEqual(
+                        dependency.get("version"),
+                        self.VERSION,
+                        f"{relative_path}: {name}",
+                    )
+
+        workflows = {
+            ".woodpecker.yml": "gameta",
+            ".github/workflows/tests.yml": "codeberg/gameta",
+            ".github/workflows/windows-build.yml": "codeberg/gameta",
+            ".github/workflows/flatpak-build.yml": "codeberg/gameta",
+        }
+        for relative_path, checkout_dir in workflows.items():
+            with self.subTest(workflow=relative_path):
+                text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+                self.assertIn(self.REVISION, text)
+                self.assertIn(
+                    f"git clone --no-checkout "
+                    f"https://codeberg.org/0xdev/gameta.git {checkout_dir}",
+                    text,
+                )
+                self.assertIn(
+                    f"git -C {checkout_dir} fetch --depth 1 origin "
+                    f"{self.REVISION}",
+                    text,
+                )
+                self.assertIn(
+                    f"git -C {checkout_dir} checkout --detach FETCH_HEAD",
+                    text,
+                )
+                self.assertNotIn(
+                    "git clone --depth 1 https://codeberg.org/0xdev/gameta.git",
+                    text,
+                )
+
+                if relative_path == ".github/workflows/windows-build.yml":
+                    equality_check = (
+                        f"if ((git -C {checkout_dir} rev-parse HEAD) -ne "
+                        f'"{self.REVISION}")'
+                    )
+                else:
+                    equality_check = (
+                        f'test "$(git -C {checkout_dir} rev-parse HEAD)" = '
+                        f'"{self.REVISION}"'
+                    )
+                self.assertIn(equality_check, text)
+
+
 class TestPluginVersions(unittest.TestCase):
     def test_plugin_manifest_versions_match_cargo(self):
         for plugin in ("dlsite-metadata", "gstreamer-preview", "ui-demo"):
