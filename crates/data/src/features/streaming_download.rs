@@ -73,10 +73,24 @@ struct DownloadIdentity {
     cache_key: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DownloadRequestDescriptor {
+    url: String,
+    cache_type: CacheType,
+    product_id: Option<String>,
+    use_proxy: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletedDownload {
+    request: DownloadRequestDescriptor,
+    bytes: u64,
+}
+
 #[derive(Debug)]
 struct DownloadState {
     gate: Mutex<()>,
-    completed_bytes: Mutex<Option<u64>>,
+    completed: Mutex<Option<CompletedDownload>>,
 }
 
 type DownloadLockRegistry = HashMap<DownloadIdentity, Weak<DownloadState>>;
@@ -124,7 +138,7 @@ fn download_identity_lock(cache_base_dir: &Path, key: &str) -> Result<DownloadId
         .unwrap_or_else(|| {
             let state = Arc::new(DownloadState {
                 gate: Mutex::new(()),
-                completed_bytes: Mutex::new(None),
+                completed: Mutex::new(None),
             });
             registry.insert(identity.clone(), Arc::downgrade(&state));
             state
@@ -187,25 +201,50 @@ fn is_strong_etag(etag: &str) -> bool {
             .all(|byte| *byte == 0x21 || (0x23..=0x7e).contains(byte) || *byte >= 0x80)
 }
 
-fn remove_record_file(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
+fn remove_record_file_with<R>(path: &Path, remove_file: &mut R) -> Result<()>
+where
+    R: FnMut(&Path) -> std::io::Result<()>,
+{
+    match remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| format!("removing partial sidecar {:?}", path)),
     }
 }
 
-fn discard_partial_record(data_path: &Path, meta_path: &Path) -> Result<()> {
-    remove_record_file(data_path)?;
-    remove_record_file(meta_path)?;
+fn discard_partial_record_with<R>(
+    data_path: &Path,
+    meta_path: &Path,
+    remove_file: &mut R,
+) -> Result<()>
+where
+    R: FnMut(&Path) -> std::io::Result<()>,
+{
+    remove_record_file_with(meta_path, remove_file)?;
+    remove_record_file_with(data_path, remove_file)?;
     Ok(())
 }
 
+#[cfg(test)]
 fn prepare_resume_record(
     data_path: &Path,
     meta_path: &Path,
     requested_url: &str,
 ) -> Result<Option<ResumeRecord>> {
+    prepare_resume_record_with(data_path, meta_path, requested_url, &mut |path| {
+        fs::remove_file(path)
+    })
+}
+
+fn prepare_resume_record_with<R>(
+    data_path: &Path,
+    meta_path: &Path,
+    requested_url: &str,
+    remove_file: &mut R,
+) -> Result<Option<ResumeRecord>>
+where
+    R: FnMut(&Path) -> std::io::Result<()>,
+{
     let data_exists = data_path
         .try_exists()
         .with_context(|| format!("checking partial data {:?}", data_path))?;
@@ -236,7 +275,7 @@ fn prepare_resume_record(
     })();
 
     if candidate.is_none() {
-        discard_partial_record(data_path, meta_path)?;
+        discard_partial_record_with(data_path, meta_path, remove_file)?;
     }
     Ok(candidate)
 }
@@ -268,6 +307,7 @@ pub fn fetch_url_to_cache(
         url,
         cache_type,
         product_id,
+        use_proxy,
         |writer, range_start, if_match| {
             http_client.blocking_get_streaming(url, use_proxy, writer, range_start, if_match)
         },
@@ -280,10 +320,31 @@ fn fetch_url_to_cache_with<F>(
     url: &str,
     cache_type: CacheType,
     product_id: Option<&str>,
-    mut fetch: F,
+    use_proxy: bool,
+    fetch: F,
 ) -> Result<u64, String>
 where
     F: FnMut(&mut File, Option<u64>, Option<&str>) -> Result<StreamingDownload, String>,
+{
+    let request = DownloadRequestDescriptor {
+        url: url.to_string(),
+        cache_type,
+        product_id: product_id.map(str::to_string),
+        use_proxy,
+    };
+    fetch_url_to_cache_with_file_ops(cache, key, request, fetch, |path| fs::remove_file(path))
+}
+
+fn fetch_url_to_cache_with_file_ops<F, R>(
+    cache: &ContentCache,
+    key: &str,
+    request_descriptor: DownloadRequestDescriptor,
+    mut fetch: F,
+    mut remove_file: R,
+) -> Result<u64, String>
+where
+    F: FnMut(&mut File, Option<u64>, Option<&str>) -> Result<StreamingDownload, String>,
+    R: FnMut(&Path) -> std::io::Result<()>,
 {
     let (partial_path, meta_path) = partial_paths(cache, key);
     fs::create_dir_all(partial_dir(cache).as_path())
@@ -295,14 +356,23 @@ where
     // Callers that overlapped the successful owner share its committed
     // result. Once the last participant drops, the weak registry entry and
     // this outcome disappear, so a later independent call still refetches.
-    if let Some(bytes) = *identity_lock.state.completed_bytes.lock() {
-        return Ok(bytes);
+    if let Some(completed) = identity_lock.state.completed.lock().as_ref() {
+        if completed.request == request_descriptor {
+            return Ok(completed.bytes);
+        }
     }
 
-    let resume = prepare_resume_record(&partial_path, &meta_path, url)
-        .map_err(|error| format!("validating partial download: {error:#}"))?;
+    let resume = prepare_resume_record_with(
+        &partial_path,
+        &meta_path,
+        &request_descriptor.url,
+        &mut remove_file,
+    )
+    .map_err(|error| format!("validating partial download: {error:#}"))?;
 
     if let Some(record) = resume.as_ref() {
+        remove_record_file_with(&meta_path, &mut remove_file)
+            .map_err(|error| format!("revoking resume metadata before append: {error:#}"))?;
         info!(
             "[streaming] resuming {} from byte {} (etag: {})",
             key, record.offset, record.etag
@@ -337,11 +407,13 @@ where
                 key
             );
             drop(file);
-            discard_partial_record(&partial_path, &meta_path).map_err(|discard_error| {
-                format!(
-                    "discarding partial download after resume error ({error}): {discard_error:#}"
-                )
-            })?;
+            discard_partial_record_with(&partial_path, &meta_path, &mut remove_file).map_err(
+                |discard_error| {
+                    format!(
+                        "discarding partial download after resume error ({error}): {discard_error:#}"
+                    )
+                },
+            )?;
             file = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -370,7 +442,7 @@ where
             key
         );
         drop(file);
-        discard_partial_record(&partial_path, &meta_path)
+        discard_partial_record_with(&partial_path, &meta_path, &mut remove_file)
             .map_err(|error| format!("discarding mismatched partial download: {error:#}"))?;
         file = OpenOptions::new()
             .create(true)
@@ -403,7 +475,7 @@ where
     }
 
     let meta = PartialMeta {
-        url: url.to_string(),
+        url: request_descriptor.url.clone(),
         etag: result.etag.clone(),
         last_modified: result.last_modified.clone(),
         total_size: Some(total_size),
@@ -447,22 +519,25 @@ where
             key,
             &sri,
             bytes_committed,
-            cache_type,
-            product_id,
-            Some(url),
+            request_descriptor.cache_type,
+            request_descriptor.product_id.as_deref(),
+            Some(&request_descriptor.url),
         )
         .map_err(|e| format!("upserting cache index: {}", e))?;
 
     // Cleanup partial sidecars on success. Best-effort — orphans get
     // GC'd by `.partial` directory cleanup on next run if removal
     // fails (e.g. on Windows when antivirus is mid-scan).
-    let _ = discard_partial_record(&partial_path, &meta_path);
+    let _ = discard_partial_record_with(&partial_path, &meta_path, &mut remove_file);
 
     debug!(
         "[streaming] cached {} bytes for key {} (partial was {}, sri {})",
         bytes_committed, key, partial_size, sri
     );
-    *identity_lock.state.completed_bytes.lock() = Some(bytes_committed);
+    *identity_lock.state.completed.lock() = Some(CompletedDownload {
+        request: request_descriptor,
+        bytes: bytes_committed,
+    });
     Ok(bytes_committed)
 }
 
@@ -803,7 +878,12 @@ mod tests {
             url,
             CacheType::Other,
             None,
+            false,
             |writer, range_start, if_match| {
+                assert!(
+                    !meta_path.exists(),
+                    "resume metadata must be revoked before appending new bytes"
+                );
                 calls += 1;
                 assert_eq!(range_start, Some(3));
                 assert_eq!(if_match, Some("\"v1\""));
@@ -847,6 +927,7 @@ mod tests {
             url,
             CacheType::Other,
             None,
+            false,
             |writer, range_start, if_match| {
                 calls += 1;
                 match calls {
@@ -900,6 +981,7 @@ mod tests {
             url,
             CacheType::Other,
             None,
+            false,
             |writer, range_start, _if_match| {
                 calls += 1;
                 if calls == 1 {
@@ -945,6 +1027,7 @@ mod tests {
             url,
             CacheType::Other,
             None,
+            false,
             |writer, range_start, if_match| {
                 calls += 1;
                 if calls == 1 {
@@ -965,6 +1048,95 @@ mod tests {
         assert_eq!(calls, 2);
         assert_eq!(bytes, 6);
         assert_eq!(cache.get(key).unwrap().unwrap(), b"fresh!");
+    }
+
+    #[test]
+    fn failed_data_cleanup_after_invalid_resume_cannot_reauthorize_appended_bytes() {
+        let (_dir, cache, index) = test_cache();
+        let key = "failed-cleanup-key";
+        let url = "https://example.test/file";
+        let (data_path, meta_path) = partial_paths(&cache, key);
+        fs::create_dir_all(data_path.parent().unwrap()).unwrap();
+        fs::write(&data_path, b"abc").unwrap();
+        write_meta(
+            &meta_path,
+            &PartialMeta {
+                url: url.to_string(),
+                etag: Some("\"v1\"".to_string()),
+                last_modified: None,
+                total_size: Some(6),
+            },
+        )
+        .unwrap();
+
+        let mut data_removal_attempts = 0;
+        let first = fetch_url_to_cache_with_file_ops(
+            &cache,
+            key,
+            DownloadRequestDescriptor {
+                url: url.to_string(),
+                cache_type: CacheType::Other,
+                product_id: None,
+                use_proxy: false,
+            },
+            |writer, range_start, if_match| {
+                assert_eq!(range_start, Some(3));
+                assert_eq!(if_match, Some("\"v1\""));
+                assert!(
+                    !meta_path.exists(),
+                    "metadata must be revoked before the transport can append"
+                );
+                writer.write_all(b"x").unwrap();
+                Ok(streaming_result(1, true, Some("\"v1\""), Some(7)))
+            },
+            |path| {
+                if path == data_path && data_removal_attempts == 0 {
+                    data_removal_attempts += 1;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "injected partial-data removal failure",
+                    ));
+                }
+                fs::remove_file(path)
+            },
+        );
+
+        assert!(first
+            .unwrap_err()
+            .contains("injected partial-data removal failure"));
+        assert_eq!(data_removal_attempts, 1);
+        assert!(
+            data_path.exists(),
+            "injected failure should leave data behind"
+        );
+        assert!(
+            !meta_path.exists(),
+            "failed data cleanup must not leave authoritative metadata"
+        );
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 0);
+
+        let mut next_calls = 0;
+        let bytes = fetch_url_to_cache_with(
+            &cache,
+            key,
+            url,
+            CacheType::Other,
+            None,
+            false,
+            |writer, range_start, if_match| {
+                next_calls += 1;
+                assert_eq!(range_start, None);
+                assert_eq!(if_match, None);
+                writer.write_all(b"fresh!").unwrap();
+                Ok(streaming_result(6, false, Some("\"v2\""), Some(6)))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(next_calls, 1);
+        assert_eq!(bytes, 6);
+        assert_eq!(cache.get(key).unwrap().unwrap(), b"fresh!");
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -991,6 +1163,7 @@ mod tests {
                 url,
                 CacheType::Other,
                 None,
+                false,
                 |writer, range_start, if_match| {
                     first_calls.fetch_add(1, Ordering::SeqCst);
                     assert_eq!(range_start, None);
@@ -1012,6 +1185,7 @@ mod tests {
                 url,
                 CacheType::Other,
                 None,
+                false,
                 |writer, _range_start, _if_match| {
                     second_calls.fetch_add(1, Ordering::SeqCst);
                     writer.write_all(b"two").unwrap();
@@ -1050,5 +1224,155 @@ mod tests {
         assert_eq!(fetch_calls.load(Ordering::SeqCst), 1);
         assert_eq!(index.upserts.load(Ordering::SeqCst), 1);
         assert_eq!(cache.get(key).unwrap().unwrap(), b"one");
+    }
+
+    #[test]
+    fn concurrent_same_key_only_coalesces_exact_request_descriptors() {
+        let cases = [
+            (
+                "URL",
+                "https://example.test/one",
+                CacheType::Other,
+                None,
+                false,
+                "https://example.test/two",
+                CacheType::Other,
+                None,
+                false,
+            ),
+            (
+                "cache type",
+                "https://example.test/file",
+                CacheType::Other,
+                None,
+                false,
+                "https://example.test/file",
+                CacheType::Cover,
+                None,
+                false,
+            ),
+            (
+                "product ID",
+                "https://example.test/file",
+                CacheType::Other,
+                Some("product-one"),
+                false,
+                "https://example.test/file",
+                CacheType::Other,
+                Some("product-two"),
+                false,
+            ),
+            (
+                "transport mode",
+                "https://example.test/file",
+                CacheType::Other,
+                None,
+                false,
+                "https://example.test/file",
+                CacheType::Other,
+                None,
+                true,
+            ),
+        ];
+
+        for (
+            label,
+            first_url,
+            first_cache_type,
+            first_product_id,
+            first_use_proxy,
+            second_url,
+            second_cache_type,
+            second_product_id,
+            second_use_proxy,
+        ) in cases
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let base = dir.path().join("cache");
+            fs::create_dir_all(&base).unwrap();
+            let index = Arc::new(RecordingIndex::default());
+            let (upsert_started_tx, upsert_started_rx) = std::sync::mpsc::channel();
+            let (upsert_release_tx, upsert_release_rx) = std::sync::mpsc::channel();
+            *index.first_upsert_started.lock() = Some(upsert_started_tx);
+            *index.first_upsert_release.lock() = Some(upsert_release_rx);
+            let cache = ContentCache::new(base.clone(), index.clone()).unwrap();
+            let key = "descriptor-key";
+            let fetch_calls = Arc::new(AtomicUsize::new(0));
+
+            let first_cache = cache.clone();
+            let first_calls = fetch_calls.clone();
+            let first = std::thread::spawn(move || {
+                fetch_url_to_cache_with(
+                    &first_cache,
+                    key,
+                    first_url,
+                    first_cache_type,
+                    first_product_id,
+                    first_use_proxy,
+                    |writer, range_start, if_match| {
+                        first_calls.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(range_start, None);
+                        assert_eq!(if_match, None);
+                        writer.write_all(b"one").unwrap();
+                        Ok(streaming_result(3, false, Some("\"v1\""), Some(3)))
+                    },
+                )
+            });
+
+            upsert_started_rx.recv().unwrap();
+
+            let second_cache = cache.clone();
+            let second_calls = fetch_calls.clone();
+            let second = std::thread::spawn(move || {
+                fetch_url_to_cache_with(
+                    &second_cache,
+                    key,
+                    second_url,
+                    second_cache_type,
+                    second_product_id,
+                    second_use_proxy,
+                    |writer, range_start, if_match| {
+                        second_calls.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(range_start, None);
+                        assert_eq!(if_match, None);
+                        writer.write_all(b"two").unwrap();
+                        Ok(streaming_result(3, false, Some("\"v2\""), Some(3)))
+                    },
+                )
+            });
+
+            let identity = DownloadIdentity {
+                cache_base_dir: fs::canonicalize(&base).unwrap(),
+                cache_key: key.to_string(),
+            };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let participant_count = download_lock_registry()
+                    .lock()
+                    .get(&identity)
+                    .map(Weak::strong_count)
+                    .unwrap_or(0);
+                if participant_count >= 2 {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "second {label} caller did not join the identity lock"
+                );
+                std::thread::yield_now();
+            }
+
+            upsert_release_tx.send(()).unwrap();
+            assert_eq!(first.join().unwrap().unwrap(), 3, "{label}");
+            assert_eq!(second.join().unwrap().unwrap(), 3, "{label}");
+            assert_eq!(fetch_calls.load(Ordering::SeqCst), 2, "{label}");
+            assert_eq!(index.upserts.load(Ordering::SeqCst), 2, "{label}");
+            assert_eq!(cache.get(key).unwrap().unwrap(), b"two", "{label}");
+
+            let entry = index.entry.lock().clone().unwrap();
+            assert_eq!(entry.source_url.as_deref(), Some(second_url), "{label}");
+            assert_eq!(entry.cache_type, second_cache_type, "{label}");
+            assert_eq!(entry.product_id.as_deref(), second_product_id, "{label}");
+        }
     }
 }
