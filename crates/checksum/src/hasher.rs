@@ -2,7 +2,7 @@
 
 use crate::algorithm::Algorithm;
 use crate::merkle::MerkleTree;
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
@@ -114,12 +114,87 @@ pub struct FileHashResult {
     pub size: u64,
 }
 
+fn collect_file_entries(root: &Path) -> Result<Vec<walkdir::DirEntry>> {
+    let mut files = Vec::new();
+    for entry in WalkDir::new(root) {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                let affected_path = error.path().unwrap_or(root).to_path_buf();
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to walk {} while hashing root {}",
+                        affected_path.display(),
+                        root.display()
+                    )
+                });
+            }
+        };
+        if entry.file_type().is_file() {
+            files.push(entry);
+        }
+    }
+    Ok(files)
+}
+
+fn hash_file_entries(
+    root: &Path,
+    entries: &[walkdir::DirEntry],
+    algorithm: Algorithm,
+) -> Result<Vec<FileHashResult>> {
+    // Rayon may choose any error when collecting `Result` directly. Keep its
+    // indexed output order, then return the first traversal-order error.
+    let results: Vec<Result<FileHashResult>> = entries
+        .par_iter()
+        .map(|entry| {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .with_context(|| {
+                    format!(
+                        "Failed to make {} relative to hash root {}",
+                        path.display(),
+                        root.display()
+                    )
+                })?
+                .to_str()
+                .with_context(|| {
+                    format!(
+                        "Hash path {} under root {} is not valid UTF-8",
+                        path.display(),
+                        root.display()
+                    )
+                })?
+                .replace('\\', "/");
+            let metadata = entry
+                .metadata()
+                .with_context(|| format!("Failed to read metadata for file {}", path.display()))?;
+            let hash = hash_file(path, algorithm)
+                .with_context(|| format!("Failed to hash file {}", path.display()))?;
+
+            Ok(FileHashResult {
+                relative_path: relative,
+                hash,
+                size: metadata.len(),
+            })
+        })
+        .collect();
+
+    results.into_iter().collect()
+}
+
 /// Hash all files in a folder in parallel
 pub fn hash_folder_parallel(
     root: &Path,
     algorithm: Algorithm,
     max_threads: Option<usize>,
 ) -> Result<(Vec<FileHashResult>, MerkleTree)> {
+    let root_metadata = std::fs::metadata(root)
+        .with_context(|| format!("Failed to read metadata for root {}", root.display()))?;
+    if !root_metadata.is_dir() {
+        bail!("Hash root {} is not a directory", root.display());
+    }
+
     // Configure thread pool if specified
     if let Some(threads) = max_threads {
         rayon::ThreadPoolBuilder::new()
@@ -129,41 +204,12 @@ pub fn hash_folder_parallel(
     }
 
     // Collect all file paths first
-    let files: Vec<_> = WalkDir::new(root)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .collect();
+    let files = collect_file_entries(root)?;
 
     tracing::info!("Hashing {} files in parallel", files.len());
 
     // Hash files in parallel
-    let results: Vec<FileHashResult> = files
-        .par_iter()
-        .filter_map(|entry| {
-            let path = entry.path();
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(path)
-                .to_string_lossy()
-                .replace('\\', "/");
-
-            match hash_file(path, algorithm) {
-                Ok(hash) => {
-                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-                    Some(FileHashResult {
-                        relative_path: relative,
-                        hash,
-                        size,
-                    })
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to hash {}: {}", path.display(), e);
-                    None
-                }
-            }
-        })
-        .collect();
+    let results = hash_file_entries(root, &files, algorithm)?;
 
     // Build Merkle tree from results
     let merkle = MerkleTree::from_file_hashes(&results, algorithm);
@@ -273,5 +319,63 @@ mod tests {
         let (results, merkle) = hash_folder_parallel(dir.path(), Algorithm::Crc32, None).unwrap();
         assert_eq!(results.len(), 5);
         assert!(!merkle.root_hash().bytes.is_empty());
+    }
+
+    #[test]
+    fn hash_folder_parallel_rejects_missing_root_with_path_context() {
+        let dir = TempDir::new().unwrap();
+        let missing_root = dir.path().join("missing");
+
+        let error = hash_folder_parallel(&missing_root, Algorithm::Sha256, None).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains(&missing_root.display().to_string()));
+        assert!(message.contains("metadata"));
+    }
+
+    #[test]
+    fn hash_folder_parallel_rejects_non_directory_root() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("file.txt");
+        std::fs::write(&file_path, b"contents").unwrap();
+
+        let error = hash_folder_parallel(&file_path, Algorithm::Sha256, None).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains(&file_path.display().to_string()));
+        assert!(message.contains("not a directory"));
+    }
+
+    #[test]
+    fn hash_file_entries_reports_file_removed_after_walk() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("removed.txt");
+        std::fs::write(&file_path, b"contents").unwrap();
+        let entries = collect_file_entries(dir.path()).unwrap();
+        assert_eq!(entries.len(), 1);
+        std::fs::remove_file(&file_path).unwrap();
+
+        let error = hash_file_entries(dir.path(), &entries, Algorithm::Sha256).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains(&file_path.display().to_string()));
+        assert!(message.contains("metadata"));
+    }
+
+    #[test]
+    fn hash_file_entries_reports_file_replaced_by_directory() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("replaced.txt");
+        std::fs::write(&file_path, b"contents").unwrap();
+        let entries = collect_file_entries(dir.path()).unwrap();
+        assert_eq!(entries.len(), 1);
+        std::fs::remove_file(&file_path).unwrap();
+        std::fs::create_dir(&file_path).unwrap();
+
+        let error = hash_file_entries(dir.path(), &entries, Algorithm::Sha256).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains(&file_path.display().to_string()));
+        assert!(message.contains("Failed to hash file"));
     }
 }
