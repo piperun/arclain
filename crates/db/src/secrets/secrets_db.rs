@@ -10,11 +10,29 @@ use anyhow::{anyhow, Context, Result};
 use arclain_app_fs::{ensure_owner_dir, restrict_owner_file};
 use redb::{ReadableTable, TableDefinition};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::Path;
 use zeroize::Zeroizing;
 
 const PASS_RULES_TABLE: TableDefinition<u32, &[u8]> = TableDefinition::new("pass_rules");
 const METADATA_TABLE: TableDefinition<&str, &[u8]> = TableDefinition::new("metadata");
+
+/// One encrypted metadata change applied as part of a single redb transaction.
+///
+/// This type intentionally does not implement `Debug`: `Set::value` is secret
+/// material and must not be exposed through diagnostics.
+pub enum SecretMutation<'a> {
+    Set { key: &'a str, value: &'a str },
+    Remove { key: &'a str },
+}
+
+impl SecretMutation<'_> {
+    fn key(&self) -> &str {
+        match self {
+            Self::Set { key, .. } | Self::Remove { key } => key,
+        }
+    }
+}
 
 /// Encrypted password rule stored in redb
 #[derive(Clone, Serialize, Deserialize)]
@@ -223,6 +241,53 @@ impl SecretsDb {
             {
                 let mut table = write_txn.open_table(METADATA_TABLE)?;
                 table.insert(key, encrypted.as_slice())?;
+            }
+            write_txn.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Apply encrypted metadata changes atomically.
+    ///
+    /// Every key is validated and every `Set` value is encrypted before the
+    /// redb write transaction starts. Duplicate keys are rejected so callers
+    /// cannot depend on order-sensitive behavior inside a durability boundary.
+    pub fn apply_secret_mutations(&self, mutations: &[SecretMutation<'_>]) -> Result<()> {
+        let mut keys = HashSet::with_capacity(mutations.len());
+        for mutation in mutations {
+            let key = mutation.key();
+            if key.is_empty() {
+                return Err(anyhow!("secret mutation key must not be empty"));
+            }
+            if !keys.insert(key) {
+                return Err(anyhow!("duplicate secret mutation key"));
+            }
+        }
+
+        let prepared = mutations
+            .iter()
+            .map(|mutation| match mutation {
+                SecretMutation::Set { key, value } => {
+                    Ok((*key, Some(self.encrypt(value.as_bytes())?)))
+                }
+                SecretMutation::Remove { key } => Ok((*key, None)),
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        self.db.with_connection(|conn| {
+            let write_txn = conn.begin_write()?;
+            {
+                let mut table = write_txn.open_table(METADATA_TABLE)?;
+                for (key, encrypted) in &prepared {
+                    match encrypted {
+                        Some(value) => {
+                            table.insert(*key, value.as_slice())?;
+                        }
+                        None => {
+                            table.remove(*key)?;
+                        }
+                    }
+                }
             }
             write_txn.commit()?;
             Ok(())

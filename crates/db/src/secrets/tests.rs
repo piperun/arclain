@@ -46,6 +46,97 @@ fn remove_secret_deletes_an_existing_value_and_is_idempotent() {
 }
 
 #[test]
+fn atomic_secret_mutations_persist_replacement_and_marker_after_reopen() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("secrets.redb");
+    {
+        let db = SecretsDb::open(&db_path, &test_key()).unwrap();
+        db.set_secret("proxy:socks5", "old-password").unwrap();
+
+        db.apply_secret_mutations(&[
+            SecretMutation::Set {
+                key: "proxy:socks5",
+                value: "new-password",
+            },
+            SecretMutation::Set {
+                key: "journal:proxy-settings",
+                value: "encrypted-marker-payload",
+            },
+        ])
+        .unwrap();
+    }
+
+    let reopened = SecretsDb::open(&db_path, &test_key()).unwrap();
+    assert_eq!(
+        reopened
+            .get_secret("proxy:socks5")
+            .unwrap()
+            .as_ref()
+            .map(|value| value.as_str()),
+        Some("new-password")
+    );
+    assert_eq!(
+        reopened
+            .get_secret("journal:proxy-settings")
+            .unwrap()
+            .as_ref()
+            .map(|value| value.as_str()),
+        Some("encrypted-marker-payload")
+    );
+}
+
+#[test]
+fn atomic_secret_mutations_can_remove_password_while_setting_marker() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("secrets.redb");
+    let db = SecretsDb::open(&db_path, &test_key()).unwrap();
+    db.set_secret("proxy:socks5", "old-password").unwrap();
+
+    db.apply_secret_mutations(&[
+        SecretMutation::Remove {
+            key: "proxy:socks5",
+        },
+        SecretMutation::Set {
+            key: "journal:proxy-settings",
+            value: "encrypted-marker-payload",
+        },
+    ])
+    .unwrap();
+
+    assert!(db.get_secret("proxy:socks5").unwrap().is_none());
+    assert!(db.get_secret("journal:proxy-settings").unwrap().is_some());
+}
+
+#[test]
+fn atomic_secret_mutations_reject_duplicate_keys_before_mutation() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("secrets.redb");
+    let db = SecretsDb::open(&db_path, &test_key()).unwrap();
+    db.set_secret("proxy:socks5", "old-password").unwrap();
+
+    let error = db
+        .apply_secret_mutations(&[
+            SecretMutation::Set {
+                key: "proxy:socks5",
+                value: "new-password",
+            },
+            SecretMutation::Remove {
+                key: "proxy:socks5",
+            },
+        ])
+        .unwrap_err();
+
+    assert!(error.to_string().contains("duplicate secret mutation key"));
+    assert_eq!(
+        db.get_secret("proxy:socks5")
+            .unwrap()
+            .as_ref()
+            .map(|value| value.as_str()),
+        Some("old-password")
+    );
+}
+
+#[test]
 fn test_crud_completeness() {
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("secrets.redb");

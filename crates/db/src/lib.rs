@@ -42,7 +42,7 @@ pub use cache::{
 };
 
 mod secrets;
-pub use secrets::{PassRule as DbPassRule, SecretsDb};
+pub use secrets::{PassRule as DbPassRule, SecretMutation, SecretsDb};
 
 mod metadata_store;
 pub use metadata_store::MetadataStore;
