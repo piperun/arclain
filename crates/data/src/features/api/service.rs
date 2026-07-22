@@ -5,11 +5,19 @@
 
 use super::types::{DataRequest, DataResult, DataSource, DataStatus, SourceChain};
 use crate::features::resolver::DataSourceResolver;
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
+
+/// The legacy request/poll API resolves synchronously, so entries normally
+/// live only until the SDK's next poll. Bound abandoned IDs so a plugin that
+/// never polls cannot grow host memory without limit.
+const MAX_PENDING_REQUESTS: usize = 256;
+/// Aggregate body budget for results waiting to cross the request/poll ABI.
+/// Large resources should use the cache-backed streaming API instead.
+const MAX_PENDING_BODY_BYTES: usize = 50 * 1024 * 1024;
 
 /// The main Data Service
 ///
@@ -28,8 +36,14 @@ pub struct DataService {
 
 /// Internal state for pending requests
 struct DataApiState {
-    pending: RwLock<HashMap<String, PendingRequest>>,
+    pending: RwLock<PendingRequests>,
     next_id: RwLock<u64>,
+}
+
+#[derive(Default)]
+struct PendingRequests {
+    entries: IndexMap<String, PendingRequest>,
+    retained_body_bytes: usize,
 }
 
 struct PendingRequest {
@@ -38,12 +52,74 @@ struct PendingRequest {
     result: Option<DataResult>,
 }
 
+impl PendingRequest {
+    fn body_bytes(&self) -> usize {
+        self.result
+            .as_ref()
+            .and_then(|result| result.data.as_ref())
+            .map_or(0, Vec::len)
+    }
+}
+
+impl PendingRequests {
+    fn insert(&mut self, id: String, mut request: PendingRequest) {
+        let mut body_bytes = request.body_bytes();
+        if body_bytes > MAX_PENDING_BODY_BYTES {
+            request.result = Some(DataResult::failed(format!(
+                "Data response exceeds pending body budget of {MAX_PENDING_BODY_BYTES} bytes"
+            )));
+            body_bytes = 0;
+        }
+
+        while !self.entries.is_empty()
+            && (self.entries.len() >= MAX_PENDING_REQUESTS
+                || self.retained_body_bytes.saturating_add(body_bytes) > MAX_PENDING_BODY_BYTES)
+        {
+            let (evicted_id, evicted) = self
+                .entries
+                .shift_remove_index(0)
+                .expect("pending entries checked as non-empty");
+            self.retained_body_bytes = self
+                .retained_body_bytes
+                .saturating_sub(evicted.body_bytes());
+            debug!("Evicted abandoned data request '{evicted_id}'");
+        }
+
+        self.retained_body_bytes = self.retained_body_bytes.saturating_add(body_bytes);
+        self.entries.insert(id, request);
+    }
+
+    fn poll(&mut self, request_id: &str) -> Option<DataResult> {
+        let is_terminal = self
+            .entries
+            .get(request_id)?
+            .result
+            .as_ref()
+            .is_some_and(|result| {
+                matches!(
+                    result.status,
+                    DataStatus::Ready | DataStatus::Failed | DataStatus::Cached
+                )
+            });
+
+        if !is_terminal {
+            return self.entries.get(request_id)?.result.clone();
+        }
+
+        let mut request = self.entries.shift_remove(request_id)?;
+        self.retained_body_bytes = self
+            .retained_body_bytes
+            .saturating_sub(request.body_bytes());
+        request.result.take()
+    }
+}
+
 type ResolverSnapshot = Vec<(DataSource, Arc<dyn DataSourceResolver>)>;
 
 impl DataApiState {
     fn new() -> Self {
         Self {
-            pending: RwLock::new(HashMap::new()),
+            pending: RwLock::new(PendingRequests::default()),
             next_id: RwLock::new(0),
         }
     }
@@ -245,10 +321,8 @@ impl DataService {
 
     /// Poll for request result
     pub fn poll_data(&self, request_id: &str) -> DataResult {
-        if let Some(pending) = self.state.pending.write().get_mut(request_id) {
-            if let Some(result) = pending.result.take() {
-                return result;
-            }
+        if let Some(result) = self.state.pending.write().poll(request_id) {
+            return result;
         }
 
         DataResult::failed("Unknown request ID")
@@ -290,5 +364,192 @@ impl DataService {
 impl Default for DataService {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::features::resolver::ResolveError;
+    use std::sync::Barrier;
+    use std::thread;
+
+    const EXPECTED_MAX_PENDING_REQUESTS: usize = 256;
+    const EXPECTED_MAX_PENDING_BODY_BYTES: usize = 50 * 1024 * 1024;
+    const RESPONSE_BYTES: usize = 1024;
+
+    struct FixedBodyResolver {
+        body_bytes: usize,
+    }
+
+    impl DataSourceResolver for FixedBodyResolver {
+        fn try_resolve(&self, _key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
+            Ok(vec![0xA5; self.body_bytes])
+        }
+    }
+
+    fn service_with_body_resolver() -> DataService {
+        service_with_body_size(RESPONSE_BYTES)
+    }
+
+    fn service_with_body_size(body_bytes: usize) -> DataService {
+        let service = DataService::new();
+        service.register_resolver(
+            DataSource::Network,
+            Arc::new(FixedBodyResolver { body_bytes }),
+        );
+        service
+    }
+
+    fn network_request(key: impl Into<String>) -> DataRequest {
+        DataRequest::new(key).with_sources([DataSource::Network])
+    }
+
+    #[test]
+    fn terminal_poll_removes_the_whole_pending_request() {
+        let service = service_with_body_resolver();
+        let request_id = service.request_data(network_request("payload"));
+
+        assert_eq!(service.state.pending.read().entries.len(), 1);
+        let result = service.poll_data(&request_id);
+
+        assert_eq!(result.status, DataStatus::Ready);
+        assert_eq!(result.data.as_ref().map(Vec::len), Some(RESPONSE_BYTES));
+        assert!(service.state.pending.read().entries.is_empty());
+    }
+
+    #[test]
+    fn repeat_poll_after_terminal_result_is_unknown() {
+        let service = service_with_body_resolver();
+        let request_id = service.request_data(network_request("payload"));
+
+        assert_eq!(service.poll_data(&request_id).status, DataStatus::Ready);
+        let repeated = service.poll_data(&request_id);
+
+        assert_eq!(repeated.status, DataStatus::Failed);
+        assert_eq!(repeated.error.as_deref(), Some("Unknown request ID"));
+        assert!(repeated.data.is_none());
+    }
+
+    #[test]
+    fn concurrent_terminal_polls_have_one_consumer_and_leave_no_entry() {
+        let service = service_with_body_resolver();
+        let request_id = service.request_data(network_request("payload"));
+        let start = Arc::new(Barrier::new(3));
+
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let service = service.clone();
+                let request_id = request_id.clone();
+                let start = start.clone();
+                thread::spawn(move || {
+                    start.wait();
+                    service.poll_data(&request_id)
+                })
+            })
+            .collect();
+
+        start.wait();
+        let results: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("poll worker panicked"))
+            .collect();
+
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| result.status == DataStatus::Ready)
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| {
+                    result.status == DataStatus::Failed
+                        && result.error.as_deref() == Some("Unknown request ID")
+                })
+                .count(),
+            1
+        );
+        assert!(service.state.pending.read().entries.is_empty());
+    }
+
+    #[test]
+    fn abandoned_terminal_requests_are_bounded_and_evict_oldest_first() {
+        let service = service_with_body_resolver();
+        let mut request_ids = Vec::new();
+
+        for index in 0..=EXPECTED_MAX_PENDING_REQUESTS {
+            request_ids.push(service.request_data(network_request(format!("payload-{index}"))));
+        }
+
+        let pending = service.state.pending.read();
+        assert_eq!(pending.entries.len(), EXPECTED_MAX_PENDING_REQUESTS);
+        let retained_bytes: usize = pending
+            .entries
+            .values()
+            .filter_map(|request| request.result.as_ref()?.data.as_ref())
+            .map(Vec::len)
+            .sum();
+        assert_eq!(
+            retained_bytes,
+            EXPECTED_MAX_PENDING_REQUESTS * RESPONSE_BYTES
+        );
+        drop(pending);
+
+        let evicted = service.poll_data(&request_ids[0]);
+        assert_eq!(evicted.status, DataStatus::Failed);
+        assert_eq!(evicted.error.as_deref(), Some("Unknown request ID"));
+        assert_eq!(
+            service
+                .poll_data(request_ids.last().expect("latest request ID"))
+                .status,
+            DataStatus::Ready
+        );
+    }
+
+    #[test]
+    fn abandoned_terminal_body_bytes_evict_oldest_before_crossing_budget() {
+        const BODY_BYTES: usize = 5 * 1024 * 1024;
+        let service = service_with_body_size(BODY_BYTES);
+        let mut request_ids = Vec::new();
+
+        for index in 0..=EXPECTED_MAX_PENDING_BODY_BYTES / BODY_BYTES {
+            request_ids.push(service.request_data(network_request(format!("body-{index}"))));
+        }
+
+        let pending = service.state.pending.read();
+        assert_eq!(pending.retained_body_bytes, EXPECTED_MAX_PENDING_BODY_BYTES);
+        assert_eq!(pending.entries.len(), 10);
+        drop(pending);
+
+        let evicted = service.poll_data(&request_ids[0]);
+        assert_eq!(evicted.status, DataStatus::Failed);
+        assert_eq!(evicted.error.as_deref(), Some("Unknown request ID"));
+        assert_eq!(
+            service
+                .poll_data(request_ids.last().expect("latest request ID"))
+                .status,
+            DataStatus::Ready
+        );
+    }
+
+    #[test]
+    fn body_larger_than_aggregate_budget_is_not_retained() {
+        let service = service_with_body_size(EXPECTED_MAX_PENDING_BODY_BYTES + 1);
+        let request_id = service.request_data(network_request("oversized"));
+
+        let pending = service.state.pending.read();
+        assert_eq!(pending.retained_body_bytes, 0);
+        assert_eq!(pending.entries.len(), 1);
+        drop(pending);
+
+        let result = service.poll_data(&request_id);
+        assert_eq!(result.status, DataStatus::Failed);
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("pending body budget")));
     }
 }
