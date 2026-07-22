@@ -194,6 +194,15 @@ fn validate_actions_result(
     validate_serialized_result(actions)
 }
 
+fn validate_top_tabs_result(
+    tabs: &[crate::types::TopTabConfig],
+) -> std::result::Result<(), ResultValidationError> {
+    if tabs.len() > MAX_UI_ELEMENTS {
+        return Err(ResultValidationError::Quota(QuotaViolation::Result));
+    }
+    validate_serialized_result(tabs)
+}
+
 #[derive(Debug, Default)]
 struct InstanceAvailability {
     reason: Option<&'static str>,
@@ -814,11 +823,13 @@ impl PluginInstance {
     pub fn get_top_tabs(&mut self) -> Result<Vec<crate::types::TopTabConfig>> {
         self.call_export(
             |plugin, store| {
-                plugin
-                    .call_get_top_tabs(store)
-                    .map(|tabs| tabs.into_iter().map(convert_top_tab_config).collect())
+                plugin.call_get_top_tabs(store).map(|tabs| {
+                    tabs.into_iter()
+                        .map(convert_top_tab_config)
+                        .collect::<Vec<_>>()
+                })
             },
-            validate_serialized_result,
+            |tabs| validate_top_tabs_result(tabs),
             PluginError::ExecutionError,
         )
     }
@@ -1531,6 +1542,69 @@ mod resource_limit_tests {
             validate_actions_result(&action(MAX_ACTIONS)),
             Err(ResultValidationError::Quota(QuotaViolation::Result))
         ));
+    }
+
+    fn minimal_top_tab() -> crate::types::TopTabConfig {
+        crate::types::TopTabConfig {
+            id: String::new(),
+            label: String::new(),
+            icon: String::new(),
+            badge: None,
+            priority: 0,
+        }
+    }
+
+    #[test]
+    fn top_tab_limit_accepts_boundary_and_rejects_one_over() {
+        let exact = vec![minimal_top_tab(); MAX_UI_ELEMENTS];
+        let over = vec![minimal_top_tab(); MAX_UI_ELEMENTS + 1];
+
+        assert!(validate_top_tabs_result(&exact).is_ok());
+        assert!(matches!(
+            validate_top_tabs_result(&over),
+            Err(ResultValidationError::Quota(QuotaViolation::Result))
+        ));
+    }
+
+    #[test]
+    fn oversized_top_tabs_are_terminal_and_second_call_skips_guest_boundary() {
+        let runtime = WasmRuntime::new().unwrap();
+        let host = HostFunctions::new_for_metadata_validation("top-tab-quota".to_string()).unwrap();
+        let mut store = new_plugin_store(&runtime.engine, host).unwrap();
+        let mut availability = InstanceAvailability::default();
+        let call_entries = std::sync::atomic::AtomicUsize::new(0);
+        let over = vec![minimal_top_tab(); MAX_UI_ELEMENTS + 1];
+
+        let first = call_with_quotas(
+            &mut store,
+            &mut availability,
+            |_| {
+                call_entries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(over.clone())
+            },
+            |tabs| validate_top_tabs_result(tabs),
+            PluginError::ExecutionError,
+        )
+        .unwrap_err();
+        let second = call_with_quotas(
+            &mut store,
+            &mut availability,
+            |_| {
+                call_entries.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Vec::<crate::types::TopTabConfig>::new())
+            },
+            |tabs| validate_top_tabs_result(tabs),
+            PluginError::ExecutionError,
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            first,
+            PluginError::Unavailable(ref reason) if reason == "plugin result quota exceeded"
+        ));
+        assert!(matches!(second, PluginError::Unavailable(_)));
+        assert_eq!(call_entries.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(availability.reason(), Some("plugin result quota exceeded"));
     }
 
     #[test]
