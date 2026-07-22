@@ -35,7 +35,6 @@ pub fn delete_selected(
     state: &Arc<Mutex<AppState>>,
     entries: &[FileEntry],
     status_info: &mut status_bar::StatusBarInfo,
-    ui_entries: &mut Vec<FileEntry>,
 ) {
     // Build full paths using current navigation prefix; skip folders for delete
     let (full_paths, archive_opt) = {
@@ -83,7 +82,6 @@ pub fn delete_selected(
                     &mut Default::default(), // password_dialog placeholder
                     &mut None,               // pending_archive_path placeholder
                     status_info,
-                    ui_entries,
                 );
             }
         }

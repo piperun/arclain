@@ -3,6 +3,8 @@ use arclain_ui::features::archive_operations::ArchiveOperationsState;
 use arclain_ui::shared::models::file_entry::FileEntry;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 mod common;
 use common::TestContext;
@@ -42,24 +44,40 @@ fn test_navigate_to_folder_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
 
-    signals.tabs.get().active().archive_path.set(Some(PathBuf::from("test.zip")));
+    signals
+        .tabs
+        .get()
+        .active()
+        .archive_path
+        .set(Some(PathBuf::from("test.zip")));
 
     let target = "subfolder".to_string();
     ctx.handle_action(Action::NavigateToFolder(target.clone()));
 
-    assert_eq!(signals.tabs.get().active().navigation.get().current_path, target);
+    assert_eq!(
+        signals.tabs.get().active().navigation.get().current_path,
+        target
+    );
 }
 
 #[test]
 fn test_navigate_to_path_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
-    signals.tabs.get().active().archive_path.set(Some(PathBuf::from("test.zip")));
+    signals
+        .tabs
+        .get()
+        .active()
+        .archive_path
+        .set(Some(PathBuf::from("test.zip")));
 
     let target = "direct/path/folder".to_string();
     ctx.handle_action(Action::NavigateToPath(target.clone()));
 
-    assert_eq!(signals.tabs.get().active().navigation.get().current_path, target);
+    assert_eq!(
+        signals.tabs.get().active().navigation.get().current_path,
+        target
+    );
 }
 
 #[test]
@@ -69,19 +87,19 @@ fn test_show_properties_action() {
 
     // Setup entries via signal
     let tab = signals.tabs.get().active().clone();
-    let mut view_state = tab.browser_view_state.get();
-    view_state.view_entries.push(FileEntry {
-        name: "test.txt".to_string(),
-        path: "test.txt".to_string(),
-        size: "100".to_string(),
-        compressed: "50".to_string(),
-        ratio: "50%".to_string(),
-        modified: "2024-01-01".to_string(),
-        crc32: "00000000".to_string(),
-        encrypted: false,
-        is_folder: false,
+    tab.browser_entries.update(|snapshot| {
+        snapshot.replace(vec![FileEntry {
+            name: "test.txt".to_string(),
+            path: "test.txt".to_string(),
+            size: "100".to_string(),
+            compressed: "50".to_string(),
+            ratio: "50%".to_string(),
+            modified: "2024-01-01".to_string(),
+            crc32: "00000000".to_string(),
+            encrypted: false,
+            is_folder: false,
+        }])
     });
-    tab.browser_view_state.set(view_state);
 
     ctx.handle_action(Action::ShowProperties("test.txt".to_string()));
 
@@ -98,12 +116,24 @@ fn test_copy_path_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
 
-    signals.tabs.get().active().navigation.get().set_current_path("root/folder");
+    signals
+        .tabs
+        .get()
+        .active()
+        .navigation
+        .get()
+        .set_current_path("root/folder");
 
     let filename = "file.txt".to_string();
     ctx.handle_action(Action::CopyPath(filename.clone()));
 
-    signals.tabs.get().active().navigation.get().set_current_path("");
+    signals
+        .tabs
+        .get()
+        .active()
+        .navigation
+        .get()
+        .set_current_path("");
     ctx.handle_action(Action::CopyPath(filename));
 }
 
@@ -164,7 +194,12 @@ fn test_organize_action() {
     let mut ctx = TestContext::new();
     let signals = ctx.shared.app_state.lock().signals.clone();
 
-    signals.tabs.get().active().archive_path.set(Some(PathBuf::from("test.zip")));
+    signals
+        .tabs
+        .get()
+        .active()
+        .archive_path
+        .set(Some(PathBuf::from("test.zip")));
 
     ctx.handle_action(Action::Organize);
 
@@ -203,19 +238,19 @@ fn test_ui_render_sanity() {
         .set(Some(PathBuf::from("test.zip")));
 
     let tab = shared.signals().tabs.get().active().clone();
-    let mut view_state = tab.browser_view_state.get();
-    view_state.view_entries.push(FileEntry {
-        name: "test_ui_file.txt".to_string(),
-        path: "test_ui_file.txt".to_string(),
-        size: "100".to_string(),
-        compressed: "50".to_string(),
-        ratio: "50%".to_string(),
-        modified: "2024-01-01".to_string(),
-        crc32: "00000000".to_string(),
-        encrypted: false,
-        is_folder: false,
+    tab.browser_entries.update(|snapshot| {
+        snapshot.replace(vec![FileEntry {
+            name: "test_ui_file.txt".to_string(),
+            path: "test_ui_file.txt".to_string(),
+            size: "100".to_string(),
+            compressed: "50".to_string(),
+            ratio: "50%".to_string(),
+            modified: "2024-01-01".to_string(),
+            crc32: "00000000".to_string(),
+            encrypted: false,
+            is_folder: false,
+        }])
     });
-    tab.browser_view_state.set(view_state);
 
     // egui_kittest harness
     let mut harness = Harness::new(move |ctx| {
@@ -227,4 +262,55 @@ fn test_ui_render_sanity() {
     // In a real scenario with AccessKit support enabled in egui_kittest (requires feature flags or config),
     // we could do: harness.get_by_label("test_ui_file.txt").exists();
     // For now, this confirms the render loop completes without panicking on missing resources.
+}
+
+#[test]
+fn idle_render_reuses_entry_allocation_without_publishing_state() {
+    use arclain_ui::features::archive_browser::ArchiveBrowser;
+    use egui_kittest::Harness;
+
+    let ctx = TestContext::new();
+    let shared = ctx.shared.clone();
+    let tab = shared.signals().tabs.get().active().clone();
+    tab.archive_path.set(Some(PathBuf::from("large.zip")));
+
+    let entries = (0..10_000)
+        .rev()
+        .map(|index| FileEntry {
+            name: format!("entry-{index:05}.txt"),
+            path: format!("entry-{index:05}.txt"),
+            size: "0 B".to_string(),
+            compressed: "0 B".to_string(),
+            ratio: "0%".to_string(),
+            modified: String::new(),
+            crc32: String::new(),
+            encrypted: false,
+            is_folder: false,
+        })
+        .collect();
+    tab.browser_entries
+        .update(|snapshot| snapshot.replace(entries));
+    let before = tab.browser_entries.get();
+
+    let entry_notifications = Arc::new(AtomicUsize::new(0));
+    let view_notifications = Arc::new(AtomicUsize::new(0));
+    let entry_notifications_for_listener = entry_notifications.clone();
+    tab.browser_entries.subscribe(move || {
+        entry_notifications_for_listener.fetch_add(1, Ordering::SeqCst);
+    });
+    let view_notifications_for_listener = view_notifications.clone();
+    tab.browser_view_state.subscribe(move || {
+        view_notifications_for_listener.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let mut browser = ArchiveBrowser::new(&shared);
+    let mut harness = Harness::new(move |ctx| {
+        let _ = browser.render(ctx, &shared);
+    });
+    harness.run_steps(2);
+
+    let after = tab.browser_entries.get();
+    assert!(Arc::ptr_eq(&before.entries, &after.entries));
+    assert_eq!(entry_notifications.load(Ordering::SeqCst), 0);
+    assert_eq!(view_notifications.load(Ordering::SeqCst), 0);
 }

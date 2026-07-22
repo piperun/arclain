@@ -85,10 +85,12 @@ impl BrowserController {
                 // matching by name keeps the old semantics where the
                 // "show properties" toolbar action highlights the
                 // single entry whose name matches.
-                shared.signals().tabs.get().active().browser_view_state.update(|s| {
+                let tab = shared.signals().tabs.get().active().clone();
+                let entries = tab.browser_entries.get();
+                tab.browser_view_state.update(|s| {
                     s.toolbar_state.show_properties_panel = true;
                     s.selection.clear();
-                    if let Some(entry) = s.view_entries.iter().find(|e| e.name == file) {
+                    if let Some(entry) = entries.entries.iter().find(|e| e.name == file) {
                         s.selection.insert(entry.path.clone());
                     }
                 });
@@ -128,7 +130,6 @@ impl BrowserController {
             let bc_tab = shared.signals().tabs.get().active().clone();
             let mut password_dialog = bc_tab.password_dialog.get();
             let mut status_info = shared.signals().status_bar.get();
-            let mut view_state = bc_tab.browser_view_state.get();
             // nav removed
 
             // archive_info is per-tab Computed<ArchiveInfo> (post 2026-05-20
@@ -141,13 +142,11 @@ impl BrowserController {
                 // current_path removed
                 &mut password_dialog,
                 &mut status_info,
-                &mut view_state.view_entries,
             );
 
             // navigation set removed
             bc_tab.password_dialog.set(password_dialog);
             shared.signals().status_bar.set(status_info);
-            bc_tab.browser_view_state.set(view_state);
         } else {
             shared.signals().status_bar.set(status_info);
         }
@@ -251,7 +250,13 @@ impl BrowserController {
         match serde_json::from_str::<arclain_core::features::organization::GameMetadata>(&json) {
             Ok(metadata) => {
                 tracing::info!("Received metadata from plugin: {}", metadata.title);
-                shared.signals().tabs.get().active().game_metadata.set(Some(metadata));
+                shared
+                    .signals()
+                    .tabs
+                    .get()
+                    .active()
+                    .game_metadata
+                    .set(Some(metadata));
             }
             Err(e) => {
                 tracing::warn!("Failed to parse metadata JSON: {}", e);

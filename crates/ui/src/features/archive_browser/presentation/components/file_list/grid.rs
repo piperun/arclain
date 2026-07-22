@@ -21,7 +21,8 @@ const GRID_SPACING: f32 = 6.0;
 pub fn render_grid_view(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    entries: &mut [FileEntry],
+    entries: &[FileEntry],
+    order: &[usize],
     selection: &mut std::collections::HashSet<String>,
 ) -> Option<FileListAction> {
     let mut action: Option<FileListAction> = None;
@@ -38,7 +39,7 @@ pub fn render_grid_view(
     // allocation entirely for off-screen rows, dropping per-frame
     // work from O(entries) to O(visible-rows × columns).
     let row_height = CARD_HEIGHT + GRID_SPACING;
-    let num_rows = entries.len().div_ceil(columns);
+    let num_rows = order.len().div_ceil(columns);
 
     egui::ScrollArea::vertical()
         .id_salt("grid_scroll")
@@ -53,10 +54,11 @@ pub fn render_grid_view(
                             ui.spacing_mut().item_spacing.x = GRID_SPACING;
                             for col in 0..columns {
                                 let idx = row * columns + col;
-                                if idx >= entries.len() {
+                                if idx >= order.len() {
                                     break;
                                 }
-                                let card_action = render_card(ui, theme, &mut entries[idx], selection);
+                                let card_action =
+                                    render_card(ui, theme, &entries[order[idx]], selection);
                                 if action.is_none() {
                                     action = card_action;
                                 }
@@ -73,7 +75,7 @@ pub fn render_grid_view(
 fn render_card(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    entry: &mut FileEntry,
+    entry: &FileEntry,
     selection: &mut std::collections::HashSet<String>,
 ) -> Option<FileListAction> {
     let mut action: Option<FileListAction> = None;
@@ -112,12 +114,10 @@ fn render_card(
 
     // ── Selection checkmark (top-right corner) ────────────────
     if selected {
-        let check_center = pixel_align(egui::pos2(
-            rect.max.x - 12.0,
-            rect.min.y + 12.0,
-        ));
+        let check_center = pixel_align(egui::pos2(rect.max.x - 12.0, rect.min.y + 12.0));
         // Circle background
-        ui.painter().circle_filled(check_center, 8.0, theme.colors.primary);
+        ui.painter()
+            .circle_filled(check_center, 8.0, theme.colors.primary);
         // Checkmark — use on_primary for guaranteed contrast
         ui.painter().text(
             check_center,
@@ -148,10 +148,8 @@ fn render_card(
     if !entry.is_folder {
         let ext = extension(&entry.name).to_uppercase();
         if !ext.is_empty() && ext.len() <= 5 {
-            let badge_pos = pixel_align(egui::pos2(
-                icon_center.x,
-                icon_center.y + ICON_SIZE * 0.38,
-            ));
+            let badge_pos =
+                pixel_align(egui::pos2(icon_center.x, icon_center.y + ICON_SIZE * 0.38));
             ui.painter().text(
                 badge_pos,
                 egui::Align2::CENTER_CENTER,
@@ -225,8 +223,7 @@ fn render_card(
         ui.separator();
         if ui
             .add(
-                TextButton::new("📦  Extract", ButtonSize::Medium)
-                    .with_theme_colors(&theme.colors),
+                TextButton::new("📦  Extract", ButtonSize::Medium).with_theme_colors(&theme.colors),
             )
             .clicked()
         {
@@ -277,10 +274,7 @@ fn render_card(
             ui.close();
         }
         if ui
-            .add(
-                TextButton::new("🗑️  Delete", ButtonSize::Medium)
-                    .with_theme_colors(&theme.colors),
-            )
+            .add(TextButton::new("🗑️  Delete", ButtonSize::Medium).with_theme_colors(&theme.colors))
             .clicked()
         {
             action = Some(FileListAction::Delete(entry_name.clone()));
@@ -336,8 +330,8 @@ fn file_type_icon<'a>(name: &str, is_folder: bool, theme: &AppTheme) -> (&'a str
             (egui_phosphor::regular::FILM_STRIP, ext_colors.file_video)
         }
         // Text + word-processor docs share file_document.
-        "txt" | "md" | "log" | "nfo" | "ini" | "cfg" | "conf" | "toml" | "yaml" | "yml"
-        | "csv" | "tsv" | "doc" | "docx" | "odt" | "rtf" => {
+        "txt" | "md" | "log" | "nfo" | "ini" | "cfg" | "conf" | "toml" | "yaml" | "yml" | "csv"
+        | "tsv" | "doc" | "docx" | "odt" | "rtf" => {
             (egui_phosphor::regular::FILE_TEXT, ext_colors.file_document)
         }
         "rs" | "py" | "js" | "ts" | "html" | "css" | "json" | "xml" | "c" | "cpp" | "h"
@@ -346,9 +340,7 @@ fn file_type_icon<'a>(name: &str, is_folder: bool, theme: &AppTheme) -> (&'a str
         }
         "pdf" => (egui_phosphor::regular::FILE_PDF, ext_colors.file_pdf),
         "url" | "lnk" | "desktop" => (egui_phosphor::regular::LINK, ext_colors.file_link),
-        "dll" | "so" | "dylib" => {
-            (egui_phosphor::regular::PUZZLE_PIECE, ext_colors.file_link)
-        }
+        "dll" | "so" | "dylib" => (egui_phosphor::regular::PUZZLE_PIECE, ext_colors.file_link),
         "ttf" | "otf" | "woff" | "woff2" => {
             (egui_phosphor::regular::TEXT_AA, ext_colors.file_other)
         }

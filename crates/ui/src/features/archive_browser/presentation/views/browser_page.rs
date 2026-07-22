@@ -1,6 +1,9 @@
 //! Main view for the archive browser feature.
 
-use crate::core::tabs::BrowserViewState;
+use crate::core::tabs::view_state::{
+    BrowserEntriesSnapshot, BrowserProjectionCache, BrowserViewState,
+};
+use crate::core::tabs::TabState;
 use crate::features::archive_browser::domain::Action;
 use crate::features::archive_browser::presentation::components::file_list;
 use crate::shared::components::tree_panel;
@@ -9,10 +12,14 @@ use arclain_core::ActionType;
 use arclain_plugins::types::PluginExtensionPoint;
 use eframe::egui;
 
-pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Action {
+pub fn render_archive_browser(
+    ctx: &egui::Context,
+    shared: &SharedState,
+    tab: &TabState,
+    projection: &mut BrowserProjectionCache,
+) -> Action {
     let mut action = Action::None;
 
-    let tab = shared.signals().tabs.get().active().clone();
     let archive_loaded = tab.archive_loaded.get();
 
     if !archive_loaded {
@@ -20,23 +27,32 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
         return action;
     }
 
-    // Get view state once for synchronization
+    let entries = tab.browser_entries.get();
     let mut view_state = tab.browser_view_state.get();
 
     // Render tree panel if enabled
     if view_state.toolbar_state.show_tree_panel {
-        render_tree_panel(ctx, &mut view_state, shared, &mut action);
+        render_tree_panel(ctx, &mut view_state, shared, tab, &mut action);
     }
 
     // Render properties panel if enabled
     if view_state.toolbar_state.show_properties_panel {
-        if let Some(act) = render_properties_panel(ctx, &view_state, shared) {
+        if let Some(act) =
+            render_properties_panel(ctx, &view_state, entries.entries.as_ref(), shared, tab)
+        {
             action = act;
         }
     }
 
     // Render central file list
-    render_file_list(ctx, &mut view_state, shared, &mut action);
+    render_file_list(
+        ctx,
+        &entries,
+        projection,
+        &mut view_state,
+        shared,
+        &mut action,
+    );
 
     // Update selection_count signal for toolbar button state.
     // Selection lives in a dedicated HashSet now (post-refactor for
@@ -46,31 +62,7 @@ pub fn render_archive_browser(ctx: &egui::Context, shared: &SharedState) -> Acti
         tab.selection_count.set(selection_count);
     }
 
-    // Sync back state.
-    //
-    // selection / toolbar_state / sort_state / tree_state are
-    // renderer-owned and written unconditionally. view_entries is
-    // worker-owned (`refresh_view_entries` is the only producer)
-    // and we only write it back when the snapshot's length matches
-    // the live state — if they differ, a worker update landed
-    // between snapshot and writeback and we MUST NOT clobber it.
-    //
-    // The length-check is the same guard we used pre-refactor; with
-    // selection now in its own HashSet (rather than embedded as
-    // `entry.selected` inside FileEntry), there's no selection state
-    // riding along inside view_entries to be discarded by a skipped
-    // writeback — the HashSet writeback above handles that
-    // separately. Net effect: same drop-in reliability as the
-    // length-check pattern, with selection no longer racing.
-    tab.browser_view_state.update(|s| {
-        s.toolbar_state = view_state.toolbar_state;
-        s.sort_state = view_state.sort_state;
-        s.tree_state = view_state.tree_state;
-        s.selection = view_state.selection;
-        if s.view_entries.len() == view_state.view_entries.len() {
-            s.view_entries = view_state.view_entries;
-        }
-    });
+    tab.browser_view_state.set_if_changed(view_state);
 
     // After UI has rendered, dispatch any pending plugin events.
     // Emit as an Action so the controller is the single chokepoint
@@ -112,14 +104,14 @@ fn render_tree_panel(
     ctx: &egui::Context,
     state: &mut BrowserViewState,
     shared: &SharedState,
+    tab: &TabState,
     action: &mut Action,
 ) {
     egui::SidePanel::left("tree_panel")
         .exact_width(240.0)
         .frame(egui::Frame::NONE.fill(shared.theme.colors.surface_variant))
         .show(ctx, |ui| {
-            let tree_tab = shared.signals().tabs.get().active().clone();
-            let archive_name = tree_tab
+            let archive_name = tab
                 .archive_path
                 .get()
                 .as_ref()
@@ -127,8 +119,8 @@ fn render_tree_panel(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| "archive".to_string());
 
-            let entries = tree_tab.entries.get();
-            let nav = tree_tab.navigation.get();
+            let entries = tab.entries.get();
+            let nav = tab.navigation.get();
             let folders = nav.get_all_folders(&entries);
             let current_path = nav.current_path.clone();
 
@@ -148,7 +140,9 @@ fn render_tree_panel(
 fn render_properties_panel(
     ctx: &egui::Context,
     state: &BrowserViewState,
+    entries: &[crate::shared::models::file_entry::FileEntry],
     shared: &SharedState,
+    tab: &TabState,
 ) -> Option<Action> {
     use crate::core::utils::format_size;
     use crate::features::archive_browser::presentation::components::properties_panel::{
@@ -166,15 +160,13 @@ fn render_properties_panel(
         )
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                let prop_tab = shared.signals().tabs.get().active().clone();
-                let archive_info = prop_tab.archive_info.get();
+                let archive_info = tab.archive_info.get();
                 let items = shared.signals().info_panel_items.get();
-                let plugin_metadata = prop_tab.metadata.get();
+                let plugin_metadata = tab.metadata.get();
 
                 let mut sections: Vec<properties_panel::PanelSection> = Vec::new();
 
-                let selected_entries: Vec<_> = state
-                    .view_entries
+                let selected_entries: Vec<_> = entries
                     .iter()
                     .filter(|e| state.selection.contains(&e.path))
                     .collect();
@@ -187,7 +179,7 @@ fn render_properties_panel(
                 // archive_loaded is its own Computed on TabState post
                 // 2026-05-20 Tier 2 — `archive_info` (Computed<ArchiveInfo>)
                 // no longer carries the flag.
-                let archive_loaded = prop_tab.archive_loaded.get();
+                let archive_loaded = tab.archive_loaded.get();
 
                 for item in items.iter().filter(|i| i.visible) {
                     match item.id.as_str() {
@@ -266,12 +258,14 @@ fn render_properties_panel(
                                         // this plugin's panel section
                                         // for this frame; it reappears
                                         // next frame.
-                                        let elements = match manager
-                                            .try_with_plugin_instance(plugin_id, |instance| {
+                                        let elements = match manager.try_with_plugin_instance(
+                                            plugin_id,
+                                            |instance| {
                                                 instance
                                                     .get_ui_layout(PluginExtensionPoint::Panel)
                                                     .unwrap_or_default()
-                                            }) {
+                                            },
+                                        ) {
                                             Some(Some(layout)) => layout,
                                             _ => Default::default(),
                                         };
@@ -311,6 +305,8 @@ fn render_properties_panel(
 
 fn render_file_list(
     ctx: &egui::Context,
+    snapshot: &BrowserEntriesSnapshot,
+    projection: &mut BrowserProjectionCache,
     state: &mut BrowserViewState,
     shared: &SharedState,
     action: &mut Action,
@@ -320,8 +316,7 @@ fn render_file_list(
         .show(ctx, |ui| {
             ui.vertical(|ui| {
                 let search_text = shared.signals().search_text.get();
-                let search_lower = search_text.to_lowercase();
-                let is_searching = !search_text.trim().is_empty();
+                let order = projection.visible_indices(snapshot, state.sort_state, &search_text);
 
                 // No outer ScrollArea here — both render_list_view (egui_extras
                 // TableBuilder with body.rows virtualization) and render_grid_view
@@ -329,48 +324,12 @@ fn render_file_list(
                 // Wrapping them in an outer ScrollArea gives the virtualized
                 // children infinite vertical room, which breaks the visible-row
                 // computation and renders nothing.
-                if is_searching {
-                    let matching_indices: Vec<usize> = state
-                        .view_entries
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, e)| e.name.to_lowercase().contains(&search_lower))
-                        .map(|(i, _)| i)
-                        .collect();
-
-                    let mut filtered: Vec<_> = matching_indices
-                        .iter()
-                        .filter_map(|&i| state.view_entries.get(i).cloned())
-                        .collect();
-
-                    if state.toolbar_state.grid_view {
-                        if let Some(file_action) = file_list::render_grid_view(
-                            ui,
-                            &shared.theme,
-                            &mut filtered,
-                            &mut state.selection,
-                        ) {
-                            *action = map_file_list_action(file_action);
-                        }
-                    } else if let Some(file_action) = file_list::render_list_view(
-                        ui,
-                        &shared.theme,
-                        &mut filtered,
-                        &mut state.selection,
-                        state.toolbar_state.columns_locked,
-                        &mut state.sort_state,
-                    ) {
-                        *action = map_file_list_action(file_action);
-                    }
-                    // No more filtered→original sync needed: selection
-                    // lives in a HashSet keyed by path now, shared
-                    // between filtered and original views automatically.
-                    let _ = matching_indices; // touched above; kept binding stable
-                } else if state.toolbar_state.grid_view {
+                if state.toolbar_state.grid_view {
                     if let Some(file_action) = file_list::render_grid_view(
                         ui,
                         &shared.theme,
-                        &mut state.view_entries,
+                        snapshot.entries.as_ref(),
+                        order,
                         &mut state.selection,
                     ) {
                         *action = map_file_list_action(file_action);
@@ -378,7 +337,8 @@ fn render_file_list(
                 } else if let Some(file_action) = file_list::render_list_view(
                     ui,
                     &shared.theme,
-                    &mut state.view_entries,
+                    snapshot.entries.as_ref(),
+                    order,
                     &mut state.selection,
                     state.toolbar_state.columns_locked,
                     &mut state.sort_state,

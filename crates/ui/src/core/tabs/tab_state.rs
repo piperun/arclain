@@ -1,7 +1,7 @@
 //! Per-tab state — owns the archive-context signals and the plugin pool.
 
 use super::plugin_instances::TabPluginPool;
-use super::view_state::BrowserViewState;
+use super::view_state::{BrowserEntriesSnapshot, BrowserViewState};
 use super::TabId;
 use crate::core::operations::archive::{derive_archive_info, ArchiveExtras, ArchiveInfo};
 use crate::core::signals::ToolbarContext;
@@ -64,6 +64,9 @@ pub struct TabState {
     pub current_password: Signal<Option<String>>,
     pub selection_count: Signal<usize>,
     pub opened_archive: Signal<Option<Arc<RwLock<arclain_core::Archive>>>>,
+    /// Worker-owned immutable file-list snapshot. Renderers may clone this
+    /// signal value in O(1), but only archive/navigation workers replace it.
+    pub browser_entries: Signal<BrowserEntriesSnapshot>,
     pub browser_view_state: Signal<BrowserViewState>,
     pub page_display_name: Signal<Option<String>>,
     pub active_toolbar: Signal<ToolbarContext>,
@@ -195,15 +198,15 @@ impl TabState {
             current_password: Signal::new(None).with_name("current_password"),
             selection_count: Signal::new(0).with_name("selection_count"),
             opened_archive: Signal::new(None).with_name("opened_archive"),
+            browser_entries: Signal::new(BrowserEntriesSnapshot::default())
+                .with_name("browser_entries"),
             browser_view_state: Signal::new(BrowserViewState::default())
                 .with_name("browser_view_state"),
             page_display_name: Signal::new(None).with_name("page_display_name"),
             active_toolbar: Signal::new(ToolbarContext::Archive).with_name("active_toolbar"),
             pending_open_file: Signal::new(None).with_name("pending_open_file"),
-            file_edit_dialog: Signal::new(
-                crate::features::file_editing::FileEditDialog::default(),
-            )
-            .with_name("file_edit_dialog"),
+            file_edit_dialog: Signal::new(crate::features::file_editing::FileEditDialog::default())
+                .with_name("file_edit_dialog"),
             merge_dialog: Signal::new(crate::shared::dialogs::MergeDialogState::default())
                 .with_name("merge_dialog"),
             lightbox_state: Signal::new(crate::shared::dialogs::LightboxState::default())
@@ -261,6 +264,7 @@ impl TabState {
         sig_ctx.bind_named(&self.current_password, "tab.current_password");
         sig_ctx.bind_named(&self.selection_count, "tab.selection_count");
         sig_ctx.bind_named(&self.opened_archive, "tab.opened_archive");
+        sig_ctx.bind_named(&self.browser_entries, "tab.browser_entries");
         sig_ctx.bind_named(&self.browser_view_state, "tab.browser_view_state");
         sig_ctx.bind_named(&self.page_display_name, "tab.page_display_name");
         sig_ctx.bind_named(&self.active_toolbar, "tab.active_toolbar");
@@ -269,7 +273,10 @@ impl TabState {
         sig_ctx.bind_named(&self.merge_dialog, "tab.merge_dialog");
         sig_ctx.bind_named(&self.lightbox_state, "tab.lightbox_state");
         sig_ctx.bind_named(&self.password_dialog, "tab.password_dialog");
-        sig_ctx.bind_named(&self.pending_open_after_unlock, "tab.pending_open_after_unlock");
+        sig_ctx.bind_named(
+            &self.pending_open_after_unlock,
+            "tab.pending_open_after_unlock",
+        );
         sig_ctx.bind_named(&self.progress_dialogs, "tab.progress_dialogs");
     }
 

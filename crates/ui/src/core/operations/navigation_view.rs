@@ -8,18 +8,16 @@ use crate::core::utils::convert_to_file_entry;
 use std::sync::Arc;
 use tracing::info;
 
-/// Re-filter the active tab's `view_entries` based on its navigation
-/// path. Call after updating `tab.navigation.current_path` so the file
-/// list matches.
+/// Publish the active tab's worker-owned browser snapshot for its current path.
 pub fn refresh_view_entries(signals: &AppSignals) {
     let tab = signals.tabs.get().active().clone();
     refresh_view_entries_for(&tab);
 }
 
-/// Refresh `view_entries` for a specific tab. Used when an archive is
+/// Refresh browser entries for a specific tab. Used when an archive is
 /// loaded into a non-active tab (e.g. multi-file drop opens several
 /// tabs but only the last is active; each must populate its own
-/// view_entries so a future switch shows the file list immediately).
+/// browser snapshot so a future switch shows the file list immediately).
 pub fn refresh_view_entries_for_tab(signals: &AppSignals, tab_id: TabId) {
     let Some(tab) = signals.tabs.get().get(tab_id).cloned() else {
         return;
@@ -51,7 +49,6 @@ fn refresh_view_entries_for(tab: &Arc<TabState>) {
         .map(convert_to_file_entry)
         .collect::<Vec<_>>();
 
-    tab.browser_view_state.update(|s| {
-        s.view_entries = entries;
-    });
+    tab.browser_entries
+        .update(|snapshot| snapshot.replace(entries));
 }

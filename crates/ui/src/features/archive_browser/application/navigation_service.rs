@@ -5,6 +5,8 @@ use crate::core::signals::AppSignals;
 pub struct NavigationService;
 
 impl NavigationService {
+    // Navigation workers are the only producers of TabState::browser_entries;
+    // renderer-owned sort/filter projections never flow back into signals.
     /// Navigate into a subfolder (RELATIVE to current path)
     pub fn navigate_to_folder(&self, signals: &AppSignals, folder: &str) {
         // Use relative navigation - appends folder to current path

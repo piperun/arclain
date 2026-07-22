@@ -2,15 +2,9 @@
 
 /// Represents a single file or folder entry in the file list.
 ///
-/// Selection state is NOT stored here — it lives in
-/// `BrowserViewState.selection: HashSet<String>` keyed by `path`.
-/// Embedding `selected: bool` inside this struct caused a data race
-/// against `refresh_view_entries` worker writes: the renderer's
-/// `get / mutate / set` writeback would clobber the worker's
-/// `view_entries` update with the renderer's stale snapshot
-/// (symptom: "drop a zip and the file list stays empty until I click
-/// the side panel"). Keeping selection in a separate set means worker
-/// and renderer never share a field on the same struct.
+/// Worker-produced entries are stored in `TabState::browser_entries`.
+/// Renderer-owned selection and projection indices live separately, so
+/// rendering can never publish a stale entry snapshot over a worker update.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileEntry {
     pub name: String, // Display name (basename only)
@@ -50,6 +44,51 @@ impl Default for SortState {
             column: SortColumn::Name,
             ascending: true,
         }
+    }
+}
+
+/// Sort an index projection without cloning or reordering archive entries.
+pub fn sort_entry_indices(entries: &[FileEntry], indices: &mut [usize], sort: SortState) {
+    match sort.column {
+        SortColumn::Name => {
+            indices.sort_by_cached_key(|index| entries[*index].name.to_lowercase());
+        }
+        SortColumn::Type => {
+            indices.sort_by_cached_key(|index| {
+                let entry = &entries[*index];
+                if entry.is_folder {
+                    "directory".to_string()
+                } else {
+                    entry
+                        .name
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or("file")
+                        .to_lowercase()
+                }
+            });
+        }
+        SortColumn::Size => {
+            indices.sort_by_cached_key(|index| parse_size_to_bytes(&entries[*index].size));
+        }
+        SortColumn::Compressed => {
+            indices.sort_by_cached_key(|index| parse_size_to_bytes(&entries[*index].compressed));
+        }
+        SortColumn::Ratio => {
+            indices.sort_by_cached_key(|index| parse_ratio_pct(&entries[*index].ratio));
+        }
+        SortColumn::Modified => {
+            indices.sort_by_cached_key(|index| entries[*index].modified.clone());
+        }
+        SortColumn::Crc32 => {
+            indices.sort_by_cached_key(|index| entries[*index].crc32.to_uppercase());
+        }
+        SortColumn::Encrypted => {
+            indices.sort_by_cached_key(|index| entries[*index].encrypted as u8);
+        }
+    }
+    if !sort.ascending {
+        indices.reverse();
     }
 }
 
@@ -93,7 +132,10 @@ mod tests {
 
     #[test]
     fn parse_size_megabytes() {
-        assert_eq!(parse_size_to_bytes("2.5 MB"), (2.5 * 1024.0 * 1024.0) as u64);
+        assert_eq!(
+            parse_size_to_bytes("2.5 MB"),
+            (2.5 * 1024.0 * 1024.0) as u64
+        );
     }
 
     #[test]

@@ -145,7 +145,6 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 if actions.open {
                     // Sync from signals
                     let open_tab = shared_state.signals().tabs.get().active().clone();
-                    let mut view_state = open_tab.browser_view_state.get();
                     // password_dialog is per-tab now (post 2026-05-20 B3 reframed slice)
                     let mut password_dialog = open_tab.password_dialog.get();
                     let mut status_info = shared_state.signals().status_bar.get();
@@ -162,13 +161,11 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         &mut password_dialog,
                         &mut app._pending_archive_path,
                         &mut status_info,
-                        &mut view_state.view_entries,
                         Some(&mut merge_dialog),
                     );
 
                     // Sync back to signals
                     // navigation set removed
-                    open_tab.browser_view_state.set(view_state);
                     open_tab.password_dialog.set(password_dialog);
                     shared_state.signals().status_bar.set(status_info);
                     open_tab.merge_dialog.set(merge_dialog);
@@ -179,6 +176,7 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     // toolbar, so the dialog lives on the active tab.
                     let active_tab = shared_state.signals().tabs.get().active().clone();
                     let view_state = active_tab.browser_view_state.get();
+                    let entries = active_tab.browser_entries.get();
                     let ops_state = app.archive_operations.state_mut();
                     let mut status_info = shared_state.signals().status_bar.get();
                     let mut dialog = active_tab.extraction_dialog().get();
@@ -188,8 +186,8 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     // path-keyed HashSet on BrowserViewState; the
                     // backend wants basenames (the navigation prefix
                     // is added inside extract_selected).
-                    let selected_names: Vec<String> = view_state
-                        .view_entries
+                    let selected_names: Vec<String> = entries
+                        .entries
                         .iter()
                         .filter(|e| view_state.selection.contains(&e.path))
                         .map(|e| e.name.clone())
@@ -236,21 +234,18 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                 }
                 if actions.delete_selected {
                     let t = shared_state.signals().tabs.get().active().clone();
-                    let mut view_state = t.browser_view_state.get();
                     let mut status_info = shared_state.signals().status_bar.get();
-                    let entries_clone = view_state.view_entries.clone();
+                    let entries = t.browser_entries.get();
 
                     // archive_info parameter dropped post 2026-05-20 Tier 2
                     // item 6 — Computed derives it from the underlying
                     // signals after list_archive refreshes them.
                     operations::file::delete_selected(
                         &app.shared_state.app_state,
-                        &entries_clone,
+                        entries.entries.as_ref(),
                         &mut status_info,
-                        &mut view_state.view_entries,
                     );
 
-                    t.browser_view_state.set(view_state);
                     shared_state.signals().status_bar.set(status_info);
                 }
                 if actions.convert_to_7z {

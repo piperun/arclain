@@ -96,8 +96,7 @@ fn add_text_col(
     }
     row.col(|ui| {
         ui.add(
-            egui::Label::new(egui::RichText::new(text).size(14.0).color(color))
-                .selectable(false),
+            egui::Label::new(egui::RichText::new(text).size(14.0).color(color)).selectable(false),
         );
     });
 }
@@ -127,22 +126,27 @@ fn paint_row_selection(
     painter.rect_filled(fill_rect, 0.0, fill_color);
 
     let prev_selected = row_index > 0 && selection_flags[row_index - 1];
-    let next_selected =
-        row_index + 1 < selection_flags.len() && selection_flags[row_index + 1];
+    let next_selected = row_index + 1 < selection_flags.len() && selection_flags[row_index + 1];
     let stroke_color = theme.colors.selection.linear_multiply(0.35);
     let stroke = egui::Stroke::new(1.0, stroke_color);
 
     if !prev_selected {
         let y = fill_rect.min.y + 0.5;
         painter.line_segment(
-            [egui::pos2(fill_rect.min.x, y), egui::pos2(fill_rect.max.x, y)],
+            [
+                egui::pos2(fill_rect.min.x, y),
+                egui::pos2(fill_rect.max.x, y),
+            ],
             stroke,
         );
     }
     if !next_selected {
         let y = fill_rect.max.y - 0.5;
         painter.line_segment(
-            [egui::pos2(fill_rect.min.x, y), egui::pos2(fill_rect.max.x, y)],
+            [
+                egui::pos2(fill_rect.min.x, y),
+                egui::pos2(fill_rect.max.x, y),
+            ],
             stroke,
         );
     }
@@ -210,46 +214,6 @@ fn row_context_menu(
     picked
 }
 
-fn sort_entries(entries: &mut [FileEntry], sort: &SortState) {
-    // Use sort_by_cached_key where the key involves allocation (Name, Type, Crc32)
-    // to avoid repeated allocations per comparison. Other columns use cheap keys.
-    match sort.column {
-        SortColumn::Name => {
-            entries.sort_by_cached_key(|e| e.name.to_lowercase());
-        }
-        SortColumn::Type => {
-            entries.sort_by_cached_key(|e| {
-                if e.is_folder {
-                    "directory".to_string()
-                } else {
-                    e.name.split('.').last().unwrap_or("file").to_lowercase()
-                }
-            });
-        }
-        SortColumn::Size => {
-            entries.sort_by_cached_key(|e| parse_size_to_bytes(&e.size));
-        }
-        SortColumn::Compressed => {
-            entries.sort_by_cached_key(|e| parse_size_to_bytes(&e.compressed));
-        }
-        SortColumn::Ratio => {
-            entries.sort_by_cached_key(|e| parse_ratio_pct(&e.ratio));
-        }
-        SortColumn::Modified => {
-            entries.sort_by_cached_key(|e| e.modified.clone());
-        }
-        SortColumn::Crc32 => {
-            entries.sort_by_cached_key(|e| e.crc32.to_uppercase());
-        }
-        SortColumn::Encrypted => {
-            entries.sort_by_cached_key(|e| e.encrypted as u8);
-        }
-    }
-    if !sort.ascending {
-        entries.reverse();
-    }
-}
-
 /// Which optional columns fit at the current viewport width.
 ///
 /// Checkbox, Name, and Actions are always shown. Everything else is hidden
@@ -286,33 +250,54 @@ impl ColumnVisibility {
         let mut remaining = (available - must_have).max(0.0);
 
         let size = remaining >= COL_SIZE_W;
-        if size { remaining -= COL_SIZE_W; }
+        if size {
+            remaining -= COL_SIZE_W;
+        }
 
         let type_col = remaining >= COL_TYPE_W;
-        if type_col { remaining -= COL_TYPE_W; }
+        if type_col {
+            remaining -= COL_TYPE_W;
+        }
 
         let modified = remaining >= COL_MODIFIED_W;
-        if modified { remaining -= COL_MODIFIED_W; }
+        if modified {
+            remaining -= COL_MODIFIED_W;
+        }
 
         let compressed = remaining >= COL_COMPRESSED_W;
-        if compressed { remaining -= COL_COMPRESSED_W; }
+        if compressed {
+            remaining -= COL_COMPRESSED_W;
+        }
 
         let ratio = remaining >= COL_RATIO_W;
-        if ratio { remaining -= COL_RATIO_W; }
+        if ratio {
+            remaining -= COL_RATIO_W;
+        }
 
         let crc = remaining >= COL_CRC_W;
-        if crc { remaining -= COL_CRC_W; }
+        if crc {
+            remaining -= COL_CRC_W;
+        }
 
         let encrypted = remaining >= COL_ENCRYPTED_W;
 
-        Self { size, type_col, modified, compressed, ratio, crc, encrypted }
+        Self {
+            size,
+            type_col,
+            modified,
+            compressed,
+            ratio,
+            crc,
+            encrypted,
+        }
     }
 }
 
 pub fn render_list_view(
     ui: &mut egui::Ui,
     theme: &AppTheme,
-    entries: &mut [FileEntry],
+    entries: &[FileEntry],
+    order: &[usize],
     selection: &mut std::collections::HashSet<String>,
     columns_locked: bool,
     sort: &mut SortState,
@@ -350,21 +335,39 @@ pub fn render_list_view(
                 .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
                 .column(Column::exact(COL_CHECKBOX_W))
                 .column(Column::remainder().at_least(COL_NAME_MIN_W));
-            if vis.type_col { table = table.column(Column::exact(COL_TYPE_W)); }
-            if vis.size { table = table.column(Column::exact(COL_SIZE_W)); }
-            if vis.compressed { table = table.column(Column::exact(COL_COMPRESSED_W)); }
-            if vis.ratio { table = table.column(Column::exact(COL_RATIO_W)); }
-            if vis.modified { table = table.column(Column::exact(COL_MODIFIED_W)); }
-            if vis.crc { table = table.column(Column::exact(COL_CRC_W)); }
-            if vis.encrypted { table = table.column(Column::exact(COL_ENCRYPTED_W)); }
+            if vis.type_col {
+                table = table.column(Column::exact(COL_TYPE_W));
+            }
+            if vis.size {
+                table = table.column(Column::exact(COL_SIZE_W));
+            }
+            if vis.compressed {
+                table = table.column(Column::exact(COL_COMPRESSED_W));
+            }
+            if vis.ratio {
+                table = table.column(Column::exact(COL_RATIO_W));
+            }
+            if vis.modified {
+                table = table.column(Column::exact(COL_MODIFIED_W));
+            }
+            if vis.crc {
+                table = table.column(Column::exact(COL_CRC_W));
+            }
+            if vis.encrypted {
+                table = table.column(Column::exact(COL_ENCRYPTED_W));
+            }
             table
                 .column(Column::exact(COL_ACTIONS_W))
                 .header(28.0, |mut header| {
                     // Select all checkbox
                     header.col(|ui| {
-                        let all_selected =
-                            !entries.is_empty() && entries.iter().all(|e| selection.contains(&e.path));
-                        let some_selected = entries.iter().any(|e| selection.contains(&e.path));
+                        let all_selected = !order.is_empty()
+                            && order
+                                .iter()
+                                .all(|index| selection.contains(&entries[*index].path));
+                        let some_selected = order
+                            .iter()
+                            .any(|index| selection.contains(&entries[*index].path));
                         let mut header_check = all_selected;
                         let resp = ui.checkbox(&mut header_check, "");
                         if resp.clicked() {
@@ -386,13 +389,62 @@ pub fn render_list_view(
                             apply_sort_click(sort, SortColumn::Name);
                         }
                     });
-                    add_sort_header_col(&mut header, theme, "Type", SortColumn::Type, sort, vis.type_col);
-                    add_sort_header_col(&mut header, theme, "Size", SortColumn::Size, sort, vis.size);
-                    add_sort_header_col(&mut header, theme, "Compressed", SortColumn::Compressed, sort, vis.compressed);
-                    add_sort_header_col(&mut header, theme, "Ratio", SortColumn::Ratio, sort, vis.ratio);
-                    add_sort_header_col(&mut header, theme, "Modified", SortColumn::Modified, sort, vis.modified);
-                    add_sort_header_col(&mut header, theme, "CRC-32", SortColumn::Crc32, sort, vis.crc);
-                    add_sort_header_col(&mut header, theme, "Encrypted", SortColumn::Encrypted, sort, vis.encrypted);
+                    add_sort_header_col(
+                        &mut header,
+                        theme,
+                        "Type",
+                        SortColumn::Type,
+                        sort,
+                        vis.type_col,
+                    );
+                    add_sort_header_col(
+                        &mut header,
+                        theme,
+                        "Size",
+                        SortColumn::Size,
+                        sort,
+                        vis.size,
+                    );
+                    add_sort_header_col(
+                        &mut header,
+                        theme,
+                        "Compressed",
+                        SortColumn::Compressed,
+                        sort,
+                        vis.compressed,
+                    );
+                    add_sort_header_col(
+                        &mut header,
+                        theme,
+                        "Ratio",
+                        SortColumn::Ratio,
+                        sort,
+                        vis.ratio,
+                    );
+                    add_sort_header_col(
+                        &mut header,
+                        theme,
+                        "Modified",
+                        SortColumn::Modified,
+                        sort,
+                        vis.modified,
+                    );
+                    add_sort_header_col(
+                        &mut header,
+                        theme,
+                        "CRC-32",
+                        SortColumn::Crc32,
+                        sort,
+                        vis.crc,
+                    );
+                    add_sort_header_col(
+                        &mut header,
+                        theme,
+                        "Encrypted",
+                        SortColumn::Encrypted,
+                        sort,
+                        vis.encrypted,
+                    );
                     header.col(|ui| {
                         ui.add(
                             egui::Label::new(
@@ -409,43 +461,39 @@ pub fn render_list_view(
                     // Apply select-all toggle if requested
                     if let Some(v) = apply_select_all.take() {
                         if v {
-                            for e in entries.iter() {
-                                selection.insert(e.path.clone());
+                            for index in order {
+                                selection.insert(entries[*index].path.clone());
                             }
                         } else {
-                            for e in entries.iter() {
-                                selection.remove(&e.path);
+                            for index in order {
+                                selection.remove(&entries[*index].path);
                             }
                         }
                     }
 
-                    // Sort entries based on current sort state
-                    sort_entries(entries, sort);
-
-                    // Capture selection flags after sorting (selection lives
-                    // in a separate HashSet now — see FileEntry docs for
-                    // the ownership-split rationale)
-                    let selection_flags: Vec<bool> =
-                        entries.iter().map(|e| selection.contains(&e.path)).collect();
+                    let selection_flags: Vec<bool> = order
+                        .iter()
+                        .map(|index| selection.contains(&entries[*index].path))
+                        .collect();
 
                     // Pre-collect selected file paths for drag-out (needed because we can't borrow entries during iter_mut)
                     // Note: Include both files AND folders for drag
-                    let selected_files: Vec<String> = entries
+                    let selected_files: Vec<String> = order
                         .iter()
+                        .map(|index| &entries[*index])
                         .filter(|e| selection.contains(&e.path))
                         .map(|e| e.path.clone())
                         .collect();
 
                     // Virtualized row rendering: body.rows() only invokes
-                        // the closure for rows currently in the scroll viewport
-                        // (typically 20-40 rows on screen), not all `entries.len()`
-                        // rows. Critical for large archives — 1000s of entries
-                        // were O(n) per frame before this. Cursor-move repaints
-                        // now scale with visible rows instead of total entries.
-                    let entries_len = entries.len();
-                    body.rows(32.0, entries_len, |mut row| {
+                    // the closure for rows currently in the scroll viewport
+                    // (typically 20-40 rows on screen), not all `entries.len()`
+                    // rows. Critical for large archives — 1000s of entries
+                    // were O(n) per frame before this. Cursor-move repaints
+                    // now scale with visible rows instead of total entries.
+                    body.rows(32.0, order.len(), |mut row| {
                         let row_index = row.index();
-                        let entry = &mut entries[row_index];
+                        let entry = &entries[order[row_index]];
                         let entry_name = entry.name.clone();
                         let entry_path = entry.path.clone();
                         let is_folder = entry.is_folder;

@@ -1,7 +1,6 @@
 //! File operations application service
 
 use crate::core::operations;
-use crate::core::utils::convert_to_file_entry;
 use crate::features::archive_operations::ArchiveOperationsState;
 use crate::shared::SharedState;
 
@@ -24,19 +23,11 @@ impl FileOpsService {
                             });
                             // Refresh entries after deletion
                             if let Ok(info) = backend.list(&archive, None) {
-                                tab.entries
-                                    .set(std::sync::Arc::new(info.entries));
-                                // Update browser view state entries via signals
-                                let entries = tab
-                                    .entries
-                                    .get()
-                                    .iter()
-                                    .map(convert_to_file_entry)
-                                    .collect::<Vec<_>>();
-
-                                tab.browser_view_state.update(|s| {
-                                    s.view_entries = entries;
-                                });
+                                tab.entries.set(std::sync::Arc::new(info.entries));
+                                crate::core::operations::navigation_view::refresh_view_entries_for_tab(
+                                    shared.signals(),
+                                    tab.id,
+                                );
                             }
                         }
                         Err(e) => {
@@ -100,20 +91,32 @@ impl FileOpsService {
     }
 
     pub fn edit_file(&self, shared: &SharedState, file: &str) {
-        shared.signals().tabs.get().active().file_edit_dialog.update(|d| {
-            d.show = true;
-            d.full_path_in_archive = file.to_string();
-            d.name_input = file.to_string();
-        });
+        shared
+            .signals()
+            .tabs
+            .get()
+            .active()
+            .file_edit_dialog
+            .update(|d| {
+                d.show = true;
+                d.full_path_in_archive = file.to_string();
+                d.name_input = file.to_string();
+            });
 
         if let Some(archive) = shared.signals().tabs.get().active().archive_path.get() {
             let state = shared.app_state.lock();
             match state.read_text_file(&archive, file) {
                 Ok(content) => {
-                    shared.signals().tabs.get().active().file_edit_dialog.update(|d| {
-                        d.content = content.clone();
-                        d.original_content = content;
-                    });
+                    shared
+                        .signals()
+                        .tabs
+                        .get()
+                        .active()
+                        .file_edit_dialog
+                        .update(|d| {
+                            d.content = content.clone();
+                            d.original_content = content;
+                        });
                 }
                 Err(e) => {
                     let msg = format!("Failed to read file: {}", e);

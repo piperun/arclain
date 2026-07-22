@@ -1,11 +1,9 @@
 use crate::core::signals::AppSignals;
 use crate::core::tabs::{OpGuard, TabId, TabState};
-use crate::core::utils::convert_to_file_entry;
 use crate::core::AppState;
 use crate::features::password_management::dialogs;
 use crate::shared::components::status_bar;
 use crate::shared::dialogs::MergeDialogState;
-use crate::shared::models::file_entry::FileEntry;
 use arclain_core::archive::{MultiPartArchive, NavigationState};
 use arclain_core::ArchiveBackend;
 use crc32fast::Hasher;
@@ -26,7 +24,6 @@ pub fn open_archive(
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
-    entries: &mut Vec<FileEntry>,
     merge_dialog: Option<&mut MergeDialogState>,
 ) {
     if let Some(file) = rfd::FileDialog::new()
@@ -46,7 +43,14 @@ pub fn open_archive(
         }
 
         // Reset navigation state entirely for new archive
-        state.lock().signals.tabs.get().active().navigation.set(NavigationState::new());
+        state
+            .lock()
+            .signals
+            .tabs
+            .get()
+            .active()
+            .navigation
+            .set(NavigationState::new());
 
         let mut st = state.lock();
         let active_id = st.signals.tabs.get().active_id();
@@ -56,13 +60,7 @@ pub fn open_archive(
                 // load_archive_data reads from those signals directly,
                 // so we don't need to thread the entries Vec through.
                 drop(st);
-                load_archive_data(
-                    state,
-                    password_dialog,
-                    pending_archive_path,
-                    status_info,
-                    entries,
-                );
+                load_archive_data(state, password_dialog, pending_archive_path, status_info);
             }
             Err(e) => {
                 let err_msg = e.to_string();
@@ -96,24 +94,24 @@ pub fn open_archive_by_path(
     // current_path removed - handled via signal reset
     password_dialog: &mut dialogs::PasswordDialog,
     status_info: &mut status_bar::StatusBarInfo,
-    entries: &mut Vec<FileEntry>,
 ) {
     info!("Opening archive from path: {}", path.display());
     // Reset navigation state entirely for new archive
-    state.lock().signals.tabs.get().active().navigation.set(NavigationState::new());
+    state
+        .lock()
+        .signals
+        .tabs
+        .get()
+        .active()
+        .navigation
+        .set(NavigationState::new());
 
     let mut st = state.lock();
     let active_id = st.signals.tabs.get().active_id();
     match st.list_archive(path, active_id) {
         Ok(_) => {
             drop(st);
-            load_archive_data(
-                state,
-                password_dialog,
-                &mut None,
-                status_info,
-                entries,
-            );
+            load_archive_data(state, password_dialog, &mut None, status_info);
         }
         Err(e) => {
             let err_msg = e.to_string();
@@ -146,13 +144,28 @@ pub fn try_open_with_password(
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
-    entries: &mut Vec<FileEntry>,
 ) -> bool {
     let mut st = state.lock();
     let active_id = st.signals.tabs.get().active_id();
     // Save the current navigation state before re-listing
-    let saved_current_path = st.signals.tabs.get().active().navigation.get().current_path.clone();
-    let saved_path_stack = st.signals.tabs.get().active().navigation.get().path_stack.clone();
+    let saved_current_path = st
+        .signals
+        .tabs
+        .get()
+        .active()
+        .navigation
+        .get()
+        .current_path
+        .clone();
+    let saved_path_stack = st
+        .signals
+        .tabs
+        .get()
+        .active()
+        .navigation
+        .get()
+        .path_stack
+        .clone();
 
     match st.list_with_password(path, password, active_id) {
         Ok(_) => {
@@ -180,13 +193,7 @@ pub fn try_open_with_password(
             }
 
             drop(st);
-            load_archive_data(
-                state,
-                password_dialog,
-                pending_archive_path,
-                status_info,
-                entries,
-            );
+            load_archive_data(state, password_dialog, pending_archive_path, status_info);
             true
         }
         Err(_) => false,
@@ -206,7 +213,6 @@ pub fn load_archive_data(
     password_dialog: &mut dialogs::PasswordDialog,
     pending_archive_path: &mut Option<PathBuf>,
     status_info: &mut status_bar::StatusBarInfo,
-    entries: &mut Vec<FileEntry>,
 ) {
     // Audit finding R3: the previous version opened `state.lock()` 6-7
     // times within this single logical operation, with the gaps in
@@ -222,11 +228,6 @@ pub fn load_archive_data(
             pass_rules: st.pass_rules.clone(),
             last_entries: st.last_entries.clone(),
             fallback_backend: st.fallback_backend.clone(),
-            ui_entries: st
-                .get_current_entries()
-                .iter()
-                .map(convert_to_file_entry)
-                .collect(),
         }
     };
     let signals = snapshot.signals;
@@ -255,11 +256,7 @@ pub fn load_archive_data(
             let headers_encrypted = tab.archive_extras.get().headers_encrypted;
             entries_arc
                 .iter()
-                .filter(|e| {
-                    !e.is_dir
-                        && (e.encrypted || headers_encrypted)
-                        && e.crc32.is_none()
-                })
+                .filter(|e| !e.is_dir && (e.encrypted || headers_encrypted) && e.crc32.is_none())
                 .map(|e| e.path.clone())
                 .collect()
         };
@@ -300,13 +297,6 @@ pub fn load_archive_data(
         }
     }
 
-    // Build UI rows from the snapshot we took up front. The previous
-    // version re-locked `state` here to call `get_current_entries`,
-    // which by this point could have changed beneath us. Using the
-    // snapshot is correct: callers compute against the entry list as
-    // it existed when load_archive_data was invoked.
-    *entries = snapshot.ui_entries;
-
     // Auto-prompt if requested
     if policy == "prompt_on_open" && !have_pw {
         let any_encrypted = tab.entries.get().iter().any(|e| e.encrypted);
@@ -337,7 +327,6 @@ struct ArchiveSnapshot {
     pass_rules: Vec<arclain_core::utilities::PassRule>,
     last_entries: Vec<String>,
     fallback_backend: arclain_core::backends::sevenz_cli::SevenZipCli,
-    ui_entries: Vec<FileEntry>,
 }
 
 /// Archive information state — output shape of the per-tab
@@ -580,8 +569,7 @@ pub fn convert_archive(
             options.compression,
         ) {
             Ok(handle) => {
-                *conversion_dialog =
-                    crate::shared::dialogs::ExtractionProgressDialog::default();
+                *conversion_dialog = crate::shared::dialogs::ExtractionProgressDialog::default();
                 conversion_dialog.show = true;
                 conversion_dialog.title = format!(
                     "Converting to {}",
@@ -659,8 +647,9 @@ pub fn load_archive_into_tab(
                 drop(st);
                 tab.entries.set(std::sync::Arc::new(archive_entries));
                 tab.archive_path.set(Some(path_owned.clone()));
-                tab.navigation.set(arclain_core::archive::NavigationState::new());
-                // Populate this tab's view_entries so the file list
+                tab.navigation
+                    .set(arclain_core::archive::NavigationState::new());
+                // Populate this tab's browser snapshot so the file list
                 // renders immediately. Without this, the UI shows an
                 // empty list at root until the user navigates into
                 // a folder (which triggers refresh elsewhere).

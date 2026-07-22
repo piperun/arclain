@@ -12,7 +12,7 @@ use std::time::Instant;
 /// navigation folder) from the active tab's archive.
 ///
 /// Callers pre-compute the list of names — either by filtering the
-/// active tab's `view_entries` against `browser_view_state.selection`
+/// active tab's `browser_entries` against `browser_view_state.selection`
 /// (toolbar "Extract" button), or by passing a single name from a
 /// per-row action (file_ops_service::extract). This function used to
 /// read selection itself, but coupling it to `BrowserViewState.selection`

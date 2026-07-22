@@ -42,7 +42,6 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     match password_management::handle_password_dialogs(ctx, &shared_state) {
         password_management::PasswordFeatureAction::PasswordUnlocked { path, password } => {
             let t = app.shared_state.signals().tabs.get().active().clone();
-            let mut view_state = t.browser_view_state.get();
             let mut pass_dialog = t.password_dialog.get();
             let mut status_bar = app.shared_state.signals().status_bar.get();
 
@@ -55,9 +54,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 &mut pass_dialog,
                 &mut app._pending_archive_path,
                 &mut status_bar,
-                &mut view_state.view_entries,
             ) {
-                t.browser_view_state.set(view_state);
                 pass_dialog.show = false;
                 pass_dialog.target_path = None;
                 app._pending_archive_path = None;

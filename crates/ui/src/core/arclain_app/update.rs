@@ -176,7 +176,6 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                     let hk_tab = app.shared_state.signals().tabs.get().active().clone();
                     let mut password_dialog = hk_tab.password_dialog.get();
                     let mut status_info = app.shared_state.signals().status_bar.get();
-                    let mut view_state = hk_tab.browser_view_state.get();
                     // nav removed
 
                     // archive_info parameter dropped post 2026-05-20 Tier 2
@@ -187,13 +186,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                         // current_path removed
                         &mut password_dialog,
                         &mut status_info,
-                        &mut view_state.view_entries,
                     );
 
                     // navigation set removed
                     hk_tab.password_dialog.set(password_dialog);
                     app.shared_state.signals().status_bar.set(status_info);
-                    hk_tab.browser_view_state.set(view_state);
                 }
             }
             HotkeyAction::Search => {
@@ -201,16 +198,24 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 app.shared_state.signals().search_focus_requested.set(true);
             }
             HotkeyAction::SelectAll => {
-                // Select all entries in the file list. Selection lives
-                // in a path-keyed HashSet (see FileEntry docs) so we
-                // extend it with every entry's path. Two-step (collect
-                // then extend) so we don't try to borrow view_entries
-                // immutably while holding a mutable borrow on
-                // selection — both live on the same struct.
                 let sel_tab = app.shared_state.signals().tabs.get().active().clone();
+                let snapshot = sel_tab.browser_entries.get();
+                let filter = app
+                    .shared_state
+                    .signals()
+                    .search_text
+                    .get()
+                    .trim()
+                    .to_lowercase();
+                let paths: Vec<String> = snapshot
+                    .entries
+                    .iter()
+                    .filter(|entry| {
+                        filter.is_empty() || entry.name.to_lowercase().contains(&filter)
+                    })
+                    .map(|entry| entry.path.clone())
+                    .collect();
                 sel_tab.browser_view_state.update(|s| {
-                    let paths: Vec<String> =
-                        s.view_entries.iter().map(|e| e.path.clone()).collect();
                     s.selection.extend(paths);
                 });
             }
@@ -387,7 +392,6 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             let nested_tab = app.shared_state.signals().tabs.get().active().clone();
             let mut password_dialog = nested_tab.password_dialog.get();
             let mut status_info = app.shared_state.signals().status_bar.get();
-            let mut view_state = nested_tab.browser_view_state.get();
             // nav removed
 
             // archive_info parameter dropped post 2026-05-20 Tier 2
@@ -398,13 +402,11 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                 // current_path removed
                 &mut password_dialog,
                 &mut status_info,
-                &mut view_state.view_entries,
             );
 
             // navigation set removed
             nested_tab.password_dialog.set(password_dialog);
             app.shared_state.signals().status_bar.set(status_info);
-            nested_tab.browser_view_state.set(view_state);
         } else {
             app.shared_state.signals().status_bar.set(status_info);
         }
