@@ -53,13 +53,19 @@ impl OrganizationPlan {
         crate::utilities::CheckedRelativePath::new(&self.root_folder)
             .context("invalid organization root_folder")?;
 
+        let collision_key = |path: &crate::utilities::CheckedRelativePath| {
+            path.as_path()
+                .to_string_lossy()
+                .replace('\\', "/")
+                .to_lowercase()
+        };
         let mut destinations = HashSet::new();
         for (source, destination) in &self.moves {
             crate::utilities::CheckedRelativePath::new(source)
                 .with_context(|| format!("invalid move source {source:?}"))?;
             let destination = crate::utilities::CheckedRelativePath::new(destination)
                 .with_context(|| format!("invalid move destination {destination:?}"))?;
-            if !destinations.insert(destination.as_path().to_path_buf()) {
+            if !destinations.insert(collision_key(&destination)) {
                 anyhow::bail!(
                     "duplicate organization destination {:?}",
                     destination.as_path()
@@ -70,7 +76,7 @@ impl OrganizationPlan {
         for (path, _) in &self.generated_files {
             let path = crate::utilities::CheckedRelativePath::new(path)
                 .with_context(|| format!("invalid generated file path {path:?}"))?;
-            if !destinations.insert(path.as_path().to_path_buf()) {
+            if !destinations.insert(collision_key(&path)) {
                 anyhow::bail!("duplicate organization destination {:?}", path.as_path());
             }
         }
@@ -78,7 +84,7 @@ impl OrganizationPlan {
         for download in &self.downloads {
             let destination = crate::utilities::CheckedRelativePath::new(&download.dest_path)
                 .with_context(|| format!("invalid download path {:?}", download.dest_path))?;
-            if !destinations.insert(destination.as_path().to_path_buf()) {
+            if !destinations.insert(collision_key(&destination)) {
                 anyhow::bail!(
                     "duplicate organization destination {:?}",
                     destination.as_path()
@@ -399,6 +405,44 @@ mod tests {
         let error = format!("{error:#}");
 
         assert!(error.contains("root_folder"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn validate_paths_rejects_case_insensitive_cross_category_collision() {
+        let plan = OrganizationPlan {
+            rule_name: "unsafe".into(),
+            root_folder: "MyGame".into(),
+            root_folder_template: "MyGame".into(),
+            moves: vec![("game.exe".into(), "MyGame/Output.bin".into())],
+            generated_files: vec![("mygame/output.BIN".into(), "generated".into())],
+            downloads: vec![],
+            use_standard_layout: false,
+            resolved_variables: Default::default(),
+        };
+
+        assert!(plan.validate_paths().is_err());
+    }
+
+    #[test]
+    fn validate_paths_rejects_case_insensitive_download_collision() {
+        let plan = OrganizationPlan {
+            rule_name: "unsafe".into(),
+            root_folder: "MyGame".into(),
+            root_folder_template: "MyGame".into(),
+            moves: vec![("game.exe".into(), "MyGame/Cover.JPG".into())],
+            generated_files: vec![],
+            downloads: vec![PendingDownload {
+                product_id: None,
+                url: "https://example.invalid/cover.jpg".into(),
+                dest_path: "mygame/cover.jpg".into(),
+                cache_key: "cover".into(),
+                cached: false,
+            }],
+            use_standard_layout: false,
+            resolved_variables: Default::default(),
+        };
+
+        assert!(plan.validate_paths().is_err());
     }
 
     /// Regression: screenshot cache keys must use `gm.product_id` directly

@@ -9,6 +9,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::features::organization::engine::OrganizationPlan;
+use crate::features::organization::organizer::persist_plan_output;
 use crate::utilities::CheckedRelativePath;
 
 /// Apply the plan's moves + generated_files to `work_dir` in place.
@@ -35,6 +36,11 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
         .iter()
         .map(|(path, _)| CheckedRelativePath::new(path))
         .collect::<Result<Vec<_>>>()?;
+    let checked_downloads = plan
+        .downloads
+        .iter()
+        .map(|download| CheckedRelativePath::new(&download.dest_path))
+        .collect::<Result<Vec<_>>>()?;
 
     // Resolve the final paths before touching the work tree. This catches
     // static symlinked parents while the original layout is still intact.
@@ -45,14 +51,24 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
     for path in &checked_generated {
         path.resolve_under(work_dir)?;
     }
-
-    // Stage 1: stage all moves into a temp subdir to avoid clobbering
-    //          when src and dest overlap
-    let staging = work_dir.join("__pipeline_staging__");
-    if staging.exists() {
-        fs::remove_dir_all(&staging)?;
+    for path in &checked_downloads {
+        path.resolve_under(work_dir)?;
     }
-    fs::create_dir_all(&staging)?;
+
+    // Stage 1: stage all moves in an owned sibling directory. Keeping staging
+    // outside the work tree prevents collisions with valid archive paths and
+    // still guarantees same-filesystem renames.
+    let work_root = work_dir
+        .canonicalize()
+        .with_context(|| format!("canonicalize work directory {:?}", work_dir))?;
+    let work_parent = work_root
+        .parent()
+        .context("pipeline work directory has no parent")?;
+    let staging_dir = tempfile::Builder::new()
+        .prefix(".arclain-plan-")
+        .tempdir_in(work_parent)
+        .context("create pipeline plan staging directory")?;
+    let staging = staging_dir.path();
 
     for (source, destination) in &checked_moves {
         let src = source.resolve_under(work_dir)?;
@@ -70,20 +86,20 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
         // Use rename if possible (same filesystem), else copy+remove
         if fs::rename(&src, &dest).is_err() {
             let src = source.resolve_under(work_dir)?;
-            let dest = destination.resolve_under(&staging)?;
-            fs::copy(&src, &dest).with_context(|| format!("copy {:?} -> {:?}", src, dest))?;
+            let mut source_file =
+                fs::File::open(&src).with_context(|| format!("open move source {:?}", src))?;
+            persist_plan_output(staging, destination, &mut source_file)
+                .with_context(|| format!("copy {:?} into plan staging", src))?;
             let src = source.resolve_under(work_dir)?;
             fs::remove_file(&src).ok();
         }
     }
 
-    // Stage 2: remove everything outside the staging dir (old layout)
+    // Stage 2: remove the old layout. Staging is an owned sibling and cannot
+    // be mistaken for a plan-controlled work-tree entry.
     for entry in fs::read_dir(work_dir)? {
         let entry = entry?;
         let path = entry.path();
-        if path == staging {
-            continue;
-        }
         if path.is_dir() {
             fs::remove_dir_all(&path).ok();
         } else {
@@ -99,16 +115,11 @@ pub fn apply_plan_to_workdir(plan: &OrganizationPlan, work_dir: &Path) -> Result
         let to = top_level.resolve_under(work_dir)?;
         fs::rename(&from, &to).with_context(|| format!("move {:?} -> {:?}", from, to))?;
     }
-    fs::remove_dir_all(&staging).ok();
-
     // Stage 3: write generated files (metadata.json etc.)
     for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
-        let path = checked_path.resolve_under(work_dir)?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let path = checked_path.resolve_under(work_dir)?;
-        fs::write(&path, content).with_context(|| format!("write {:?}", path))?;
+        let mut bytes = std::io::Cursor::new(content.as_bytes());
+        persist_plan_output(work_dir, checked_path, &mut bytes)
+            .with_context(|| format!("write generated output {:?}", checked_path.as_path()))?;
     }
 
     Ok(())
@@ -123,7 +134,21 @@ mod tests {
         fs::write(p, b"test").unwrap();
     }
 
-    fn empty_plan(moves: Vec<(String, String)>, generated: Vec<(String, String)>) -> OrganizationPlan {
+    #[cfg(unix)]
+    fn symlink_dir_for_test(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn symlink_dir_for_test(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_dir(target, link)
+            .expect("Windows symlink support is required for this containment regression");
+    }
+
+    fn empty_plan(
+        moves: Vec<(String, String)>,
+        generated: Vec<(String, String)>,
+    ) -> OrganizationPlan {
         OrganizationPlan {
             rule_name: "test".into(),
             root_folder: "MyGame".into(),
@@ -159,16 +184,69 @@ mod tests {
     }
 
     #[test]
+    fn apply_plan_preserves_source_named_like_legacy_staging_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("__pipeline_staging__/game.exe"));
+        let plan = empty_plan(
+            vec![(
+                "__pipeline_staging__/game.exe".into(),
+                "MyGame/game.exe".into(),
+            )],
+            vec![],
+        );
+
+        apply_plan_to_workdir(&plan, tmp.path()).unwrap();
+
+        assert_eq!(
+            fs::read(tmp.path().join("MyGame/game.exe")).unwrap(),
+            b"test"
+        );
+    }
+
+    #[test]
+    fn apply_plan_allows_destination_named_like_legacy_staging_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        touch(&tmp.path().join("game.exe"));
+        let plan = empty_plan(
+            vec![("game.exe".into(), "__pipeline_staging__/game.exe".into())],
+            vec![],
+        );
+
+        apply_plan_to_workdir(&plan, tmp.path()).unwrap();
+
+        assert_eq!(
+            fs::read(tmp.path().join("__pipeline_staging__/game.exe")).unwrap(),
+            b"test"
+        );
+    }
+
+    #[test]
+    fn apply_plan_preserves_two_file_move_cycles() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("a.bin"), b"a").unwrap();
+        fs::write(tmp.path().join("b.bin"), b"b").unwrap();
+        let plan = empty_plan(
+            vec![
+                ("a.bin".into(), "b.bin".into()),
+                ("b.bin".into(), "a.bin".into()),
+            ],
+            vec![],
+        );
+
+        apply_plan_to_workdir(&plan, tmp.path()).unwrap();
+
+        assert_eq!(fs::read(tmp.path().join("a.bin")).unwrap(), b"b");
+        assert_eq!(fs::read(tmp.path().join("b.bin")).unwrap(), b"a");
+    }
+
+    #[test]
     fn apply_plan_writes_generated_files() {
         let tmp = tempfile::tempdir().unwrap();
         touch(&tmp.path().join("game.exe"));
 
         let plan = empty_plan(
             vec![("game.exe".into(), "MyGame/game.exe".into())],
-            vec![(
-                "MyGame/metadata.json".into(),
-                r#"{"title":"Test"}"#.into(),
-            )],
+            vec![("MyGame/metadata.json".into(), r#"{"title":"Test"}"#.into())],
         );
 
         apply_plan_to_workdir(&plan, tmp.path()).unwrap();
@@ -253,6 +331,32 @@ mod tests {
         assert!(work.join("game.exe").exists());
     }
 
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn apply_plan_resolves_download_destinations_before_mutation() {
+        use crate::features::organization::engine::PendingDownload;
+
+        let temp = tempfile::tempdir().unwrap();
+        let work = temp.path().join("work");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&work).unwrap();
+        fs::create_dir(&outside).unwrap();
+        touch(&work.join("game.exe"));
+        symlink_dir_for_test(&outside, &work.join("linked"));
+        let mut plan = empty_plan(vec![("game.exe".into(), "MyGame/game.exe".into())], vec![]);
+        plan.downloads.push(PendingDownload {
+            product_id: None,
+            url: "https://example.invalid/image.jpg".into(),
+            dest_path: "linked/image.jpg".into(),
+            cache_key: "test".into(),
+            cached: false,
+        });
+
+        assert!(apply_plan_to_workdir(&plan, &work).is_err());
+        assert!(work.join("game.exe").exists());
+        assert!(!outside.join("image.jpg").exists());
+    }
+
     #[test]
     fn apply_plan_rejects_duplicate_normalized_destinations_before_mutation() {
         let temp = tempfile::tempdir().unwrap();
@@ -325,9 +429,8 @@ mod tests {
         fs::create_dir(&work).unwrap();
         fs::create_dir(&outside).unwrap();
         touch(&work.join("game.exe"));
-        if symlink_dir(&outside, work.join("linked")).is_err() {
-            return;
-        }
+        symlink_dir(&outside, work.join("linked"))
+            .expect("Windows symlink support is required for this containment regression");
         let plan = empty_plan(
             vec![("game.exe".into(), "MyGame/game.exe".into())],
             vec![("linked/generated.txt".into(), "bad".into())],

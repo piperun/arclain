@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use tracing::{debug, error, info};
 
@@ -12,6 +13,54 @@ pub use super::checks::{
 pub use super::flatten::find_and_flatten_game_content; // Kept as pub if needed by engine?
 pub use super::metadata::{GameMetadata, ScreenshotData};
 pub use super::tasks::*;
+
+/// Persist a plan-controlled file without following or replacing an existing
+/// final leaf. The temporary file is created beside the destination so the
+/// final no-clobber operation is atomic on the destination filesystem.
+pub(crate) fn persist_plan_output<R: std::io::Read + ?Sized>(
+    root: &Path,
+    relative: &CheckedRelativePath,
+    reader: &mut R,
+) -> Result<()> {
+    let output = relative.resolve_under(root)?;
+    let parent = output
+        .parent()
+        .context("organization output has no parent")?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating organization output parent {}", parent.display()))?;
+
+    let checked_output = relative.resolve_under(root)?;
+    let checked_parent = checked_output
+        .parent()
+        .context("organization output has no checked parent")?;
+    let mut staged = tempfile::NamedTempFile::new_in(checked_parent).with_context(|| {
+        format!(
+            "staging organization output in {}",
+            checked_parent.display()
+        )
+    })?;
+    std::io::copy(reader, staged.as_file_mut())
+        .with_context(|| format!("writing staged output {}", checked_output.display()))?;
+    staged
+        .flush()
+        .with_context(|| format!("flushing staged output {}", checked_output.display()))?;
+    staged
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("syncing staged output {}", checked_output.display()))?;
+
+    let checked_output = relative.resolve_under(root)?;
+    staged
+        .persist_noclobber(&checked_output)
+        .map_err(|error| error.error)
+        .with_context(|| {
+            format!(
+                "persisting organization output {}",
+                checked_output.display()
+            )
+        })?;
+    Ok(())
+}
 
 /// Organize archive with game metadata using Archive (dependency injection pattern)
 ///
@@ -187,8 +236,9 @@ pub fn execute_organization_plan(
                 // Since it's all in temp, rename should be fine.
                 if std::fs::rename(&src_path, &dst_path).is_err() {
                     let src_path = source.resolve_under(&source_extracted)?;
-                    let dst_path = destination.resolve_under(&organized_dir)?;
-                    std::fs::copy(&src_path, &dst_path)?;
+                    let mut source_file = std::fs::File::open(&src_path)
+                        .with_context(|| format!("opening move source {}", src_path.display()))?;
+                    persist_plan_output(&organized_dir, destination, &mut source_file)?;
                 }
             } else {
                 debug!("Source file not found (maybe directory?): {}", src_rel);
@@ -199,12 +249,8 @@ pub fn execute_organization_plan(
     // 2b. Write generated files (e.g. metadata.json)
     debug!("Writing generated files");
     for ((_, content), checked_path) in plan.generated_files.iter().zip(&checked_generated) {
-        let dst_path = checked_path.resolve_under(&organized_dir)?;
-        if let Some(parent) = dst_path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let dst_path = checked_path.resolve_under(&organized_dir)?;
-        std::fs::write(&dst_path, content)?;
+        let mut bytes = std::io::Cursor::new(content.as_bytes());
+        persist_plan_output(&organized_dir, checked_path, &mut bytes)?;
     }
 
     // 2c. Download files (e.g. screenshots)
@@ -226,8 +272,10 @@ pub fn execute_organization_plan(
                 Ok(resp) => {
                     if resp.status().is_success() {
                         if let Ok(bytes) = resp.bytes() {
-                            let dst_path = checked_path.resolve_under(&organized_dir)?;
-                            if let Err(e) = std::fs::write(&dst_path, bytes) {
+                            let mut bytes = std::io::Cursor::new(bytes);
+                            if let Err(e) =
+                                persist_plan_output(&organized_dir, checked_path, &mut bytes)
+                            {
                                 error!(
                                     "Failed to write downloaded file {}: {}",
                                     download.dest_path, e
@@ -287,4 +335,57 @@ pub fn execute_organization_plan(
 
     info!("Plan execution completed successfully");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn persist_plan_output_does_not_replace_existing_leaf() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("output.bin"), b"known-good").unwrap();
+        let relative = CheckedRelativePath::new("output.bin").unwrap();
+        let mut replacement = Cursor::new(b"replacement");
+
+        assert!(persist_plan_output(&root, &relative, &mut replacement).is_err());
+        assert_eq!(
+            std::fs::read(root.join("output.bin")).unwrap(),
+            b"known-good"
+        );
+    }
+
+    #[cfg(unix)]
+    fn symlink_file_for_test(target: &Path, link: &Path) {
+        std::os::unix::fs::symlink(target, link).unwrap();
+    }
+
+    #[cfg(windows)]
+    fn symlink_file_for_test(target: &Path, link: &Path) {
+        std::os::windows::fs::symlink_file(target, link)
+            .expect("Windows symlink support is required for this containment regression");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn persist_plan_output_does_not_follow_existing_leaf_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("root");
+        let outside = temp.path().join("outside.bin");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(&outside, b"known-good").unwrap();
+        symlink_file_for_test(&outside, &root.join("output.bin"));
+        let relative = CheckedRelativePath::new("output.bin").unwrap();
+        let mut replacement = Cursor::new(b"replacement");
+
+        assert!(persist_plan_output(&root, &relative, &mut replacement).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), b"known-good");
+        assert!(std::fs::symlink_metadata(root.join("output.bin"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
 }
