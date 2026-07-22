@@ -258,21 +258,27 @@ impl PluginRequestContext {
     ) -> Result<AuthorizedPluginTarget, HttpError> {
         let policy = self.registered_policy(plugin_id)?;
         let url = validate_plugin_url(url.as_str())?;
-        let host = url
-            .host_str()
-            .ok_or_else(|| HttpError::InvalidUrl {
-                reason: "plugin URL has no host".to_string(),
-            })?
-            .to_ascii_lowercase();
         let port = url
             .port_or_known_default()
             .ok_or_else(|| HttpError::InvalidUrl {
                 reason: "plugin URL has no usable port".to_string(),
             })?;
-        let resolved = if let Ok(address) = host.parse::<IpAddr>() {
-            vec![SocketAddr::new(address, port)]
-        } else {
-            self.resolve_host(&host, port).await?
+        let (host, resolved) = match url.host().ok_or_else(|| HttpError::InvalidUrl {
+            reason: "plugin URL has no host".to_string(),
+        })? {
+            url::Host::Domain(domain) => {
+                let host = domain.to_ascii_lowercase();
+                let resolved = self.resolve_host(&host, port).await?;
+                (host, resolved)
+            }
+            url::Host::Ipv4(address) => {
+                let host = address.to_string();
+                (host, vec![SocketAddr::new(IpAddr::V4(address), port)])
+            }
+            url::Host::Ipv6(address) => {
+                let host = address.to_string();
+                (host, vec![SocketAddr::new(IpAddr::V6(address), port)])
+            }
         };
         let resolved_ips: Vec<IpAddr> = resolved.iter().map(|address| address.ip()).collect();
         #[cfg(test)]
@@ -288,37 +294,33 @@ impl PluginRequestContext {
             });
         }
 
-        let domain_info =
-            analyze_url(url.as_str()).map_err(|reason| HttpError::InvalidUrl { reason })?;
-        let access = self
-            .whitelist
-            .read()
-            .check(plugin_id, &domain_info.effective_domain);
+        let rate_domain = if matches!(url.host(), Some(url::Host::Domain(_))) {
+            analyze_url(url.as_str())
+                .map_err(|reason| HttpError::InvalidUrl { reason })?
+                .effective_domain
+        } else {
+            host.clone()
+        };
+        let access = self.whitelist.read().check(plugin_id, &host);
         match access {
             AccessCheck::Allowed => {}
             AccessCheck::NeedsApproval => {
-                return Err(HttpError::DomainNeedsApproval {
-                    domain: domain_info.effective_domain,
-                });
+                return Err(HttpError::DomainNeedsApproval { domain: host });
             }
             AccessCheck::NotWhitelisted => {
-                self.whitelist
-                    .write()
-                    .add_pending(plugin_id, &domain_info.effective_domain);
-                return Err(HttpError::DomainNotWhitelisted {
-                    domain: domain_info.effective_domain,
-                });
+                self.whitelist.write().add_pending(plugin_id, &host);
+                return Err(HttpError::DomainNotWhitelisted { domain: host });
             }
         }
 
-        let scope = format!("{plugin_id}\0{}", domain_info.effective_domain);
+        let scope = format!("{plugin_id}\0{rate_domain}");
         if !self
             .rate_limiter
             .read()
             .try_acquire_with_limit(&scope, policy.requests_per_minute)
         {
             return Err(HttpError::RateLimited {
-                domain: domain_info.effective_domain,
+                domain: rate_domain,
             });
         }
 
@@ -338,13 +340,14 @@ impl PluginRequestContext {
         &self,
         target: &AuthorizedPluginTarget,
     ) -> Result<reqwest::Client, HttpError> {
-        let host = target.url.host_str().ok_or_else(|| HttpError::InvalidUrl {
+        let host = match target.url.host().ok_or_else(|| HttpError::InvalidUrl {
             reason: "plugin URL has no host".to_string(),
-        })?;
-        let mut builder =
-            AsyncHttpClient::client_builder().resolve_to_addrs(host, &target.resolved);
-
-        if target.use_proxy {
+        })? {
+            url::Host::Domain(domain) => domain.to_ascii_lowercase(),
+            url::Host::Ipv4(address) => address.to_string(),
+            url::Host::Ipv6(address) => address.to_string(),
+        };
+        let proxy_config = if target.use_proxy {
             let config = self
                 .proxy_config
                 .read()
@@ -356,6 +359,36 @@ impl PluginRequestContext {
                         "plugin is configured to use a proxy, but no enabled proxy is configured"
                             .to_string(),
                 })?;
+            Some(config)
+        } else {
+            None
+        };
+        let proxy_resolved = target.use_proxy.then(|| {
+            target
+                .resolved
+                .iter()
+                .copied()
+                .filter(SocketAddr::is_ipv4)
+                .collect::<Vec<_>>()
+        });
+        let pinned_addresses = match proxy_resolved.as_deref() {
+            Some([]) => {
+                // reqwest 0.12.28 formats a locally resolved IPv6 SOCKS target
+                // as a bracketed domain, causing hyper-util to emit hostname
+                // ATYP instead of IPv6 ATYP. Fail closed until the locked
+                // transport can represent the already-validated address.
+                return Err(HttpError::PinnedResolutionUnavailable {
+                    reason: "the locked SOCKS transport cannot encode a validated IPv6 target as an IP destination"
+                        .to_string(),
+                });
+            }
+            Some(addresses) => addresses,
+            None => target.resolved.as_slice(),
+        };
+        let mut builder =
+            AsyncHttpClient::client_builder().resolve_to_addrs(&host, pinned_addresses);
+
+        if let Some(config) = proxy_config {
             let mut proxy_url =
                 url::Url::parse(&format!("socks5://{}", config.address)).map_err(|error| {
                     HttpError::RequestFailed {
@@ -606,6 +639,15 @@ impl AsyncHttpClient {
         target: &AuthorizedPluginTarget,
     ) -> Result<reqwest::Client, HttpError> {
         self.plugin_context.build_pinned_client(target)
+    }
+
+    #[cfg(test)]
+    pub(super) async fn authorize_plugin_target_for_test(
+        &self,
+        plugin_id: &str,
+        url: url::Url,
+    ) -> Result<AuthorizedPluginTarget, HttpError> {
+        self.plugin_context.authorize_target(plugin_id, url).await
     }
 
     /// Update the whitelist

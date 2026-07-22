@@ -186,6 +186,10 @@ async fn plugin_policy_rejects_authority_and_hop_by_hop_headers_before_connectin
         "Trailer",
         "Forwarded",
         "X-Forwarded-Host",
+        "X-Forwarded-For",
+        "x-FoRwArDeD-pRoTo",
+        "X-Forwarded-Port",
+        "X-Forwarded-Server",
     ] {
         let result = client.request_for_plugin(
             "plugin-a",
@@ -355,6 +359,198 @@ async fn plugin_policy_socks_connector_sends_the_pinned_ip_not_the_hostname() {
     assert_eq!(destination, pinned_ip);
     assert_eq!(port, 80);
     server.await.expect("SOCKS5 listener task panicked");
+}
+
+async fn assert_proxied_ipv6_literal_fails_closed(url: &str) {
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind SOCKS5 listener");
+    let proxy_address = listener.local_addr().expect("SOCKS5 listener address");
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist
+        .write()
+        .approve("plugin-a", "2606:4700:4700::1111");
+    let client = AsyncHttpClient::new(
+        Handle::current(),
+        whitelist,
+        Some(ProxyConfig {
+            enabled: true,
+            address: proxy_address.to_string(),
+            username: None,
+            password: None,
+        }),
+    );
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.update_plugin_proxy_map(std::collections::HashMap::from([(
+        "plugin-a".to_string(),
+        true,
+    )]));
+    client.set_plugin_dns_answers_for_test(
+        "[2606:4700:4700::1111]",
+        vec![vec!["127.0.0.1:9".parse().unwrap()]],
+    );
+
+    let id = client
+        .request_for_plugin(
+            "plugin-a",
+            HttpRequest::get(url).with_timeout(Duration::from_millis(250)),
+        )
+        .expect("checked IPv6 literal request should start");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "an unpinnable IPv6 target reached the SOCKS proxy"
+    );
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("Pinned resolution is unavailable")),
+        "proxied IPv6 target did not fail closed: {status:?}"
+    );
+    assert_eq!(
+        client.plugin_dns_lookup_count_for_test("[2606:4700:4700::1111]"),
+        0,
+        "an IP literal must never pass through DNS resolution"
+    );
+}
+
+#[tokio::test]
+async fn plugin_policy_proxied_ipv6_literals_fail_before_proxy_or_dns() {
+    assert_proxied_ipv6_literal_fails_closed("http://[2606:4700:4700::1111]/").await;
+    assert_proxied_ipv6_literal_fails_closed("http://[2606:4700:4700::1111]:8080/").await;
+}
+
+#[tokio::test]
+async fn plugin_policy_direct_ipv6_literal_bypasses_dns_and_preserves_wire_authority() {
+    let listener = TokioTcpListener::bind("[::1]:0")
+        .await
+        .expect("bind IPv6 HTTP listener");
+    let address = listener.local_addr().expect("IPv6 listener address");
+    let (host_sender, host_receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept IPv6 HTTP request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut buffer).await.expect("read HTTP request");
+            assert!(read > 0, "connection closed before request headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        let request = String::from_utf8(request).expect("HTTP request headers are UTF-8");
+        let host = request
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("host")
+                    .then(|| value.trim().to_string())
+            })
+            .expect("wire request has Host header");
+        host_sender.send(host).expect("receive observed Host");
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .expect("write HTTP response");
+    });
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "::1");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("[::1]", vec![vec!["127.0.0.1:9".parse().unwrap()]]);
+    let url = format!("http://[::1]:{}/", address.port());
+
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(url))
+        .expect("checked direct IPv6 request should start");
+    assert!(
+        matches!(
+            wait_for_request(&client, &id).await,
+            RequestStatus::Ready(_)
+        ),
+        "direct IPv6 literal request failed"
+    );
+    assert_eq!(
+        host_receiver.await.expect("observe IPv6 wire Host"),
+        format!("[::1]:{}", address.port())
+    );
+    assert_eq!(client.plugin_dns_lookup_count_for_test("[::1]"), 0);
+    server.await.expect("IPv6 HTTP server task panicked");
+}
+
+#[tokio::test]
+async fn plugin_policy_public_ipv6_literal_builds_a_direct_pinned_target_without_dns() {
+    let public_ipv6 = "2606:4700:4700::1111"
+        .parse::<std::net::Ipv6Addr>()
+        .unwrap();
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist
+        .write()
+        .approve("plugin-a", "2606:4700:4700::1111");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.set_plugin_dns_answers_for_test(
+        "[2606:4700:4700::1111]",
+        vec![vec!["127.0.0.1:9".parse().unwrap()]],
+    );
+
+    for (url, expected_port) in [
+        ("http://[2606:4700:4700::1111]/", 80),
+        ("http://[2606:4700:4700::1111]:8080/", 8080),
+    ] {
+        let target = client
+            .authorize_plugin_target_for_test(
+                "plugin-a",
+                url::Url::parse(url).expect("parse public IPv6 URL"),
+            )
+            .await
+            .expect("authorize public IPv6 literal");
+        assert_eq!(
+            target.resolved,
+            vec![std::net::SocketAddr::new(
+                std::net::IpAddr::V6(public_ipv6),
+                expected_port,
+            )]
+        );
+        assert!(!target.use_proxy);
+        client
+            .build_pinned_plugin_client(&target)
+            .expect("build direct public IPv6 client");
+    }
+    assert_eq!(
+        client.plugin_dns_lookup_count_for_test("[2606:4700:4700::1111]"),
+        0,
+        "a public IPv6 literal must bypass DNS"
+    );
+}
+
+#[tokio::test]
+async fn plugin_policy_rejects_ipv6_loopback_literal_before_connecting() {
+    let listener = TokioTcpListener::bind("[::1]:0")
+        .await
+        .expect("bind IPv6 connection sentinel");
+    let address = listener.local_addr().expect("IPv6 sentinel address");
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "::1");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    let url = format!("http://[::1]:{}/", address.port());
+
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(url))
+        .expect("checked loopback request should start");
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("unsafe address")),
+        "IPv6 loopback was not rejected by production policy: {status:?}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "rejected IPv6 loopback request reached the network"
+    );
 }
 
 #[tokio::test]
@@ -585,6 +781,80 @@ async fn plugin_policy_rejects_an_unapproved_redirect_after_resolving_it() {
         .any(|entry| entry.plugin_id == "plugin-a" && entry.domain == "blocked.test"));
 }
 
+async fn assert_redirect_requires_exact_host_approval(start_host: &str, blocked_host: &str) {
+    let server = MockServer::start().await;
+    let blocked_url = format!("http://{blocked_host}:{}/blocked", server.address().port());
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(ResponseTemplate::new(302).append_header("Location", blocked_url.as_str()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/blocked"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("approved"))
+        .mount(&server)
+        .await;
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", start_host);
+    let client = AsyncHttpClient::new(Handle::current(), whitelist.clone(), None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test(start_host, vec![vec![*server.address()]]);
+    client.set_plugin_dns_answers_for_test(blocked_host, vec![vec![*server.address()]]);
+
+    let start_url = format!("http://{start_host}:{}/start", server.address().port());
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(&start_url))
+        .expect("checked redirect request should start");
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("not whitelisted")),
+        "cross-host redirect was not rejected: {status:?}"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.url.path() == "/start")
+            .count(),
+        1,
+        "the separately approved initial host was not reached"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() != "/blocked"),
+        "redirect reached a different exact host without approval"
+    );
+    assert!(whitelist.read().get_pending().iter().any(|entry| {
+        entry.plugin_id == "plugin-a" && entry.domain.eq_ignore_ascii_case(blocked_host)
+    }));
+
+    whitelist.write().approve("plugin-a", blocked_host);
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(start_url))
+        .expect("approved redirect request should start");
+    assert!(
+        matches!(
+            wait_for_request(&client, &id).await,
+            RequestStatus::Ready(_)
+        ),
+        "redirect did not succeed after the exact target host was approved"
+    );
+}
+
+#[tokio::test]
+async fn plugin_policy_requires_exact_host_approval_across_com_cn_redirects() {
+    assert_redirect_requires_exact_host_approval("trusted.com.cn", "attacker.com.cn").await;
+}
+
+#[tokio::test]
+async fn plugin_policy_requires_exact_host_approval_across_private_suffix_redirects() {
+    assert_redirect_requires_exact_host_approval("tenant-a.github.io", "tenant-b.github.io").await;
+}
+
 #[tokio::test]
 async fn plugin_policy_follows_five_redirects_and_rejects_the_sixth() {
     let server = MockServer::start().await;
@@ -767,7 +1037,7 @@ async fn plugin_policy_preserves_dlsite_cdn_path_normalization() {
         .await;
 
     let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
-    whitelist.write().approve("plugin-a", "dlsite.jp");
+    whitelist.write().approve("plugin-a", "img.dlsite.jp");
     let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
     configure_enabled_plugin(&client, "plugin-a", 60);
     client.allow_special_plugin_addresses_for_test();

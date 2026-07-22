@@ -79,13 +79,15 @@ pub(crate) fn validate_plugin_headers(headers: &HashMap<String, String>) -> Resu
         "te",
         "trailer",
         "forwarded",
-        "x-forwarded-host",
     ];
 
     if let Some(name) = headers.keys().find(|name| {
         FORBIDDEN
             .iter()
             .any(|forbidden| name.eq_ignore_ascii_case(forbidden))
+            || name
+                .get(.."x-forwarded-".len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("x-forwarded-"))
     }) {
         return Err(HttpError::SecurityWarning {
             message: format!("plugin requests must not set routing header {name:?}"),
