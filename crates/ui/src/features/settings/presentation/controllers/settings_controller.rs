@@ -457,11 +457,33 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     use tempfile::TempDir;
     use tracing_test::traced_test;
 
     const PROXY_PLUGIN_ID: &str = "proxy-map-test-plugin";
+
+    fn serve_proxy_sentinel(
+        proxy: TcpListener,
+        request_finished: Arc<AtomicBool>,
+        reached_proxy: Arc<AtomicBool>,
+    ) {
+        // The HTTP request timeout bounds this lifecycle. A shorter wall-clock
+        // deadline makes the sentinel depend on when the OS schedules its thread.
+        while !request_finished.load(Ordering::SeqCst) {
+            match proxy.accept() {
+                Ok((mut socket, _)) => {
+                    reached_proxy.store(true, Ordering::SeqCst);
+                    let _ = socket.write_all(&[0x05, 0xff]);
+                    return;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("proxy sentinel accept failed: {error}"),
+            }
+        }
+    }
 
     struct ProxySaveFixture {
         shared: SharedState,
@@ -616,28 +638,12 @@ mod tests {
             let request_finished = Arc::new(AtomicBool::new(false));
             let proxy_finished_on_thread = request_finished.clone();
             let proxy_server = std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(1);
-                while !proxy_finished_on_thread.load(Ordering::SeqCst) && Instant::now() < deadline
-                {
-                    match proxy.accept() {
-                        Ok((mut socket, _)) => {
-                            proxy_reached_on_thread.store(true, Ordering::SeqCst);
-                            let _ = socket.write_all(&[0x05, 0xff]);
-                            return;
-                        }
-                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                            std::thread::sleep(Duration::from_millis(10));
-                        }
-                        Err(error) => panic!("proxy sentinel accept failed: {error}"),
-                    }
-                }
+                serve_proxy_sentinel(proxy, proxy_finished_on_thread, proxy_reached_on_thread);
             });
 
             let target_finished_on_thread = request_finished.clone();
             let target_server = std::thread::spawn(move || {
-                let deadline = Instant::now() + Duration::from_secs(1);
-                while !target_finished_on_thread.load(Ordering::SeqCst) && Instant::now() < deadline
-                {
+                while !target_finished_on_thread.load(Ordering::SeqCst) {
                     match target.accept() {
                         Ok((mut socket, _)) => {
                             reached_on_thread.store(true, Ordering::SeqCst);
@@ -1090,6 +1096,35 @@ mod tests {
         assert!(
             TcpListener::bind(proxy_address).is_err(),
             "fixture released its proxy port for reuse by a later sentinel"
+        );
+    }
+
+    #[test]
+    fn proxy_sentinel_remains_available_until_the_request_finishes() {
+        let proxy = TcpListener::bind("127.0.0.1:0").expect("bind delayed proxy sentinel");
+        let proxy_address = proxy.local_addr().expect("read delayed proxy address");
+        proxy
+            .set_nonblocking(true)
+            .expect("make delayed proxy sentinel nonblocking");
+        let request_finished = Arc::new(AtomicBool::new(false));
+        let reached_proxy = Arc::new(AtomicBool::new(false));
+        let server = {
+            let request_finished = request_finished.clone();
+            let reached_proxy = reached_proxy.clone();
+            std::thread::spawn(move || {
+                serve_proxy_sentinel(proxy, request_finished, reached_proxy);
+            })
+        };
+
+        std::thread::sleep(Duration::from_millis(1_100));
+        let _connection = std::net::TcpStream::connect(proxy_address)
+            .expect("connect after the old scheduling deadline");
+        server.join().expect("proxy sentinel thread panicked");
+        request_finished.store(true, Ordering::SeqCst);
+
+        assert!(
+            reached_proxy.load(Ordering::SeqCst),
+            "proxy sentinel stopped before the request lifecycle finished"
         );
     }
 }

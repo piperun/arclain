@@ -175,6 +175,17 @@ fn wait_until(message: &str, predicate: impl Fn() -> bool) {
 }
 
 #[test]
+fn archive_test_context_bounds_runtime_workers_for_parallel_tests() {
+    let ctx = TestContext::new();
+
+    assert_eq!(
+        ctx.shared.services.tokio_runtime.metrics().num_workers(),
+        2,
+        "each parallel archive test must not create one Tokio worker per CPU"
+    );
+}
+
+#[test]
 fn archive_file_jobs_delete_returns_before_io_and_updates_origin_tab() {
     let ctx = TestContext::new();
     let shared = ctx.shared.clone();

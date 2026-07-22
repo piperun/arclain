@@ -29,7 +29,20 @@ use eframe::egui;
 use parking_lot::Mutex;
 use std::sync::Arc;
 use tempfile::TempDir;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Builder, Runtime};
+
+fn create_test_runtime() -> Runtime {
+    // Integration tests run concurrently, and each SharedState owns a runtime.
+    // Runtime::new() creates one worker per logical CPU, so a parallel test
+    // binary that creates many SharedStates can start hundreds of Tokio
+    // workers. Two workers still exercise task hand-off and concurrent
+    // blocking jobs without overwhelming the scheduler.
+    Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("create test runtime")
+}
 
 /// Build a minimal `SharedState` suitable for dispatcher unit tests.
 ///
@@ -42,7 +55,7 @@ use tokio::runtime::Runtime;
 /// Requires a 7z binary on PATH; the test backend uses it as the
 /// fallback. Tests on systems without 7z will panic at this helper.
 pub fn create_test_shared_state() -> SharedState {
-    let runtime = Runtime::new().unwrap();
+    let runtime = create_test_runtime();
     let services = Arc::new(Services::new(runtime));
 
     let app_state = AppState {
@@ -131,7 +144,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
     let key = SecretsKey::generate();
     let dbs = open_databases(&paths, &key).expect("open test databases");
 
-    let runtime = Runtime::new().unwrap();
+    let runtime = create_test_runtime();
     let mut services = Services::new(runtime);
     // arclain_ui::Services wraps CoreServices via Deref-only, so
     // db-backed fields live on `.core`.
