@@ -72,14 +72,20 @@ impl PluginManager {
                     requests_per_minute: rate_limit,
                 },
             );
+            client.replace_plugin_manifest_domains(
+                &plugin_id,
+                &discovered.manifest.capabilities.network_domains,
+            );
             instance.set_async_http_client(Some(client.clone()));
-            for domain in &discovered.manifest.capabilities.network_domains {
-                client.approve_domain(&plugin_id, domain);
-            }
         }
 
         // Initialize the plugin
-        instance.init()?;
+        if let Err(error) = instance.init() {
+            if let Some(ref client) = self.async_http_client {
+                client.remove_plugin_configuration(&plugin_id);
+            }
+            return Err(error);
+        }
 
         // Get metadata from manifest (WIT get_metadata is not yet implemented and returns defaults)
         let manifest = &discovered.manifest;
@@ -118,7 +124,12 @@ impl PluginManager {
         info!("Reloading plugin: {}", plugin_id);
 
         // Remove existing plugin
-        self.plugins.write().remove(plugin_id);
+        let removed = self.plugins.write().remove(plugin_id);
+        if removed.is_some() {
+            if let Some(ref client) = self.async_http_client {
+                client.remove_plugin_configuration(plugin_id);
+            }
+        }
 
         // Discover plugins again
         let discovered = self.loader.discover_plugins()?;
@@ -140,11 +151,12 @@ impl PluginManager {
     pub fn unload_plugin(&mut self, plugin_id: &str) -> Result<()> {
         info!("Unloading plugin: {}", plugin_id);
 
-        let mut plugins = self.plugins.write();
-
-        if let Some(plugin) = plugins.remove(plugin_id) {
+        let plugin = self.plugins.write().remove(plugin_id);
+        if let Some(plugin) = plugin {
+            if let Some(ref client) = self.async_http_client {
+                client.remove_plugin_configuration(plugin_id);
+            }
             plugin.instance.lock().cleanup()?;
-            drop(plugins);
             self.invalidate_top_tabs_cache();
             info!("Plugin unloaded: {}", plugin_id);
             Ok(())

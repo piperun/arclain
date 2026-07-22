@@ -1979,6 +1979,54 @@ async fn streaming_metadata_failure_writes_no_body_bytes() {
 }
 
 #[tokio::test]
+async fn streaming_rejects_non_full_success_statuses_before_metadata_or_body() {
+    for status in [201, 204] {
+        let mock_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/not-a-full-response"))
+            .respond_with(
+                ResponseTemplate::new(status)
+                    .set_body_bytes(format!("unexpected-{status}").into_bytes()),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let handle = Handle::current();
+        let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+        let client = AsyncHttpClient::new(handle, whitelist, None);
+        let url = format!("{}/not-a-full-response", mock_server.uri());
+        let (result, buffer, metadata_callbacks) = tokio::task::spawn_blocking(move || {
+            let mut buffer = Vec::new();
+            let mut metadata_callbacks = 0;
+            let result = client.blocking_get_streaming_with_metadata(
+                &url,
+                false,
+                &mut buffer,
+                None,
+                None,
+                |_| {
+                    metadata_callbacks += 1;
+                    Ok(())
+                },
+            );
+            (result, buffer, metadata_callbacks)
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            result.is_err(),
+            "status {status} was accepted as a full response"
+        );
+        assert!(buffer.is_empty(), "status {status} leaked body bytes");
+        assert_eq!(
+            metadata_callbacks, 0,
+            "status {status} reached the metadata boundary"
+        );
+    }
+}
+
+#[tokio::test]
 async fn streaming_metadata_binds_the_final_redirect_url() {
     let mock_server = MockServer::start().await;
     Mock::given(method("GET"))

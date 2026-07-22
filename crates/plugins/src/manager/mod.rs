@@ -163,10 +163,10 @@ impl PluginManager {
         }
     }
 
-    /// Set async http client. Snapshots `(id, instance, network_domains)`
+    /// Set async http client. Snapshots manifest-derived network state
     /// under `plugins.read()`, drops the read guard, then takes per-plugin
-    /// `instance.lock()` and `client.approve_domain()` (which acquires
-    /// `whitelist.write()`). Without the snapshot/drop, plugins.read +
+    /// `instance.lock()` and updates the client's whitelist. Without the
+    /// snapshot/drop, plugins.read +
     /// whitelist.write nest, forming a deadlock cycle (see
     /// `tests/c1_cascading_lock_test.rs`).
     pub fn set_async_http_client(&mut self, client: Arc<arclain_network::AsyncHttpClient>) {
@@ -202,10 +202,8 @@ impl PluginManager {
                     requests_per_minute,
                 },
             );
+            client.replace_plugin_manifest_domains(&plugin_id, &domains);
             instance.lock().set_async_http_client(Some(client.clone()));
-            for domain in &domains {
-                client.approve_domain(&plugin_id, domain);
-            }
         }
     }
 

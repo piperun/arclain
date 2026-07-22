@@ -295,6 +295,83 @@ fn valid_install_runs_normal_init_once_after_id_validation() {
     );
 }
 
+#[test]
+fn reload_and_unload_replace_only_manifest_owned_domains() {
+    use arclain_network::features::whitelist::{AccessCheck, DomainWhitelist};
+    use parking_lot::RwLock;
+
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let wasm_path = temp_dir.path().join("ui-demo.wasm");
+    std::fs::write(
+        &wasm_path,
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../plugins/ui-demo/ui-demo.wasm"
+        )),
+    )
+    .unwrap();
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let whitelist = Arc::new(RwLock::new(DomainWhitelist::default()));
+    let client = Arc::new(arclain_network::AsyncHttpClient::new(
+        runtime.handle().clone(),
+        whitelist.clone(),
+        None,
+    ));
+    let mut manager = PluginManager::new(plugins_dir.clone(), HashMap::new()).unwrap();
+    manager.set_async_http_client(client.clone());
+    assert_eq!(manager.install_plugin(&wasm_path).unwrap(), "ui-demo");
+
+    let manifest_path = plugins_dir.join("ui-demo").join("ui-demo.toml");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap().replace(
+        "network = false",
+        "network = true\nnetwork_domains = [\"old-manifest.test\"]",
+    );
+    std::fs::write(&manifest_path, manifest).unwrap();
+    manager.reload_plugin("ui-demo").unwrap();
+    whitelist.read().approve("ui-demo", "user-approved.test");
+    assert_eq!(
+        whitelist.read().check("ui-demo", "old-manifest.test"),
+        AccessCheck::Allowed,
+    );
+
+    let replacement = std::fs::read_to_string(&manifest_path)
+        .unwrap()
+        .replace("old-manifest.test", "new-manifest.test");
+    std::fs::write(&manifest_path, replacement).unwrap();
+    manager.reload_plugin("ui-demo").unwrap();
+
+    assert_eq!(
+        whitelist.read().check("ui-demo", "old-manifest.test"),
+        AccessCheck::NotWhitelisted,
+        "replacement manifest retained its predecessor's automatic grant",
+    );
+    assert_eq!(
+        whitelist.read().check("ui-demo", "new-manifest.test"),
+        AccessCheck::Allowed,
+    );
+    assert_eq!(
+        whitelist.read().check("ui-demo", "user-approved.test"),
+        AccessCheck::Allowed,
+        "reload revoked an independent user approval",
+    );
+
+    manager.unload_plugin("ui-demo").unwrap();
+
+    assert_eq!(
+        whitelist.read().check("ui-demo", "new-manifest.test"),
+        AccessCheck::NotWhitelisted,
+        "unload retained a manifest-owned domain grant",
+    );
+    assert_eq!(
+        whitelist.read().check("ui-demo", "user-approved.test"),
+        AccessCheck::Allowed,
+        "unload revoked an independent user approval",
+    );
+    assert_eq!(client.plugin_network_policy("ui-demo"), None);
+}
+
 /// Regression test for P5 from `docs/AUDIT_2026-05-03.md`.
 ///
 /// `status_summary()` is the cheap counts-only path the status bar

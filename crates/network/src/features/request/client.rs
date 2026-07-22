@@ -670,6 +670,29 @@ impl AsyncHttpClient {
         );
     }
 
+    /// Replace the domains granted by this plugin's currently loaded
+    /// manifest. Independent user approvals remain intact.
+    pub fn replace_plugin_manifest_domains(&self, plugin_id: &str, domains: &[String]) {
+        self.plugin_context
+            .whitelist
+            .read()
+            .replace_manifest_domains(plugin_id, domains);
+    }
+
+    /// Remove the request policy and manifest-owned domains for an unloaded
+    /// plugin while preserving independently approved domains and proxy
+    /// preferences.
+    pub fn remove_plugin_configuration(&self, plugin_id: &str) {
+        self.plugin_context
+            .plugin_policies
+            .write()
+            .remove(plugin_id);
+        self.plugin_context
+            .whitelist
+            .read()
+            .clear_manifest_domains(plugin_id);
+    }
+
     /// Analyze a URL for security issues (without making a request)
     pub fn analyze_url(&self, url: &str) -> Result<DomainInfo, String> {
         analyze_url(url)
@@ -1165,7 +1188,11 @@ where
     if !status.is_success() {
         return Err(format!("HTTP error: {status}"));
     }
-    let was_partial = status.as_u16() == 206;
+    let was_partial = match status.as_u16() {
+        200 => false,
+        206 => true,
+        _ => return Err(format!("Unsupported streaming response status: {status}")),
+    };
     let content_range = if was_partial {
         let requested_start = requested_start.ok_or_else(|| {
             "Server returned 206 Partial Content without a Range request".to_string()
