@@ -539,6 +539,9 @@ pub enum PluginError {
     #[error("Plugin execution failed: {0}")]
     ExecutionError(String),
 
+    #[error("Plugin unavailable: {0}")]
+    Unavailable(String),
+
     #[error("Capability denied: {0:?}")]
     CapabilityDenied(PluginCapability),
 
@@ -638,5 +641,17 @@ impl PluginLayout {
                 sidebar
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod resource_limit_error_tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_error_exposes_only_the_redacted_host_reason() {
+        let error = PluginError::Unavailable("fuel quota exceeded".to_string());
+
+        assert_eq!(error.to_string(), "Plugin unavailable: fuel quota exceeded");
     }
 }

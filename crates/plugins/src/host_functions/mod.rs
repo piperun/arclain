@@ -24,9 +24,84 @@ use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use wasmtime::component::ResourceTable;
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiView};
+use wasmtime::ResourceLimiter;
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 const METADATA_VALIDATION_DENIED: &str = "metadata-validation-denied";
+
+pub(crate) const MAX_LINEAR_MEMORY_BYTES: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_TABLE_ELEMENTS: usize = 100_000;
+// `ResourceLimiter::instances` counts the component's adapter-internal core
+// instances, not user-visible plugin instances. Each Store still owns exactly
+// one `PluginWorld`; 32 accommodates the 20 core instances used by current
+// components while bounding malformed components.
+pub(crate) const MAX_CORE_INSTANCES: usize = 32;
+pub(crate) const MAX_TABLES: usize = 8;
+pub(crate) const MAX_MEMORIES: usize = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StoreQuotaKind {
+    Memory,
+    Table,
+}
+
+#[derive(Debug)]
+pub(crate) struct StoreQuotaExceeded {
+    pub(crate) kind: StoreQuotaKind,
+}
+
+impl std::fmt::Display for StoreQuotaExceeded {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("plugin store resource quota exceeded")
+    }
+}
+
+impl std::error::Error for StoreQuotaExceeded {}
+
+#[derive(Debug, Default)]
+pub(crate) struct PluginStoreLimiter;
+
+impl ResourceLimiter for PluginStoreLimiter {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if desired > MAX_LINEAR_MEMORY_BYTES {
+            return Err(wasmtime::Error::new(StoreQuotaExceeded {
+                kind: StoreQuotaKind::Memory,
+            }));
+        }
+        Ok(true)
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if desired > MAX_TABLE_ELEMENTS {
+            return Err(wasmtime::Error::new(StoreQuotaExceeded {
+                kind: StoreQuotaKind::Table,
+            }));
+        }
+        Ok(true)
+    }
+
+    fn instances(&self) -> usize {
+        MAX_CORE_INSTANCES
+    }
+
+    fn tables(&self) -> usize {
+        MAX_TABLES
+    }
+
+    fn memories(&self) -> usize {
+        MAX_MEMORIES
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum HostMode {
@@ -72,6 +147,7 @@ pub struct HostFunctions {
     pub data_service: DataService,
     pub table: ResourceTable,
     pub ctx: WasiCtx,
+    pub(crate) store_limiter: PluginStoreLimiter,
 
     /// Bridge to the host's per-tab signal tree — replaces the
     /// previous held `current_archive` / `current_password` /
@@ -184,6 +260,7 @@ impl HostFunctions {
             data_service,
             table: ResourceTable::new(),
             ctx,
+            store_limiter: PluginStoreLimiter,
             active_tab: None,
             event_context: None,
             pending_status_message: Arc::new(Mutex::new(None)),
@@ -198,7 +275,7 @@ impl HostFunctions {
     pub fn set_library_service(&mut self, lib_svc: Arc<arclain_core::LibraryService>) {
         // Register MetadataStore resolver with DataService
         let resolver = Arc::new(arclain_data::MetadataStoreResolver::new(
-            lib_svc.clone() as Arc<dyn arclain_data::MetadataReader>,
+            lib_svc.clone() as Arc<dyn arclain_data::MetadataReader>
         ));
 
         self.data_service
@@ -343,12 +420,11 @@ impl HostFunctions {
 
 // Implement WasiView for HostFunctions
 impl WasiView for HostFunctions {
-    fn table(&mut self) -> &mut ResourceTable {
-        &mut self.table
-    }
-
-    fn ctx(&mut self) -> &mut WasiCtx {
-        &mut self.ctx
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView {
+            ctx: &mut self.ctx,
+            table: &mut self.table,
+        }
     }
 }
 
@@ -482,15 +558,9 @@ impl Host for HostFunctions {
             let key = request.key.clone();
             let use_proxy = http_client.should_use_proxy_for_plugin(self.plugin_id.as_str());
             let cache_type = match request.resource_type {
-                crate::arclain::plugin::host::ResourceType::Binary => {
-                    arclain_db::CacheType::Other
-                }
-                crate::arclain::plugin::host::ResourceType::Image => {
-                    arclain_db::CacheType::Cover
-                }
-                crate::arclain::plugin::host::ResourceType::Json => {
-                    arclain_db::CacheType::Other
-                }
+                crate::arclain::plugin::host::ResourceType::Binary => arclain_db::CacheType::Other,
+                crate::arclain::plugin::host::ResourceType::Image => arclain_db::CacheType::Cover,
+                crate::arclain::plugin::host::ResourceType::Json => arclain_db::CacheType::Other,
             };
             let product_id = request.product_id.as_deref();
             match arclain_data::fetch_url_to_cache(
@@ -577,17 +647,13 @@ impl Host for HostFunctions {
             safe_ext
         };
 
-        let safe_key = key.replace(
-            [':', '/', '\\', '*', '?', '"', '<', '>', '|', ' '],
-            "_",
-        );
+        let safe_key = key.replace([':', '/', '\\', '*', '?', '"', '<', '>', '|', ' '], "_");
 
         let mut path = std::env::temp_dir();
         path.push(format!("arclain_{}.{}", safe_key, ext));
 
-        std::fs::write(&path, &bytes).map_err(|e| {
-            format!("Failed to write temp blob to {}: {}", path.display(), e)
-        })?;
+        std::fs::write(&path, &bytes)
+            .map_err(|e| format!("Failed to write temp blob to {}: {}", path.display(), e))?;
 
         tracing::info!(
             "[HostFunctions::play_cached_blob] key='{}' -> {} ({} bytes); shelling out",
@@ -600,9 +666,8 @@ impl Host for HostFunctions {
         // has accepted the request — the launched app then runs
         // asynchronously, so this function returns control even
         // though playback continues.
-        open::that(&path).map_err(|e| {
-            format!("Failed to launch default app for {}: {}", path.display(), e)
-        })?;
+        open::that(&path)
+            .map_err(|e| format!("Failed to launch default app for {}: {}", path.display(), e))?;
 
         Ok(())
     }
