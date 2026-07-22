@@ -105,9 +105,12 @@ fn plugin_policy_zero_rpm_denies_and_limits_are_isolated_per_plugin() {
     let limiter = RateLimiter::new(60);
 
     assert!(!limiter.try_acquire_with_limit("plugin-a\0example.com", 0));
-    assert!(limiter.try_acquire_with_limit("plugin-a\0example.com", 1));
-    assert!(!limiter.try_acquire_with_limit("plugin-a\0example.com", 1));
-    assert!(limiter.try_acquire_with_limit("plugin-b\0example.com", 1));
+    assert!(limiter.try_acquire_with_limit("Plugin-A\0Example.COM", 1));
+    assert!(!limiter.try_acquire_with_limit("Plugin-A\0example.com", 1));
+    assert!(
+        limiter.try_acquire_with_limit("plugin-a\0example.com", 1),
+        "case-distinct plugin IDs must have isolated budgets"
+    );
 }
 
 #[test]
@@ -154,6 +157,109 @@ async fn plugin_policy_requires_registered_enabled_network_capability() {
         client.request_for_plugin("disabled", request),
         Err(HttpError::PluginNetworkDisabled { .. })
     ));
+}
+
+#[tokio::test]
+async fn plugin_policy_rejects_authority_and_hop_by_hop_headers_before_connecting() {
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind sentinel HTTP listener");
+    let address = listener.local_addr().expect("sentinel listener address");
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "headers.test");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("headers.test", vec![vec![address]]);
+    let url = format!("http://headers.test:{}/", address.port());
+
+    for header in [
+        "Host",
+        "Proxy-Authorization",
+        "Content-Length",
+        "Connection",
+        "Proxy-Connection",
+        "Keep-Alive",
+        "Transfer-Encoding",
+        "Upgrade",
+        "TE",
+        "Trailer",
+        "Forwarded",
+        "X-Forwarded-Host",
+    ] {
+        let result = client.request_for_plugin(
+            "plugin-a",
+            HttpRequest::get(&url).with_header(header, "attacker.internal"),
+        );
+        assert!(
+            matches!(result, Err(HttpError::SecurityWarning { .. })),
+            "plugin-controlled routing header {header:?} was accepted: {result:?}"
+        );
+    }
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "a rejected plugin header still reached the network"
+    );
+}
+
+#[tokio::test]
+async fn plugin_policy_derives_the_wire_host_from_the_validated_url() {
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind HTTP listener");
+    let address = listener.local_addr().expect("HTTP listener address");
+    let (host_sender, host_receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept HTTP request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket.read(&mut buffer).await.expect("read HTTP request");
+            assert!(read > 0, "connection closed before request headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        let request = String::from_utf8(request).expect("HTTP request headers are UTF-8");
+        let host = request
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("host")
+                    .then(|| value.trim().to_string())
+            })
+            .expect("wire request has Host header");
+        host_sender.send(host).expect("receive observed Host");
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .expect("write HTTP response");
+    });
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "authority.test");
+    let client = AsyncHttpClient::new(Handle::current(), whitelist, None);
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("authority.test", vec![vec![address]]);
+    let url = format!("http://authority.test:{}/", address.port());
+
+    let id = client
+        .request_for_plugin("plugin-a", HttpRequest::get(url))
+        .expect("checked request should start");
+    assert!(
+        matches!(
+            wait_for_request(&client, &id).await,
+            RequestStatus::Ready(_)
+        ),
+        "ordinary checked request failed"
+    );
+    assert_eq!(
+        host_receiver.await.expect("observe wire Host"),
+        format!("authority.test:{}", address.port())
+    );
+    server.await.expect("HTTP server task panicked");
 }
 
 #[tokio::test]
@@ -249,6 +355,73 @@ async fn plugin_policy_socks_connector_sends_the_pinned_ip_not_the_hostname() {
     assert_eq!(destination, pinned_ip);
     assert_eq!(port, 80);
     server.await.expect("SOCKS5 listener task panicked");
+}
+
+#[tokio::test]
+async fn plugin_policy_proxy_selection_fails_closed_without_an_enabled_proxy() {
+    async fn assert_fails_closed(proxy_config: Option<ProxyConfig>) {
+        let listener = TokioTcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind direct-connection sentinel");
+        let address = listener.local_addr().expect("sentinel address");
+        let (accepted_sender, accepted_receiver) = tokio::sync::oneshot::channel();
+        let sentinel = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept direct request");
+            let _ = accepted_sender.send(());
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.expect("read direct request");
+                if read == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndirect",
+                )
+                .await
+                .expect("write sentinel response");
+        });
+
+        let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+        whitelist.write().approve("plugin-a", "proxy-required.test");
+        let client = AsyncHttpClient::new(Handle::current(), whitelist, proxy_config);
+        configure_enabled_plugin(&client, "plugin-a", 60);
+        client.allow_special_plugin_addresses_for_test();
+        client.set_plugin_dns_answers_for_test("proxy-required.test", vec![vec![address]]);
+        client.update_plugin_proxy_map(std::collections::HashMap::from([(
+            "plugin-a".to_string(),
+            true,
+        )]));
+        let url = format!("http://proxy-required.test:{}/", address.port());
+
+        let id = client
+            .request_for_plugin("plugin-a", HttpRequest::get(url))
+            .expect("checked request should start");
+        let status = wait_for_request(&client, &id).await;
+        assert!(
+            matches!(status, RequestStatus::Failed(ref message) if message.contains("enabled proxy")),
+            "proxy-selected request did not fail closed: {status:?}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), accepted_receiver)
+                .await
+                .is_err(),
+            "proxy-selected request fell back to a direct connection"
+        );
+        sentinel.abort();
+    }
+
+    assert_fails_closed(None).await;
+    assert_fails_closed(Some(ProxyConfig {
+        enabled: false,
+        address: "127.0.0.1:9".to_string(),
+        username: None,
+        password: None,
+    }))
+    .await;
 }
 
 fn configure_enabled_plugin(client: &AsyncHttpClient, plugin_id: &str, rpm: u32) {
@@ -511,6 +684,77 @@ async fn plugin_policy_checked_streaming_get_uses_the_pinned_executor() {
     assert_eq!(download.bytes_written, 8);
     assert!(!download.was_partial);
     assert_eq!(client.plugin_dns_lookup_count_for_test("stream.test"), 1);
+}
+
+#[tokio::test]
+async fn plugin_policy_checked_streaming_preserves_range_and_if_match_headers() {
+    let listener = TokioTcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind resumable HTTP listener");
+    let address = listener.local_addr().expect("resumable listener address");
+    let (headers_sender, headers_receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.expect("accept resumable request");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let read = socket
+                .read(&mut buffer)
+                .await
+                .expect("read resumable request");
+            assert!(read > 0, "connection closed before resumable headers");
+            request.extend_from_slice(&buffer[..read]);
+        }
+        let request = String::from_utf8(request).expect("HTTP headers are UTF-8");
+        let range = request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("range:"))
+            .map(str::to_string);
+        let if_match = request
+            .lines()
+            .find(|line| line.to_ascii_lowercase().starts_with("if-match:"))
+            .map(str::to_string);
+        headers_sender
+            .send((range, if_match))
+            .expect("receive resumable headers");
+        socket
+            .write_all(
+                b"HTTP/1.1 206 Partial Content\r\nContent-Length: 3\r\nContent-Range: bytes 3-5/6\r\nConnection: close\r\n\r\ndef",
+            )
+            .await
+            .expect("write resumable response");
+    });
+
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "resume.test");
+    let client = Arc::new(AsyncHttpClient::new(Handle::current(), whitelist, None));
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("resume.test", vec![vec![address]]);
+    let url = format!("http://resume.test:{}/file", address.port());
+    let worker_client = client.clone();
+    let (download, bytes) = tokio::task::spawn_blocking(move || {
+        let mut bytes = Vec::new();
+        let download = worker_client.blocking_get_streaming_for_plugin(
+            "plugin-a",
+            &url,
+            &mut bytes,
+            Some(3),
+            Some("\"etag-v1\""),
+        );
+        (download, bytes)
+    })
+    .await
+    .expect("checked resumable worker panicked");
+
+    let download = download.expect("checked resumable request failed");
+    assert_eq!(bytes, b"def");
+    assert!(download.was_partial);
+    assert_eq!(download.total_size, Some(6));
+    let (range, if_match) = headers_receiver.await.expect("observe resumable headers");
+    assert_eq!(range.as_deref(), Some("range: bytes=3-"));
+    assert_eq!(if_match.as_deref(), Some("if-match: \"etag-v1\""));
+    server.await.expect("resumable HTTP server panicked");
 }
 
 #[tokio::test]
@@ -788,8 +1032,8 @@ async fn test_runtime_config_update() {
     map.insert("test-plugin".to_string(), true);
     client.update_plugin_proxy_map(map);
 
-    // 1. Verify direct connection works (even if "use proxy" is true, if proxy config is None, it should build a direct client)
-    // Actually, client_proxied is built with None, so it behaves as direct.
+    // 1. A plugin explicitly routed through a proxy must fail closed when no
+    // proxy is configured.
     let id = client
         .request_for_plugin(
             "test-plugin",
@@ -797,10 +1041,10 @@ async fn test_runtime_config_update() {
         )
         .expect("Request 1 failed");
     let status = wait_for_request(&client, &id).await;
-    match status {
-        RequestStatus::Ready(res) => assert_eq!(res.status_code, 200),
-        _ => panic!("Direct request failed"),
-    }
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("enabled proxy")),
+        "proxy-selected request without a proxy did not fail closed: {status:?}"
+    );
 
     // 2. Update to Invalid Proxy
     let proxy_config = ProxyConfig {
@@ -824,7 +1068,8 @@ async fn test_runtime_config_update() {
         _ => panic!("Request should have failed with invalid proxy"),
     }
 
-    // 4. Update back to Direct (Disable proxy)
+    // 4. A disabled proxy also fails closed while plugin routing still asks
+    // for a proxy.
     let direct_config = ProxyConfig {
         enabled: false,
         address: "127.0.0.1:0".to_string(),
@@ -832,7 +1077,7 @@ async fn test_runtime_config_update() {
     };
     client.update_config(Some(direct_config));
 
-    // 5. Verify direct connection works again
+    // 5. Verify a disabled proxy does not silently become a direct request.
     let id = client
         .request_for_plugin(
             "test-plugin",
@@ -840,10 +1085,28 @@ async fn test_runtime_config_update() {
         )
         .expect("Request 3 failed");
     let status = wait_for_request(&client, &id).await;
-    match status {
-        RequestStatus::Ready(res) => assert_eq!(res.status_code, 200),
-        _ => panic!("Direct request failed after disabling proxy"),
-    }
+    assert!(
+        matches!(status, RequestStatus::Failed(ref message) if message.contains("enabled proxy")),
+        "disabled proxy did not fail closed: {status:?}"
+    );
+
+    // 6. Explicitly route the plugin directly, then host-only direct behavior
+    // remains available.
+    client.update_plugin_proxy_map(std::collections::HashMap::from([(
+        "test-plugin".to_string(),
+        false,
+    )]));
+    let id = client
+        .request_for_plugin(
+            "test-plugin",
+            HttpRequest::get(&format!("{}/test", mock_server.uri())),
+        )
+        .expect("Request 4 failed");
+    let status = wait_for_request(&client, &id).await;
+    assert!(
+        matches!(status, RequestStatus::Ready(ref response) if response.status_code == 200),
+        "explicit direct routing failed: {status:?}"
+    );
 }
 
 /// Regression test for P2 from `docs/AUDIT_2026-05-03.md`.

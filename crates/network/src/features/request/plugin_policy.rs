@@ -1,6 +1,7 @@
 //! Security policy for plugin-originated HTTP requests.
 
 use crate::shared::HttpError;
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use url::Url;
 
@@ -60,6 +61,38 @@ pub(crate) fn validate_redirect_target(current: &Url, location: &str) -> Result<
             reason: format!("invalid redirect Location: {error}"),
         })?;
     validate_plugin_url(target.as_str())
+}
+
+/// Reject plugin-controlled headers that can change HTTP routing, proxy
+/// credentials, framing, or hop-by-hop connection semantics. The host derives
+/// these values from the validated URL and request body instead.
+pub(crate) fn validate_plugin_headers(headers: &HashMap<String, String>) -> Result<(), HttpError> {
+    const FORBIDDEN: &[&str] = &[
+        "host",
+        "proxy-authorization",
+        "content-length",
+        "connection",
+        "proxy-connection",
+        "keep-alive",
+        "transfer-encoding",
+        "upgrade",
+        "te",
+        "trailer",
+        "forwarded",
+        "x-forwarded-host",
+    ];
+
+    if let Some(name) = headers.keys().find(|name| {
+        FORBIDDEN
+            .iter()
+            .any(|forbidden| name.eq_ignore_ascii_case(forbidden))
+    }) {
+        return Err(HttpError::SecurityWarning {
+            message: format!("plugin requests must not set routing header {name:?}"),
+        });
+    }
+
+    Ok(())
 }
 
 /// Reject DNS results unless every answer is an ordinary public address.

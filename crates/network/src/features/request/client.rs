@@ -3,8 +3,8 @@
 //! Non-blocking HTTP client that manages requests asynchronously.
 
 use super::plugin_policy::{
-    validate_plugin_url, validate_redirect_target, validate_resolved_addresses,
-    AuthorizedPluginTarget, MAX_PLUGIN_REDIRECTS,
+    validate_plugin_headers, validate_plugin_url, validate_redirect_target,
+    validate_resolved_addresses, AuthorizedPluginTarget, MAX_PLUGIN_REDIRECTS,
 };
 use super::types::{HttpRequest, RequestId, RequestStatus};
 use super::PluginNetworkPolicy;
@@ -345,35 +345,41 @@ impl PluginRequestContext {
             AsyncHttpClient::client_builder().resolve_to_addrs(host, &target.resolved);
 
         if target.use_proxy {
-            if let Some(config) = self
+            let config = self
                 .proxy_config
                 .read()
                 .as_ref()
                 .filter(|config| config.enabled)
-            {
-                let mut proxy_url = url::Url::parse(&format!("socks5://{}", config.address))
-                    .map_err(|error| HttpError::RequestFailed {
-                        message: format!("invalid SOCKS5 proxy configuration: {error}"),
-                    })?;
-                if let (Some(username), Some(password)) = (&config.username, &config.password) {
-                    proxy_url
-                        .set_username(username)
-                        .map_err(|_| HttpError::RequestFailed {
-                            message: "invalid SOCKS5 proxy username".to_string(),
-                        })?;
-                    proxy_url.set_password(Some(password)).map_err(|_| {
-                        HttpError::RequestFailed {
-                            message: "invalid SOCKS5 proxy password".to_string(),
-                        }
-                    })?;
-                }
-                let proxy = reqwest::Proxy::all(proxy_url.as_str()).map_err(|error| {
+                .cloned()
+                .ok_or_else(|| HttpError::RequestFailed {
+                    message:
+                        "plugin is configured to use a proxy, but no enabled proxy is configured"
+                            .to_string(),
+                })?;
+            let mut proxy_url =
+                url::Url::parse(&format!("socks5://{}", config.address)).map_err(|error| {
                     HttpError::RequestFailed {
                         message: format!("invalid SOCKS5 proxy configuration: {error}"),
                     }
                 })?;
-                builder = builder.proxy(proxy);
+            if let (Some(username), Some(password)) = (&config.username, &config.password) {
+                proxy_url
+                    .set_username(username)
+                    .map_err(|_| HttpError::RequestFailed {
+                        message: "invalid SOCKS5 proxy username".to_string(),
+                    })?;
+                proxy_url
+                    .set_password(Some(password))
+                    .map_err(|_| HttpError::RequestFailed {
+                        message: "invalid SOCKS5 proxy password".to_string(),
+                    })?;
             }
+            let proxy = reqwest::Proxy::all(proxy_url.as_str()).map_err(|error| {
+                HttpError::RequestFailed {
+                    message: format!("invalid SOCKS5 proxy configuration: {error}"),
+                }
+            })?;
+            builder = builder.proxy(proxy);
         }
 
         builder.build().map_err(|error| HttpError::RequestFailed {
@@ -386,6 +392,7 @@ impl PluginRequestContext {
         plugin_id: &str,
         request: HttpRequest,
     ) -> Result<reqwest::Response, HttpError> {
+        validate_plugin_headers(&request.headers)?;
         let initial_url = if request.url.contains("img.dlsite.jp") {
             fix_dlsite_cdn_folder(&request.url)
         } else {
@@ -631,6 +638,7 @@ impl AsyncHttpClient {
     ) -> Result<RequestId, HttpError> {
         self.plugin_context.registered_policy(plugin_id)?;
         validate_plugin_url(&request.url)?;
+        validate_plugin_headers(&request.headers)?;
         Ok(self.start_plugin_request(plugin_id.to_string(), request))
     }
 

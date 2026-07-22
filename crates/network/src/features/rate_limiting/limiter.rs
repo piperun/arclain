@@ -11,6 +11,44 @@ use std::time::{Duration, Instant};
 /// 60-second budget is explicit, rather than buried in a literal.
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 
+#[derive(Debug)]
+struct RequestHistory {
+    by_scope: HashMap<String, VecDeque<Instant>>,
+    last_sweep: Instant,
+}
+
+impl RequestHistory {
+    fn new(now: Instant) -> Self {
+        Self {
+            by_scope: HashMap::new(),
+            last_sweep: now,
+        }
+    }
+
+    fn sweep_expired(&mut self, window_start: Instant) {
+        for queue in self.by_scope.values_mut() {
+            prune_expired(queue, window_start);
+        }
+        self.by_scope.retain(|_, queue| !queue.is_empty());
+    }
+
+    fn sweep_if_due(&mut self, now: Instant, window: Duration) {
+        if now.duration_since(self.last_sweep) >= window {
+            self.sweep_expired(now - window);
+            self.last_sweep = now;
+        }
+    }
+}
+
+fn prune_expired(queue: &mut VecDeque<Instant>, window_start: Instant) {
+    while queue
+        .front()
+        .is_some_and(|timestamp| *timestamp <= window_start)
+    {
+        queue.pop_front();
+    }
+}
+
 /// Rate limiter for HTTP requests
 #[derive(Debug)]
 pub struct RateLimiter {
@@ -19,7 +57,7 @@ pub struct RateLimiter {
     /// Default limit for domains not explicitly configured
     default_limit: u32,
     /// Request timestamps per domain
-    history: Mutex<HashMap<String, VecDeque<Instant>>>,
+    history: Mutex<RequestHistory>,
     /// Window duration (default: 1 minute)
     window: Duration,
 }
@@ -33,10 +71,11 @@ impl Default for RateLimiter {
 impl RateLimiter {
     /// Create a new rate limiter with the given default limit
     pub fn new(default_rpm: u32) -> Self {
+        let now = Instant::now();
         Self {
             limits: HashMap::new(),
             default_limit: default_rpm,
-            history: Mutex::new(HashMap::new()),
+            history: Mutex::new(RequestHistory::new(now)),
             window: RATE_LIMIT_WINDOW,
         }
     }
@@ -64,24 +103,35 @@ impl RateLimiter {
 
         let now = Instant::now();
         let window_start = now - self.window;
-
-        let queue = history.entry(domain_lower).or_default();
-
-        // Remove expired entries
-        while queue.front().is_some_and(|t| *t < window_start) {
-            queue.pop_front();
+        history.sweep_if_due(now, self.window);
+        let mut remove_scope = false;
+        let request_count = history
+            .by_scope
+            .get_mut(&domain_lower)
+            .map(|queue| {
+                prune_expired(queue, window_start);
+                remove_scope = queue.is_empty();
+                queue.len()
+            })
+            .unwrap_or(0);
+        if remove_scope {
+            history.by_scope.remove(&domain_lower);
         }
 
-        queue.len() < limit as usize
+        request_count < limit as usize
     }
 
     /// Record a request to this domain
     pub fn record(&self, domain: &str) {
         let domain_lower = domain.to_lowercase();
         let mut history = self.history.lock();
-
-        let queue = history.entry(domain_lower).or_default();
-        queue.push_back(Instant::now());
+        let now = Instant::now();
+        history.sweep_if_due(now, self.window);
+        history
+            .by_scope
+            .entry(domain_lower)
+            .or_default()
+            .push_back(now);
     }
 
     /// Check and record in one operation (atomic check-then-record)
@@ -92,13 +142,16 @@ impl RateLimiter {
 
         let now = Instant::now();
         let window_start = now - self.window;
+        history.sweep_if_due(now, self.window);
 
-        let queue = history.entry(domain_lower).or_default();
+        if limit == 0 {
+            return false;
+        }
+
+        let queue = history.by_scope.entry(domain_lower).or_default();
 
         // Remove expired entries
-        while queue.front().is_some_and(|t| *t < window_start) {
-            queue.pop_front();
-        }
+        prune_expired(queue, window_start);
 
         if queue.len() < limit as usize {
             queue.push_back(now);
@@ -113,18 +166,20 @@ impl RateLimiter {
     /// Plugin callers use a `plugin_id + NUL + effective_domain` scope so one
     /// plugin cannot consume another plugin's allowance for the same domain.
     pub fn try_acquire_with_limit(&self, scope: &str, limit: u32) -> bool {
-        let scope = scope.to_lowercase();
+        if limit == 0 {
+            return false;
+        }
+        let scope = scope
+            .split_once('\0')
+            .map(|(plugin_id, domain)| format!("{plugin_id}\0{}", domain.to_ascii_lowercase()))
+            .unwrap_or_else(|| scope.to_string());
         let mut history = self.history.lock();
         let now = Instant::now();
         let window_start = now - self.window;
-        let queue = history.entry(scope).or_default();
+        history.sweep_if_due(now, self.window);
+        let queue = history.by_scope.entry(scope).or_default();
 
-        while queue
-            .front()
-            .is_some_and(|timestamp| *timestamp < window_start)
-        {
-            queue.pop_front();
-        }
+        prune_expired(queue, window_start);
 
         if queue.len() >= limit as usize {
             return false;
@@ -142,15 +197,22 @@ impl RateLimiter {
 
         let now = Instant::now();
         let window_start = now - self.window;
-
-        let queue = history.entry(domain_lower).or_default();
-
-        // Remove expired entries
-        while queue.front().is_some_and(|t| *t < window_start) {
-            queue.pop_front();
+        history.sweep_if_due(now, self.window);
+        let mut remove_scope = false;
+        let request_count = history
+            .by_scope
+            .get_mut(&domain_lower)
+            .map(|queue| {
+                prune_expired(queue, window_start);
+                remove_scope = queue.is_empty();
+                queue.len()
+            })
+            .unwrap_or(0);
+        if remove_scope {
+            history.by_scope.remove(&domain_lower);
         }
 
-        limit.saturating_sub(queue.len() as u32)
+        limit.saturating_sub(request_count as u32)
     }
 
     /// Get time until next request is allowed (if rate limited)
@@ -158,7 +220,7 @@ impl RateLimiter {
         let domain_lower = domain.to_lowercase();
         let history = self.history.lock();
 
-        if let Some(queue) = history.get(&domain_lower) {
+        if let Some(queue) = history.by_scope.get(&domain_lower) {
             if let Some(oldest) = queue.front() {
                 let expires = *oldest + self.window;
                 let now = Instant::now();
@@ -211,5 +273,52 @@ mod tests {
         assert_eq!(limiter.remaining("example.com"), 5);
         limiter.record("example.com");
         assert_eq!(limiter.remaining("example.com"), 4);
+    }
+
+    #[test]
+    fn zero_plugin_budget_does_not_allocate_history() {
+        let limiter = RateLimiter::new(60);
+
+        assert!(!limiter.try_acquire_with_limit("plugin-a\0example.com", 0));
+        assert!(
+            limiter.history.lock().by_scope.is_empty(),
+            "zero-RPM denial left a permanent scope entry"
+        );
+    }
+
+    #[test]
+    fn read_only_checks_and_zero_host_budget_do_not_allocate_history() {
+        let limiter = RateLimiter::new(0);
+
+        assert!(!limiter.check("unused.example"));
+        assert_eq!(limiter.remaining("unused.example"), 0);
+        assert!(!limiter.try_acquire("unused.example"));
+        assert!(
+            limiter.history.lock().by_scope.is_empty(),
+            "non-recording operations left empty history entries"
+        );
+    }
+
+    #[test]
+    fn plugin_budget_sweep_evicts_expired_inactive_scopes() {
+        let limiter = RateLimiter::new(60);
+        {
+            let mut history = limiter.history.lock();
+            history.by_scope.insert(
+                "stale-plugin\0stale.example".to_string(),
+                VecDeque::from([Instant::now() - RATE_LIMIT_WINDOW - Duration::from_secs(1)]),
+            );
+            history.last_sweep = Instant::now() - RATE_LIMIT_WINDOW;
+        }
+
+        assert!(limiter.try_acquire_with_limit("fresh-plugin\0fresh.example", 1));
+
+        let history = limiter.history.lock();
+        assert!(!history.by_scope.contains_key("stale-plugin\0stale.example"));
+        assert_eq!(
+            history.by_scope.len(),
+            1,
+            "expired plugin scopes were not evicted"
+        );
     }
 }
