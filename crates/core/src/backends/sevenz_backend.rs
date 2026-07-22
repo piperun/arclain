@@ -1,8 +1,9 @@
 use crate::{ArchiveBackend, ArchiveEntry, ArchiveInfo, ArchiveKind, BackendCapabilities};
 use anyhow::{anyhow, Context, Result};
 use sevenz_rust2::{ArchiveReader, Password};
+use std::borrow::Cow;
 use std::fs::File;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
@@ -10,55 +11,109 @@ use tracing::{info, warn};
 #[derive(Clone)]
 pub struct SevenZBackend;
 
-fn write_archive_entry<R: std::io::Read + ?Sized>(
-    dest: &Path,
-    entry_name: &str,
-    is_directory: bool,
-    reader: &mut R,
-) -> Result<()> {
-    let relative = crate::utilities::CheckedRelativePath::new(entry_name)
-        .with_context(|| format!("unsafe 7z entry {entry_name:?}"))?;
-    let output = relative.resolve_under(dest)?;
+fn sevenz_host_error(error: anyhow::Error) -> sevenz_rust2::Error {
+    sevenz_rust2::Error::Other(Cow::Owned(format!("{error:#}")))
+}
 
-    if is_directory {
-        std::fs::create_dir_all(&output)
-            .with_context(|| format!("create archive directory {}", output.display()))?;
-        relative.resolve_under(dest)?;
+fn sevenz_host_io(error: std::io::Error, context: String) -> sevenz_rust2::Error {
+    sevenz_rust2::Error::Io(error, Cow::Owned(context))
+}
+
+fn write_archive_entry<R: Read + ?Sized>(
+    dest: &Path,
+    entry: &sevenz_rust2::ArchiveEntry,
+    reader: &mut R,
+) -> std::result::Result<(), sevenz_rust2::Error> {
+    let entry_name = &entry.name;
+    let relative = crate::utilities::CheckedRelativePath::new(entry_name)
+        .with_context(|| format!("unsafe 7z entry {entry_name:?}"))
+        .map_err(sevenz_host_error)?;
+    let output = relative.resolve_under(dest).map_err(sevenz_host_error)?;
+
+    if entry.is_directory {
+        std::fs::create_dir_all(&output).map_err(|error| {
+            sevenz_host_io(
+                error,
+                format!("create archive directory {}", output.display()),
+            )
+        })?;
+        relative.resolve_under(dest).map_err(sevenz_host_error)?;
         return Ok(());
     }
 
     let parent = output
         .parent()
-        .ok_or_else(|| anyhow!("archive entry has no destination parent: {entry_name:?}"))?;
-    std::fs::create_dir_all(parent)
-        .with_context(|| format!("create archive parent {}", parent.display()))?;
+        .ok_or_else(|| anyhow!("archive entry has no destination parent: {entry_name:?}"))
+        .map_err(sevenz_host_error)?;
+    std::fs::create_dir_all(parent).map_err(|error| {
+        sevenz_host_io(error, format!("create archive parent {}", parent.display()))
+    })?;
 
-    let checked_output = relative.resolve_under(dest)?;
+    let checked_output = relative.resolve_under(dest).map_err(sevenz_host_error)?;
     let checked_parent = checked_output
         .parent()
-        .ok_or_else(|| anyhow!("archive entry has no destination parent: {entry_name:?}"))?;
-    let mut staged = tempfile::NamedTempFile::new_in(checked_parent)
-        .with_context(|| format!("stage extracted file in {}", checked_parent.display()))?;
-    std::io::copy(reader, &mut staged)
-        .with_context(|| format!("write staged archive entry {entry_name:?}"))?;
-    staged.flush()?;
-    staged.as_file().sync_all()?;
+        .ok_or_else(|| anyhow!("archive entry has no destination parent: {entry_name:?}"))
+        .map_err(sevenz_host_error)?;
+    let mut staged = tempfile::NamedTempFile::new_in(checked_parent).map_err(|error| {
+        sevenz_host_io(
+            error,
+            format!("stage extracted file in {}", checked_parent.display()),
+        )
+    })?;
+
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        // Archive-reader I/O must remain context-free so BlockDecoder can
+        // classify encrypted read failures as MaybeBadPassword.
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        staged.write_all(&buffer[..read]).map_err(|error| {
+            sevenz_host_io(error, format!("write staged archive entry {entry_name:?}"))
+        })?;
+    }
+    staged
+        .flush()
+        .map_err(|error| sevenz_host_io(error, format!("flush archive entry {entry_name:?}")))?;
+    staged.as_file().sync_all().map_err(|error| {
+        sevenz_host_io(error, format!("sync staged archive entry {entry_name:?}"))
+    })?;
+
+    if entry.size > 0 {
+        #[cfg(target_os = "macos")]
+        use std::os::macos::fs::FileTimesExt;
+        #[cfg(windows)]
+        use std::os::windows::fs::FileTimesExt;
+
+        let file_times = std::fs::FileTimes::new()
+            .set_accessed(entry.access_date.into())
+            .set_modified(entry.last_modified_date.into());
+
+        #[cfg(any(windows, target_os = "macos"))]
+        let file_times = file_times.set_created(entry.creation_date.into());
+
+        // Match sevenz-rust2's prior default extractor: timestamps are best
+        // effort and do not turn an otherwise valid extraction into failure.
+        let _ = staged.as_file().set_times(file_times);
+    }
 
     // Revalidate immediately before persistence. `persist_noclobber` atomically
     // fails if the leaf now exists, so a final-component symlink is never
     // followed or overwritten. Parent replacement by a separate local process
     // remains the documented std-only limitation.
-    let checked_output = relative.resolve_under(dest)?;
+    let checked_output = relative.resolve_under(dest).map_err(sevenz_host_error)?;
     staged
         .persist_noclobber(&checked_output)
         .map_err(|error| error.error)
-        .with_context(|| format!("persist extracted file {}", checked_output.display()))?;
+        .map_err(|error| {
+            sevenz_host_io(
+                error,
+                format!("persist extracted file {}", checked_output.display()),
+            )
+        })?;
 
     Ok(())
-}
-
-fn sevenz_entry_error(error: anyhow::Error) -> sevenz_rust2::Error {
-    sevenz_rust2::Error::Other(std::borrow::Cow::Owned(error.to_string()))
 }
 
 impl SevenZBackend {
@@ -198,8 +253,7 @@ impl ArchiveBackend for SevenZBackend {
         let mut reader = ArchiveReader::open(path, pwd).context("Failed to open 7z archive")?;
         reader
             .for_each_entries(|entry, reader| {
-                write_archive_entry(dest, &entry.name, entry.is_directory, reader)
-                    .map_err(sevenz_entry_error)?;
+                write_archive_entry(dest, entry, reader)?;
                 Ok(true)
             })
             .context("Failed to extract 7z archive")?;
@@ -274,8 +328,7 @@ impl ArchiveBackend for SevenZBackend {
                     });
                 }
 
-                write_archive_entry(dest, &entry_path, entry.is_directory, reader)
-                    .map_err(sevenz_entry_error)?;
+                write_archive_entry(dest, entry, reader)?;
             }
             Ok(true)
         })?;
@@ -317,8 +370,7 @@ impl ArchiveBackend for SevenZBackend {
         reader.for_each_entries(|entry, reader| {
             let entry_path = entry.name.clone();
             if entry_path.starts_with(&dir_prefix) || entry_path == dir_path {
-                write_archive_entry(dest, &entry_path, entry.is_directory, reader)
-                    .map_err(sevenz_entry_error)?;
+                write_archive_entry(dest, entry, reader)?;
             }
             Ok(true)
         })?;
@@ -399,8 +451,7 @@ impl ArchiveBackend for SevenZBackend {
                     });
                 }
 
-                write_archive_entry(dest, &entry_path, entry.is_directory, reader)
-                    .map_err(sevenz_entry_error)?;
+                write_archive_entry(dest, entry, reader)?;
             }
             Ok(true)
         })?;
@@ -808,6 +859,45 @@ impl ArchiveBackend for SevenZBackend {
 mod path_safety_tests {
     use super::*;
     use std::io::Cursor;
+    use std::time::{Duration, SystemTime};
+
+    fn write_test_archive(archive: &Path, entry: sevenz_rust2::ArchiveEntry, contents: &[u8]) {
+        let mut writer = sevenz_rust2::ArchiveWriter::create(archive).unwrap();
+        writer.set_encrypt_header(false);
+        writer
+            .push_archive_entry(entry, Some(Cursor::new(contents)))
+            .unwrap();
+        writer.finish().unwrap();
+    }
+
+    fn write_encrypted_test_archive(archive: &Path, entry_name: &str, contents: &[u8]) {
+        use sevenz_rust2::encoder_options::AesEncoderOptions;
+
+        let mut writer = sevenz_rust2::ArchiveWriter::create(archive).unwrap();
+        writer.set_encrypt_header(false);
+        writer.set_content_methods(vec![
+            AesEncoderOptions::new(Password::from("correct-password")).into(),
+            sevenz_rust2::EncoderMethod::LZMA2.into(),
+        ]);
+        writer
+            .push_archive_entry(
+                sevenz_rust2::ArchiveEntry::new_file(entry_name),
+                Some(Cursor::new(contents)),
+            )
+            .unwrap();
+        writer.finish().unwrap();
+    }
+
+    fn assert_time_close(actual: SystemTime, expected: SystemTime) {
+        let drift = actual
+            .duration_since(expected)
+            .or_else(|_| expected.duration_since(actual))
+            .unwrap();
+        assert!(
+            drift <= Duration::from_secs(3),
+            "timestamp drifted by {drift:?}: actual={actual:?}, expected={expected:?}"
+        );
+    }
 
     #[test]
     fn native_entry_writer_rejects_parent_traversal_before_write() {
@@ -816,8 +906,9 @@ mod path_safety_tests {
         std::fs::create_dir(&dest).unwrap();
         let outside = temp.path().join("escaped.txt");
         let mut body = Cursor::new(b"owned".to_vec());
+        let entry = sevenz_rust2::ArchiveEntry::new_file("../escaped.txt");
 
-        let error = write_archive_entry(&dest, "../escaped.txt", false, &mut body)
+        let error = write_archive_entry(&dest, &entry, &mut body)
             .unwrap_err()
             .to_string();
 
@@ -833,8 +924,9 @@ mod path_safety_tests {
         let outside = temp.path().join("absolute-escaped.txt");
         let entry_name = outside.to_string_lossy();
         let mut body = Cursor::new(b"owned".to_vec());
+        let entry = sevenz_rust2::ArchiveEntry::new_file(&entry_name);
 
-        let error = write_archive_entry(&dest, &entry_name, false, &mut body)
+        let error = write_archive_entry(&dest, &entry, &mut body)
             .unwrap_err()
             .to_string();
 
@@ -848,8 +940,9 @@ mod path_safety_tests {
         let dest = temp.path().join("dest");
         std::fs::create_dir(&dest).unwrap();
         let mut body = Cursor::new(b"safe".to_vec());
+        let entry = sevenz_rust2::ArchiveEntry::new_file("Game/data.bin");
 
-        write_archive_entry(&dest, "Game/data.bin", false, &mut body).unwrap();
+        write_archive_entry(&dest, &entry, &mut body).unwrap();
 
         assert_eq!(std::fs::read(dest.join("Game/data.bin")).unwrap(), b"safe");
     }
@@ -862,8 +955,9 @@ mod path_safety_tests {
         let output = dest.join("existing.bin");
         std::fs::write(&output, b"original").unwrap();
         let mut body = Cursor::new(b"replacement".to_vec());
+        let entry = sevenz_rust2::ArchiveEntry::new_file("existing.bin");
 
-        write_archive_entry(&dest, "existing.bin", false, &mut body).unwrap_err();
+        write_archive_entry(&dest, &entry, &mut body).unwrap_err();
 
         assert_eq!(std::fs::read(output).unwrap(), b"original");
     }
@@ -874,9 +968,219 @@ mod path_safety_tests {
         let dest = temp.path().join("dest");
         std::fs::create_dir(&dest).unwrap();
         let mut body = Cursor::new(Vec::new());
+        let entry = sevenz_rust2::ArchiveEntry::new_directory("Game/data");
 
-        write_archive_entry(&dest, "Game/data", true, &mut body).unwrap();
+        write_archive_entry(&dest, &entry, &mut body).unwrap();
 
         assert!(dest.join("Game/data").is_dir());
+    }
+
+    #[test]
+    fn native_extract_all_reports_maybe_bad_password() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("encrypted.7z");
+        let dest = temp.path().join("dest");
+        write_encrypted_test_archive(&archive, "secret.txt", b"classified contents");
+
+        let error = SevenZBackend::new()
+            .extract_all(&archive, &dest, Some("wrong-password"))
+            .unwrap_err();
+
+        assert!(
+            error.chain().any(|cause| matches!(
+                cause.downcast_ref::<sevenz_rust2::Error>(),
+                Some(sevenz_rust2::Error::MaybeBadPassword(_))
+            )),
+            "unexpected wrong-password error: {error:#}"
+        );
+        assert!(!dest.join("secret.txt").exists());
+    }
+
+    #[test]
+    fn native_extract_all_restores_file_timestamps() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("timestamped.7z");
+        let dest = temp.path().join("dest");
+        let expected = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let archive_time = sevenz_rust2::NtTime::try_from(expected).unwrap();
+        let mut entry = sevenz_rust2::ArchiveEntry::new_file("timestamped.txt");
+        entry.has_access_date = true;
+        entry.access_date = archive_time;
+        entry.has_last_modified_date = true;
+        entry.last_modified_date = archive_time;
+        entry.has_creation_date = true;
+        entry.creation_date = archive_time;
+        write_test_archive(&archive, entry, b"timestamp contents");
+
+        SevenZBackend::new()
+            .extract_all(&archive, &dest, None)
+            .unwrap();
+
+        let metadata = std::fs::metadata(dest.join("timestamped.txt")).unwrap();
+        assert_time_close(metadata.accessed().unwrap(), expected);
+        assert_time_close(metadata.modified().unwrap(), expected);
+        #[cfg(any(windows, target_os = "macos"))]
+        assert_time_close(metadata.created().unwrap(), expected);
+    }
+
+    #[test]
+    fn native_extract_all_rejects_malicious_archive_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("malicious.7z");
+        let dest = temp.path().join("dest");
+        let outside = temp.path().join("escaped.txt");
+        write_test_archive(
+            &archive,
+            sevenz_rust2::ArchiveEntry::new_file("../escaped.txt"),
+            b"owned",
+        );
+
+        SevenZBackend::new()
+            .extract_all(&archive, &dest, None)
+            .unwrap_err();
+
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn native_extract_files_rejects_malicious_archive_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("malicious.7z");
+        let dest = temp.path().join("dest");
+        let outside = temp.path().join("escaped.txt");
+        let entry_name = "../escaped.txt";
+        write_test_archive(
+            &archive,
+            sevenz_rust2::ArchiveEntry::new_file(entry_name),
+            b"owned",
+        );
+
+        SevenZBackend::new()
+            .extract_files(&archive, &dest, &[entry_name.to_string()], None)
+            .unwrap_err();
+
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn native_extract_directory_rejects_malicious_archive_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("malicious.7z");
+        let dest = temp.path().join("dest");
+        let outside = temp.path().join("escaped.txt");
+        write_test_archive(
+            &archive,
+            sevenz_rust2::ArchiveEntry::new_file("safe/../../escaped.txt"),
+            b"owned",
+        );
+
+        SevenZBackend::new()
+            .extract_directory(&archive, &dest, "safe", None)
+            .unwrap_err();
+
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn native_unified_extract_rejects_malicious_archive_entry() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("malicious.7z");
+        let dest = temp.path().join("dest");
+        let outside = temp.path().join("escaped.txt");
+        write_test_archive(
+            &archive,
+            sevenz_rust2::ArchiveEntry::new_file("../escaped.txt"),
+            b"owned",
+        );
+
+        SevenZBackend::new()
+            .extract(&archive, &dest, None, None, None, None)
+            .unwrap_err();
+
+        assert!(!outside.exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    fn create_directory_symlink(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_dir(target, link);
+
+        match result {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!("skipping symlink assertion: {error}");
+                false
+            }
+            Err(error) => panic!("create directory symlink: {error}"),
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    fn create_file_symlink(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let result = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let result = std::os::windows::fs::symlink_file(target, link);
+
+        match result {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                eprintln!("skipping symlink assertion: {error}");
+                false
+            }
+            Err(error) => panic!("create file symlink: {error}"),
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn native_extract_all_rejects_static_symlink_parent() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("symlink-parent.7z");
+        let dest = temp.path().join("dest");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        if !create_directory_symlink(&outside, &dest.join("linked")) {
+            return;
+        }
+        write_test_archive(
+            &archive,
+            sevenz_rust2::ArchiveEntry::new_file("linked/escaped.txt"),
+            b"owned",
+        );
+
+        SevenZBackend::new()
+            .extract_all(&archive, &dest, None)
+            .unwrap_err();
+
+        assert!(!outside.join("escaped.txt").exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn native_extract_all_does_not_follow_final_leaf_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("symlink-leaf.7z");
+        let dest = temp.path().join("dest");
+        let outside = temp.path().join("outside.txt");
+        std::fs::create_dir(&dest).unwrap();
+        std::fs::write(&outside, b"original").unwrap();
+        if !create_file_symlink(&outside, &dest.join("victim.txt")) {
+            return;
+        }
+        write_test_archive(
+            &archive,
+            sevenz_rust2::ArchiveEntry::new_file("victim.txt"),
+            b"replacement",
+        );
+
+        SevenZBackend::new()
+            .extract_all(&archive, &dest, None)
+            .unwrap_err();
+
+        assert_eq!(std::fs::read(outside).unwrap(), b"original");
     }
 }
