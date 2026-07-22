@@ -7,17 +7,24 @@ use tracing::{debug, warn};
 /// Load CJK fonts during app initialization to avoid deadlock.
 /// This should be called from CreationContext, not during update().
 pub fn load_cjk_fonts(ctx: &Context) {
-    let (font_bytes, source) = match load_system_cjk_font() {
-        Some((bytes, source)) => (Some(bytes), Some(source)),
-        None => (None, None),
-    };
-    ctx.set_fonts(build_font_definitions(font_bytes));
+    let (fonts, source) = build_loaded_font_definitions(load_system_cjk_font());
+    ctx.set_fonts(fonts);
 
     if let Some(source) = source {
         debug!("Loaded system CJK font from: {}", source);
     } else {
         warn!("No CJK-compatible system font found. Japanese/Chinese characters may not display correctly.");
     }
+}
+
+fn build_loaded_font_definitions(
+    cjk_font: Option<(Vec<u8>, String)>,
+) -> (egui::FontDefinitions, Option<String>) {
+    let (font_bytes, source) = match cjk_font {
+        Some((bytes, source)) => (Some(bytes), Some(source)),
+        None => (None, None),
+    };
+    (build_font_definitions(font_bytes), source)
 }
 
 fn build_font_definitions(cjk_font: Option<Vec<u8>>) -> egui::FontDefinitions {
@@ -149,5 +156,20 @@ mod tests {
             fonts.families[&egui::FontFamily::Proportional][0],
             "cjk_font"
         );
+    }
+
+    #[test]
+    fn system_cjk_font_bytes_are_moved_into_font_definitions() {
+        let bytes = vec![0, 1, 2, 3];
+        let original_ptr = bytes.as_ptr();
+
+        let (fonts, source) = build_loaded_font_definitions(Some((bytes, "test-font".to_string())));
+
+        assert_eq!(source.as_deref(), Some("test-font"));
+        let cjk_font = &fonts.font_data["cjk_font"];
+        match &cjk_font.font {
+            std::borrow::Cow::Owned(stored) => assert_eq!(stored.as_ptr(), original_ptr),
+            std::borrow::Cow::Borrowed(_) => panic!("system font bytes must remain owned"),
+        }
     }
 }
