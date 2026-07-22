@@ -4,6 +4,7 @@ pub mod apply_plan;
 pub mod context;
 pub mod executor;
 pub mod hashing;
+mod output_transaction;
 pub mod presets;
 pub mod preview;
 pub mod types;

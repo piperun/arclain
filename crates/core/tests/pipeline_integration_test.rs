@@ -14,6 +14,97 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[test]
+fn overwrite_failure_preserves_existing_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let input_dir = temp.path().join("input");
+    let output_dir = temp.path().join("output");
+    std::fs::create_dir_all(&input_dir).unwrap();
+    std::fs::create_dir_all(&output_dir).unwrap();
+    let input = input_dir.join("game.zip");
+    std::fs::write(&input, b"source").unwrap();
+    let output = output_dir.join("game.zip");
+    std::fs::write(&output, b"known-good").unwrap();
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input])),
+        steps: vec![],
+        output: PipelineOutput::NewFolder(output_dir),
+        collision_policy: Some(OutputCollisionPolicy::Overwrite),
+        output_artifact: OutputArtifact::Archive,
+    };
+    let ctx = PipelineContext::minimal(|_| anyhow::bail!("injected extraction failure"));
+    let mut failures = 0;
+
+    execute_pipeline(&pipeline, temp.path(), &ctx, |event| {
+        if matches!(event, arclain_core::PipelineProgress::FileFailed { .. }) {
+            failures += 1;
+        }
+    })
+    .unwrap();
+
+    assert_eq!(failures, 1);
+    assert_eq!(std::fs::read(output).unwrap(), b"known-good");
+}
+
+#[test]
+fn same_path_overwrite_failure_preserves_the_input_archive() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("game.zip");
+    std::fs::write(&input, b"known-good-input").unwrap();
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input.clone()])),
+        steps: vec![],
+        output: PipelineOutput::SameFolder,
+        collision_policy: Some(OutputCollisionPolicy::Overwrite),
+        output_artifact: OutputArtifact::Archive,
+    };
+    let ctx = PipelineContext::minimal(|_| anyhow::bail!("injected extraction failure"));
+    let mut failures = 0;
+
+    execute_pipeline(&pipeline, temp.path(), &ctx, |event| {
+        if matches!(event, arclain_core::PipelineProgress::FileFailed { .. }) {
+            failures += 1;
+        }
+    })
+    .unwrap();
+
+    assert_eq!(failures, 1);
+    assert_eq!(std::fs::read(input).unwrap(), b"known-good-input");
+}
+
+#[test]
+fn folder_overwrite_failure_preserves_existing_output_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("game.zip");
+    std::fs::write(&input, b"source").unwrap();
+    let output_dir = temp.path().join("output");
+    let output = output_dir.join("game");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("save.dat"), b"known-good").unwrap();
+    let pipeline = Pipeline {
+        input: Some(PipelineInput::Files(vec![input])),
+        steps: vec![],
+        output: PipelineOutput::NewFolder(output_dir),
+        collision_policy: Some(OutputCollisionPolicy::Overwrite),
+        output_artifact: OutputArtifact::Folder,
+    };
+    let ctx = PipelineContext::minimal(|_| anyhow::bail!("injected extraction failure"));
+    let mut failures = 0;
+
+    execute_pipeline(&pipeline, temp.path(), &ctx, |event| {
+        if matches!(event, arclain_core::PipelineProgress::FileFailed { .. }) {
+            failures += 1;
+        }
+    })
+    .unwrap();
+
+    assert_eq!(failures, 1);
+    assert_eq!(
+        std::fs::read(output.join("save.dat")).unwrap(),
+        b"known-good"
+    );
+}
+
+#[test]
 fn preview_for_silver_lining_style_input() {
     let inputs = vec![
         PathBuf::from("/tmp/AG - Silver - Main.rar"),

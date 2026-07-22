@@ -2,6 +2,7 @@
 
 use super::context::PipelineContext;
 use super::hashing::hash_file_blake3_with_progress;
+use super::output_transaction::StagedOutput;
 use super::types::{
     OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineInput, PipelineStep,
 };
@@ -201,6 +202,7 @@ fn run_one(
         .default_collision_policy
         .unwrap_or(OutputCollisionPolicy::Smart);
     let policy = pipeline.effective_collision_policy(app_default);
+    let replace_existing = matches!(policy, OutputCollisionPolicy::Overwrite);
     let path_exists = predicted_output_path.exists();
 
     if matches!(policy, OutputCollisionPolicy::Smart) {
@@ -253,15 +255,6 @@ fn run_one(
                     "[pipeline] Overwriting {} (policy=Overwrite)",
                     predicted_output_path.display()
                 );
-                if predicted_output_path.is_dir() {
-                    std::fs::remove_dir_all(&predicted_output_path).with_context(|| {
-                        format!("Remove existing folder {:?}", predicted_output_path)
-                    })?;
-                } else {
-                    std::fs::remove_file(&predicted_output_path).with_context(|| {
-                        format!("Remove existing file {:?}", predicted_output_path)
-                    })?;
-                }
             }
             OutputCollisionPolicy::Fail | OutputCollisionPolicy::Smart => {
                 // Smart with no matching DB row: output exists but we can't
@@ -306,8 +299,8 @@ fn run_one(
         temp_root,
         ctx,
         on_progress,
-        &archive_name_for_meta,
         output_metadata.as_ref(),
+        replace_existing,
     );
 
     // Record completion/failure. Same logic: log and continue on DB errors.
@@ -348,9 +341,13 @@ fn run_one_inner(
     temp_root: &Path,
     ctx: &PipelineContext,
     on_progress: &mut impl FnMut(PipelineProgress),
-    archive_name_for_meta: &str,
     output_metadata: Option<&crate::features::organization::metadata::GameMetadata>,
+    replace_existing: bool,
 ) -> Result<PathBuf> {
+    let archive_name_for_meta = input
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
     let work_dir = temp_root.join(format!(
         "arclain_pipeline_{}_{}",
         std::process::id(),
@@ -421,7 +418,7 @@ fn run_one_inner(
                 // don't repeat the DB lookup for each Organize step.
                 let plan = RuleEngine::create_plan(
                     &rule,
-                    &archive_name_for_meta,
+                    archive_name_for_meta,
                     &entries,
                     output_metadata,
                 )
@@ -460,44 +457,49 @@ fn run_one_inner(
                 output_metadata,
             );
 
-            if let Some(parent) = output_path.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-
             on_progress(PipelineProgress::StepStart {
                 step_index: pipeline.steps.len() + 1,
                 step_name: format!("Packing .{}", format.extension()),
             });
 
+            let staged = StagedOutput::new(&output_path, replace_existing)?;
             let cli = crate::backends::SevenZipCli::detect(None)
                 .context("7z CLI not found — required for pipeline conversion")?;
             let handle = cli
-                .spawn_convert_with_progress(&work_dir, &output_path, format, final_compression)
+                .spawn_convert_with_progress(
+                    &work_dir,
+                    staged.artifact_path(),
+                    format,
+                    final_compression,
+                )
                 .context("Failed to spawn 7z compression")?;
             drain_progress(handle, on_progress)?;
-
-            Ok(output_path)
+            staged.verify(OutputArtifact::Archive)?;
+            staged.commit()
         }
         OutputArtifact::Folder => {
             let output_path = pipeline
                 .output
                 .resolve_folder_with_metadata(input, output_metadata);
 
-            if let Some(parent) = output_path.parent() {
-                std::fs::create_dir_all(parent).ok();
-            }
-
             on_progress(PipelineProgress::StepStart {
                 step_index: pipeline.steps.len() + 1,
                 step_name: "Writing folder output".to_string(),
             });
 
-            // Rename the work dir into place when we can; on cross-device moves
-            // fall back to copy + delete. Either way, `output_path` is
-            // guaranteed not to exist here — the collision gate above either
-                // removed it (Overwrite) or skipped the whole run.
-            move_dir(&work_dir, &output_path)
-                .with_context(|| format!("Moving {:?} to {:?}", work_dir, output_path))?;
+            // Copy the complete work tree to a destination-sibling stage.
+            // The source remains intact until the staged tree is verified and
+            // atomically promoted.
+            let staged = StagedOutput::new(&output_path, replace_existing)?;
+            copy_dir_recursive(&work_dir, staged.artifact_path()).with_context(|| {
+                format!(
+                    "staging folder output from {} beside {}",
+                    work_dir.display(),
+                    output_path.display()
+                )
+            })?;
+            staged.verify(OutputArtifact::Folder)?;
+            let output_path = staged.commit()?;
             on_progress(PipelineProgress::StepProgress { percent: 100 });
 
             Ok(output_path)
@@ -505,38 +507,25 @@ fn run_one_inner(
     }
 }
 
-/// Move a directory tree. Falls back to recursive copy + delete if `rename`
-/// fails (typically because the destination is on a different filesystem).
-fn move_dir(src: &Path, dest: &Path) -> Result<()> {
-    match std::fs::rename(src, dest) {
-        Ok(()) => Ok(()),
-        Err(_) => move_dir_via_copy(src, dest),
-    }
-}
-
-/// Cross-device fallback: copy the tree, then remove the source. If the
-/// removal fails after a successful copy, both `src` and `dest` will hold
-/// identical data; we propagate the error so callers can decide whether
-/// to clean up `dest` or surface a warning to the user.
-fn move_dir_via_copy(src: &Path, dest: &Path) -> Result<()> {
-    copy_dir_recursive(src, dest)?;
-    std::fs::remove_dir_all(src)
-        .with_context(|| format!("Removing source dir after copy: {:?}", src))?;
-    Ok(())
-}
-
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<()> {
-    std::fs::create_dir_all(dest)
-        .with_context(|| format!("Creating {:?}", dest))?;
+    std::fs::create_dir(dest).with_context(|| format!("Creating {:?}", dest))?;
     for entry in std::fs::read_dir(src).with_context(|| format!("Reading {:?}", src))? {
         let entry = entry?;
         let from = entry.path();
         let to = dest.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("Reading filesystem type for {:?}", from))?;
+        if file_type.is_dir() {
             copy_dir_recursive(&from, &to)?;
-        } else {
+        } else if file_type.is_file() {
             std::fs::copy(&from, &to)
                 .with_context(|| format!("Copying {:?} to {:?}", from, to))?;
+        } else {
+            anyhow::bail!(
+                "Folder output contains a symlink or special filesystem node: {}",
+                from.display()
+            );
         }
     }
     Ok(())
@@ -644,90 +633,35 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Regression test for C3 from `docs/AUDIT_2026-05-03.md`.
-    ///
-    /// Pre-fix, `move_dir_via_copy` swallowed `remove_dir_all` failures with
-    /// `.ok()` — the function returned `Ok(())` even when the source dir
-    /// couldn't be removed, leaving identical data at both `src` and `dest`.
-    /// Subsequent pipeline runs would then see the leftover work-dir and
-    /// could corrupt `WorkDirGuard` cleanup.
-    ///
-    /// Post-fix, removal failures propagate via `with_context`. This test
-    /// engineers a removal failure (held file handle on Windows; chmodded
-    /// parent on Unix) and asserts the error surfaces. The destination copy
-    /// is intentionally left in place so the caller can choose to clean it
-    /// up or surface a partial-success warning.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
-    fn c3_move_dir_via_copy_propagates_remove_failure() {
-        use std::os::unix::fs::PermissionsExt;
-
+    fn folder_staging_copy_failure_preserves_existing_output() {
         let temp = tempfile::tempdir().unwrap();
-        let parent = temp.path().join("parent");
-        std::fs::create_dir_all(&parent).unwrap();
-        let src = parent.join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("file.txt"), "hello").unwrap();
-        let dest = temp.path().join("dest");
+        let source = temp.path().join("source");
+        std::fs::create_dir(&source).unwrap();
+        let outside = temp.path().join("outside.txt");
+        std::fs::write(&outside, b"outside").unwrap();
+        let link = source.join("linked.txt");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_file(&outside, &link)
+            .expect("Windows symlink support is required for this containment regression");
 
-        // Strip write+exec from parent so children can't be unlinked.
-        let mut perms = std::fs::metadata(&parent).unwrap().permissions();
-        perms.set_mode(0o555);
-        std::fs::set_permissions(&parent, perms).unwrap();
+        let destination = temp.path().join("output");
+        std::fs::create_dir(&destination).unwrap();
+        std::fs::write(destination.join("save.dat"), b"known-good").unwrap();
+        let staged = StagedOutput::new(&destination, true).unwrap();
 
-        let result = move_dir_via_copy(&src, &dest);
+        let error = copy_dir_recursive(&source, staged.artifact_path())
+            .unwrap_err()
+            .to_string();
+        drop(staged);
 
-        // Restore perms so tempdir cleanup succeeds.
-        let mut perms = std::fs::metadata(&parent).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&parent, perms).unwrap();
-
-        assert!(
-            result.is_err(),
-            "C3 fix regressed: move_dir_via_copy returned Ok despite a blocked remove",
+        assert!(error.contains("symlink or special"), "{error}");
+        assert_eq!(
+            std::fs::read(destination.join("save.dat")).unwrap(),
+            b"known-good"
         );
-        assert!(
-            dest.join("file.txt").exists(),
-            "Dest copy should still be in place — caller decides whether to clean up",
-        );
-    }
-
-    /// Windows variant of the C3 regression test. Holds a file handle
-    /// without `FILE_SHARE_DELETE` to block removal.
-    #[cfg(windows)]
-    #[test]
-    fn c3_move_dir_via_copy_propagates_remove_failure() {
-        use std::os::windows::fs::OpenOptionsExt;
-
-        const FILE_SHARE_READ: u32 = 0x1;
-        const FILE_SHARE_WRITE: u32 = 0x2;
-        // Note: deliberately NOT including FILE_SHARE_DELETE (0x4).
-
-        let temp = tempfile::tempdir().unwrap();
-        let src = temp.path().join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        let file_path = src.join("locked.txt");
-        std::fs::write(&file_path, "hello").unwrap();
-        let dest = temp.path().join("dest");
-
-        let _locked = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-            .open(&file_path)
-            .expect("opening file without delete-share");
-
-        let result = move_dir_via_copy(&src, &dest);
-
-        assert!(
-            result.is_err(),
-            "C3 fix regressed: move_dir_via_copy returned Ok despite a blocked remove. Got: {:?}",
-            result,
-        );
-        assert!(
-            dest.join("locked.txt").exists(),
-            "Dest copy should still be in place — caller decides whether to clean up",
-        );
-
-        drop(_locked);
     }
 }
