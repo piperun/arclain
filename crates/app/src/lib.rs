@@ -11,7 +11,9 @@
 //! [`operations`] registry those events are broadcast through, and
 //! [`runtime`]: the [`runtime::ArclainApp`] facade itself, which owns the
 //! Tokio runtime and composes every headless service `crates/ui`'s
-//! initialization used to build directly.
+//! initialization used to build directly. [`materialization`] adds
+//! leased, application-owned materialization of an archive entry onto a
+//! real local disk path.
 //!
 //! `operations`'s own registry/challenge-waiter internals stay
 //! `pub(crate)` -- implementation details behind the application facade,
@@ -21,16 +23,16 @@
 //! (`operations::ExtractRequest`, and so on as later tasks add
 //! `start_convert`/`start_organize`/etc.).
 //!
-//! The remaining modules from the full facade contract
-//! (`materialization`, `plugins`, `settings`) are added incrementally by
-//! later tasks; this crate declares only the modules it actually
-//! implements so far.
+//! The remaining modules from the full facade contract (`plugins`,
+//! `settings`) are added incrementally by later tasks; this crate declares
+//! only the modules it actually implements so far.
 
 pub mod archive;
 pub mod challenge;
 pub mod error;
 pub mod event;
 pub mod ids;
+pub mod materialization;
 pub mod operations;
 pub mod runtime;
 

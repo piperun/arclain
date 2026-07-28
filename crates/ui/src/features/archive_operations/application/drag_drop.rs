@@ -1,3 +1,13 @@
+//! Progress polling for an OS-level drag-out already in flight (started by
+//! `crate::features::archive_browser::application::drag_drop_service`).
+//!
+//! Not routed through `arclain_app::materialization`: this module's own
+//! state (`ArchiveOperationsState::drag_rx`/`drag_origin_tab`) holds no
+//! filesystem resource at all -- just an `mpsc::Receiver` and a tab handle
+//! -- so there is nothing here for a lease to replace. See
+//! `drag_drop_service`'s own module doc comment for why the temp directory
+//! the drag itself extracts into is out of scope for this task too.
+
 use crate::core::utils;
 use crate::features::archive_operations::domain::state::ArchiveOperationsState;
 use eframe::egui;

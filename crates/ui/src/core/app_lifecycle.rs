@@ -263,7 +263,14 @@ pub fn process_extraction_progress(
 /// Falls through `load_archive_into_tab`, so the encryption path
 /// (password dialog show) and auto-bind ctx-repaint behave the same
 /// as a top-level archive open.
-fn open_nested_archive_in_tab(shared_state: &SharedState, archive_path: &std::path::Path) {
+///
+/// `pub(crate)`, not private: `crate::core::operation_bridge` also calls
+/// this once a `file_opener::open_file_from_archive` materialization
+/// completes and the extracted content turns out to itself be an archive.
+pub(crate) fn open_nested_archive_in_tab(
+    shared_state: &SharedState,
+    archive_path: &std::path::Path,
+) {
     let signals = shared_state.signals();
     let user_config = signals.user_config.get();
     let open_in_new_tab = user_config.open_nested_in_new_tab;
@@ -329,6 +336,23 @@ fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String)
             );
         }
     }
+}
+
+/// Adapter for callers with no render-frame-local `&mut String` to thread
+/// a status message through -- `crate::core::operation_bridge`'s
+/// materialize-completion handler runs on the bridge's background worker,
+/// not inside a frame, so it writes `shared_state.signals().status_bar`
+/// directly instead. Reuses [`open_extracted_file`] verbatim rather than
+/// duplicating its platform-conditional spawn logic.
+pub(crate) fn open_extracted_file_via_signals(
+    shared_state: &SharedState,
+    file_path: &std::path::Path,
+) {
+    let mut message = String::new();
+    open_extracted_file(file_path, &mut message);
+    shared_state.signals().status_bar.update(|s| {
+        s.message = message.clone();
+    });
 }
 
 /// Restore the previous tab session from `tabs.json` in the config dir.

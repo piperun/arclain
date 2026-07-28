@@ -1,4 +1,44 @@
-//! Drag and drop application service
+//! Drag and drop application service.
+//!
+//! Deliberately **not** routed through `arclain_app::materialization` in
+//! this task, unlike `file_opener::open_file_from_archive`. Investigated
+//! and rejected, rather than silently left alone:
+//!
+//! - **No leak exists here to fix.** This function reaches
+//!   `crate::platform::drag_source::start_deferred_drag`, whose Windows
+//!   implementation (`platform::drag_source::windows::{data_object,
+//!   hdrop_data_object}`) already owns its own temp directory via
+//!   `tempfile::TempDir` -- ordinary RAII, cleaned up when the OS releases
+//!   the `IDataObject` COM object after `DoDragDrop` returns. There is no
+//!   `std::mem::forget` (or equivalent unbounded retention) anywhere in
+//!   that path; verified by reading the implementation, not assumed.
+//! - **Migrating it anyway would require a real redesign, not a small
+//!   change.** The Windows drag objects extract *lazily*, on demand,
+//!   inside a `GetData` callback invoked by the OS shell during the drag
+//!   gesture itself (`HDropDataObject`'s dual-HDROP: a placeholder path
+//!   during hover, the real extracted files only once an actual drop
+//!   happens) -- a deliberate, working responsiveness optimization.
+//!   Routing that through `start_materialization` would mean either
+//!   eagerly materializing the whole selection before the OS drag even
+//!   starts (giving up the "don't extract until actually dropped"
+//!   behavior), or bridging a synchronous, OS-invoked COM callback into
+//!   the facade's async operation model with no render loop on the other
+//!   end to hand off to -- a harder version of the same "can't block the
+//!   render thread on an async challenge" problem `start_open_archive`'s
+//!   own background-worker bridge exists to solve, except here there is no
+//!   egui frame loop backing the callback thread at all.
+//! - **The one real, pre-existing architectural gap** -- this function
+//!   reads `tab.opened_archive` directly for `backend_arc()`/`password_ref()`,
+//!   bypassing the facade entirely (flagged by an earlier task's own
+//!   report as a known, deliberately deferred item) -- is not created by
+//!   this task and is not fixed by it either: the facade has no API that
+//!   hands back a raw backend handle for a UI-driven lazy extraction to
+//!   use (by design), so closing this gap needs the redesign above, not a
+//!   small follow-up.
+//!
+//! Given no leak to fix and a disproportionate, high-risk redesign to
+//! reach full architectural parity, this file is unchanged. Full
+//! unification remains a named, surfaced follow-up.
 
 use crate::features::archive_operations::ArchiveOperationsState;
 use crate::shared::SharedState;

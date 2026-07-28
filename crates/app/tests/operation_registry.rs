@@ -171,6 +171,59 @@ mod serialization_snapshots {
     }
 
     #[test]
+    fn operation_result_materialized_serializes_with_its_lease() {
+        use arclain_app::ids::MaterializationLeaseId;
+        use arclain_app::materialization::MaterializationLease;
+
+        let result = OperationResult::Materialized {
+            lease: MaterializationLease {
+                id: MaterializationLeaseId::from_raw(9),
+                local_path: std::path::PathBuf::from("/leases/9/file.bin"),
+                size: 2048,
+                expires_at_unix_ms: 1_700_000_000_000,
+            },
+        };
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "materialized",
+                "data": {
+                    "lease": {
+                        "id": 9,
+                        "local_path": "/leases/9/file.bin",
+                        "size": 2048,
+                        "expires_at_unix_ms": 1_700_000_000_000i64,
+                    }
+                }
+            })
+        );
+
+        let round_tripped: OperationResult = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, result);
+    }
+
+    #[test]
+    fn operation_state_completed_with_materialized_serializes_end_to_end() {
+        use arclain_app::ids::MaterializationLeaseId;
+        use arclain_app::materialization::MaterializationLease;
+
+        let state = OperationState::Completed {
+            result: OperationResult::Materialized {
+                lease: MaterializationLease {
+                    id: MaterializationLeaseId::from_raw(1),
+                    local_path: std::path::PathBuf::from("leased.bin"),
+                    size: 0,
+                    expires_at_unix_ms: 0,
+                },
+            },
+        };
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(value["state"], serde_json::json!("completed"));
+        assert_eq!(value["result"]["type"], serde_json::json!("materialized"));
+    }
+
+    #[test]
     fn operation_state_completed_with_archive_opened_serializes_end_to_end() {
         use arclain_app::archive::ArchiveSnapshot;
 

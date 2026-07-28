@@ -88,6 +88,8 @@ pub fn create_test_shared_state() -> SharedState {
         signals,
         facade: None,
         operation_origins: arclain_ui::core::operation_bridge::OperationOrigins::new(),
+        materialization_actions: arclain_ui::core::operation_bridge::MaterializationActions::new(),
+        external_open_leases: arclain_ui::core::operation_bridge::ExternalOpenLeases::new(),
     }
 }
 
@@ -199,6 +201,8 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         signals,
         facade: None,
         operation_origins: arclain_ui::core::operation_bridge::OperationOrigins::new(),
+        materialization_actions: arclain_ui::core::operation_bridge::MaterializationActions::new(),
+        external_open_leases: arclain_ui::core::operation_bridge::ExternalOpenLeases::new(),
     };
 
     (temp, shared)

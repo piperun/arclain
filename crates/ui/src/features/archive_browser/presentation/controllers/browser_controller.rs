@@ -113,25 +113,11 @@ impl BrowserController {
     }
 
     fn handle_open_archive_in_tab(&self, shared: &SharedState, archive_path: String) {
-        // Use a local StatusBarInfo for the extraction call, then sync to signal
-        let mut status_info = shared.signals().status_bar.get();
-
-        if let Some(extracted_path) = crate::features::archive_operations::open_file_from_archive(
-            &shared.app_state,
-            &archive_path,
-            &mut status_info,
-        ) {
-            shared.signals().status_bar.set(status_info);
-            let active_id = shared.signals().tabs.get().active_id();
-            crate::core::operations::archive::start_archive_open(
-                shared,
-                active_id,
-                extracted_path,
-                None,
-            );
-        } else {
-            shared.signals().status_bar.set(status_info);
-        }
+        // Fire-and-forget: materialization, launching the external
+        // application (or opening a nested archive), and lease lifetime
+        // are all driven asynchronously by `crate::core::operation_bridge`
+        // from here on -- see `file_opener`'s own module doc comment.
+        crate::features::archive_operations::open_file_from_archive(shared, &archive_path);
     }
 
     fn handle_organize(

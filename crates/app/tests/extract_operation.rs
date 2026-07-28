@@ -74,6 +74,8 @@ fn bootstrap_app(
         worker_threads: None,
         archive_backend_override: Some(backend),
         extract_runner_override: Some(runner),
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap must succeed")
 }

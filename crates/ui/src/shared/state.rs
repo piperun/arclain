@@ -38,11 +38,21 @@ pub struct SharedState {
     /// startup path) always sets this to `Some`.
     pub facade: Option<arclain_app::ArclainApp>,
     /// Which tab a given in-flight facade operation (archive-open,
-    /// extraction) belongs to -- populated by whichever call site starts
-    /// one, read by `crate::core::operation_bridge`'s background worker
-    /// on every event. See that module's own doc comment for the full
-    /// bridge design.
+    /// extraction, materialize) belongs to -- populated by whichever call
+    /// site starts one, read by `crate::core::operation_bridge`'s
+    /// background worker on every event. See that module's own doc comment
+    /// for the full bridge design.
     pub operation_origins: crate::core::operation_bridge::OperationOrigins,
+    /// What to do once a given in-flight `Materialize` operation completes
+    /// -- see `crate::core::operation_bridge::MaterializationActions`'s own
+    /// doc comment for why this exists alongside (not instead of)
+    /// `operation_origins`.
+    pub materialization_actions: crate::core::operation_bridge::MaterializationActions,
+    /// Materialization leases currently backing a launched external
+    /// application, renewed periodically for as long as this session
+    /// runs -- see `crate::core::operation_bridge::ExternalOpenLeases`'s
+    /// own doc comment.
+    pub external_open_leases: crate::core::operation_bridge::ExternalOpenLeases,
 }
 
 impl SharedState {
@@ -106,6 +116,8 @@ impl SharedState {
             signals: signals.clone(),
             facade: Some(facade),
             operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
+            materialization_actions: crate::core::operation_bridge::MaterializationActions::new(),
+            external_open_leases: crate::core::operation_bridge::ExternalOpenLeases::new(),
         };
         // Spawns the background worker that drives archive-open/
         // extraction progress, challenges, and completion onto this

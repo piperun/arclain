@@ -750,3 +750,95 @@ mod pipeline_request_dtos {
         );
     }
 }
+mod materialization_dto_tests {
+    use std::path::PathBuf;
+
+    use arclain_app::ids::{ArchiveSessionId, EntryId, MaterializationLeaseId};
+    use arclain_app::materialization::{
+        MaterializationLease, MaterializationPurpose, MaterializeRequest,
+        MAX_MATERIALIZATION_READ_BYTES,
+    };
+
+    #[test]
+    fn max_materialization_read_bytes_is_two_mebibytes() {
+        assert_eq!(MAX_MATERIALIZATION_READ_BYTES, 2 * 1024 * 1024);
+    }
+
+    #[test]
+    fn every_dto_this_module_introduces_is_constructible_from_outside_the_crate() {
+        let request = MaterializeRequest {
+            session_id: ArchiveSessionId::from_raw(1),
+            entry_id: EntryId::from_raw(2),
+            purpose: MaterializationPurpose::ExternalOpen,
+        };
+        assert_eq!(request.entry_id, EntryId::from_raw(2));
+
+        let lease = MaterializationLease {
+            id: MaterializationLeaseId::from_raw(3),
+            local_path: PathBuf::from("leases/3/game.exe"),
+            size: 4096,
+            expires_at_unix_ms: 1_700_000_000_000,
+        };
+        assert_eq!(lease.size, 4096);
+    }
+
+    #[test]
+    fn materialization_purpose_variants_serialize_snake_case() {
+        let cases = [
+            (MaterializationPurpose::DragOut, "drag_out"),
+            (MaterializationPurpose::Edit, "edit"),
+            (MaterializationPurpose::ExternalOpen, "external_open"),
+            (MaterializationPurpose::Preview, "preview"),
+        ];
+        for (variant, expected) in cases {
+            assert_eq!(
+                serde_json::to_value(variant).unwrap(),
+                serde_json::json!(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn materialize_request_serializes_with_snake_case_fields() {
+        let request = MaterializeRequest {
+            session_id: ArchiveSessionId::from_raw(5),
+            entry_id: EntryId::from_raw(9),
+            purpose: MaterializationPurpose::DragOut,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "session_id": 5,
+                "entry_id": 9,
+                "purpose": "drag_out",
+            })
+        );
+        let round_tripped: MaterializeRequest = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped.session_id, request.session_id);
+        assert_eq!(round_tripped.entry_id, request.entry_id);
+        assert_eq!(round_tripped.purpose, request.purpose);
+    }
+
+    #[test]
+    fn materialization_lease_round_trips_through_json() {
+        let lease = MaterializationLease {
+            id: MaterializationLeaseId::from_raw(11),
+            local_path: PathBuf::from("leases/11/save.dat"),
+            size: 1024,
+            expires_at_unix_ms: 42,
+        };
+        let value = serde_json::to_value(&lease).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": 11,
+                "local_path": "leases/11/save.dat",
+                "size": 1024,
+                "expires_at_unix_ms": 42,
+            })
+        );
+        let round_tripped: MaterializationLease = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, lease);
+    }
+}

@@ -1,10 +1,11 @@
 //! The event stream every asynchronous application operation reports its
 //! progress through, and the point-in-time snapshot read back from it.
 //!
-//! `OperationResult::ArchiveOpened` is this task's addition: the terminal
-//! payload `start_open_archive`'s spawned operation produces on success.
-//! `Materialized` and `PluginUiUpdated` are added by the later tasks that
-//! implement the facade methods able to actually produce those results;
+//! `OperationResult::ArchiveOpened` was added when `start_open_archive`
+//! first needed a terminal payload. `OperationResult::Materialized` is this
+//! task's addition: the terminal payload `start_materialization`'s spawned
+//! operation produces on success. `PluginUiUpdated` is added by the later
+//! task that implements the facade method able to actually produce it;
 //! adding a variant is additive and does not change anything defined
 //! earlier.
 
@@ -12,6 +13,7 @@ use crate::archive::ArchiveSnapshot;
 use crate::challenge::Challenge;
 use crate::error::ApplicationError;
 use crate::ids::{ArchiveSessionId, OperationId};
+use crate::materialization::MaterializationLease;
 
 /// Which kind of long-running, cancellable action an operation performs.
 /// A frontend uses this to choose an icon/label without inspecting the
@@ -31,17 +33,18 @@ pub enum OperationKind {
 
 /// The payload an operation's terminal `Completed` state carries.
 ///
-/// `Materialized` and `PluginUiUpdated` are added by later tasks (see the
-/// module doc comment). Deliberately not `Eq`: `ArchiveSnapshot` carries a
-/// `serde_json::Value` (`metadata`), which has no total order, so `Eq` is
-/// left off `OperationResult` from the start rather than removed later as
-/// a breaking change to every type that embeds this one transitively
+/// `PluginUiUpdated` is added by a later task (see the module doc comment).
+/// Deliberately not `Eq`: `ArchiveSnapshot` carries a `serde_json::Value`
+/// (`metadata`), which has no total order, so `Eq` is left off
+/// `OperationResult` from the start rather than removed later as a
+/// breaking change to every type that embeds this one transitively
 /// (`OperationState`, `OperationEvent`, `OperationSnapshot`).
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum OperationResult {
     None,
     ArchiveOpened { snapshot: ArchiveSnapshot },
+    Materialized { lease: MaterializationLease },
 }
 
 /// The lifecycle state of one in-flight (or finished) operation. Carried,

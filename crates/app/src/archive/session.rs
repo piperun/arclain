@@ -723,10 +723,16 @@ impl ArchiveSession {
     /// Looks up one entry by id against this session's *current* index.
     /// `None` if `entry_id` was never minted into this revision's index --
     /// a stale id from a superseded revision, or one a caller fabricated.
+    ///
     /// Used by `crate::operations::archive_mutation`'s `ReplaceText`
     /// handling to resolve the entry's current path and confirm it names
     /// a `File` (rather than a `Directory`) before ever calling the
-    /// backend.
+    /// backend, and by the materialization operation
+    /// (`crate::materialization`) to decide whether a requested entry is
+    /// a single file (materializes to that one extracted path) or a
+    /// directory (materializes to the whole extracted subtree, via
+    /// [`Self::resolve_extractable_paths`]) -- the two cases a lease's
+    /// `local_path` must distinguish.
     pub(crate) fn entry(&self, entry_id: EntryId) -> Option<ArchiveEntryDto> {
         self.entry_index.read().get(entry_id).cloned()
     }
@@ -903,6 +909,7 @@ impl ArchiveSession {
     pub(crate) fn all_file_paths(&self) -> Vec<String> {
         self.entry_index.read().file_paths()
     }
+
 }
 
 #[cfg(test)]

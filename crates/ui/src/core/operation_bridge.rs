@@ -11,15 +11,19 @@
 //! [`arclain_app::ids::OperationId`] belongs to, populated by whichever
 //! call site starts the operation (`crate::core::operations::archive::
 //! start_archive_open`, `crate::features::archive_operations::application::
-//! extraction::start_extraction`); the worker reads it back for every
-//! event and updates that tab's signals.
+//! extraction::start_extraction`, `crate::features::archive_operations::
+//! application::file_opener::open_file_from_archive`); the worker reads it
+//! back for every event and updates that tab's signals.
+//! [`MaterializationActions`] carries the extra, materialize-specific "what
+//! to do on completion" a bare tab id has no room for (see its own doc
+//! comment); [`ExternalOpenLeases`] tracks which materialization leases an
+//! external-open action is keeping alive by periodic renewal.
 //!
-//! Both operation kinds this task wires up (`OpenArchive`, `Extract`)
-//! share a password-challenge dialog (the existing per-tab
-//! `password_dialog` signal) rather than each owning a separate prompt --
-//! see [`TabState::pending_challenge`]'s own doc comment for how the
-//! render side knows which operation/challenge id a submitted password
-//! answers.
+//! Every operation kind this bridge wires up shares one password-challenge
+//! dialog (the existing per-tab `password_dialog` signal) rather than each
+//! owning a separate prompt -- see [`TabState::pending_challenge`]'s own
+//! doc comment for how the render side knows which operation/challenge id
+//! a submitted password answers.
 //!
 //! `Challenge::ConfirmOverwrite` has no interactive prompt wired up yet:
 //! every egui-initiated extraction requests `CollisionPolicy::Overwrite`,
@@ -34,10 +38,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use arclain_app::challenge::{Challenge, ChallengeResponse};
 use arclain_app::event::{OperationEvent, OperationKind, OperationResult, OperationState};
-use arclain_app::ids::OperationId;
+use arclain_app::ids::{MaterializationLeaseId, OperationId};
+use arclain_app::materialization::MaterializationLease;
 use arclain_app::ArclainApp;
 
 use crate::core::tabs::TabId;
@@ -97,6 +103,157 @@ impl OperationOrigins {
     fn tracked_ids(&self) -> Vec<OperationId> {
         self.origins.lock().unwrap().keys().copied().collect()
     }
+}
+
+/// What to do once a `Materialize` operation this bridge is tracking
+/// completes. Keyed by `OperationId` in [`MaterializationActions`],
+/// alongside (not instead of) [`OperationOrigins`]: `OperationOrigins`
+/// answers "which tab", this answers "what specifically to do for this one
+/// materialize call" -- per-call-site information `OperationOrigins`'s
+/// simpler, operation-kind-agnostic shape has no room for.
+#[derive(Clone, Debug)]
+pub enum MaterializationAction {
+    /// Launch the materialized content in the OS's default external
+    /// application (or, if it is itself an archive, open it as a nested
+    /// archive in this tab instead) -- `crate::features::archive_operations::
+    /// application::file_opener`'s replacement for the pre-facade leaked
+    /// `FileOpener`. `relative_target` is `Some` when the lease represents
+    /// a whole directory (materializing a target file's containing folder
+    /// so sibling files -- a game executable's co-located DLLs -- come
+    /// along too) and names the specific file within it to actually open;
+    /// `None` when the lease's own `local_path` already is that file.
+    ExternalOpen { relative_target: Option<String> },
+}
+
+/// Registry of pending [`MaterializationAction`]s for in-flight `Materialize`
+/// operations. A plain `Mutex<HashMap<...>>`, mirroring [`OperationOrigins`]'s
+/// own shape for the equivalent "one slot per in-flight operation" need.
+#[derive(Clone, Default)]
+pub struct MaterializationActions {
+    actions: Arc<Mutex<HashMap<OperationId, MaterializationAction>>>,
+}
+
+impl MaterializationActions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers `action` for `operation_id`. Called immediately after
+    /// `start_materialization` returns its id, mirroring
+    /// `OperationOrigins::register`'s own no-race reasoning.
+    pub fn register(&self, operation_id: OperationId, action: MaterializationAction) {
+        self.actions.lock().unwrap().insert(operation_id, action);
+    }
+
+    /// Removes and returns the pending action for `operation_id`, if any --
+    /// there is exactly one terminal event per operation (see
+    /// `arclain_app::operations::registry`'s own guarantee), so taking by
+    /// value here can never double-fire an action.
+    fn take(&self, operation_id: OperationId) -> Option<MaterializationAction> {
+        self.actions.lock().unwrap().remove(&operation_id)
+    }
+}
+
+/// Materialization leases currently backing a launched external
+/// application, kept alive by periodic renewal (`renew_due_external_open_leases`,
+/// called once per frame from `crate::core::arclain_app::update`) for as
+/// long as this application session runs.
+///
+/// There is no reliable, portable way to detect "the external, OS-
+/// registered application has finished reading this file and exited" for
+/// an arbitrary launched handler (unlike a nested nested-archive open,
+/// which reads the file once up front and is done with it -- see
+/// `handle_materialize_completed`, which releases that case's lease
+/// immediately instead of tracking it here). Renewing indefinitely for the
+/// life of the session, rather than guessing at a release point, is the
+/// deliberate trade-off: `ArclainApp::shutdown`'s own cleanup reclaims
+/// every directory still tracked here when the application actually
+/// exits, and an individual lease still expires on its own (see
+/// `arclain_app::materialization`'s default TTL) if renewal itself ever
+/// stops (a crash, a bug) rather than leaking forever the way the
+/// pre-facade `std::mem::forget` did.
+#[derive(Clone, Default)]
+pub struct ExternalOpenLeases {
+    leases: Arc<Mutex<HashMap<MaterializationLeaseId, Instant>>>,
+}
+
+impl ExternalOpenLeases {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Starts tracking `lease_id`, timestamped as just-renewed (it was
+    /// materialized moments ago, which already gave it a full, fresh TTL).
+    pub fn track(&self, lease_id: MaterializationLeaseId) {
+        self.leases.lock().unwrap().insert(lease_id, Instant::now());
+    }
+
+    /// Every tracked lease last renewed at least `min_age` ago -- due for
+    /// another renewal call.
+    fn due_for_renewal(&self, min_age: Duration) -> Vec<MaterializationLeaseId> {
+        let now = Instant::now();
+        self.leases
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, last)| now.duration_since(**last) >= min_age)
+            .map(|(id, _)| *id)
+            .collect()
+    }
+
+    /// Records a successful renewal, resetting the tracked lease's clock.
+    fn mark_renewed(&self, lease_id: MaterializationLeaseId) {
+        if let Some(last) = self.leases.lock().unwrap().get_mut(&lease_id) {
+            *last = Instant::now();
+        }
+    }
+
+    /// Stops tracking a lease that failed to renew -- already released or
+    /// expired out from under this tracker, so there is nothing left to
+    /// renew.
+    fn forget(&self, lease_id: MaterializationLeaseId) {
+        self.leases.lock().unwrap().remove(&lease_id);
+    }
+}
+
+/// How long a tracked external-open lease is allowed to sit since its last
+/// renewal before the next per-frame check renews it again. Comfortably
+/// under `arclain_app::materialization::DEFAULT_LEASE_TTL` (5 minutes) so a
+/// slow frame or a busy runtime never risks letting a lease actually expire
+/// while still tracked.
+const EXTERNAL_OPEN_RENEWAL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Renews every tracked external-open lease due for it. Called once per
+/// frame from `crate::core::arclain_app::update`; cheap on every frame
+/// where nothing is due (a single lock plus a linear scan over what is
+/// expected to be a very small set -- one entry per currently-open
+/// external application).
+pub fn renew_due_external_open_leases(shared: &SharedState) {
+    let Some(app) = shared.facade.clone() else {
+        return;
+    };
+    let due = shared
+        .external_open_leases
+        .due_for_renewal(EXTERNAL_OPEN_RENEWAL_INTERVAL);
+    if due.is_empty() {
+        return;
+    }
+    let leases = shared.external_open_leases.clone();
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.spawn(async move {
+        for lease_id in due {
+            match app.renew_materialization(lease_id).await {
+                Ok(_) => leases.mark_renewed(lease_id),
+                Err(error) => {
+                    tracing::warn!(
+                        "[operation_bridge] failed to renew external-open lease {lease_id:?}, \
+                         no longer tracking it: {error:?}"
+                    );
+                    leases.forget(lease_id);
+                }
+            }
+        }
+    });
 }
 
 fn is_terminal(state: &OperationState) -> bool {
@@ -746,6 +903,103 @@ fn handle_archive_modify_terminal(
     });
 }
 
+/// Resolves what a completed `Materialize` operation's [`MaterializationAction`]
+/// says to do, and does it. Always forgets both `origins` and `actions`'
+/// entries for `operation_id` first -- every path below is a leaf (nothing
+/// re-dispatches another operation that would need this same entry again).
+/// Takes no `TabId`: neither branch below needs one -- an external-open
+/// launch is not scoped to any tab's UI, and a nested archive open (see
+/// `crate::core::app_lifecycle::open_nested_archive_in_tab`'s own doc
+/// comment) already targets whichever tab is active, matching the
+/// pre-facade behavior exactly (it never threaded a specific origin tab
+/// through either).
+fn handle_materialize_completed(
+    shared: &SharedState,
+    origins: &OperationOrigins,
+    actions: &MaterializationActions,
+    operation_id: OperationId,
+    lease: MaterializationLease,
+) {
+    origins.forget(operation_id);
+    let Some(action) = actions.take(operation_id) else {
+        // No pending action registered -- a materialize call this bridge
+        // does not (yet) drive any UI behavior for. Nothing to do; the
+        // lease itself is still valid and reachable by its id for whatever
+        // did start it, if it kept the id some other way.
+        return;
+    };
+    match action {
+        MaterializationAction::ExternalOpen { relative_target } => {
+            let target_path = match &relative_target {
+                Some(relative) => lease.local_path.join(relative),
+                None => lease.local_path.clone(),
+            };
+            let release_now = |shared: &SharedState, lease_id: MaterializationLeaseId| {
+                if let Some(app) = shared.facade.clone() {
+                    shared.services.tokio_runtime.clone().spawn(async move {
+                        let _ = app.release_materialization(lease_id).await;
+                    });
+                }
+            };
+
+            if !target_path.exists() {
+                tracing::warn!(
+                    "[operation_bridge] materialized lease {:?} but the expected file {} is missing",
+                    lease.id,
+                    target_path.display()
+                );
+                shared.signals().status_bar.update(|s| {
+                    s.message = "Extracted file not found".to_string();
+                });
+                release_now(shared, lease.id);
+                return;
+            }
+
+            if arclain_core::features::organization::flatten::is_archive_extension(&target_path) {
+                // Route through arclain's own archive-open flow instead of
+                // the OS default handler (keeps nested-archive browsing
+                // inside the app, and surfaces the password dialog if the
+                // inner archive is itself encrypted).
+                crate::core::app_lifecycle::open_nested_archive_in_tab(shared, &target_path);
+                // The nested open reads this lease's bytes exactly once
+                // (via a fresh `start_open_archive` `list()` call against
+                // `target_path`); nothing keeps reading them afterward, so
+                // release immediately rather than track this lease for
+                // ongoing renewal.
+                release_now(shared, lease.id);
+            } else {
+                crate::core::app_lifecycle::open_extracted_file_via_signals(shared, &target_path);
+                // Unlike the nested-archive case, an external, OS-launched
+                // application's own read timing is unknowable from here --
+                // see `ExternalOpenLeases`'s own doc comment for why this
+                // keeps renewing instead of releasing.
+                shared.external_open_leases.track(lease.id);
+            }
+        }
+    }
+}
+
+fn handle_materialize_failed_or_cancelled(
+    shared: &SharedState,
+    origins: &OperationOrigins,
+    actions: &MaterializationActions,
+    operation_id: OperationId,
+    error: Option<arclain_app::error::ApplicationError>,
+) {
+    origins.forget(operation_id);
+    actions.take(operation_id);
+    let message = match error {
+        Some(error) => {
+            tracing::error!("[operation_bridge] materialization failed: {error:?}");
+            format!("Failed to open file: {}", error.summary)
+        }
+        None => "Opening file cancelled".to_string(),
+    };
+    shared.signals().status_bar.update(|s| {
+        s.message = message.clone();
+    });
+}
+
 fn handle_password_challenge(
     shared: &SharedState,
     tab_id: TabId,
@@ -829,6 +1083,7 @@ fn handle_confirm_overwrite_challenge(
 async fn handle_event(
     shared: &SharedState,
     origins: &OperationOrigins,
+    materialization_actions: &MaterializationActions,
     runtime: &tokio::runtime::Runtime,
     event: OperationEvent,
 ) {
@@ -951,6 +1206,36 @@ async fn handle_event(
             let message = format!("Archive change failed: {}", error.summary);
             handle_archive_modify_terminal(shared, origins, event.operation_id, message);
         }
+        (
+            OperationKind::Materialize,
+            OperationState::Completed {
+                result: OperationResult::Materialized { lease },
+            },
+        ) => handle_materialize_completed(
+            shared,
+            origins,
+            materialization_actions,
+            event.operation_id,
+            lease,
+        ),
+        (OperationKind::Materialize, OperationState::Cancelled) => {
+            handle_materialize_failed_or_cancelled(
+                shared,
+                origins,
+                materialization_actions,
+                event.operation_id,
+                None,
+            )
+        }
+        (OperationKind::Materialize, OperationState::Failed { error }) => {
+            handle_materialize_failed_or_cancelled(
+                shared,
+                origins,
+                materialization_actions,
+                event.operation_id,
+                Some(error),
+            )
+        }
         _ => {
             if event_is_terminal {
                 origins.forget(event_operation_id);
@@ -996,7 +1281,14 @@ async fn reconcile_one(
 ) {
     match app.operation(operation_id).await {
         Ok(snapshot) => {
-            handle_event(shared, origins, runtime, snapshot_to_event(snapshot)).await;
+            handle_event(
+                shared,
+                origins,
+                &shared.materialization_actions,
+                runtime,
+                snapshot_to_event(snapshot),
+            )
+            .await;
         }
         Err(_) => {
             tracing::warn!(
@@ -1097,7 +1389,14 @@ pub fn spawn(shared: &SharedState) {
         loop {
             match receiver.recv().await {
                 Ok(event) => {
-                    handle_event(&shared, &shared.operation_origins, &runtime, event).await;
+                    handle_event(
+                        &shared,
+                        &shared.operation_origins,
+                        &shared.materialization_actions,
+                        &runtime,
+                        event,
+                    )
+                    .await;
                     shared.signals().kick_repaint();
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {

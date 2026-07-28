@@ -81,6 +81,19 @@ pub struct BootstrapConfig {
     /// see `crate::operations::extract::ExtractRunner`. Always `None` in
     /// `system_default()`.
     pub extract_runner_override: Option<Arc<dyn crate::operations::extract::ExtractRunner>>,
+    /// Test-only seam: overrides how long a materialization lease stays
+    /// valid before expiring. `None` uses
+    /// `crate::materialization::DEFAULT_LEASE_TTL`. A test that needs to
+    /// observe real expiry cleanup sets this (and usually
+    /// `materialization_cleanup_interval_override` too) to a much shorter
+    /// duration rather than waiting on the production TTL. Always `None`
+    /// in `system_default()`.
+    pub materialization_lease_ttl_override: Option<std::time::Duration>,
+    /// Test-only seam: overrides how often the background sweep that
+    /// removes expired materialization leases runs. `None` uses
+    /// `crate::materialization::DEFAULT_CLEANUP_INTERVAL`. Always `None`
+    /// in `system_default()`.
+    pub materialization_cleanup_interval_override: Option<std::time::Duration>,
 }
 
 /// Hand-written rather than `#[derive(Debug)]`: `dyn arclain_core::
@@ -100,6 +113,14 @@ impl std::fmt::Debug for BootstrapConfig {
                 "extract_runner_override_is_set",
                 &self.extract_runner_override.is_some(),
             )
+            .field(
+                "materialization_lease_ttl_override",
+                &self.materialization_lease_ttl_override,
+            )
+            .field(
+                "materialization_cleanup_interval_override",
+                &self.materialization_cleanup_interval_override,
+            )
             .finish()
     }
 }
@@ -113,6 +134,8 @@ impl BootstrapConfig {
             worker_threads: None,
             archive_backend_override: None,
             extract_runner_override: None,
+            materialization_lease_ttl_override: None,
+            materialization_cleanup_interval_override: None,
         }
     }
 }
@@ -433,6 +456,12 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
             ))
         });
 
+    // Read before `paths` moves into `AppRuntime`'s struct literal below.
+    let materialization_root = paths.materialization_dir();
+    let materialization_ttl = config
+        .materialization_lease_ttl_override
+        .unwrap_or(crate::materialization::DEFAULT_LEASE_TTL);
+
     let session = SessionStore {
         core_services: Arc::new(core_services),
         plugin_manager,
@@ -459,6 +488,10 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         challenges: ChallengeWaiters::new(),
         archive_backend_override: config.archive_backend_override,
         extract_runner,
+        materialization: crate::materialization::MaterializationStore::new(
+            materialization_root,
+            materialization_ttl,
+        ),
         shut_down: std::sync::atomic::AtomicBool::new(false),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })

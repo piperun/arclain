@@ -108,6 +108,7 @@ impl AppPaths {
             &self.log_dir,
             &self.databases_dir(),
             &self.secrets_dir(),
+            &self.materialization_dir(),
         ] {
             arclain_app_fs::ensure_owner_dir(dir)
                 .map_err(|error| directory_error(&format!("creating {}", dir.display()), error))?;
@@ -153,6 +154,19 @@ impl AppPaths {
     /// Where `pass.redb` and `master.key` live.
     pub(crate) fn secrets_dir(&self) -> PathBuf {
         self.data_dir.join("secrets")
+    }
+
+    /// Where materialization leases (application-owned, temporary,
+    /// individually-leased copies of archive entries extracted onto real
+    /// disk paths -- see `crate::materialization`) are rooted. Deliberately
+    /// under `cache_dir`, not the OS temp directory: unlike the leaked
+    /// `std::env::temp_dir()`-rooted directory the pre-facade UI used
+    /// (`arclain_<pid>`, shared by every `FileOpener` in one process run),
+    /// this application owns the whole subtree, names each lease's own
+    /// directory by its `MaterializationLeaseId`, and is responsible for
+    /// removing it again -- on release, on expiry, and on shutdown.
+    pub(crate) fn materialization_dir(&self) -> PathBuf {
+        self.cache_dir.join("materialization")
     }
 }
 

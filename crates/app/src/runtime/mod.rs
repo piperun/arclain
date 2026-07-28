@@ -47,7 +47,8 @@ use crate::archive::{ArchiveSessionStore, EntryPage, ListEntriesRequest, OpenArc
 use crate::challenge::ChallengeResponse;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::event::{OperationEvent, OperationKind, OperationSnapshot};
-use crate::ids::{ArchiveSessionId, OperationId};
+use crate::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId};
+use crate::materialization::{MaterializationLease, MaterializationStore, MaterializeRequest};
 use crate::operations::{
     ArchiveMutationRequest, ChallengeWaiters, ConvertRequest, OperationRegistry, OrganizeRequest,
     PipelineRequest,
@@ -211,6 +212,8 @@ pub(crate) struct AppRuntime {
     /// always installs either the configured override or a real
     /// `SevenZipRunner`.
     extract_runner: Arc<dyn crate::operations::extract::ExtractRunner>,
+    /// Every live materialization lease -- see `crate::materialization`.
+    materialization: MaterializationStore,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
@@ -259,6 +262,10 @@ impl AppRuntime {
 
     pub(crate) fn extract_runner(&self) -> Arc<dyn crate::operations::extract::ExtractRunner> {
         self.extract_runner.clone()
+    }
+
+    pub(crate) fn materialization(&self) -> &MaterializationStore {
+        &self.materialization
     }
 
     pub(crate) fn pass_rules(&self) -> Vec<PassRule> {
@@ -328,10 +335,25 @@ impl ArclainApp {
     /// [`bootstrap::run`] for the full sequence and what changed moving
     /// it here).
     pub fn bootstrap(config: BootstrapConfig) -> Result<Self, ApplicationError> {
+        // Read before `config` moves into `bootstrap::run` -- the resolved
+        // interval is only needed here, to spawn the materialization
+        // cleanup task below, once `inner` actually exists to clone into
+        // it (see `crate::materialization::run_cleanup_task`'s own doc
+        // comment: it needs an `Arc<AppRuntime>`, which does not exist
+        // until this constructor wraps `bootstrap::run`'s return value).
+        let cleanup_interval = config
+            .materialization_cleanup_interval_override
+            .unwrap_or(crate::materialization::DEFAULT_CLEANUP_INTERVAL);
         let runtime = bootstrap::run(config)?;
-        Ok(Self {
-            inner: Arc::new(runtime),
-        })
+        let inner = Arc::new(runtime);
+        if let Some(handle) = inner.tokio_handle() {
+            let cleanup_inner = inner.clone();
+            handle.spawn(crate::materialization::run_cleanup_task(
+                cleanup_inner,
+                cleanup_interval,
+            ));
+        }
+        Ok(Self { inner })
     }
 
     /// The directories this instance resolved at bootstrap.
@@ -384,6 +406,13 @@ impl ArclainApp {
             // any other) -- documented idempotent no-op.
             return Ok(());
         }
+        // Removes every outstanding materialization lease's directory
+        // before the runtime starts tearing down. Plain synchronous work
+        // (the store's own internal locking is `parking_lot`, not
+        // `tokio::sync`, precisely so this never needs `dispatch`/`spawn`
+        // either) -- safe to call directly here, same as `shutdown_now`
+        // below.
+        self.inner.materialization().clear_all();
         // Synchronous, but always safe to call from any context --
         // including from within a task on this app's own runtime --
         // see `RuntimeOwner`'s doc comment. No need to route this
@@ -564,6 +593,119 @@ impl ArclainApp {
     }
 
     // ========== Task 8: archive mutation operation (end) ===========
+
+    // ============= Task 7: materialization leases (start) =============
+
+    /// Starts materializing one archive entry onto a real local disk path
+    /// as a cancellable, event-broadcasting operation. Returns as soon as
+    /// the operation is recorded `Accepted`; the actual extraction (and
+    /// any password-challenge retry) happens on a task spawned through
+    /// this app's own runtime handle (see `crate::materialization::run_materialize`).
+    /// Subscribe via [`Self::subscribe_operations`] to observe `Started` /
+    /// `Challenge` / `Completed { Materialized }` / `Cancelled` / `Failed`.
+    pub async fn start_materialization(
+        &self,
+        request: MaterializeRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let (operation_id, cancel) = inner.operations().begin(OperationKind::Materialize).await;
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(crate::materialization::run_materialize(
+                    worker_inner,
+                    operation_id,
+                    cancel,
+                    request,
+                ));
+            }
+            operation_id
+        })
+        .await
+    }
+
+    /// Extends `id`'s expiry by its configured TTL from now, returning the
+    /// new `expires_at_unix_ms`. `NotFound` if `id` is unknown, already
+    /// released, or already expired -- a caller whose renewal lost the
+    /// race against expiry must re-materialize rather than assume the
+    /// lease is still valid.
+    pub async fn renew_materialization(
+        &self,
+        id: MaterializationLeaseId,
+    ) -> Result<i64, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            inner
+                .materialization()
+                .renew(id, crate::materialization::current_unix_ms())
+        })
+        .await?
+    }
+
+    /// Releases a materialization lease, removing its owned directory.
+    /// Idempotent -- see `MaterializationStore::release`.
+    pub async fn release_materialization(
+        &self,
+        id: MaterializationLeaseId,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let Some(handle) = inner.tokio_handle() else {
+                return Ok(());
+            };
+            handle
+                .spawn_blocking(move || inner.materialization().release(id))
+                .await
+                .map_err(|join_error| {
+                    ApplicationError::new(ApplicationErrorKind::Internal, "internal task failed")
+                        .with_diagnostic(join_error.to_string())
+                })?
+        })
+        .await?
+    }
+
+    /// A point-in-time read of one materialization lease.
+    pub async fn materialization(
+        &self,
+        id: MaterializationLeaseId,
+    ) -> Result<MaterializationLease, ApplicationError> {
+        self.dispatch_async(move |inner| async move { inner.materialization().get(id) })
+            .await?
+    }
+
+    /// Reads up to `length` bytes (bounded by
+    /// `crate::materialization::MAX_MATERIALIZATION_READ_BYTES`) starting
+    /// at `offset` from a materialized lease's own file. `NotFound` on a
+    /// released/expired/unknown lease; an offset at or past end-of-file
+    /// yields an empty result rather than an error. Runs the actual file
+    /// read through `spawn_blocking` (unlike `renew`/`release`/`materialization`,
+    /// which are plain in-memory lookups): a bounded read is still real,
+    /// potentially slow disk I/O, not the "trivial computation" this
+    /// crate's `dispatch`/`dispatch_async` doc comments reserve for
+    /// running directly.
+    pub async fn read_materialization_range(
+        &self,
+        id: MaterializationLeaseId,
+        offset: u64,
+        length: u32,
+    ) -> Result<Vec<u8>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let Some(handle) = inner.tokio_handle() else {
+                return Err(ApplicationError::new(
+                    ApplicationErrorKind::Internal,
+                    "application has been shut down",
+                )
+                .with_recoverability(Recoverability::Fatal));
+            };
+            handle
+                .spawn_blocking(move || inner.materialization().read_range(id, offset, length))
+                .await
+                .map_err(|join_error| {
+                    ApplicationError::new(ApplicationErrorKind::Internal, "internal task failed")
+                        .with_diagnostic(join_error.to_string())
+                })?
+        })
+        .await?
+    }
+
+    // ============== Task 7: materialization leases (end) ==============
 
     /// Subscribes to the operation-event stream. See
     /// `OperationRegistry::subscribe`.

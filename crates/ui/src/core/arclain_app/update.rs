@@ -365,33 +365,20 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
 
     // Process pending file opens (double-click on file in archive).
     // `pending_open_file` is per-tab now — read from the active tab.
+    // Fire-and-forget: materialization, launching the external
+    // application (or opening a nested archive), and lease lifetime are
+    // all driven asynchronously by `crate::core::operation_bridge` from
+    // here on -- see `file_opener`'s own module doc comment.
     let active_tab_for_open = app.shared_state.signals().tabs.get().active().clone();
     if let Some(file_path) = active_tab_for_open.pending_open_file.get() {
         active_tab_for_open.pending_open_file.set(None);
-
-        // Use a local StatusBarInfo for the extraction call, then sync to signal
-        let mut status_info = app.shared_state.signals().status_bar.get();
-
-        if let Some(nested_archive_path) =
-            crate::features::archive_operations::open_file_from_archive(
-                &app.shared_state.app_state,
-                &file_path,
-                &mut status_info,
-            )
-        {
-            app.shared_state.signals().status_bar.set(status_info);
-            // It's a nested archive - open it as the current archive
-            let active_id = app.shared_state.signals().tabs.get().active_id();
-            operations::archive::start_archive_open(
-                &app.shared_state,
-                active_id,
-                nested_archive_path,
-                None,
-            );
-        } else {
-            app.shared_state.signals().status_bar.set(status_info);
-        }
+        crate::features::archive_operations::open_file_from_archive(&app.shared_state, &file_path);
     }
+
+    // Renews any materialization lease still backing a launched external
+    // application (see `crate::core::operation_bridge::ExternalOpenLeases`).
+    // Cheap on every frame where nothing is due for renewal.
+    crate::core::operation_bridge::renew_due_external_open_leases(&app.shared_state);
 
     // === Render Header Panel ===
     let header_actions = app_rendering::render_header_panel(

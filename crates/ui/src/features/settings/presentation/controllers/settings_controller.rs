@@ -577,6 +577,9 @@ mod tests {
                 signals,
                 facade: None,
                 operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
+                materialization_actions: crate::core::operation_bridge::MaterializationActions::new(
+                ),
+                external_open_leases: crate::core::operation_bridge::ExternalOpenLeases::new(),
             };
 
             Self {

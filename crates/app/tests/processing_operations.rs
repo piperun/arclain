@@ -119,6 +119,8 @@ fn bootstrap_with_paths(
         worker_threads: None,
         archive_backend_override,
         extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap must succeed")
 }
@@ -1842,6 +1844,8 @@ fn start_convert_real_happy_path_and_overwrite_when_7z_is_available_and_unaffect
         worker_threads: None,
         archive_backend_override: None,
         extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap must succeed");
 
@@ -2043,6 +2047,8 @@ fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end_producing_an_archive_when_
         worker_threads: None,
         archive_backend_override: None,
         extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap must succeed");
 
