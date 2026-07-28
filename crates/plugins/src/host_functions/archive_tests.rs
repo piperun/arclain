@@ -98,6 +98,10 @@ impl ActiveTabBridge for TestActiveTabBridge {
         *self.metadata.lock() = metadata;
     }
 
+    fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>) {
+        *self.metadata.lock() = metadata;
+    }
+
     fn set_archive_path(&self, path: Option<String>) {
         *self.archive_path.lock() = path;
     }

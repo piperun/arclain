@@ -100,6 +100,17 @@ impl ActiveTabBridge for AppSignalsBridge {
             .map(arclain_app::ids::ArchiveSessionId::into_raw)
     }
 
+    fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>) {
+        // Unconditional write to whichever tab is active right now, no
+        // session-id resolution -- the fallback `emit_metadata`'s
+        // non-event-context path takes when the active tab has no
+        // archive open. Mirrors this bridge's own pre-decoupling
+        // behavior (the removed `metadata_signal()` method wrote here
+        // unconditionally); see `ActiveTabBridge::set_active_tab_metadata`'s
+        // own doc comment for why the fallback exists at all.
+        self.signals.tabs.get().active().metadata.set(metadata);
+    }
+
     fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>) {
         // Resolved by session id, not "whichever tab is active now" -- the
         // whole point of moving `OnArchiveOpen` to carry an

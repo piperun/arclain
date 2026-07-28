@@ -1483,6 +1483,83 @@ fn granted_archive_metadata_capabilities_reach_read_and_write_hostcalls() {
     );
 }
 
+/// Regression coverage for the review finding that the panel-driven
+/// (non-event-context) `emit_metadata` path silently dropped the write
+/// whenever the active tab had no archive open, where the pre-decoupling
+/// behavior wrote to the active tab's signal unconditionally. This test
+/// covers the *first* branch of the fix: when the active tab *does* have
+/// a session (`active_archive_session_id` is `Some`), the write must go
+/// through `set_session_metadata` with that exact session id -- not
+/// `set_active_tab_metadata`.
+#[test]
+fn panel_driven_emit_with_an_active_session_writes_via_set_session_metadata() {
+    let capabilities = [PluginCapability::ArchiveMetadataWrite]
+        .into_iter()
+        .collect();
+    let mut host = host_functions("metadata-panel-with-session", capabilities, 0);
+    let bridge = Arc::new(TestActiveTabBridge::default());
+    bridge.set_active_session_id(Some(77));
+    host.set_active_tab_bridge(bridge.clone());
+    // No event context installed: this is a panel/manual-emit call, not
+    // one dispatched from inside a queued `PluginEvent::OnArchiveOpen`
+    // handler.
+
+    Host::emit_metadata(
+        &mut host,
+        r#"{"product_id":"RJ000003","title":"Panel write with session"}"#.to_string(),
+    );
+
+    let session_calls = bridge.session_metadata_calls();
+    assert_eq!(session_calls.len(), 1);
+    assert_eq!(session_calls[0].0, 77);
+    assert_eq!(
+        session_calls[0]
+            .1
+            .as_ref()
+            .and_then(|value| value["product_id"].as_str()),
+        Some("RJ000003")
+    );
+    assert!(
+        bridge.active_tab_metadata_calls().is_empty(),
+        "an active session must resolve via set_session_metadata, not the active-tab fallback"
+    );
+}
+
+/// Second branch of the same fix: when the active tab has *no* archive
+/// open (`active_archive_session_id` is `None`, the default), the write
+/// must fall back to `set_active_tab_metadata` -- restoring the
+/// pre-decoupling behavior -- rather than being silently dropped.
+#[test]
+fn panel_driven_emit_with_no_active_session_falls_back_to_set_active_tab_metadata() {
+    let capabilities = [PluginCapability::ArchiveMetadataWrite]
+        .into_iter()
+        .collect();
+    let mut host = host_functions("metadata-panel-without-session", capabilities, 0);
+    let bridge = Arc::new(TestActiveTabBridge::default());
+    host.set_active_tab_bridge(bridge.clone());
+    // No event context, and no active session id -- exactly the case
+    // that used to silently drop the write.
+
+    Host::emit_metadata(
+        &mut host,
+        r#"{"product_id":"RJ000004","title":"Panel write without session"}"#.to_string(),
+    );
+
+    let fallback_calls = bridge.active_tab_metadata_calls();
+    assert_eq!(fallback_calls.len(), 1);
+    assert_eq!(
+        fallback_calls[0]
+            .as_ref()
+            .and_then(|value| value["product_id"].as_str()),
+        Some("RJ000004"),
+        "the write must not be silently dropped when no archive session is active"
+    );
+    assert!(
+        bridge.session_metadata_calls().is_empty(),
+        "no active session must never resolve via set_session_metadata"
+    );
+}
+
 #[test]
 fn metadata_summary_accepts_max_external_id_after_dlsite_prefixing() {
     let external_id = "X".repeat(256);
@@ -1580,11 +1657,34 @@ fn source_explicit_metadata_write_rejects_a_spoofed_payload_source() {
 struct TestActiveTabBridge {
     archive_path: parking_lot::Mutex<Option<String>>,
     metadata: parking_lot::Mutex<Option<serde_json::Value>>,
+    /// Configurable return value for `active_archive_session_id` --
+    /// `None` by default (every pre-existing test that never calls
+    /// `set_active_session_id` keeps observing the old hardcoded-`None`
+    /// behavior unchanged).
+    active_session_id: parking_lot::Mutex<Option<u64>>,
+    /// Every `(archive_session_id, metadata)` pair passed to
+    /// `set_session_metadata`, in call order.
+    session_metadata_calls: parking_lot::Mutex<Vec<(u64, Option<serde_json::Value>)>>,
+    /// Every `metadata` value passed to `set_active_tab_metadata`, in
+    /// call order.
+    active_tab_metadata_calls: parking_lot::Mutex<Vec<Option<serde_json::Value>>>,
 }
 
 impl TestActiveTabBridge {
     fn metadata(&self) -> Option<serde_json::Value> {
         self.metadata.lock().clone()
+    }
+
+    fn set_active_session_id(&self, id: Option<u64>) {
+        *self.active_session_id.lock() = id;
+    }
+
+    fn session_metadata_calls(&self) -> Vec<(u64, Option<serde_json::Value>)> {
+        self.session_metadata_calls.lock().clone()
+    }
+
+    fn active_tab_metadata_calls(&self) -> Vec<Option<serde_json::Value>> {
+        self.active_tab_metadata_calls.lock().clone()
     }
 }
 
@@ -1602,10 +1702,18 @@ impl ActiveTabBridge for TestActiveTabBridge {
     }
 
     fn active_archive_session_id(&self) -> Option<u64> {
-        None
+        *self.active_session_id.lock()
     }
 
-    fn set_session_metadata(&self, _archive_session_id: u64, metadata: Option<serde_json::Value>) {
+    fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>) {
+        self.session_metadata_calls
+            .lock()
+            .push((archive_session_id, metadata.clone()));
+        *self.metadata.lock() = metadata;
+    }
+
+    fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>) {
+        self.active_tab_metadata_calls.lock().push(metadata.clone());
         *self.metadata.lock() = metadata;
     }
 

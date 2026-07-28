@@ -16,6 +16,7 @@ members = [
 default-members = ["crates/ui"]
 exclude = [
     "plugins/dlsite-metadata",
+    "plugins/facade-test-fixture",
     "plugins/gstreamer-preview",
     "plugins/ui-demo",
     "plugin-sdk",

@@ -532,9 +532,25 @@ impl HostFunctions {
                 // user is currently looking at.
                 //
                 // Without the context (panel render, manual UI emit), fall
-                // through to the bridge → currently active tab. That's the
-                // right semantic for user-initiated emits, where "this is
-                // for the tab I'm looking at" is what the user expects.
+                // through to the bridge. Two branches from there, both
+                // needed to match the pre-bridge behavior faithfully:
+                //
+                // - The active tab has an archive open
+                //   (`active_archive_session_id` is `Some`): resolve and
+                //   write via `set_session_metadata`, the same session-id
+                //   path the event-context branch above uses. Equivalent
+                //   to "the active tab", since the id it resolves *is* the
+                //   active tab's own session.
+                // - The active tab has no archive open (`None`): fall back
+                //   to `set_active_tab_metadata`, which writes directly to
+                //   whichever tab is active with no session-id resolution
+                //   at all. This restores the original, pre-decoupling
+                //   behavior exactly: the removed `metadata_signal()`
+                //   method wrote to the active tab's signal
+                //   unconditionally, regardless of whether an archive was
+                //   open in it. Resolving only through
+                //   `active_archive_session_id` (dropping the write when
+                //   it's `None`) was a real regression this branch fixes.
                 if let Some(ref ctx) = self.event_context {
                     if let Some(ref bridge) = self.active_tab {
                         bridge.set_session_metadata(ctx.archive_session_id, Some(parsed.clone()));
@@ -543,9 +559,18 @@ impl HostFunctions {
                         );
                     }
                 } else if let Some(ref bridge) = self.active_tab {
-                    if let Some(session_id) = bridge.active_archive_session_id() {
-                        bridge.set_session_metadata(session_id, Some(parsed.clone()));
-                        debug!("[Cache SAVE] Triggered metadata signal via active session id");
+                    match bridge.active_archive_session_id() {
+                        Some(session_id) => {
+                            bridge.set_session_metadata(session_id, Some(parsed.clone()));
+                            debug!("[Cache SAVE] Triggered metadata signal via active session id");
+                        }
+                        None => {
+                            bridge.set_active_tab_metadata(Some(parsed.clone()));
+                            debug!(
+                                "[Cache SAVE] Triggered metadata signal via active-tab fallback \
+                                 (no archive open in the active tab)"
+                            );
+                        }
                     }
                 }
             }

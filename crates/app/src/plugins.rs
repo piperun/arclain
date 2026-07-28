@@ -63,11 +63,24 @@ use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
 use tokio::sync::Mutex as AsyncMutex;
 
 use arclain_plugins::types::{PluginArchiveAccess, PluginArchiveContextId};
-use arclain_plugins::ui_model::{
-    self, PluginActionDto, PluginExtensionPointDto, PluginHostIntentDto, PluginImageDto,
-    PluginUiNodeDto, PluginUiNodeKind, PluginUiNormalizeError,
-};
+use arclain_plugins::ui_model::{self, PluginUiNormalizeError};
 use arclain_plugins::{ActiveTabBridge, PluginError, PluginManager};
+
+// Re-exported so a consumer of this facade (a Flutter/Dart bridge, a CLI,
+// this crate's own integration tests) never needs `arclain_plugins` as a
+// direct dependency just to name the types `PluginUiDocument`/
+// `PluginActionRequest`/`PluginUiUpdate` expose in their own fields --
+// every type transitively reachable from those three is re-exported here,
+// under `arclain_app::plugins`, alongside the types this module defines
+// itself. `PluginUiNormalizeError` is deliberately *not* re-exported: a
+// normalization failure is always converted into an `ApplicationError`
+// (see `normalize_error`) before it leaves this facade, so no consumer
+// ever needs to name the lower-level error type directly.
+pub use arclain_plugins::ui_model::{
+    PluginActionDto, PluginButtonActionDto, PluginExtensionPointDto, PluginHostIntentDto,
+    PluginImageDto, PluginKeyValueDto, PluginToastLevelDto, PluginToolbarButtonDto,
+    PluginUiNodeDto, PluginUiNodeKind, PluginWarningIconDto,
+};
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::ids::{ArchiveSessionId, PluginSessionId};
@@ -266,9 +279,10 @@ pub struct PluginSummary {
     pub enabled: bool,
     /// `Some(reason)` if this plugin was discovered on disk but failed to
     /// load -- see `arclain_plugins::manager::FailedPlugin`. A plugin
-    /// reported this way has no running instance: `enabled` is always
-    /// `false` and `version` reflects whatever the manifest claimed, not
-    /// a live instance's self-reported metadata.
+    /// reported this way has no running instance and `arclain_plugins`
+    /// records only its id and failure reason, not its manifest: `enabled`
+    /// is always `false`, and `name`/`version` are always empty strings
+    /// rather than whatever the manifest claimed.
     pub load_error: Option<String>,
 }
 
@@ -366,6 +380,53 @@ fn plugin_execution_error(error: PluginError) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::Plugin, "plugin execution failed")
         .with_diagnostic(error.to_string())
         .with_recoverability(Recoverability::Retry)
+}
+
+/// Maximum byte length of a `Dialog`/`Page` extension point's id string.
+/// Matches the bound the pre-facade egui `PluginUiJobs` queue enforced on
+/// the analogous `page_id`/`plugin_id` request fields before rejecting a
+/// request outright, rather than letting an unbounded guest-adjacent
+/// string reach a `HashMap` key or a WASM host-function call.
+const MAX_EXTENSION_POINT_ID_BYTES: usize = 512;
+
+fn invalid_extension_point(reason: &str) -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::InvalidInput,
+        "invalid plugin extension point",
+    )
+    .with_diagnostic(reason.to_string())
+    .with_recoverability(Recoverability::UserAction)
+    .with_field("extension_point")
+}
+
+/// Structural validation for the extension point `open_plugin_session`
+/// was asked to open. `MainPage`/`PluginButton`/`Panel` carry no
+/// caller-supplied data and are always valid. `Dialog`/`Page` carry an
+/// open-ended id a plugin defines; this facade cannot know in advance
+/// which ids a given plugin actually recognizes (that's determined by
+/// whatever `get-ui-layout` returns for it, empty or not), but it *can*
+/// reject a structurally malformed one -- empty, or absurdly long --
+/// before ever reaching the plugin manager or its WASM guest.
+fn validate_extension_point(
+    extension_point: &PluginExtensionPointDto,
+) -> Result<(), ApplicationError> {
+    let id = match extension_point {
+        PluginExtensionPointDto::Dialog(id) | PluginExtensionPointDto::Page(id) => id,
+        PluginExtensionPointDto::MainPage
+        | PluginExtensionPointDto::PluginButton
+        | PluginExtensionPointDto::Panel => return Ok(()),
+    };
+    if id.is_empty() {
+        return Err(invalid_extension_point(
+            "a dialog/page extension point id must not be empty",
+        ));
+    }
+    if id.len() > MAX_EXTENSION_POINT_ID_BYTES {
+        return Err(invalid_extension_point(&format!(
+            "a dialog/page extension point id must not exceed {MAX_EXTENSION_POINT_ID_BYTES} bytes"
+        )));
+    }
+    Ok(())
 }
 
 fn action_rejected(node_id: &str) -> ApplicationError {
@@ -474,19 +535,21 @@ impl PluginSessionStore {
         result.map_err(|_| plugin_not_found(plugin_id))
     }
 
-    /// Opens a fresh session for `plugin_id`'s `MainPage` extension
-    /// point (the only one `open_plugin_session`'s single-argument
-    /// signature can address today -- see `PluginExtensionPointDto::
-    /// region_slug`'s doc comment). Runs the WASM `get-ui-layout` call on
-    /// a blocking-pool thread via `handle`, never on the caller's async
-    /// task.
+    /// Opens a fresh session for `plugin_id`'s requested `extension_point`
+    /// -- `MainPage`/`Panel`/`PluginButton`/`Dialog(id)`/`Page(id)`, any
+    /// of the five current WIT extension points. Rejects a structurally
+    /// invalid `Dialog`/`Page` id (see [`validate_extension_point`])
+    /// before ever reaching the plugin manager. Runs the WASM
+    /// `get-ui-layout` call on a blocking-pool thread via `handle`, never
+    /// on the caller's async task.
     pub(crate) async fn open(
         &self,
         manager: Arc<SyncMutex<PluginManager>>,
         plugin_id: String,
+        extension_point: PluginExtensionPointDto,
         handle: &tokio::runtime::Handle,
     ) -> Result<PluginSessionSnapshot, ApplicationError> {
-        let extension_point = PluginExtensionPointDto::MainPage;
+        validate_extension_point(&extension_point)?;
         let root = self
             .fetch_and_normalize(&manager, &plugin_id, &extension_point, handle)
             .await?;
@@ -712,14 +775,19 @@ fn apply_bounded_action(
             title,
         } => {
             intents.push(PluginHostIntentDto::OpenLightbox {
+                // Encoded the same way `rewrite_cache_keys` encodes every
+                // other image-bearing node (Image/Carousel/ListItem) at
+                // normalization time: a lightbox image reference is just
+                // as plugin-namespaced as those, and `read_plugin_image`
+                // only ever accepts the encoded form (see
+                // `decode_plugin_image_cache_key`). Left raw, every
+                // lightbox image would fail to resolve with `NotFound`.
                 images: images
                     .into_iter()
-                    .map(
-                        |(cache_key, url)| arclain_plugins::ui_model::PluginImageDto {
-                            cache_key,
-                            url,
-                        },
-                    )
+                    .map(|(cache_key, url)| PluginImageDto {
+                        cache_key: encode_plugin_image_cache_key(plugin_id, &cache_key),
+                        url,
+                    })
                     .collect(),
                 start_index: start_index as u64,
                 title,
@@ -862,6 +930,13 @@ impl ActiveTabBridge for ArchiveContextBridge {
         // not installed on `PluginManager` in production yet (see the
         // module doc comment), so there is nothing for this to wire to
         // in this pass.
+    }
+
+    fn set_active_tab_metadata(&self, _metadata: Option<serde_json::Value>) {
+        // Same limitation as `set_session_metadata` just above: nothing
+        // in this crate's own archive-session model has a metadata slot
+        // to write into yet, and this adapter is not installed in
+        // production (see the module doc comment).
     }
 
     fn set_archive_path(&self, _path: Option<String>) {
@@ -1417,5 +1492,126 @@ mod tests {
                 level: PluginToastLevelDto::Success,
             }]
         );
+    }
+
+    #[test]
+    fn close_dialog_converts_into_a_bounded_host_intent() {
+        let mut intents = Vec::new();
+        let mut needs_refresh = false;
+        apply_bounded_action(
+            arclain_plugins::types::PluginAction::CloseDialog,
+            "demo",
+            &mut intents,
+            &mut needs_refresh,
+        );
+        assert_eq!(intents, vec![PluginHostIntentDto::CloseDialog]);
+        assert!(!needs_refresh);
+    }
+
+    #[test]
+    fn copy_to_clipboard_converts_into_a_bounded_host_intent() {
+        let mut intents = Vec::new();
+        let mut needs_refresh = false;
+        apply_bounded_action(
+            arclain_plugins::types::PluginAction::CopyToClipboard {
+                text: "clip me".to_string(),
+            },
+            "demo",
+            &mut intents,
+            &mut needs_refresh,
+        );
+        assert_eq!(
+            intents,
+            vec![PluginHostIntentDto::CopyToClipboard {
+                text: "clip me".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn set_page_display_name_converts_into_a_bounded_host_intent() {
+        let mut intents = Vec::new();
+        let mut needs_refresh = false;
+        apply_bounded_action(
+            arclain_plugins::types::PluginAction::SetPageDisplayName {
+                name: "New Title".to_string(),
+            },
+            "demo",
+            &mut intents,
+            &mut needs_refresh,
+        );
+        assert_eq!(
+            intents,
+            vec![PluginHostIntentDto::SetPageDisplayName {
+                name: "New Title".to_string(),
+            }]
+        );
+    }
+
+    /// Regression test for the review finding that `OpenLightbox` images
+    /// left their `cache_key` raw (unlike every other image-bearing node
+    /// `rewrite_cache_keys` encodes at normalization time), so every
+    /// lightbox image would fail `read_plugin_image` with `NotFound`.
+    /// Proves the full round trip: the intent's encoded key resolves
+    /// through `read_plugin_image` to the exact bytes the plugin's own
+    /// namespace has cached.
+    #[test]
+    fn open_lightbox_encodes_cache_keys_and_they_resolve_through_read_plugin_image() {
+        let mut intents = Vec::new();
+        let mut needs_refresh = false;
+        apply_bounded_action(
+            arclain_plugins::types::PluginAction::OpenLightbox {
+                images: vec![
+                    (
+                        "cover:1".to_string(),
+                        Some("https://example.invalid/1".to_string()),
+                    ),
+                    ("cover:2".to_string(), None),
+                ],
+                start_index: 1,
+                title: Some("Gallery".to_string()),
+            },
+            "demo-plugin",
+            &mut intents,
+            &mut needs_refresh,
+        );
+
+        let PluginHostIntentDto::OpenLightbox {
+            images,
+            start_index,
+            title,
+        } = &intents[0]
+        else {
+            panic!("expected an OpenLightbox intent");
+        };
+        assert_eq!(*start_index, 1);
+        assert_eq!(title.as_deref(), Some("Gallery"));
+        assert_eq!(
+            images[0].cache_key,
+            encode_plugin_image_cache_key("demo-plugin", "cover:1")
+        );
+        assert_eq!(images[0].url.as_deref(), Some("https://example.invalid/1"));
+        assert_eq!(
+            images[1].cache_key,
+            encode_plugin_image_cache_key("demo-plugin", "cover:2")
+        );
+
+        // Round-trip: the exact encoded key the intent carries must
+        // resolve back through `read_plugin_image` to the bytes cached
+        // under the plugin's own namespace.
+        let (_root, cache) = test_content_cache();
+        let bytes = vec![0xCD_u8; 256];
+        cache
+            .put_for_owner(
+                &arclain_data::CacheOwner::plugin("demo-plugin"),
+                "cover:1",
+                &bytes,
+                arclain_db::CacheType::Cover,
+                None,
+                None,
+            )
+            .unwrap();
+        let resolved = read_plugin_image(&cache, &images[0].cache_key).unwrap();
+        assert_eq!(resolved, bytes);
     }
 }

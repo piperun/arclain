@@ -226,12 +226,31 @@ impl InstanceAvailability {
     }
 }
 
+/// Classifies a wasmtime call failure as *terminal* -- the instance must
+/// never be called again -- returning the redacted, host-generated
+/// reason to report if so. `None` means the failure is ordinary (a guest
+/// error the caller can map to `PluginError::ExecutionError` and move on
+/// from; the instance stays usable).
+///
+/// Every `wasmtime::Trap` variant is terminal, not just `OutOfFuel`/
+/// `Interrupt`: a wasmtime *component* instance is permanently poisoned
+/// by any trap at all (an out-of-bounds guest panic included) -- a
+/// second call into the same `Store` after, say, an unreachable-code
+/// trap fails again with wasmtime's own internal "cannot enter component
+/// instance" error, not a fresh attempt. Before this covered every
+/// variant, only the two quota-shaped traps marked the instance
+/// `Unavailable`; a genuine guest panic fell through to the generic
+/// `_ => None` arm below, leaving `InstanceAvailability` reporting
+/// "available" while the underlying `Store` was already permanently
+/// unusable -- so the *next* call would attempt the WASM call again and
+/// surface that confusing wasmtime-internal string instead of this
+/// crate's own redacted, stable `PluginError::Unavailable` reason.
 fn resource_quota_reason(error: &wasmtime::Error) -> Option<&'static str> {
     if let Some(trap) = error.downcast_ref::<wasmtime::Trap>() {
         return match trap {
             wasmtime::Trap::OutOfFuel => Some("plugin fuel quota exceeded"),
             wasmtime::Trap::Interrupt => Some("plugin execution deadline exceeded"),
-            _ => None,
+            _ => Some("plugin execution trapped"),
         };
     }
 
@@ -1307,6 +1326,26 @@ mod resource_limit_tests {
         assert_eq!(
             resource_quota_reason(&table),
             Some("plugin table quota exceeded")
+        );
+    }
+
+    /// A guest trap that is *not* one of the two quota-shaped variants
+    /// (a real out-of-bounds panic, `unreachable`, an integer division
+    /// by zero, ...) must still be classified terminal -- see
+    /// `resource_quota_reason`'s own doc comment for why every trap
+    /// variant permanently poisons its `Store`, not just fuel/interrupt.
+    #[test]
+    fn a_generic_guest_trap_is_also_classified_as_terminal() {
+        let unreachable = wasmtime::Error::from(wasmtime::Trap::UnreachableCodeReached);
+        let division_by_zero = wasmtime::Error::from(wasmtime::Trap::IntegerDivisionByZero);
+
+        assert_eq!(
+            resource_quota_reason(&unreachable),
+            Some("plugin execution trapped")
+        );
+        assert_eq!(
+            resource_quota_reason(&division_by_zero),
+            Some("plugin execution trapped")
         );
     }
 

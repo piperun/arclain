@@ -123,6 +123,24 @@ pub trait ActiveTabBridge: Send + Sync {
     /// already closed by the time the worker processed it.
     fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>);
 
+    /// Writes `metadata` directly onto whichever tab is currently
+    /// active, with no session-id resolution at all. This is the
+    /// fallback the non-event-context path of `emit_metadata` uses when
+    /// [`Self::active_archive_session_id`] is `None` -- the active tab
+    /// has no archive open (a plugin's panel UI can be visible, and can
+    /// still emit metadata, before or without one). Before this method
+    /// existed, the removed `metadata_signal()` write path handled this
+    /// case unconditionally (it wrote to the active tab's signal
+    /// regardless of whether an archive was open in it); the
+    /// session-id-only path this trait moved to would otherwise silently
+    /// drop exactly that write, a real regression this method restores.
+    ///
+    /// A no-op is an acceptable implementation only if this bridge truly
+    /// has no notion of "the active tab" at all (e.g. a headless test
+    /// double); every production implementation must actually write
+    /// somewhere a subsequent read can observe.
+    fn set_active_tab_metadata(&self, metadata: Option<serde_json::Value>);
+
     /// Update the active tab's archive path. Used by
     /// `rename_archive`, which renames the underlying file and
     /// needs to reflect the new path in the tab state.

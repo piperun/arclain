@@ -1153,14 +1153,17 @@ impl ArclainApp {
     }
 
     /// Opens a fresh renderer-neutral session with `plugin_id`'s
-    /// `MainPage` extension point (see `arclain_plugins::ui_model::
-    /// PluginExtensionPointDto::region_slug`'s doc comment for why this
-    /// single-argument call always addresses `MainPage`), fetching and
-    /// normalizing its first document. Runs the plugin's `get-ui-layout`
-    /// WASM call on this app's own runtime, never the caller's.
+    /// requested `extension_point` (`MainPage`, `Panel`, `PluginButton`,
+    /// `Dialog(id)`, or `Page(id)` -- every current WIT extension point),
+    /// fetching and normalizing its first document. Rejects a
+    /// structurally invalid `Dialog`/`Page` id as `InvalidInput` before
+    /// ever reaching the plugin manager. Runs the plugin's
+    /// `get-ui-layout` WASM call on this app's own runtime, never the
+    /// caller's.
     pub async fn open_plugin_session(
         &self,
         plugin_id: String,
+        extension_point: crate::plugins::PluginExtensionPointDto,
     ) -> Result<crate::plugins::PluginSessionSnapshot, ApplicationError> {
         self.dispatch_async(move |inner| async move {
             let manager = crate::plugins::require_manager(inner.plugin_manager())?;
@@ -1169,7 +1172,7 @@ impl ArclainApp {
             };
             inner
                 .plugin_sessions()
-                .open(manager, plugin_id, &handle)
+                .open(manager, plugin_id, extension_point, &handle)
                 .await
         })
         .await?
@@ -1227,6 +1230,18 @@ impl ArclainApp {
                                 return;
                             }
                         };
+                    // `tokio_handle()` returning `None` here would mean the
+                    // runtime finished tearing down in the instant between
+                    // this task being spawned and this line -- see
+                    // `AppRuntime::tokio_handle`'s doc comment for why that
+                    // is only a theoretical race in a real bootstrapped app.
+                    // Matches `archive_ops::run_open_archive`'s identical
+                    // handle-recheck-mid-worker pattern: there is nothing
+                    // left to run on a runtime that is tearing down, so the
+                    // operation is left at whatever state it last reached
+                    // (`Accepted`, since `Started` has not been recorded
+                    // yet) rather than forcing a `Failed` transition onto a
+                    // registry that may itself be going away.
                     let Some(worker_handle) = worker_inner.tokio_handle() else {
                         return;
                     };

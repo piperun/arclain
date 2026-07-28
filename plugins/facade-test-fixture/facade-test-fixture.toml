@@ -1,0 +1,17 @@
+[plugin]
+id = "facade-test-fixture"
+name = "Facade Test Fixture"
+version = "0.1.0"
+description = "Deterministic plugin used only by arclain_app's own facade tests (crash containment, action ordering, refresh coalescing) -- not a user-facing plugin"
+author = "Arclain Team"
+
+[capabilities]
+network = false
+archive_metadata_read = false
+archive_metadata_write = false
+archive_modify = false
+file_read = false
+file_write = false
+
+[rate_limits]
+http_requests_per_minute = 60
