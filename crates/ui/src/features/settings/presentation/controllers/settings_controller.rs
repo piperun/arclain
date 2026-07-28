@@ -347,10 +347,16 @@ pub fn handle_action(
                 .block_on(facade.set_socks5_password(password))
             {
                 tracing::error!("[SaveNetwork] Failed to save the SOCKS5 password: {error:?}");
-                shared
-                    .toaster
-                    .lock()
-                    .error("Network settings were not saved: password persistence failed");
+                // Unlike the `patch_result` branch above, `snapshot` is
+                // `Ok` here -- the address/identity patch already
+                // committed before this call ever ran. "Network
+                // settings were not saved" would be false in exactly
+                // this branch, so this message says precisely what did
+                // and didn't happen instead of reusing that wording.
+                shared.toaster.lock().error(
+                    "Network address and identity settings were saved, but the password \
+                     change failed: the old password remains in effect",
+                );
                 return;
             }
             let _ = shared.app_state.lock().refresh_settings_from_facade(facade);

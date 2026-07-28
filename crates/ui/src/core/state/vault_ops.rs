@@ -90,10 +90,10 @@ impl AppState {
         runtime: &Runtime,
         dest_path: &str,
     ) -> Result<()> {
-        runtime
+        let result = runtime
             .block_on(facade.move_vault(PathBuf::from(dest_path)))
-            .map_err(|error| describe_facade_error("moving the vault", error))?;
-        self.refresh_settings_from_facade(facade)
+            .map_err(|error| describe_facade_error("moving the vault", error));
+        self.refresh_mirror_after_vault_operation(facade, result)
     }
 
     pub fn rekey_vault(
@@ -102,9 +102,210 @@ impl AppState {
         runtime: &Runtime,
         new_key_file_path: &str,
     ) -> Result<()> {
-        runtime
+        let result = runtime
             .block_on(facade.rekey_vault(PathBuf::from(new_key_file_path)))
-            .map_err(|error| describe_facade_error("rekeying the vault", error))?;
-        self.refresh_settings_from_facade(facade)
+            .map_err(|error| describe_facade_error("rekeying the vault", error));
+        self.refresh_mirror_after_vault_operation(facade, result)
+    }
+
+    /// Refreshes this state's `dbs`/`user_config`/`pass_rules` mirror
+    /// after a vault operation regardless of whether it succeeded or
+    /// failed, then returns the operation's own outcome.
+    ///
+    /// A *failed* `move_vault`/`rekey_vault` still closes the shared
+    /// vault handle on its way in, before the actual move/rekey I/O
+    /// runs (see `ReDb::close`'s own doc comment in `arclain_db`) --
+    /// so skipping the refresh on the error path, as this used to do,
+    /// left `self.dbs` holding a stale `Some(_)` whose `secrets` handle
+    /// was already permanently closed underneath it. Any of this
+    /// crate's ~200 not-yet-migrated call sites that only check
+    /// "`self.dbs` is `Some`" to decide the vault is available would
+    /// take that branch and then fail at first actual use, instead of
+    /// failing closed consistently with the facade's own
+    /// `mutable.dbs == None` state. Calling this on both outcomes
+    /// keeps the two copies in agreement either way.
+    ///
+    /// If the refresh *itself* fails while the operation had already
+    /// failed, the operation's own (more actionable) error is what the
+    /// caller sees -- the refresh failure is logged, not returned, so
+    /// one failure never masks the other. If the operation succeeded
+    /// but the refresh failed, the refresh error is returned as-is
+    /// (there is no more-relevant error to prefer over it).
+    fn refresh_mirror_after_vault_operation(
+        &mut self,
+        facade: &ArclainApp,
+        result: Result<()>,
+    ) -> Result<()> {
+        match self.refresh_settings_from_facade(facade) {
+            Ok(()) => result,
+            Err(refresh_error) => match result {
+                Ok(()) => Err(refresh_error),
+                Err(operation_error) => {
+                    tracing::warn!(
+                        "failed to refresh the settings mirror after a vault operation that \
+                         itself failed: {refresh_error:?}"
+                    );
+                    Err(operation_error)
+                }
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::signals::AppSignals;
+    use tempfile::TempDir;
+
+    #[cfg(windows)]
+    fn sevenzip_exe_name() -> &'static str {
+        "7zz.exe"
+    }
+
+    #[cfg(not(windows))]
+    fn sevenzip_exe_name() -> &'static str {
+        "7zz"
+    }
+
+    /// Bootstraps a real `ArclainApp` against an isolated temp profile.
+    /// Near-identical to `settings_controller.rs`'s own test-module-
+    /// private `bootstrap_test_facade` -- see that copy's doc comment
+    /// for why this seam is reimplemented per test module rather than
+    /// shared (no cross-module test-helper wiring exists in this crate
+    /// yet, matching `arclain_app`'s own `tests/support` being
+    /// unreachable from here too).
+    fn bootstrap_test_facade(temp: &TempDir) -> ArclainApp {
+        let paths = arclain_app::AppPaths {
+            config_dir: temp.path().join("config"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            log_dir: temp.path().join("logs"),
+            plugins_dir: temp.path().join("plugins"),
+        };
+
+        let sevenzip_path = temp.path().join(sevenzip_exe_name());
+        std::fs::write(
+            &sevenzip_path,
+            b"not a real binary, only its path is checked",
+        )
+        .expect("write dummy 7-Zip executable");
+
+        let databases_dir = paths.data_dir.join("databases");
+        std::fs::create_dir_all(&databases_dir).expect("create databases dir");
+        let config_db_path = databases_dir.join("config.sqlite");
+        let db = arclain_core::config::ConfigDb::open(&config_db_path).expect("open config db");
+        let conn = db.into_sqlite_db();
+        conn.with_connection(|conn| {
+            arclain_core::UserConfig::ensure_table(conn)?;
+            let mut config = arclain_core::UserConfig::new();
+            config.sevenzip_path = Some(sevenzip_path.to_string_lossy().into_owned());
+            config.save(conn)?;
+            Ok(())
+        })
+        .expect("seed sevenzip_path into test config db");
+
+        ArclainApp::bootstrap(arclain_app::BootstrapConfig {
+            paths_override: Some(paths),
+            worker_threads: None,
+            archive_backend_override: None,
+            extract_runner_override: None,
+            materialization_lease_ttl_override: None,
+            materialization_cleanup_interval_override: None,
+        })
+        .expect("bootstrap the vault-ops test facade")
+    }
+
+    /// Builds an `AppState` mirror from a real facade's current
+    /// composition -- the same unpacking `AppState::new`/
+    /// `ProxySaveFixture` both do.
+    fn app_state_from_facade(facade: &ArclainApp) -> AppState {
+        let legacy = facade
+            .take_legacy_composition()
+            .expect("take legacy composition for the test fixture");
+        let signals = AppSignals::new();
+        signals.user_config.set(legacy.user_config.clone());
+        signals.pass_rules.set(legacy.pass_rules.clone());
+        AppState {
+            user_config: legacy.user_config,
+            pass_rules: legacy.pass_rules,
+            backend_selector: legacy.backend_selector,
+            fallback_backend: legacy.fallback_backend,
+            last_entries: vec![],
+            encrypted_crc_policy: legacy.encrypted_crc_policy,
+            db_paths: legacy.db_paths,
+            dbs: legacy.dbs,
+            signals,
+        }
+    }
+
+    /// The "NB2" fix: a *failed* `move_vault` still closes the shared
+    /// vault handle on its way in (`run_move_vault` calls
+    /// `close_vault_handle` before ever attempting the actual file
+    /// move -- see that function's own doc comment in
+    /// `arclain_app::runtime::settings_ops`), so `AppState.dbs`,
+    /// obtained earlier via `take_legacy_composition`, is left holding
+    /// a `Some(_)` whose `secrets` handle is now permanently closed
+    /// unless this mirror is refreshed on the error path too.
+    #[test]
+    fn move_vault_failure_still_refreshes_the_mirror_to_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let facade = bootstrap_test_facade(&temp);
+        let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
+        let mut state = app_state_from_facade(&facade);
+        assert!(
+            state.dbs.is_some(),
+            "a fresh bootstrap must have a usable vault"
+        );
+
+        // A destination whose parent is an existing plain file, not a
+        // directory -- `fs::create_dir_all` on it deterministically
+        // fails on every platform, forcing `move_vault` to fail after
+        // the shared vault handle has already been closed.
+        let blocker = temp.path().join("blocker-not-a-directory");
+        std::fs::write(&blocker, b"not a directory").expect("write blocking file");
+        let dest_path = blocker.join("pass.redb");
+
+        state
+            .move_vault(&facade, &runtime, dest_path.to_string_lossy().as_ref())
+            .expect_err("moving into a blocked destination must fail");
+
+        assert!(
+            state.dbs.is_none(),
+            "a failed move_vault must refresh the mirror to None, matching the facade's own \
+             mutable.dbs -- not leave a stale Some(_) whose secrets handle is already closed"
+        );
+    }
+
+    /// Sibling of the test above for `rekey_vault`.
+    #[test]
+    fn rekey_vault_failure_still_refreshes_the_mirror_to_none() {
+        let temp = tempfile::tempdir().unwrap();
+        let facade = bootstrap_test_facade(&temp);
+        let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
+        let mut state = app_state_from_facade(&facade);
+        assert!(
+            state.dbs.is_some(),
+            "a fresh bootstrap must have a usable vault"
+        );
+
+        // A key file that does not exist: `SecretsService::rekey_vault`
+        // fails trying to load it, after the shared vault handle has
+        // already been closed.
+        let missing_key_file = temp.path().join("does-not-exist.key");
+
+        state
+            .rekey_vault(
+                &facade,
+                &runtime,
+                missing_key_file.to_string_lossy().as_ref(),
+            )
+            .expect_err("rekeying with a missing key file must fail");
+
+        assert!(
+            state.dbs.is_none(),
+            "a failed rekey_vault must refresh the mirror to None, matching the facade's own \
+             mutable.dbs -- not leave a stale Some(_) whose secrets handle is already closed"
+        );
     }
 }

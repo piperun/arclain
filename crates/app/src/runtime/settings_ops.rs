@@ -448,31 +448,53 @@ pub(super) async fn run_set_gameta_api_key(
 /// step), resolving any such stale marker synchronously, right here,
 /// before staging and committing the actual requested change -- so the
 /// end state after this call returns is always the password this call
-/// was actually asked to set, never a stale rollback snapshot. Passing
-/// the *unchanged* `user_config` as `save`'s "candidate" means only the
-/// secret changes; the config row round-trips to the same values it
-/// already had.
+/// was actually asked to set, never a stale rollback snapshot.
+///
+/// Reads the *current on-disk* `user_config` row fresh -- not this
+/// instance's cached copy -- before using it as `save`'s "candidate":
+/// the same fix `run_update_settings` applies for the same reason (see
+/// its own "C1" doc note). This call carries no settings patch of its
+/// own (only the secret changes), but it is reachable directly through
+/// the facade API on its own, not only after an `update_settings` call
+/// that would have just refreshed the cache -- the egui `SaveNetwork`
+/// handler always calls `update_settings` first, so this gap never
+/// showed up through it, but a caller that invokes this method by
+/// itself (a Flutter bridge, a script, any future frontend) would
+/// otherwise silently overwrite every *other* column with whatever this
+/// instance's cache last happened to see. The cache is refreshed from
+/// this same read once the write succeeds, exactly like
+/// `run_update_settings`'s own commit step -- and that same fresh row,
+/// not the stale cached one, is what gets applied against the live
+/// `AsyncHttpClient` below, so a plugin-proxy-map change nobody asked
+/// this call to touch can never be silently reverted by it either.
 pub(super) async fn run_set_socks5_password(
     inner: &Arc<AppRuntime>,
     value: Option<SecretInput>,
 ) -> Result<(), ApplicationError> {
     let _write_guard = inner.settings_write_lock.lock().await;
-    let (dbs, user_config) = {
+    let dbs = {
         let mutable = inner.session.mutable.read();
-        (
-            mutable.dbs.clone().ok_or_else(vault_unavailable_error)?,
-            mutable.user_config.clone(),
-        )
+        mutable.dbs.clone().ok_or_else(vault_unavailable_error)?
     };
     let config_service = inner
         .core_services()
         .config_service
         .clone()
         .ok_or_else(settings_unavailable_error)?;
-
     let handle = inner
         .tokio_handle()
         .ok_or_else(shutdown_mid_request_error)?;
+
+    let read_config_service = config_service.clone();
+    let user_config = handle
+        .spawn_blocking(move || {
+            read_config_service
+                .get_user_config()
+                .map_err(|error| backend_error("reading current settings", error))
+        })
+        .await
+        .map_err(internal_join_error)??;
+
     let secret_value = value
         .as_ref()
         .map(|value| value.expose_secret().to_string());
@@ -490,12 +512,19 @@ pub(super) async fn run_set_socks5_password(
         })
         .await
         .map_err(internal_join_error)??;
-    bump_revision(inner);
+
+    {
+        let mut mutable = inner.session.mutable.write();
+        mutable.user_config = user_config.clone();
+        mutable.revision += 1;
+    }
     // Re-apply live routing with the NEW password immediately -- without
     // this, the new credential only takes effect after the next
     // `update_settings` call (which re-applies routing for identity
     // changes) or a restart, even though it is already correctly
-    // persisted. See this module's own "I3" note.
+    // persisted. See this module's own "I3" note. Uses the same fresh
+    // `user_config` just committed above, not a stale cached one -- see
+    // this function's own doc comment for why (the "NB1" fix).
     apply_live_proxy_routing(inner, &dbs, &user_config).await;
     Ok(())
 }

@@ -406,6 +406,64 @@ fn update_settings_does_not_revert_columns_written_directly_via_config_service()
     );
 }
 
+/// Sibling of the test above for `set_socks5_password` instead of
+/// `update_settings`: a standalone secret-only call, with no
+/// intervening `update_settings` call to refresh the facade's cache
+/// first, must not silently revert a column it never touches either.
+/// Unreachable through today's egui `SaveNetwork` handler (which always
+/// calls `update_settings` first, refreshing the cache before this
+/// method ever runs) but fully reachable through the facade API on its
+/// own -- any caller that invokes `set_socks5_password` by itself, such
+/// as a non-egui frontend.
+#[test]
+fn set_socks5_password_does_not_revert_columns_written_directly_via_config_service() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    // Simulate a still-unmigrated direct write (e.g. SaveKeyboardMouse)
+    // that never goes through the facade at all -- and crucially, no
+    // `update_settings` call happens in between to refresh the cache.
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let config_service = legacy
+        .core_services
+        .config_service
+        .clone()
+        .expect("config service must be available");
+    let mut direct = config_service
+        .get_user_config()
+        .expect("read user config directly");
+    direct.hotkey_bindings = Some(r#"{"foo":"Ctrl+F"}"#.to_string());
+    config_service
+        .save_user_config(&direct)
+        .expect("direct write must succeed");
+
+    runtime
+        .block_on(app.set_socks5_password(Some(SecretInput::new(
+            "does-not-clobber-hotkeys".to_string(),
+        ))))
+        .expect("setting the password must succeed");
+
+    // The directly-written column must survive on disk...
+    let after_on_disk = config_service
+        .get_user_config()
+        .expect("read user config directly");
+    assert_eq!(
+        after_on_disk.hotkey_bindings.as_deref(),
+        Some(r#"{"foo":"Ctrl+F"}"#),
+        "set_socks5_password reverted a column it never touched"
+    );
+
+    // ...and the facade's own cached view must have picked up the fresh
+    // read too.
+    let legacy_after = app.take_legacy_composition().expect("legacy composition");
+    assert_eq!(
+        legacy_after.user_config.hotkey_bindings.as_deref(),
+        Some(r#"{"foo":"Ctrl+F"}"#),
+        "the facade's cached user_config was not refreshed from the direct write"
+    );
+}
+
 // ============================================================================
 // update_settings: revision, validation, atomicity.
 // ============================================================================
