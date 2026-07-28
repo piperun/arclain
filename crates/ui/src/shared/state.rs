@@ -22,6 +22,21 @@ pub struct SharedState {
     pub image_assets: ImageAssetStore,
     /// Direct access to signals without locking AppState
     pub signals: AppSignals,
+    /// The application facade: owns the Tokio runtime and every composed
+    /// headless service `app_state`/`services` above were populated
+    /// from at startup (see `AppState::new`). Not yet read by any call
+    /// site in this crate -- later Stage 1 tasks migrate `app_state`/
+    /// `services` readers onto this facade's own async operation
+    /// methods incrementally, retiring the fields above as they go.
+    ///
+    /// `Option` rather than a bare `ArclainApp`: several test fixtures
+    /// (`crates/ui/tests/common/mod.rs`, `settings_controller.rs`'s own
+    /// tests) build a `SharedState` by hand, deliberately skipping a
+    /// full `ArclainApp::bootstrap` (directory creation, real SQLite
+    /// databases, a plugin manager) to keep dispatcher-focused unit
+    /// tests fast and isolated. `SharedState::new` (the real egui
+    /// startup path) always sets this to `Some`.
+    pub facade: Option<arclain_app::ArclainApp>,
 }
 
 impl SharedState {
@@ -32,7 +47,8 @@ impl SharedState {
         // Load CJK fonts during initialization
         load_cjk_fonts(&cc.egui_ctx);
 
-        let (app_state_inner, services) = AppState::new().expect("Failed to initialize app state");
+        let (app_state_inner, services, facade) =
+            AppState::new().expect("Failed to initialize app state");
 
         // Clone signals before wrapping in Arc<Mutex>
         let signals = app_state_inner.signals.clone();
@@ -75,6 +91,7 @@ impl SharedState {
             plugin_ui_jobs,
             image_assets,
             signals: signals.clone(),
+            facade: Some(facade),
         };
 
         // One-shot upgrade of legacy auto-saved password rules.

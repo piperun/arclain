@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+# The sanctioned frontend dependency: owns the Tokio runtime and every
+# composed headless service. See scripts/frontend_boundary.py's `app`
+# exemption -- this is the one headless dependency the boundary guard
+# accepts from a GUI crate.
+arclain_app = { path = "../app" }
 arclain_core = { path = "../core" }
 arclain_plugins = { path = "../plugins" }
 eframe = "0.33.0"

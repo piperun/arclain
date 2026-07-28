@@ -1,25 +1,16 @@
-//! Configuration sync and reload operations
+//! Configuration reload operations
+//!
+//! The startup-time sync this file used to also hold
+//! (`sync_configuration`: seeding organization rules and title filters
+//! from TOML defaults into the database) moved into `arclain_app::
+//! runtime::bootstrap::run` -- it needed nothing from `AppState` beyond
+//! `self.dbs`, which that function now has its own copy of during
+//! composition. `sync_configuration`'s only caller
+//! (`crates/ui/src/core/state/init.rs`) was removed along with it.
 
 use super::AppState;
-use tracing::warn;
 
 impl AppState {
-    /// Synchronize configuration (rules, filters) from TOML defaults to DB
-    pub fn sync_configuration(&self) {
-        if let Some(ref dbs) = self.dbs {
-            let config_pool = &dbs.config_pool;
-            if let Err(e) = arclain_core::config::sync::sync_rules(config_pool) {
-                warn!("Failed to sync organization rules: {}", e);
-            }
-            // Title filters: init() seeds system replacements and
-            // primes the in-memory cache. Goes through the shared
-            // Diesel pool, not a fresh ConfigDb handle.
-            if let Err(e) = arclain_core::utilities::title_filter::init(config_pool) {
-                warn!("Failed to initialize title filters: {}", e);
-            }
-        }
-    }
-
     /// Refresh UI configuration (toolbar/info panel/context menu items)
     /// from UiService. Called from the settings header save handlers
     /// after a layout-editor save lands.

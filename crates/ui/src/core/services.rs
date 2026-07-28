@@ -9,6 +9,13 @@ use std::sync::Arc;
 /// Wraps CoreServices and adds UI-specific services (PluginManager).
 /// Cache + ResourceManager live here too because they aren't part of
 /// the headless `arclain_core::services::Services` bag.
+///
+/// At real startup, every field here is populated from
+/// `arclain_app::ArclainApp::take_legacy_composition` (see
+/// `crate::core::state::init::AppState::new`) rather than computed
+/// inline -- `ArclainApp::bootstrap` now owns that composition. `new`
+/// below stays a direct constructor purely for feature-level UI tests
+/// that want a minimal `Services` without paying for a full bootstrap.
 pub struct Services {
     pub core: CoreServices,
 

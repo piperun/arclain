@@ -9,9 +9,10 @@ Arclain's crates split into two categories:
   crate.
 - GUI_CRATES (theme, ui, widgets) are frontends. They may depend on
   headless crates in principle, but Stage 1's target architecture routes
-  the frontend through a single facade crate instead of reaching into
-  headless internals directly, so every direct headless dependency found
-  today is migration-baseline work still to do.
+  the frontend through a single facade crate (`app`, package
+  `arclain_app`) instead of reaching into headless internals directly, so
+  every direct dependency on a headless crate *other than* `app` is
+  migration-baseline work still to do -- see SANCTIONED_FRONTEND_DEPENDENCY.
 
 This module exposes two static checks:
 
@@ -42,6 +43,14 @@ HEADLESS_CRATES = {
     "network", "plugins", "signals",
 }
 GUI_CRATES = {"theme", "ui", "widgets"}
+
+# `app` (`arclain_app`) is the Stage 1 application facade: the one
+# headless crate a GUI crate is *meant* to depend on, replacing direct
+# dependencies on every other headless crate over time. A GUI crate
+# depending on it is therefore accepted rather than flagged as
+# migration-baseline debt; a GUI crate depending on any other headless
+# crate remains a violation.
+SANCTIONED_FRONTEND_DEPENDENCY = "app"
 
 # Dependency tables to inspect, per manifest and per `[target.'cfg(...)'.*]`
 # section.
@@ -127,7 +136,7 @@ def dependency_violations(workspace_root: Path) -> list[str]:
     all_names = HEADLESS_CRATES | GUI_CRATES
     for crate_name, crate_dir, manifest_path in _iter_crate_manifests(workspace_root, all_names):
         is_headless = crate_name in HEADLESS_CRATES
-        forbidden = GUI_CRATES if is_headless else HEADLESS_CRATES
+        forbidden = GUI_CRATES if is_headless else (HEADLESS_CRATES - {SANCTIONED_FRONTEND_DEPENDENCY})
         manifest = _load_manifest(manifest_path)
         for table_label, table in _dependency_tables(manifest):
             for dep_name, dep_value in table.items():

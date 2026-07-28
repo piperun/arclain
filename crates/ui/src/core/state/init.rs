@@ -1,368 +1,70 @@
 //! AppState initialization
+//!
+//! `AppState::new` used to perform the entire application composition
+//! sequence directly (directories, configuration, databases, backends,
+//! plugins, ...). That sequence now lives in `arclain_app::ArclainApp::
+//! bootstrap`, which this function calls and then unpacks via
+//! `take_legacy_composition` into this crate's still-existing
+//! `AppState`/`Services` shapes -- unmigrated call sites elsewhere in
+//! this crate keep reading `shared_state.app_state`/`shared_state.services`
+//! exactly as before. What's left here is genuinely UI-only: `AppSignals`
+//! construction, wiring the live per-tab plugin bridge (which needs
+//! `AppSignals`, so `arclain_app` cannot build it), and loading persisted
+//! UI state into signals.
 
 use super::AppState;
 use crate::core::signals::AppSignals;
 use anyhow::Result;
-use arclain_core::backends::sevenz_cli::SevenZipCli;
-use arclain_core::backends::BackendSelector;
-use arclain_core::services::ConfigService;
-use arclain_core::services::Services as CoreServices;
-use arclain_core::utilities::{effective_plugin_proxy_map, ChecksumService, PassRule};
-use arclain_core::{open_databases, DbPaths, SecretsKey};
-use arclain_core::{ActionType, DisplayMode, UiItem, UiRegion, UserConfig};
-use arclain_core::{ContentCache, ResourceConfig, ResourceManager};
-use arclain_plugins::PluginManager;
-use parking_lot::Mutex;
-use std::{
-    env,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-use tracing::{info, warn};
-
-const PLUGINS_DIR_ENV: &str = "ARCLAIN_PLUGINS_DIR";
-
-fn resolve_plugins_dir() -> PathBuf {
-    let override_dir = env::var_os(PLUGINS_DIR_ENV)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
-    resolve_plugins_dir_from(override_dir, env::current_exe().ok(), dev_plugins_dir())
-}
-
-fn resolve_plugins_dir_from(
-    override_dir: Option<PathBuf>,
-    exe_path: Option<PathBuf>,
-    dev_plugins_dir: Option<PathBuf>,
-) -> PathBuf {
-    if let Some(path) = override_dir {
-        return path;
-    }
-
-    let bundled_plugins_dir = exe_path
-        .as_deref()
-        .and_then(Path::parent)
-        .map(|dir| dir.join("plugins"));
-
-    if let Some(path) = bundled_plugins_dir.as_ref().filter(|path| path.exists()) {
-        return path.clone();
-    }
-
-    if let Some(path) = dev_plugins_dir.filter(|path| path.exists()) {
-        return path;
-    }
-
-    bundled_plugins_dir.unwrap_or_else(|| PathBuf::from("plugins"))
-}
-
-fn dev_plugins_dir() -> Option<PathBuf> {
-    #[cfg(debug_assertions)]
-    {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        manifest_dir
-            .parent()
-            .and_then(Path::parent)
-            .map(|repo_root| repo_root.join("plugins"))
-    }
-
-    #[cfg(not(debug_assertions))]
-    {
-        None
-    }
-}
-
-fn initialize_resource_services(
-    cache_dir: PathBuf,
-    cache_index: Arc<dyn arclain_core::CacheIndex>,
-    resource_config: ResourceConfig,
-) -> Result<(Arc<ContentCache>, Arc<ResourceManager>)> {
-    let cache = Arc::new(ContentCache::new_with_config(
-        cache_dir,
-        cache_index,
-        &resource_config,
-    )?);
-    let manager = Arc::new(ResourceManager::new(cache.clone(), resource_config));
-    Ok((cache, manager))
-}
+use tracing::info;
 
 impl AppState {
-    pub fn new() -> Result<(Self, crate::core::services::Services)> {
+    pub fn new() -> Result<(
+        Self,
+        crate::core::services::Services,
+        arclain_app::ArclainApp,
+    )> {
         info!("Initializing application state");
 
-        // Initialize Tokio runtime
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()?;
+        let facade =
+            arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig::system_default())
+                .map_err(|error| anyhow::anyhow!("Failed to bootstrap application: {error:?}"))?;
+        let legacy = facade.take_legacy_composition();
 
-        // Local variables for services (will be moved to Services struct at the end)
-        let mut plugin_manager: Option<Arc<Mutex<PluginManager>>> = None;
-        let mut checksum_service: Option<Arc<ChecksumService>> = None;
-        let mut content_cache: Option<Arc<ContentCache>> = None;
-        let mut resource_manager: Option<Arc<ResourceManager>> = None;
-
-        // Load startup config using ConfigService helper
-        // Initialize infrastructure (creates all dirs)
-        let app_dirs = arclain_app_fs::AppDirectories::init("arclain", None)?;
-
-        // Construct DB paths from initialized directories
-        let db_paths = DbPaths {
-            config_db: app_dirs.databases_dir.join("config.sqlite"),
-            cache_db: app_dirs.databases_dir.join("metadata.sqlite"),
-            secrets_db: app_dirs.secrets_dir.join("pass.redb"),
-            key_file: Some(app_dirs.secrets_dir.join("master.key")),
-        };
-        let (secrets_path, key_path, crc_policy) =
-            ConfigService::load_startup_config(&db_paths.config_db).unwrap_or((None, None, None));
-
-        let user_config =
-            if let Ok(cfg_db) = arclain_core::config::ConfigDb::open(&db_paths.config_db) {
-                let cfg_conn = cfg_db.into_sqlite_db();
-                cfg_conn
-                    .with_connection(|conn| {
-                        UserConfig::ensure_table(conn)?;
-                        Ok(UserConfig::load(conn)?.unwrap_or_default())
-                    })
-                    .unwrap_or_default()
-            } else {
-                UserConfig::default()
-            };
-
-        // Initialize 7-Zip backend with path from config
-        let sevenzip_path = user_config.sevenzip_path.as_ref().map(PathBuf::from);
-        let fallback_backend = SevenZipCli::detect(sevenzip_path.as_deref())?;
-        info!("7-Zip CLI backend initialized as fallback");
-
-        // Create backend selector (defaults to native mode with fallbacks)
-        let backend_selector = BackendSelector::new_native();
-        info!("Backend selector initialized (native mode with fallbacks)");
-
-        // Build initial state
-        let mut me = Self {
-            user_config,
-            pass_rules: vec![],
-            backend_selector,
-            fallback_backend,
+        let me = Self {
+            user_config: legacy.user_config.clone(),
+            pass_rules: legacy.pass_rules.clone(),
+            backend_selector: legacy.backend_selector,
+            fallback_backend: legacy.fallback_backend,
             last_entries: vec![],
-
-            // Default to on_access: only compute CRC when the user actually
-            // looks at an entry. The legacy on_open default fired one 7z
-            // subprocess per entry on archive open, which on multi-thousand-
-            // entry encrypted archives ran for minutes.
-            encrypted_crc_policy: crc_policy.unwrap_or_else(|| "on_access".to_string()),
-            db_paths: Some(db_paths.clone()),
-            dbs: None,
-            plugin_event_scheduler: None,
+            encrypted_crc_policy: legacy.encrypted_crc_policy,
+            db_paths: legacy.db_paths,
+            dbs: legacy.dbs,
+            plugin_event_scheduler: legacy.plugin_event_scheduler,
             pending_plugin_events: Vec::new(),
             signals: AppSignals::new(),
         };
 
         me.signals.user_config.set(me.user_config.clone());
+        me.signals.pass_rules.set(me.pass_rules.clone());
 
-        // Update paths from config if present
-        let mut current_paths = db_paths.clone();
-        if let Some(sp) = secrets_path {
-            current_paths.secrets_db = sp;
-        }
-        if let Some(kp) = key_path {
-            current_paths.key_file = Some(kp);
-        } else if let Ok(kf) = env::var("ARCLAIN_KEYFILE") {
-            if !kf.trim().is_empty() {
-                current_paths.key_file = Some(PathBuf::from(kf.trim()));
-            }
-        }
-
-        // Auto-generate key logic
-        if let Some(ref key_path) = current_paths.key_file {
-            if !key_path.exists() {
-                info!(
-                    "Master key file not found, generating new key at: {}",
-                    key_path.display()
-                );
-                let new_key = SecretsKey::generate();
-                if let Err(e) = new_key.save_to_file(key_path) {
-                    warn!("Failed to save generated key file: {}", e);
-                } else {
-                    info!("Master key file created successfully");
-                }
-            }
+        // Active context: the one composition step that must happen
+        // here rather than inside `ArclainApp::bootstrap`, because it
+        // needs `AppSignals` -- an egui-integration type `arclain_app`
+        // must never depend on. Resolves through `AppSignals` at call
+        // time so plugins always see the currently active tab; see
+        // `arclain_plugins::active_tab` for the design rationale.
+        if let Some(ref plugin_manager) = legacy.plugin_manager {
+            let bridge = std::sync::Arc::new(
+                crate::shared::active_tab_bridge::AppSignalsBridge::new(me.signals.clone()),
+            );
+            plugin_manager.lock().set_active_tab_bridge(bridge);
         }
 
-        // Initialize Services Manager
-        let mut services = CoreServices::new(Arc::new(runtime));
-
-        // Keep plugin routing fail-closed if database-backed service
-        // initialization fails before the proxy credentials can be loaded.
-        services
-            .async_http_client
-            .apply_proxy_routing(None, effective_plugin_proxy_map(&me.user_config));
-        info!("Initialized HTTP client proxy settings");
-
-        // Open Databases and Init Services
-        if let Some(ref key_path) = current_paths.key_file {
-            if let Ok(key) = SecretsKey::load_from_file(key_path) {
-                match open_databases(&current_paths, &key) {
-                    Ok(dbs) => {
-                        // Initialize Core Services
-                        if let Err(e) = services.init_db_services(&dbs, &current_paths) {
-                            warn!("Failed to initialize DB services: {}", e);
-                        } else {
-                            // Build the cache and manager from one configuration
-                            // value so disk limits cannot silently diverge.
-                            if let Some(cache_svc) = services.cache_service.clone() {
-                                let cache_dir = services.cache_dir.clone();
-                                let resource_config = ResourceConfig {
-                                    fallback_dir: Some(services.cache_dir.join("resources")),
-                                    ..Default::default()
-                                };
-                                match initialize_resource_services(
-                                    cache_dir,
-                                    cache_svc as Arc<dyn arclain_core::CacheIndex>,
-                                    resource_config,
-                                ) {
-                                    Ok((cache, manager)) => {
-                                        content_cache = Some(cache);
-                                        resource_manager = Some(manager);
-                                        info!("Content cache initialized via Services");
-                                    }
-                                    Err(error) => {
-                                        warn!("Failed to initialize content cache: {error}");
-                                    }
-                                }
-                            }
-
-                            // Load pass rules and map to Core PassRule
-                            if let Ok(rules) = dbs.secrets.list_pass_rules() {
-                                me.pass_rules = rules
-                                    .into_iter()
-                                    .map(|r| PassRule {
-                                        name: r.name,
-                                        pattern: r.pattern,
-                                        password: r.password,
-                                        priority: r.priority,
-                                        enabled: r.enabled,
-                                    })
-                                    .collect();
-                                // Sync to signal for lock-free access
-                                me.signals.pass_rules.set(me.pass_rules.clone());
-                            }
-                        }
-
-                        me.dbs = Some(dbs);
-                        me.db_paths = Some(current_paths.clone());
-
-                        // Ensure default organization rules
-                        if let Some(dbs) = &me.dbs {
-                            if let Err(e) = arclain_core::config::database::ensure_default_rules(
-                                &dbs.config_pool,
-                            ) {
-                                warn!("Failed to organize default rules: {}", e);
-                            }
-                        }
-
-                        me.sync_configuration();
-                    }
-                    Err(e) => {
-                        warn!("Failed to open databases: {}", e);
-                    }
-                }
-            }
-        }
-
-        // Initialize checksum service separately (using path from manager/paths)
-        let checksum_db_path = current_paths
-            .config_db
-            .parent()
-            .unwrap_or(Path::new("."))
-            .join("checksum.sqlite");
-        match ChecksumService::open(&checksum_db_path) {
-            Ok(svc) => {
-                let _ = svc.recover_pending();
-                checksum_service = Some(Arc::new(svc));
-            }
-            Err(e) => warn!("Failed to init checksum service: {}", e),
-        }
-        services.checksum_service = checksum_service.clone();
-
-        // Initialize plugin system
-        info!("Initializing plugin system");
-        let plugins_dir = resolve_plugins_dir();
-        info!("Using plugins directory: {}", plugins_dir.display());
-        let settings = me.user_config.get_all_plugin_settings();
-        match PluginManager::new(plugins_dir, settings) {
-            Ok(mut manager) => {
-                manager.init().ok();
-                // Inject services
-                if let Some(lib_svc) = services.library_service.clone() {
-                    manager.set_library_service(lib_svc);
-                }
-                if let Some(ref c) = content_cache {
-                    manager.set_content_cache(c.clone());
-                }
-                if let Some(ref r) = resource_manager {
-                    manager.set_resource_manager(r.clone());
-                }
-                manager.set_async_http_client(services.async_http_client.clone());
-                if let Some(ref gc) = services.gameta_client {
-                    manager.set_gameta_client(gc.clone());
-                }
-                // Install the active-tab bridge. Resolves through
-                // `AppSignals` at call time so plugins always see the
-                // currently active tab — pre-bridge this was a
-                // `set_metadata_signal` of the first tab's signal
-                // handle, which went stale on every subsequent
-                // `replace_active` / `col.open`. See
-                // `arclain_plugins::active_tab`.
-                let bridge = std::sync::Arc::new(
-                    crate::shared::active_tab_bridge::AppSignalsBridge::new(me.signals.clone()),
-                );
-                manager.set_active_tab_bridge(bridge);
-                me.plugin_event_scheduler = Some(manager.event_scheduler());
-                plugin_manager = Some(Arc::new(Mutex::new(manager)));
-
-                // Sync UI items
-                if let Some(ref pm) = plugin_manager {
-                    let pm_lock = pm.lock();
-
-                    // Sync top-level tabs to Toolbar
-                    let top_tabs = pm_lock.get_all_top_tabs();
-                    let mut ui_items = Vec::new();
-
-                    for (plugin_id, tab) in top_tabs {
-                        let item = UiItem {
-                            id: format!("plugin:{}:{}", plugin_id, tab.id),
-                            region: UiRegion::Toolbar,
-                            group_id: Some("plugins".to_string()),
-                            label: tab.label,
-                            icon: Some(tab.icon),
-                            visible: true,
-                            sort_order: tab.priority as i32,
-                            display_mode: DisplayMode::IconAndText,
-                            action_type: ActionType::Plugin,
-                            action_data: Some(format!("{}:{}", plugin_id, tab.id)),
-                        };
-                        ui_items.push(item);
-                    }
-
-                    // Upsert items if we have a UI service
-                    if let Some(ui_svc) = services.ui_service.clone() {
-                        if !ui_items.is_empty() {
-                            if let Err(e) = ui_svc.upsert_items(&ui_items) {
-                                warn!("Failed to sync plugin UI items: {}", e);
-                            } else {
-                                info!("Synced {} plugin UI items to database", ui_items.len());
-                            }
-                        }
-                    }
-                }
-            }
-            Err(_) => {}
-        }
-
-        // Finalize services
         let services = crate::core::services::Services {
-            core: services,
-            plugin_manager,
-            content_cache,
-            resource_manager,
+            core: (*legacy.core_services).clone(),
+            plugin_manager: legacy.plugin_manager,
+            content_cache: legacy.content_cache,
+            resource_manager: legacy.resource_manager,
         };
 
         // Set initial server connection status signal based on startup health check.
@@ -428,122 +130,6 @@ impl AppState {
             tab.browser_view_state.set(view_state);
         }
 
-        Ok((me, services))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{initialize_resource_services, resolve_plugins_dir_from};
-    use anyhow::Result;
-    use arclain_core::{CacheEntry, CacheIndex, CacheType, ResourceConfig};
-    use std::fs;
-    use std::sync::Arc;
-    use tempfile::TempDir;
-
-    struct EmptyCacheIndex;
-
-    impl CacheIndex for EmptyCacheIndex {
-        fn upsert(
-            &self,
-            _key: &str,
-            _product_id: Option<&str>,
-            _content_hash: &str,
-            _source_url: Option<&str>,
-            _cache_type: CacheType,
-            _size_bytes: Option<i64>,
-        ) -> Result<i64> {
-            Ok(1)
-        }
-
-        fn get(&self, _key: &str) -> Result<Option<CacheEntry>> {
-            Ok(None)
-        }
-
-        fn has(&self, _key: &str) -> Result<bool> {
-            Ok(false)
-        }
-
-        fn delete(&self, _key: &str) -> Result<bool> {
-            Ok(false)
-        }
-
-        fn delete_by_pattern(&self, _pattern: &str) -> Result<usize> {
-            Ok(0)
-        }
-
-        fn update_last_accessed(&self, _key: &str) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn plugin_dir_env_override_wins() {
-        let temp = TempDir::new().unwrap();
-        let override_dir = temp.path().join("override-plugins");
-        let exe_path = temp.path().join("install").join("arclain.exe");
-        let dev_plugins = temp.path().join("repo").join("plugins");
-
-        let resolved = resolve_plugins_dir_from(
-            Some(override_dir.clone()),
-            Some(exe_path),
-            Some(dev_plugins),
-        );
-
-        assert_eq!(resolved, override_dir);
-    }
-
-    #[test]
-    fn executable_adjacent_plugins_dir_wins_when_it_exists() {
-        let temp = TempDir::new().unwrap();
-        let install_dir = temp.path().join("install");
-        let bundled_plugins = install_dir.join("plugins");
-        let dev_plugins = temp.path().join("repo").join("plugins");
-        fs::create_dir_all(&bundled_plugins).unwrap();
-        fs::create_dir_all(&dev_plugins).unwrap();
-
-        let resolved = resolve_plugins_dir_from(
-            None,
-            Some(install_dir.join("arclain.exe")),
-            Some(dev_plugins),
-        );
-
-        assert_eq!(resolved, bundled_plugins);
-    }
-
-    #[test]
-    fn dev_plugins_dir_is_used_when_bundled_dir_is_missing() {
-        let temp = TempDir::new().unwrap();
-        let install_dir = temp.path().join("install");
-        let dev_plugins = temp.path().join("repo").join("plugins");
-        fs::create_dir_all(&dev_plugins).unwrap();
-
-        let resolved = resolve_plugins_dir_from(
-            None,
-            Some(install_dir.join("arclain.exe")),
-            Some(dev_plugins.clone()),
-        );
-
-        assert_eq!(resolved, dev_plugins);
-    }
-
-    #[test]
-    fn startup_uses_one_resource_config_for_cache_and_manager() {
-        let temp = TempDir::new().unwrap();
-        let cache_dir = temp.path().join("cache");
-        let fallback_dir = cache_dir.join("resources");
-        let mut config = ResourceConfig {
-            fallback_dir: Some(fallback_dir.clone()),
-            ..ResourceConfig::default()
-        };
-        config.cache_limits.max_object_bytes = 17;
-        config.cache_limits.min_free_space_bytes = 0;
-
-        let (cache, manager) =
-            initialize_resource_services(cache_dir, Arc::new(EmptyCacheIndex), config).unwrap();
-
-        assert_eq!(cache.limits().max_object_bytes, 17);
-        assert_eq!(manager.config().cache_limits.max_object_bytes, 17);
-        assert_eq!(manager.config().fallback_dir.as_ref(), Some(&fallback_dir));
+        Ok((me, services, facade))
     }
 }

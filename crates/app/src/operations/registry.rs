@@ -164,6 +164,19 @@ impl OperationRegistry {
     /// is listening yet), not a registry failure, so it is deliberately
     /// ignored here.
     fn publish(&self, operation_id: OperationId, kind: OperationKind, sequence: u64, state: OperationState) {
+        // Re-asserts, at the point an error actually leaves the application,
+        // the 4 KiB bound `ApplicationError::with_diagnostic` enforces at
+        // construction. `diagnostic` is a plain public field (the contract
+        // mandates that), so nothing stops a future call site from building
+        // an `ApplicationError` with a struct literal instead of the bounded
+        // `with_*` helpers -- this catches that in debug builds before an
+        // unbounded diagnostic reaches a subscriber.
+        if let OperationState::Failed { ref error } = state {
+            debug_assert!(
+                error.diagnostic.as_deref().map_or(true, |diagnostic| diagnostic.len() <= 4096),
+                "OperationState::Failed diagnostic exceeds the 4 KiB bound ApplicationError::with_diagnostic enforces"
+            );
+        }
         let _ = self.events.send(OperationEvent {
             operation_id,
             sequence,

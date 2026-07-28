@@ -88,6 +88,7 @@ pub fn create_test_shared_state() -> SharedState {
         plugin_ui_jobs,
         image_assets,
         signals,
+        facade: None,
     }
 }
 
@@ -199,6 +200,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         plugin_ui_jobs,
         image_assets,
         signals,
+        facade: None,
     };
 
     (temp, shared)

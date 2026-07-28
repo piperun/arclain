@@ -4,11 +4,24 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tracing.workspace = true
 zeroize.workspace = true
 
+# Runtime composition (Task 4) pulls in the headless crates whose
+# construction it now owns. All three are HEADLESS_CRATES per
+# scripts/frontend_boundary.py -- headless-to-headless dependencies are
+# unrestricted, so this does not create a boundary violation.
+arclain_app_fs = { path = "../app_fs" }
+arclain_core = { path = "../core" }
+arclain_plugins = { path = "../plugins" }
+
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 trybuild = "1.0.118"

@@ -86,6 +86,43 @@ class TestDependencyViolations(unittest.TestCase):
             self.assertIn("ui", violations[0])
             self.assertIn("core", violations[0])
 
+    def test_accepts_the_sanctioned_frontend_dependency_on_app(self):
+        # `app` (`arclain_app`) is the Stage 1 facade: a GUI crate
+        # depending on it is the intended end state, not migration debt.
+        with tempfile.TemporaryDirectory() as workspace:
+            crates = Path(workspace) / "crates"
+            _write_manifest(crates, "ui", (
+                '[package]\nname = "arclain_ui"\n\n'
+                '[dependencies]\n'
+                'arclain_app = { path = "../app" }\n'
+            ))
+            _write_manifest(crates, "app", '[package]\nname = "arclain_app"\n')
+
+            violations = frontend_boundary.dependency_violations(Path(workspace))
+
+            self.assertEqual(violations, [])
+
+    def test_still_rejects_other_headless_dependencies_alongside_the_sanctioned_one(self):
+        # The `app` exemption is narrow: a frontend depending on `app`
+        # *and* directly on `core` in the same manifest must still flag
+        # the `core` edge.
+        with tempfile.TemporaryDirectory() as workspace:
+            crates = Path(workspace) / "crates"
+            _write_manifest(crates, "ui", (
+                '[package]\nname = "arclain_ui"\n\n'
+                '[dependencies]\n'
+                'arclain_app = { path = "../app" }\n'
+                'arclain_core = { path = "../core" }\n'
+            ))
+            _write_manifest(crates, "app", '[package]\nname = "arclain_app"\n')
+            _write_manifest(crates, "core", '[package]\nname = "arclain_core"\n')
+
+            violations = frontend_boundary.dependency_violations(Path(workspace))
+
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("ui", violations[0])
+            self.assertIn("core", violations[0])
+
     def test_accepts_the_declared_dependency_direction(self):
         with tempfile.TemporaryDirectory() as workspace:
             crates = Path(workspace) / "crates"

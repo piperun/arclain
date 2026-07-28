@@ -5,17 +5,21 @@
 //! internals directly. It must stay usable without any GUI toolkit --
 //! nothing here may depend on egui, eframe, or a Flutter/Dart bridge.
 //!
-//! This task adds the identifier ([`ids`]), error-envelope ([`error`]),
-//! archive read-model ([`archive`]), secret/challenge ([`challenge`]), and
-//! operation-event ([`event`]) types, plus the [`operations`] registry
-//! those events are broadcast through. `operations` is declared `pub` so
-//! the module path is stable per the facade contract, but everything
-//! inside it is `pub(crate)`: the registry is an implementation detail
-//! behind the application facade a later task adds, never a type a
-//! frontend names directly. The remaining modules from the full facade
-//! contract (`materialization`, `plugins`, `runtime`, `settings`) are
-//! added incrementally by later tasks; this crate declares only the
-//! modules it actually implements so far.
+//! Earlier tasks added the identifier ([`ids`]), error-envelope
+//! ([`error`]), archive read-model ([`archive`]), secret/challenge
+//! ([`challenge`]), and operation-event ([`event`]) types, plus the
+//! [`operations`] registry those events are broadcast through.
+//! `operations` is declared `pub` so the module path is stable per the
+//! facade contract, but everything inside it is `pub(crate)`: the
+//! registry is an implementation detail behind the application facade,
+//! never a type a frontend names directly.
+//!
+//! This task adds [`runtime`]: the [`runtime::ArclainApp`] facade itself,
+//! which owns the Tokio runtime and composes every headless service
+//! `crates/ui`'s initialization used to build directly. The remaining
+//! modules from the full facade contract (`materialization`, `plugins`,
+//! `settings`) are added incrementally by later tasks; this crate
+//! declares only the modules it actually implements so far.
 
 pub mod archive;
 pub mod challenge;
@@ -23,6 +27,9 @@ pub mod error;
 pub mod event;
 pub mod ids;
 pub mod operations;
+pub mod runtime;
+
+pub use runtime::{AppPaths, ArclainApp, BootstrapConfig};
 
 /// The application facade's own compatibility version, independent of the
 /// crate's Cargo package version. Frontends (egui today, Flutter later)

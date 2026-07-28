@@ -577,6 +577,7 @@ mod tests {
                 plugin_ui_jobs,
                 image_assets,
                 signals,
+                facade: None,
             };
 
             Self {

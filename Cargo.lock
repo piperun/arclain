@@ -324,9 +324,17 @@ dependencies = [
 name = "arclain_app"
 version = "2.3.2"
 dependencies = [
+ "anyhow",
+ "arclain_app_fs",
+ "arclain_core",
+ "arclain_plugins",
+ "dirs",
+ "parking_lot",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
+ "tracing",
  "trybuild",
  "zeroize",
 ]
@@ -504,6 +512,7 @@ dependencies = [
  "anyhow",
  "arboard",
  "arclain-network",
+ "arclain_app",
  "arclain_app_fs",
  "arclain_core",
  "arclain_db",
