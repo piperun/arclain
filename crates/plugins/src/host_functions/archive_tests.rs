@@ -94,6 +94,10 @@ impl ActiveTabBridge for TestActiveTabBridge {
         self.metadata.clone()
     }
 
+    fn set_session_metadata(&self, _archive_session_id: u64, metadata: Option<serde_json::Value>) {
+        self.metadata.set(metadata);
+    }
+
     fn set_archive_path(&self, path: Option<String>) {
         *self.archive_path.lock() = path;
     }

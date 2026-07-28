@@ -59,7 +59,7 @@ fn test_plugin_event_types() {
         kind: arclain_core::ArchiveKind::Zip,
         password: None,
         entries: std::sync::Arc::new(Vec::new()),
-        metadata_signal: arclain_signals::Signal::new(None),
+        archive_session_id: 1,
     }];
 
     assert_eq!(events.len(), 1, "Only OnArchiveOpen is currently supported");

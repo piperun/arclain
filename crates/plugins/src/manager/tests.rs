@@ -11,7 +11,7 @@ fn plugin_event_scheduler_rejects_immediately_when_capacity_is_full() {
         kind: arclain_core::ArchiveKind::Zip,
         password: Some("secret".to_string()),
         entries: Arc::new(Vec::new()),
-        metadata_signal: arclain_signals::Signal::new(None),
+        archive_session_id: 0,
     };
 
     scheduler.try_schedule(event()).expect("first event fits");

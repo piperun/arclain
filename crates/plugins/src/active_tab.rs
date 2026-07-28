@@ -84,7 +84,30 @@ pub trait ActiveTabBridge: Send + Sync {
     /// (cheap — internal `Arc` clone) before the write, so the
     /// write lands on the originally-targeted tab even if the user
     /// switches in the meantime.
+    ///
+    /// This is the right sink for a *user-initiated* emit (a plugin
+    /// panel action with no event context) — "whichever tab I'm
+    /// looking at right now" is the correct semantic there. An
+    /// event-context emit (one fired while dispatching a queued
+    /// `PluginEvent::OnArchiveOpen`) must instead route through
+    /// [`Self::set_session_metadata`], since the tab that requested
+    /// the event may no longer be the active one by the time it's
+    /// processed.
     fn metadata_signal(&self) -> Signal<Option<serde_json::Value>>;
+
+    /// Writes `metadata` for the tab (if any) currently holding
+    /// `archive_session_id` open — resolved by session id, independent
+    /// of which tab is currently active. Used by the event-context path
+    /// of `emit_metadata`, replacing the previous approach of capturing
+    /// a UI `Signal` handle directly on `PluginEvent::OnArchiveOpen` (see
+    /// that type's doc comment): the application layer that fires the
+    /// event only has an opaque session id to hand over, never a UI
+    /// signal. A no-op if no tab currently holds that session (it was
+    /// closed, or the id does not correspond to any tab this bridge
+    /// knows about) — the write is simply lost, matching the pre-
+    /// existing behavior for a plugin event whose originating tab was
+    /// already closed by the time the worker processed it.
+    fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>);
 
     /// Update the active tab's archive path. Used by
     /// `rename_archive`, which renames the underlying file and

@@ -74,7 +74,14 @@ impl SharedState {
                         .unwrap_or_default(),
                     password: tab.current_password.get(),
                     entries: tab.entries.get(),
-                    metadata_signal: tab.metadata.clone(),
+                    // 0 is never a real `ArchiveSessionId` (the facade
+                    // mints ids from 1) -- a safe "no session open in
+                    // this tab" sentinel for this fallback context.
+                    archive_session_id: tab
+                        .archive_session_id
+                        .get()
+                        .map(arclain_app::ids::ArchiveSessionId::into_raw)
+                        .unwrap_or(0),
                 })
             }
         });

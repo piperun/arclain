@@ -63,6 +63,22 @@ pub struct TabState {
     pub current_password: Signal<Option<String>>,
     pub selection_count: Signal<usize>,
     pub opened_archive: Signal<Option<Arc<RwLock<arclain_core::Archive>>>>,
+    /// The application facade's session id for this tab's open archive
+    /// (`None` when no archive is open in this tab). Set once the
+    /// `start_open_archive` operation reaches `Completed { ArchiveOpened }`
+    /// (see `crate::core::operations::archive`); cleared when the tab's
+    /// archive is closed/replaced.
+    ///
+    /// `arclain_app`'s per-session archive read model
+    /// (`ArclainApp::list_entries`/`archive_snapshot`) is keyed by this id,
+    /// which a tab uses as the stable handle to reach it. `opened_archive`
+    /// above still carries the direct backend handle a few not-yet-
+    /// migrated call sites need (drag-out extraction in particular reads
+    /// `backend_arc()`/`password_ref()` off it directly) -- moving those
+    /// onto session-id-mediated facade calls is future work covering
+    /// archive mutation/extraction, so both fields coexist for now rather
+    /// than one being silently incomplete.
+    pub archive_session_id: Signal<Option<arclain_app::ids::ArchiveSessionId>>,
     /// Worker-owned immutable file-list snapshot. Renderers may clone this
     /// signal value in O(1), but only archive/navigation workers replace it.
     pub browser_entries: Signal<BrowserEntriesSnapshot>,
@@ -204,6 +220,7 @@ impl TabState {
             current_password: Signal::new(None).with_name("current_password"),
             selection_count: Signal::new(0).with_name("selection_count"),
             opened_archive: Signal::new(None).with_name("opened_archive"),
+            archive_session_id: Signal::new(None).with_name("archive_session_id"),
             browser_entries: Signal::new(BrowserEntriesSnapshot::default())
                 .with_name("browser_entries"),
             browser_view_state: Signal::new(BrowserViewState::default())
@@ -272,6 +289,7 @@ impl TabState {
         sig_ctx.bind_named(&self.current_password, "tab.current_password");
         sig_ctx.bind_named(&self.selection_count, "tab.selection_count");
         sig_ctx.bind_named(&self.opened_archive, "tab.opened_archive");
+        sig_ctx.bind_named(&self.archive_session_id, "tab.archive_session_id");
         sig_ctx.bind_named(&self.browser_entries, "tab.browser_entries");
         sig_ctx.bind_named(&self.browser_view_state, "tab.browser_view_state");
         sig_ctx.bind_named(&self.page_display_name, "tab.page_display_name");

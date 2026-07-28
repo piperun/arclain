@@ -1497,7 +1497,7 @@ mod tests {
             archive_path: "archive.zip".to_string(),
             password: Some("secret".to_string()),
             entries,
-            metadata_signal: Signal::new(None),
+            archive_session_id: 0,
         }
     }
 
@@ -1778,7 +1778,7 @@ mod tests {
             archive_path: "archive.zip".to_string(),
             password: None,
             entries,
-            metadata_signal: Signal::new(None),
+            archive_session_id: 0,
         };
         let mut old = reactive_job(1, "old");
         old.origin_context = Some(context(old_entries.clone()));
@@ -1885,7 +1885,7 @@ mod tests {
                 archive_path: "archive.zip".to_string(),
                 password: Some("p".repeat(MAX_ORIGIN_PASSWORD_BYTES + 1)),
                 entries: Arc::new(Vec::new()),
-                metadata_signal: Signal::new(None),
+                archive_session_id: 0,
             })
         });
 

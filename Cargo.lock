@@ -328,6 +328,7 @@ dependencies = [
  "arclain_app_fs",
  "arclain_core",
  "arclain_plugins",
+ "crc32fast",
  "dirs",
  "parking_lot",
  "serde",
@@ -337,6 +338,7 @@ dependencies = [
  "tracing",
  "trybuild",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

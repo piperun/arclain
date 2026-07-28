@@ -536,8 +536,12 @@ impl HostFunctions {
                 // right semantic for user-initiated emits, where "this is
                 // for the tab I'm looking at" is what the user expects.
                 if let Some(ref ctx) = self.event_context {
-                    ctx.metadata_signal.set(Some(parsed.clone()));
-                    debug!("[Cache SAVE] Triggered metadata signal via event context");
+                    if let Some(ref bridge) = self.active_tab {
+                        bridge.set_session_metadata(ctx.archive_session_id, Some(parsed.clone()));
+                        debug!(
+                            "[Cache SAVE] Triggered metadata signal via event context session id"
+                        );
+                    }
                 } else if let Some(ref bridge) = self.active_tab {
                     bridge.metadata_signal().set(Some(parsed.clone()));
                     debug!("[Cache SAVE] Triggered metadata signal via bridge");

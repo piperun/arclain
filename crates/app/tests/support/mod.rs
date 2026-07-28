@@ -80,3 +80,49 @@ pub fn seed_corrupt_config(paths: &AppPaths) {
     )
     .expect("write corrupt config.sqlite");
 }
+
+/// Where `bootstrap()` places `pass.redb`/`master.key`, mirroring the
+/// crate-private `AppPaths::secrets_dir` convention (`data_dir/secrets`).
+/// Kept in sync with it the same way [`databases_dir`] is.
+fn secrets_dir(paths: &AppPaths) -> PathBuf {
+    paths.data_dir.join("secrets")
+}
+
+/// Seeds one enabled password rule into the encrypted secrets database at
+/// `paths`, so a `bootstrap()` call against these same `paths` loads it
+/// into `SessionStore::pass_rules` -- letting a test drive
+/// `start_open_archive`'s real auto-password-match branch (see
+/// `archive_ops::attempt_initial`) end to end through the public facade,
+/// rather than only through that function's own crate-internal unit
+/// tests. `pattern` is matched as a regex substring against the archive's
+/// filename (see `arclain_core::utilities::auto_password_for`) -- callers
+/// typically pass `regex::escape(filename)` for an exact match.
+pub fn seed_pass_rule(paths: &AppPaths, pattern: &str, password: &str) {
+    let secrets_dir = secrets_dir(paths);
+    std::fs::create_dir_all(&secrets_dir).expect("create secrets dir");
+    let key_path = secrets_dir.join("master.key");
+    let key = arclain_core::SecretsKey::generate();
+    key.save_to_file(&key_path)
+        .expect("save generated secrets key");
+
+    let databases_dir = databases_dir(paths);
+    std::fs::create_dir_all(&databases_dir).expect("create databases dir");
+    let db_paths = arclain_core::DbPaths {
+        config_db: databases_dir.join("config.sqlite"),
+        cache_db: databases_dir.join("metadata.sqlite"),
+        secrets_db: secrets_dir.join("pass.redb"),
+        key_file: Some(key_path),
+    };
+
+    let dbs =
+        arclain_core::open_databases(&db_paths, &key).expect("open databases to seed a pass rule");
+    dbs.secrets
+        .replace_all_pass_rules(&[arclain_core::DbPassRule {
+            name: "test rule".to_string(),
+            pattern: pattern.to_string(),
+            password: password.to_string(),
+            priority: 10,
+            enabled: true,
+        }])
+        .expect("seed pass rule");
+}

@@ -123,14 +123,26 @@ pub const REQUEST_FETCH_CAPABILITIES: [PluginCapability; 2] = [
 /// ignored them and no plugin handler had ever observed them. Add a
 /// new variant only when the dispatch path is ready to forward it.
 ///
-/// The Signal + Arc fields below pin the event to a *specific* tab
-/// at fire time, so the worker can route the plugin handler's
-/// host-function reads (`current_archive_info`, `list_archive_files`)
-/// and metadata writes (`emit_metadata`) to that tab even if events
-/// queue up and the user switches tabs in the meantime. The
-/// pre-existing serde derives were dead (no production caller) and
-/// have been dropped — Signal isn't Serialize, and there was no
-/// reader to satisfy anyway.
+/// `archive_session_id` pins the event to the *specific archive session*
+/// it was fired for (the application facade's opaque
+/// `ArchiveSessionId::into_raw()` value -- this crate cannot name
+/// `arclain_app::ids::ArchiveSessionId` itself without an illegal reverse
+/// dependency, since `arclain_app` depends on this crate, not the other
+/// way around), so the worker can route the plugin handler's host-function
+/// reads (`current_archive_info`, `list_archive_files`) and metadata
+/// writes (`emit_metadata`) to that session even if events queue up and
+/// the user switches tabs in the meantime.
+///
+/// This replaces a previously-carried `arclain_signals::Signal<Option<
+/// serde_json::Value>>` field: the application layer that now fires this
+/// event (rather than `crates/ui`) has no UI-signal type to hand over, and
+/// should not need one -- a plain, application-owned session id is the
+/// right payload for an application-layer emitter to construct.
+/// `ActiveTabBridge::set_session_metadata` is the write path that resolves
+/// this id back to wherever its host stores that session's metadata.
+///
+/// The pre-existing serde derives on this enum were dead (no production
+/// caller) and have been dropped -- there was no reader to satisfy anyway.
 #[derive(Clone)]
 pub enum PluginEvent {
     /// Archive was opened
@@ -138,24 +150,18 @@ pub enum PluginEvent {
         path: String,
         kind: ArchiveKind,
         password: Option<String>,
-        /// Listed entries for the originating tab's archive, captured
+        /// Listed entries for the originating session's archive, captured
         /// at fire time. Lets `list_archive_files` in the plugin
-        /// handler return the originating tab's entries instead of
+        /// handler return the originating session's entries instead of
         /// whatever's active in the bridge when the worker gets
         /// around to processing this event.
         entries: std::sync::Arc<Vec<arclain_core::ArchiveEntry>>,
-        /// The originating tab's per-tab `metadata` signal,
-        /// captured at fire time. Writes from `emit_metadata` (sync
-        /// in the handler, async in the RequestFetch fallback) land
-        /// here, never on a now-active different tab's signal.
-        metadata_signal: arclain_signals::Signal<Option<serde_json::Value>>,
+        /// The opaque `ArchiveSessionId` (raw `u64`) this event was fired
+        /// for. See this enum's own doc comment.
+        archive_session_id: u64,
     },
 }
 
-// Custom Debug — `arclain_signals::Signal<T>` doesn't impl Debug
-// (it's a reactive primitive holding an `Arc<RwLock<T>>` with no
-// useful debug projection). Skip the signal field and show the rest
-// so dispatch worker `debug!(...)` logs stay readable.
 impl std::fmt::Debug for PluginEvent {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -164,13 +170,14 @@ impl std::fmt::Debug for PluginEvent {
                 kind,
                 password,
                 entries,
-                metadata_signal: _,
+                archive_session_id,
             } => f
                 .debug_struct("OnArchiveOpen")
                 .field("path", path)
                 .field("kind", kind)
                 .field("password", &password.as_ref().map(|_| "[REDACTED]"))
                 .field("entries_len", &entries.len())
+                .field("archive_session_id", archive_session_id)
                 .finish(),
         }
     }

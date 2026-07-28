@@ -131,6 +131,69 @@ mod serialization_snapshots {
     }
 
     #[test]
+    fn operation_result_archive_opened_serializes_with_its_snapshot() {
+        use arclain_app::archive::ArchiveSnapshot;
+
+        let result = OperationResult::ArchiveOpened {
+            snapshot: ArchiveSnapshot {
+                session_id: ArchiveSessionId::from_raw(5),
+                revision: 1,
+                source_path: std::path::PathBuf::from("archive.zip"),
+                archive_type: "zip".to_string(),
+                entry_count: 3,
+                total_uncompressed_size: 1024,
+                comment: None,
+                metadata: None,
+            },
+        };
+        let value = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "archive_opened",
+                "data": {
+                    "snapshot": {
+                        "session_id": 5,
+                        "revision": 1,
+                        "source_path": "archive.zip",
+                        "archive_type": "zip",
+                        "entry_count": 3,
+                        "total_uncompressed_size": 1024,
+                        "comment": null,
+                        "metadata": null,
+                    }
+                }
+            })
+        );
+
+        let round_tripped: OperationResult = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, result);
+    }
+
+    #[test]
+    fn operation_state_completed_with_archive_opened_serializes_end_to_end() {
+        use arclain_app::archive::ArchiveSnapshot;
+
+        let state = OperationState::Completed {
+            result: OperationResult::ArchiveOpened {
+                snapshot: ArchiveSnapshot {
+                    session_id: ArchiveSessionId::from_raw(1),
+                    revision: 1,
+                    source_path: std::path::PathBuf::from("a.zip"),
+                    archive_type: "zip".to_string(),
+                    entry_count: 0,
+                    total_uncompressed_size: 0,
+                    comment: None,
+                    metadata: None,
+                },
+            },
+        };
+        let value = serde_json::to_value(&state).unwrap();
+        assert_eq!(value["state"], serde_json::json!("completed"));
+        assert_eq!(value["result"]["type"], serde_json::json!("archive_opened"));
+    }
+
+    #[test]
     fn operation_state_challenge_serializes_with_the_state_tag() {
         let state = OperationState::Challenge {
             challenge: Challenge::Password {

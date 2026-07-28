@@ -28,16 +28,16 @@
 //! // background worker without locking the manager.
 //! let scheduler = manager.event_scheduler();
 //!
-//! // The per-tab handles (`entries`, `metadata_signal`) pin the
-//! // event to a specific tab so the worker can route the plugin
-//! // handler's reads/writes to that tab even if events queue up
+//! // `entries` and `archive_session_id` pin the event to the specific
+//! // session it was fired for, so the worker can route the plugin
+//! // handler's reads/writes to that session even if events queue up
 //! // and the user has switched tabs by the time processing happens.
 //! scheduler.try_schedule(PluginEvent::OnArchiveOpen {
 //!     path: "test.zip".to_string(),
 //!     kind: arclain_core::ArchiveKind::Zip,
 //!     password: None,
 //!     entries: Arc::new(Vec::new()),
-//!     metadata_signal: arclain_signals::Signal::new(None),
+//!     archive_session_id: 1,
 //! }).unwrap();
 //! ```
 

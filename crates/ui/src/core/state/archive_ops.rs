@@ -15,7 +15,18 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 const MAX_PENDING_PLUGIN_EVENTS: usize = 32;
+// `queue_pending_plugin_event` (and these two bounds it enforces) has no
+// production caller right now: `list_archive`/`list_with_password` no
+// longer build an `OnArchiveOpen` event to queue (see their own doc
+// comments -- minting a valid, routable `archive_session_id` requires
+// `ArclainApp::start_open_archive`'s asynchronous, interactive-challenge-
+// aware flow, which this synchronous legacy path cannot drive). Kept
+// (rather than deleted) with its own test coverage intact: the queueing
+// mechanics themselves are unchanged and become live again the moment a
+// follow-up task migrates the open path onto the facade.
+#[allow(dead_code)]
 const MAX_PLUGIN_EVENT_PATH_BYTES: usize = 32 * 1024;
+#[allow(dead_code)]
 const MAX_PLUGIN_EVENT_PASSWORD_BYTES: usize = 4 * 1024;
 
 trait PluginEventAdmission {
@@ -49,22 +60,6 @@ fn publish_archive_entries(tab: &TabState, entries: Vec<ArchiveEntry>) -> Arc<Ve
     entries
 }
 
-fn archive_open_event(
-    path: &Path,
-    kind: ArchiveKind,
-    password: Option<String>,
-    entries: Arc<Vec<ArchiveEntry>>,
-    tab: &TabState,
-) -> PluginEvent {
-    PluginEvent::OnArchiveOpen {
-        path: path.to_string_lossy().into_owned(),
-        kind,
-        password,
-        entries,
-        metadata_signal: tab.metadata.clone(),
-    }
-}
-
 fn dispatch_pending_plugin_events<S: PluginEventAdmission>(
     pending: &mut Vec<PendingPluginEvent>,
     scheduler: Option<&S>,
@@ -94,6 +89,9 @@ fn dispatch_pending_plugin_events<S: PluginEventAdmission>(
     }
 }
 
+// See the doc comment on `MAX_PLUGIN_EVENT_PATH_BYTES` above for why this
+// has no production caller today.
+#[allow(dead_code)]
 fn queue_pending_plugin_event(
     pending: &mut Vec<PendingPluginEvent>,
     event: PendingPluginEvent,
@@ -265,47 +263,25 @@ impl AppState {
             );
         }
 
-        // Queue OnArchiveOpen for deferred dispatch.
-        //
-        // The event carries per-tab snapshots (entries list,
-        // metadata signal handle) captured RIGHT NOW from this
-        // tab, so the worker can route the plugin handler's host-
-        // function reads (`current_archive_info`,
-        // `list_archive_files`) and emit_metadata writes to *this*
-        // tab even if subsequent archive opens push more events
-        // onto the queue and the user switches tabs by the time
-        // the worker processes us.
+        // The `OnArchiveOpen` plugin event used to be queued for deferred
+        // dispatch from right here. It no longer is: `PluginEvent::
+        // OnArchiveOpen` now carries an application-owned
+        // `archive_session_id` instead of a captured UI signal (see that
+        // type's doc comment) -- a session id this legacy, not-yet-
+        // facade-backed open path has no way to mint (`ArclainApp::
+        // start_open_archive` is the only session-minting entry point,
+        // and it is asynchronous with an interactive password-challenge
+        // step this synchronous method cannot drive without either
+        // freezing the UI thread or deadlocking against a dialog the
+        // frozen render loop could no longer draw). Archives opened here
+        // do not fire `OnArchiveOpen` until this open path itself moves
+        // onto `start_open_archive` -- a known, temporary gap, not a
+        // silent regression.
         tab.metadata.set(None);
-        if self.plugin_event_scheduler.is_some() {
-            let event = archive_open_event(
-                path,
-                info.archive_kind,
-                tab.current_password.get(),
-                published_entries.clone(),
-                &tab,
-            );
-
-            if queue_pending_plugin_event(
-                &mut self.pending_plugin_events,
-                PendingPluginEvent::new(target_tab_id, event),
-                &self.signals,
-            ) {
-                tab.ui_ready.set(false);
-            }
-
-            info!(
-                "Archive opened successfully with {} entries (plugin event pending, queue depth {})",
-                tab.entries.get().len(),
-                self.pending_plugin_events.len()
-            );
-        }
-
-        if self.plugin_event_scheduler.is_none() {
-            info!(
-                "Archive opened successfully with {} entries",
-                tab.entries.get().len()
-            );
-        }
+        info!(
+            "Archive opened successfully with {} entries",
+            tab.entries.get().len()
+        );
 
         // Create Archive handle and store in signal for session operations
         // Re-select backend since the one from earlier was consumed
@@ -364,27 +340,8 @@ impl AppState {
         clear_archive_selection(&tab);
         let published_entries = publish_archive_entries(&tab, info.entries.clone());
 
-        // Queue OnArchiveOpen for deferred dispatch — see the
-        // sibling `list_archive` site above for why the payload
-        // carries per-tab snapshots of entries + the metadata
-        // signal handle.
-        if self.plugin_event_scheduler.is_some() {
-            let event = archive_open_event(
-                path,
-                info.archive_kind.clone(),
-                Some(password.to_string()),
-                published_entries.clone(),
-                &tab,
-            );
-
-            if queue_pending_plugin_event(
-                &mut self.pending_plugin_events,
-                PendingPluginEvent::new(target_tab_id, event),
-                &self.signals,
-            ) {
-                tab.ui_ready.set(false);
-            }
-        }
+        // No `OnArchiveOpen` dispatch here either — see the sibling
+        // `list_archive` site above for why.
 
         // Create Archive handle with password and store in signal for session operations
         let archive =
@@ -478,7 +435,7 @@ mod tests {
             kind: ArchiveKind::Zip,
             password: None,
             entries: tab.entries.get(),
-            metadata_signal: tab.metadata.clone(),
+            archive_session_id: 0,
         }
     }
 
@@ -503,13 +460,19 @@ mod tests {
         tab.entries.set(Arc::new(vec![entry("locked-name.txt")]));
 
         let published = publish_archive_entries(&tab, vec![entry("decrypted-name.txt")]);
-        let plugin_event = archive_open_event(
-            Path::new("encrypted.zip"),
-            ArchiveKind::Zip,
-            Some("secret".to_string()),
-            published.clone(),
-            &tab,
-        );
+        // A plugin event referencing this same published `Arc` (rather than
+        // a fresh clone of its contents) still exercises the invariant this
+        // test guards: `publish_archive_entries`'s returned `Arc` is the
+        // exact one `tab.entries` now holds, so any consumer handed that
+        // `Arc` (a plugin event, a render pass) sees the identical
+        // allocation, never a stale duplicate.
+        let plugin_event = PluginEvent::OnArchiveOpen {
+            path: Path::new("encrypted.zip").to_string_lossy().into_owned(),
+            kind: ArchiveKind::Zip,
+            password: Some("secret".to_string()),
+            entries: published.clone(),
+            archive_session_id: 0,
+        };
         crate::core::operations::navigation_view::refresh_view_entries_for_tab(&signals, tab.id);
 
         assert!(Arc::ptr_eq(&published, &tab.entries.get()));
@@ -639,7 +602,7 @@ mod tests {
                 kind: ArchiveKind::Zip,
                 password: Some(format!("password-{index}")),
                 entries,
-                metadata_signal: tab.metadata.clone(),
+                archive_session_id: 0,
             };
             assert!(queue_pending_plugin_event(
                 &mut pending,
@@ -663,7 +626,7 @@ mod tests {
             kind: ArchiveKind::Zip,
             password: Some("p".repeat(MAX_PLUGIN_EVENT_PASSWORD_BYTES + 1)),
             entries: Arc::new(Vec::new()),
-            metadata_signal: tab.metadata.clone(),
+            archive_session_id: 0,
         };
         let mut pending = Vec::new();
 

@@ -22,6 +22,7 @@
 //! simply `.await` it directly; nothing in this crate creates a nested
 //! Tokio runtime from inside an async context either way.
 
+mod archive_ops;
 mod bootstrap;
 mod paths;
 mod session_store;
@@ -35,7 +36,18 @@ pub use session_store::{
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use arclain_core::backends::BackendSelector;
+use arclain_core::utilities::PassRule;
+use arclain_core::ArchiveBackend;
+use arclain_plugins::PluginEventScheduler;
+
+use crate::archive::ArchiveSnapshot;
+use crate::archive::{ArchiveSessionStore, EntryPage, ListEntriesRequest, OpenArchiveRequest};
+use crate::challenge::ChallengeResponse;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
+use crate::event::{OperationEvent, OperationKind, OperationSnapshot};
+use crate::ids::{ArchiveSessionId, OperationId};
+use crate::operations::{ChallengeWaiters, OperationRegistry};
 use session_store::SessionStore;
 
 /// Wraps the application's `Arc<tokio::runtime::Runtime>` so dropping
@@ -169,6 +181,25 @@ impl Drop for RuntimeOwner {
 pub(crate) struct AppRuntime {
     paths: AppPaths,
     session: SessionStore,
+    /// The cancellable, event-broadcasting registry every asynchronous
+    /// application operation (starting with `start_open_archive`) is
+    /// tracked through.
+    operations: OperationRegistry,
+    /// Every open archive session, keyed by the `ArchiveSessionId` this
+    /// store itself mints.
+    archive_sessions: ArchiveSessionStore,
+    /// Delivers a `ChallengeResponse`'s live payload to whichever
+    /// operation task is waiting on it -- see the module's own doc
+    /// comment for why this is a separate structure from `operations`.
+    challenges: ChallengeWaiters,
+    /// Test-only seam: when set, every archive open uses this backend
+    /// instead of `SessionStore::backend_selector`'s real, extension-based
+    /// selection -- lets integration tests exercise the full
+    /// `start_open_archive` flow (challenges, retries, cancellation)
+    /// against a deterministic fake backend without depending on a real
+    /// encrypted archive fixture. Always `None` outside tests: production
+    /// `BootstrapConfig::system_default()` never sets it.
+    archive_backend_override: Option<Arc<dyn ArchiveBackend>>,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
@@ -178,6 +209,50 @@ pub(crate) struct AppRuntime {
     /// cannot obtain a live `Services` either.
     shut_down: AtomicBool,
     tokio_runtime: RuntimeOwner,
+}
+
+impl AppRuntime {
+    pub(crate) fn operations(&self) -> &OperationRegistry {
+        &self.operations
+    }
+
+    pub(crate) fn archive_sessions(&self) -> &ArchiveSessionStore {
+        &self.archive_sessions
+    }
+
+    pub(crate) fn challenges(&self) -> &ChallengeWaiters {
+        &self.challenges
+    }
+
+    /// A `Handle` for spawning onto this app's own runtime, or `None`
+    /// once [`ArclainApp::shutdown`] has actually reclaimed and torn it
+    /// down (see `RuntimeOwner`'s doc comment -- in practice this only
+    /// happens once every other reference, including `SessionStore::
+    /// core_services`'s own bare clone, is also gone). Callers that
+    /// reach this from inside a task already running on the app's own
+    /// runtime (every `archive_ops` worker does) can treat `None` as
+    /// "nothing left to do" and stop, the same way they already treat a
+    /// closed challenge channel.
+    pub(crate) fn tokio_handle(&self) -> Option<tokio::runtime::Handle> {
+        self.tokio_runtime.handle()
+    }
+
+    /// Cheap: `BackendSelector` is a single `String` internally.
+    pub(crate) fn backend_selector(&self) -> BackendSelector {
+        self.session.backend_selector.clone()
+    }
+
+    pub(crate) fn archive_backend_override(&self) -> Option<Arc<dyn ArchiveBackend>> {
+        self.archive_backend_override.clone()
+    }
+
+    pub(crate) fn pass_rules(&self) -> Vec<PassRule> {
+        self.session.pass_rules.clone()
+    }
+
+    pub(crate) fn plugin_event_scheduler(&self) -> Option<PluginEventScheduler> {
+        self.session.plugin_event_scheduler.clone()
+    }
 }
 
 /// The application facade. Cheap to clone (an `Arc` internally); every
@@ -297,6 +372,151 @@ impl ArclainApp {
         Ok(self.inner.session.take_legacy_composition())
     }
 
+    /// Starts opening and indexing an archive as a cancellable, event-
+    /// broadcasting operation. Returns as soon as the operation is
+    /// recorded `Accepted`; the archive listing, auto-password matching,
+    /// and any interactive password challenge all happen on a task
+    /// spawned through this app's own runtime handle (see
+    /// `archive_ops::run_open_archive`) -- awaiting this method's future
+    /// does not itself wait for the archive to finish opening. Subscribe
+    /// via [`Self::subscribe_operations`] (or poll [`Self::operation`]) to
+    /// observe `Started` / `Challenge` / `Completed { ArchiveOpened }` /
+    /// `Failed`.
+    pub async fn start_open_archive(
+        &self,
+        request: OpenArchiveRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let (operation_id, cancel) = inner.operations().begin(OperationKind::OpenArchive).await;
+            // `tokio_handle()` returning `None` here would mean the
+            // runtime finished tearing down in the instant between
+            // `dispatch_async` obtaining its handle and this line --
+            // see `AppRuntime::tokio_handle`'s doc comment for why that
+            // is only a theoretical race, not a reachable one in a real
+            // bootstrapped app. Handled defensively anyway: the
+            // operation simply stays `Accepted` rather than panicking,
+            // which is the least-bad outcome in an application that is
+            // already on its way out.
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(archive_ops::run_open_archive(
+                    worker_inner,
+                    operation_id,
+                    cancel,
+                    request,
+                ));
+            }
+            operation_id
+        })
+        .await
+    }
+
+    /// Closes an open archive session. `NotFound` if `session_id` is
+    /// unknown to this app instance -- including a structurally valid but
+    /// never-issued (or already-closed) reconstructed id.
+    pub async fn close_archive(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(
+            move |inner| async move { inner.archive_sessions().close(session_id).await },
+        )
+        .await?
+    }
+
+    /// Lists one page of entries within `request.directory` of an open
+    /// archive session, sorted/filtered/paginated per `request`. An
+    /// immediate, in-memory query -- see `ArchiveSession::list_entries`.
+    pub async fn list_entries(
+        &self,
+        session_id: ArchiveSessionId,
+        request: ListEntriesRequest,
+    ) -> Result<EntryPage, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let session = inner.archive_sessions().get(session_id).await?;
+            Ok(session.list_entries(&request))
+        })
+        .await?
+    }
+
+    /// A point-in-time summary of an open archive session.
+    pub async fn archive_snapshot(
+        &self,
+        session_id: ArchiveSessionId,
+    ) -> Result<ArchiveSnapshot, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let session = inner.archive_sessions().get(session_id).await?;
+            Ok(session.snapshot())
+        })
+        .await?
+    }
+
+    /// Subscribes to the operation-event stream. See
+    /// `OperationRegistry::subscribe`.
+    pub fn subscribe_operations(&self) -> tokio::sync::broadcast::Receiver<OperationEvent> {
+        self.inner.operations().subscribe()
+    }
+
+    /// Answers a pending challenge on `operation_id` with `response`.
+    /// Rejects (`Conflict`) a response whose id does not match the
+    /// operation's actual pending challenge, or an operation with no
+    /// pending challenge at all.
+    pub async fn respond_to_challenge(
+        &self,
+        operation_id: OperationId,
+        response: ChallengeResponse,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            inner
+                .operations()
+                .resolve_challenge(operation_id, response.id())
+                .await?;
+            inner.challenges().respond(operation_id, response)
+        })
+        .await?
+    }
+
+    /// Cooperatively cancels an in-flight operation. Idempotent -- see
+    /// `OperationRegistry::cancel`.
+    pub async fn cancel_operation(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(
+            move |inner| async move { inner.operations().cancel(operation_id).await },
+        )
+        .await?
+    }
+
+    /// A point-in-time snapshot of one operation's last-known state.
+    pub async fn operation(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<OperationSnapshot, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            inner
+                .operations()
+                .operation(operation_id)
+                .await
+                .ok_or_else(|| {
+                    ApplicationError::new(ApplicationErrorKind::NotFound, "no such operation")
+                        .with_operation_id(operation_id)
+                })
+        })
+        .await?
+    }
+
+    /// Up to `limit` operations, most-recently-created first.
+    pub async fn recent_operations(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<OperationSnapshot>, ApplicationError> {
+        self.dispatch_async(
+            move |inner| async move { inner.operations().recent(limit as usize).await },
+        )
+        .await
+    }
+
     /// Runs `work` against the composed session state on this app's own
     /// Tokio runtime, then awaits the result -- so the computation
     /// itself is never at the mercy of whatever executor happens to be
@@ -340,6 +560,36 @@ impl ArclainApp {
                 ApplicationError::new(ApplicationErrorKind::Internal, "internal task failed")
                     .with_diagnostic(join_error.to_string())
             })
+    }
+
+    /// Generalizes [`Self::dispatch`] to asynchronous work: `work` gets an
+    /// owned `Arc<AppRuntime>` (rather than a borrow) precisely so it can
+    /// return a future that outlives the borrow -- await internal locks,
+    /// query the archive-session store, and so on -- while still running
+    /// entirely on this app's own runtime via the same `spawn`-then-await
+    /// pattern `dispatch` uses. Every facade method that awaits anything
+    /// beyond trivial synchronous computation goes through this rather
+    /// than through `dispatch`. Checks the same `shut_down` flag `dispatch`
+    /// does, for the same reason -- see `dispatch`'s own comments for why
+    /// the flag, not `RuntimeOwner::handle()` returning `None`, is the
+    /// authoritative signal.
+    async fn dispatch_async<T, F, Fut>(&self, work: F) -> Result<T, ApplicationError>
+    where
+        T: Send + 'static,
+        F: FnOnce(Arc<AppRuntime>) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = T> + Send + 'static,
+    {
+        if self.inner.shut_down.load(Ordering::SeqCst) {
+            return Err(shutdown_error());
+        }
+        let Some(handle) = self.inner.tokio_handle() else {
+            return Err(shutdown_error());
+        };
+        let inner = self.inner.clone();
+        handle.spawn(work(inner)).await.map_err(|join_error| {
+            ApplicationError::new(ApplicationErrorKind::Internal, "internal task failed")
+                .with_diagnostic(join_error.to_string())
+        })
     }
 }
 

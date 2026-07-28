@@ -5,11 +5,12 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+crc32fast = "1"
 dirs.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 tracing.workspace = true
 zeroize.workspace = true
 
@@ -23,5 +24,8 @@ arclain_plugins = { path = "../plugins" }
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 trybuild = "1.0.118"
+# Builds real ZIP fixtures in temp dirs for the archive-session tests
+# (`tests/archive_sessions.rs`) -- same crate/version `arclain_core`
+# already depends on, so this adds no new crate to the dependency tree.
+zip = "7.0.0"

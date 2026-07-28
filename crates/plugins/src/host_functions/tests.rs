@@ -813,7 +813,7 @@ fn archive_path_requires_archive_metadata_read_capability() {
         archive_path: "C:/private/library/secret.zip".to_string(),
         password: None,
         entries: Arc::new(Vec::new()),
-        metadata_signal: arclain_signals::Signal::new(None),
+        archive_session_id: 0,
     }));
 
     assert!(Host::current_archive_info(&mut host).is_none());
@@ -1120,12 +1120,13 @@ fn cached_metadata_migration_persists_only_with_metadata_write_capability() {
 #[test]
 fn emit_metadata_requires_archive_metadata_write_capability() {
     let mut host = host_functions("metadata-write-denial", Default::default(), 0);
-    let metadata_signal = arclain_signals::Signal::new(None);
+    let bridge = Arc::new(TestActiveTabBridge::default());
+    host.set_active_tab_bridge(bridge.clone());
     host.set_event_context(Some(EventContext {
         archive_path: "test.zip".to_string(),
         password: None,
         entries: Arc::new(Vec::new()),
-        metadata_signal: metadata_signal.clone(),
+        archive_session_id: 1,
     }));
 
     Host::emit_metadata(
@@ -1134,7 +1135,7 @@ fn emit_metadata_requires_archive_metadata_write_capability() {
     );
 
     assert!(
-        metadata_signal.get().is_none(),
+        bridge.metadata_signal().get().is_none(),
         "unauthorized metadata write reached the host signal"
     );
 }
@@ -1150,12 +1151,13 @@ fn emit_metadata_rejects_oversized_json_and_product_ids_without_side_effects() {
         .collect();
     let mut host = host_functions("bounded-metadata-emission", capabilities, 0);
     host.set_library_service(library.clone());
-    let signal = arclain_signals::Signal::new(None);
+    let bridge = Arc::new(TestActiveTabBridge::default());
+    host.set_active_tab_bridge(bridge.clone());
     host.set_event_context(Some(EventContext {
         archive_path: "test.zip".to_string(),
         password: None,
         entries: Arc::new(Vec::new()),
-        metadata_signal: signal.clone(),
+        archive_session_id: 1,
     }));
 
     let oversized_json = serde_json::json!({
@@ -1169,7 +1171,7 @@ fn emit_metadata_rejects_oversized_json_and_product_ids_without_side_effects() {
         serde_json::json!({"product_id": "R".repeat(257), "title": "oversized id"}).to_string(),
     );
 
-    assert!(signal.get().is_none());
+    assert!(bridge.metadata_signal().get().is_none());
     assert!(library
         .list_by_source(arclain_core::MetadataSource::DLSite)
         .unwrap()
@@ -1443,12 +1445,13 @@ fn granted_archive_metadata_capabilities_reach_read_and_write_hostcalls() {
     .collect();
     let mut host = host_functions("metadata-allow-path", capabilities, 0);
     host.set_library_service(library);
-    let signal = arclain_signals::Signal::new(None);
+    let bridge = Arc::new(TestActiveTabBridge::default());
+    host.set_active_tab_bridge(bridge.clone());
     host.set_event_context(Some(EventContext {
         archive_path: "C:/library/allowed.zip".to_string(),
         password: None,
         entries: Arc::new(Vec::new()),
-        metadata_signal: signal.clone(),
+        archive_session_id: 1,
     }));
 
     assert_eq!(
@@ -1472,7 +1475,8 @@ fn granted_archive_metadata_capabilities_reach_read_and_write_hostcalls() {
         r#"{"product_id":"RJ000002","title":"Allowed write"}"#.to_string(),
     );
     assert_eq!(
-        signal
+        bridge
+            .metadata_signal()
             .get()
             .and_then(|value| value["product_id"].as_str().map(str::to_owned))
             .as_deref(),
@@ -1594,6 +1598,10 @@ impl ActiveTabBridge for TestActiveTabBridge {
 
     fn metadata_signal(&self) -> arclain_signals::Signal<Option<serde_json::Value>> {
         self.metadata.clone()
+    }
+
+    fn set_session_metadata(&self, _archive_session_id: u64, metadata: Option<serde_json::Value>) {
+        self.metadata.set(metadata);
     }
 
     fn set_archive_path(&self, path: Option<String>) {

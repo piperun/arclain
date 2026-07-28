@@ -7,10 +7,8 @@
 //! sees the [`crate::ids::OperationId`], [`crate::event::OperationEvent`],
 //! and [`crate::event::OperationSnapshot`] values its methods hand back.
 
+pub(crate) mod challenge_waiters;
 pub(crate) mod registry;
 
-// Not read anywhere yet: the facade (`ArclainApp`) is this re-export's only
-// intended consumer, and it does not exist until a later task wires the
-// registry into it.
-#[allow(unused_imports)]
+pub(crate) use challenge_waiters::ChallengeWaiters;
 pub(crate) use registry::OperationRegistry;

@@ -79,6 +79,29 @@ impl ActiveTabBridge for AppSignalsBridge {
         self.signals.tabs.get().active().metadata.clone()
     }
 
+    fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>) {
+        // Resolved by session id, not "whichever tab is active now" -- the
+        // whole point of moving `OnArchiveOpen` to carry an
+        // `archive_session_id` instead of a captured UI signal (see
+        // `arclain_plugins::PluginEvent::OnArchiveOpen`'s doc comment) is
+        // that a queued event's metadata must land on the tab that
+        // requested it, even if the user has since switched tabs. A tab
+        // whose session was since closed (or that never matched -- for
+        // example a stale event outliving its tab) is a silent no-op,
+        // matching the pre-existing behavior for an event whose
+        // originating tab had already closed by the time the worker
+        // processed it.
+        let target_id = arclain_app::ids::ArchiveSessionId::from_raw(archive_session_id);
+        let tabs = self.signals.tabs.get();
+        if let Some(tab) = tabs
+            .tabs()
+            .iter()
+            .find(|tab| tab.archive_session_id.get() == Some(target_id))
+        {
+            tab.metadata.set(metadata);
+        }
+    }
+
     fn set_archive_path(&self, path: Option<String>) {
         self.signals
             .tabs

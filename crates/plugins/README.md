@@ -52,7 +52,7 @@ scheduler.try_schedule(PluginEvent::OnArchiveOpen {
     kind: ArchiveKind::Zip,
     password: None,
     entries: std::sync::Arc::new(Vec::new()),
-    metadata_signal: arclain_signals::Signal::new(None),
+    archive_session_id: session_id.into_raw(),
 })?;
 ```
 

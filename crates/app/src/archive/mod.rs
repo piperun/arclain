@@ -2,6 +2,12 @@
 //! and display the contents of an open archive, independent of which
 //! archive format or which UI toolkit is on the other end.
 
+mod session;
+mod store;
+
+pub(crate) use session::ArchiveSession;
+pub(crate) use store::ArchiveSessionStore;
+
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
 use crate::ids::{ArchiveSessionId, EntryId};
 
@@ -160,4 +166,15 @@ pub struct EntryPage {
     pub directory: ArchivePath,
     pub total: u64,
     pub entries: Vec<ArchiveEntryDto>,
+}
+
+/// A request to open and index an archive, the argument to
+/// [`crate::ArclainApp::start_open_archive`]. Not `Clone`/`Serialize`/
+/// `Deserialize`: `password`, when present, carries a live
+/// [`crate::challenge::SecretInput`], and those restrictions are
+/// contagious by design (see `SecretInput`'s own doc comment).
+#[derive(Debug)]
+pub struct OpenArchiveRequest {
+    pub source_path: std::path::PathBuf,
+    pub password: Option<crate::challenge::SecretInput>,
 }

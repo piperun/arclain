@@ -43,6 +43,7 @@ use arclain_core::{ContentCache, ResourceConfig, ResourceManager};
 use arclain_plugins::PluginManager;
 
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction};
+use crate::operations::{ChallengeWaiters, OperationRegistry};
 
 use super::paths::AppPaths;
 use super::session_store::SessionStore;
@@ -50,7 +51,7 @@ use super::AppRuntime;
 
 /// What [`crate::ArclainApp::bootstrap`] needs beyond the OS/
 /// installation defaults.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct BootstrapConfig {
     /// Overrides every OS-conventional directory `AppPaths::system_default`
     /// would otherwise compute. Tests use this to point an entire
@@ -59,15 +60,40 @@ pub struct BootstrapConfig {
     /// Worker thread count for the application-owned Tokio runtime.
     /// `None` uses Tokio's own default (the number of logical CPUs).
     pub worker_threads: Option<usize>,
+    /// Test-only seam: when set, every `start_open_archive` call uses this
+    /// backend instead of selecting one by file extension. Lets a test
+    /// exercise the real `start_open_archive` operation (challenges,
+    /// retries, cancellation) against a deterministic fake backend without
+    /// depending on a real encrypted archive fixture. Always `None` in
+    /// `system_default()`.
+    pub archive_backend_override: Option<Arc<dyn arclain_core::ArchiveBackend>>,
+}
+
+/// Hand-written rather than `#[derive(Debug)]`: `dyn arclain_core::
+/// ArchiveBackend` does not implement `Debug`, so `archive_backend_override`
+/// cannot derive it. Reports only whether an override is set, never the
+/// backend's identity or contents.
+impl std::fmt::Debug for BootstrapConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BootstrapConfig")
+            .field("paths_override", &self.paths_override)
+            .field("worker_threads", &self.worker_threads)
+            .field(
+                "archive_backend_override_is_set",
+                &self.archive_backend_override.is_some(),
+            )
+            .finish()
+    }
 }
 
 impl BootstrapConfig {
     /// The configuration a real, non-test launch uses: OS-conventional
-    /// paths, default worker thread count.
+    /// paths, default worker thread count, no backend override.
     pub fn system_default() -> Self {
         Self {
             paths_override: None,
             worker_threads: None,
+            archive_backend_override: None,
         }
     }
 }
@@ -398,6 +424,10 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
     Ok(AppRuntime {
         paths,
         session,
+        operations: OperationRegistry::new(),
+        archive_sessions: crate::archive::ArchiveSessionStore::new(),
+        challenges: ChallengeWaiters::new(),
+        archive_backend_override: config.archive_backend_override,
         shut_down: std::sync::atomic::AtomicBool::new(false),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })

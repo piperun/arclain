@@ -100,6 +100,21 @@ where
     Some(result)
 }
 
+/// Writes metadata for the session an event-worker RequestFetch is
+/// resolving on behalf of, via the bridge (if one is installed and still
+/// knows about that session). Replaces a direct `Signal::set` now that
+/// the event only carries an opaque `archive_session_id` -- see
+/// `PluginEvent::OnArchiveOpen`'s doc comment.
+fn set_event_session_metadata(
+    active_tab: Option<&Arc<dyn crate::ActiveTabBridge>>,
+    archive_session_id: u64,
+    metadata: serde_json::Value,
+) {
+    if let Some(bridge) = active_tab {
+        bridge.set_session_metadata(archive_session_id, Some(metadata));
+    }
+}
+
 /// Execute the event-worker RequestFetch route behind the instance's
 /// immutable manifest capabilities. The injected operations keep the exact
 /// production route testable without making a real network request.
@@ -107,7 +122,8 @@ fn process_event_worker_request_fetch<Permit, Get, Fetch, Fallback>(
     instance: &Arc<Mutex<PluginInstance>>,
     plugin_id: &str,
     key: &str,
-    metadata_signal: &arclain_signals::Signal<Option<serde_json::Value>>,
+    active_tab: Option<&Arc<dyn crate::ActiveTabBridge>>,
+    archive_session_id: u64,
     gameta_available: bool,
     mut acquire_host_service_permit: Permit,
     get_from_server: Get,
@@ -149,7 +165,7 @@ where
             if !crate::types::metadata_value_within_limit(&metadata) {
                 return RequestFetchOutcome::Denied;
             }
-            metadata_signal.set(Some(metadata));
+            set_event_session_metadata(active_tab, archive_session_id, metadata);
             info!("[EventWorker] Set metadata signal via gameta server");
             RequestFetchOutcome::ServerHandled
         }
@@ -162,7 +178,7 @@ where
                     if !crate::types::metadata_value_within_limit(&metadata) {
                         return RequestFetchOutcome::Denied;
                     }
-                    metadata_signal.set(Some(metadata));
+                    set_event_session_metadata(active_tab, archive_session_id, metadata);
                     RequestFetchOutcome::ServerHandled
                 }
                 Ok(None) | Err(_) => {
@@ -202,14 +218,14 @@ impl PluginManager {
                     path,
                     password,
                     entries,
-                    metadata_signal,
+                    archive_session_id,
                     ..
                 } = &event;
                 crate::host_functions::EventContext {
                     archive_path: path.clone(),
                     password: password.clone(),
                     entries: entries.clone(),
-                    metadata_signal: metadata_signal.clone(),
+                    archive_session_id: *archive_session_id,
                 }
             };
 
@@ -254,12 +270,19 @@ impl PluginManager {
                         continue;
                     };
                     info!("[EventWorker] Processing plugin RequestFetch");
-                    let gameta_available = instance_arc.lock().get_gameta_client().is_some();
+                    let (gameta_available, active_tab_bridge) = {
+                        let locked = instance_arc.lock();
+                        (
+                            locked.get_gameta_client().is_some(),
+                            locked.get_active_tab_bridge(),
+                        )
+                    };
                     process_event_worker_request_fetch(
                         &instance_arc,
                         &plugin_id,
                         &key,
-                        &event_ctx.metadata_signal,
+                        active_tab_bridge.as_ref(),
+                        event_ctx.archive_session_id,
                         gameta_available,
                         || {
                             instance_arc
@@ -395,6 +418,39 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    /// Minimal `ActiveTabBridge` test double for
+    /// `process_event_worker_request_fetch`'s own tests: only
+    /// `metadata_signal`/`set_session_metadata` matter here (the tests
+    /// assert on what was -- or was not -- written), so every other
+    /// method is a harmless stub.
+    #[derive(Default)]
+    struct TestBridge {
+        metadata: arclain_signals::Signal<Option<serde_json::Value>>,
+    }
+
+    impl crate::ActiveTabBridge for TestBridge {
+        fn archive_path(&self) -> Option<String> {
+            None
+        }
+        fn current_password(&self) -> Option<String> {
+            None
+        }
+        fn archive_entries(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn metadata_signal(&self) -> arclain_signals::Signal<Option<serde_json::Value>> {
+            self.metadata.clone()
+        }
+        fn set_session_metadata(
+            &self,
+            _archive_session_id: u64,
+            metadata: Option<serde_json::Value>,
+        ) {
+            self.metadata.set(metadata);
+        }
+        fn set_archive_path(&self, _path: Option<String>) {}
+    }
+
     fn manager_with_capabilities(
         network: bool,
         archive_metadata_write: bool,
@@ -448,7 +504,7 @@ mod tests {
             kind: arclain_core::ArchiveKind::Zip,
             password: Some(password_marker.to_string()),
             entries: Arc::new(Vec::new()),
-            metadata_signal: arclain_signals::Signal::new(None),
+            archive_session_id: 0,
         };
 
         trace_event_received(&event);
@@ -480,7 +536,7 @@ mod tests {
             let instance = manager
                 .get_plugin_instance("ui-demo")
                 .expect("loaded plugin instance");
-            let metadata = arclain_signals::Signal::new(None);
+            let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
             let fetch_called = AtomicBool::new(false);
             let fallback_called = AtomicBool::new(false);
 
@@ -488,7 +544,8 @@ mod tests {
                 &instance,
                 "ui-demo",
                 "dlsite:RJ000001",
-                &metadata,
+                Some(&bridge),
+                1,
                 true,
                 || Ok(()),
                 |_, _| {
@@ -502,7 +559,7 @@ mod tests {
             assert_eq!(outcome, RequestFetchOutcome::Denied);
             assert!(!fetch_called.load(Ordering::SeqCst));
             assert!(!fallback_called.load(Ordering::SeqCst));
-            assert!(metadata.get().is_none());
+            assert!(bridge.metadata_signal().get().is_none());
         }
     }
 
@@ -512,7 +569,7 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
-        let metadata = arclain_signals::Signal::new(None);
+        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
         let fetch_called = AtomicBool::new(false);
         let fallback_called = AtomicBool::new(false);
 
@@ -520,7 +577,8 @@ mod tests {
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
-            &metadata,
+            Some(&bridge),
+            1,
             true,
             || Ok(()),
             |source, product_id| {
@@ -537,7 +595,8 @@ mod tests {
         assert!(fetch_called.load(Ordering::SeqCst));
         assert!(!fallback_called.load(Ordering::SeqCst));
         assert_eq!(
-            metadata
+            bridge
+                .metadata_signal()
                 .get()
                 .and_then(|value| value["product_id"].as_str().map(str::to_owned))
                 .as_deref(),
@@ -569,7 +628,7 @@ mod tests {
         client
             .try_acquire_plugin_host_service("ui-demo", "gameta")
             .expect("first host-service request is within policy");
-        let metadata = arclain_signals::Signal::new(None);
+        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
         let fetch_called = AtomicBool::new(false);
         let fallback_called = AtomicBool::new(false);
 
@@ -577,7 +636,8 @@ mod tests {
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
-            &metadata,
+            Some(&bridge),
+            1,
             true,
             || {
                 client
@@ -595,7 +655,7 @@ mod tests {
         assert_eq!(outcome, RequestFetchOutcome::Denied);
         assert!(!fetch_called.load(Ordering::SeqCst));
         assert!(!fallback_called.load(Ordering::SeqCst));
-        assert!(metadata.get().is_none());
+        assert!(bridge.metadata_signal().get().is_none());
     }
 
     #[test]
@@ -619,7 +679,7 @@ mod tests {
                 requests_per_minute: 1,
             },
         );
-        let metadata = arclain_signals::Signal::new(None);
+        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
         let get_called = AtomicBool::new(false);
         let fetch_called = AtomicBool::new(false);
         let native_called = AtomicBool::new(false);
@@ -628,7 +688,8 @@ mod tests {
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
-            &metadata,
+            Some(&bridge),
+            1,
             true,
             || {
                 client
@@ -650,7 +711,7 @@ mod tests {
         assert!(get_called.load(Ordering::SeqCst));
         assert!(!fetch_called.load(Ordering::SeqCst));
         assert!(!native_called.load(Ordering::SeqCst));
-        assert!(metadata.get().is_none());
+        assert!(bridge.metadata_signal().get().is_none());
     }
 
     #[test]
@@ -659,14 +720,15 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
-        let metadata = arclain_signals::Signal::new(None);
+        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
         let native_called = AtomicBool::new(false);
 
         let outcome = process_event_worker_request_fetch(
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
-            &metadata,
+            Some(&bridge),
+            1,
             true,
             || Ok(()),
             |_, _| {
@@ -680,7 +742,7 @@ mod tests {
         );
 
         assert_eq!(outcome, RequestFetchOutcome::Denied);
-        assert!(metadata.get().is_none());
+        assert!(bridge.metadata_signal().get().is_none());
         assert!(!native_called.load(Ordering::SeqCst));
     }
 
@@ -690,7 +752,7 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
-        let metadata = arclain_signals::Signal::new(None);
+        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
         let permits = AtomicUsize::new(0);
         let get_calls = AtomicUsize::new(0);
         let fetch_calls = AtomicUsize::new(0);
@@ -700,7 +762,8 @@ mod tests {
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
-            &metadata,
+            Some(&bridge),
+            1,
             false,
             || {
                 permits.fetch_add(1, Ordering::SeqCst);
@@ -732,7 +795,7 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
-        let metadata = arclain_signals::Signal::new(None);
+        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
         let permits = AtomicUsize::new(0);
         let fetch_calls = AtomicUsize::new(0);
         let fallback_calls = AtomicUsize::new(0);
@@ -741,7 +804,8 @@ mod tests {
             &instance,
             "ui-demo",
             "dlsite:RJ000001",
-            &metadata,
+            Some(&bridge),
+            1,
             true,
             || {
                 permits.fetch_add(1, Ordering::SeqCst);
@@ -775,7 +839,7 @@ mod tests {
             archive_path: "C:/private/library/secret.zip".to_string(),
             password: Some("private-password".to_string()),
             entries: Arc::new(Vec::new()),
-            metadata_signal: arclain_signals::Signal::new(None),
+            archive_session_id: 0,
         };
 
         let result =
@@ -805,7 +869,7 @@ mod tests {
             archive_path: "C:/library/allowed.zip".to_string(),
             password: None,
             entries: Arc::new(Vec::new()),
-            metadata_signal: arclain_signals::Signal::new(None),
+            archive_session_id: 0,
         };
 
         let result =
@@ -830,7 +894,7 @@ mod tests {
             archive_path: "C:/library/panic.zip".to_string(),
             password: None,
             entries: Arc::new(Vec::new()),
-            metadata_signal: arclain_signals::Signal::new(None),
+            archive_session_id: 0,
         };
 
         let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

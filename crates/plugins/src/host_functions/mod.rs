@@ -144,9 +144,9 @@ enum HostMode {
 }
 
 /// Per-event context the dispatch worker installs while a plugin's
-/// event handler runs. Carries snapshots of the *originating tab's*
-/// state (archive path, password, entries list, metadata signal),
-/// so host-function calls inside the handler resolve to the tab the
+/// event handler runs. Carries snapshots of the *originating session's*
+/// state (archive path, password, entries list, session id), so
+/// host-function calls inside the handler resolve to the session the
 /// event was fired for — never to whatever tab is currently active
 /// when the worker processes the event.
 #[derive(Clone)]
@@ -154,7 +154,11 @@ pub struct EventContext {
     pub archive_path: String,
     pub password: Option<String>,
     pub entries: Arc<Vec<arclain_core::ArchiveEntry>>,
-    pub metadata_signal: arclain_signals::Signal<Option<serde_json::Value>>,
+    /// The opaque `ArchiveSessionId` (raw `u64`) this event was fired
+    /// for. `emit_metadata`'s event-context path resolves this back to
+    /// its owning tab (if any) via `ActiveTabBridge::set_session_metadata`
+    /// rather than writing to a captured UI signal directly.
+    pub archive_session_id: u64,
 }
 
 /// State for host functions
