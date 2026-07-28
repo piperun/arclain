@@ -97,17 +97,32 @@ pub struct TabState {
     /// that means a second, UI-owned `list()` call rather than reaching
     /// into the facade's own indexed session).
     pub archive_session_id: Signal<Option<arclain_app::ids::ArchiveSessionId>>,
-    /// The operation (if any) currently awaiting a response to a
-    /// challenge it raised, shown via this tab's existing
-    /// `password_dialog`/collision-prompt UI. Set by
-    /// `crate::core::operation_bridge` when a `Challenge` arrives for an
-    /// operation this tab originated (archive-open or extraction alike --
-    /// both share the same password prompt); cleared once answered or the
-    /// operation reaches a terminal state. The render side reads this to
-    /// know which `OperationId`/`ChallengeId` a submitted answer targets,
-    /// rather than assuming "whatever `try_open_with_password` used to
-    /// call" the way the pre-facade UI could.
-    pub pending_challenge: Signal<Option<PendingChallenge>>,
+    /// Every operation (archive-open, extraction, or both at once --
+    /// see below) currently awaiting a response to a challenge it
+    /// raised, oldest first. The front entry is the one shown via this
+    /// tab's `password_dialog`; the rest wait their turn.
+    ///
+    /// A single `Option` slot held only the most recent challenge until
+    /// the 2026-07 operation-bridge hardening: a tab's archive-open and
+    /// its extraction are independent operations that can both be in
+    /// flight at once (e.g. the user starts extracting, then opens a
+    /// different archive into the same tab before the extraction
+    /// finishes), and either can raise its own `Challenge::Password`.
+    /// With one slot, the second challenge to arrive silently overwrote
+    /// the first -- the first operation's challenge waiter then hung
+    /// forever, since nothing would ever answer it. A small FIFO queue
+    /// means every challenge eventually gets shown, never dropped.
+    ///
+    /// Populated by `crate::core::operation_bridge` when a `Challenge`
+    /// arrives for an operation this tab originated; the front entry is
+    /// removed (and the next, if any, presented) via
+    /// `crate::core::operation_bridge::dequeue_and_present_next` once
+    /// answered, cancelled, or the operation reaches a terminal state.
+    /// The render side reads the front entry to know which
+    /// `OperationId`/`ChallengeId` a submitted answer targets, rather
+    /// than assuming "whatever `try_open_with_password` used to call"
+    /// the way the pre-facade UI could.
+    pub pending_challenge: Signal<Vec<PendingChallenge>>,
     /// The extraction operation (if any) currently running for this tab
     /// -- set by `crate::features::archive_operations::application::
     /// extraction::start_extraction` right after registering with the
@@ -117,6 +132,16 @@ pub struct TabState {
     /// cancelling means `ArclainApp::cancel_operation`, not killing a
     /// handle egui holds directly.
     pub active_extraction_operation: Signal<Option<arclain_app::ids::OperationId>>,
+    /// The archive-open operation (if any) currently running for this
+    /// tab -- set by `crate::core::operations::archive::start_archive_open`
+    /// right after registering with the operation bridge, cleared once
+    /// the operation reaches a terminal state. Mirrors
+    /// `active_extraction_operation`'s role for extraction: what a
+    /// tab-close must cancel before the tab goes away (see
+    /// `crate::core::operations::archive::cancel_archive_open` and its
+    /// call site in the close-tab-confirm handler) so an open in flight
+    /// for a tab that no longer exists doesn't keep running orphaned.
+    pub pending_open_operation: Signal<Option<arclain_app::ids::OperationId>>,
     /// Worker-owned immutable file-list snapshot. Renderers may clone this
     /// signal value in O(1), but only archive/navigation workers replace it.
     pub browser_entries: Signal<BrowserEntriesSnapshot>,
@@ -258,8 +283,9 @@ impl TabState {
             selection_count: Signal::new(0).with_name("selection_count"),
             opened_archive: Signal::new(None).with_name("opened_archive"),
             archive_session_id: Signal::new(None).with_name("archive_session_id"),
-            pending_challenge: Signal::new(None).with_name("pending_challenge"),
+            pending_challenge: Signal::new(Vec::new()).with_name("pending_challenge"),
             active_extraction_operation: Signal::new(None).with_name("active_extraction_operation"),
+            pending_open_operation: Signal::new(None).with_name("pending_open_operation"),
             browser_entries: Signal::new(BrowserEntriesSnapshot::default())
                 .with_name("browser_entries"),
             browser_view_state: Signal::new(BrowserViewState::default())
@@ -333,6 +359,7 @@ impl TabState {
             &self.active_extraction_operation,
             "tab.active_extraction_operation",
         );
+        sig_ctx.bind_named(&self.pending_open_operation, "tab.pending_open_operation");
         sig_ctx.bind_named(&self.browser_entries, "tab.browser_entries");
         sig_ctx.bind_named(&self.browser_view_state, "tab.browser_view_state");
         sig_ctx.bind_named(&self.page_display_name, "tab.page_display_name");

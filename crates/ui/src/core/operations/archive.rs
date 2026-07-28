@@ -1,4 +1,4 @@
-use crate::core::tabs::TabId;
+use crate::core::tabs::{TabId, TabState};
 use crate::shared::components::status_bar;
 use crate::shared::dialogs::MergeDialogState;
 use crate::shared::SharedState;
@@ -6,6 +6,7 @@ use arclain_core::archive::MultiPartArchive;
 use arclain_core::ArchiveBackend;
 use crc32fast::Hasher;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::info;
 
 /// Starts opening `path` into `tab_id` through the application facade,
@@ -42,8 +43,8 @@ pub fn start_archive_open(
         // reach into the facade's own session for the password it used.
         tab.current_password.set(password.clone());
     }
-    let origins = shared.operation_origins.clone();
     let runtime = shared.services.tokio_runtime.clone();
+    let shared = shared.clone();
     runtime.spawn(async move {
         match app
             .start_open_archive(arclain_app::archive::OpenArchiveRequest {
@@ -52,10 +53,75 @@ pub fn start_archive_open(
             })
             .await
         {
-            Ok(operation_id) => origins.register(operation_id, tab_id),
+            Ok(operation_id) => {
+                // Set before registering (not after): `register_operation`
+                // immediately reconciles against the operation's current
+                // snapshot, and a fast-failing open could already be
+                // terminal by the time that reconciliation runs. Setting
+                // this first means a terminal reconciliation's own
+                // `tab.pending_open_operation.set(None)` is the value
+                // that sticks, rather than this overwriting it back to
+                // `Some` afterward for an operation that already finished.
+                if let Some(tab) = shared.signals().tabs.get().get(tab_id) {
+                    tab.pending_open_operation.set(Some(operation_id));
+                }
+                crate::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
+                    .await;
+            }
             Err(error) => {
                 tracing::error!("[archive] start_open_archive was rejected: {error:?}");
             }
+        }
+    });
+}
+
+/// Cancels the archive-open operation currently in flight for `tab`, if
+/// any. Mirrors `crate::core::operations::extraction::cancel_extraction`
+/// -- see the close-tab-confirm handler (`dialog_handler.rs`) for why an
+/// in-flight operation must be cancelled before its owning tab goes
+/// away: the facade has no way to notice a tab closing on its own, so
+/// without this the open would keep running orphaned in the background
+/// with nowhere left to route its completion once the tab is gone.
+pub fn cancel_archive_open(shared: &SharedState, tab: &Arc<TabState>) {
+    let Some(operation_id) = tab.pending_open_operation.get() else {
+        return;
+    };
+    let Some(app) = shared.facade.clone() else {
+        return;
+    };
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.spawn(async move {
+        let _ = app.cancel_operation(operation_id).await;
+    });
+}
+
+/// Fire-and-forget `ArclainApp::close_archive` for `session_id`, if any.
+///
+/// Every call site that is about to overwrite or discard a tab's
+/// `archive_session_id` -- closing the tab, replacing its active
+/// archive with a different one -- must call this first with whatever
+/// the id was beforehand. `close_archive` is the only way to release
+/// the facade-side session `ArclainApp::start_open_archive` opened;
+/// without a call here at every such site, the facade keeps the
+/// session (and its indexed entry data) alive in memory for the rest of
+/// the process's life. A no-op if `session_id` is `None` (nothing was
+/// ever open) or the facade is unavailable (test fixtures).
+pub fn close_archive_session(
+    shared: &SharedState,
+    session_id: Option<arclain_app::ids::ArchiveSessionId>,
+) {
+    let Some(session_id) = session_id else {
+        return;
+    };
+    let Some(app) = shared.facade.clone() else {
+        return;
+    };
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.spawn(async move {
+        if let Err(error) = app.close_archive(session_id).await {
+            tracing::warn!(
+                "[archive] close_archive failed for a discarded session {session_id:?}: {error:?}"
+            );
         }
     });
 }

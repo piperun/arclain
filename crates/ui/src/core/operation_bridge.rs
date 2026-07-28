@@ -32,7 +32,7 @@
 //! rather than silently ignoring it.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use arclain_app::challenge::{Challenge, ChallengeResponse};
@@ -60,11 +60,20 @@ impl OperationOrigins {
         Self::default()
     }
 
-    /// Registers `operation_id` as belonging to `tab_id`. Called
-    /// immediately after `start_open_archive`/`start_extract` returns
-    /// its id -- nothing could reference the id before that point, so
-    /// there is no race against the bridge worker observing an event for
-    /// it first.
+    /// Registers `operation_id` as belonging to `tab_id`.
+    ///
+    /// Called immediately after `start_open_archive`/`start_extract`
+    /// returns its id -- but that is *not* race-free: the spawned
+    /// worker starts running (and can publish events, including a
+    /// terminal one for a fast-failing operation) concurrently with the
+    /// caller resuming from that `.await` and reaching this call. The
+    /// bridge's receiver task can observe and drop such an event before
+    /// this ever runs. Callers must use
+    /// `crate::core::operation_bridge::register_operation` instead of
+    /// calling this directly -- it registers and then immediately
+    /// reconciles against the operation's current snapshot, so a state
+    /// reached before registration is never silently lost. This method
+    /// stays `pub` only for `register_operation` itself and tests.
     pub fn register(&self, operation_id: OperationId, tab_id: TabId) {
         self.origins.lock().unwrap().insert(operation_id, tab_id);
     }
@@ -78,6 +87,15 @@ impl OperationOrigins {
     /// application.
     fn forget(&self, operation_id: OperationId) {
         self.origins.lock().unwrap().remove(&operation_id);
+    }
+
+    /// Every operation id currently tracked, snapshotted at call time.
+    /// Used after the broadcast receiver reports `Lagged` to reconcile
+    /// every in-flight operation directly against its current snapshot
+    /// (see `reconcile_after_lag`) -- a dropped event can otherwise
+    /// leave an origin (and its tab's dialog) stuck forever.
+    fn tracked_ids(&self) -> Vec<OperationId> {
+        self.origins.lock().unwrap().keys().copied().collect()
     }
 }
 
@@ -105,6 +123,70 @@ fn archive_error_kind(kind: arclain_app::error::ApplicationErrorKind) -> Archive
     }
 }
 
+/// The pieces of `relist_for_browser_signals` that come from actual
+/// backend I/O, plain data with no `TabState`/`SharedState` access --
+/// see `resolve_archive_listing`'s own doc comment for why this is kept
+/// separate.
+struct ResolvedListing {
+    info: arclain_core::archive::ArchiveInfo,
+    resolved_password: Option<String>,
+}
+
+/// The blocking half of `relist_for_browser_signals`: lists `path`
+/// through `backend`, trying `current_password` first, then falling
+/// back to auto-detecting one from `pass_rules`/`last_entries` exactly
+/// the way `archive_ops::attempt_initial` does (see its own doc
+/// comment) using the identical inputs the facade resolved its own
+/// password from, so it deterministically re-derives the same guess --
+/// there is nothing to read the facade's own resolved password back
+/// from without reaching into its private `ArchiveSession` internals,
+/// which this crate must not do.
+///
+/// Pure data in, data out: no signal access, so this can run inside
+/// `spawn_blocking` without a blocking-pool thread ever touching
+/// `SharedState`/`TabState`. `backend.list()` is a real blocking
+/// filesystem/subprocess call (7z-CLI or a native archive library), and
+/// this is invoked from the bridge worker's own event loop (see
+/// `spawn`'s doc comment) -- running it inline on that loop would block
+/// every other tab's operation events (and the broadcast channel
+/// itself) for as long as the listing takes.
+fn resolve_archive_listing(
+    backend: Arc<dyn arclain_core::ArchiveBackend>,
+    pass_rules: Vec<arclain_core::utilities::PassRule>,
+    last_entries: Vec<String>,
+    path: PathBuf,
+    current_password: Option<String>,
+) -> anyhow::Result<ResolvedListing> {
+    let archive_name = path.to_str();
+    let auto_password =
+        || arclain_core::utilities::auto_password_for(&pass_rules, archive_name, &last_entries);
+
+    let (info, resolved_password) = if let Some(password) = current_password {
+        // Already known -- either a prior open of this same tab, or a
+        // password the user just submitted for a live challenge.
+        (backend.list(&path, Some(&password))?, Some(password))
+    } else {
+        match backend.list(&path, None) {
+            Ok(info) if info.headers_encrypted => match auto_password() {
+                Some(password) => match backend.list(&path, Some(&password)) {
+                    Ok(unlocked) => (unlocked, Some(password)),
+                    Err(_) => (info, None),
+                },
+                None => (info, None),
+            },
+            Ok(info) => (info, None),
+            Err(error) => match auto_password() {
+                Some(password) => (backend.list(&path, Some(&password))?, Some(password)),
+                None => return Err(error),
+            },
+        }
+    };
+    Ok(ResolvedListing {
+        info,
+        resolved_password,
+    })
+}
+
 /// Re-lists `path` directly through the backend selector to populate this
 /// tab's flat `entries`/`archive_extras`/`opened_archive` signals -- the
 /// data the archive browser UI reads today. A deliberate duplicate of
@@ -117,19 +199,10 @@ fn archive_error_kind(kind: arclain_app::error::ApplicationErrorKind) -> Archive
 /// facade model is a separate, much larger undertaking this task does
 /// not attempt (see this task's report).
 ///
-/// Resolves its own password rather than trusting `tab.current_password`
-/// to already be right: a password the *user* typed in response to a
-/// `Challenge::Password` does land there first (see
-/// `handle_password_challenge`), but an *auto-detected* one (a matching
-/// `PassRule`, resolved silently inside the facade's own session with no
-/// challenge ever raised) does not -- there is nothing to read it back
-/// from without reaching into the facade's private `ArchiveSession`
-/// internals, which this crate must not do. Instead this mirrors
-/// `archive_ops::attempt_initial`'s exact two-branch characterization
-/// (see its own doc comment) using the identical `(pass_rules,
-/// archive_name, last_entries)` inputs the facade resolved its own
-/// password from, so it deterministically re-derives the same guess.
-fn relist_for_browser_signals(
+/// The actual backend listing (`resolve_archive_listing`) runs inside
+/// `spawn_blocking` -- see that function's own doc comment for why
+/// running it directly on the bridge's event loop would be a problem.
+async fn relist_for_browser_signals(
     shared: &SharedState,
     tab: &crate::core::tabs::TabState,
     path: &Path,
@@ -142,30 +215,27 @@ fn relist_for_browser_signals(
             state.last_entries.clone(),
         )
     };
-    let archive_name = path.to_str();
-    let auto_password =
-        || arclain_core::utilities::auto_password_for(&pass_rules, archive_name, &last_entries);
-
-    let (info, resolved_password) = if let Some(password) = tab.current_password.get() {
-        // Already known -- either a prior open of this same tab, or a
-        // password the user just submitted for a live challenge.
-        (backend.list(path, Some(&password))?, Some(password))
-    } else {
-        match backend.list(path, None) {
-            Ok(info) if info.headers_encrypted => match auto_password() {
-                Some(password) => match backend.list(path, Some(&password)) {
-                    Ok(unlocked) => (unlocked, Some(password)),
-                    Err(_) => (info, None),
-                },
-                None => (info, None),
-            },
-            Ok(info) => (info, None),
-            Err(error) => match auto_password() {
-                Some(password) => (backend.list(path, Some(&password))?, Some(password)),
-                None => return Err(error),
-            },
-        }
-    };
+    let current_password = tab.current_password.get();
+    let path_owned = path.to_path_buf();
+    // `backend` is `Arc<dyn ArchiveBackend>` -- cloned (a cheap refcount
+    // bump) rather than moved outright, since `Archive::new`/
+    // `with_password` below still need a handle to it after the
+    // blocking task below consumes its own copy.
+    let backend_for_blocking = backend.clone();
+    let ResolvedListing {
+        info,
+        resolved_password,
+    } = tokio::task::spawn_blocking(move || {
+        resolve_archive_listing(
+            backend_for_blocking,
+            pass_rules,
+            last_entries,
+            path_owned,
+            current_password,
+        )
+    })
+    .await
+    .map_err(|join_error| anyhow::anyhow!("archive listing task panicked: {join_error}"))??;
 
     if let Some(password) = &resolved_password {
         tab.current_password.set(Some(password.clone()));
@@ -187,6 +257,22 @@ fn relist_for_browser_signals(
         }
     }
     tab.selection_count.set_if_changed(0);
+
+    // Refresh the auto-password matcher's "internal file paths" input
+    // (see `resolve_archive_listing`'s own doc comment on
+    // `auto_password_for`) with this archive's own entries. Left stale
+    // (whatever was set at app startup, or by whichever archive was
+    // opened first this session), a `PassRule` keyed on an entry
+    // filename could only ever match the very first archive it was
+    // ever checked against.
+    {
+        let mut state = shared.app_state.lock();
+        state.last_entries = info
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+    }
     tab.entries.set(Arc::new(info.entries));
 
     let archive = match resolved_password {
@@ -203,24 +289,104 @@ fn relist_for_browser_signals(
     Ok(())
 }
 
-fn handle_open_archive_completed(
+/// Removes `operation_id`'s entry (if any) from `tab`'s pending-challenge
+/// queue, then re-presents whichever challenge (if any) is now at the
+/// front by populating `tab.password_dialog` for it -- or hides the
+/// dialog if the queue is now empty.
+///
+/// Used both when an operation reaches a terminal state (below, and
+/// `handle_extract_terminal`) and when the user answers/cancels the
+/// currently-displayed challenge
+/// (`password_management::presentation::ui::handle_password_dialogs`).
+/// Either way, a second tab-scoped operation's still-queued challenge
+/// (see `TabState::pending_challenge`'s own doc comment on why a tab
+/// can have more than one operation in flight at once) must be shown
+/// next rather than silently forgotten, which is exactly what the old
+/// single-`Option` slot did: whichever challenge arrived first was
+/// simply overwritten, and its waiter then hung forever.
+pub(crate) fn dequeue_and_present_next(
+    tab: &crate::core::tabs::TabState,
+    operation_id: OperationId,
+) {
+    let mut queue = tab.pending_challenge.get();
+    queue.retain(|pending| pending.operation_id != operation_id);
+    let mut dialog = tab.password_dialog.get();
+    match queue.first() {
+        Some(next) => {
+            dialog.show = true;
+            dialog.password.clear();
+            dialog.error = match &next.challenge {
+                Challenge::Password { attempt, .. } if *attempt > 1 => {
+                    "Incorrect password".to_string()
+                }
+                _ => String::new(),
+            };
+        }
+        None => {
+            dialog.show = false;
+            dialog.error.clear();
+        }
+    }
+    tab.password_dialog.set(dialog);
+    tab.pending_challenge.set(queue);
+}
+
+/// Drains any metadata a plugin's `set_session_metadata` host function
+/// already reported for `session_id` before this tab was stamped with
+/// it, applying it to `tab` if given -- see `AppSignals::
+/// pending_session_metadata`'s own doc comment for why that race
+/// exists and how the two of them cooperate to close it.
+///
+/// Always drains regardless of whether `tab` is `Some`: a session whose
+/// tab is already gone by the time this runs has no metadata
+/// destination left, but the buffered entry must still be removed --
+/// otherwise it leaks for the process's lifetime, since nothing else
+/// will ever ask for it again. Idempotent: draining an
+/// empty/already-drained entry is a harmless no-op, which is what
+/// happens for the overwhelming majority of opens (no plugin calls
+/// back with metadata before the tab is stamped).
+///
+/// Takes `&AppSignals` rather than `&SharedState`: the buffer lives on
+/// signals alone (see that field's own doc comment on why -- it must be
+/// reachable from `AppSignalsBridge::set_session_metadata`, constructed
+/// before a full `SharedState` exists), so this needs nothing else.
+fn apply_buffered_session_metadata(
+    signals: &crate::core::signals::AppSignals,
+    tab: Option<&crate::core::tabs::TabState>,
+    session_id: arclain_app::ids::ArchiveSessionId,
+) {
+    let metadata = signals
+        .pending_session_metadata
+        .lock()
+        .unwrap()
+        .remove(&session_id);
+    if let (Some(tab), Some(metadata)) = (tab, metadata) {
+        tab.metadata.set(metadata);
+    }
+}
+
+async fn handle_open_archive_completed(
     shared: &SharedState,
     origins: &OperationOrigins,
     tab_id: TabId,
     operation_id: OperationId,
     snapshot: arclain_app::archive::ArchiveSnapshot,
 ) {
-    let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() else {
+    // Always forget the origin, regardless of whether the tab lookup
+    // below succeeds -- otherwise the origin map grows for the
+    // process's lifetime for any tab closed mid-open.
+    origins.forget(operation_id);
+
+    let tab = shared.signals().tabs.get().get(tab_id).cloned();
+    apply_buffered_session_metadata(shared.signals(), tab.as_deref(), snapshot.session_id);
+    let Some(tab) = tab else {
         return;
     };
     tab.archive_session_id.set(Some(snapshot.session_id));
-    let mut password_dialog = tab.password_dialog.get();
-    password_dialog.show = false;
-    password_dialog.error.clear();
-    tab.password_dialog.set(password_dialog);
-    tab.pending_challenge.set(None);
+    tab.pending_open_operation.set(None);
+    dequeue_and_present_next(&tab, operation_id);
 
-    if let Err(error) = relist_for_browser_signals(shared, &tab, &snapshot.source_path) {
+    if let Err(error) = relist_for_browser_signals(shared, &tab, &snapshot.source_path).await {
         tracing::error!(
             "[operation_bridge] archive opened via the facade but the UI-side re-list failed: {error:#}"
         );
@@ -244,7 +410,6 @@ fn handle_open_archive_completed(
             tab.pending_open_file.set(Some(retry_path));
         }
     }
-    origins.forget(operation_id);
 }
 
 fn handle_open_archive_failed_or_cancelled(
@@ -254,13 +419,20 @@ fn handle_open_archive_failed_or_cancelled(
     operation_id: OperationId,
     error: Option<arclain_app::error::ApplicationError>,
 ) {
+    // Always forget regardless of whether the tab lookup below
+    // succeeds -- see `handle_open_archive_completed`'s identical
+    // ordering and its own doc comment. A failed/cancelled open never
+    // reaches the point of minting a session id, so there is nothing
+    // to drain from `pending_session_metadata` on this path (that
+    // buffer is keyed by session id, and only a *successful* open ever
+    // produces one).
+    origins.forget(operation_id);
+
     let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() else {
         return;
     };
-    let mut password_dialog = tab.password_dialog.get();
-    password_dialog.show = false;
-    tab.password_dialog.set(password_dialog);
-    tab.pending_challenge.set(None);
+    tab.pending_open_operation.set(None);
+    dequeue_and_present_next(&tab, operation_id);
 
     if let Some(error) = error {
         let message = format!("Failed to load archive: {}", error.summary);
@@ -283,7 +455,27 @@ fn handle_open_archive_failed_or_cancelled(
             status.message = "Archive open cancelled".to_string();
         });
     }
-    origins.forget(operation_id);
+}
+
+/// Below this percent, a linear time-left extrapolation is withheld
+/// entirely (see `handle_extract_progress`) -- too little progress to
+/// extrapolate from produces a wildly noisy estimate, worse than no
+/// estimate at all.
+const MIN_PERCENT_FOR_TIME_ESTIMATE: u64 = 5;
+
+/// Formats a `Duration` as a short, human-scale `MMm SSs` (or just
+/// `SSs` under a minute) -- enough precision for a progress dialog,
+/// without pulling in a duration-formatting dependency for two call
+/// sites.
+fn format_duration_short(duration: std::time::Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    if minutes > 0 {
+        format!("{minutes}m {seconds}s")
+    } else {
+        format!("{seconds}s")
+    }
 }
 
 fn handle_extract_progress(
@@ -291,10 +483,39 @@ fn handle_extract_progress(
     percent: u64,
     message: Option<String>,
 ) {
+    // `processed_text` deliberately stays untouched here: extraction's
+    // `OperationState::Progress` reports `completed_units`/`total_units`
+    // as a percent-out-of-100 (see `operations::extract::run_extract`'s
+    // own `OperationState::Progress { completed_units: overall_percent,
+    // total_units: Some(100), .. }`), not a real file/byte count.
+    // Formatting that pair as "45/100" would just restate `percent` in
+    // a second, redundant format next to the progress bar rather than
+    // showing genuine per-item progress the way the pre-facade dialog's
+    // `current`/`total` file counter did. Populating this field for
+    // real would need the facade's extraction operation to report an
+    // actual file counter -- a facade-level enhancement, not something
+    // this bridge can fabricate from a percent alone.
     let mut dialog = tab.extraction_dialog().get();
     dialog.show = true;
     dialog.status = crate::shared::dialogs::ExtractionStatus::Running;
-    dialog.percent = percent.min(100) as u8;
+    let percent = percent.min(100);
+    dialog.percent = percent as u8;
+    if let Some(started_at) = dialog.started_at {
+        let elapsed = started_at.elapsed();
+        dialog.elapsed_text = format_duration_short(elapsed);
+        // Simple linear extrapolation from "how long it took to reach
+        // this percent" -- a rough estimate, not a precise ETA (7-Zip's
+        // own per-file throughput varies too much for anything fancier
+        // to be worth the complexity here), and only offered once
+        // there's enough progress for the extrapolation to be
+        // meaningful rather than wildly noisy.
+        if (MIN_PERCENT_FOR_TIME_ESTIMATE..100).contains(&percent) {
+            let total_estimated_secs = elapsed.as_secs_f64() * 100.0 / percent as f64;
+            let remaining_secs = (total_estimated_secs - elapsed.as_secs_f64()).max(0.0);
+            dialog.time_left_text =
+                format_duration_short(std::time::Duration::from_secs_f64(remaining_secs));
+        }
+    }
     if let Some(message) = message {
         if dialog.log_lines.len() > 500 {
             let overflow = dialog.log_lines.len() - 500;
@@ -308,10 +529,16 @@ fn handle_extract_progress(
 
 fn handle_extract_terminal(
     shared: &SharedState,
+    origins: &OperationOrigins,
     tab_id: TabId,
+    operation_id: OperationId,
     status: crate::shared::dialogs::ExtractionStatus,
     message: String,
 ) {
+    // Always forget regardless of whether the tab lookup below
+    // succeeds -- see `handle_open_archive_completed`'s identical
+    // ordering and its own doc comment; the same leak applies here.
+    origins.forget(operation_id);
     let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() else {
         return;
     };
@@ -320,6 +547,12 @@ fn handle_extract_terminal(
     dialog.show = false;
     tab.extraction_dialog().set(dialog);
     tab.active_extraction_operation.set(None);
+    // An extraction can raise its own `Challenge::Password` (encrypted
+    // entries); if this operation reaches a terminal state while that
+    // challenge is still queued (e.g. the user cancelled instead of
+    // answering it), the entry must not be left behind forever -- see
+    // `dequeue_and_present_next`'s own doc comment.
+    dequeue_and_present_next(&tab, operation_id);
     shared.signals().status_bar.update(|s| {
         s.message = message;
     });
@@ -337,20 +570,31 @@ fn handle_password_challenge(
     let Challenge::Password { attempt, .. } = &challenge else {
         return;
     };
-    let mut dialog = tab.password_dialog.get();
-    dialog.show = true;
-    dialog.password.clear();
-    dialog.error = if *attempt > 1 {
-        "Incorrect password".to_string()
-    } else {
-        String::new()
-    };
-    tab.password_dialog.set(dialog);
-    tab.pending_challenge
-        .set(Some(super::tabs::PendingChallenge {
-            operation_id,
-            challenge,
-        }));
+    let attempt = *attempt;
+    let mut queue = tab.pending_challenge.get();
+    // If the queue is already non-empty, some other operation's
+    // challenge is currently being shown -- this one waits its turn
+    // rather than clobbering the visible dialog (see `TabState::
+    // pending_challenge`'s own doc comment). It gets presented once
+    // that earlier challenge is answered/cancelled/terminalized, via
+    // `dequeue_and_present_next`.
+    let already_showing = !queue.is_empty();
+    queue.push(super::tabs::PendingChallenge {
+        operation_id,
+        challenge,
+    });
+    tab.pending_challenge.set(queue);
+    if !already_showing {
+        let mut dialog = tab.password_dialog.get();
+        dialog.show = true;
+        dialog.password.clear();
+        dialog.error = if attempt > 1 {
+            "Incorrect password".to_string()
+        } else {
+            String::new()
+        };
+        tab.password_dialog.set(dialog);
+    }
 }
 
 fn handle_confirm_overwrite_challenge(
@@ -384,8 +628,11 @@ fn handle_confirm_overwrite_challenge(
 }
 
 /// Handles one operation event, dispatching to the tab-specific handlers
-/// above based on `event.kind`/`event.state`.
-fn handle_event(
+/// above based on `event.kind`/`event.state`. `async` because the
+/// `OpenArchive` completion path awaits `relist_for_browser_signals`,
+/// whose own blocking backend call now runs on a `spawn_blocking` task
+/// (see that function's doc comment) rather than inline on this loop.
+async fn handle_event(
     shared: &SharedState,
     origins: &OperationOrigins,
     runtime: &tokio::runtime::Runtime,
@@ -430,37 +677,43 @@ fn handle_event(
         (OperationKind::Extract, OperationState::Completed { .. }) => {
             handle_extract_terminal(
                 shared,
+                origins,
                 tab_id,
+                event.operation_id,
                 crate::shared::dialogs::ExtractionStatus::Completed,
                 "Extraction completed".to_string(),
             );
-            origins.forget(event.operation_id);
         }
         (OperationKind::Extract, OperationState::Cancelled) => {
             handle_extract_terminal(
                 shared,
+                origins,
                 tab_id,
+                event.operation_id,
                 crate::shared::dialogs::ExtractionStatus::Cancelled,
                 "Extraction cancelled".to_string(),
             );
-            origins.forget(event.operation_id);
         }
         (OperationKind::Extract, OperationState::Failed { error }) => {
             let message = format!("Extraction failed: {}", error.summary);
             handle_extract_terminal(
                 shared,
+                origins,
                 tab_id,
+                event.operation_id,
                 crate::shared::dialogs::ExtractionStatus::Failed,
                 message,
             );
-            origins.forget(event.operation_id);
         }
         (
             OperationKind::OpenArchive,
             OperationState::Completed {
                 result: OperationResult::ArchiveOpened { snapshot },
             },
-        ) => handle_open_archive_completed(shared, origins, tab_id, event.operation_id, snapshot),
+        ) => {
+            handle_open_archive_completed(shared, origins, tab_id, event.operation_id, snapshot)
+                .await
+        }
         (OperationKind::OpenArchive, OperationState::Cancelled) => {
             handle_open_archive_failed_or_cancelled(
                 shared,
@@ -494,6 +747,126 @@ fn handle_event(
 /// (`SharedState::new`) constructs it before calling this, so every
 /// clone of `shared` (including the one captured here) already shares
 /// the same registry call sites register into.
+fn snapshot_to_event(snapshot: arclain_app::event::OperationSnapshot) -> OperationEvent {
+    OperationEvent {
+        operation_id: snapshot.operation_id,
+        sequence: snapshot.last_sequence,
+        kind: snapshot.kind,
+        state: snapshot.state,
+    }
+}
+
+/// Re-fetches `operation_id`'s current point-in-time snapshot directly
+/// (bypassing the broadcast channel entirely) and replays it through the
+/// exact same [`handle_event`] dispatch a live event would have gone
+/// through -- catching up on whatever this bridge missed.
+///
+/// If the registry no longer has the operation at all (`Err`; it
+/// finished and enough newer operations completed after it to evict its
+/// history -- see `OperationRegistry::evict_excess_history`), there is
+/// no state left to recover, but the origin must still be forgotten and
+/// the tab's dialogs must still stop spinning -- both would otherwise
+/// be stuck forever, since nothing will ever tell this bridge about
+/// that operation again.
+async fn reconcile_one(
+    shared: &SharedState,
+    origins: &OperationOrigins,
+    runtime: &tokio::runtime::Runtime,
+    app: &ArclainApp,
+    operation_id: OperationId,
+) {
+    match app.operation(operation_id).await {
+        Ok(snapshot) => {
+            handle_event(shared, origins, runtime, snapshot_to_event(snapshot)).await;
+        }
+        Err(_) => {
+            tracing::warn!(
+                "[operation_bridge] lost track of operation {operation_id:?} -- its history was \
+                 already evicted from the registry; forcing it to a terminal state so its tab \
+                 does not spin forever"
+            );
+            if let Some(tab_id) = origins.resolve(operation_id) {
+                if let Some(tab) = shared.signals().tabs.get().get(tab_id).cloned() {
+                    let mut extraction_dialog = tab.extraction_dialog().get();
+                    extraction_dialog.show = false;
+                    tab.extraction_dialog().set(extraction_dialog);
+                    tab.active_extraction_operation.set(None);
+                    tab.pending_open_operation.set(None);
+                    dequeue_and_present_next(&tab, operation_id);
+                }
+            }
+            origins.forget(operation_id);
+        }
+    }
+}
+
+/// Registers `operation_id` as belonging to `tab_id`, then immediately
+/// reconciles against its current snapshot.
+///
+/// Every `start_open_archive`/`start_extract` call site must use this
+/// instead of calling `OperationOrigins::register` directly: the
+/// operation's worker starts running (and can publish events,
+/// including a terminal one for a fast-failing operation) concurrently
+/// with the caller resuming from that `.await` and reaching the
+/// registration call, and the bridge's own receiver task can observe
+/// and drop such an event -- having no registered origin yet -- before
+/// this ever runs. The one-shot reconciliation immediately afterward
+/// catches up on whatever state the operation already reached before
+/// registration landed, exactly the same way `reconcile_after_lag`
+/// catches up after a dropped broadcast event. Replaying a state the
+/// live event stream will *also* still deliver (the common case: the
+/// operation is still `Accepted`/`Started`) is a harmless no-op --
+/// every `handle_event` branch either re-applies the same values or
+/// falls through the terminal-only catch-all.
+pub async fn register_operation(shared: &SharedState, operation_id: OperationId, tab_id: TabId) {
+    shared.operation_origins.register(operation_id, tab_id);
+    let Some(app) = shared.facade.clone() else {
+        return;
+    };
+    let runtime = shared.services.tokio_runtime.clone();
+    reconcile_one(
+        shared,
+        &shared.operation_origins,
+        &runtime,
+        &app,
+        operation_id,
+    )
+    .await;
+}
+
+/// Called after the bridge's receiver reports `Lagged`: some number of
+/// events were dropped from the broadcast channel before this worker
+/// could read them, which can include a terminal event for an
+/// operation this bridge is still tracking -- left alone, that tab's
+/// dialog would spin forever and the leaked origin would never be
+/// forgotten. Reconciles every currently-tracked operation directly
+/// against its own snapshot (see `reconcile_one`), bypassing the lagged
+/// channel entirely. `pub` (rather than the module-private default) so
+/// integration tests can drive this reconciliation path directly,
+/// without needing to manufacture an actual broadcast-channel overflow.
+pub async fn reconcile_after_lag(
+    shared: &SharedState,
+    origins: &OperationOrigins,
+    runtime: &tokio::runtime::Runtime,
+    app: &ArclainApp,
+    skipped: u64,
+) {
+    tracing::warn!(
+        "[operation_bridge] the operation-event broadcast channel lagged, dropping {skipped} \
+         event(s) -- reconciling every tracked operation directly"
+    );
+    for operation_id in origins.tracked_ids() {
+        reconcile_one(shared, origins, runtime, app, operation_id).await;
+    }
+}
+
+/// Spawns the bridge worker onto `shared.services.tokio_runtime`. A no-op
+/// if `shared.facade` is `None` (test fixtures that skip a full
+/// `ArclainApp::bootstrap` -- see `SharedState::facade`'s own doc
+/// comment). Reads `shared.operation_origins` directly -- the caller
+/// (`SharedState::new`) constructs it before calling this, so every
+/// clone of `shared` (including the one captured here) already shares
+/// the same registry call sites register into.
 pub fn spawn(shared: &SharedState) {
     let Some(app) = shared.facade.clone() else {
         return;
@@ -505,12 +878,499 @@ pub fn spawn(shared: &SharedState) {
         loop {
             match receiver.recv().await {
                 Ok(event) => {
-                    handle_event(&shared, &shared.operation_origins, &runtime, event);
+                    handle_event(&shared, &shared.operation_origins, &runtime, event).await;
                     shared.signals().kick_repaint();
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    reconcile_after_lag(
+                        &shared,
+                        &shared.operation_origins,
+                        &runtime,
+                        &app,
+                        skipped,
+                    )
+                    .await;
+                    shared.signals().kick_repaint();
+                }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::signals::AppSignals;
+    use crate::core::tabs::{PendingChallenge, TabState};
+    use arclain_app::challenge::Challenge;
+    use arclain_app::ids::{ArchiveSessionId, ChallengeId};
+
+    fn password_challenge(challenge_id: u64, attempt: u32) -> Challenge {
+        Challenge::Password {
+            id: ChallengeId::from_raw(challenge_id),
+            archive_name: "archive.zip".to_string(),
+            attempt,
+        }
+    }
+
+    // -- handle_extract_progress: dialog reset + elapsed/time-left ----
+
+    #[test]
+    fn format_duration_short_uses_minutes_only_once_a_full_minute_has_passed() {
+        assert_eq!(
+            format_duration_short(std::time::Duration::from_secs(5)),
+            "5s"
+        );
+        assert_eq!(
+            format_duration_short(std::time::Duration::from_secs(59)),
+            "59s"
+        );
+        assert_eq!(
+            format_duration_short(std::time::Duration::from_secs(65)),
+            "1m 5s"
+        );
+    }
+
+    #[test]
+    fn handle_extract_progress_computes_elapsed_and_time_left_from_started_at() {
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        {
+            let mut dialog = tab.extraction_dialog().get();
+            dialog.started_at =
+                Some(std::time::Instant::now() - std::time::Duration::from_secs(10));
+            tab.extraction_dialog().set(dialog);
+        }
+
+        handle_extract_progress(&tab, 50, None);
+
+        let dialog = tab.extraction_dialog().get();
+        assert_eq!(dialog.percent, 50);
+        assert!(
+            !dialog.elapsed_text.is_empty(),
+            "elapsed_text must be computed once started_at is known"
+        );
+        assert!(
+            !dialog.time_left_text.is_empty(),
+            "time_left_text must be estimated once there is enough progress to extrapolate from"
+        );
+        // ~10s elapsed at 50% implies roughly another ~10s remaining --
+        // a loose bound, not an exact one, since this is a rough
+        // extrapolation by design.
+        assert!(
+            dialog.time_left_text.contains('s'),
+            "expected a seconds-scale estimate, got {:?}",
+            dialog.time_left_text
+        );
+    }
+
+    #[test]
+    fn handle_extract_progress_leaves_elapsed_and_time_left_blank_without_a_known_start_time() {
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        // started_at is None by default (ExtractionProgressDialog::default()).
+        handle_extract_progress(&tab, 50, None);
+        let dialog = tab.extraction_dialog().get();
+        assert!(dialog.elapsed_text.is_empty());
+        assert!(dialog.time_left_text.is_empty());
+    }
+
+    #[test]
+    fn handle_extract_progress_does_not_estimate_time_left_before_five_percent() {
+        // Extrapolating from a tiny sliver of progress produces a wildly
+        // noisy estimate -- deliberately withheld until there is enough
+        // signal to be worth showing at all.
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        {
+            let mut dialog = tab.extraction_dialog().get();
+            dialog.started_at = Some(std::time::Instant::now());
+            tab.extraction_dialog().set(dialog);
+        }
+        handle_extract_progress(&tab, 1, None);
+        assert!(tab.extraction_dialog().get().time_left_text.is_empty());
+    }
+
+    // -- apply_buffered_session_metadata ------------------------------
+
+    #[test]
+    fn metadata_reported_before_any_tab_is_stamped_is_buffered_not_dropped() {
+        let signals = AppSignals::new();
+        let session_id = ArchiveSessionId::from_raw(42);
+        let metadata = Some(serde_json::json!({"game": "test"}));
+
+        // No tab known yet for this session -- mirrors
+        // `AppSignalsBridge::set_session_metadata`'s own no-match branch
+        // buffering rather than dropping.
+        signals
+            .pending_session_metadata
+            .lock()
+            .unwrap()
+            .insert(session_id, metadata.clone());
+
+        // Draining with no tab yet (the session's tab is still unknown)
+        // must not lose the value -- there is nothing to apply it to,
+        // but nothing has drained it either.
+        assert_eq!(
+            signals
+                .pending_session_metadata
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .cloned(),
+            Some(metadata)
+        );
+    }
+
+    #[test]
+    fn apply_buffered_session_metadata_applies_and_drains_once_a_tab_is_known() {
+        let signals = AppSignals::new();
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        let session_id = ArchiveSessionId::from_raw(7);
+        let metadata = Some(serde_json::json!({"game": "arrived-late"}));
+        signals
+            .pending_session_metadata
+            .lock()
+            .unwrap()
+            .insert(session_id, metadata.clone());
+
+        apply_buffered_session_metadata(&signals, Some(&tab), session_id);
+
+        assert_eq!(
+            tab.metadata.get(),
+            metadata,
+            "buffered metadata must land on the now-known tab"
+        );
+        assert!(
+            signals
+                .pending_session_metadata
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .is_none(),
+            "a drained entry must not still be sitting in the buffer"
+        );
+    }
+
+    #[test]
+    fn apply_buffered_session_metadata_still_drains_when_no_tab_is_given() {
+        // A session whose tab is already gone by the time this runs
+        // (closed mid-open) has no metadata destination -- but the
+        // buffered entry must still be removed, or it leaks for the
+        // process's lifetime.
+        let signals = AppSignals::new();
+        let session_id = ArchiveSessionId::from_raw(9);
+        signals
+            .pending_session_metadata
+            .lock()
+            .unwrap()
+            .insert(session_id, Some(serde_json::json!({"orphaned": true})));
+
+        apply_buffered_session_metadata(&signals, None, session_id);
+
+        assert!(
+            signals
+                .pending_session_metadata
+                .lock()
+                .unwrap()
+                .get(&session_id)
+                .is_none(),
+            "draining with no tab must still remove the buffered entry"
+        );
+    }
+
+    #[test]
+    fn apply_buffered_session_metadata_is_a_harmless_no_op_when_nothing_is_buffered() {
+        let signals = AppSignals::new();
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        apply_buffered_session_metadata(&signals, Some(&tab), ArchiveSessionId::from_raw(1));
+        assert_eq!(tab.metadata.get(), None);
+    }
+
+    // -- dequeue_and_present_next --------------------------------------
+
+    #[test]
+    fn a_second_challenge_is_queued_behind_the_first_rather_than_overwriting_it() {
+        // Regression test: a tab's archive-open and its extraction are
+        // independent operations that can both be in flight at once (see
+        // `TabState::pending_challenge`'s own doc comment), and either
+        // can raise its own `Challenge::Password`. With the old single
+        // `Option` slot, the second challenge to arrive silently
+        // overwrote the first, and the first operation's challenge
+        // waiter then hung forever.
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        let op_a = OperationId::from_raw(1);
+        let op_b = OperationId::from_raw(2);
+        tab.pending_challenge.set(vec![
+            PendingChallenge {
+                operation_id: op_a,
+                challenge: password_challenge(1, 1),
+            },
+            PendingChallenge {
+                operation_id: op_b,
+                challenge: password_challenge(2, 1),
+            },
+        ]);
+
+        let queue = tab.pending_challenge.get();
+        assert_eq!(
+            queue.len(),
+            2,
+            "the second challenge must not have overwritten the first"
+        );
+        assert_eq!(queue[0].operation_id, op_a);
+        assert_eq!(queue[1].operation_id, op_b);
+    }
+
+    #[test]
+    fn dequeuing_the_front_challenge_presents_the_next_one_instead_of_hiding_the_dialog() {
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        let op_a = OperationId::from_raw(1);
+        let op_b = OperationId::from_raw(2);
+        tab.pending_challenge.set(vec![
+            PendingChallenge {
+                operation_id: op_a,
+                challenge: password_challenge(1, 1),
+            },
+            PendingChallenge {
+                operation_id: op_b,
+                challenge: password_challenge(2, 1),
+            },
+        ]);
+
+        dequeue_and_present_next(&tab, op_a);
+
+        let queue = tab.pending_challenge.get();
+        assert_eq!(
+            queue.len(),
+            1,
+            "only the answered operation's entry must be removed"
+        );
+        assert_eq!(queue[0].operation_id, op_b);
+        let dialog = tab.password_dialog.get();
+        assert!(
+            dialog.show,
+            "a second operation's still-queued challenge must be presented, not silently dropped"
+        );
+    }
+
+    #[test]
+    fn dequeuing_the_only_challenge_hides_the_dialog() {
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        let op_a = OperationId::from_raw(1);
+        tab.pending_challenge.set(vec![PendingChallenge {
+            operation_id: op_a,
+            challenge: password_challenge(1, 1),
+        }]);
+        {
+            let mut dialog = tab.password_dialog.get();
+            dialog.show = true;
+            tab.password_dialog.set(dialog);
+        }
+
+        dequeue_and_present_next(&tab, op_a);
+
+        assert!(tab.pending_challenge.get().is_empty());
+        assert!(!tab.password_dialog.get().show);
+    }
+
+    #[test]
+    fn dequeuing_an_operation_with_no_queued_challenge_is_a_harmless_no_op() {
+        let tab = TabState::new(crate::core::tabs::TabId(1));
+        let op_a = OperationId::from_raw(1);
+        // Terminal-state cleanup calls this unconditionally (see
+        // `handle_extract_terminal`) even when this operation never
+        // raised a challenge at all.
+        dequeue_and_present_next(&tab, op_a);
+        assert!(tab.pending_challenge.get().is_empty());
+    }
+
+    // -- OperationOrigins::tracked_ids ----------------------------------
+
+    #[test]
+    fn tracked_ids_reflects_every_registered_operation_until_forgotten() {
+        let origins = OperationOrigins::new();
+        let op_a = OperationId::from_raw(1);
+        let op_b = OperationId::from_raw(2);
+        origins.register(op_a, TabId(1));
+        origins.register(op_b, TabId(2));
+
+        let mut ids = origins.tracked_ids();
+        ids.sort_by_key(|id| id.into_raw());
+        assert_eq!(ids, vec![op_a, op_b]);
+
+        origins.forget(op_a);
+        assert_eq!(origins.tracked_ids(), vec![op_b]);
+    }
+
+    // -- resolve_archive_listing (auto-password re-derivation) ---------
+    //
+    // Regression test for a bug the automated suite never caught during
+    // Task 6 -- only a manual, real-archive test did: `resolve_archive_
+    // listing` must independently re-derive the same auto-detected
+    // password the facade's own `archive_ops::attempt_initial` resolved
+    // internally. There is nothing to read the facade's own resolved
+    // password back from without reaching into its private
+    // `ArchiveSession` internals, which this crate must not do. Without
+    // this, an archive a matching `PassRule` auto-unlocked on the facade
+    // side (no password ever typed, no challenge ever raised) would open
+    // successfully there while the UI-side re-list still saw an
+    // encrypted, unreadable listing.
+
+    struct FakeBackend {
+        correct_password: String,
+    }
+
+    impl arclain_core::ArchiveBackend for FakeBackend {
+        fn name(&self) -> &str {
+            "fake"
+        }
+        fn capabilities(&self) -> arclain_core::archive::BackendCapabilities {
+            arclain_core::archive::BackendCapabilities::read_only()
+        }
+        fn identify(&self, _path: &Path) -> anyhow::Result<arclain_core::archive::ArchiveKind> {
+            Ok(arclain_core::archive::ArchiveKind::Zip)
+        }
+        fn list(
+            &self,
+            _path: &Path,
+            password: Option<&str>,
+        ) -> anyhow::Result<arclain_core::archive::ArchiveInfo> {
+            match password {
+                Some(candidate) if candidate == self.correct_password => {
+                    Ok(arclain_core::archive::ArchiveInfo {
+                        archive_path: PathBuf::new(),
+                        archive_kind: arclain_core::archive::ArchiveKind::Zip,
+                        entries: vec![arclain_core::archive::ArchiveEntry {
+                            path: "secret.txt".to_string(),
+                            size: 10,
+                            packed_size: 5,
+                            modified: None,
+                            is_dir: false,
+                            encrypted: true,
+                            crc32: None,
+                        }],
+                        encrypted: true,
+                        headers_encrypted: false,
+                        encryption_method: Some("AES256".to_string()),
+                    })
+                }
+                _ => Err(anyhow::anyhow!("Wrong password for archive")),
+            }
+        }
+        fn extract_all(&self, _: &Path, _: &Path, _: Option<&str>) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn extract_files(
+            &self,
+            _: &Path,
+            _: &Path,
+            _: &[String],
+            _: Option<&str>,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn extract_directory(
+            &self,
+            _: &Path,
+            _: &Path,
+            _: &str,
+            _: Option<&str>,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn recompress_7z(&self, _: &Path, _: &Path) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn add_files(&self, _: &Path, _: &[PathBuf]) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn create_archive(&self, _: &Path, _: &[PathBuf], _: &str) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn read_text_file(&self, _: &Path, _: &str, _: Option<&str>) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+        fn delete_files(&self, _: &Path, _: &[String]) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn add_or_update_file_from_str(&self, _: &Path, _: &str, _: &str) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn convert_to_7z(
+            &self,
+            _: &arclain_core::Archive,
+            _: &Path,
+            _: &Path,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn crc32_of_entry(&self, _: &Path, _: &str, _: Option<&str>) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+    }
+
+    fn matching_rule(archive_name: &str, password: &str) -> arclain_core::utilities::PassRule {
+        arclain_core::utilities::PassRule {
+            name: "test".to_string(),
+            pattern: archive_name.to_string(),
+            password: password.to_string(),
+            priority: 10,
+            enabled: true,
+        }
+    }
+
+    #[test]
+    fn resolve_archive_listing_auto_detects_a_password_from_a_matching_pass_rule() {
+        let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeBackend {
+            correct_password: "correct-horse-battery-staple".to_string(),
+        });
+        let rules = vec![matching_rule(
+            "auto-unlock-fixture.zip",
+            "correct-horse-battery-staple",
+        )];
+        let path = PathBuf::from("auto-unlock-fixture.zip");
+
+        let resolved = resolve_archive_listing(backend, rules, Vec::new(), path, None)
+            .expect("a matching pass rule must let this succeed without ever prompting");
+
+        assert_eq!(
+            resolved.resolved_password.as_deref(),
+            Some("correct-horse-battery-staple")
+        );
+        assert_eq!(resolved.info.entries.len(), 1);
+    }
+
+    #[test]
+    fn resolve_archive_listing_fails_when_no_pass_rule_matches_and_no_password_is_known() {
+        let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeBackend {
+            correct_password: "secret".to_string(),
+        });
+        let path = PathBuf::from("unmatched.zip");
+
+        let result = resolve_archive_listing(backend, Vec::new(), Vec::new(), path, None);
+
+        assert!(
+            result.is_err(),
+            "with no known password and no matching rule, this must fail rather than silently \
+             succeeding with an unreadable listing"
+        );
+    }
+
+    #[test]
+    fn resolve_archive_listing_uses_an_already_known_password_without_consulting_pass_rules() {
+        let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeBackend {
+            correct_password: "already-known".to_string(),
+        });
+        let path = PathBuf::from("archive.zip");
+
+        let resolved = resolve_archive_listing(
+            backend,
+            Vec::new(),
+            Vec::new(),
+            path,
+            Some("already-known".to_string()),
+        )
+        .expect("an already-known correct password must succeed with no pass rules needed");
+
+        assert_eq!(resolved.resolved_password.as_deref(), Some("already-known"));
+    }
 }

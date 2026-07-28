@@ -11,9 +11,10 @@ use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmState;
 use arclain_core::utilities::PassRule;
 use arclain_core::UiItem;
 use arclain_signals::{Signal, SignalContext};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// Connection status for the gameta server.
 ///
@@ -199,6 +200,31 @@ pub struct AppSignals {
     /// reads are lock-free. `Arc` so clones of `AppSignals` share the
     /// same slot.
     pub egui_ctx: Arc<OnceLock<egui::Context>>,
+
+    /// Metadata a plugin's `set_session_metadata` host function reported
+    /// for a session before any tab had been stamped with that session
+    /// id yet (keyed by the raw `ArchiveSessionId`).
+    ///
+    /// A plugin's `OnArchiveOpen` handler and
+    /// `crate::core::operation_bridge`'s own `handle_open_archive_completed`
+    /// are two independent consumers of the same operation-completion
+    /// event -- nothing guarantees the operation bridge stamps
+    /// `tab.archive_session_id` before the plugin's handler runs and
+    /// calls back into `crate::shared::active_tab_bridge::
+    /// AppSignalsBridge::set_session_metadata`. Without this buffer,
+    /// that race meant the metadata a plugin computed during its very
+    /// first look at the archive could silently vanish (no tab yet
+    /// matched the session id, so the write was dropped). Buffered here
+    /// instead, and drained/applied by `handle_open_archive_completed`
+    /// the moment it stamps the matching tab -- see both functions' own
+    /// doc comments.
+    ///
+    /// `Option<serde_json::Value>` (not just `Value`) because the
+    /// metadata itself can legitimately be `None` -- a plugin clearing
+    /// a previous guess is a real, bufferable write, not "nothing
+    /// pending".
+    pub pending_session_metadata:
+        Arc<Mutex<HashMap<arclain_app::ids::ArchiveSessionId, Option<serde_json::Value>>>>,
 }
 
 /// Proxy that lets callers keep the old `signals.extraction_dialog
@@ -339,6 +365,7 @@ impl AppSignals {
             archive_error_dialog: Signal::new(ArchiveErrorDialogState::default())
                 .with_name("archive_error_dialog"),
             egui_ctx: Arc::new(OnceLock::new()),
+            pending_session_metadata: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 

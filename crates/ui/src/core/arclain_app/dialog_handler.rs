@@ -304,6 +304,19 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 if tab.active_extraction_operation.get().is_some() {
                     crate::core::operations::extraction::cancel_extraction(&app.shared_state, tab);
                 }
+                // An in-flight archive-open must be cancelled the same
+                // way -- it is just as much an orphaned background
+                // operation once this tab is gone as an extraction is.
+                if tab.pending_open_operation.get().is_some() {
+                    crate::core::operations::archive::cancel_archive_open(&app.shared_state, tab);
+                }
+                // Release the facade-side session this tab held open,
+                // if any -- otherwise it stays resident in the facade's
+                // session store for the rest of the process's life.
+                crate::core::operations::archive::close_archive_session(
+                    &app.shared_state,
+                    tab.archive_session_id.get(),
+                );
             }
 
             let mut col = app.shared_state.signals().tabs.get();
@@ -396,6 +409,10 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                 match effective {
                     DropZone::NewTab => {
                         if col.active().archive_path.get().is_none() {
+                            crate::core::operations::archive::close_archive_session(
+                                &app.shared_state,
+                                col.active().archive_session_id.get(),
+                            );
                             col.replace_active(path.clone());
                             tabs_to_load.push((col.active_id(), path.clone()));
                         } else {
@@ -405,6 +422,10 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     }
                     DropZone::ReplaceCurrent => {
                         if col.active().archive_path.get().is_some() {
+                            crate::core::operations::archive::close_archive_session(
+                                &app.shared_state,
+                                col.active().archive_session_id.get(),
+                            );
                             col.replace_active(path.clone());
                             tabs_to_load.push((col.active_id(), path.clone()));
                         } else {
@@ -635,6 +656,10 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                                         // initial "New tab" from accumulating on the
                                         // left when the user drops their first archive.
                                         if col.active().archive_path.get().is_none() {
+                                            crate::core::operations::archive::close_archive_session(
+                                                &app.shared_state,
+                                                col.active().archive_session_id.get(),
+                                            );
                                             col.replace_active(path.clone());
                                             tabs_to_load.push((col.active_id(), path));
                                         } else {
@@ -644,6 +669,10 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                                     }
                                     DropZone::ReplaceCurrent => {
                                         if col.active().archive_path.get().is_some() {
+                                            crate::core::operations::archive::close_archive_session(
+                                                &app.shared_state,
+                                                col.active().archive_session_id.get(),
+                                            );
                                             col.replace_active(path.clone());
                                             tabs_to_load.push((col.active_id(), path));
                                         } else {

@@ -188,8 +188,7 @@ pub fn process_extraction_progress(
                     // The archive the user is extracting from has
                     // encrypted contents and no password has been
                     // provided yet. Surface the password dialog on
-                    // the active tab — the existing unlock flow
-                    // (dialog_handler → try_open_with_password) sets
+                    // the active tab — the existing unlock flow sets
                     // tab.current_password on success, and the unlock
                     // handler re-fires `pending_open_file` from
                     // `pending_open_after_unlock` so the same click
@@ -240,6 +239,7 @@ pub fn process_extraction_progress(
                     log_lines: vec![progress.current_file.clone()],
                     show_log: false,
                     dest_path: None,
+                    started_at: None,
                 };
             } else {
                 extraction_dialog.percent = progress.percent;
@@ -276,6 +276,10 @@ fn open_nested_archive_in_tab(shared_state: &SharedState, archive_path: &std::pa
         // Replace the active tab when there's an archive in it, or
         // reuse the empty placeholder when there isn't.
         if col.active().archive_path.get().is_some() {
+            crate::core::operations::archive::close_archive_session(
+                shared_state,
+                col.active().archive_session_id.get(),
+            );
             col.replace_active(archive_path.to_path_buf());
             col.active_id()
         } else {

@@ -29,6 +29,12 @@ pub struct ExtractionProgressDialog {
     pub show_log: bool,
     /// Destination path for checksum verification
     pub dest_path: Option<std::path::PathBuf>,
+    /// When this dialog's operation started -- the reference point
+    /// `elapsed_text`/`time_left_text` are computed from (see
+    /// `crate::core::operation_bridge::handle_extract_progress`). Set
+    /// once, when the dialog is first shown for a fresh extraction; not
+    /// itself rendered.
+    pub started_at: Option<std::time::Instant>,
 }
 
 impl Default for ExtractionProgressDialog {
@@ -49,6 +55,7 @@ impl Default for ExtractionProgressDialog {
             log_lines: Vec::new(),
             show_log: true,
             dest_path: None,
+            started_at: None,
         }
     }
 }
