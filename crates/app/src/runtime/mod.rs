@@ -1160,6 +1160,19 @@ impl ArclainApp {
     /// ever reaching the plugin manager. Runs the plugin's
     /// `get-ui-layout` WASM call on this app's own runtime, never the
     /// caller's.
+    ///
+    /// A *structurally* valid `Dialog`/`Page` id the plugin itself does
+    /// not implement still opens successfully: `get-ui-layout` has no way
+    /// to report "unknown extension point" versus "known, currently
+    /// empty" (both return the same `PluginLayout::Single(vec![])`), so
+    /// the resulting document's root is a `Single` node with no children
+    /// either way -- indistinguishable from a real, intentionally empty
+    /// layout. This matches the pre-facade egui renderer's own behavior
+    /// for the same case (it never treated an empty layout as an error
+    /// either); a frontend that wants to detect "this plugin has nothing
+    /// registered for this dialog/page" needs its own convention (an
+    /// empty layout as a sentinel), not a signal this facade can add
+    /// without changing the WIT ABI.
     pub async fn open_plugin_session(
         &self,
         plugin_id: String,

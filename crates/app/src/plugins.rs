@@ -542,6 +542,11 @@ impl PluginSessionStore {
     /// before ever reaching the plugin manager. Runs the WASM
     /// `get-ui-layout` call on a blocking-pool thread via `handle`, never
     /// on the caller's async task.
+    ///
+    /// A structurally valid id the plugin does not implement still opens
+    /// successfully with an empty document -- see
+    /// `ArclainApp::open_plugin_session`'s own doc comment for why that
+    /// is indistinguishable from a real empty layout, and not a bug.
     pub(crate) async fn open(
         &self,
         manager: Arc<SyncMutex<PluginManager>>,

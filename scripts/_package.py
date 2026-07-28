@@ -35,7 +35,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PLUGINS_DIR = REPO_ROOT / "plugins"
-SKIP_PLUGINS = {"gstreamer-preview", "ui-demo"}
+# "facade-test-fixture" is arclain_app's own dedicated test plugin (crash
+# containment / action ordering / refresh coalescing fixtures for
+# crates/app/tests/plugin_sessions.rs -- see plugins/facade-test-fixture/
+# src/lib.rs) -- never user-facing, and must never reach a release package.
+SKIP_PLUGINS = {"facade-test-fixture", "gstreamer-preview", "ui-demo"}
 
 
 def get_platform() -> tuple[str, str]:

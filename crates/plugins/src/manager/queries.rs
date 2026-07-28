@@ -73,9 +73,12 @@ impl PluginManager {
     }
 
     /// Every plugin discovered on disk that failed to load during
-    /// [`PluginManager::init`] (or a later [`PluginManager::install_plugin`]
-    /// / [`PluginManager::reload_plugin`] retry), most-recent first. Used
-    /// by the application facade to report a plugin's `load_error`
+    /// [`PluginManager::init`], most-recent first. [`PluginManager::
+    /// install_plugin`] and [`PluginManager::reload_plugin`] do *not* feed
+    /// this list: both return their failure directly to the caller (via
+    /// `Result`) instead, so a rejected install/reload is only ever
+    /// visible to whoever made that specific call, never recorded here.
+    /// Used by the application facade to report a plugin's `load_error`
     /// alongside the plugins that *did* load successfully -- see
     /// `super::types::FailedPlugin`'s own doc comment.
     pub fn failed_plugins(&self) -> Vec<super::types::FailedPlugin> {

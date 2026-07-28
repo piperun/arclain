@@ -26,6 +26,7 @@ ROOT_PACKAGES = (
 STANDALONE_MANIFESTS = (
     "plugin-sdk/Cargo.toml",
     "plugins/dlsite-metadata/Cargo.toml",
+    "plugins/facade-test-fixture/Cargo.toml",
     "plugins/gstreamer-preview/Cargo.toml",
     "plugins/ui-demo/Cargo.toml",
 )

@@ -80,6 +80,12 @@ class TestOwnedFormatting(unittest.TestCase):
             "cargo",
             "fmt",
             "--manifest-path",
+            "plugins/facade-test-fixture/Cargo.toml",
+        ],
+        [
+            "cargo",
+            "fmt",
+            "--manifest-path",
             "plugins/gstreamer-preview/Cargo.toml",
         ],
         ["cargo", "fmt", "--manifest-path", "plugins/ui-demo/Cargo.toml"],
@@ -576,23 +582,40 @@ class TestPackagePlugins(unittest.TestCase):
             self.assertTrue((plugins_dest / "example-plugin.wasm").is_file())
 
     def test_copy_bundled_plugins_skips_unused_plugins(self):
-        with tempfile.TemporaryDirectory() as d:
-            root = Path(d)
-            plugins_root = root / "plugins-src"
-            plugins_dest = root / "pkg" / "plugins"
-            plugins_root.mkdir()
-            plugins_dest.mkdir(parents=True)
-            self._write_plugin(
-                plugins_root,
-                "gstreamer-preview",
-                wasm=False,
-                manifest=False,
-            )
+        # Iterates the *real* `_package.SKIP_PLUGINS` set rather than a
+        # hardcoded duplicate: every plugin ever added to that set --
+        # including "facade-test-fixture", arclain_app's own test-only
+        # fixture -- must be skipped even with no sidecar files at all, so
+        # `just release`/`just debug` never depends on (or bundles) it.
+        for plugin_name in sorted(_package.SKIP_PLUGINS):
+            with self.subTest(plugin=plugin_name):
+                with tempfile.TemporaryDirectory() as d:
+                    root = Path(d)
+                    plugins_root = root / "plugins-src"
+                    plugins_dest = root / "pkg" / "plugins"
+                    plugins_root.mkdir()
+                    plugins_dest.mkdir(parents=True)
+                    self._write_plugin(
+                        plugins_root,
+                        plugin_name,
+                        wasm=False,
+                        manifest=False,
+                    )
 
-            copied = _package.copy_bundled_plugins(plugins_dest, plugins_root)
+                    copied = _package.copy_bundled_plugins(plugins_dest, plugins_root)
 
-            self.assertEqual(copied, [])
-            self.assertEqual(list(plugins_dest.iterdir()), [])
+                    self.assertEqual(copied, [])
+                    self.assertEqual(list(plugins_dest.iterdir()), [])
+
+    def test_facade_test_fixture_is_never_bundled_into_a_release_package(self):
+        # Named regression guard (on top of the parametrized test above):
+        # this must keep failing loudly if a future edit ever drops
+        # "facade-test-fixture" from `SKIP_PLUGINS`, since the fixture's
+        # own "Trigger Trap" button has no business in a user-facing
+        # package, and the missing-sidecar-fatal rule in
+        # `copy_bundled_plugins` would otherwise abort every release build
+        # that has not also built this fixture's .wasm.
+        self.assertIn("facade-test-fixture", _package.SKIP_PLUGINS)
 
     def test_copy_bundled_plugins_fails_when_wasm_is_missing(self):
         with tempfile.TemporaryDirectory() as d:
