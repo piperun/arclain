@@ -434,15 +434,6 @@ pub(super) async fn run_open_archive(
 
                 let snapshot = session.snapshot();
 
-                dispatch_archive_opened_event(
-                    &inner,
-                    &source_path,
-                    info.archive_kind,
-                    password_used,
-                    entries,
-                    session.id().into_raw(),
-                );
-
                 let _ = inner
                     .operations()
                     .transition(
@@ -462,16 +453,36 @@ pub(super) async fn run_open_archive(
                 // operation's `Completed` result can only ever be produced
                 // by this worker's own call just above, so seeing anything
                 // else here means that call lost the race -- the session
-                // just inserted (and the event just dispatched) is now
-                // unreachable through this operation's result and must be
-                // closed rather than left leaked.
+                // just inserted is now unreachable through this
+                // operation's result and must be closed rather than left
+                // leaked.
                 let we_completed_it = matches!(
                     inner.operations().operation(operation_id).await,
                     Some(snapshot) if matches!(snapshot.state, OperationState::Completed { .. })
                 );
                 if !we_completed_it {
                     let _ = inner.archive_sessions().close(session.id()).await;
+                    return;
                 }
+
+                // Only now, once the operation is confirmed `Completed`
+                // (not lost to a concurrent cancel just above), tell any
+                // plugin about the new session. Ordering this after the
+                // transition -- and gating it on `we_completed_it` --
+                // means a plugin's `OnArchiveOpen` handler can never
+                // observe a session for an operation whose caller
+                // believes was cancelled: dispatching first (a previous
+                // version of this function did) could tell a plugin
+                // about a session in the same instant it was being torn
+                // down as unreachable.
+                dispatch_archive_opened_event(
+                    &inner,
+                    &source_path,
+                    info.archive_kind,
+                    password_used,
+                    entries,
+                    session.id().into_raw(),
+                );
                 return;
             }
             AttemptOutcome::PasswordRequired => {
