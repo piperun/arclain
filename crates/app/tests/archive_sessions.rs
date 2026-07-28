@@ -36,7 +36,7 @@
 mod support;
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::time::Duration;
 
 use arclain_app::archive::{
@@ -661,6 +661,212 @@ fn cancelling_while_a_password_challenge_is_pending_ends_the_operation_as_cancel
         assert!(
             response.is_err(),
             "a cancelled operation has no pending challenge to answer"
+        );
+    });
+}
+
+/// A backend whose `list()` blocks (on a real OS thread -- it always runs
+/// inside `spawn_blocking`) until the test releases it. Lets a test land a
+/// cancellation deterministically while the archive-open worker's blocking
+/// `list()` call is still in flight, instead of racing real wall-clock
+/// timing against it.
+struct SlowBackend {
+    started: mpsc::Sender<()>,
+    // `ArchiveBackend` requires `Sync` (it is used behind `Arc<dyn
+    // ArchiveBackend>`); `mpsc::Receiver` is `Send` but not `Sync`, so it
+    // needs a mutex even though only ever accessed from the single
+    // `spawn_blocking` thread that calls `list()`.
+    proceed: std::sync::Mutex<mpsc::Receiver<()>>,
+}
+
+impl arclain_core::ArchiveBackend for SlowBackend {
+    fn name(&self) -> &str {
+        "slow"
+    }
+    fn capabilities(&self) -> arclain_core::archive::BackendCapabilities {
+        arclain_core::archive::BackendCapabilities::read_only()
+    }
+    fn identify(&self, _path: &Path) -> anyhow::Result<arclain_core::archive::ArchiveKind> {
+        Ok(arclain_core::archive::ArchiveKind::Zip)
+    }
+    fn list(
+        &self,
+        _path: &Path,
+        _password: Option<&str>,
+    ) -> anyhow::Result<arclain_core::ArchiveInfo> {
+        let _ = self.started.send(());
+        let _ = self
+            .proceed
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(5));
+        Ok(arclain_core::ArchiveInfo {
+            archive_path: PathBuf::new(),
+            archive_kind: arclain_core::archive::ArchiveKind::Zip,
+            entries: vec![arclain_core::ArchiveEntry {
+                path: "a.txt".to_string(),
+                size: 1,
+                packed_size: 1,
+                modified: None,
+                is_dir: false,
+                encrypted: false,
+                crc32: None,
+            }],
+            encrypted: false,
+            headers_encrypted: false,
+            encryption_method: None,
+        })
+    }
+    fn extract_all(&self, _p: &Path, _d: &Path, _pw: Option<&str>) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn extract_files(
+        &self,
+        _p: &Path,
+        _d: &Path,
+        _files: &[String],
+        _pw: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn extract_directory(
+        &self,
+        _p: &Path,
+        _d: &Path,
+        _dir_path: &str,
+        _pw: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn recompress_7z(&self, _source: &Path, _dest_7z: &Path) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn add_files(&self, _archive: &Path, _files: &[PathBuf]) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn create_archive(
+        &self,
+        _dest: &Path,
+        _files: &[PathBuf],
+        _format: &str,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn read_text_file(
+        &self,
+        _archive: &Path,
+        _path_in_archive: &str,
+        _password: Option<&str>,
+    ) -> anyhow::Result<String> {
+        unimplemented!()
+    }
+    fn delete_files(&self, _archive: &Path, _files: &[String]) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn add_or_update_file_from_str(
+        &self,
+        _archive: &Path,
+        _path_in_archive: &str,
+        _content: &str,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn convert_to_7z(
+        &self,
+        _source: &arclain_core::Archive,
+        _dest: &Path,
+        _temp_dir: &Path,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn crc32_of_entry(
+        &self,
+        _archive: &Path,
+        _path_in_archive: &str,
+        _password: Option<&str>,
+    ) -> anyhow::Result<String> {
+        unimplemented!()
+    }
+}
+
+/// Reproduces the exact race a cancel-during-open can hit: `list()` is
+/// still blocked (still running inside `spawn_blocking`) when
+/// `cancel_operation` is called, so the operation reaches `Cancelled`
+/// well before the backend call it raced against ever returns. Once
+/// released, that call reports success as normal -- proving the fix is
+/// that a *later* success can no longer insert a session or dispatch a
+/// plugin event for an operation the caller already knows was cancelled.
+#[test]
+fn cancelling_while_the_blocking_list_call_is_still_running_leaves_no_session_behind() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    let (started_tx, started_rx) = mpsc::channel::<()>();
+    let (proceed_tx, proceed_rx) = mpsc::channel::<()>();
+    let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(SlowBackend {
+        started: started_tx,
+        proceed: std::sync::Mutex::new(proceed_rx),
+    });
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: Some(backend),
+    })
+    .expect("bootstrap must succeed");
+    let slow_path = temp.path().join("slow.zip");
+
+    runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(OpenArchiveRequest {
+                source_path: slow_path,
+                password: None,
+            })
+            .await
+            .unwrap();
+
+        // Wait until the backend's blocking `list()` call has actually
+        // started (not merely scheduled), so the cancel below reliably
+        // lands while it is still in flight rather than before
+        // `spawn_blocking` even begins running it.
+        started_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the slow backend's list() must start within 5s");
+
+        app.cancel_operation(operation_id)
+            .await
+            .expect("cancelling while list() is in flight must be accepted");
+
+        // Only now release the blocked backend call, well after the
+        // cancellation has already been recorded.
+        let _ = proceed_tx.send(());
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let snapshot = app.operation(operation_id).await.unwrap();
+            match snapshot.state {
+                OperationState::Cancelled => break,
+                OperationState::Completed { .. } => {
+                    panic!("an open cancelled while list() was still running must not complete")
+                }
+                _ if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                _ => panic!("operation did not settle to Cancelled within the test deadline"),
+            }
+        }
+
+        // A fresh `ArclainApp`'s archive-session store mints ids
+        // sequentially starting at 1; this test never opens any other
+        // archive, so id 1 is the very first one this store would ever
+        // mint. If the fix holds, it was never minted at all -- proving
+        // no session (and so no plugin dispatch either, which only ever
+        // happens after a session exists) was left behind by the race.
+        let leaked = app.archive_snapshot(ArchiveSessionId::from_raw(1)).await;
+        assert_eq!(
+            leaked.unwrap_err().kind,
+            ApplicationErrorKind::NotFound,
+            "cancelling during the blocking list() call must not leave a reachable session behind"
         );
     });
 }

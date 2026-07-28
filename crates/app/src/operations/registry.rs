@@ -458,6 +458,45 @@ mod tests {
         assert_eq!(snapshot.last_sequence, sequence_after_completion);
     }
 
+    /// The mechanism `archive_ops::run_open_archive`'s post-insertion
+    /// cancellation guard depends on: if a concurrent `cancel` reaches
+    /// `Cancelled` first, a worker's own later attempt to transition the
+    /// *same* operation to `Completed` must silently no-op (already
+    /// covered by `terminal_state_ignores_further_transitions`, the
+    /// reverse ordering) -- and, critically, a caller that did not
+    /// itself observe which side won can read the record back afterward
+    /// and get a definitive, race-free answer: whichever terminal state
+    /// is actually recorded is the one that stuck, because a terminal
+    /// state never changes once set.
+    #[tokio::test]
+    async fn cancelling_before_a_racing_completion_attempt_leaves_the_operation_cancelled() {
+        let registry = OperationRegistry::new();
+        let (id, _cancel) = registry.begin(OperationKind::OpenArchive).await;
+
+        registry.cancel(id).await.unwrap();
+
+        // Simulates a worker that had already passed its own last
+        // cancellation check, performed the (in this case, archive-open)
+        // work, and only now attempts to record `Completed` -- unaware
+        // that a `cancel` call already won the race.
+        registry
+            .transition(
+                id,
+                OperationState::Completed {
+                    result: OperationResult::None,
+                },
+            )
+            .await
+            .unwrap();
+
+        let snapshot = registry.operation(id).await.unwrap();
+        assert_eq!(
+            snapshot.state,
+            OperationState::Cancelled,
+            "a worker's own Completed transition must not overwrite a Cancelled that already won"
+        );
+    }
+
     #[tokio::test]
     async fn cancelling_an_already_terminal_operation_is_an_idempotent_no_op() {
         let registry = OperationRegistry::new();

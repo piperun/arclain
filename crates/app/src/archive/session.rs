@@ -22,15 +22,45 @@ use crate::archive::{
 };
 use crate::ids::{ArchiveSessionId, EntryId};
 
-/// Mints a fresh, process-wide-unique [`EntryId`]. Ids are revision-scoped
-/// in spirit (see the module doc comment): a new [`EntryIndex::build`]
-/// call -- whether for the initial open or a future reindex after a
-/// mutation -- always mints fresh ids from this counter rather than
-/// deriving them from content, so a stale id from a superseded revision
-/// can never coincidentally match a live entry in a newer one.
-fn next_entry_id() -> EntryId {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    EntryId::from_raw(NEXT.fetch_add(1, Ordering::Relaxed))
+/// Session-scoped id assignment, keyed by `(canonical path, collision
+/// ordinal)` and carried across every [`EntryIndex::build`] a session
+/// performs -- the initial open, and any future reindex after a mutation
+/// (see the module doc comment). An unchanged path is handed back the
+/// same [`EntryId`] every time, so a caller that cached an id across a
+/// refresh (selection, expanded-folder state) keeps pointing at the same
+/// logical entry for as long as that entry itself did not change. A path
+/// new to this session mints a fresh id from the per-session counter; a
+/// path that stops appearing simply stops being handed out again --
+/// nothing ever removes it from `assigned`, so its id is never
+/// reassigned to a different path.
+///
+/// The "collision ordinal" is which occurrence (0, 1, 2, ...) of a
+/// duplicate path this is, in stable, deterministic encounter order (see
+/// `EntryIndex::build`); every non-duplicate path is always ordinal 0.
+///
+/// Ids are unique only within the owning session (see the module doc
+/// comment): two different sessions may (and eventually will) hand out
+/// the same raw id to unrelated entries. Every consumer already addresses
+/// entries as a `(session, entry)` pair, never a bare [`EntryId`], so
+/// this is not a correctness gap.
+#[derive(Debug, Default)]
+pub(crate) struct EntryIdAssigner {
+    assigned: HashMap<(String, u64), EntryId>,
+    next: u64,
+}
+
+impl EntryIdAssigner {
+    /// Returns the id already assigned to `(path, ordinal)`, or mints and
+    /// remembers a fresh one the first time this key is seen.
+    fn assign(&mut self, path: &str, ordinal: u64) -> EntryId {
+        if let Some(id) = self.assigned.get(&(path.to_string(), ordinal)) {
+            return *id;
+        }
+        self.next += 1;
+        let id = EntryId::from_raw(self.next);
+        self.assigned.insert((path.to_string(), ordinal), id);
+        id
+    }
 }
 
 /// Days since the Unix epoch for a proleptic-Gregorian civil date.
@@ -107,6 +137,41 @@ fn kind_sort_key(dto: &ArchiveEntryDto) -> String {
             dto.name.rsplit('.').next().unwrap_or("file").to_lowercase()
         }
     }
+}
+
+/// Reproduces the pre-facade UI's `SortColumn::Crc32` key (see
+/// `crates/ui/src/shared/models/file_entry.rs::sort_entry_indices`):
+/// `crc32.to_uppercase()`, a plain string compare. The old `FileEntry::
+/// crc32` was a non-optional `String`, empty for an entry with no CRC
+/// (uppercasing an empty string is still an empty string); this facade's
+/// [`ArchiveEntryDto::crc32`] is `Option<String>` for the same case, so
+/// `None` is treated as that same empty string -- sorting before every
+/// real (uppercased hex) CRC, ascending.
+fn crc32_sort_key(dto: &ArchiveEntryDto) -> String {
+    dto.crc32.as_deref().unwrap_or("").to_uppercase()
+}
+
+/// Reproduces the pre-facade UI's `SortColumn::Ratio` key
+/// (`parse_ratio_pct` over a pre-formatted `"{pct}%"` display string).
+/// The display string itself was always computed as `packed_size * 100 /
+/// size` (truncating integer division) when `size > 0`, else the literal
+/// `"0%"` -- see `crates/ui/src/core/utils.rs::convert_to_file_entry`.
+/// Recomputed directly from the already-numeric [`ArchiveEntryDto`]
+/// fields here rather than round-tripped through a display string, which
+/// is a pure representation change (same reasoning as
+/// [`parse_modified_to_unix_ms`]'s doc comment): the zero-size fallback
+/// (an empty file, or a folder aggregating zero total bytes) reproduces
+/// the old code's divide-by-zero guard exactly, and `saturating_mul`
+/// guards the multiply the old string-formatting code never had to
+/// consider (its `format!` happened once at listing time over sizes that
+/// fit a `u64` percentage without overflow in any real archive; kept here
+/// purely as defensive arithmetic, not a reachable behavior difference).
+fn ratio_sort_key(dto: &ArchiveEntryDto) -> u64 {
+    if dto.uncompressed_size == 0 {
+        return 0;
+    }
+    let compressed = dto.compressed_size.unwrap_or(0);
+    compressed.saturating_mul(100) / dto.uncompressed_size
 }
 
 /// One entry discovered while walking a backend's flat entry list, before
@@ -201,7 +266,10 @@ impl EntryIndex {
     /// path -- a malformed or adversarial archive, not a normal one) are
     /// preserved as distinct rows with distinct [`EntryId`]s rather than
     /// collapsed: the second occurrence does not overwrite the first.
-    pub(crate) fn build(entries: &[arclain_core::ArchiveEntry]) -> Self {
+    pub(crate) fn build(
+        entries: &[arclain_core::ArchiveEntry],
+        assigner: &mut EntryIdAssigner,
+    ) -> Self {
         let mut files: Vec<(String, RawEntry)> = Vec::new();
         let mut dirs: std::collections::BTreeMap<String, RawEntry> =
             std::collections::BTreeMap::new();
@@ -253,28 +321,51 @@ impl EntryIndex {
             });
         }
 
-        // Aggregate each directory's totals across every descendant file
-        // at any depth (recursive-prefix aggregation, matching
-        // `compute_folder_totals`/`compute_folder_crc`).
         let mut by_id: HashMap<EntryId, ArchiveEntryDto> = HashMap::new();
         let mut children: HashMap<ArchivePath, Vec<EntryId>> = HashMap::new();
         let mut entry_count: u64 = 0;
         let mut total_uncompressed_size: u64 = 0;
 
-        // Files: duplicates preserved, ordinal = encounter order for a
-        // given path. Sorting by path is a stable sort, so entries
-        // sharing a path keep their encounter-order relative position --
-        // the "collision ordinal" the id derivation is keyed on.
+        // Every directory's running aggregate, built by a single
+        // ancestor-walk pass over the files below instead of a full
+        // rescan per directory -- see `FolderTotals`'s own doc comment.
+        let mut folder_totals: HashMap<String, FolderTotals> = HashMap::new();
+
+        // Files: duplicates preserved. Sorting by path is a stable sort,
+        // so entries sharing a path keep their encounter-order relative
+        // position, which `ordinal_for_path` below turns into each
+        // duplicate's "collision ordinal" -- the second component of the
+        // key `EntryIdAssigner` mints/remembers each entry's id under
+        // (see its own doc comment).
         let mut ordered_files = files;
         ordered_files.sort_by(|a, b| a.0.cmp(&b.0));
 
+        let mut ordinal_for_path: HashMap<String, u64> = HashMap::new();
         for (path, raw) in ordered_files {
-            let id = next_entry_id();
+            let ordinal = {
+                let counter = ordinal_for_path.entry(path.clone()).or_insert(0);
+                let this_ordinal = *counter;
+                *counter += 1;
+                this_ordinal
+            };
+            let id = assigner.assign(&path, ordinal);
             let name = basename(&path).to_string();
             let parent = ArchivePath::parse(parent_of(&path).to_string())
                 .unwrap_or_else(|_| ArchivePath::root());
             entry_count += 1;
             total_uncompressed_size = total_uncompressed_size.saturating_add(raw.uncompressed_size);
+
+            for ancestor in ancestors(&path) {
+                let totals = folder_totals.entry(ancestor).or_default();
+                totals.uncompressed_size = totals
+                    .uncompressed_size
+                    .saturating_add(raw.uncompressed_size);
+                totals.compressed_size = totals.compressed_size.saturating_add(raw.compressed_size);
+                if let Some(crc) = &raw.crc32 {
+                    totals.crc_pairs.push((path.clone(), crc.to_uppercase()));
+                }
+            }
+
             let dto = ArchiveEntryDto {
                 id,
                 path: ArchivePath::parse(path).unwrap_or_else(|_| ArchivePath::root()),
@@ -291,8 +382,8 @@ impl EntryIndex {
         }
 
         for (path, raw) in dirs {
-            let (total_size, total_packed, folder_crc) = aggregate_folder(&by_id, &path);
-            let id = next_entry_id();
+            let totals = folder_totals.remove(&path).unwrap_or_default();
+            let id = assigner.assign(&path, 0);
             let name = basename(&path).to_string();
             let parent = ArchivePath::parse(parent_of(&path).to_string())
                 .unwrap_or_else(|_| ArchivePath::root());
@@ -302,11 +393,11 @@ impl EntryIndex {
                 path: ArchivePath::parse(path).unwrap_or_else(|_| ArchivePath::root()),
                 name,
                 kind: EntryKind::Directory,
-                compressed_size: Some(total_packed),
-                uncompressed_size: total_size,
+                compressed_size: Some(totals.compressed_size),
+                uncompressed_size: totals.uncompressed_size,
                 modified_at_unix_ms: raw.modified.as_deref().and_then(parse_modified_to_unix_ms),
                 encrypted: raw.encrypted,
-                crc32: folder_crc,
+                crc32: totals.finalize_crc(),
             };
             by_id.insert(id, dto);
             children.entry(parent).or_default().push(id);
@@ -345,49 +436,56 @@ impl EntryIndex {
     }
 }
 
-/// Sums uncompressed size, compressed size, and a combined CRC-32 across
-/// every entry already indexed under `folder_path/...` (any depth).
-/// Mirrors `NavigationState::compute_folder_totals`/`compute_folder_crc`
-/// exactly, including the CRC construction (sorted `path:crc` pairs hashed
-/// together, order-independent of backend listing order).
-fn aggregate_folder(
-    by_id: &HashMap<EntryId, ArchiveEntryDto>,
-    folder_path: &str,
-) -> (u64, u64, Option<String>) {
-    let prefix = format!("{folder_path}/");
-    let mut size = 0u64;
-    let mut packed = 0u64;
-    let mut crc_pairs: Vec<(String, String)> = Vec::new();
+/// One folder's running aggregate across every descendant file at any
+/// depth. Built by a single ancestor-walk pass over every file in
+/// [`EntryIndex::build`] -- each file adds itself to every one of its
+/// ancestors' `FolderTotals` exactly once, in `O(files * depth)` total --
+/// instead of the old `aggregate_folder`'s full rescan of every indexed
+/// entry, once per directory (`O(directories * files)`, and quadratic in
+/// the common case where a listing's directory count scales with its
+/// file count). `Default` gives every folder, including one synthesized
+/// purely from an implied ancestor with no direct file of its own, a
+/// correct all-zero starting point.
+///
+/// One narrow, deliberate behavior difference from the old per-directory
+/// rescan: the old code also matched a file whose path was *exactly
+/// equal* to the folder's own path (`path == folder_path`), which could
+/// only ever fire for a malformed archive reporting both a file and a
+/// directory entry at the identical canonical path. A proper-ancestors
+/// walk (see `ancestors`) never includes a path in its own ancestor list,
+/// so that self-match no longer contributes to the colliding directory's
+/// totals here. Not reproduced: it has no sensible interpretation (a
+/// file is not its own descendant) and cannot arise from any archive this
+/// workspace's backends produce in practice.
+#[derive(Default)]
+struct FolderTotals {
+    uncompressed_size: u64,
+    compressed_size: u64,
+    /// `(file path, uppercased crc32)` pairs, one per descendant file
+    /// that reported a crc32, accumulated in file-processing order.
+    crc_pairs: Vec<(String, String)>,
+}
 
-    for dto in by_id.values() {
-        if dto.kind != EntryKind::File {
-            continue;
+impl FolderTotals {
+    /// Combines every accumulated `(path, crc)` pair into one folder-level
+    /// CRC-32, sorting by path first so the combined digest is
+    /// independent of backend listing order. Mirrors the old
+    /// `aggregate_folder`'s exact hash construction (and
+    /// `NavigationState::compute_folder_crc`'s before it).
+    fn finalize_crc(mut self) -> Option<String> {
+        if self.crc_pairs.is_empty() {
+            return None;
         }
-        let path = dto.path.as_str();
-        if path == folder_path || path.starts_with(&prefix) {
-            size = size.saturating_add(dto.uncompressed_size);
-            packed = packed.saturating_add(dto.compressed_size.unwrap_or(0));
-            if let Some(crc) = &dto.crc32 {
-                crc_pairs.push((path.to_string(), crc.to_uppercase()));
-            }
-        }
-    }
-
-    let crc = if crc_pairs.is_empty() {
-        None
-    } else {
-        crc_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        self.crc_pairs.sort_by(|a, b| a.0.cmp(&b.0));
         let mut hasher = crc32fast::Hasher::new();
-        for (path, crc) in crc_pairs {
+        for (path, crc) in &self.crc_pairs {
             hasher.update(path.as_bytes());
             hasher.update(b":");
             hasher.update(crc.as_bytes());
             hasher.update(b"\n");
         }
         Some(format!("{:08X}", hasher.finalize()))
-    };
-
-    (size, packed, crc)
+    }
 }
 
 /// One open archive: its backend handle (for future read/mutate
@@ -401,6 +499,9 @@ pub(crate) struct ArchiveSession {
     archive: Arc<Mutex<arclain_core::Archive>>,
     revision: AtomicU64,
     entry_index: RwLock<EntryIndex>,
+    /// Persists id assignment across every `EntryIndex::build` this
+    /// session performs -- see [`EntryIdAssigner`]'s own doc comment.
+    id_assigner: Mutex<EntryIdAssigner>,
 }
 
 impl ArchiveSession {
@@ -411,18 +512,32 @@ impl ArchiveSession {
         archive: arclain_core::Archive,
         entries: &[arclain_core::ArchiveEntry],
     ) -> Self {
+        let mut id_assigner = EntryIdAssigner::default();
+        let entry_index = EntryIndex::build(entries, &mut id_assigner);
         Self {
             id,
             source_path,
             archive_type,
             archive: Arc::new(Mutex::new(archive)),
             revision: AtomicU64::new(1),
-            entry_index: RwLock::new(EntryIndex::build(entries)),
+            entry_index: RwLock::new(entry_index),
+            id_assigner: Mutex::new(id_assigner),
         }
     }
 
     pub(crate) fn id(&self) -> ArchiveSessionId {
         self.id
+    }
+
+    /// Not called by anything this task adds: a future mutation-aware
+    /// reindex rebuilds `entry_index` and needs this same assigner
+    /// (locked for the rebuild's duration) so ids stay stable across it --
+    /// see [`EntryIdAssigner`]'s own doc comment. Kept as the seam that
+    /// future task reuses rather than re-deriving its own way to reach
+    /// this session's id-assignment state.
+    #[allow(dead_code)]
+    pub(crate) fn id_assigner(&self) -> &Mutex<EntryIdAssigner> {
+        &self.id_assigner
     }
 
     /// Not read by anything this task adds: a future extract/mutate
@@ -494,17 +609,29 @@ impl ArchiveSession {
             .collect();
 
         match request.sort_key {
-            EntrySortKey::Name => {
-                matching.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            EntrySortKey::Compressed => {
+                matching.sort_by_key(|dto| dto.compressed_size);
+            }
+            EntrySortKey::Crc32 => {
+                matching.sort_by_key(|dto| crc32_sort_key(dto));
+            }
+            EntrySortKey::Encrypted => {
+                matching.sort_by_key(|dto| dto.encrypted as u8);
             }
             EntrySortKey::Kind => {
-                matching.sort_by(|a, b| kind_sort_key(a).cmp(&kind_sort_key(b)));
-            }
-            EntrySortKey::Size => {
-                matching.sort_by_key(|dto| dto.uncompressed_size);
+                matching.sort_by_key(|dto| kind_sort_key(dto));
             }
             EntrySortKey::Modified => {
                 matching.sort_by_key(|dto| dto.modified_at_unix_ms);
+            }
+            EntrySortKey::Name => {
+                matching.sort_by_key(|dto| dto.name.to_lowercase());
+            }
+            EntrySortKey::Ratio => {
+                matching.sort_by_key(|dto| ratio_sort_key(dto));
+            }
+            EntrySortKey::Size => {
+                matching.sort_by_key(|dto| dto.uncompressed_size);
             }
         }
         if request.sort_direction == SortDirection::Descending {
@@ -557,6 +684,30 @@ mod tests {
         }
     }
 
+    fn file_with_crc32(path: &str, crc32: &str) -> arclain_core::ArchiveEntry {
+        arclain_core::ArchiveEntry {
+            path: path.to_string(),
+            size: 1,
+            packed_size: 1,
+            modified: None,
+            is_dir: false,
+            encrypted: false,
+            crc32: Some(crc32.to_string()),
+        }
+    }
+
+    fn encrypted_file(path: &str) -> arclain_core::ArchiveEntry {
+        arclain_core::ArchiveEntry {
+            path: path.to_string(),
+            size: 1,
+            packed_size: 1,
+            modified: None,
+            is_dir: false,
+            encrypted: true,
+            crc32: None,
+        }
+    }
+
     fn request(directory: &str) -> ListEntriesRequest {
         ListEntriesRequest {
             directory: ArchivePath::parse(directory.to_string()).unwrap(),
@@ -575,16 +726,8 @@ mod tests {
             file("game/Game.exe", 100, 90),
             file("game/data/file.dat", 200, 150),
         ];
-        let index = EntryIndex::build(&entries);
-        let page = ArchiveSession {
-            id: ArchiveSessionId::from_raw(1),
-            source_path: PathBuf::from("a.zip"),
-            archive_type: "zip".to_string(),
-            archive: Arc::new(Mutex::new(dummy_archive())),
-            revision: AtomicU64::new(1),
-            entry_index: RwLock::new(index),
-        }
-        .list_entries(&request(""));
+        let session = session_with(&entries);
+        let page = session.list_entries(&request(""));
 
         let names: Vec<&str> = page.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["game", "readme.txt"]);
@@ -621,6 +764,38 @@ mod tests {
     }
 
     #[test]
+    fn folder_aggregation_accumulates_correctly_at_every_nesting_level() {
+        // Guards the ancestor-walk accumulation pass (see `FolderTotals`)
+        // against a regression to the old per-directory full rescan it
+        // replaced: three levels deep, with a sibling file at the
+        // shallowest level, so a bug that aggregated only one level, or
+        // leaked a sibling's size into an unrelated folder, would be
+        // caught. `a` must include every descendant at any depth
+        // (including `a/other.txt`); `a/b` must include its own
+        // descendants but never `a`'s sibling file.
+        let entries = vec![
+            file("a/other.txt", 1, 1),
+            file("a/b/one.txt", 10, 5),
+            file("a/b/c/two.txt", 100, 50),
+        ];
+        let session = session_with(&entries);
+
+        let root_page = session.list_entries(&request(""));
+        let a = root_page.entries.iter().find(|e| e.name == "a").unwrap();
+        assert_eq!(a.uncompressed_size, 1 + 10 + 100);
+        assert_eq!(a.compressed_size, Some(1 + 5 + 50));
+
+        let a_page = session.list_entries(&request("a"));
+        let b = a_page.entries.iter().find(|e| e.name == "b").unwrap();
+        assert_eq!(
+            b.uncompressed_size,
+            10 + 100,
+            "must not include a's sibling other.txt"
+        );
+        assert_eq!(b.compressed_size, Some(5 + 50));
+    }
+
+    #[test]
     fn duplicate_paths_are_preserved_as_distinct_entries_with_distinct_ids() {
         let entries = vec![file("dup.txt", 1, 1), file("dup.txt", 2, 2)];
         let session = session_with(&entries);
@@ -638,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn entry_ids_are_stable_across_repeated_queries_of_the_same_revision() {
+    fn entry_ids_are_stable_across_repeated_queries_and_independent_of_sort_key() {
         let entries = vec![file("a.txt", 1, 1), file("b.txt", 2, 2)];
         let session = session_with(&entries);
 
@@ -646,25 +821,95 @@ mod tests {
         let second = session.list_entries(&request(""));
         assert_eq!(first.entries[0].id, second.entries[0].id);
         assert_eq!(first.entries[1].id, second.entries[1].id);
+
+        // A same-params re-list alone cannot catch id assignment that
+        // accidentally depended on iteration/sort order: an unchanged
+        // order would coincidentally reproduce the same ids even if the
+        // underlying minting were order-dependent. A different sort key
+        // AND direction reorders the page but must never re-mint or swap
+        // ids for the same underlying entries.
+        let mut by_size_desc = request("");
+        by_size_desc.sort_key = EntrySortKey::Size;
+        by_size_desc.sort_direction = SortDirection::Descending;
+        let reordered = session.list_entries(&by_size_desc);
+
+        let id_of = |page: &EntryPage, name: &str| {
+            page.entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap()
+                .id
+        };
+        assert_eq!(id_of(&first, "a.txt"), id_of(&reordered, "a.txt"));
+        assert_eq!(id_of(&first, "b.txt"), id_of(&reordered, "b.txt"));
+    }
+
+    /// Finds an entry's id by its indexed path, without going through a
+    /// `list_entries` page (whose directory scoping and sort/filter would
+    /// be irrelevant noise for the rebuild-stability tests below, which
+    /// care only about identity, not display order).
+    fn id_for_path(index: &EntryIndex, path: &str) -> EntryId {
+        index
+            .by_id
+            .values()
+            .find(|dto| dto.path.as_str() == path)
+            .map(|dto| dto.id)
+            .unwrap_or_else(|| panic!("path {path:?} must exist in the index"))
     }
 
     #[test]
-    fn rebuilding_the_index_mints_fresh_ids_never_reusing_the_prior_revisions() {
-        let entries = vec![file("a.txt", 1, 1)];
-        let first_index = EntryIndex::build(&entries);
-        let first_id = *first_index
-            .children_of(&ArchivePath::root())
-            .first()
-            .unwrap();
-        let second_index = EntryIndex::build(&entries);
-        let second_id = *second_index
-            .children_of(&ArchivePath::root())
-            .first()
-            .unwrap();
+    fn rebuilding_with_identical_content_preserves_every_id() {
+        let entries = vec![file("a.txt", 1, 1), file("dir/b.txt", 2, 2)];
+        let mut assigner = EntryIdAssigner::default();
+        let first = EntryIndex::build(&entries, &mut assigner);
+        let second = EntryIndex::build(&entries, &mut assigner);
 
+        assert_eq!(id_for_path(&first, "a.txt"), id_for_path(&second, "a.txt"));
+        assert_eq!(
+            id_for_path(&first, "dir/b.txt"),
+            id_for_path(&second, "dir/b.txt")
+        );
+        assert_eq!(
+            id_for_path(&first, "dir"),
+            id_for_path(&second, "dir"),
+            "a synthesized folder's id must also be stable across an identical rebuild"
+        );
+    }
+
+    #[test]
+    fn rebuild_after_a_simulated_mutation_preserves_unchanged_ids_mints_new_ones_and_never_reuses_a_removed_id(
+    ) {
+        let before = vec![file("a.txt", 1, 1), file("b.txt", 2, 2)];
+        let mut assigner = EntryIdAssigner::default();
+        let first = EntryIndex::build(&before, &mut assigner);
+        let a_id_before = id_for_path(&first, "a.txt");
+        let b_id = id_for_path(&first, "b.txt");
+
+        // Simulates a mutation between two rebuilds of the SAME session:
+        // "b.txt" is removed, "c.txt" is newly added, "a.txt" is untouched.
+        let after = vec![file("a.txt", 1, 1), file("c.txt", 3, 3)];
+        let second = EntryIndex::build(&after, &mut assigner);
+        let a_id_after = id_for_path(&second, "a.txt");
+        let c_id = id_for_path(&second, "c.txt");
+
+        assert_eq!(
+            a_id_before, a_id_after,
+            "an unchanged path keeps its id across a reindex"
+        );
         assert_ne!(
-            first_id, second_id,
-            "a reindex must never reuse a prior revision's id"
+            c_id, a_id_before,
+            "a path new to this session mints a fresh id"
+        );
+        assert_ne!(
+            c_id, b_id,
+            "a removed path's id is never reused for a different path"
+        );
+        assert!(
+            second
+                .by_id
+                .values()
+                .all(|dto| dto.path.as_str() != "b.txt"),
+            "the removed path is no longer present in the rebuilt index"
         );
     }
 
@@ -724,6 +969,95 @@ mod tests {
         let page = session.list_entries(&req);
         let names: Vec<&str> = page.entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["nested", "dated.txt"]);
+    }
+
+    #[test]
+    fn sort_by_compressed_orders_by_exact_compressed_bytes_not_uncompressed_size() {
+        // Deliberately opposite orderings for compressed vs. uncompressed
+        // size, so a test that accidentally sorted by the wrong field
+        // would fail instead of coincidentally passing.
+        let entries = vec![
+            file("small_but_incompressible.bin", 10, 8),
+            file("large_but_compressible.bin", 1000, 2),
+        ];
+        let session = session_with(&entries);
+
+        let mut req = request("");
+        req.sort_key = EntrySortKey::Compressed;
+        let page = session.list_entries(&req);
+        let names: Vec<&str> = page.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["large_but_compressible.bin", "small_but_incompressible.bin"]
+        );
+    }
+
+    #[test]
+    fn sort_by_crc32_is_uppercased_and_a_missing_crc_sorts_first() {
+        let entries = vec![
+            file_with_crc32("has_crc.bin", "abcd"),
+            file("no_crc.bin", 1, 1),
+        ];
+        let session = session_with(&entries);
+
+        let mut req = request("");
+        req.sort_key = EntrySortKey::Crc32;
+        let page = session.list_entries(&req);
+        let names: Vec<&str> = page.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["no_crc.bin", "has_crc.bin"],
+            "a missing crc32 sorts as an empty string, before any real (uppercased) crc"
+        );
+    }
+
+    #[test]
+    fn sort_by_encrypted_orders_unencrypted_before_encrypted_ascending() {
+        let entries = vec![encrypted_file("locked.bin"), file("plain.bin", 1, 1)];
+        let session = session_with(&entries);
+
+        let mut req = request("");
+        req.sort_key = EntrySortKey::Encrypted;
+        let page = session.list_entries(&req);
+        let names: Vec<&str> = page.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["plain.bin", "locked.bin"]);
+    }
+
+    #[test]
+    fn sort_by_ratio_computes_truncating_percentage_and_treats_zero_size_as_zero() {
+        let entries = vec![
+            file("half.bin", 100, 50),  // 50%
+            file("empty.bin", 0, 0),    // zero-size fallback: 0%, not a divide-by-zero panic
+            file("full.bin", 100, 100), // 100%
+        ];
+        let session = session_with(&entries);
+
+        let mut req = request("");
+        req.sort_key = EntrySortKey::Ratio;
+        let page = session.list_entries(&req);
+        let names: Vec<&str> = page.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["empty.bin", "half.bin", "full.bin"]);
+    }
+
+    #[test]
+    fn sort_ties_preserve_the_build_times_alphabetical_order() {
+        // Both entries share the same compressed size, so this exercises
+        // the stable-sort tie-break: `children` is pre-sorted by name at
+        // build time (see `EntryIndex`'s own doc comment), and
+        // `list_entries`'s own sort is stable, so entries tied on the
+        // chosen key must keep that alphabetical order.
+        let entries = vec![file("zeta.txt", 1, 5), file("alpha.txt", 1, 5)];
+        let session = session_with(&entries);
+
+        let mut req = request("");
+        req.sort_key = EntrySortKey::Compressed;
+        let page = session.list_entries(&req);
+        let names: Vec<&str> = page.entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["alpha.txt", "zeta.txt"],
+            "entries tied on Compressed keep their build-time alphabetical order"
+        );
     }
 
     #[test]

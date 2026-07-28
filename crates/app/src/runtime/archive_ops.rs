@@ -407,6 +407,19 @@ pub(super) async fn run_open_archive(
                 info,
                 password_used,
             } => {
+                // The blocking `list()` call just above can run for a long
+                // time on a large archive; cancellation is otherwise
+                // checked only at the top of this loop and while parked on
+                // a challenge (see `wait_until_cancelled`), so a cancel
+                // requested while that call was in flight would otherwise
+                // go unnoticed until after a session was inserted below
+                // and a plugin told about an open its caller believes was
+                // cancelled. There is no session eviction, so a session
+                // left behind here would be unreachable forever.
+                if inner.operations().is_cancelled(operation_id).await {
+                    return;
+                }
+
                 let archive = match password_used.clone() {
                     Some(password) => {
                         arclain_core::Archive::with_password(backend, source_path.clone(), password)
@@ -414,10 +427,31 @@ pub(super) async fn run_open_archive(
                     None => arclain_core::Archive::new(backend, source_path.clone()),
                 };
                 let archive_type = archive_kind_to_type_string(&info.archive_kind);
-                let session = inner
+                let entries = Arc::new(info.entries);
+                let session = match inner
                     .archive_sessions()
-                    .open(source_path.clone(), archive_type, archive, &info.entries)
-                    .await;
+                    .open(source_path.clone(), archive_type, archive, entries.clone())
+                    .await
+                {
+                    Ok(session) => session,
+                    Err(error) => {
+                        fail(&inner, operation_id, error).await;
+                        return;
+                    }
+                };
+
+                // `open` above is itself async and can yield (indexing runs
+                // on a blocking-pool thread it awaits the result of -- see
+                // its own doc comment), so a cancellation can still land in
+                // the gap between the check above and the session now
+                // existing in the store. Re-check before telling any
+                // plugin about a session id a cancelled operation's own
+                // caller will never learn about.
+                if inner.operations().is_cancelled(operation_id).await {
+                    let _ = inner.archive_sessions().close(session.id()).await;
+                    return;
+                }
+
                 let snapshot = session.snapshot();
 
                 dispatch_archive_opened_event(
@@ -425,7 +459,7 @@ pub(super) async fn run_open_archive(
                     &source_path,
                     info.archive_kind,
                     password_used,
-                    Arc::new(info.entries),
+                    entries,
                     session.id().into_raw(),
                 );
 
@@ -438,6 +472,26 @@ pub(super) async fn run_open_archive(
                         },
                     )
                     .await;
+
+                // `transition` silently no-ops once a record is already
+                // terminal -- including when a concurrent
+                // `cancel_operation` call's own transition to `Cancelled`
+                // won the race for the registry's write lock in the gap
+                // between the check above and this call. Read the record
+                // back to find out which transition actually stuck: this
+                // operation's `Completed` result can only ever be produced
+                // by this worker's own call just above, so seeing anything
+                // else here means that call lost the race -- the session
+                // just inserted (and the event just dispatched) is now
+                // unreachable through this operation's result and must be
+                // closed rather than left leaked.
+                let we_completed_it = matches!(
+                    inner.operations().operation(operation_id).await,
+                    Some(snapshot) if matches!(snapshot.state, OperationState::Completed { .. })
+                );
+                if !we_completed_it {
+                    let _ = inner.archive_sessions().close(session.id()).await;
+                }
                 return;
             }
             AttemptOutcome::PasswordRequired => {

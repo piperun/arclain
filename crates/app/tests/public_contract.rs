@@ -317,7 +317,7 @@ mod error_envelope {
 
 mod serialization_snapshots {
     use arclain_app::archive::{
-        ArchiveEntryDto, ArchivePath, ArchiveSnapshot, EntryKind, EntryPage,
+        ArchiveEntryDto, ArchivePath, ArchiveSnapshot, EntryKind, EntryPage, EntrySortKey,
     };
     use arclain_app::error::{
         ApplicationError, ApplicationErrorKind, Recoverability, SuggestedAction,
@@ -475,6 +475,26 @@ mod serialization_snapshots {
             serde_json::to_value(&path).unwrap(),
             serde_json::json!("dir/file.txt")
         );
+    }
+
+    #[test]
+    fn entry_sort_key_variants_serialize_snake_case() {
+        let cases = [
+            (EntrySortKey::Compressed, "compressed"),
+            (EntrySortKey::Crc32, "crc32"),
+            (EntrySortKey::Encrypted, "encrypted"),
+            (EntrySortKey::Kind, "kind"),
+            (EntrySortKey::Modified, "modified"),
+            (EntrySortKey::Name, "name"),
+            (EntrySortKey::Ratio, "ratio"),
+            (EntrySortKey::Size, "size"),
+        ];
+        for (variant, expected) in cases {
+            assert_eq!(
+                serde_json::to_value(variant).unwrap(),
+                serde_json::json!(expected)
+            );
+        }
     }
 }
 

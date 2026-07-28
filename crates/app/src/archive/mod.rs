@@ -129,9 +129,13 @@ pub struct ArchiveSnapshot {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntrySortKey {
+    Compressed,
+    Crc32,
+    Encrypted,
     Kind,
     Modified,
     Name,
+    Ratio,
     Size,
 }
 

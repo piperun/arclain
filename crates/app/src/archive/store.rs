@@ -56,23 +56,52 @@ impl ArchiveSessionStore {
     /// this -- building the entry index is pure in-memory work, but this
     /// method itself briefly takes the store's write lock, so it must
     /// never be called while holding a lock across blocking archive I/O.
+    ///
+    /// `ArchiveSession::new` runs inside `tokio::task::spawn_blocking`
+    /// rather than directly on this call's own async task: indexing walks
+    /// every entry, synthesizes ancestor directories, and aggregates each
+    /// folder's totals, which for a large archive is real, potentially
+    /// slow CPU work that has no business running on an async executor's
+    /// worker thread (it would otherwise starve every other task sharing
+    /// that thread for the duration). Using the *ambient* `tokio::task::
+    /// spawn_blocking` here (rather than threading an explicit `Handle`
+    /// through this method, as `crate::runtime::archive_ops` does for its
+    /// own `spawn_blocking` calls) is deliberately safe, not an exception
+    /// to the crate's "never the caller's ambient runtime" rule: `open`'s
+    /// one production call site (`archive_ops::run_open_archive`) always
+    /// runs as a task already spawned through the application's own
+    /// stored runtime handle, so the ambient runtime *is* that same
+    /// handle by construction -- exactly the reasoning
+    /// `archive_ops::wait_until_cancelled`'s own doc comment gives for
+    /// the same pattern. This module's own `#[cfg(test)]` callers each
+    /// provide their own `#[tokio::test]` runtime, which is likewise the
+    /// correct ambient target for those tests.
     pub(crate) async fn open(
         &self,
         source_path: PathBuf,
         archive_type: String,
         archive: arclain_core::Archive,
-        entries: &[arclain_core::ArchiveEntry],
-    ) -> Arc<ArchiveSession> {
+        entries: Arc<Vec<arclain_core::ArchiveEntry>>,
+    ) -> Result<Arc<ArchiveSession>, ApplicationError> {
         let id = next_archive_session_id();
-        let session = Arc::new(ArchiveSession::new(
-            id,
-            source_path,
-            archive_type,
-            archive,
-            entries,
-        ));
+        let session = tokio::task::spawn_blocking(move || {
+            Arc::new(ArchiveSession::new(
+                id,
+                source_path,
+                archive_type,
+                archive,
+                entries.as_slice(),
+            ))
+        })
+        .await
+        .map_err(|join_error| {
+            ApplicationError::new(ApplicationErrorKind::Internal, "failed to index archive")
+                .with_diagnostic(join_error.to_string())
+                .with_recoverability(Recoverability::Fatal)
+                .with_archive_session_id(id)
+        })?;
         self.sessions.write().await.insert(id, session.clone());
-        session
+        Ok(session)
     }
 
     /// Validates `session_id` against this store and returns a clone of
@@ -218,9 +247,10 @@ mod tests {
                 PathBuf::from("a.zip"),
                 "zip".to_string(),
                 dummy_archive(),
-                &[],
+                Arc::new(Vec::new()),
             )
-            .await;
+            .await
+            .unwrap();
 
         let fetched = store.get(session.id()).await.unwrap();
         assert_eq!(fetched.id(), session.id());
@@ -234,17 +264,19 @@ mod tests {
                 PathBuf::from("a.zip"),
                 "zip".to_string(),
                 dummy_archive(),
-                &[],
+                Arc::new(Vec::new()),
             )
-            .await;
+            .await
+            .unwrap();
         let b = store
             .open(
                 PathBuf::from("b.zip"),
                 "zip".to_string(),
                 dummy_archive(),
-                &[],
+                Arc::new(Vec::new()),
             )
-            .await;
+            .await
+            .unwrap();
         assert_ne!(a.id(), b.id());
     }
 
@@ -272,9 +304,10 @@ mod tests {
                 PathBuf::from("a.zip"),
                 "zip".to_string(),
                 dummy_archive(),
-                &[],
+                Arc::new(Vec::new()),
             )
-            .await;
+            .await
+            .unwrap();
 
         store.close(session.id()).await.unwrap();
 
