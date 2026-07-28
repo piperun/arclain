@@ -284,7 +284,10 @@ mod challenge_response_tests {
     #[test]
     fn challenge_response_id_accessor_matches_every_variant() {
         let id = ChallengeId::from_raw(3);
-        let response = ChallengeResponse::ConfirmDestructiveAction { id, confirmed: true };
+        let response = ChallengeResponse::ConfirmDestructiveAction {
+            id,
+            confirmed: true,
+        };
         assert_eq!(response.id(), id);
     }
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT_PACKAGES = (
+    "arclain_app",
     "arclain_app_fs",
     "arclain_checksum",
     "arclain_core",

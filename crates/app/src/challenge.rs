@@ -95,26 +95,11 @@ impl Challenge {
 /// never queued, cloned, logged, or persisted.
 #[derive(Debug)]
 pub enum ChallengeResponse {
-    Password {
-        id: ChallengeId,
-        value: SecretInput,
-    },
-    ConfirmOverwrite {
-        id: ChallengeId,
-        overwrite: bool,
-    },
-    ConfirmDestructiveAction {
-        id: ChallengeId,
-        confirmed: bool,
-    },
-    MissingExternalTool {
-        id: ChallengeId,
-        retry: bool,
-    },
-    RetryPermission {
-        id: ChallengeId,
-        retry: bool,
-    },
+    Password { id: ChallengeId, value: SecretInput },
+    ConfirmOverwrite { id: ChallengeId, overwrite: bool },
+    ConfirmDestructiveAction { id: ChallengeId, confirmed: bool },
+    MissingExternalTool { id: ChallengeId, retry: bool },
+    RetryPermission { id: ChallengeId, retry: bool },
 }
 
 impl ChallengeResponse {

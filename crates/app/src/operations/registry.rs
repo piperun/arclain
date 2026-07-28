@@ -81,7 +81,9 @@ impl OperationRecord {
 fn is_terminal(state: &OperationState) -> bool {
     matches!(
         state,
-        OperationState::Completed { .. } | OperationState::Cancelled | OperationState::Failed { .. }
+        OperationState::Completed { .. }
+            | OperationState::Cancelled
+            | OperationState::Failed { .. }
     )
 }
 
@@ -163,7 +165,13 @@ impl OperationRegistry {
     /// returns `Err` on send; that is a normal, harmless outcome (nobody
     /// is listening yet), not a registry failure, so it is deliberately
     /// ignored here.
-    fn publish(&self, operation_id: OperationId, kind: OperationKind, sequence: u64, state: OperationState) {
+    fn publish(
+        &self,
+        operation_id: OperationId,
+        kind: OperationKind,
+        sequence: u64,
+        state: OperationState,
+    ) {
         // Re-asserts, at the point an error actually leaves the application,
         // the 4 KiB bound `ApplicationError::with_diagnostic` enforces at
         // construction. `diagnostic` is a plain public field (the contract
@@ -268,7 +276,8 @@ impl OperationRegistry {
         if already_terminal {
             return Ok(());
         }
-        self.transition(operation_id, OperationState::Cancelled).await
+        self.transition(operation_id, OperationState::Cancelled)
+            .await
     }
 
     /// True once `operation_id` has been flagged for cancellation.
@@ -314,7 +323,10 @@ impl OperationRegistry {
     /// operations are never eviction candidates.
     async fn evict_excess_history(&self) {
         let mut records = self.records.write().await;
-        let terminal_count = records.values().filter(|record| is_terminal(&record.state)).count();
+        let terminal_count = records
+            .values()
+            .filter(|record| is_terminal(&record.state))
+            .count();
         if terminal_count <= MAX_TERMINAL_HISTORY {
             return;
         }
@@ -324,7 +336,10 @@ impl OperationRegistry {
             .map(|(operation_id, _)| *operation_id)
             .collect();
         terminal_ids.sort_by_key(|id| id.into_raw());
-        for operation_id in terminal_ids.into_iter().take(terminal_count - MAX_TERMINAL_HISTORY) {
+        for operation_id in terminal_ids
+            .into_iter()
+            .take(terminal_count - MAX_TERMINAL_HISTORY)
+        {
             records.remove(&operation_id);
         }
     }
@@ -340,7 +355,10 @@ mod tests {
     async fn sequences_increase_monotonically_per_operation() {
         let registry = OperationRegistry::new();
         let (id, _cancel) = registry.begin(OperationKind::Extract).await;
-        registry.transition(id, OperationState::Started).await.unwrap();
+        registry
+            .transition(id, OperationState::Started)
+            .await
+            .unwrap();
         registry
             .transition(
                 id,
@@ -362,7 +380,10 @@ mod tests {
         let registry = OperationRegistry::new();
         let (id_a, _cancel_a) = registry.begin(OperationKind::Extract).await;
         let (id_b, _cancel_b) = registry.begin(OperationKind::Convert).await;
-        registry.transition(id_a, OperationState::Started).await.unwrap();
+        registry
+            .transition(id_a, OperationState::Started)
+            .await
+            .unwrap();
 
         assert_eq!(registry.operation(id_a).await.unwrap().last_sequence, 2);
         assert_eq!(registry.operation(id_b).await.unwrap().last_sequence, 1);
@@ -422,7 +443,10 @@ mod tests {
 
         // Attempting to move a completed operation to `Cancelled` must not
         // overwrite the recorded terminal state or bump its sequence.
-        registry.transition(id, OperationState::Cancelled).await.unwrap();
+        registry
+            .transition(id, OperationState::Cancelled)
+            .await
+            .unwrap();
 
         let snapshot = registry.operation(id).await.unwrap();
         assert_eq!(
@@ -568,7 +592,10 @@ mod tests {
         let response_debug = format!("{response:?}");
         registry.resolve_challenge(id, response.id()).await.unwrap();
 
-        registry.transition(id, OperationState::Started).await.unwrap();
+        registry
+            .transition(id, OperationState::Started)
+            .await
+            .unwrap();
         registry
             .transition(
                 id,
@@ -593,7 +620,8 @@ mod tests {
         assert_eq!(serialized_events.len(), 4); // Accepted, Challenge, Started, Completed
 
         // Every snapshot reachable after the flow completes.
-        let serialized_snapshot = serde_json::to_string(&registry.operation(id).await.unwrap()).unwrap();
+        let serialized_snapshot =
+            serde_json::to_string(&registry.operation(id).await.unwrap()).unwrap();
         let serialized_recent = serde_json::to_string(&registry.recent(10).await).unwrap();
 
         for serialized_event in &serialized_events {
@@ -622,11 +650,20 @@ mod tests {
         let (id, _cancel) = registry.begin(OperationKind::Extract).await;
 
         // Before: freshly accepted.
-        assert_eq!(registry.operation(id).await.unwrap().state, OperationState::Accepted);
+        assert_eq!(
+            registry.operation(id).await.unwrap().state,
+            OperationState::Accepted
+        );
 
         // During: an in-progress state.
-        registry.transition(id, OperationState::Started).await.unwrap();
-        assert_eq!(registry.operation(id).await.unwrap().state, OperationState::Started);
+        registry
+            .transition(id, OperationState::Started)
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.operation(id).await.unwrap().state,
+            OperationState::Started
+        );
 
         // After: the only `OperationResult` variant that exists yet.
         registry
@@ -649,9 +686,15 @@ mod tests {
     #[tokio::test]
     async fn unknown_operation_id_is_not_found() {
         let registry = OperationRegistry::new();
-        assert!(registry.operation(OperationId::from_raw(999)).await.is_none());
+        assert!(registry
+            .operation(OperationId::from_raw(999))
+            .await
+            .is_none());
 
-        let err = registry.cancel(OperationId::from_raw(999)).await.unwrap_err();
+        let err = registry
+            .cancel(OperationId::from_raw(999))
+            .await
+            .unwrap_err();
         assert_eq!(err.kind, ApplicationErrorKind::NotFound);
 
         let err = registry
@@ -760,7 +803,10 @@ mod tests {
         }
 
         let result = subscriber.recv().await;
-        assert!(matches!(result, Err(broadcast::error::RecvError::Lagged(_))));
+        assert!(matches!(
+            result,
+            Err(broadcast::error::RecvError::Lagged(_))
+        ));
 
         // Even though the subscriber lagged, the registry's own record was
         // never touched by channel capacity -- it still reflects the true
@@ -847,7 +893,10 @@ mod tests {
         // EVENT_CHANNEL_CAPACITY (600) comfortably covers the 1 + 8*60 = 481
         // events this test publishes, so no lag is expected here at all --
         // if this fails, the capacity assumption above needs revisiting.
-        assert_eq!(observed_sequences.len(), 1 + CONCURRENT_TASKS * TRANSITIONS_PER_TASK);
+        assert_eq!(
+            observed_sequences.len(),
+            1 + CONCURRENT_TASKS * TRANSITIONS_PER_TASK
+        );
 
         for pair in observed_sequences.windows(2) {
             assert!(
