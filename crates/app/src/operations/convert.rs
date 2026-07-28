@@ -65,7 +65,9 @@ pub(crate) fn empty_inputs_error() -> ApplicationError {
 /// vocabulary [`arclain_core::ConvertFormat::extension`] produces
 /// ("zip", "7z") plus "sevenz" as a friendlier alias for a bridge
 /// consumer that may not know the internal enum's exact spelling.
-fn parse_convert_format(format: &str) -> Result<arclain_core::ConvertFormat, ApplicationError> {
+pub(crate) fn parse_convert_format(
+    format: &str,
+) -> Result<arclain_core::ConvertFormat, ApplicationError> {
     match format.to_ascii_lowercase().as_str() {
         "zip" => Ok(arclain_core::ConvertFormat::Zip),
         "7z" | "sevenz" => Ok(arclain_core::ConvertFormat::SevenZ),

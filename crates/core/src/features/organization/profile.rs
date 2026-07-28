@@ -2,6 +2,8 @@
 //!
 //! Defines compression presets that can be selected when organizing archives.
 
+use anyhow::Context;
+use diesel::Connection;
 use serde::{Deserialize, Serialize};
 
 /// Output format for organized archives
@@ -141,4 +143,28 @@ impl ArchiveProfile {
             ArchiveFormat::Zip => "Deflate",
         }
     }
+}
+
+/// Looks up one archive profile by id directly against the config
+/// database at `config_db_path`, opening a short-lived, unpooled
+/// connection for just this one query.
+///
+/// A deliberately narrow entry point, not a general-purpose pool
+/// constructor: unlike organization rules (`OrganizationService` holds a
+/// long-lived `DieselPool` for the app's whole lifetime), nothing in this
+/// crate keeps a standing handle onto the `archive_profiles` table today
+/// -- `crates/ui`'s own callers (`browser_controller.rs`, `profiles_page/
+/// mod.rs`) each open their own connection per lookup too. The
+/// application facade is one more such caller, not a reason to introduce
+/// pooling here; if profile lookups become a hot path, revisit this
+/// alongside those existing call sites, not in isolation.
+pub fn load_archive_profile(
+    config_db_path: &std::path::Path,
+    profile_id: i64,
+) -> anyhow::Result<Option<ArchiveProfile>> {
+    let mut conn = diesel::SqliteConnection::establish(&config_db_path.to_string_lossy())
+        .with_context(|| format!("opening config database at {}", config_db_path.display()))?;
+    let db_profile = arclain_db::get_profile(&mut conn, profile_id as i32)
+        .with_context(|| format!("looking up archive profile {profile_id}"))?;
+    Ok(db_profile.map(|profile| ArchiveProfile::from_db(&profile)))
 }

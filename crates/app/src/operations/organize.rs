@@ -1,49 +1,43 @@
 //! `OrganizeRequest`: the facade request DTO for the batch archive-
 //! organization operation ([`crate::ArclainApp::start_organize`]).
 //!
-//! Characterization (pre-facade flows this replaces, and the naming
-//! decision this file makes): the pre-facade UI actually had *two*
-//! independent organize code paths --
+//! ## Adjudicated characterization (amended from this task's first
+//! submission)
 //!
-//! - `crates/ui/src/features/organization/presentation/controllers/
-//!   organization_controller.rs::ActionContext::handle` (the single-
-//!   archive "Organize" quick action): builds one `OrganizationPlan`
-//!   interactively (rule chosen via a dropdown,
-//!   `arclain_core::features::organization::engine::RuleEngine::
-//!   create_plan`), then calls `crate::features::archive_operations::
-//!   run_organization_plan`, which repacks the result using an
-//!   `arclain_core::features::organization::ArchiveProfile` (an output
-//!   *archive format/compression* preset -- ZIP/7z, compression level,
-//!   solid/encrypt-headers). This path has no transactional output
-//!   commit/rollback at all: it repacks directly over `dest`.
-//! - The batch "Process" page's `PipelineStep::Organize { rule_id }`,
-//!   run through `arclain_core::execute_pipeline`: a numeric
-//!   `arclain_core::OrganizationRule` id picks the layout rule for the
-//!   *whole* batch, output defaults to a plain folder unless a later
-//!   `Convert` step packs it, and every input/output goes through
-//!   `arclain_core`'s `StagedOutput` transaction (atomic promote,
-//!   rollback-preserves-pre-existing-output -- see
-//!   `crates/core/src/features/pipeline/output_transaction.rs`'s own
-//!   exhaustive test suite).
+//! The pre-facade UI's single-archive "quick action"
+//! (`crates/ui/src/features/organization/presentation/controllers/
+//! organization_controller.rs::ActionContext::handle`,
+//! `OrganizationAction::Apply`) reads **two independent selections**:
 //!
-//! **Decision:** `OrganizeRequest` wraps the *second* flow (`PipelineStep::
-//! Organize` via `execute_pipeline`), not the first. The brief's own test
-//! list requires proving output-transaction rollback for Organize, and
-//! only the `execute_pipeline` path has that property at all -- the quick-
-//! action repack has no staged/atomic commit to characterize. `profile_id`
-//! is therefore parsed as the decimal string form of an
-//! `arclain_core::OrganizationRule` id (`PipelineStep::Organize::rule_id`),
-//! *not* an `ArchiveProfile` id, despite the field's name. This is a
-//! judgment call on an underspecified contract field, called out
-//! explicitly in this task's report -- the alternative (treating
-//! `profile_id` as an `ArchiveProfile` and reimplementing the quick-
-//! action's direct-repack flow instead) was rejected for the reason
-//! above.
+//! - **"Rule:"** (`organize_panel/rule_selector.rs`) binds an
+//!   `arclain_core::OrganizationRule` -- which files go where inside the
+//!   organized layout (`RuleEngine::create_plan`).
+//! - **"Profile:"** (`organize_panel/profile_selector.rs`,
+//!   `organization_controller.rs:38-59`) binds an `arclain_core::
+//!   features::organization::ArchiveProfile` -- the *output archive's*
+//!   format/compression. The controller reads
+//!   `profiles[selected_profile_index]` and derives the destination's
+//!   extension from `profile.format`.
 //!
-//! `dry_run` computes `arclain_core::preview_pipeline_with_metadata`
-//! (pure, already exists) instead of running `execute_pipeline`, and
-//! reports the result via `OperationState::Progress` messages -- see
-//! `crate::runtime::processing_ops::run_dry_run_preview`.
+//! `OrganizeRequest` therefore carries **both** ids: `rule_id` (layout)
+//! and `profile_id` (output format/compression) -- this task's first
+//! submission collapsed the two into one `profile_id` field parsed as a
+//! rule id, which was incorrect; see `crate::runtime::processing_ops`'s
+//! own doc comment for the corrected flow this now drives.
+//!
+//! **This flow has no output transaction.** `execute_organization_plan`
+//! (the pure core function this now calls, matching the quick action
+//! exactly) extracts, applies the plan, and packs the result via
+//! `archive.backend().create_archive_with_profile(...)` directly onto
+//! `dest` -- no `StagedOutput`, no atomic commit, no rollback. This
+//! matches the pre-facade quick action's own behavior precisely (it
+//! never had a transaction either); this task's first submission
+//! incorrectly assumed Organize went through the transactional
+//! `execute_pipeline`/`PipelineStep::Organize` path instead. The
+//! absence is preserved and characterized honestly here, not
+//! papered over -- see `crate::runtime::processing_ops`'s tests for
+//! what this means in practice (a colliding destination is genuinely at
+//! risk; there is no rollback to protect it).
 
 use std::path::PathBuf;
 
@@ -51,52 +45,68 @@ use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability, Sugge
 
 use super::convert::empty_inputs_error;
 
-/// Organizes a batch of archives according to one organization rule,
-/// writing the resulting folders under `destination` (each input gets
-/// its own subfolder/file, named by its own stem/detected metadata
-/// title -- the same convention `arclain_core::PipelineOutput::
-/// NewFolder` already uses).
-///
-/// No archive-format/compression fields exist here (unlike
-/// [`super::ConvertRequest`]): organizing produces a plain folder on
-/// disk (`arclain_core::OutputArtifact::Folder`), never a repacked
-/// archive. See this module's doc comment for why.
+/// Organizes a batch of archives according to one organization rule
+/// (layout) and one archive profile (output format/compression),
+/// writing the resulting packed archive under `destination` (each
+/// input gets its own output file, named by its own stem/detected
+/// metadata title -- the same convention `arclain_core::PipelineOutput::
+/// NewFolder` uses elsewhere in this facade).
 #[derive(Debug)]
 pub struct OrganizeRequest {
     pub inputs: Vec<PathBuf>,
     pub destination: PathBuf,
+    /// An `arclain_core::features::organization::ArchiveProfile` id --
+    /// governs the output archive's format/compression. See this
+    /// module's doc comment for why this is a separate id from
+    /// `rule_id`.
     pub profile_id: String,
+    /// An `arclain_core::OrganizationRule` id -- governs the organized
+    /// layout (which files go where).
+    pub rule_id: String,
     pub dry_run: bool,
 }
 
+/// Both ids this request needs, once parsed from their decimal string
+/// form. Returned together by [`OrganizeRequest::validate`] so a caller
+/// destructures one value instead of two independent `Result`s.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ParsedIds {
+    pub(crate) profile_id: i64,
+    pub(crate) rule_id: i64,
+}
+
 impl OrganizeRequest {
-    /// Validates this request and, on success, parses [`Self::profile_id`]
-    /// into the `arclain_core::OrganizationRule` id it identifies (see
-    /// this module's doc comment). Purely structural -- no I/O, so this
-    /// runs before [`crate::runtime::ArclainApp::start_organize`]
-    /// registers an operation. Whether the id actually names an
-    /// *existing, enabled* rule is a separate, I/O-requiring check that
-    /// method performs afterward (see `processing_ops::resolve_rule`).
-    pub(crate) fn validate(&self) -> Result<i64, ApplicationError> {
+    /// Validates this request and, on success, parses [`Self::profile_id`]/
+    /// [`Self::rule_id`] into the ids they identify.
+    ///
+    /// Rejects (as [`ApplicationErrorKind::InvalidInput`]) an empty input
+    /// list or either id string failing to parse as a decimal integer --
+    /// both are purely structural problems, discoverable with no I/O, so
+    /// [`crate::runtime::ArclainApp::start_organize`] runs this before
+    /// ever registering an operation. Whether the ids actually name an
+    /// *existing* rule/profile is a separate, I/O-requiring check that
+    /// method performs afterward (see `processing_ops::resolve_rule_and_profile`).
+    pub(crate) fn validate(&self) -> Result<ParsedIds, ApplicationError> {
         if self.inputs.is_empty() {
             return Err(empty_inputs_error());
         }
-        parse_rule_id(&self.profile_id)
+        Ok(ParsedIds {
+            profile_id: parse_id(&self.profile_id, "profile_id")?,
+            rule_id: parse_id(&self.rule_id, "rule_id")?,
+        })
     }
 }
 
-fn parse_rule_id(profile_id: &str) -> Result<i64, ApplicationError> {
-    profile_id.trim().parse::<i64>().map_err(|_| {
+fn parse_id(value: &str, field: &'static str) -> Result<i64, ApplicationError> {
+    value.trim().parse::<i64>().map_err(|_| {
         ApplicationError::new(
             ApplicationErrorKind::InvalidInput,
-            "profile_id must be an organization rule id",
+            "expected a decimal integer id",
         )
-        .with_diagnostic(format!(
-            "expected a decimal integer (an arclain_core::OrganizationRule id), got {profile_id:?}"
-        ))
+        .with_diagnostic(format!("field {field:?}: got {value:?}"))
         .with_recoverability(Recoverability::UserAction)
         .with_suggested_action(SuggestedAction::ChooseDestination)
-        .with_field("profile_id")
+        .with_field(field)
     })
 }
 
@@ -104,44 +114,56 @@ fn parse_rule_id(profile_id: &str) -> Result<i64, ApplicationError> {
 mod tests {
     use super::*;
 
-    fn request(inputs: Vec<PathBuf>, profile_id: &str) -> OrganizeRequest {
+    fn request(inputs: Vec<PathBuf>, profile_id: &str, rule_id: &str) -> OrganizeRequest {
         OrganizeRequest {
             inputs,
             destination: PathBuf::from("/dest"),
             profile_id: profile_id.to_string(),
+            rule_id: rule_id.to_string(),
             dry_run: false,
         }
     }
 
     #[test]
     fn empty_inputs_are_rejected() {
-        let err = request(vec![], "1").validate().unwrap_err();
+        let err = request(vec![], "1", "2").validate().unwrap_err();
         assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(err.field.as_deref(), Some("inputs"));
     }
 
     #[test]
-    fn numeric_profile_id_parses_as_a_rule_id() {
-        let rule_id = request(vec![PathBuf::from("a.zip")], "42")
+    fn numeric_ids_parse_independently() {
+        let parsed = request(vec![PathBuf::from("a.zip")], "42", "7")
             .validate()
-            .expect("numeric profile_id must be accepted");
-        assert_eq!(rule_id, 42);
+            .expect("numeric ids must be accepted");
+        assert_eq!(parsed.profile_id, 42);
+        assert_eq!(parsed.rule_id, 7);
     }
 
     #[test]
-    fn whitespace_around_a_numeric_profile_id_is_tolerated() {
-        let rule_id = request(vec![PathBuf::from("a.zip")], "  7 \n")
+    fn whitespace_around_a_numeric_id_is_tolerated() {
+        let parsed = request(vec![PathBuf::from("a.zip")], " 3 \n", "\t9")
             .validate()
-            .expect("whitespace-padded numeric profile_id must be accepted");
-        assert_eq!(rule_id, 7);
+            .expect("whitespace-padded numeric ids must be accepted");
+        assert_eq!(parsed.profile_id, 3);
+        assert_eq!(parsed.rule_id, 9);
     }
 
     #[test]
     fn non_numeric_profile_id_is_rejected() {
-        let err = request(vec![PathBuf::from("a.zip")], "dlsite-standard")
+        let err = request(vec![PathBuf::from("a.zip")], "max-7z", "1")
             .validate()
             .unwrap_err();
         assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(err.field.as_deref(), Some("profile_id"));
+    }
+
+    #[test]
+    fn non_numeric_rule_id_is_rejected() {
+        let err = request(vec![PathBuf::from("a.zip")], "1", "dlsite-standard")
+            .validate()
+            .unwrap_err();
+        assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(err.field.as_deref(), Some("rule_id"));
     }
 }

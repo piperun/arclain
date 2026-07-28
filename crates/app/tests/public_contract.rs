@@ -554,3 +554,150 @@ mod archive_path_tests {
         assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
     }
 }
+
+/// Exhaustive serialization coverage for the new `PipelineRequest`
+/// enums (`PipelineSpecDto`/`PipelineDestinationDto`/
+/// `OutputCollisionPolicyDto`/`PipelineStepDto`/`CompressionLevelDto`),
+/// matching `serialization_snapshots`'s own per-variant style above.
+mod pipeline_request_dtos {
+    use arclain_app::operations::pipeline::{
+        CompressionLevelDto, OutputCollisionPolicyDto, PipelineDestinationDto, PipelineSpecDto,
+        PipelineStepDto,
+    };
+    use std::path::PathBuf;
+
+    #[test]
+    fn compression_level_dto_variants_serialize_snake_case() {
+        assert_eq!(
+            serde_json::to_value(CompressionLevelDto::Fast).unwrap(),
+            serde_json::json!("fast")
+        );
+        assert_eq!(
+            serde_json::to_value(CompressionLevelDto::Normal).unwrap(),
+            serde_json::json!("normal")
+        );
+        assert_eq!(
+            serde_json::to_value(CompressionLevelDto::Max).unwrap(),
+            serde_json::json!("max")
+        );
+    }
+
+    #[test]
+    fn output_collision_policy_dto_variants_serialize_snake_case() {
+        assert_eq!(
+            serde_json::to_value(OutputCollisionPolicyDto::Fail).unwrap(),
+            serde_json::json!("fail")
+        );
+        assert_eq!(
+            serde_json::to_value(OutputCollisionPolicyDto::Skip).unwrap(),
+            serde_json::json!("skip")
+        );
+        assert_eq!(
+            serde_json::to_value(OutputCollisionPolicyDto::Overwrite).unwrap(),
+            serde_json::json!("overwrite")
+        );
+        assert_eq!(
+            serde_json::to_value(OutputCollisionPolicyDto::Smart).unwrap(),
+            serde_json::json!("smart")
+        );
+    }
+
+    #[test]
+    fn pipeline_destination_dto_variants_round_trip() {
+        assert_eq!(
+            serde_json::to_value(PipelineDestinationDto::SameFolder).unwrap(),
+            serde_json::json!({"type": "same_folder"})
+        );
+        let folder = PipelineDestinationDto::Folder {
+            path: PathBuf::from("/out/dir"),
+        };
+        let value = serde_json::to_value(&folder).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "folder", "path": "/out/dir"})
+        );
+        let round_tripped: PipelineDestinationDto = serde_json::from_value(value).unwrap();
+        assert_eq!(round_tripped, folder);
+    }
+
+    #[test]
+    fn pipeline_step_dto_variants_round_trip() {
+        let flatten = PipelineStepDto::Flatten {
+            strip_common_prefix: true,
+            max_depth: 2,
+        };
+        let value = serde_json::to_value(&flatten).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "flatten", "strip_common_prefix": true, "max_depth": 2})
+        );
+        assert_eq!(
+            serde_json::from_value::<PipelineStepDto>(value).unwrap(),
+            flatten
+        );
+
+        let organize = PipelineStepDto::Organize {
+            rule_id: "42".to_string(),
+        };
+        let value = serde_json::to_value(&organize).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "organize", "rule_id": "42"})
+        );
+        assert_eq!(
+            serde_json::from_value::<PipelineStepDto>(value).unwrap(),
+            organize
+        );
+
+        let convert = PipelineStepDto::Convert {
+            format: "zip".to_string(),
+            compression: CompressionLevelDto::Normal,
+        };
+        let value = serde_json::to_value(&convert).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "convert", "format": "zip", "compression": "normal"})
+        );
+        assert_eq!(
+            serde_json::from_value::<PipelineStepDto>(value).unwrap(),
+            convert
+        );
+    }
+
+    #[test]
+    fn pipeline_spec_dto_variants_round_trip() {
+        let preset = PipelineSpecDto::Preset {
+            id: "RE Mod Cleanup".to_string(),
+        };
+        let value = serde_json::to_value(&preset).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"type": "preset", "id": "RE Mod Cleanup"})
+        );
+        assert_eq!(
+            serde_json::from_value::<PipelineSpecDto>(value).unwrap(),
+            preset
+        );
+
+        let steps = PipelineSpecDto::Steps {
+            steps: vec![PipelineStepDto::Flatten {
+                strip_common_prefix: false,
+                max_depth: 1,
+            }],
+        };
+        let value = serde_json::to_value(&steps).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "type": "steps",
+                "steps": [
+                    {"type": "flatten", "strip_common_prefix": false, "max_depth": 1}
+                ]
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<PipelineSpecDto>(value).unwrap(),
+            steps
+        );
+    }
+}

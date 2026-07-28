@@ -34,7 +34,6 @@ pub use session_store::{
     AppCapabilities, BackendCapabilityDto, ExternalToolStatusDto, HealthSnapshot, LegacyComposition,
 };
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -211,12 +210,6 @@ pub(crate) struct AppRuntime {
     /// always installs either the configured override or a real
     /// `SevenZipRunner`.
     extract_runner: Arc<dyn crate::operations::extract::ExtractRunner>,
-    /// Test-only seam: when set, `start_pipeline` reads saved presets
-    /// from this path instead of `arclain_core::default_presets_path()`'s
-    /// real, OS-conventional user config directory. See
-    /// `runtime::bootstrap::BootstrapConfig::presets_path_override`'s own
-    /// doc comment. Always `None` outside tests.
-    presets_path_override: Option<PathBuf>,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
@@ -290,11 +283,15 @@ impl AppRuntime {
         &self.session.core_services
     }
 
-    /// `None` in every real bootstrap; see this struct's own
-    /// `presets_path_override` field doc comment for the test-only seam
-    /// this exposes.
-    pub(crate) fn presets_path_override(&self) -> Option<PathBuf> {
-        self.presets_path_override.clone()
+    /// The on-disk directories this instance resolved at bootstrap --
+    /// `paths().config_dir` is where `start_pipeline` reads/resolves the
+    /// saved-presets file (see `runtime::processing_ops::
+    /// resolve_preset_pipeline`'s own doc comment for why this, and not
+    /// `arclain_core::default_presets_path()`, is the correct path to
+    /// use: the latter bypasses `paths_override` entirely and has its
+    /// own directory-creation side effect).
+    pub(crate) fn paths(&self) -> &AppPaths {
+        &self.paths
     }
 }
 
@@ -617,6 +614,15 @@ impl ArclainApp {
         let format = request.validate()?;
         self.dispatch_async(move |inner| async move {
             let (operation_id, _cancel) = inner.operations().begin(OperationKind::Convert).await;
+            // `tokio_handle()` returning `None` here would mean the
+            // runtime finished tearing down in the instant between
+            // `dispatch_async` obtaining its handle and this line --
+            // see `AppRuntime::tokio_handle`'s doc comment for why that
+            // is only a theoretical race, not a reachable one in a real
+            // bootstrapped app. Handled defensively anyway: the
+            // operation simply stays `Accepted` rather than panicking,
+            // which is the least-bad outcome in an application that is
+            // already on its way out.
             if let Some(handle) = inner.tokio_handle() {
                 let worker_inner = inner.clone();
                 handle.spawn(processing_ops::run_convert(
@@ -631,28 +637,37 @@ impl ArclainApp {
         .await
     }
 
-    /// Starts organizing a batch of archives under one rule as a
+    /// Starts organizing a batch of archives under one organization rule
+    /// (layout) and one archive profile (output format/compression) as a
     /// cancellable, event-broadcasting operation. Rejects a structurally
     /// invalid request the same way [`Self::start_convert`] does (see
     /// [`crate::operations::OrganizeRequest::validate`]), and additionally
-    /// confirms `profile_id` names an existing organization rule before
-    /// registering an operation -- an I/O-requiring check `validate`
-    /// itself cannot perform.
+    /// confirms both ids name an existing rule/profile before registering
+    /// an operation -- an I/O-requiring check `validate` itself cannot
+    /// perform. See [`crate::operations::OrganizeRequest`]'s own doc
+    /// comment for why this needs two ids and has no output transaction.
     pub async fn start_organize(
         &self,
         request: OrganizeRequest,
     ) -> Result<OperationId, ApplicationError> {
-        let rule_id = request.validate()?;
+        let parsed_ids = request.validate()?;
         self.dispatch_async(move |inner| async move {
-            processing_ops::resolve_rule(&inner, rule_id).await?;
+            processing_ops::resolve_rule_and_profile(
+                &inner,
+                parsed_ids.rule_id,
+                parsed_ids.profile_id,
+            )
+            .await?;
             let (operation_id, _cancel) = inner.operations().begin(OperationKind::Organize).await;
+            // See `start_convert`'s identical comment above -- the same
+            // theoretical, non-reachable-in-practice race.
             if let Some(handle) = inner.tokio_handle() {
                 let worker_inner = inner.clone();
                 handle.spawn(processing_ops::run_organize(
                     worker_inner,
                     operation_id,
                     request,
-                    rule_id,
+                    parsed_ids,
                 ));
             }
             Ok(operation_id)
@@ -660,13 +675,13 @@ impl ArclainApp {
         .await?
     }
 
-    /// Starts running a saved pipeline preset over a batch of inputs as a
-    /// cancellable, event-broadcasting operation. Rejects an empty
-    /// `inputs` list the same way [`Self::start_convert`] does, and
-    /// resolves `preset_id` against the saved presets file before
-    /// registering an operation -- see
-    /// [`crate::operations::PipelineRequest`]'s own doc comment for why
-    /// presets are looked up by name.
+    /// Starts running either a saved preset or an ad-hoc step list over a
+    /// batch of inputs as a cancellable, event-broadcasting operation.
+    /// Rejects an empty `inputs` list (or a malformed ad-hoc step) the
+    /// same way [`Self::start_convert`] does, and resolves a
+    /// [`crate::operations::pipeline::PipelineSpecDto::Preset`] id against
+    /// the saved presets file before registering an operation -- see
+    /// [`crate::operations::PipelineRequest`]'s own doc comment.
     pub async fn start_pipeline(
         &self,
         request: PipelineRequest,
@@ -674,9 +689,14 @@ impl ArclainApp {
         request.validate()?;
         self.dispatch_async(move |inner| async move {
             let mut pipeline =
-                processing_ops::resolve_preset_pipeline(&inner, &request.preset_id).await?;
-            pipeline.output = arclain_core::PipelineOutput::NewFolder(request.destination.clone());
+                processing_ops::resolve_pipeline_spec(&inner, &request.pipeline).await?;
+            pipeline.output = request.destination.to_core();
+            if let Some(policy) = request.collision_policy {
+                pipeline.collision_policy = Some(policy.to_core());
+            }
             let (operation_id, _cancel) = inner.operations().begin(OperationKind::Pipeline).await;
+            // See `start_convert`'s identical comment above -- the same
+            // theoretical, non-reachable-in-practice race.
             if let Some(handle) = inner.tokio_handle() {
                 let worker_inner = inner.clone();
                 handle.spawn(processing_ops::run_pipeline(

@@ -16,7 +16,7 @@ pub mod tasks;
 pub use checks::*;
 pub use metadata::{GameMetadata, ScreenshotData};
 pub use organizer::*;
-pub use profile::{ArchiveFormat, ArchiveProfile};
+pub use profile::{load_archive_profile, ArchiveFormat, ArchiveProfile};
 
 use serde::{Deserialize, Serialize};
 

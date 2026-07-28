@@ -81,14 +81,6 @@ pub struct BootstrapConfig {
     /// see `crate::operations::extract::ExtractRunner`. Always `None` in
     /// `system_default()`.
     pub extract_runner_override: Option<Arc<dyn crate::operations::extract::ExtractRunner>>,
-    /// Test-only seam (Task 9): overrides where `start_pipeline` looks for
-    /// the saved-preset file `arclain_core::default_presets_path()` would
-    /// otherwise resolve to (a real, OS-conventional user config
-    /// directory -- never test-isolated on its own). Always `None` in
-    /// `system_default()`, matching `archive_backend_override`'s own
-    /// convention: production never sets it, and `run()` simply falls
-    /// back to the real default path when it is unset.
-    pub presets_path_override: Option<PathBuf>,
 }
 
 /// Hand-written rather than `#[derive(Debug)]`: `dyn arclain_core::
@@ -108,7 +100,6 @@ impl std::fmt::Debug for BootstrapConfig {
                 "extract_runner_override_is_set",
                 &self.extract_runner_override.is_some(),
             )
-            .field("presets_path_override", &self.presets_path_override)
             .finish()
     }
 }
@@ -122,7 +113,6 @@ impl BootstrapConfig {
             worker_threads: None,
             archive_backend_override: None,
             extract_runner_override: None,
-            presets_path_override: None,
         }
     }
 }
@@ -469,7 +459,6 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         challenges: ChallengeWaiters::new(),
         archive_backend_override: config.archive_backend_override,
         extract_runner,
-        presets_path_override: config.presets_path_override,
         shut_down: std::sync::atomic::AtomicBool::new(false),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })
