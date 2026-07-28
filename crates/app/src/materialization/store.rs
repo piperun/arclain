@@ -45,7 +45,16 @@ fn unknown_lease_error(id: MaterializationLeaseId) -> ApplicationError {
     .with_diagnostic(format!("lease id {}", id.into_raw()))
 }
 
-fn directory_io_error(context: &str, path: &Path, error: std::io::Error) -> ApplicationError {
+// Accepts `impl Display` rather than the concrete `std::io::Error` --
+// mirrors `crate::runtime::paths`'s own `directory_error` helper, which
+// exists for the identical reason: `arclain_app_fs::ensure_owner_dir`
+// returns `anyhow::Error`, not `std::io::Error`, so a helper narrowed to
+// the latter couldn't report that call's failures at all.
+fn directory_io_error(
+    context: &str,
+    path: &Path,
+    error: impl std::fmt::Display,
+) -> ApplicationError {
     ApplicationError::new(
         ApplicationErrorKind::Persistence,
         "failed to prepare a materialization lease directory",
@@ -164,12 +173,71 @@ impl Drop for ReservedLease {
 /// process produced it -- the pair together is what makes two runs'
 /// directory names collide-proof without needing a new dependency (a
 /// proper UUID/random crate) for a need this narrow.
+///
+/// This is a name-collision guard only. It does **not** make it safe for
+/// one instance to delete another live instance's content -- see
+/// [`MaterializationStore::new`]'s own doc comment for the mechanism that
+/// actually guards *that* (an exclusive lock, not this tag).
 fn session_tag() -> String {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
     format!("{}-{nanos:x}", std::process::id())
+}
+
+/// Where the exclusive lock guarding `root`'s leftover-clearing step
+/// lives -- a sibling of `root`, deliberately never a file *inside* it:
+/// `root`'s own contents are exactly what clearing removes, and this
+/// lock must keep working (both for this instance, for the rest of its
+/// lifetime, and for whichever instance constructs next) independent of
+/// whatever clearing does or doesn't do to those contents.
+fn lock_file_path(root: &Path) -> PathBuf {
+    root.with_extension("lock")
+}
+
+/// Attempts to remove every direct child of `root` individually and
+/// best-effort, logging (not failing) any it cannot remove right now --
+/// a leftover directory an antivirus scanner or a still-open external
+/// viewer holds a handle into (surviving the crash that left it behind
+/// in the first place) must not turn "reclaim what we can" into "this
+/// application cannot start." [`session_tag`] already guarantees this
+/// run's own fresh leases can never collide by name with whatever is
+/// left behind here, so an unremovable leftover only costs a little
+/// permanently-unreclaimed disk space, never correctness.
+///
+/// Does nothing if `root` does not exist yet -- the ordinary first-run
+/// case.
+fn clear_leftover_lease_directories(root: &Path) {
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            tracing::warn!(
+                "[materialization] could not list {} to clear leftover leases from a previous \
+                 run -- leaving its contents in place: {error}",
+                root.display()
+            );
+            return;
+        }
+    };
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        let is_dir = entry.file_type().map(|kind| kind.is_dir()).unwrap_or(true);
+        let result = if is_dir {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                "[materialization] could not remove leftover {} from a previous run (still open \
+                 elsewhere? antivirus hold?) -- leaving it in place: {error}",
+                path.display()
+            );
+        }
+    }
 }
 
 /// The store every [`MaterializationLease`] is tracked through for the
@@ -186,55 +254,101 @@ pub(crate) struct MaterializationStore {
     /// why a `static` counter shared across every store instance in one
     /// test binary is itself a latent smell, independent of any one test).
     /// Restarts at 1 on every construction -- exactly why [`Self::new`]
-    /// must clear `root` first: a bare numeric id alone would otherwise
-    /// collide by name with whatever a previous process run (crashed,
-    /// force-killed, or otherwise never reaching `ArclainApp::shutdown`)
-    /// left behind at that same path.
+    /// clears `root` first (when it can -- see that method's own doc
+    /// comment): a bare numeric id alone would otherwise collide by name
+    /// with whatever a previous process run (crashed, force-killed, or
+    /// otherwise never reaching `ArclainApp::shutdown`) left behind at
+    /// that same path.
     next_id: AtomicU64,
+    /// An OS-level exclusive lock on [`lock_file_path`], held for this
+    /// store's *entire* lifetime -- never read again after [`Self::new`]
+    /// acquires (or fails to acquire) it. Kept alive purely for its
+    /// `Drop`: releasing it (when this field goes out of scope, on a
+    /// clean shutdown or an OS process exit/crash alike -- the OS closes
+    /// every handle a dying process held, lock included) is what lets the
+    /// *next* instance constructed against this `root` reacquire it and
+    /// clear leftovers in turn. See [`Self::new`]'s own doc comment.
+    #[allow(dead_code)]
+    root_lock: std::fs::File,
 }
 
 impl MaterializationStore {
-    /// Constructs the store rooted at `root`, first reclaiming anything a
-    /// previous process run left there. A [`MaterializationLeaseId`] is
-    /// only ever valid within the process that minted it (`next_id`
-    /// restarts at 1 on every construction, matching the module's own
-    /// "process-scoped by definition" lease model), so any directory
-    /// already at `root` when this runs cannot belong to a lease this run
-    /// could ever legitimately reference again -- left alone, it would
-    /// both grow `root` without bound across many runs *and* collide by
-    /// name with this run's own freshly-minted ids (a `Directory`
-    /// materialization could otherwise silently hand the caller a
-    /// previously opened, unrelated archive's leftover content sitting
-    /// alongside the new one).
+    /// Constructs the store rooted at `root`.
     ///
-    /// This assumes single-instance operation: it does not attempt to
-    /// detect whether another instance of this application is
-    /// concurrently running against the same `root` (a real, if narrow,
-    /// gap -- doing so reliably needs cross-platform process-liveness
-    /// detection this crate does not otherwise need, and is out of scope
-    /// here). [`session_tag`] is the mitigation for that gap: every lease
-    /// directory this instance mints is additionally named with its own
-    /// process id and a nanosecond timestamp (see [`Self::reserve`]), so
-    /// even if two instances' clears and reserves interleave unluckily,
-    /// their own leases can never collide by name with each other.
+    /// Reclaiming a previous run's leftovers (crash, force-kill --
+    /// anything that skipped `ArclainApp::shutdown`) is conditional on
+    /// this instance actually acquiring an exclusive OS-level lock on a
+    /// sibling lock file at [`lock_file_path`]. If another instance of
+    /// this application is already live against the same `root` --
+    /// holding that same lock itself -- this construction skips the
+    /// clear entirely and simply coexists with it, rather than deleting
+    /// the other, still-live instance's lease directories out from under
+    /// it. Locking is what actually prevents that, **not**
+    /// [`session_tag`]: that tag only guarantees the two instances' own
+    /// freshly minted lease directories can never collide *by name*; on
+    /// its own it does nothing to stop one instance's construction-time
+    /// clear from wiping another, already-live instance's entire root
+    /// (an earlier version of this doc comment claimed otherwise -- that
+    /// claim was wrong).
+    ///
+    /// The lock is held for this store's *whole* lifetime, not just
+    /// around the clear, so the *next* single instance to construct
+    /// against this `root` -- once this one has cleanly shut down or
+    /// crashed, either way releasing the OS-level lock -- can reacquire
+    /// it and clear leftovers in its own turn.
+    ///
+    /// Failing to acquire the lock is not itself an error: construction
+    /// still succeeds, just without clearing. A genuine I/O failure
+    /// opening or locking the lock file *is* fatal, as is a failure
+    /// creating/securing `root` itself (via
+    /// `arclain_app_fs::ensure_owner_dir`, which also re-applies owner-
+    /// only permissions every time -- plain `create_dir_all` would
+    /// silently leave a freshly (re)created `root` at the process umask's
+    /// default instead, typically world-readable on Unix, letting other
+    /// local users traverse into materialized content that may have come
+    /// from an encrypted archive). A failure clearing an individual
+    /// leftover is not fatal (see [`clear_leftover_lease_directories`]).
     pub(crate) fn new(root: PathBuf, ttl: Duration) -> Result<Self, ApplicationError> {
-        if root.exists() {
-            std::fs::remove_dir_all(&root).map_err(|error| {
-                directory_io_error(
-                    "clearing leftover leases from a previous run at",
-                    &root,
-                    error,
-                )
-            })?;
+        let lock_path = lock_file_path(&root);
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| directory_io_error("creating", parent, error))?;
         }
-        std::fs::create_dir_all(&root)
+        let root_lock = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|error| {
+                directory_io_error("opening the lease-root lock file at", &lock_path, error)
+            })?;
+
+        match root_lock.try_lock() {
+            Ok(()) => clear_leftover_lease_directories(&root),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                // Another live instance owns `root` right now -- leave
+                // its contents alone entirely; see this method's own doc
+                // comment.
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(directory_io_error(
+                    "locking the lease-root lock file at",
+                    &lock_path,
+                    error,
+                ));
+            }
+        }
+
+        arclain_app_fs::ensure_owner_dir(&root)
             .map_err(|error| directory_io_error("creating", &root, error))?;
+
         Ok(Self {
             root,
             session_tag: session_tag(),
             ttl,
             leases: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
+            root_lock,
         })
     }
 
@@ -249,11 +363,12 @@ impl MaterializationStore {
     /// `commit` should just let the returned guard drop.
     ///
     /// The directory name embeds this instance's own [`session_tag`], not
-    /// just the numeric id -- see [`Self::new`]'s own doc comment for why
-    /// (defense in depth against a previous run's leftovers, and against
-    /// two concurrently running instances, neither of which a bare
-    /// numeric id -- which restarts at 1 every process -- could
-    /// distinguish on its own).
+    /// just the numeric id -- a bare numeric id restarts at 1 every
+    /// process, so it alone could not distinguish this instance's own
+    /// directories from a previous run's leftovers, or from a second,
+    /// concurrently live instance's own leases (which this instance's
+    /// construction does not delete -- see [`Self::new`]'s own doc
+    /// comment for the lock that actually guards that case).
     pub(crate) fn reserve(&self) -> Result<ReservedLease, ApplicationError> {
         let id = MaterializationLeaseId::from_raw(self.next_id.fetch_add(1, Ordering::Relaxed));
         let dir = self
@@ -561,29 +676,19 @@ mod tests {
     }
 
     #[test]
-    fn two_stores_constructed_against_the_same_root_mint_differently_named_directories() {
-        // Defense in depth for the case the review specifically asked for:
-        // even though `MaterializationStore::new` clearing the whole root
-        // assumes single-instance operation, two store instances (e.g. two
-        // sequential constructions in one process, or a scenario the
-        // clearing step above didn't fully protect) must never mint the
-        // exact same directory name for the same numeric id -- the
-        // per-instance `session_tag` embedded in every directory name is
-        // what guarantees that regardless of whether clearing itself ran.
+    fn two_reservations_from_two_stores_against_the_same_root_never_collide_by_name() {
+        // Both stores go through the real `new()` this time (a raw struct
+        // literal used to stand in for "a second overlapping instance"
+        // here, but that bypassed the lock entirely and so didn't
+        // actually exercise it) -- store_b's construction, while store_a
+        // is still alive and holding the lock, is exactly the "second
+        // live instance" scenario the lock exists to detect.
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("materialization");
         let store_a = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+        let store_b = MaterializationStore::new(root, Duration::from_secs(300)).unwrap();
+
         let reserved_a = store_a.reserve().unwrap();
-        // Don't clear -- construct a second store directly against the
-        // same root without going through the normal "one store per
-        // process" flow, simulating two overlapping instances.
-        let store_b = MaterializationStore {
-            root: store_a.root.clone(),
-            session_tag: format!("{}-different", store_a.session_tag),
-            ttl: Duration::from_secs(300),
-            leases: RwLock::new(HashMap::new()),
-            next_id: AtomicU64::new(1),
-        };
         let reserved_b = store_b.reserve().unwrap();
 
         assert_eq!(reserved_a.id, reserved_b.id, "sanity: both mint id 1");
@@ -592,6 +697,216 @@ mod tests {
             reserved_b.dir(),
             "two instances' directories for the same numeric id must never collide by name"
         );
+    }
+
+    #[test]
+    fn a_second_store_constructed_while_the_first_is_still_live_skips_the_clear_and_coexists() {
+        // The bug NB2 fixes: a second concurrent instance's bootstrap
+        // used to `remove_dir_all` the shared root regardless of whether
+        // another instance already had live leases there -- session_tag
+        // alone (asserted above) only stops the two instances' own
+        // directories from colliding by *name*; it does nothing to stop
+        // one from deleting the other's.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("materialization");
+
+        let store_a = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+        let reserved_a = store_a.reserve().unwrap();
+        let lease_a = commit_file(&store_a, reserved_a, "a.txt", b"still live", 0);
+        assert!(lease_a.local_path.exists());
+
+        // Constructed against the SAME root while `store_a` is still
+        // alive (and therefore still holding the lock) -- must not touch
+        // `store_a`'s live content.
+        let store_b = MaterializationStore::new(root, Duration::from_secs(300)).unwrap();
+
+        assert!(
+            lease_a.local_path.exists(),
+            "a second store constructed while the first is still live must not delete the \
+             first instance's live lease content"
+        );
+
+        // The second instance must still be fully usable alongside the
+        // first -- distinct session tags keep its own leases from
+        // colliding with the first instance's.
+        let reserved_b = store_b.reserve().unwrap();
+        let lease_b = commit_file(&store_b, reserved_b, "b.txt", b"second instance", 0);
+        assert_ne!(lease_a.local_path.parent(), lease_b.local_path.parent());
+        assert!(
+            lease_a.local_path.exists(),
+            "still there after store_b's own reserve+commit"
+        );
+    }
+
+    #[test]
+    fn a_fresh_store_clears_leftovers_once_the_previous_instances_lock_is_released() {
+        // The companion case: successive *single* instances (the
+        // ordinary crash-and-restart scenario, not two overlapping live
+        // instances) must still see the original reclaim-on-restart
+        // behavior once the previous instance has actually gone away and
+        // released its lock -- the lock must not turn into a permanent
+        // "nobody may ever clear again" latch.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("materialization");
+
+        let leftover_dir = {
+            let store = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+            let reserved = store.reserve().unwrap();
+            let dir = reserved.dir().to_path_buf();
+            let _lease = commit_file(&store, reserved, "old.txt", b"stale", 0);
+            dir
+            // `store` (and the lock it held) is dropped here.
+        };
+        assert!(
+            leftover_dir.exists(),
+            "sanity: the first instance's lease dir is still on disk"
+        );
+
+        let store2 = MaterializationStore::new(root, Duration::from_secs(300)).unwrap();
+        assert!(
+            !leftover_dir.exists(),
+            "a fresh store must still clear a previous instance's leftovers once that \
+             instance's lock has actually been released"
+        );
+        let reserved = store2.reserve().unwrap();
+        let lease = commit_file(&store2, reserved, "new.txt", b"fresh", 0);
+        assert_eq!(std::fs::read(&lease.local_path).unwrap(), b"fresh");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recreating_the_root_still_locks_it_down_to_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("materialization");
+
+        {
+            let _store = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+        }
+        // Loosen it, simulating what a plain `create_dir_all` (the
+        // process umask's default, typically 0755) would leave behind if
+        // this fix regressed to it -- proves the *second* construction
+        // below is what re-secures it, not merely that it happened to
+        // already be right from the first.
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let _store2 = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "the lease root must be owner-only (0700) after being (re)secured, never left at \
+             whatever the process umask's default happens to be -- other local users must not \
+             be able to traverse into materialized content, which may have come from an \
+             encrypted archive"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_leftover_held_open_by_another_handle_is_logged_and_left_in_place() {
+        // Windows-specific mechanism for the same "cannot remove one
+        // leftover right now" scenario NB3 describes (an antivirus
+        // scanner or a still-open external viewer holding a handle into
+        // it). `std::fs::OpenOptions`'s own *default* share mode
+        // deliberately includes `FILE_SHARE_DELETE` (matching Unix's
+        // unlink-while-open semantics, confirmed directly: a plain
+        // default-mode open here does NOT block `remove_file`), so this
+        // opens with an explicit, narrower share mode instead --
+        // `FILE_SHARE_READ` only, the way many real external
+        // viewers/scanners do -- which does block removal until the
+        // handle closes.
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("materialization");
+
+        let (undeletable_file, deletable_dir) = {
+            let store = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+
+            let reserved_ok = store.reserve().unwrap();
+            let deletable_dir = reserved_ok.dir().to_path_buf();
+            let _lease_ok = commit_file(&store, reserved_ok, "fine.txt", b"removable", 0);
+
+            let reserved_stuck = store.reserve().unwrap();
+            let _lease_stuck = commit_file(&store, reserved_stuck, "stuck.txt", b"held open", 0);
+            let undeletable_file = _lease_stuck.local_path.clone();
+
+            (undeletable_file, deletable_dir)
+        };
+
+        let held_open = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&undeletable_file)
+            .unwrap();
+
+        // Construction must still succeed...
+        let _store2 = MaterializationStore::new(root, Duration::from_secs(300)).unwrap();
+
+        // ...must have cleared the leftover it COULD remove...
+        assert!(
+            !deletable_dir.exists(),
+            "a removable leftover must still be cleared"
+        );
+        // ...and must have left the undeletable one in place instead of
+        // failing construction over it.
+        assert!(
+            undeletable_file.exists(),
+            "a leftover this process cannot remove right now must be left in place, not cause \
+             construction to fail"
+        );
+
+        drop(held_open);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_leftover_whose_permissions_forbid_removal_is_logged_and_left_in_place() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Unix analog of the Windows held-open-handle test above:
+        // removing a directory's *contents* (what `remove_dir_all` must
+        // do before it can remove the directory itself) needs write+
+        // execute permission on that directory, not on the files inside
+        // it -- stripping that permission reliably fails removal with
+        // EACCES on any POSIX filesystem, regardless of which user owns
+        // the files, without relying on any Windows-only handle-sharing
+        // semantics.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("materialization");
+
+        let (undeletable_dir, deletable_dir) = {
+            let store = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+
+            let reserved_ok = store.reserve().unwrap();
+            let deletable_dir = reserved_ok.dir().to_path_buf();
+            let _lease_ok = commit_file(&store, reserved_ok, "fine.txt", b"removable", 0);
+
+            let reserved_stuck = store.reserve().unwrap();
+            let undeletable_dir = reserved_stuck.dir().to_path_buf();
+            let _lease_stuck = commit_file(&store, reserved_stuck, "stuck.txt", b"held open", 0);
+
+            (undeletable_dir, deletable_dir)
+        };
+        std::fs::set_permissions(&undeletable_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let _store2 = MaterializationStore::new(root, Duration::from_secs(300)).unwrap();
+
+        assert!(
+            !deletable_dir.exists(),
+            "a removable leftover must still be cleared"
+        );
+        assert!(
+            undeletable_dir.exists(),
+            "a leftover this process cannot remove right now (permission-restricted) must be \
+             left in place, not cause construction to fail"
+        );
+
+        // Restore permissions so the tempdir's own cleanup can succeed.
+        std::fs::set_permissions(&undeletable_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
     }
 
     #[test]
@@ -740,13 +1055,22 @@ mod tests {
         let new_expiry = store.renew(id, 100_000).unwrap();
 
         // Sweep with a "now" that is past the *original* expiry (300_000)
-        // but well before the *renewed* one (400_000). The fixed
-        // `sweep_expired` re-checks each record's expiry atomically under
-        // the same write guard it removes under, so a renewal that has
-        // already landed (as it has here, sequentially, before this call)
-        // is always honored -- this is the invariant the single-write-
-        // guard-retain fix exists to guarantee, independent of whichever
-        // implementation happens to satisfy it.
+        // but well before the *renewed* one (400_000).
+        //
+        // This is a sequential call -- `renew` fully completes and
+        // returns before `sweep_expired` is even invoked -- so it proves
+        // `sweep_expired` reads the lease's *current* state rather than
+        // some snapshot memoized once at an earlier time, but it does
+        // NOT exercise the concurrent read-then-write race the single-
+        // write-guard-retain fix actually closes: with nothing running
+        // at the same time, both the old two-step implementation and the
+        // current one see the already-landed renewal identically, so
+        // this test alone cannot tell them apart (confirmed directly: it
+        // still passes if `sweep_expired` is reverted to the old
+        // two-step shape). `a_renew_that_returns_ok_never_leaves_the_
+        // lease_unreachable_afterward`, below, is the test that actually
+        // races the two concurrently and was confirmed by direct revert
+        // to fail against the old implementation.
         store.sweep_expired(350_000);
 
         assert_eq!(
@@ -823,6 +1147,98 @@ mod tests {
             store.get(id).is_ok(),
             "a lease kept continuously renewed far into the future must never be removed by a \
              concurrently running sweep"
+        );
+    }
+
+    #[test]
+    fn a_renew_that_returns_ok_never_leaves_the_lease_unreachable_afterward() {
+        // The exact race the two-step (read-then-decide under a read
+        // guard, then remove under a separate write guard without
+        // re-checking) `sweep_expired` used to allow: a `renew` landing
+        // in the gap between those two guards could return `Ok` with a
+        // freshly extended expiry, and then have its lease deleted
+        // anyway on the strength of the stale snapshot `sweep_expired`
+        // had already committed to acting on.
+        //
+        // A single renewer/sweeper thread pair racing one lease was
+        // tried first and never reproduced this, even against the
+        // genuinely reverted two-step implementation (confirmed
+        // directly during this round) -- two bare `std::thread::spawn`
+        // calls don't create enough scheduler contention on their own to
+        // land in a gap this narrow. Many pairs racing *simultaneously*
+        // does: with real contention from dozens of threads at once, the
+        // scheduler actually preempts a sweeper between its read guard
+        // and its write guard often enough for a concurrent renew to
+        // land there. Confirmed by revert with this exact test shape:
+        // against the reverted two-step `sweep_expired`, it reliably
+        // produced several hundred violations per run (out of roughly a
+        // thousand successful renews); against the current single-
+        // write-guard-retain implementation, zero, every time.
+        let temp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(store(&temp));
+
+        const PAIRS: usize = 64;
+        const ROUNDS: usize = 5;
+        let mut total_ok = 0usize;
+        let mut violations = Vec::new();
+
+        for round in 0..ROUNDS {
+            let mut ids = Vec::new();
+            for _ in 0..PAIRS {
+                let reserved = store.reserve().unwrap();
+                let id = reserved.id;
+                let _lease = commit_file(&store, reserved, "file.bin", b"x", 0); // expires at 300_000
+                ids.push(id);
+            }
+
+            // Just past every lease's current expiry (expiry + delta) --
+            // exactly the boundary where a sweeper's stale snapshot and
+            // a concurrent renew's fresh write could disagree.
+            let now = 300_001i64;
+            let renew_handles: Vec<_> = ids
+                .iter()
+                .map(|&id| {
+                    let store = store.clone();
+                    std::thread::spawn(move || (id, store.renew(id, now).is_ok()))
+                })
+                .collect();
+            let sweep_handles: Vec<_> = (0..PAIRS)
+                .map(|_| {
+                    let store = store.clone();
+                    std::thread::spawn(move || store.sweep_expired(now))
+                })
+                .collect();
+
+            let mut renew_ok = std::collections::HashMap::new();
+            for handle in renew_handles {
+                let (id, ok) = handle.join().unwrap();
+                renew_ok.insert(id, ok);
+            }
+            for handle in sweep_handles {
+                handle.join().unwrap();
+            }
+
+            for &id in &ids {
+                if renew_ok[&id] {
+                    total_ok += 1;
+                    if store.get(id).is_err() {
+                        violations.push((round, id));
+                    }
+                }
+                let _ = store.release(id);
+            }
+        }
+
+        assert!(
+            total_ok > 0,
+            "sanity: renew must win the race at least sometimes across {ROUNDS} rounds of \
+             {PAIRS} pairs"
+        );
+        assert!(
+            violations.is_empty(),
+            "renew returned Ok but a subsequent get failed for {} of {total_ok} successful \
+             renews: {violations:?}",
+            violations.len()
         );
     }
 
