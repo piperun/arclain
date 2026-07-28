@@ -156,27 +156,86 @@ impl Drop for ReservedLease {
     }
 }
 
+/// A tag unique to this one running process instance, embedded in every
+/// lease directory name this store mints (see [`MaterializationStore::reserve`]).
+/// Combines the process id with a nanosecond timestamp rather than either
+/// alone: a bare pid can be reused by the OS across two different runs
+/// separated by enough time, and a bare timestamp says nothing about which
+/// process produced it -- the pair together is what makes two runs'
+/// directory names collide-proof without needing a new dependency (a
+/// proper UUID/random crate) for a need this narrow.
+fn session_tag() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    format!("{}-{nanos:x}", std::process::id())
+}
+
 /// The store every [`MaterializationLease`] is tracked through for the
 /// lifetime of its id's validity. See the module doc comment.
 pub(crate) struct MaterializationStore {
     root: PathBuf,
+    /// This instance's own [`session_tag`], embedded in every lease
+    /// directory name -- see [`Self::reserve`]'s own doc comment for why.
+    session_tag: String,
     ttl: Duration,
     leases: RwLock<HashMap<MaterializationLeaseId, LeaseRecord>>,
     /// Per-store, not a process-wide `static` -- mirrors
     /// `ArchiveSessionStore::next_id`'s own field (see its doc comment for
     /// why a `static` counter shared across every store instance in one
     /// test binary is itself a latent smell, independent of any one test).
+    /// Restarts at 1 on every construction -- exactly why [`Self::new`]
+    /// must clear `root` first: a bare numeric id alone would otherwise
+    /// collide by name with whatever a previous process run (crashed,
+    /// force-killed, or otherwise never reaching `ArclainApp::shutdown`)
+    /// left behind at that same path.
     next_id: AtomicU64,
 }
 
 impl MaterializationStore {
-    pub(crate) fn new(root: PathBuf, ttl: Duration) -> Self {
-        Self {
+    /// Constructs the store rooted at `root`, first reclaiming anything a
+    /// previous process run left there. A [`MaterializationLeaseId`] is
+    /// only ever valid within the process that minted it (`next_id`
+    /// restarts at 1 on every construction, matching the module's own
+    /// "process-scoped by definition" lease model), so any directory
+    /// already at `root` when this runs cannot belong to a lease this run
+    /// could ever legitimately reference again -- left alone, it would
+    /// both grow `root` without bound across many runs *and* collide by
+    /// name with this run's own freshly-minted ids (a `Directory`
+    /// materialization could otherwise silently hand the caller a
+    /// previously opened, unrelated archive's leftover content sitting
+    /// alongside the new one).
+    ///
+    /// This assumes single-instance operation: it does not attempt to
+    /// detect whether another instance of this application is
+    /// concurrently running against the same `root` (a real, if narrow,
+    /// gap -- doing so reliably needs cross-platform process-liveness
+    /// detection this crate does not otherwise need, and is out of scope
+    /// here). [`session_tag`] is the mitigation for that gap: every lease
+    /// directory this instance mints is additionally named with its own
+    /// process id and a nanosecond timestamp (see [`Self::reserve`]), so
+    /// even if two instances' clears and reserves interleave unluckily,
+    /// their own leases can never collide by name with each other.
+    pub(crate) fn new(root: PathBuf, ttl: Duration) -> Result<Self, ApplicationError> {
+        if root.exists() {
+            std::fs::remove_dir_all(&root).map_err(|error| {
+                directory_io_error(
+                    "clearing leftover leases from a previous run at",
+                    &root,
+                    error,
+                )
+            })?;
+        }
+        std::fs::create_dir_all(&root)
+            .map_err(|error| directory_io_error("creating", &root, error))?;
+        Ok(Self {
             root,
+            session_tag: session_tag(),
             ttl,
             leases: RwLock::new(HashMap::new()),
             next_id: AtomicU64::new(1),
-        }
+        })
     }
 
     fn expires_at(&self, now_unix_ms: i64) -> i64 {
@@ -188,9 +247,18 @@ impl MaterializationStore {
     /// then hands to [`Self::commit`]. Not yet visible to `get`/`renew`/
     /// `release`/`read_range` -- a caller that errors out before calling
     /// `commit` should just let the returned guard drop.
+    ///
+    /// The directory name embeds this instance's own [`session_tag`], not
+    /// just the numeric id -- see [`Self::new`]'s own doc comment for why
+    /// (defense in depth against a previous run's leftovers, and against
+    /// two concurrently running instances, neither of which a bare
+    /// numeric id -- which restarts at 1 every process -- could
+    /// distinguish on its own).
     pub(crate) fn reserve(&self) -> Result<ReservedLease, ApplicationError> {
         let id = MaterializationLeaseId::from_raw(self.next_id.fetch_add(1, Ordering::Relaxed));
-        let dir = self.root.join(id.into_raw().to_string());
+        let dir = self
+            .root
+            .join(format!("{}-{}", self.session_tag, id.into_raw()));
         std::fs::create_dir_all(&dir)
             .map_err(|error| directory_io_error("creating", &dir, error))?;
         Ok(ReservedLease {
@@ -318,25 +386,31 @@ impl MaterializationStore {
     /// Removes every lease whose `expires_at_unix_ms` is at or before
     /// `now_unix_ms`. See the module doc comment for why "now" is an
     /// explicit parameter.
+    ///
+    /// Decides and removes under one held write guard (`HashMap::retain`),
+    /// not a read pass followed by a separate write pass: an earlier
+    /// version computed the expired set under a read guard, dropped it,
+    /// then removed under a fresh write guard without re-checking
+    /// `expires_at_unix_ms` -- a `renew` landing in the gap between those
+    /// two guards would return `Ok` with a fresh expiry, and then have its
+    /// lease deleted anyway on the strength of the stale snapshot. A
+    /// single retain closes that gap by construction: `renew` and this
+    /// method both need the same write lock, so one fully happens before
+    /// the other, and whichever ran second sees the other's effect.
     pub(crate) fn sweep_expired(&self, now_unix_ms: i64) {
-        let expired: Vec<(MaterializationLeaseId, PathBuf)> = {
-            let leases = self.leases.read();
-            leases
-                .iter()
-                .filter(|(_, record)| record.expires_at_unix_ms <= now_unix_ms)
-                .map(|(id, record)| (*id, record.lease_dir.clone()))
-                .collect()
-        };
-        if expired.is_empty() {
-            return;
-        }
+        let mut removed_dirs: Vec<PathBuf> = Vec::new();
         {
             let mut leases = self.leases.write();
-            for (id, _) in &expired {
-                leases.remove(id);
-            }
+            leases.retain(|_, record| {
+                if record.expires_at_unix_ms <= now_unix_ms {
+                    removed_dirs.push(record.lease_dir.clone());
+                    false
+                } else {
+                    true
+                }
+            });
         }
-        for (_, dir) in expired {
+        for dir in removed_dirs {
             let _ = std::fs::remove_dir_all(&dir);
         }
     }
@@ -370,6 +444,7 @@ mod tests {
             temp.path().join("materialization"),
             Duration::from_secs(300),
         )
+        .unwrap()
     }
 
     fn commit_file(
@@ -396,6 +471,127 @@ mod tests {
         assert!(reserved.dir().is_dir());
         assert!(reserved.dir().starts_with(store.root()));
         assert_eq!(std::fs::read_dir(reserved.dir()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn constructing_a_store_clears_leftover_content_from_a_previous_run_at_the_same_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("materialization");
+
+        // Simulate a previous, no-longer-running process instance having
+        // left a lease's directory behind at this exact root (a crash, a
+        // force-kill -- anything that skips `ArclainApp::shutdown`).
+        let leftover_dir = root.join("stale-session-1");
+        std::fs::create_dir_all(&leftover_dir).unwrap();
+        std::fs::write(
+            leftover_dir.join("previous_archive_content.bin"),
+            b"belongs to a different, already-closed archive session",
+        )
+        .unwrap();
+        assert!(std::fs::read_dir(&root).unwrap().next().is_some());
+
+        // A fresh store construction (what a fresh `ArclainApp::bootstrap`
+        // does) must reclaim it -- the id space restarts at 1 regardless,
+        // so nothing at this root can ever legitimately belong to the new
+        // store.
+        let store = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+
+        assert_eq!(
+            std::fs::read_dir(&root).unwrap().count(),
+            0,
+            "a fresh store must clear away every leftover directory from a previous run"
+        );
+
+        // A fresh lease minted by the new store must contain only its own
+        // content -- proves the clearing actually ran before anything else
+        // touched the root, not just that the leftover happened to still
+        // be there afterward.
+        let reserved = store.reserve().unwrap();
+        let lease = commit_file(&store, reserved, "new.txt", b"fresh", 0);
+        assert_eq!(std::fs::read(&lease.local_path).unwrap(), b"fresh");
+    }
+
+    #[test]
+    fn a_fresh_lease_never_inherits_a_previous_runs_content_even_at_the_same_numeric_id() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("materialization");
+
+        // First "run": mint lease id 1 and commit real content into it,
+        // then simulate the process going away without releasing or
+        // shutting down (drop the store; its directory is left on disk).
+        let first_run_lease_dir = {
+            let store = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+            let reserved = store.reserve().unwrap();
+            assert_eq!(reserved.id, MaterializationLeaseId::from_raw(1));
+            let dir = reserved.dir().to_path_buf();
+            let _lease = commit_file(&store, reserved, "old.txt", b"stale, from run 1", 0);
+            dir
+        };
+        assert!(
+            first_run_lease_dir.exists(),
+            "sanity: run 1's lease dir is really still on disk"
+        );
+
+        // Second "run" against the identical root -- ids restart at 1
+        // again by construction.
+        let store2 = MaterializationStore::new(root, Duration::from_secs(300)).unwrap();
+        let reserved2 = store2.reserve().unwrap();
+        assert_eq!(
+            reserved2.id,
+            MaterializationLeaseId::from_raw(1),
+            "sanity: the id space really does restart at 1 every construction"
+        );
+        let lease2 = commit_file(&store2, reserved2, "new.txt", b"fresh, from run 2", 0);
+
+        // Run 1's old directory must be gone (reclaimed by run 2's
+        // construction), and run 2's own lease must contain only its own
+        // file -- never run 1's stale sibling.
+        assert!(!first_run_lease_dir.exists());
+        assert_eq!(
+            std::fs::read(&lease2.local_path).unwrap(),
+            b"fresh, from run 2"
+        );
+        let sibling_count = std::fs::read_dir(lease2.local_path.parent().unwrap())
+            .unwrap()
+            .count();
+        assert_eq!(
+            sibling_count, 1,
+            "the fresh lease's own directory must contain only what THIS run wrote to it"
+        );
+    }
+
+    #[test]
+    fn two_stores_constructed_against_the_same_root_mint_differently_named_directories() {
+        // Defense in depth for the case the review specifically asked for:
+        // even though `MaterializationStore::new` clearing the whole root
+        // assumes single-instance operation, two store instances (e.g. two
+        // sequential constructions in one process, or a scenario the
+        // clearing step above didn't fully protect) must never mint the
+        // exact same directory name for the same numeric id -- the
+        // per-instance `session_tag` embedded in every directory name is
+        // what guarantees that regardless of whether clearing itself ran.
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("materialization");
+        let store_a = MaterializationStore::new(root.clone(), Duration::from_secs(300)).unwrap();
+        let reserved_a = store_a.reserve().unwrap();
+        // Don't clear -- construct a second store directly against the
+        // same root without going through the normal "one store per
+        // process" flow, simulating two overlapping instances.
+        let store_b = MaterializationStore {
+            root: store_a.root.clone(),
+            session_tag: format!("{}-different", store_a.session_tag),
+            ttl: Duration::from_secs(300),
+            leases: RwLock::new(HashMap::new()),
+            next_id: AtomicU64::new(1),
+        };
+        let reserved_b = store_b.reserve().unwrap();
+
+        assert_eq!(reserved_a.id, reserved_b.id, "sanity: both mint id 1");
+        assert_ne!(
+            reserved_a.dir(),
+            reserved_b.dir(),
+            "two instances' directories for the same numeric id must never collide by name"
+        );
     }
 
     #[test]
@@ -529,6 +725,105 @@ mod tests {
 
         assert_eq!(new_expiry, 50_000 + 300_000);
         assert_eq!(store.get(id).unwrap().expires_at_unix_ms, new_expiry);
+    }
+
+    #[test]
+    fn a_renewed_lease_survives_a_sweep_timed_against_its_pre_renewal_deadline() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(&temp);
+        let reserved = store.reserve().unwrap();
+        let id = reserved.id;
+        let _lease = commit_file(&store, reserved, "file.bin", b"x", 0); // expires at 300_000
+
+        // Renew well before the original expiry, pushing it much further
+        // out (100_000 + 300_000 = 400_000).
+        let new_expiry = store.renew(id, 100_000).unwrap();
+
+        // Sweep with a "now" that is past the *original* expiry (300_000)
+        // but well before the *renewed* one (400_000). The fixed
+        // `sweep_expired` re-checks each record's expiry atomically under
+        // the same write guard it removes under, so a renewal that has
+        // already landed (as it has here, sequentially, before this call)
+        // is always honored -- this is the invariant the single-write-
+        // guard-retain fix exists to guarantee, independent of whichever
+        // implementation happens to satisfy it.
+        store.sweep_expired(350_000);
+
+        assert_eq!(
+            store.get(id).unwrap().expires_at_unix_ms,
+            new_expiry,
+            "a renewed lease must survive a sweep that only would have expired its pre-renewal deadline"
+        );
+    }
+
+    #[test]
+    fn concurrent_renewals_and_sweeps_never_lose_a_lease_kept_continuously_renewed() {
+        // Stress-tests the single-write-guard-retain fix under real
+        // thread concurrency: many renews and many sweeps hit the same
+        // lease's record from two different threads at once, exercising
+        // real lock contention rather than just sequential calls.
+        //
+        // The actual "sweep decides from a stale snapshot" race
+        // (`a_renewed_lease_survives_a_sweep_timed_against_its_pre_
+        // renewal_deadline`, just above, is the deterministic,
+        // explicit-clock proof of that fix) is orthogonal to *this*
+        // test's job, which is only to confirm the fix holds up under
+        // genuine concurrent access, not to also referee the two
+        // threads' relative progress. So every "now" the renewer ever
+        // passes -- including the record's *initial* commit below --
+        // resolves to an expiry far beyond anything the sweeper ever
+        // sweeps at, regardless of which thread the OS schedules first
+        // or how far either one gets before being preempted.
+        //
+        // An earlier version of this test instead derived both threads'
+        // "now" from the same 0..500 tick counter and asserted the
+        // sweeper could never mathematically "catch up" to the
+        // renewer's clock. That assumption silently depended on the two
+        // independently-spawned threads making roughly lockstep
+        // progress, which the OS scheduler never promises -- and it
+        // produced a real, reproducible failure under CPU contention
+        // (e.g. other concurrent builds/tests on the same machine
+        // letting the sweeper thread run 300+ iterations ahead of the
+        // renewer before the renewer's first call had even landed).
+        // Anchoring every expiry in the unreachable-future removes that
+        // dependency entirely: the assertion can only fail if a
+        // concurrent renew/sweep pair actually loses or corrupts state,
+        // which is the one thing this test exists to catch.
+        let temp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(store(&temp));
+        let reserved = store.reserve().unwrap();
+        let id = reserved.id;
+        // Committed with the same far-future "now" the renewer uses
+        // below, so the very first expiry -- before either thread has
+        // run at all -- is already unreachable by the sweeper.
+        const FAR_FUTURE_NOW: i64 = 10_000_000;
+        let _lease = commit_file(&store, reserved, "file.bin", b"x", FAR_FUTURE_NOW);
+
+        let renewer = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                for _ in 0..500 {
+                    let _ = store.renew(id, FAR_FUTURE_NOW); // expiry always FAR_FUTURE_NOW + 300_000
+                }
+            })
+        };
+        let sweeper = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                for tick in 0..500i64 {
+                    let now = tick * 900; // tops out at 449_100 -- nowhere near 10_300_000
+                    store.sweep_expired(now);
+                }
+            })
+        };
+        renewer.join().unwrap();
+        sweeper.join().unwrap();
+
+        assert!(
+            store.get(id).is_ok(),
+            "a lease kept continuously renewed far into the future must never be removed by a \
+             concurrently running sweep"
+        );
     }
 
     #[test]

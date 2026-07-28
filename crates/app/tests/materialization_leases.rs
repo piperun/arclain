@@ -536,7 +536,7 @@ fn materializing_a_file_entry_extracts_it_and_completes_with_a_lease() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::ExternalOpen,
             })
             .await
@@ -579,7 +579,7 @@ fn materializing_a_directory_entry_extracts_the_whole_subtree() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id: game_dir_id,
+                entry_ids: vec![game_dir_id],
                 purpose: MaterializationPurpose::DragOut,
             })
             .await
@@ -601,6 +601,87 @@ fn materializing_a_directory_entry_extracts_the_whole_subtree() {
 }
 
 #[test]
+fn empty_entry_ids_materializes_the_whole_archive_so_a_root_level_exes_sibling_dll_comes_along() {
+    // Regression test for a real behavior gap a review caught: the
+    // pre-facade implementation's own directory filter degenerated to
+    // "match every entry" for a root-level target (its `dir.is_empty()`
+    // branch), so a root-level game executable extracted the *entire*
+    // archive, DLLs included. `entry_ids: vec![]` is this facade's own
+    // "whole archive" convention (mirroring `ExtractRequest`'s), which is
+    // what `file_opener.rs`'s UI-side fallback now requests for exactly
+    // this layout.
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let backend = ScriptedBackend::new(
+        vec![file("Game.exe"), file("d3d9.dll")],
+        vec![succeed(&[
+            ("Game.exe", b"exe-bytes"),
+            ("d3d9.dll", b"dll-bytes"),
+        ])],
+    );
+    let app = bootstrap_app(paths, backend);
+    let archive_path = temp.path().join("archive.zip");
+
+    runtime.block_on(async {
+        let session_id = open_session_with_entries(&app, &archive_path).await;
+
+        let operation_id = app
+            .start_materialization(MaterializeRequest {
+                session_id,
+                entry_ids: Vec::new(),
+                purpose: MaterializationPurpose::ExternalOpen,
+            })
+            .await
+            .unwrap();
+
+        let lease = expect_materialized(wait_for_terminal(&app, operation_id).await);
+
+        assert!(lease.local_path.is_dir());
+        assert_eq!(
+            std::fs::read(lease.local_path.join("Game.exe")).unwrap(),
+            b"exe-bytes"
+        );
+        assert_eq!(
+            std::fs::read(lease.local_path.join("d3d9.dll")).unwrap(),
+            b"dll-bytes"
+        );
+    });
+}
+
+#[test]
+fn two_or_more_entry_ids_are_rejected_as_invalid_input() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let backend = ScriptedBackend::new(vec![file("a.txt"), file("b.txt")], vec![]);
+    let app = bootstrap_app(paths, backend);
+    let archive_path = temp.path().join("archive.zip");
+
+    runtime.block_on(async {
+        let session_id = open_session_with_entries(&app, &archive_path).await;
+        let entry_a = entry_id_for(&app, session_id, "", "a.txt").await;
+        let entry_b = entry_id_for(&app, session_id, "", "b.txt").await;
+
+        let operation_id = app
+            .start_materialization(MaterializeRequest {
+                session_id,
+                entry_ids: vec![entry_a, entry_b],
+                purpose: MaterializationPurpose::Preview,
+            })
+            .await
+            .unwrap();
+
+        match wait_for_terminal(&app, operation_id).await {
+            OperationState::Failed { error } => {
+                assert_eq!(error.kind, ApplicationErrorKind::InvalidInput);
+            }
+            other => panic!("expected Failed(InvalidInput), got {other:?}"),
+        }
+    });
+}
+
+#[test]
 fn an_unknown_entry_id_fails_with_not_found_and_never_touches_the_backend() {
     let runtime = foreign_runtime();
     let temp = tempfile::tempdir().unwrap();
@@ -616,7 +697,7 @@ fn an_unknown_entry_id_fails_with_not_found_and_never_touches_the_backend() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id: fabricated,
+                entry_ids: vec![fabricated],
                 purpose: MaterializationPurpose::Preview,
             })
             .await
@@ -654,7 +735,7 @@ fn a_password_shaped_failure_raises_a_challenge_then_retries_with_the_supplied_p
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::ExternalOpen,
             })
             .await
@@ -705,7 +786,7 @@ fn a_generic_extraction_failure_cleans_up_the_reserved_lease_directory() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::Preview,
             })
             .await
@@ -751,7 +832,7 @@ fn cancellation_stops_the_running_extraction_and_cleans_up_the_lease_directory()
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::DragOut,
             })
             .await
@@ -807,7 +888,7 @@ fn release_removes_the_lease_and_its_directory_and_is_idempotent() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::Preview,
             })
             .await
@@ -840,7 +921,7 @@ fn renew_extends_the_leases_expiry() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::Edit,
             })
             .await
@@ -894,7 +975,7 @@ fn expired_leases_are_removed_by_the_background_cleanup_task() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::Preview,
             })
             .await
@@ -951,7 +1032,7 @@ fn application_shutdown_removes_every_outstanding_lease_directory() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::ExternalOpen,
             })
             .await
@@ -987,7 +1068,7 @@ fn read_materialization_range_returns_bounded_slices_and_handles_eof() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::Preview,
             })
             .await
@@ -1057,7 +1138,7 @@ fn concurrent_reads_of_the_same_lease_all_succeed() {
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::Preview,
             })
             .await
@@ -1095,7 +1176,7 @@ fn exactly_one_terminal_event_is_ever_published_for_a_successful_materialization
         let operation_id = app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids: vec![entry_id],
                 purpose: MaterializationPurpose::Preview,
             })
             .await

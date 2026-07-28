@@ -351,6 +351,189 @@ fn shutdown_succeeds_from_a_foreign_runtime() {
         .expect("shutdown must succeed");
 }
 
+/// Guards the invariant `crate::materialization::run_cleanup_task`'s
+/// `Weak<AppRuntime>` fix exists to establish: `AppRuntime` (and
+/// everything it composes -- the plugin manager, database pools, caches,
+/// every worker thread) must actually drop once the last `ArclainApp`
+/// clone is gone. Before that fix, the cleanup task held a strong
+/// `Arc<AppRuntime>` in a loop with nothing to end it (`AppRuntime` -> its
+/// own runtime -> the task -> the same `Arc<AppRuntime>`, a closed cycle),
+/// so `AppRuntime` was never dropped no matter how many `ArclainApp`
+/// clones a caller dropped -- a real, permanent resource leak in every
+/// bootstrapped application.
+///
+/// `AppRuntime` itself is `pub(crate)`, unreachable from this integration
+/// test -- observed indirectly instead: `archive_backend_override`
+/// installs a backend whose own `Drop` impl flips a shared flag. Since
+/// nothing in this test ever calls `start_open_archive` (no session is
+/// ever opened), the *only* place holding a reference to that backend is
+/// `AppRuntime` itself, so the flag becoming true is proof positive that
+/// the whole composed `AppRuntime` was actually dropped.
+#[test]
+fn app_runtime_actually_drops_once_every_arclain_app_clone_is_gone() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    struct DropObserverBackend {
+        dropped: Arc<AtomicBool>,
+    }
+    impl Drop for DropObserverBackend {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    impl arclain_core::ArchiveBackend for DropObserverBackend {
+        fn name(&self) -> &str {
+            "drop-observer"
+        }
+        fn capabilities(&self) -> arclain_core::archive::BackendCapabilities {
+            arclain_core::archive::BackendCapabilities::read_only()
+        }
+        fn identify(
+            &self,
+            _path: &std::path::Path,
+        ) -> anyhow::Result<arclain_core::archive::ArchiveKind> {
+            unimplemented!("never called: this test never opens an archive")
+        }
+        fn list(
+            &self,
+            _path: &std::path::Path,
+            _password: Option<&str>,
+        ) -> anyhow::Result<arclain_core::ArchiveInfo> {
+            unimplemented!()
+        }
+        fn extract_all(
+            &self,
+            _path: &std::path::Path,
+            _dest: &std::path::Path,
+            _password: Option<&str>,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn extract_files(
+            &self,
+            _path: &std::path::Path,
+            _dest: &std::path::Path,
+            _files: &[String],
+            _password: Option<&str>,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn extract_directory(
+            &self,
+            _path: &std::path::Path,
+            _dest: &std::path::Path,
+            _dir_path: &str,
+            _password: Option<&str>,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn recompress_7z(
+            &self,
+            _source: &std::path::Path,
+            _dest_7z: &std::path::Path,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn add_files(&self, _archive: &std::path::Path, _files: &[PathBuf]) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn create_archive(
+            &self,
+            _dest: &std::path::Path,
+            _files: &[PathBuf],
+            _format: &str,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn read_text_file(
+            &self,
+            _archive: &std::path::Path,
+            _path_in_archive: &str,
+            _password: Option<&str>,
+        ) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+        fn delete_files(
+            &self,
+            _archive: &std::path::Path,
+            _files: &[String],
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn add_or_update_file_from_str(
+            &self,
+            _archive: &std::path::Path,
+            _path_in_archive: &str,
+            _content: &str,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn convert_to_7z(
+            &self,
+            _source: &arclain_core::Archive,
+            _dest: &std::path::Path,
+            _temp_dir: &std::path::Path,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn crc32_of_entry(
+            &self,
+            _archive: &std::path::Path,
+            _path_in_archive: &str,
+            _password: Option<&str>,
+        ) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(DropObserverBackend {
+        dropped: dropped.clone(),
+    });
+
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: Some(backend),
+        extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        // Short enough that the cleanup task is definitely alive and has
+        // actually ticked at least once by the time this test drops the
+        // app below -- so a pass here cannot be a coincidence of the task
+        // never having started polling yet.
+        materialization_cleanup_interval_override: Some(std::time::Duration::from_millis(5)),
+    })
+    .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(
+        !dropped.load(Ordering::SeqCst),
+        "sanity: must not be dropped yet -- the app is still alive"
+    );
+
+    drop(app);
+
+    // Bounded poll: `RuntimeOwner::shutdown_now`'s teardown (reached via
+    // `AppRuntime`'s own `Drop`, once the last `Arc<AppRuntime>` reference
+    // is actually gone) does not block, so the observer's own drop can
+    // land a moment after this call returns, not necessarily before it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !dropped.load(Ordering::SeqCst) {
+        if std::time::Instant::now() >= deadline {
+            panic!(
+                "AppRuntime (and everything it owns) was never dropped after the last \
+                 ArclainApp clone went away -- the cleanup task's Arc<AppRuntime> may still be \
+                 holding an unbreakable cycle"
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// `ensure_default_rules` and `sync_rules` both seed the organization
 /// rules table only when it is empty, with *different* default rules
 /// ("DLsite Standard" vs. "DLSite Archive") -- whichever runs first

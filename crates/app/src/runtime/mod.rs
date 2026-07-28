@@ -214,6 +214,23 @@ pub(crate) struct AppRuntime {
     extract_runner: Arc<dyn crate::operations::extract::ExtractRunner>,
     /// Every live materialization lease -- see `crate::materialization`.
     materialization: MaterializationStore,
+    /// A handle to abort the materialization cleanup task
+    /// (`crate::materialization::run_cleanup_task`), set once shortly
+    /// after that task is spawned in [`ArclainApp::bootstrap`] (it cannot
+    /// be set any earlier: the task needs a `Weak<AppRuntime>`, which does
+    /// not exist until this struct is already wrapped in an `Arc` -- see
+    /// that method's own comment). `Mutex<Option<..>>` rather than a plain
+    /// field for exactly that reason: briefly `None` between this
+    /// struct's own construction and the moment `bootstrap` finishes
+    /// spawning the task. Aborting is a *prompt* stop -- [`ArclainApp::shutdown`]
+    /// calls it explicitly rather than relying solely on the task's own
+    /// `Weak::upgrade` check, which would otherwise only notice this
+    /// application is gone on its next timer tick (up to a full
+    /// `materialization_cleanup_interval_override`/`DEFAULT_CLEANUP_INTERVAL`
+    /// later), or not at all if some other reference (see `RuntimeOwner`'s
+    /// own doc comment on `SessionStore::core_services`) keeps `AppRuntime`
+    /// itself alive past `shutdown()`.
+    cleanup_task_handle: parking_lot::Mutex<Option<tokio::task::AbortHandle>>,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
@@ -338,20 +355,28 @@ impl ArclainApp {
         // Read before `config` moves into `bootstrap::run` -- the resolved
         // interval is only needed here, to spawn the materialization
         // cleanup task below, once `inner` actually exists to clone into
-        // it (see `crate::materialization::run_cleanup_task`'s own doc
-        // comment: it needs an `Arc<AppRuntime>`, which does not exist
-        // until this constructor wraps `bootstrap::run`'s return value).
+        // it (see `crate::materialization::run_cleanup_task`'s own comment
+        // on why it takes a `Weak`, which likewise cannot be produced
+        // until this constructor wraps `bootstrap::run`'s return value in
+        // an `Arc`).
         let cleanup_interval = config
             .materialization_cleanup_interval_override
             .unwrap_or(crate::materialization::DEFAULT_CLEANUP_INTERVAL);
         let runtime = bootstrap::run(config)?;
         let inner = Arc::new(runtime);
         if let Some(handle) = inner.tokio_handle() {
-            let cleanup_inner = inner.clone();
-            handle.spawn(crate::materialization::run_cleanup_task(
+            // `Weak`, not `Arc`: see `run_cleanup_task`'s own doc comment
+            // for why holding a strong reference here would keep
+            // `AppRuntime` permanently alive. The join handle's own
+            // `AbortHandle` is retained separately so `shutdown()` can stop
+            // this task promptly and explicitly, rather than only via the
+            // task noticing `upgrade()` fail on its own next timer tick.
+            let cleanup_inner = Arc::downgrade(&inner);
+            let join_handle = handle.spawn(crate::materialization::run_cleanup_task(
                 cleanup_inner,
                 cleanup_interval,
             ));
+            *inner.cleanup_task_handle.lock() = Some(join_handle.abort_handle());
         }
         Ok(Self { inner })
     }
@@ -405,6 +430,19 @@ impl ArclainApp {
             // Already shut down (by an earlier call on this clone or
             // any other) -- documented idempotent no-op.
             return Ok(());
+        }
+        // Stops the materialization cleanup task promptly and explicitly,
+        // rather than leaving it to notice on its own (see
+        // `AppRuntime::cleanup_task_handle`'s own doc comment): it would
+        // otherwise keep calling `sweep_expired` right up until its next
+        // `Weak::upgrade` fails, which this method's own remaining steps
+        // do not wait for, and might never even reach if some other
+        // reference keeps `AppRuntime` alive past this call (see
+        // `RuntimeOwner`'s doc comment). `None` only in the narrow case
+        // `bootstrap` itself already treats defensively (no runtime handle
+        // was available to spawn the task onto in the first place).
+        if let Some(handle) = self.inner.cleanup_task_handle.lock().take() {
+            handle.abort();
         }
         // Removes every outstanding materialization lease's directory
         // before the runtime starts tearing down. Plain synchronous work

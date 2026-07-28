@@ -46,12 +46,25 @@ use crate::event::{OperationResult, OperationState};
 use crate::ids::{ArchiveSessionId, EntryId, OperationId};
 use crate::runtime::AppRuntime;
 
-/// A request to materialize one archive entry onto a real local disk path,
-/// the argument to `ArclainApp::start_materialization`.
+/// A request to materialize archive content onto a real local disk path,
+/// the argument to `ArclainApp::start_materialization`. `entry_ids` follows
+/// `crate::operations::extract::ExtractRequest`'s own established
+/// convention: empty means the whole archive (there is no `EntryId` for
+/// the archive root itself to name it directly -- the root is never a
+/// listed entry, see `crate::archive::session`'s own doc comment), and
+/// exactly one names that specific file or directory (expanded to its
+/// whole subtree, same as extraction). Unlike `ExtractRequest`,
+/// `start_materialization` rejects two or more as `InvalidInput`: a
+/// materialization lease always resolves to one coherent extracted
+/// subtree with one `local_path`, and there is no principled way to
+/// combine several unrelated entries into that shape (see this task's own
+/// report for why a caller needing several *specific* files together
+/// should materialize their common containing directory instead, not ask
+/// for an arbitrary combination).
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct MaterializeRequest {
     pub session_id: ArchiveSessionId,
-    pub entry_id: EntryId,
+    pub entry_ids: Vec<EntryId>,
     pub purpose: MaterializationPurpose,
 }
 
@@ -113,13 +126,27 @@ pub(crate) fn current_unix_ms() -> i64 {
 }
 
 /// The background task `ArclainApp::bootstrap` spawns once, for the life of
-/// the application runtime, to remove expired materialization leases. Never
-/// stopped explicitly -- like every other task spawned onto this app's own
-/// runtime, it is simply abandoned when the runtime shuts down.
-pub(crate) async fn run_cleanup_task(inner: Arc<AppRuntime>, interval: Duration) {
+/// the application runtime, to remove expired materialization leases.
+///
+/// Holds a [`Weak`], not an [`Arc`]: this task runs *on* the very runtime
+/// `AppRuntime` itself owns (through `RuntimeOwner`), and `tokio::time::interval`
+/// fires forever with nothing to naturally end the loop -- an `Arc<AppRuntime>`
+/// held here would therefore never let its strong count reach zero on its
+/// own (`AppRuntime` -> its own runtime -> this task -> `Arc<AppRuntime>`,
+/// a closed cycle), which meant `AppRuntime` -- and everything it composes
+/// (the plugin manager, database pools, caches, every worker thread) --
+/// was never actually dropped for the life of the process, no matter how
+/// many `ArclainApp` clones a caller dropped. `Weak::upgrade` returning
+/// `None` is exactly "every `ArclainApp` clone is gone", at which point
+/// this loop has nothing left to serve and exits, letting its own
+/// (non-owning) reference disappear along with it.
+pub(crate) async fn run_cleanup_task(inner: std::sync::Weak<AppRuntime>, interval: Duration) {
     let mut ticker = tokio::time::interval(interval);
     loop {
         ticker.tick().await;
+        let Some(inner) = inner.upgrade() else {
+            return;
+        };
         inner.materialization().sweep_expired(current_unix_ms());
     }
 }
@@ -222,17 +249,24 @@ async fn await_password_retry(
     }
 }
 
-/// What one materialization request resolves to: a single file (the
-/// requested entry's own path), or a directory (its own path, plus every
-/// descendant file's path, recursively -- the same expansion extraction's
-/// own directory selection uses). `own_path` is kept for the `Directory`
-/// case (not just the descendant file list) because extraction preserves
-/// each descendant's full archive-relative path, prefix included --
-/// requesting directory `"game"` extracts to `dest_dir/game/...`, not
-/// `dest_dir/...` -- so `local_path` must join `dest_dir` with the
-/// directory's own path to point at the folder that actually resulted,
-/// exactly the same reasoning already applied to the `File` case.
+/// What one materialization request resolves to: the whole archive (empty
+/// `entry_ids`, see `MaterializeRequest`'s own doc comment), a single file
+/// (the requested entry's own path), or a directory (its own path, plus
+/// every descendant file's path, recursively -- the same expansion
+/// extraction's own directory selection uses). `own_path`/`WholeArchive`
+/// both carry their already-resolved file list directly rather than
+/// re-deriving it later, so [`Self::files`] never needs a `session`
+/// parameter of its own. `own_path` is kept for the `Directory` case (not
+/// just the descendant file list) because extraction preserves each
+/// descendant's full archive-relative path, prefix included -- requesting
+/// directory `"game"` extracts to `dest_dir/game/...`, not `dest_dir/...`
+/// -- so `local_path` must join `dest_dir` with the directory's own path
+/// to point at the folder that actually resulted, exactly the same
+/// reasoning already applied to the `File` case (and moot for
+/// `WholeArchive`, whose files are already archive-root-relative, landing
+/// directly under `dest_dir` with no further prefix to join).
 enum MaterializeSelection {
+    WholeArchive(Vec<String>),
     File(String),
     Directory {
         own_path: String,
@@ -243,28 +277,59 @@ enum MaterializeSelection {
 impl MaterializeSelection {
     fn files(&self) -> Vec<String> {
         match self {
+            MaterializeSelection::WholeArchive(files) => files.clone(),
             MaterializeSelection::File(path) => vec![path.clone()],
             MaterializeSelection::Directory { files, .. } => files.clone(),
         }
     }
 
     /// Where the lease's `local_path` points once extraction into
-    /// `dest_dir` succeeds: the one extracted file itself for a `File`
-    /// selection, or the extracted directory (preserving its own
-    /// archive-relative path under `dest_dir`) for a `Directory` selection.
+    /// `dest_dir` succeeds: `dest_dir` itself for `WholeArchive` (its
+    /// files already land directly under it), the one extracted file
+    /// itself for a `File` selection, or the extracted directory
+    /// (preserving its own archive-relative path under `dest_dir`) for a
+    /// `Directory` selection.
     fn local_path(&self, dest_dir: &Path) -> PathBuf {
         match self {
+            MaterializeSelection::WholeArchive(_) => dest_dir.to_path_buf(),
             MaterializeSelection::File(path) => dest_dir.join(path),
             MaterializeSelection::Directory { own_path, .. } => dest_dir.join(own_path),
         }
     }
+
+    /// Whether extraction alone is guaranteed to have created
+    /// `local_path`'s own directory -- `false` for an empty archive/folder
+    /// (nothing for the backend to write, so nothing creates the
+    /// directory as a side effect), in which case the worker must
+    /// `create_dir_all` it explicitly before this selection's `local_path`
+    /// can be canonicalized.
+    fn is_possibly_empty_directory(&self) -> bool {
+        matches!(
+            self,
+            MaterializeSelection::WholeArchive(_) | MaterializeSelection::Directory { .. }
+        )
+    }
+}
+
+fn too_many_entries_error() -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::InvalidInput,
+        "materialization does not support combining multiple entries into one lease",
+    )
+    .with_recoverability(Recoverability::UserAction)
+    .with_field("entry_ids")
 }
 
 fn resolve_selection(
     session: &ArchiveSession,
     session_id: ArchiveSessionId,
-    entry_id: EntryId,
+    entry_ids: &[EntryId],
 ) -> Result<MaterializeSelection, ApplicationError> {
+    let entry_id = match entry_ids {
+        [] => return Ok(MaterializeSelection::WholeArchive(session.all_file_paths())),
+        [entry_id] => *entry_id,
+        _ => return Err(too_many_entries_error()),
+    };
     let entry = session
         .entry(entry_id)
         .ok_or_else(|| unknown_entry_error(session_id, entry_id))?;
@@ -343,7 +408,7 @@ pub(crate) async fn run_materialize(
         }
     };
 
-    let selection = match resolve_selection(&session, request.session_id, request.entry_id) {
+    let selection = match resolve_selection(&session, request.session_id, &request.entry_ids) {
         Ok(selection) => selection,
         Err(error) => {
             fail(&inner, operation_id, error).await;
@@ -466,13 +531,13 @@ pub(crate) async fn run_materialize(
         return;
     };
     let size_path = local_path.clone();
-    // A `Directory` selection with zero descendant files (an empty
-    // archive folder) never gets its `local_path` created as a side
+    // A `Directory`/`WholeArchive` selection with zero files (an empty
+    // archive or folder) never gets its `local_path` created as a side
     // effect of extraction -- there is nothing for the backend to write.
     // `create_dir_all` is idempotent, so calling it unconditionally here
     // is harmless even when extraction already created the directory
     // (the common, non-empty case).
-    let ensure_directory = matches!(selection, MaterializeSelection::Directory { .. });
+    let ensure_directory = selection.is_possibly_empty_directory();
     let size_result = handle
         .spawn_blocking(move || {
             if ensure_directory {

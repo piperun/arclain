@@ -768,10 +768,10 @@ mod materialization_dto_tests {
     fn every_dto_this_module_introduces_is_constructible_from_outside_the_crate() {
         let request = MaterializeRequest {
             session_id: ArchiveSessionId::from_raw(1),
-            entry_id: EntryId::from_raw(2),
+            entry_ids: vec![EntryId::from_raw(2)],
             purpose: MaterializationPurpose::ExternalOpen,
         };
-        assert_eq!(request.entry_id, EntryId::from_raw(2));
+        assert_eq!(request.entry_ids, vec![EntryId::from_raw(2)]);
 
         let lease = MaterializationLease {
             id: MaterializationLeaseId::from_raw(3),
@@ -802,7 +802,7 @@ mod materialization_dto_tests {
     fn materialize_request_serializes_with_snake_case_fields() {
         let request = MaterializeRequest {
             session_id: ArchiveSessionId::from_raw(5),
-            entry_id: EntryId::from_raw(9),
+            entry_ids: vec![EntryId::from_raw(9)],
             purpose: MaterializationPurpose::DragOut,
         };
         let value = serde_json::to_value(&request).unwrap();
@@ -810,14 +810,29 @@ mod materialization_dto_tests {
             value,
             serde_json::json!({
                 "session_id": 5,
-                "entry_id": 9,
+                "entry_ids": [9],
                 "purpose": "drag_out",
             })
         );
         let round_tripped: MaterializeRequest = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped.session_id, request.session_id);
-        assert_eq!(round_tripped.entry_id, request.entry_id);
+        assert_eq!(round_tripped.entry_ids, request.entry_ids);
         assert_eq!(round_tripped.purpose, request.purpose);
+    }
+
+    #[test]
+    fn materialize_request_with_empty_entry_ids_serializes_as_an_empty_array() {
+        // Empty `entry_ids` is the "whole archive" convention (matching
+        // `crate::operations::extract::ExtractRequest`'s own established
+        // shape) -- confirms the wire form is a plain empty JSON array,
+        // not e.g. omitted or null.
+        let request = MaterializeRequest {
+            session_id: ArchiveSessionId::from_raw(1),
+            entry_ids: Vec::new(),
+            purpose: MaterializationPurpose::Preview,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["entry_ids"], serde_json::json!([]));
     }
 
     #[test]

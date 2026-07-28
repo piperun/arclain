@@ -491,7 +491,10 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         materialization: crate::materialization::MaterializationStore::new(
             materialization_root,
             materialization_ttl,
-        ),
+        )?,
+        // Set moments later by `ArclainApp::bootstrap`, once the cleanup
+        // task is actually spawned -- see the field's own doc comment.
+        cleanup_task_handle: parking_lot::Mutex::new(None),
         shut_down: std::sync::atomic::AtomicBool::new(false),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })
