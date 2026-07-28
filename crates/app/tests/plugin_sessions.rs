@@ -94,6 +94,8 @@ fn bootstrap_app_with_plugin(temp: &tempfile::TempDir, plugin_name: &str) -> Arc
         worker_threads: None,
         archive_backend_override: None,
         extract_runner_override: None,
+        materialization_lease_ttl_override: None,
+        materialization_cleanup_interval_override: None,
     })
     .expect("bootstrap with the plugin fixture must succeed")
 }
