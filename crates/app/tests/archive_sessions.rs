@@ -814,6 +814,7 @@ fn cancelling_while_the_blocking_list_call_is_still_running_leaves_no_session_be
         paths_override: Some(paths),
         worker_threads: None,
         archive_backend_override: Some(backend),
+        extract_runner_override: None,
     })
     .expect("bootstrap must succeed");
     let slow_path = temp.path().join("slow.zip");
