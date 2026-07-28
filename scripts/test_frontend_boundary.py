@@ -192,6 +192,51 @@ class TestSourceViolations(unittest.TestCase):
             self.assertEqual(len(violations), 1, violations)
             self.assertIn("eframe", violations[0])
 
+    def test_ignores_doc_comment_only_mention_of_eframe(self):
+        # eframe appears only inside a `/// ```ignore` fenced example -- code
+        # that documents a hypothetical caller and is never compiled. This
+        # must not be flagged (regression: this exact shape previously
+        # produced a fabricated violation from crates/signals/src/context.rs,
+        # where the crate has no eframe dependency at all).
+        with tempfile.TemporaryDirectory() as workspace:
+            crate_dir = _write_manifest(
+                Path(workspace) / "crates", "core", '[package]\nname = "arclain_core"\n',
+            )
+            _write_source_file(
+                crate_dir, "lib.rs",
+                "/// ```ignore\n"
+                "/// fn update(frame: &mut eframe::Frame) {}\n"
+                "/// ```\n"
+                "pub fn noop() {}\n",
+            )
+
+            violations = frontend_boundary.source_violations(Path(workspace))
+
+            self.assertEqual(violations, [])
+
+    def test_doc_comment_egui_mention_does_not_shadow_the_real_code_reference(self):
+        # A doc comment mentions egui in prose before the real code reference
+        # appears. The reported line must be the real (non-comment) usage
+        # site, not wherever the comment happened to be first.
+        with tempfile.TemporaryDirectory() as workspace:
+            crate_dir = _write_manifest(
+                Path(workspace) / "crates", "core", '[package]\nname = "arclain_core"\n',
+            )
+            _write_source_file(
+                crate_dir, "lib.rs",
+                "//! Mentions egui in prose for docs only.\n"
+                "\n"
+                "pub struct Wrapper {\n"
+                "    ctx: egui::Context,\n"
+                "}\n",
+            )
+
+            violations = frontend_boundary.source_violations(Path(workspace))
+
+            self.assertEqual(len(violations), 1, violations)
+            self.assertIn("egui", violations[0])
+            self.assertIn(":4:", violations[0])
+
     def test_flags_use_statement_referencing_a_gui_crate_name(self):
         with tempfile.TemporaryDirectory() as workspace:
             crate_dir = _write_manifest(

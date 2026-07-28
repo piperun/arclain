@@ -53,13 +53,22 @@ _DEPENDENCY_TABLE_NAMES = ("dependencies", "build-dependencies", "dev-dependenci
 # statements avoids tripping on incidental prose.
 _BRIDGE_IDENTIFIERS = ("flutter_rust_bridge", "frb", "dart_api", "allo_isolate")
 
-# egui/eframe are matched anywhere in a file (not just use/extern lines):
-# headless code can reference `egui::Context` etc. via a fully-qualified
-# path with no `use` statement at all, and that is exactly the kind of
-# silent coupling this guard exists to catch.
+# egui/eframe are matched anywhere in a non-comment line (not just
+# use/extern lines): headless code can reference `egui::Context` etc. via a
+# fully-qualified path with no `use` statement at all, and that is exactly
+# the kind of silent coupling this guard exists to catch. Comment lines are
+# excluded (see _COMMENT_LINE below) since doc-comment prose and fenced
+# ```ignore examples routinely mention these names without compiling.
 _GUI_TOOLKIT_IDENTIFIERS = ("egui", "eframe")
 
 _USE_STATEMENT = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:use|extern\s+crate)\b")
+
+# Rust line comments (`//`, `///`, `//!`). Doc-comment prose and fenced
+# ```ignore examples routinely mention egui/eframe to describe an
+# integration point or a hypothetical caller -- that is not compiled code
+# and must not be flagged, and must not let a doc comment "win" the
+# first-hit line over the real usage site it documents below it.
+_COMMENT_LINE = re.compile(r"^\s*//")
 
 
 def _identifier_pattern(name: str, *, case_insensitive: bool) -> re.Pattern[str]:
@@ -173,9 +182,10 @@ def source_violations(workspace_root: Path) -> list[str]:
             lines = source_path.read_text(encoding="utf-8").splitlines()
             first_hit_line: dict[str, int] = {}
             for line_no, line in enumerate(lines, start=1):
-                for name, pattern in whole_file_patterns.items():
-                    if name not in first_hit_line and pattern.search(line):
-                        first_hit_line[name] = line_no
+                if not _COMMENT_LINE.match(line):
+                    for name, pattern in whole_file_patterns.items():
+                        if name not in first_hit_line and pattern.search(line):
+                            first_hit_line[name] = line_no
                 if _USE_STATEMENT.match(line):
                     for name, pattern in statement_only_patterns.items():
                         if name not in first_hit_line and pattern.search(line):
