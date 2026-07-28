@@ -431,6 +431,54 @@ fn filter_out(candidates: Vec<String>, excluded: &HashSet<String>) -> Vec<String
         .collect()
 }
 
+/// Safety ceiling on one CLI invocation's total file-argument length,
+/// comfortably under the ~32,767-character Windows command-line limit
+/// (leaving headroom for the executable path, the fixed flags, the
+/// archive path, and the destination path). Enforced on every platform,
+/// not just Windows, so [`chunk_file_list`]'s behavior is deterministic
+/// and testable everywhere: Unix's `ARG_MAX` is typically megabytes, so
+/// this never binds there in practice, but nothing about the *behavior*
+/// should depend on which OS happens to run a given test.
+const MAX_CHUNK_ARGS_CHARS: usize = 28_000;
+
+/// Splits `files` into chunks whose total argument length (each path's
+/// length plus one separator) stays under [`MAX_CHUNK_ARGS_CHARS`].
+///
+/// A whole-archive `CollisionPolicy::Skip` (or a declined `Ask`) expands
+/// to an explicit per-file argument list -- there is no "extract
+/// everything except these" flag to hand the CLI instead -- and a large
+/// archive's full (or nearly full) file list can otherwise exceed the
+/// command-line length a spawned process is allowed. [`run_extract`]
+/// runs each returned chunk as its own CLI invocation, in sequence,
+/// treating the whole run as one logical operation.
+///
+/// A single pathologically long individual path (longer than the ceiling
+/// by itself) still gets its own one-item chunk rather than being
+/// dropped silently -- the CLI is left to fail that specific invocation
+/// if the OS truly cannot accept it, which is at least a visible failure
+/// rather than a silently incomplete extraction.
+fn chunk_file_list(files: Vec<String>) -> Vec<Vec<String>> {
+    if files.is_empty() {
+        return Vec::new();
+    }
+    let mut chunks = Vec::new();
+    let mut current = Vec::new();
+    let mut current_len = 0usize;
+    for file in files {
+        let added_len = file.len() + 1;
+        if !current.is_empty() && current_len + added_len > MAX_CHUNK_ARGS_CHARS {
+            chunks.push(std::mem::take(&mut current));
+            current_len = 0;
+        }
+        current_len += added_len;
+        current.push(file);
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
 /// What [`resolve_collisions`] decided the operation should actually do.
 struct Resolution {
     selection: ExtractSelection,
@@ -711,6 +759,16 @@ async fn await_password_retry(
 /// The `start_extract` background worker. Spawned via the application's
 /// own runtime handle; runs until the operation reaches a terminal state
 /// (`Completed`, `Cancelled`, or `Failed`).
+///
+/// `_cancel` is unused directly: every cancellation check in this worker
+/// goes through `inner.operations().is_cancelled(operation_id)` (the
+/// registry's own record, which `ArclainApp::cancel_operation` sets
+/// through the exact same path regardless of which flag a caller might
+/// otherwise inspect), never this raw flag -- mirrors
+/// `archive_ops::run_open_archive`'s identical parameter, kept for
+/// signature symmetry with `OperationRegistry::begin`'s return value
+/// rather than dropped, since a future direct-flag optimization (skipping
+/// the registry lock on the hot poll path) would want it back in hand.
 pub(crate) async fn run_extract(
     inner: Arc<AppRuntime>,
     operation_id: OperationId,
@@ -768,6 +826,32 @@ pub(crate) async fn run_extract(
             }
         };
 
+    // An empty post-filter selection -- every candidate collided under
+    // `Skip`, the user declined `Ask` and every remaining candidate was
+    // itself colliding, or the caller selected only an empty directory --
+    // is a real, valid "nothing to do" outcome. Completing immediately
+    // without ever invoking the runner is load-bearing, not an
+    // optimization: `SevenZipRunner::spawn` hands an empty file list
+    // straight to the CLI as no file-list argument at all, which 7z reads
+    // as "no filter -- extract everything" (see its own doc comment).
+    // Without this check, `Skip`/a declined `Ask` would silently invert
+    // into an unfiltered whole-archive extraction, overwriting (via the
+    // unconditional `-y`) the very files those policies exist to protect.
+    if let ExtractSelection::Files(files) = &resolution.selection {
+        if files.is_empty() {
+            let _ = inner
+                .operations()
+                .transition(
+                    operation_id,
+                    OperationState::Completed {
+                        result: OperationResult::None,
+                    },
+                )
+                .await;
+            return;
+        }
+    }
+
     let staging_guard = if resolution.needs_staging {
         match StagingDirGuard::create(staging_dir_path(&request.destination, operation_id)) {
             Ok(guard) => Some(guard),
@@ -799,87 +883,114 @@ pub(crate) async fn run_extract(
         let guard = archive.lock();
         guard.password_ref().map(str::to_string)
     };
-    let mut attempt: u32 = 1;
 
-    'retry: loop {
-        if inner.operations().is_cancelled(operation_id).await {
-            return;
-        }
+    // A whole-archive selection is always exactly one chunk: it never
+    // carries an explicit file-list argument at all (see
+    // `SevenZipRunner::spawn`), so there is no command-line-length
+    // concern for it. A `Files` selection splits into as many chunks as
+    // needed to keep every single CLI invocation's file-list argument
+    // comfortably under the command-line length limit -- see
+    // `chunk_file_list`'s own doc comment. Each chunk runs to completion
+    // (with its own password-retry loop) before the next one starts; the
+    // whole sequence is one logical operation from a caller's
+    // perspective, reporting one continuous 0-100% progress and exactly
+    // one terminal event.
+    let chunks: Vec<ExtractSelection> = match &resolution.selection {
+        ExtractSelection::WholeArchive => vec![ExtractSelection::WholeArchive],
+        ExtractSelection::Files(files) => chunk_file_list(files.clone())
+            .into_iter()
+            .map(ExtractSelection::Files)
+            .collect(),
+    };
+    let total_chunks = chunks.len().max(1) as u64;
 
-        let plan = ExtractPlan {
-            source_path: session.source_path().to_path_buf(),
-            destination: extract_destination.clone(),
-            password: password.clone(),
-            selection: resolution.selection.clone(),
-        };
+    for (chunk_index, chunk_selection) in chunks.into_iter().enumerate() {
+        let chunk_index = chunk_index as u64;
+        let mut attempt: u32 = 1;
 
-        let Some(handle) = inner.tokio_handle() else {
-            return;
-        };
-        let runner_for_spawn = runner.clone();
-        let spawn_result = handle
-            .spawn_blocking(move || runner_for_spawn.spawn(&plan))
-            .await;
-        let mut running = match spawn_result {
-            Ok(Ok(running)) => running,
-            Ok(Err(error)) => {
-                fail(&inner, operation_id, error).await;
-                return;
-            }
-            Err(join_error) => {
-                fail(
-                    &inner,
-                    operation_id,
-                    ApplicationError::new(
-                        ApplicationErrorKind::Internal,
-                        "extraction worker failed",
-                    )
-                    .with_diagnostic(join_error.to_string()),
-                )
-                .await;
-                return;
-            }
-        };
-
-        let outcome = loop {
+        'retry: loop {
             if inner.operations().is_cancelled(operation_id).await {
-                running.kill();
                 return;
             }
-            while let Some(progress) = running.poll_progress() {
-                let _ = inner
-                    .operations()
-                    .transition(
+
+            let plan = ExtractPlan {
+                source_path: session.source_path().to_path_buf(),
+                destination: extract_destination.clone(),
+                password: password.clone(),
+                selection: chunk_selection.clone(),
+            };
+
+            let Some(handle) = inner.tokio_handle() else {
+                return;
+            };
+            let runner_for_spawn = runner.clone();
+            let spawn_result = handle
+                .spawn_blocking(move || runner_for_spawn.spawn(&plan))
+                .await;
+            let mut running = match spawn_result {
+                Ok(Ok(running)) => running,
+                Ok(Err(error)) => {
+                    fail(&inner, operation_id, error).await;
+                    return;
+                }
+                Err(join_error) => {
+                    fail(
+                        &inner,
                         operation_id,
-                        OperationState::Progress {
-                            completed_units: u64::from(progress.percent),
-                            total_units: Some(100),
-                            message: progress.message,
-                        },
+                        ApplicationError::new(
+                            ApplicationErrorKind::Internal,
+                            "extraction worker failed",
+                        )
+                        .with_diagnostic(join_error.to_string()),
                     )
                     .await;
-            }
-            if let Some(outcome) = running.poll_outcome() {
-                break outcome;
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        };
-
-        match outcome {
-            Ok(()) => break 'retry,
-            Err(error) if error.kind == ApplicationErrorKind::PasswordRequired => {
-                match await_password_retry(&inner, operation_id, &archive_name, &mut attempt).await
-                {
-                    Some(new_password) => {
-                        password = Some(new_password);
-                        continue 'retry;
-                    }
-                    None => return,
+                    return;
                 }
-            }
-            Err(error) => {
-                fail(&inner, operation_id, error).await;
-                return;
+            };
+
+            let outcome = loop {
+                if inner.operations().is_cancelled(operation_id).await {
+                    running.kill();
+                    return;
+                }
+                while let Some(progress) = running.poll_progress() {
+                    let overall_percent =
+                        (chunk_index * 100 + u64::from(progress.percent)) / total_chunks;
+                    let _ = inner
+                        .operations()
+                        .transition(
+                            operation_id,
+                            OperationState::Progress {
+                                completed_units: overall_percent,
+                                total_units: Some(100),
+                                message: progress.message,
+                            },
+                        )
+                        .await;
+                }
+                if let Some(outcome) = running.poll_outcome() {
+                    break outcome;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            };
+
+            match outcome {
+                Ok(()) => break 'retry,
+                Err(error) if error.kind == ApplicationErrorKind::PasswordRequired => {
+                    match await_password_retry(&inner, operation_id, &archive_name, &mut attempt)
+                        .await
+                    {
+                        Some(new_password) => {
+                            password = Some(new_password);
+                            continue 'retry;
+                        }
+                        None => return,
+                    }
+                }
+                Err(error) => {
+                    fail(&inner, operation_id, error).await;
+                    return;
+                }
             }
         }
     }
@@ -1009,6 +1120,63 @@ mod tests {
         assert_eq!(
             std::fs::read(destination.join("nested").join("inner.txt")).unwrap(),
             b"inner"
+        );
+    }
+
+    #[test]
+    fn chunk_file_list_keeps_a_small_list_in_one_chunk() {
+        let files = vec![
+            "a.txt".to_string(),
+            "b.txt".to_string(),
+            "c.txt".to_string(),
+        ];
+        let chunks = chunk_file_list(files.clone());
+        assert_eq!(chunks, vec![files]);
+    }
+
+    #[test]
+    fn chunk_file_list_returns_no_chunks_for_an_empty_list() {
+        assert_eq!(chunk_file_list(Vec::new()), Vec::<Vec<String>>::new());
+    }
+
+    #[test]
+    fn chunk_file_list_splits_once_the_ceiling_is_exceeded() {
+        // Each path is 1000 chars; 28 of them (28,028 with separators)
+        // exceeds MAX_CHUNK_ARGS_CHARS (28,000), so the 28th must start a
+        // new chunk rather than pushing the first over the ceiling.
+        let files: Vec<String> = (0..40)
+            .map(|i| format!("{i:04}-{}", "x".repeat(995)))
+            .collect();
+        let chunks = chunk_file_list(files.clone());
+
+        assert!(chunks.len() > 1, "a list this large must split");
+        for chunk in &chunks {
+            let total: usize = chunk.iter().map(|f| f.len() + 1).sum();
+            assert!(
+                total <= MAX_CHUNK_ARGS_CHARS,
+                "chunk total {total} exceeds the ceiling"
+            );
+        }
+        // Every original file must appear exactly once across all chunks,
+        // in original order, with none dropped or duplicated.
+        let flattened: Vec<&String> = chunks.iter().flatten().collect();
+        let original_refs: Vec<&String> = files.iter().collect();
+        assert_eq!(flattened, original_refs);
+    }
+
+    #[test]
+    fn chunk_file_list_gives_a_single_oversized_path_its_own_chunk() {
+        let huge = "x".repeat(MAX_CHUNK_ARGS_CHARS + 500);
+        let files = vec![
+            "small.txt".to_string(),
+            huge.clone(),
+            "other.txt".to_string(),
+        ];
+        let chunks = chunk_file_list(files);
+
+        assert!(
+            chunks.iter().any(|chunk| chunk == &vec![huge.clone()]),
+            "the oversized path must still be scheduled, alone, rather than dropped"
         );
     }
 

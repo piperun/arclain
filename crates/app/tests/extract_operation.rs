@@ -830,6 +830,221 @@ fn a_collision_under_ask_raises_a_challenge_and_declining_skips_only_the_collidi
     });
 }
 
+/// Regression test for a real data-loss bug: `Skip` filtering out every
+/// candidate (because all of them already exist at the destination) must
+/// never fall through to spawning the CLI runner with an empty file
+/// list. An empty explicit file-list argument is, to the CLI, identical
+/// to "no filter at all" -- it would extract (and, via the unconditional
+/// `-y`, silently overwrite) everything, which is exactly backwards for
+/// a policy whose entire point is to leave existing files alone.
+#[test]
+fn skip_with_every_candidate_colliding_completes_without_ever_spawning() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeListBackend {
+        entries: vec![file("a.txt"), file("b.txt")],
+    });
+    let (runner, captured) = ScriptedRunner::new(vec![]);
+    let app = bootstrap_app(&temp, backend, runner);
+    let archive_path = temp.path().join("archive.zip");
+    let destination = temp.path().join("dest");
+    std::fs::create_dir_all(&destination).unwrap();
+    std::fs::write(destination.join("a.txt"), b"already here").unwrap();
+    std::fs::write(destination.join("b.txt"), b"already here too").unwrap();
+
+    runtime.block_on(async {
+        let session_id = open_session_with_entries(&app, &archive_path).await;
+
+        let operation_id = app
+            .start_extract(ExtractRequest {
+                session_id,
+                entry_ids: vec![],
+                destination,
+                collision_policy: CollisionPolicy::Skip,
+            })
+            .await
+            .unwrap();
+
+        let terminal = wait_for_terminal(&app, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: OperationResult::None
+            }
+        );
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "the runner must never be invoked when nothing survives the collision filter"
+        );
+    });
+
+    // The pre-existing files must be untouched -- proof positive that no
+    // extraction (least of all an unfiltered whole-archive one) ran.
+    assert_eq!(
+        std::fs::read(temp.path().join("dest").join("a.txt")).unwrap(),
+        b"already here"
+    );
+    assert_eq!(
+        std::fs::read(temp.path().join("dest").join("b.txt")).unwrap(),
+        b"already here too"
+    );
+}
+
+/// The same data-loss shape as the `Skip` case above, reached through
+/// `Ask` instead: declining the overwrite when *every* candidate
+/// collided leaves nothing to extract, and that must also complete
+/// without spawning rather than falling through to "no filter".
+#[test]
+fn declining_ask_with_every_candidate_colliding_completes_without_ever_spawning() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeListBackend {
+        entries: vec![file("a.txt")],
+    });
+    let (runner, captured) = ScriptedRunner::new(vec![]);
+    let app = bootstrap_app(&temp, backend, runner);
+    let archive_path = temp.path().join("archive.zip");
+    let destination = temp.path().join("dest");
+    std::fs::create_dir_all(&destination).unwrap();
+    std::fs::write(destination.join("a.txt"), b"already here").unwrap();
+
+    runtime.block_on(async {
+        let session_id = open_session_with_entries(&app, &archive_path).await;
+        let mut events = app.subscribe_operations();
+
+        let operation_id = app
+            .start_extract(ExtractRequest {
+                session_id,
+                entry_ids: vec![],
+                destination,
+                collision_policy: CollisionPolicy::Ask,
+            })
+            .await
+            .unwrap();
+
+        let challenge = loop {
+            if let OperationState::Challenge { challenge } =
+                recv_non_progress_state(&mut events).await
+            {
+                break challenge;
+            }
+        };
+        let Challenge::ConfirmOverwrite { id, .. } = challenge else {
+            panic!("expected a ConfirmOverwrite challenge");
+        };
+
+        app.respond_to_challenge(
+            operation_id,
+            ChallengeResponse::ConfirmOverwrite {
+                id,
+                overwrite: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        let terminal = wait_for_terminal(&app, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: OperationResult::None
+            }
+        );
+        assert!(
+            captured.lock().unwrap().is_empty(),
+            "the runner must never be invoked when nothing survives the decline"
+        );
+    });
+    assert_eq!(
+        std::fs::read(temp.path().join("dest").join("a.txt")).unwrap(),
+        b"already here"
+    );
+}
+
+/// A whole-archive `Skip` (or a declined `Ask`) with no collisions at all
+/// still expands to an explicit per-file argument list (there is no
+/// "extract everything except these" flag), and a large enough archive's
+/// full file list can exceed a single CLI invocation's safe command-line
+/// length. Proves the operation splits that list into multiple
+/// sequential runner invocations rather than either failing outright or
+/// silently truncating the file list.
+#[test]
+fn whole_archive_skip_with_a_large_file_list_splits_into_multiple_chunked_invocations() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    // 40 entries at ~1000 chars each (~40,000 chars total) comfortably
+    // exceeds the 28,000-char per-chunk ceiling with no collisions
+    // involved at all -- this is purely a command-line-length split.
+    let entries: Vec<arclain_core::ArchiveEntry> = (0..40)
+        .map(|i| file(&format!("{i:04}-{}.bin", "x".repeat(995))))
+        .collect();
+    let expected_names: std::collections::HashSet<String> =
+        entries.iter().map(|e| e.path.clone()).collect();
+    let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(FakeListBackend { entries });
+    // One `Succeed` queued per expected chunk; if the operation spawned
+    // more invocations than scripted, `ScriptedRunner` panics with "ran
+    // out of configured extraction attempts" instead of silently passing.
+    let (runner, captured) = ScriptedRunner::new(vec![
+        ScriptedAttempt::Succeed,
+        ScriptedAttempt::Succeed,
+        ScriptedAttempt::Succeed,
+    ]);
+    let app = bootstrap_app(&temp, backend, runner);
+    let archive_path = temp.path().join("archive.zip");
+    let destination = temp.path().join("dest");
+
+    runtime.block_on(async {
+        let session_id = open_session_with_entries(&app, &archive_path).await;
+
+        let operation_id = app
+            .start_extract(ExtractRequest {
+                session_id,
+                entry_ids: vec![],
+                destination,
+                collision_policy: CollisionPolicy::Skip,
+            })
+            .await
+            .unwrap();
+
+        let terminal = wait_for_terminal(&app, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: OperationResult::None
+            }
+        );
+    });
+
+    let captured = captured.lock().unwrap();
+    assert!(
+        captured.len() > 1,
+        "a file list this large must split across more than one invocation, got {}",
+        captured.len()
+    );
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for plan in captured.iter() {
+        let files = plan
+            .files
+            .as_ref()
+            .expect("a chunk must carry an explicit file list");
+        let total_len: usize = files.iter().map(|f| f.len() + 1).sum();
+        assert!(
+            total_len <= 28_000,
+            "one chunk's total argument length {total_len} exceeds the safety ceiling"
+        );
+        for f in files {
+            assert!(
+                seen.insert(f.clone()),
+                "file {f} extracted by more than one chunk"
+            );
+        }
+    }
+    assert_eq!(
+        seen, expected_names,
+        "every file must be covered exactly once"
+    );
+}
+
 #[test]
 fn a_password_shaped_failure_raises_a_challenge_then_retries_with_the_supplied_password() {
     let runtime = foreign_runtime();
