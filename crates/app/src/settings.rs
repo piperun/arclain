@@ -73,6 +73,15 @@ pub struct SettingsSnapshot {
 ///   to clear *to*. Use `Set` to change one of these, or `Keep` to leave
 ///   it alone.
 ///
+/// **One documented exception:** [`SecuritySettingsPatch::
+/// secrets_database_path`] and [`SecuritySettingsPatch::key_file_path`]
+/// are `Option<PathBuf>`-shaped, so by the first bullet above `Clear`
+/// is accepted -- but it does not mean `None`. A vault must always
+/// resolve to some concrete on-disk location, so `Clear` on either of
+/// these two means "reset to this install's computed default location"
+/// instead. See [`SecuritySettingsPatch`]'s own doc comment and
+/// [`apply_vault_path_patch`] for the full rationale.
+///
 /// Each patch-applying function in this module documents which case it
 /// is on a per-field basis; the rule above is applied uniformly rather
 /// than decided ad hoc per field.
@@ -155,6 +164,20 @@ pub struct SecuritySettingsDto {
     pub vault_available: bool,
 }
 
+/// `secrets_database_path`/`key_file_path`'s `Clear` is this patch
+/// surface's one deliberate exception to [`PatchValue`]'s general
+/// "`Option<T>` `Clear` means `None`" rule: a vault must always resolve
+/// to *some* concrete location on disk, so there is no "unset" state to
+/// clear to, the way there is for e.g. [`ArchiveSettingsPatch::
+/// cache_directory`]. `Clear` on either of these two fields instead
+/// means "reset to this install's computed default location"
+/// (`DbPaths::calculate_defaults`) -- applied by
+/// [`apply_vault_path_patch`], called from
+/// `settings_ops::repoint_vault_paths` (not by [`apply_security_value_patch`],
+/// which only covers `encrypted_crc_policy`), since it needs a `DbPaths`
+/// to patch and a computed `defaults` to fall back to, neither of which
+/// a pure per-field function has on its own. Pinned by this module's own
+/// `clear_on_vault_paths_resets_to_the_computed_defaults_not_to_unset`.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct SecuritySettingsPatch {
     pub secrets_database_path: PatchValue<PathBuf>,
@@ -273,6 +296,20 @@ pub fn load_session_restore_list(
         .with_diagnostic(error.to_string())
         .with_recoverability(Recoverability::UserAction)
     })
+}
+
+/// Removes a previously-written session file, treating "already absent"
+/// as success. Used when a frontend's own "restore on launch" toggle is
+/// disabled: no open-archive paths should remain discoverable in this
+/// file once the user has opted out of session restore -- a file left
+/// behind from an *earlier* session, before the toggle was disabled,
+/// must actively be removed, not merely left unwritten-to from now on.
+pub fn clear_session_restore_list(path: &Path) -> Result<(), ApplicationError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(persistence_io_error(path, error)),
+    }
 }
 
 fn persistence_io_error(path: &Path, error: std::io::Error) -> ApplicationError {
@@ -519,11 +556,11 @@ pub(crate) fn apply_network_patch(
 
 /// The subset of [`SecuritySettingsPatch`] that is a plain, in-memory
 /// value change (`encrypted_crc_policy`). `secrets_database_path`/
-/// `key_file_path` are handled separately by
-/// `settings_ops::repoint_vault_paths` -- unlike a directory override,
-/// changing either means re-opening the encrypted vault at a new
-/// location, which needs I/O and can fail in ways a pure function can't
-/// perform.
+/// `key_file_path` are handled separately by [`apply_vault_path_patch`]
+/// below, called from `settings_ops::repoint_vault_paths` -- unlike a
+/// directory override, changing either means re-opening the encrypted
+/// vault at a new location, which needs I/O and can fail in ways a pure
+/// function can't perform.
 pub(crate) fn apply_security_value_patch(
     encrypted_crc_policy: &mut String,
     patch: &SecuritySettingsPatch,
@@ -533,6 +570,41 @@ pub(crate) fn apply_security_value_patch(
         patch.encrypted_crc_policy.clone(),
         "security.encrypted_crc_policy",
     )
+}
+
+/// Applies `secrets_database_path`/`key_file_path` to a working copy of
+/// `DbPaths`. Pure, like every other `apply_*_patch` in this module,
+/// even though the *fields* it patches are `Option<PathBuf>`-shaped like
+/// [`ArchiveSettingsPatch::cache_directory`] -- unlike that field,
+/// `Clear` here does **not** mean `None`; it means "reset to
+/// `defaults`" (this install's own `DbPaths::calculate_defaults`
+/// result). See [`SecuritySettingsPatch`]'s own doc comment and
+/// [`PatchValue`]'s "one documented exception" note for the full
+/// rationale -- a vault must always resolve to some concrete on-disk
+/// location, so there is no "no vault path" state the way there is "no
+/// cache directory override".
+///
+/// Takes `paths`/`defaults` rather than reading them itself because
+/// resolving either requires I/O this module deliberately never
+/// performs (see this module's own top-level doc comment on why patch
+/// application stays pure) -- `settings_ops::repoint_vault_paths` is
+/// the only caller, and the only place that has a current `DbPaths` to
+/// patch and a computed `defaults` to fall back to.
+pub(crate) fn apply_vault_path_patch(
+    paths: &mut DbPaths,
+    patch: &SecuritySettingsPatch,
+    defaults: &DbPaths,
+) {
+    match &patch.secrets_database_path {
+        PatchValue::Set(path) => paths.secrets_db = path.clone(),
+        PatchValue::Clear => paths.secrets_db = defaults.secrets_db.clone(),
+        PatchValue::Keep => {}
+    }
+    match &patch.key_file_path {
+        PatchValue::Set(path) => paths.key_file = Some(path.clone()),
+        PatchValue::Clear => paths.key_file = defaults.key_file.clone(),
+        PatchValue::Keep => {}
+    }
 }
 
 /// Whether `patch` touches either vault-path field (anything other than
@@ -553,6 +625,18 @@ pub(crate) fn network_patch_touches_socks5_identity(patch: &NetworkSettingsPatch
     !matches!(patch.socks5_enabled, PatchValue::Keep)
         || !matches!(patch.socks5_address, PatchValue::Keep)
         || !matches!(patch.socks5_username, PatchValue::Keep)
+}
+
+/// Whether `patch` touches the per-plugin proxy opt-in/opt-out map.
+/// `settings_ops::run_update_settings` uses this to decide whether the
+/// live `AsyncHttpClient`'s routing map needs refreshing even when no
+/// SOCKS5 identity field changed -- a patch that changes only this map
+/// (no address/username/enabled change) takes the plain
+/// `ConfigService::save_user_config` path, which
+/// [`network_patch_touches_socks5_identity`] alone would never route
+/// through live-routing re-application at all.
+pub(crate) fn network_patch_touches_plugin_proxy_map(patch: &NetworkSettingsPatch) -> bool {
+    !matches!(patch.plugin_proxy_enabled, PatchValue::Keep)
 }
 
 fn path_to_string(path: PathBuf) -> String {
@@ -752,6 +836,90 @@ mod tests {
         assert!(security_patch_touches_vault_paths(&clears_one));
     }
 
+    /// Pins the "fold 2" contract: a patch touching *only* the
+    /// per-plugin proxy map (no SOCKS5 identity field) must still be
+    /// detected as needing a live-routing refresh --
+    /// `network_patch_touches_socks5_identity` alone would say `false`
+    /// for exactly this patch, which is the gap this function closes.
+    #[test]
+    fn network_patch_touches_plugin_proxy_map_is_independent_of_identity_fields() {
+        let keep_all = NetworkSettingsPatch {
+            socks5_enabled: PatchValue::Keep,
+            socks5_address: PatchValue::Keep,
+            socks5_username: PatchValue::Keep,
+            plugin_proxy_enabled: PatchValue::Keep,
+            gameta_server_enabled: PatchValue::Keep,
+            gameta_server_url: PatchValue::Keep,
+        };
+        assert!(!network_patch_touches_plugin_proxy_map(&keep_all));
+        assert!(!network_patch_touches_socks5_identity(&keep_all));
+
+        let map_only = NetworkSettingsPatch {
+            plugin_proxy_enabled: PatchValue::Clear,
+            ..keep_all
+        };
+        assert!(
+            network_patch_touches_plugin_proxy_map(&map_only),
+            "clearing the plugin proxy map must be detected"
+        );
+        assert!(
+            !network_patch_touches_socks5_identity(&map_only),
+            "a plugin-map-only patch must not be mistaken for an identity change"
+        );
+    }
+
+    /// Pins the "I6" bridge contract: unlike every other `Option<T>`-
+    /// shaped field in this module, `Clear` on `secrets_database_path`/
+    /// `key_file_path` resets to the computed default location, not to
+    /// `None`/unset. See both `PatchValue`'s and `SecuritySettingsPatch`'s
+    /// doc comments for why a vault path has no "unset" state to clear to.
+    #[test]
+    fn clear_on_vault_paths_resets_to_the_computed_defaults_not_to_unset() {
+        let defaults = DbPaths::calculate_defaults("arclain-settings-rs-test")
+            .expect("calculate_defaults is pure path computation and should not fail");
+        let mut paths = defaults.clone();
+        paths.secrets_db = PathBuf::from("/custom/secrets.redb");
+        paths.key_file = Some(PathBuf::from("/custom/master.key"));
+
+        let patch = SecuritySettingsPatch {
+            secrets_database_path: PatchValue::Clear,
+            key_file_path: PatchValue::Clear,
+            encrypted_crc_policy: PatchValue::Keep,
+        };
+        apply_vault_path_patch(&mut paths, &patch, &defaults);
+
+        assert_eq!(
+            paths.secrets_db, defaults.secrets_db,
+            "Clear on secrets_database_path must reset to the computed default, not to unset"
+        );
+        assert_eq!(
+            paths.key_file, defaults.key_file,
+            "Clear on key_file_path must reset to the computed default, not to unset"
+        );
+    }
+
+    #[test]
+    fn set_overrides_a_vault_path_and_keep_leaves_the_other_untouched() {
+        let defaults = DbPaths::calculate_defaults("arclain-settings-rs-test")
+            .expect("calculate_defaults is pure path computation and should not fail");
+        let mut paths = defaults.clone();
+        paths.secrets_db = PathBuf::from("/custom/secrets.redb");
+
+        let patch = SecuritySettingsPatch {
+            secrets_database_path: PatchValue::Keep,
+            key_file_path: PatchValue::Set(PathBuf::from("/new/master.key")),
+            encrypted_crc_policy: PatchValue::Keep,
+        };
+        apply_vault_path_patch(&mut paths, &patch, &defaults);
+
+        assert_eq!(
+            paths.secrets_db,
+            PathBuf::from("/custom/secrets.redb"),
+            "Keep must leave the existing override untouched"
+        );
+        assert_eq!(paths.key_file, Some(PathBuf::from("/new/master.key")));
+    }
+
     #[test]
     fn password_rule_input_rejects_empty_name_pattern_and_bad_regex() {
         let base = |name: &str, pattern: &str| PasswordRuleInput {
@@ -833,5 +1001,36 @@ mod tests {
         let error = load_session_restore_list(&path).unwrap_err();
 
         assert_eq!(error.kind, ApplicationErrorKind::Persistence);
+    }
+
+    #[test]
+    fn clear_session_restore_list_removes_an_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("session.json");
+        save_session_restore_list(
+            &path,
+            &[SessionArchiveEntry {
+                source_path: PathBuf::from("/a.zip"),
+            }],
+        )
+        .unwrap();
+        assert!(path.exists());
+
+        clear_session_restore_list(&path).unwrap();
+
+        assert!(!path.exists());
+    }
+
+    /// Removing a file that never existed (or was already removed) is
+    /// success, not an error -- the caller (a disabled "restore on
+    /// launch" toggle with no prior session file at all) should never
+    /// have to distinguish "there was nothing to clear" from "clearing
+    /// succeeded".
+    #[test]
+    fn clear_session_restore_list_on_a_missing_file_is_not_an_error() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("never-existed").join("session.json");
+
+        clear_session_restore_list(&path).unwrap();
     }
 }

@@ -23,6 +23,52 @@
 //! Read-only methods (`settings`, `password_rules`, `organization_profiles`)
 //! never take this lock -- they only ever take the fast `RwLock` for the
 //! instant it takes to clone out a snapshot.
+//!
+//! ## The precise atomicity guarantee `update_settings` makes (and does not)
+//!
+//! `run_update_settings` performs up to **three independent disk writes**
+//! in sequence, none wrapped in one cross-write transaction (SQLite and
+//! redb are separate engines with no shared transaction boundary, and
+//! `repoint_vault_paths` additionally opens a whole new database):
+//!
+//! 1. The `user_config` row (archive/network fields), via either
+//!    `ConfigService::save_user_config` or, when the patch touches a
+//!    SOCKS5 identity field, the journaled `NetworkProxyPersistenceService::
+//!    save`.
+//! 2. `repoint_vault_paths`, only when the security patch touches
+//!    `secrets_database_path`/`key_file_path`: persists the path override
+//!    then re-opens the vault at the new location.
+//! 3. `persist_encrypted_crc_policy`, only when the security patch sets
+//!    that field: a separate `app_config` key/value write.
+//!
+//! **What is guaranteed**: if step 1 fails, nothing changes -- the
+//! in-memory `mutable` state (and therefore every subsequent `settings()`
+//! call) is untouched, because it is only written in the final commit
+//! phase, after every write above has already succeeded. This is proven
+//! by `a_forced_write_failure_leaves_settings_completely_unchanged` and
+//! `set_socks5_password_fails_cleanly_instead_of_ignoring_a_corrupt_pending_marker`.
+//!
+//! **What is *not* guaranteed**: if step 1 succeeds but step 2 or step 3
+//! fails, disk and this instance's in-memory cache can diverge for as
+//! long as this instance keeps running -- step 1's write already landed
+//! on disk, but the in-memory commit (phase 3) never runs, so `settings()`
+//! keeps reporting the pre-patch values until a *later* successful
+//! `update_settings` call catches the cache up (its own step 1 re-reads
+//! the current on-disk row -- see the "C1" doc note above -- which
+//! picks up whatever step 1 previously wrote) or the process restarts
+//! (which re-reads everything from disk fresh). This divergence is
+//! narrow (steps 2/3 only run for security-patch fields, a small
+//! fraction of calls) and matches this codebase's existing "propagate
+//! the first failure, don't silently swallow it" standard (the H4 audit
+//! fix) rather than full cross-engine ACID -- reordering to make the
+//! in-memory commit strictly last-and-only-on-total-success would still
+//! leave the *disk* itself inconsistent across engines/files in the same
+//! way, so it would trade one honestly-documented gap for a differently
+//! shaped one, not remove it. `repoint_vault_paths_failure_leaves_
+//! settings_unchanged_in_memory` and
+//! `persist_encrypted_crc_policy_failure_leaves_settings_unchanged_in_memory`
+//! (both in `tests/settings_facade.rs`) pin down exactly this documented
+//! end state for steps 2 and 3 respectively.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -118,20 +164,61 @@ pub(super) async fn run_update_settings(
 ) -> Result<SettingsSnapshot, ApplicationError> {
     let _write_guard = inner.settings_write_lock.lock().await;
 
-    // Phase 1: consistent snapshot + revision check + pure validation.
-    // No I/O yet -- an invalid patch is rejected before anything is
-    // persisted or before the vault is touched.
-    let (mut proposed_user_config, mut proposed_crc_policy, current_db_paths, current_dbs) = {
+    // Phase 1: consistent snapshot + revision check + validation. The
+    // only I/O here is a read-only secrets lookup for the
+    // currently-stored SOCKS5 password (only when the patch touches a
+    // SOCKS5 identity field) -- needed so `validate_proxy_for_storage`
+    // checks the exact username+password combination that will actually
+    // be in effect afterward (see that function's own doc comment).
+    // Nothing is ever written, and the vault is never re-opened, until
+    // every check below has passed.
+    let (current_crc_policy, current_db_paths, current_dbs) = {
         let mutable = inner.session.mutable.read();
         if patch.expected_revision != mutable.revision {
             return Err(conflict_error(mutable.revision));
         }
         (
-            mutable.user_config.clone(),
             mutable.encrypted_crc_policy.clone(),
             mutable.db_paths.clone(),
             mutable.dbs.clone(),
         )
+    };
+    let mut proposed_crc_policy = current_crc_policy;
+
+    let config_service = inner
+        .core_services()
+        .config_service
+        .clone()
+        .ok_or_else(settings_unavailable_error)?;
+
+    // Re-read the *current on-disk* `user_config` row rather than
+    // trusting this instance's cached `mutable.user_config` copy. Five
+    // still-unmigrated UI call sites (hotkeys, toolbar order, general
+    // prefs, plugin settings) write `user_config` columns directly
+    // through `ConfigService`, bypassing this facade entirely -- that
+    // migration is tracked separately. `UserConfig` is one row with 22+
+    // columns; patching a stale cached copy and writing the whole row
+    // back would silently revert every column those direct writers
+    // touched since this instance last saw them. Re-reading here closes
+    // that gap: the window left over (a direct write racing strictly
+    // between this read and this call's own write below, with no shared
+    // lock protecting it) is a documented, narrow, pre-existing
+    // limitation of those five call sites not yet going through
+    // `settings_write_lock` at all -- not something a read-then-write
+    // ordering on this side can fully close by itself.
+    let mut proposed_user_config = {
+        let read_config_service = config_service.clone();
+        let handle = inner
+            .tokio_handle()
+            .ok_or_else(shutdown_mid_request_error)?;
+        handle
+            .spawn_blocking(move || {
+                read_config_service
+                    .get_user_config()
+                    .map_err(|error| backend_error("reading current settings", error))
+            })
+            .await
+            .map_err(internal_join_error)??
     };
 
     let touches_socks5_identity = patch
@@ -139,11 +226,48 @@ pub(super) async fn run_update_settings(
         .as_ref()
         .map(settings::network_patch_touches_socks5_identity)
         .unwrap_or(false);
+    let touches_plugin_proxy_map = patch
+        .network
+        .as_ref()
+        .map(settings::network_patch_touches_plugin_proxy_map)
+        .unwrap_or(false);
     let touches_vault_paths = patch
         .security
         .as_ref()
         .map(settings::security_patch_touches_vault_paths)
         .unwrap_or(false);
+
+    // Read-only, and only when needed: the SOCKS5 identity fields are
+    // the only ones whose validation depends on a secret this patch
+    // itself never carries (see `validate_proxy_for_storage`'s doc
+    // comment). Read once here and reused by Phase 2 below instead of
+    // read again there -- `settings_write_lock` is held for this whole
+    // call, so nothing can change the stored password out from under
+    // either use.
+    let existing_socks5_password = if touches_socks5_identity {
+        match current_dbs.clone() {
+            Some(dbs) => {
+                let handle = inner
+                    .tokio_handle()
+                    .ok_or_else(shutdown_mid_request_error)?;
+                handle
+                    .spawn_blocking(move || {
+                        dbs.secrets
+                            .get_secret(PROXY_PASSWORD_KEY)
+                            .map_err(|error| backend_error("reading proxy password", error))
+                    })
+                    .await
+                    .map_err(internal_join_error)??
+            }
+            // No vault yet: Phase 2 below fails this call with
+            // `vault_unavailable_error` regardless, exactly as before
+            // this fix -- validating with no password here changes
+            // nothing about that outcome.
+            None => None,
+        }
+    } else {
+        None
+    };
 
     if let Some(archive_patch) = patch.archive {
         settings::apply_archive_patch(&mut proposed_user_config, archive_patch)?;
@@ -155,33 +279,27 @@ pub(super) async fn run_update_settings(
         settings::apply_security_value_patch(&mut proposed_crc_policy, security_patch)?;
     }
     if touches_socks5_identity {
-        validate_proxy_for_storage(&proposed_user_config)?;
+        let validation_password = existing_socks5_password
+            .as_deref()
+            .map(|value| value.as_str());
+        validate_proxy_for_storage(&proposed_user_config, validation_password)?;
     }
 
     // Phase 2: I/O. `inner.session.mutable` is not touched by any of this
     // -- a failure at any point here leaves it exactly as phase 1 read
     // it, so `settings()` keeps reporting the pre-patch values.
-    let config_service = inner
-        .core_services()
-        .config_service
-        .clone()
-        .ok_or_else(settings_unavailable_error)?;
-
     if touches_socks5_identity {
         let Some(dbs) = current_dbs.clone() else {
             return Err(vault_unavailable_error());
         };
         let candidate = proposed_user_config.clone();
         let save_dbs = dbs.clone();
+        let existing_password = existing_socks5_password.clone();
         let handle = inner
             .tokio_handle()
             .ok_or_else(shutdown_mid_request_error)?;
         handle
             .spawn_blocking(move || {
-                let existing_password = save_dbs
-                    .secrets
-                    .get_secret(PROXY_PASSWORD_KEY)
-                    .map_err(|error| backend_error("reading proxy password", error))?;
                 let existing_password = existing_password.as_deref().map(|value| value.as_str());
                 arclain_core::services::NetworkProxyPersistenceService::new(
                     &config_service,
@@ -212,6 +330,22 @@ pub(super) async fn run_update_settings(
             })
             .await
             .map_err(internal_join_error)??;
+
+        // A patch that changes only the per-plugin proxy map (no SOCKS5
+        // identity field -- `touches_socks5_identity` is `false`, which
+        // is why this `else` arm ran at all) still needs to reach the
+        // live `AsyncHttpClient`; the `if` arm above already covers this
+        // as part of its own full `apply_live_proxy_routing` resolve.
+        // This is the narrower equivalent for when only the map itself
+        // changed: a plain in-memory swap, no vault/secrets access
+        // needed, so it runs unconditionally rather than being
+        // best-effort like `apply_live_proxy_routing`.
+        if touches_plugin_proxy_map {
+            let async_http_client = inner.core_services().async_http_client.clone();
+            async_http_client.apply_plugin_proxy_map(
+                arclain_core::utilities::proxy::effective_plugin_proxy_map(&proposed_user_config),
+            );
+        }
     }
 
     let vault_repoint = if touches_vault_paths {
@@ -297,35 +431,72 @@ pub(super) async fn run_set_gameta_api_key(
     Ok(())
 }
 
+/// Sets or clears the SOCKS5 password.
+///
+/// Routed through the *same* journaled `NetworkProxyPersistenceService`
+/// path `run_update_settings`'s identity-touching branch uses -- not a
+/// bare `set_secret`/`remove_secret` -- because a standalone unjournaled
+/// password write is unsafe on its own: if an *earlier, unrelated*
+/// identity save (an address/username change) crashed after staging its
+/// own recovery marker but before finalizing it, that marker's
+/// `previous_password` snapshot predates whatever this call is about to
+/// set. A later crash-recovery pass (at the next bootstrap) rolling
+/// back that stale marker would otherwise silently overwrite this call's
+/// password with the older snapshot, with no error and no warning.
+/// Routing through `NetworkProxyPersistenceService::save` makes this
+/// call's own `recover_pending()` run first (as `save`'s own first
+/// step), resolving any such stale marker synchronously, right here,
+/// before staging and committing the actual requested change -- so the
+/// end state after this call returns is always the password this call
+/// was actually asked to set, never a stale rollback snapshot. Passing
+/// the *unchanged* `user_config` as `save`'s "candidate" means only the
+/// secret changes; the config row round-trips to the same values it
+/// already had.
 pub(super) async fn run_set_socks5_password(
     inner: &Arc<AppRuntime>,
     value: Option<SecretInput>,
 ) -> Result<(), ApplicationError> {
     let _write_guard = inner.settings_write_lock.lock().await;
-    let dbs = {
+    let (dbs, user_config) = {
         let mutable = inner.session.mutable.read();
-        mutable.dbs.clone().ok_or_else(vault_unavailable_error)?
+        (
+            mutable.dbs.clone().ok_or_else(vault_unavailable_error)?,
+            mutable.user_config.clone(),
+        )
     };
+    let config_service = inner
+        .core_services()
+        .config_service
+        .clone()
+        .ok_or_else(settings_unavailable_error)?;
+
     let handle = inner
         .tokio_handle()
         .ok_or_else(shutdown_mid_request_error)?;
     let secret_value = value
         .as_ref()
         .map(|value| value.expose_secret().to_string());
+    let save_dbs = dbs.clone();
+    let candidate = user_config.clone();
     handle
-        .spawn_blocking(move || match secret_value {
-            Some(password) => dbs
-                .secrets
-                .set_secret(PROXY_PASSWORD_KEY, &password)
-                .map_err(|error| persistence_error("saving SOCKS5 password", error)),
-            None => dbs
-                .secrets
-                .remove_secret(PROXY_PASSWORD_KEY)
-                .map_err(|error| persistence_error("clearing SOCKS5 password", error)),
+        .spawn_blocking(move || {
+            arclain_core::services::NetworkProxyPersistenceService::new(
+                &config_service,
+                &save_dbs.secrets,
+            )
+            .save(&candidate, secret_value.as_deref())
+            .map_err(|error| persistence_error("saving the SOCKS5 password", error))
+            .map(|_outcome| ())
         })
         .await
         .map_err(internal_join_error)??;
     bump_revision(inner);
+    // Re-apply live routing with the NEW password immediately -- without
+    // this, the new credential only takes effect after the next
+    // `update_settings` call (which re-applies routing for identity
+    // changes) or a restart, even though it is already correctly
+    // persisted. See this module's own "I3" note.
+    apply_live_proxy_routing(inner, &dbs, &user_config).await;
     Ok(())
 }
 
@@ -335,17 +506,15 @@ pub(super) async fn run_move_vault(
 ) -> Result<(), ApplicationError> {
     let _write_guard = inner.settings_write_lock.lock().await;
     let current_db_paths = {
-        let mut mutable = inner.session.mutable.write();
-        // Close the vault handle this instance currently holds before
-        // touching its file -- the OS (Windows especially) refuses to
-        // copy a file this same process still has open. Mirrors the
-        // pre-facade `AppState::move_vault`'s own `self.dbs.take()` step
-        // exactly, including that step's own limitation: a failure from
-        // here on leaves the vault unavailable until a later successful
-        // move/rekey (or restart) reopens it, the same as it always has.
-        mutable.dbs = None;
+        let mutable = inner.session.mutable.read();
         mutable.db_paths.clone()
     };
+    // Close the vault's `SecretsDb` for every outstanding clone of it --
+    // not just this instance's own `mutable.dbs` -- before touching its
+    // file. See `close_vault_handle`'s own doc comment for why clearing
+    // only this instance's field is not enough on Windows.
+    close_vault_handle(inner);
+
     let handle = inner
         .tokio_handle()
         .ok_or_else(shutdown_mid_request_error)?;
@@ -374,14 +543,15 @@ pub(super) async fn run_rekey_vault(
 ) -> Result<(), ApplicationError> {
     let _write_guard = inner.settings_write_lock.lock().await;
     let current_db_paths = {
-        let mut mutable = inner.session.mutable.write();
-        // See `run_move_vault`'s identical step -- `SecretsService::
-        // rekey_vault` additionally *deletes* the old vault file, which
-        // fails outright on Windows while this process still has it
-        // open, not just the copy `move_vault` performs.
-        mutable.dbs = None;
+        let mutable = inner.session.mutable.read();
         mutable.db_paths.clone()
     };
+    // See `run_move_vault`'s identical step and `close_vault_handle`'s
+    // own doc comment -- `SecretsService::rekey_vault` additionally
+    // *deletes* the old vault file, which fails outright on Windows
+    // while any clone (this instance's own, or a long-lived external one
+    // like `crates/ui`'s `AppState.dbs`) still has it open.
+    close_vault_handle(inner);
     let handle = inner
         .tokio_handle()
         .ok_or_else(shutdown_mid_request_error)?;
@@ -536,6 +706,38 @@ async fn apply_live_proxy_routing(
     }
 }
 
+/// Closes the current vault's `SecretsDb` for every outstanding clone of
+/// it -- this instance's own `mutable.dbs`, `crates/ui`'s long-lived
+/// `AppState.dbs` mirror, and anything else that took a
+/// `LegacyComposition` earlier and never dropped it -- and clears
+/// `mutable.dbs` to `None` here too, so `security_dto`'s
+/// `vault_available` correctly reports the vault as unavailable for the
+/// brief window between this call and whichever commit installs the new
+/// one.
+///
+/// This is the fix for a real production bug: clearing only this
+/// instance's own `mutable.dbs` field released *this* clone's reference
+/// to the underlying `Arc<Mutex<Option<redb::Database>>>`, but a
+/// long-lived external clone (obtained via `ArclainApp::
+/// take_legacy_composition`, which `crates/ui` calls once at startup and
+/// again after every settings mutation, and which is never dropped for
+/// the app's entire lifetime) kept the file locked regardless -- Windows
+/// refuses to copy (`move_vault`) or delete (`rekey_vault`) a file any
+/// live handle still has open. `ReDb::close`/`SecretsDb::close` (see
+/// their own doc comments) solve this by closing the *shared* underlying
+/// database, which every clone -- including ones this function has never
+/// heard of -- observes immediately, needing no cooperation from
+/// whoever else is holding a reference. This restores the pre-facade
+/// behavior of `AppState::move_vault`'s own `self.dbs.take()`: the one
+/// live copy went dark the instant the move started; now every copy
+/// does, together, the same way.
+fn close_vault_handle(inner: &Arc<AppRuntime>) {
+    let mut mutable = inner.session.mutable.write();
+    if let Some(dbs) = mutable.dbs.take() {
+        dbs.secrets.close();
+    }
+}
+
 fn to_core_pass_rule(rule: arclain_core::DbPassRule) -> arclain_core::PassRule {
     arclain_core::PassRule {
         name: rule.name,
@@ -630,8 +832,7 @@ async fn repoint_vault_paths(
     ),
     ApplicationError,
 > {
-    let secrets_database_path = patch.secrets_database_path.clone();
-    let key_file_path = patch.key_file_path.clone();
+    let security_patch = patch.clone();
     let handle = inner
         .tokio_handle()
         .ok_or_else(shutdown_mid_request_error)?;
@@ -645,18 +846,11 @@ async fn repoint_vault_paths(
             let defaults = arclain_core::DbPaths::calculate_defaults("arclain")
                 .map_err(|error| persistence_error("resolving default database paths", error))?;
 
-            match secrets_database_path {
-                crate::settings::PatchValue::Set(path) => paths.secrets_db = path,
-                crate::settings::PatchValue::Clear => {
-                    paths.secrets_db = defaults.secrets_db.clone()
-                }
-                crate::settings::PatchValue::Keep => {}
-            }
-            match key_file_path {
-                crate::settings::PatchValue::Set(path) => paths.key_file = Some(path),
-                crate::settings::PatchValue::Clear => paths.key_file = defaults.key_file.clone(),
-                crate::settings::PatchValue::Keep => {}
-            }
+            // `Clear` on either field means "reset to `defaults`", not
+            // "unset" -- see `settings::apply_vault_path_patch`'s own
+            // doc comment (the "I6" fix) for why a vault path can never
+            // simply be absent the way a directory override can.
+            settings::apply_vault_path_patch(&mut paths, &security_patch, &defaults);
 
             // Persist the overrides before attempting to re-open, matching
             // `apply_preferences`'s own ordering: a crash between here and
@@ -705,14 +899,31 @@ fn secret_configured(dbs: &arclain_core::ConfigDbs, key: &str) -> Result<bool, A
         .map_err(|error| persistence_error("reading secret storage", error))
 }
 
+/// Validates the SOCKS5 identity fields of a candidate `user_config`
+/// against `current_password` -- the password that will actually remain
+/// in effect after this call, since a patch that only touches the
+/// identity fields (address/username/enabled) never changes the
+/// password itself; that is
+/// [`ArclainApp::set_socks5_password`](crate::runtime::ArclainApp::set_socks5_password)'s
+/// own job. Passing the real current password here (instead of always
+/// `None`) restores parity with the pre-facade `SaveNetwork` handler,
+/// which always validated address+username+password together as one
+/// `ProxyConfig` built from a single form submission --
+/// `ProxyConfig::validate_for_storage` only exercises its
+/// username+password-together branch (`proxy_url`'s `if let
+/// (Some(username), Some(password)) = ...`) when both are `Some` at
+/// once, so passing `password: None` unconditionally silently skipped
+/// that branch for every call through this facade, even when a
+/// username+password pair was actually configured.
 fn validate_proxy_for_storage(
     user_config: &arclain_core::UserConfig,
+    current_password: Option<&str>,
 ) -> Result<(), ApplicationError> {
     let config = arclain_network::features::proxy::ProxyConfig {
         enabled: user_config.socks5_enabled,
         address: user_config.socks5_address.clone().unwrap_or_default(),
         username: user_config.socks5_username.clone(),
-        password: None,
+        password: current_password.map(str::to_string),
     };
     config.validate_for_storage().map_err(|message| {
         ApplicationError::new(

@@ -18,7 +18,12 @@
 
 mod support;
 
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use arclain_app::challenge::SecretInput;
 use arclain_app::error::ApplicationErrorKind;
@@ -27,6 +32,77 @@ use arclain_app::settings::{
     SecuritySettingsPatch, SettingsPatch,
 };
 use arclain_app::{ArclainApp, BootstrapConfig};
+
+/// A minimal SOCKS5 server that only implements enough of RFC 1928/1929
+/// to observe which username/password a client authenticates with, then
+/// stops -- the CONNECT step that would normally follow the auth
+/// handshake is deliberately never answered; capturing the credentials
+/// is this sentinel's whole job. Mirrors `settings_controller.rs`'s own
+/// `serve_proxy_sentinel` in spirit (accept, observe, respond minimally)
+/// but implements the actual auth subnegotiation instead of an
+/// immediate rejection, since this needs to see the credential bytes.
+fn capture_socks5_credentials(
+    proxy: TcpListener,
+    request_finished: Arc<AtomicBool>,
+    captured: Arc<Mutex<Option<(String, String)>>>,
+) {
+    while !request_finished.load(Ordering::SeqCst) {
+        match proxy.accept() {
+            Ok((mut socket, _)) => {
+                // The accepted socket inherits non-blocking mode from
+                // the listener on Windows (unlike POSIX, where it
+                // defaults to blocking) -- switch it back so the
+                // `read_exact` calls below wait for bytes instead of
+                // returning `WouldBlock` immediately.
+                let _ = socket.set_nonblocking(false);
+                let _ = socket.set_read_timeout(Some(Duration::from_secs(5)));
+                if try_capture_one_handshake(&mut socket, &captured).is_some() {
+                    return;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+fn try_capture_one_handshake(
+    socket: &mut std::net::TcpStream,
+    captured: &Arc<Mutex<Option<(String, String)>>>,
+) -> Option<()> {
+    // Method negotiation request: VER(1) NMETHODS(1) METHODS(NMETHODS).
+    let mut header = [0u8; 2];
+    socket.read_exact(&mut header).ok()?;
+    let n_methods = header[1] as usize;
+    let mut methods = vec![0u8; n_methods];
+    socket.read_exact(&mut methods).ok()?;
+    // Select username/password auth (0x02) unconditionally.
+    socket.write_all(&[0x05, 0x02]).ok()?;
+
+    // Username/password subnegotiation (RFC 1929):
+    // VER(1) ULEN(1) UNAME(ULEN) PLEN(1) PASSWD(PLEN).
+    let mut sub_header = [0u8; 2];
+    socket.read_exact(&mut sub_header).ok()?;
+    let ulen = sub_header[1] as usize;
+    let mut uname = vec![0u8; ulen];
+    socket.read_exact(&mut uname).ok()?;
+    let mut plen_buf = [0u8; 1];
+    socket.read_exact(&mut plen_buf).ok()?;
+    let plen = plen_buf[0] as usize;
+    let mut passwd = vec![0u8; plen];
+    socket.read_exact(&mut passwd).ok()?;
+
+    let username = String::from_utf8_lossy(&uname).into_owned();
+    let password = String::from_utf8_lossy(&passwd).into_owned();
+    *captured.lock().unwrap() = Some((username, password));
+    // Report auth success so the client doesn't abort immediately --
+    // the CONNECT request that follows is never answered; this sentinel
+    // only needs to observe the auth handshake.
+    let _ = socket.write_all(&[0x01, 0x00]);
+    Some(())
+}
 
 fn foreign_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -146,6 +222,31 @@ fn install_failing_user_config_trigger(app: &ArclainApp) {
         .expect("install failing user_config trigger");
 }
 
+/// Sibling of [`install_failing_user_config_trigger`] targeting
+/// `app_config` instead -- the plain key/value table `set_config`/
+/// `get_config` use, which is what `persist_encrypted_crc_policy` and
+/// `repoint_vault_paths`'s override-persisting step write through. A
+/// trigger here fails only those two write steps, leaving the
+/// `user_config` row write (a different table) unaffected -- needed to
+/// isolate each of `update_settings`'s independent write steps for its
+/// own forced-failure test (see the "I5" doc note in `settings_ops.rs`).
+fn install_failing_app_config_trigger(app: &ArclainApp) {
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let dbs = legacy.dbs.expect("vault must be available");
+    dbs.config
+        .with_connection(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_app_config_save
+                 BEFORE INSERT ON app_config
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected app_config save failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install failing app_config trigger");
+}
+
 // ============================================================================
 // First-run defaults.
 // ============================================================================
@@ -231,6 +332,78 @@ fn organization_profiles_lists_seeded_system_defaults() {
         assert!(!profile.name.is_empty());
         assert!(!profile.output_format.is_empty());
     }
+}
+
+// ============================================================================
+// update_settings must never clobber columns written outside the facade.
+// ============================================================================
+
+/// Five still-unmigrated UI call sites (hotkeys, toolbar order, general
+/// prefs, plugin settings) write `user_config` columns directly through
+/// `ConfigService`, bypassing the facade entirely -- that migration is
+/// tracked separately. `update_settings` must not silently revert those
+/// columns back to whatever this instance last saw just because it only
+/// knows how to patch archive/network/security fields: `UserConfig` is
+/// one row, and a naive "patch my cached copy, write the whole row" a
+/// pproach clobbers every column the cache doesn't know changed.
+#[test]
+fn update_settings_does_not_revert_columns_written_directly_via_config_service() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    // Simulate a still-unmigrated direct write (e.g. SaveKeyboardMouse)
+    // that never goes through the facade at all.
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let config_service = legacy
+        .core_services
+        .config_service
+        .clone()
+        .expect("config service must be available");
+    let mut direct = config_service
+        .get_user_config()
+        .expect("read user config directly");
+    direct.hotkey_bindings = Some(r#"{"foo":"Ctrl+F"}"#.to_string());
+    config_service
+        .save_user_config(&direct)
+        .expect("direct write must succeed");
+
+    // An unrelated, facade-driven archive-only save.
+    let current = runtime
+        .block_on(app.settings())
+        .expect("settings must succeed");
+    let patch = SettingsPatch {
+        expected_revision: current.revision,
+        archive: Some(ArchiveSettingsPatch {
+            cache_directory: PatchValue::Set(PathBuf::from("/cache/whatever")),
+            ..keep_archive_patch()
+        }),
+        network: None,
+        security: None,
+    };
+    runtime
+        .block_on(app.update_settings(patch))
+        .expect("update must succeed");
+
+    // The directly-written column must survive on disk...
+    let after_on_disk = config_service
+        .get_user_config()
+        .expect("read user config directly");
+    assert_eq!(
+        after_on_disk.hotkey_bindings.as_deref(),
+        Some(r#"{"foo":"Ctrl+F"}"#),
+        "update_settings reverted a column it never patched"
+    );
+
+    // ...and the facade's own cached view must have picked up the fresh
+    // read too (not just left it correct on disk by accident while the
+    // in-memory cache stays stale).
+    let legacy_after = app.take_legacy_composition().expect("legacy composition");
+    assert_eq!(
+        legacy_after.user_config.hotkey_bindings.as_deref(),
+        Some(r#"{"foo":"Ctrl+F"}"#),
+        "the facade's cached user_config was not refreshed from the direct write"
+    );
 }
 
 // ============================================================================
@@ -373,6 +546,193 @@ fn a_forced_write_failure_leaves_settings_completely_unchanged() {
     assert!(snapshot.archive.cache_directory.is_none());
 }
 
+/// Sibling of `a_forced_write_failure_leaves_settings_completely_
+/// unchanged` isolating `update_settings`'s *second* write step
+/// (`repoint_vault_paths`, which only runs when the security patch
+/// touches `secrets_database_path`/`key_file_path`) instead of the
+/// first. Pins down the documented divergence `settings_ops.rs`'s own
+/// module doc comment describes for this step: `repoint_vault_paths`
+/// persists the path-override row to `app_config` *before* attempting
+/// to load the key file and re-open the vault at the new location, so a
+/// load failure here leaves disk and memory in genuinely different
+/// states -- the override is on disk, but `update_settings` returns
+/// `Err` before phase 3's commit ever runs, so this instance's
+/// in-memory `mutable` (and therefore every `settings()` call against
+/// it) still reports the OLD key file path and the OLD, still-open
+/// vault.
+#[test]
+fn repoint_vault_paths_failure_leaves_settings_unchanged_in_memory() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    let before = runtime
+        .block_on(app.settings())
+        .expect("settings must succeed");
+    let original_key_file_path = before
+        .security
+        .key_file_path
+        .clone()
+        .expect("a fresh bootstrap has a key file path");
+
+    let missing_key_file = temp.path().join("does-not-exist.key");
+    let patch = SettingsPatch {
+        expected_revision: 0,
+        archive: None,
+        network: None,
+        security: Some(SecuritySettingsPatch {
+            key_file_path: PatchValue::Set(missing_key_file.clone()),
+            ..keep_security_patch()
+        }),
+    };
+
+    let error = runtime
+        .block_on(app.update_settings(patch))
+        .expect_err("a key file that does not exist must fail the vault repoint");
+    assert_eq!(error.kind, ApplicationErrorKind::Persistence);
+
+    // In memory: unchanged, exactly as documented.
+    let after = runtime
+        .block_on(app.settings())
+        .expect("settings must succeed");
+    assert_eq!(
+        after.revision, 0,
+        "a failed vault repoint must not bump the revision"
+    );
+    assert_eq!(
+        after.security.key_file_path.as_deref(),
+        Some(original_key_file_path.as_path()),
+        "the in-memory key_file_path must still show the OLD value"
+    );
+    assert!(
+        after.security.vault_available,
+        "the old vault must still be reported available after a failed repoint"
+    );
+
+    // On disk: the config-row override for the new (nonexistent) path
+    // landed anyway -- this is the documented "not guaranteed" half of
+    // the atomicity contract, not an oversight in this test.
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let dbs = legacy.dbs.expect("vault must still be available");
+    let stored_override = dbs
+        .config
+        .with_connection(|conn| arclain_core::get_config(conn, "key_file_path"))
+        .expect("read the persisted override directly");
+    assert_eq!(
+        stored_override.as_deref(),
+        Some(missing_key_file.to_string_lossy().as_ref()),
+        "the config-row override must have persisted even though the repoint itself failed"
+    );
+
+    // And the OLD vault handle itself must still genuinely work -- not
+    // just that `vault_available` happens to read `true`.
+    dbs.secrets
+        .list_pass_rules()
+        .expect("the old vault handle must still be open and usable after a failed repoint");
+}
+
+/// Sibling of the previous test isolating `update_settings`'s *third*
+/// write step (`persist_encrypted_crc_policy`) instead of the second:
+/// `secrets_database_path`/`key_file_path` both stay `Keep` so
+/// `touches_vault_paths` is false and `repoint_vault_paths` never runs
+/// at all, and only the `app_config` trigger (not the `user_config`
+/// one `a_forced_write_failure_leaves_settings_completely_unchanged`
+/// installs) is active, so the `user_config` row write (step 1) still
+/// succeeds normally. This isolates the failure to the CRC-policy write
+/// alone and proves the same "phase 3 never commits" guarantee holds
+/// for it too -- the regression coverage the deleted H4-era test class
+/// had for this exact persistence path.
+#[test]
+fn persist_encrypted_crc_policy_failure_leaves_settings_unchanged_in_memory() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    install_failing_app_config_trigger(&app);
+
+    let patch = SettingsPatch {
+        expected_revision: 0,
+        archive: None,
+        network: None,
+        security: Some(SecuritySettingsPatch {
+            encrypted_crc_policy: PatchValue::Set("always".to_string()),
+            ..keep_security_patch()
+        }),
+    };
+
+    let error = runtime
+        .block_on(app.update_settings(patch))
+        .expect_err("the injected app_config trigger must fail the CRC policy save");
+    assert_eq!(error.kind, ApplicationErrorKind::Persistence);
+
+    let snapshot = runtime
+        .block_on(app.settings())
+        .expect("settings must succeed");
+    assert_eq!(
+        snapshot.revision, 0,
+        "a failed CRC policy write must not bump the revision"
+    );
+    assert_eq!(
+        snapshot.security.encrypted_crc_policy, "on_access",
+        "the in-memory CRC policy must still show the OLD value"
+    );
+}
+
+/// `set_socks5_password` now routes through the *same* journaled
+/// `NetworkProxyPersistenceService::save` path `run_update_settings`'s
+/// identity-touching branch uses (see `run_set_socks5_password`'s own
+/// "I4" doc note), instead of a bare `set_secret` call that never
+/// consulted any pending recovery marker at all. This proves the
+/// difference that routing makes: a stale/corrupt marker left behind by
+/// an interrupted *earlier, unrelated* identity-changing save (a
+/// scenario this test simulates directly, since actually crashing a
+/// real save mid-flight to produce one is `arclain_core`'s own
+/// `network_proxy_persistence_service` test suite's job, not
+/// reproducible from here without reaching into that module's private
+/// marker type) must fail this call cleanly rather than being silently
+/// ignored while the new password gets applied on top of unresolved,
+/// corrupt recovery state.
+///
+/// Before this fix, a bare `set_secret`/`remove_secret` call didn't
+/// consult `journal:proxy-settings` at all, so this exact scenario would
+/// have silently *succeeded*, leaving the corrupt marker in place to
+/// confuse the next recovery pass at the next bootstrap.
+#[test]
+fn set_socks5_password_fails_cleanly_instead_of_ignoring_a_corrupt_pending_marker() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    const OLD_PASSWORD: &str = "old-password-preserved-2f6a";
+    const NEW_PASSWORD: &str = "new-password-must-not-silently-apply-91be";
+
+    runtime
+        .block_on(app.set_socks5_password(Some(SecretInput::new(OLD_PASSWORD.to_string()))))
+        .expect("staging the old password must succeed");
+
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let dbs = legacy.dbs.expect("vault must be available");
+    dbs.secrets
+        .set_secret("journal:proxy-settings", "not-valid-json")
+        .expect("stage a corrupt pending-update marker");
+
+    let error = runtime
+        .block_on(app.set_socks5_password(Some(SecretInput::new(NEW_PASSWORD.to_string()))))
+        .expect_err("a corrupt pending marker must fail this call, not be silently ignored");
+    assert_eq!(error.kind, ApplicationErrorKind::Persistence);
+
+    // The OLD password must still be there -- the new one was never
+    // applied on top of unresolved recovery state.
+    let restored = dbs
+        .secrets
+        .get_secret("proxy:socks5")
+        .expect("read the secret after the failed call")
+        .expect("a password must still be present");
+    assert_eq!(
+        restored.as_str(),
+        OLD_PASSWORD,
+        "the new password must not have been applied while a corrupt recovery marker was pending"
+    );
+}
+
 #[test]
 fn update_settings_applies_live_proxy_routing_to_the_shared_http_client() {
     let runtime = foreign_runtime();
@@ -451,6 +811,96 @@ fn invalid_enabled_proxy_address_is_rejected_before_any_write() {
         .expect("settings must succeed");
     assert_eq!(snapshot.revision, 0);
     assert!(!snapshot.network.socks5_enabled);
+}
+
+/// `validate_proxy_for_storage` now validates the SOCKS5 identity
+/// fields against the *real* currently-stored password instead of
+/// always passing `password: None` (the "fold 1" fix -- see
+/// `settings_ops.rs`'s own doc comment on `validate_proxy_for_storage`).
+/// This cannot be pinned as a "used to wrongly accept X, now rejects
+/// X" regression test the way
+/// `invalid_enabled_proxy_address_is_rejected_before_any_write` is:
+/// `url::Url::set_username`/`set_password` (what
+/// `ProxyConfig::validate_for_storage` calls into) only ever fail for a
+/// `cannot-be-a-base` URL, which a `socks5h://host:port` authority
+/// never is, so no input exists today where validation's outcome
+/// differs based on which password value it receives. What this test
+/// pins instead is the actual, previously-uncovered gap: an
+/// identity-only `update_settings` call (its patch carries no password
+/// field at all) still succeeds when a real username+password pair is
+/// already configured, and the password itself survives that call
+/// completely unchanged -- proving the `existing_password` this fix
+/// now also feeds to validation still correctly reaches
+/// `NetworkProxyPersistenceService::save` afterward, exactly as it did
+/// before this fix.
+#[test]
+fn update_settings_preserves_an_existing_password_across_an_identity_only_change() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    const PASSWORD: &str = "preserved-across-identity-change-7d2f";
+
+    let enable_patch = SettingsPatch {
+        expected_revision: 0,
+        archive: None,
+        network: Some(NetworkSettingsPatch {
+            socks5_enabled: PatchValue::Set(true),
+            socks5_address: PatchValue::Set("127.0.0.1:1080".to_string()),
+            socks5_username: PatchValue::Set("proxyuser".to_string()),
+            ..keep_network_patch()
+        }),
+        security: None,
+    };
+    runtime
+        .block_on(app.update_settings(enable_patch))
+        .expect("enabling socks5 with a username must succeed");
+    runtime
+        .block_on(app.set_socks5_password(Some(SecretInput::new(PASSWORD.to_string()))))
+        .expect("setting the password must succeed");
+
+    // An identity-only change (a new address, same username) -- no
+    // password field anywhere in this patch.
+    let current = runtime
+        .block_on(app.settings())
+        .expect("settings must succeed");
+    let readdress_patch = SettingsPatch {
+        expected_revision: current.revision,
+        archive: None,
+        network: Some(NetworkSettingsPatch {
+            socks5_enabled: PatchValue::Set(true),
+            socks5_address: PatchValue::Set("127.0.0.1:1081".to_string()),
+            socks5_username: PatchValue::Set("proxyuser".to_string()),
+            ..keep_network_patch()
+        }),
+        security: None,
+    };
+    let after_readdress = runtime
+        .block_on(app.update_settings(readdress_patch))
+        .expect(
+            "an identity-only change must succeed when a real username+password pair is \
+             already configured",
+        );
+    assert_eq!(
+        after_readdress.network.socks5_address.as_deref(),
+        Some("127.0.0.1:1081")
+    );
+    assert!(
+        after_readdress.network.socks5_password_configured,
+        "the identity-only change must not have cleared the password"
+    );
+
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let dbs = legacy.dbs.expect("vault must be available");
+    let stored = dbs
+        .secrets
+        .get_secret("proxy:socks5")
+        .expect("read the password after the identity-only change")
+        .expect("a password must still be present");
+    assert_eq!(
+        stored.as_str(),
+        PASSWORD,
+        "the password must survive an identity-only update_settings call unchanged"
+    );
 }
 
 #[test]
@@ -548,6 +998,68 @@ fn clear_on_the_plugin_proxy_map_resets_it_to_empty() {
     assert!(cleared.network.plugin_proxy_enabled.is_empty());
 }
 
+/// The "fold 2" fix: a patch that changes *only* the per-plugin proxy
+/// map (no SOCKS5 identity field) must still reach the live
+/// `AsyncHttpClient` immediately, the same way
+/// `update_settings_applies_live_proxy_routing_to_the_shared_http_client`
+/// already proves for an identity-touching change. Before this fix,
+/// `apply_live_proxy_routing` only ran inside the identity-touching
+/// branch, so a plugin-proxy-map-only patch persisted correctly (see
+/// `clear_on_the_plugin_proxy_map_resets_it_to_empty`) but left the live
+/// client routing stale until the next identity-touching save or a
+/// restart.
+#[test]
+fn update_settings_applies_a_plugin_proxy_map_only_change_to_the_shared_http_client() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let http_client = legacy.core_services.async_http_client.clone();
+
+    // Enable SOCKS5 first (an identity-touching call) so the default
+    // per-plugin routing map is non-empty.
+    let enable_patch = SettingsPatch {
+        expected_revision: 0,
+        archive: None,
+        network: Some(NetworkSettingsPatch {
+            socks5_enabled: PatchValue::Set(true),
+            socks5_address: PatchValue::Set("127.0.0.1:1080".to_string()),
+            ..keep_network_patch()
+        }),
+        security: None,
+    };
+    let after_enable = runtime
+        .block_on(app.update_settings(enable_patch))
+        .expect("enabling socks5 must succeed");
+    assert!(
+        http_client.should_use_proxy_for_plugin("dlsite"),
+        "dlsite is proxied by default once socks5 is enabled"
+    );
+
+    // A plugin-proxy-map-ONLY patch -- no SOCKS5 identity field
+    // anywhere in this patch.
+    let mut map = std::collections::BTreeMap::new();
+    map.insert("dlsite".to_string(), false);
+    let map_only_patch = SettingsPatch {
+        expected_revision: after_enable.revision,
+        archive: None,
+        network: Some(NetworkSettingsPatch {
+            plugin_proxy_enabled: PatchValue::Set(map),
+            ..keep_network_patch()
+        }),
+        security: None,
+    };
+    runtime
+        .block_on(app.update_settings(map_only_patch))
+        .expect("a plugin-proxy-map-only update must succeed");
+
+    assert!(
+        !http_client.should_use_proxy_for_plugin("dlsite"),
+        "a plugin-proxy-map-only update_settings call must reach the live AsyncHttpClient \
+         immediately, the same way an identity-touching call already did"
+    );
+}
+
 // ============================================================================
 // Secrets: SOCKS5 password, gameta API key -- set/clear and redaction.
 // ============================================================================
@@ -583,6 +1095,91 @@ fn socks5_password_set_and_clear_are_reflected_and_never_leak() {
         .block_on(app.settings())
         .expect("settings must succeed");
     assert!(!cleared.network.socks5_password_configured);
+}
+
+/// The password is never observable from the client's own API, so this
+/// proves the fix through the closest real observable: a fake SOCKS5
+/// proxy that captures the actual credential bytes a live request
+/// authenticates with. Before the I3 fix, `set_socks5_password` wrote
+/// the new secret to storage but never re-applied live routing, so the
+/// shared `AsyncHttpClient` kept using whatever password was live at the
+/// last `update_settings` call until the next identity-touching save or
+/// a restart -- this drives an actual proxied request immediately after
+/// `set_socks5_password` alone (no intervening `update_settings` call)
+/// and asserts the sentinel saw the *new* password, not the old one.
+#[test]
+fn set_socks5_password_re_applies_live_routing_with_the_new_credential_immediately() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    let proxy = TcpListener::bind("127.0.0.1:0").expect("bind sentinel proxy");
+    let proxy_address = proxy.local_addr().expect("read sentinel address");
+    proxy
+        .set_nonblocking(true)
+        .expect("make sentinel nonblocking");
+
+    let captured: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
+    let captured_on_thread = captured.clone();
+    let request_finished = Arc::new(AtomicBool::new(false));
+    let finished_on_thread = request_finished.clone();
+    let sentinel = std::thread::spawn(move || {
+        capture_socks5_credentials(proxy, finished_on_thread, captured_on_thread);
+    });
+
+    // Enable SOCKS5 (identity fields only) with an initial password.
+    let current = runtime
+        .block_on(app.settings())
+        .expect("settings must succeed");
+    runtime
+        .block_on(app.update_settings(SettingsPatch {
+            expected_revision: current.revision,
+            archive: None,
+            network: Some(NetworkSettingsPatch {
+                socks5_enabled: PatchValue::Set(true),
+                socks5_address: PatchValue::Set(proxy_address.to_string()),
+                socks5_username: PatchValue::Set("sentinel-user".to_string()),
+                ..keep_network_patch()
+            }),
+            security: None,
+        }))
+        .expect("enabling socks5 must succeed");
+    runtime
+        .block_on(app.set_socks5_password(Some(SecretInput::new("old-password".to_string()))))
+        .expect("setting the initial password must succeed");
+
+    // The call under test: change *only* the password, with no
+    // intervening `update_settings` call.
+    const NEW_PASSWORD: &str = "sentinel-new-password-6d21";
+    runtime
+        .block_on(app.set_socks5_password(Some(SecretInput::new(NEW_PASSWORD.to_string()))))
+        .expect("setting the new password must succeed");
+
+    // Drive an actual request through the shared client's *current*
+    // live routing. This errors out (the sentinel never answers the
+    // CONNECT step that follows the auth handshake it captures) --
+    // that's expected and irrelevant here; only the captured credential
+    // matters.
+    let legacy = app.take_legacy_composition().expect("legacy composition");
+    let _ = legacy
+        .core_services
+        .async_http_client
+        .blocking_get(&format!("http://{proxy_address}/whatever"), true);
+
+    request_finished.store(true, Ordering::SeqCst);
+    sentinel.join().expect("sentinel thread panicked");
+
+    let (username, password) = captured
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("the sentinel must have observed a SOCKS5 auth handshake");
+    assert_eq!(username, "sentinel-user");
+    assert_eq!(
+        password, NEW_PASSWORD,
+        "set_socks5_password must re-apply live routing with the NEW password immediately, \
+         not just persist it for the next identity-touching update_settings call or a restart"
+    );
 }
 
 #[test]
@@ -930,6 +1527,104 @@ fn rekey_vault_re_encrypts_and_pass_rules_survive() {
         .expect("password_rules must succeed");
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].name, "before rekey");
+}
+
+/// Reproduces production's actual shape, not an artificial stress test:
+/// `crates/ui`'s `AppState.dbs` is a long-lived clone of the same
+/// `Arc<Mutex<redb::Database>>` the facade's own live vault state wraps
+/// (obtained once via `take_legacy_composition` at startup, and again
+/// after every facade-driven settings mutation via `refresh_settings_
+/// from_facade`) -- it is never dropped just because the facade is about
+/// to move or rekey the vault. Holding `_legacy` here across the call is
+/// exactly that shape. `move_vault`/`rekey_vault` must succeed regardless
+/// of what any earlier `take_legacy_composition` caller is still holding
+/// -- the facade, not its callers, is responsible for coordinating
+/// around its own vault handle's lifecycle.
+#[test]
+fn move_vault_succeeds_even_with_an_outstanding_legacy_composition_held() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let _legacy = app.take_legacy_composition().expect("legacy composition");
+
+    let destination = temp.path().join("relocated").join("pass.redb");
+    runtime
+        .block_on(app.move_vault(destination.clone()))
+        .expect(
+            "move_vault must succeed even with an outstanding legacy composition held -- this is \
+         production's actual shape (crates/ui's AppState.dbs), not a contrived edge case",
+        );
+
+    assert!(
+        destination.exists(),
+        "the vault file must exist at the new location"
+    );
+}
+
+#[test]
+fn rekey_vault_succeeds_even_with_an_outstanding_legacy_composition_held() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+    let _legacy = app.take_legacy_composition().expect("legacy composition");
+
+    let new_key_path = temp.path().join("new_master.key");
+    arclain_core::SecretsKey::generate()
+        .save_to_file(&new_key_path)
+        .expect("write the new key file");
+
+    runtime.block_on(app.rekey_vault(new_key_path)).expect(
+        "rekey_vault must succeed even with an outstanding legacy composition held -- this is \
+         production's actual shape (crates/ui's AppState.dbs), not a contrived edge case",
+    );
+}
+
+/// The pre-facade single-owner `AppState::move_vault` made its one live
+/// copy go dark the instant a move started (`self.dbs.take()`); with
+/// multiple clones now possible, both the facade's own state *and* any
+/// externally-held clone taken *before* the move must go dark together,
+/// not just the facade's own. A stale external clone silently succeeding
+/// with pre-move data (or hanging) would be a correctness regression
+/// this test locks in against.
+#[test]
+fn move_vault_closes_every_outstanding_clone_of_the_old_secrets_handle() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_app(&temp);
+
+    let legacy_before = app.take_legacy_composition().expect("legacy composition");
+    let old_secrets = legacy_before
+        .dbs
+        .expect("legacy composition must have a vault before the move")
+        .secrets;
+    // Sanity: the old handle is usable before the move.
+    old_secrets
+        .get_secret("proxy:socks5")
+        .expect("old handle usable before the move");
+
+    let destination = temp.path().join("relocated").join("pass.redb");
+    runtime
+        .block_on(app.move_vault(destination))
+        .expect("move_vault must succeed");
+
+    // The clone taken *before* the move must now fail cleanly -- not
+    // silently return stale data, and not hang or corrupt anything.
+    let result = old_secrets.get_secret("proxy:socks5");
+    assert!(
+        result.is_err(),
+        "a SecretsDb clone taken before the move must go dark once the vault has moved, \
+         matching the pre-facade single-owner behavior"
+    );
+
+    // A *fresh* legacy composition (taken after the move) must be fully
+    // usable against the new vault.
+    let legacy_after = app.take_legacy_composition().expect("legacy composition");
+    legacy_after
+        .dbs
+        .expect("legacy composition must have a vault after the move")
+        .secrets
+        .get_secret("proxy:socks5")
+        .expect("a fresh clone taken after the move must be usable");
 }
 
 // ============================================================================

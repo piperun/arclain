@@ -1154,9 +1154,35 @@ mod tests {
         );
     }
 
+    /// `SaveNetwork` now submits two separate facade calls: `update_settings`
+    /// for the identity fields (enabled/address/username), then
+    /// `set_socks5_password` for the password -- both through
+    /// `NetworkProxyPersistenceService::save`'s journaled path, but as two
+    /// *separate* calls, not the pre-facade handler's one-shot combined
+    /// save. A `user_config`-row failure trips `update_settings`'s own
+    /// identity step *first* (it always runs before the password step),
+    /// so this proves `SaveNetwork`'s atomicity from the UI's point of
+    /// view: when the identity step fails, `set_socks5_password` is never
+    /// even attempted (the handler returns early -- see `settings_
+    /// controller.rs`'s own `SaveNetwork` arm), so neither the identity
+    /// fields nor the password change apply, and the new password never
+    /// reaches the toaster or logs.
+    ///
+    /// This does not exercise `set_socks5_password`'s *own* journaled
+    /// rollback in isolation -- for a password-only change, the identity
+    /// snapshot `NetworkProxyPersistenceService::save` tracks is
+    /// unchanged (`previous == candidate`), which its own ambiguity
+    /// resolution always treats as committed regardless of the
+    /// underlying config-row write's outcome, so there is no config-row
+    /// failure mode to roll a password-only change back from. That
+    /// mechanism (a stale/corrupt pending marker failing the call
+    /// cleanly rather than being silently ignored) is covered precisely
+    /// at the layer that owns it:
+    /// `arclain_app::tests::settings_facade::
+    /// set_socks5_password_fails_cleanly_instead_of_ignoring_a_corrupt_pending_marker`.
     #[traced_test]
     #[test]
-    fn config_persistence_failure_rolls_back_secret_and_does_not_apply() {
+    fn config_persistence_failure_during_the_identity_step_blocks_the_whole_save() {
         const NEW_PASSWORD: &str = "new-proxy-password-4b65";
         let fixture = ProxySaveFixture::new();
         {

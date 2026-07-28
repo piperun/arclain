@@ -442,6 +442,17 @@ pub fn restore_tabs_on_launch(shared_state: &SharedState) {
 /// disagrees with what `tabs.json` is about to restore. Never blocks or
 /// alters the restore itself -- see `restore_tabs_on_launch`'s own doc
 /// comment for why `tabs.json` stays the actual driver.
+///
+/// Compares both lists as multisets (sorted, not the original order):
+/// `tabs.json`'s tab order (which the user can change by dragging tabs)
+/// has no reason to match whatever order `session.json`'s entries
+/// happened to be written in, so comparing the raw `Vec`s directly
+/// would spuriously warn about a "disagreement" whenever only the order
+/// differed, even though the actual *set* of open archives -- the only
+/// thing this cross-check cares about -- agrees. Sorting rather than
+/// deduplicating preserves correct behavior if the same path is open in
+/// two different tabs at once: `[A, A, B]` and `[A, B]` must still
+/// disagree.
 fn check_session_restore_list_matches(
     config_dir: &std::path::Path,
     tab_ids_to_load: &[(crate::core::tabs::TabId, std::path::PathBuf)],
@@ -449,11 +460,13 @@ fn check_session_restore_list_matches(
     let session_path = config_dir.join("session.json");
     match arclain_app::settings::load_session_restore_list(&session_path) {
         Ok(entries) => {
-            let expected: Vec<_> = tab_ids_to_load
+            let mut expected: Vec<_> = tab_ids_to_load
                 .iter()
                 .map(|(_, path)| path.clone())
                 .collect();
-            let actual: Vec<_> = entries.into_iter().map(|entry| entry.source_path).collect();
+            let mut actual: Vec<_> = entries.into_iter().map(|entry| entry.source_path).collect();
+            expected.sort();
+            actual.sort();
             if actual != expected {
                 tracing::warn!(
                     "[tabs] session.json ({} entries) disagrees with tabs.json ({} entries); \
@@ -476,11 +489,17 @@ fn check_session_restore_list_matches(
 /// Called from `ArclainApp::on_exit`. Failures are logged as warnings
 /// — a quit-time save failure should not block the shutdown.
 ///
-/// Also writes `session.json`: the same open-archive list, expressed as
+/// Also writes `session.json` -- but only when `restore_tabs_on_launch`
+/// is enabled: the same open-archive list, expressed as
 /// `arclain_app::settings::SessionArchiveEntry` (source paths only, no
 /// tab id/pinned/order — see that type's own doc comment). `tabs.json`
-/// keeps the full visual arrangement; this is the one non-visual slice
-/// of it in an application-owned, frontend-neutral shape.
+/// keeps the full visual arrangement (a GUI-only concern, always
+/// saved); `session.json` is the one non-visual, application-owned
+/// slice of it, and privacy demands it never records which archives a
+/// user had open once they have told the application not to restore
+/// them -- so a disabled toggle also removes any `session.json` left
+/// over from an *earlier* session when the toggle was still enabled,
+/// not just skips writing a new one.
 pub fn save_tabs_on_exit(signals: &AppSignals) {
     let config_dir = match arclain_app_fs::AppDirectories::init("arclain", None) {
         Ok(dirs) => dirs.config_dir,
@@ -489,13 +508,32 @@ pub fn save_tabs_on_exit(signals: &AppSignals) {
             return;
         }
     };
+    save_tabs_on_exit_to(&config_dir, signals);
+}
 
+/// The actual save logic, taking `config_dir` directly rather than
+/// resolving it via `AppDirectories::init` itself -- split out purely
+/// so tests can point it at a temp directory instead of this process's
+/// real OS config dir, the same way `check_session_restore_list_matches`
+/// already takes `config_dir` as a parameter rather than resolving it.
+fn save_tabs_on_exit_to(config_dir: &std::path::Path, signals: &AppSignals) {
     let col = signals.tabs.get();
     let tabs_path = config_dir.join("tabs.json");
     if let Err(e) = crate::core::tabs::save_collection(&col, &tabs_path) {
         tracing::warn!("[tabs] failed to save {}: {}", tabs_path.display(), e);
     } else {
         tracing::info!("[tabs] session saved to {}", tabs_path.display());
+    }
+
+    let session_path = config_dir.join("session.json");
+    if !signals.user_config.get().restore_tabs_on_launch {
+        if let Err(error) = arclain_app::settings::clear_session_restore_list(&session_path) {
+            tracing::warn!(
+                "[tabs] failed to remove {}: {error:?}",
+                session_path.display()
+            );
+        }
+        return;
     }
 
     let session_entries: Vec<arclain_app::settings::SessionArchiveEntry> = col
@@ -507,7 +545,6 @@ pub fn save_tabs_on_exit(signals: &AppSignals) {
                 .map(|source_path| arclain_app::settings::SessionArchiveEntry { source_path })
         })
         .collect();
-    let session_path = config_dir.join("session.json");
     if let Err(error) =
         arclain_app::settings::save_session_restore_list(&session_path, &session_entries)
     {
@@ -604,5 +641,136 @@ pub fn update_window_title(
     if last_title.as_deref() != Some(&sanitized) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(sanitized.clone()));
         *last_title = Some(sanitized);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::tabs::{TabId, TabsCollection};
+    use arclain_app::settings::{save_session_restore_list, SessionArchiveEntry};
+    use std::path::PathBuf;
+    use tracing_test::traced_test;
+
+    fn signals_with_restore(restore_tabs_on_launch: bool) -> AppSignals {
+        let signals = AppSignals::new();
+        signals.user_config.set(arclain_core::UserConfig {
+            restore_tabs_on_launch,
+            ..Default::default()
+        });
+        signals
+    }
+
+    /// The "fold 3" order-insensitivity fix: `tabs.json`'s tab order
+    /// (freely changed by dragging tabs) has no reason to match
+    /// whatever order `session.json`'s entries happen to be written in
+    /// -- only the *set* of open archives matters to this cross-check.
+    #[traced_test]
+    #[test]
+    fn check_session_restore_list_matches_ignores_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = PathBuf::from("/tmp/a.zip");
+        let b = PathBuf::from("/tmp/b.zip");
+        save_session_restore_list(
+            &dir.path().join("session.json"),
+            &[
+                SessionArchiveEntry {
+                    source_path: b.clone(),
+                },
+                SessionArchiveEntry {
+                    source_path: a.clone(),
+                },
+            ],
+        )
+        .expect("write session.json");
+
+        // tabs.json order is the reverse of session.json's.
+        let tab_ids_to_load = vec![(TabId(1), a), (TabId(2), b)];
+        check_session_restore_list_matches(dir.path(), &tab_ids_to_load);
+
+        assert!(
+            !logs_contain("disagrees"),
+            "the same set of archives in a different order must not warn"
+        );
+    }
+
+    /// Companion to the above: a *genuine* mismatch (not just a
+    /// reorder) must still be caught -- proving the sort didn't turn
+    /// this cross-check into a silent no-op.
+    #[traced_test]
+    #[test]
+    fn check_session_restore_list_matches_detects_a_genuine_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        save_session_restore_list(
+            &dir.path().join("session.json"),
+            &[SessionArchiveEntry {
+                source_path: PathBuf::from("/tmp/only-in-session.zip"),
+            }],
+        )
+        .expect("write session.json");
+
+        let tab_ids_to_load = vec![(TabId(1), PathBuf::from("/tmp/only-in-tabs.zip"))];
+        check_session_restore_list_matches(dir.path(), &tab_ids_to_load);
+
+        assert!(
+            logs_contain("disagrees"),
+            "a genuinely different set of archives must still warn"
+        );
+    }
+
+    /// The "fold 3" privacy fix: disabling `restore_tabs_on_launch`
+    /// must remove any `session.json` left over from an earlier
+    /// session (not just skip writing a new one) -- `tabs.json` (the
+    /// GUI-only visual arrangement) is unaffected.
+    #[test]
+    fn save_tabs_on_exit_to_clears_a_stale_session_json_when_restore_is_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_path = dir.path().join("session.json");
+        save_session_restore_list(
+            &session_path,
+            &[SessionArchiveEntry {
+                source_path: PathBuf::from("/tmp/stale.zip"),
+            }],
+        )
+        .expect("seed a stale session.json");
+        assert!(session_path.exists());
+
+        let signals = signals_with_restore(false);
+        let mut col = TabsCollection::new();
+        col.open(Some(PathBuf::from("/tmp/currently-open.zip")));
+        signals.tabs.set(col);
+
+        save_tabs_on_exit_to(dir.path(), &signals);
+
+        assert!(
+            dir.path().join("tabs.json").exists(),
+            "tabs.json (the GUI-only visual arrangement) must always be saved"
+        );
+        assert!(
+            !session_path.exists(),
+            "session.json must be removed once restore_tabs_on_launch is disabled, not just \
+             left unwritten-to"
+        );
+    }
+
+    #[test]
+    fn save_tabs_on_exit_to_writes_session_json_when_restore_is_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let signals = signals_with_restore(true);
+        let mut col = TabsCollection::new();
+        col.open(Some(PathBuf::from("/tmp/currently-open.zip")));
+        signals.tabs.set(col);
+
+        save_tabs_on_exit_to(dir.path(), &signals);
+
+        let entries =
+            arclain_app::settings::load_session_restore_list(&dir.path().join("session.json"))
+                .expect("load session.json");
+        assert_eq!(
+            entries,
+            vec![SessionArchiveEntry {
+                source_path: PathBuf::from("/tmp/currently-open.zip"),
+            }]
+        );
     }
 }

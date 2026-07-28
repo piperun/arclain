@@ -216,6 +216,17 @@ impl SecretsDb {
         Ok(())
     }
 
+    /// Closes the underlying redb database for *every* clone of this
+    /// `SecretsDb`, releasing its OS-level file lock immediately. See
+    /// [`ReDb::close`](crate::redb_wrapper::ReDb::close)'s own doc
+    /// comment for the full rationale -- this is a thin delegation to
+    /// it, needed before a vault move/rekey physically copies, opens, or
+    /// removes the backing file out from under whichever clone last had
+    /// it open.
+    pub fn close(&self) {
+        self.db.close();
+    }
+
     /// Get a generic secret (e.g., SOCKS5 password)
     pub fn get_secret(&self, key: &str) -> Result<Option<Zeroizing<String>>> {
         self.db.with_connection(|conn| {
