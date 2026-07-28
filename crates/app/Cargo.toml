@@ -10,5 +10,5 @@ tokio = { workspace = true, features = ["sync"] }
 zeroize.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "macros", "sync"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
 trybuild = "1.0.118"

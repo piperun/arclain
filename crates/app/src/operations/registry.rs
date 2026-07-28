@@ -29,13 +29,18 @@ use crate::event::{OperationEvent, OperationKind, OperationSnapshot, OperationSt
 use crate::ids::{ChallengeId, OperationId};
 
 /// How many events the broadcast channel buffers before a subscriber that
-/// has not called `recv` yet starts lagging. Small under `cfg(test)` so
-/// the lag behavior is reachable in a handful of sends instead of
-/// hundreds.
+/// has not called `recv` yet starts lagging. `tokio::sync::broadcast`
+/// rounds the requested capacity up to the next power of two internally,
+/// so this is deliberately already a power of two to make that actual
+/// capacity exact rather than a surprise. Large enough under `cfg(test)`
+/// that the concurrent-ordering test's several hundred transitions on one
+/// operation all fit without lagging (lag is exercised deliberately, and
+/// separately, by looping past this bound in
+/// `a_lagging_subscriber_receives_tokios_explicit_lag_error`).
 #[cfg(not(test))]
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 #[cfg(test)]
-const EVENT_CHANNEL_CAPACITY: usize = 2;
+const EVENT_CHANNEL_CAPACITY: usize = 1024;
 
 /// How many *terminal* operations (`Completed`, `Cancelled`, `Failed`) the
 /// registry keeps once they are no longer active before evicting the
@@ -140,8 +145,17 @@ impl OperationRegistry {
             cancel: Arc::clone(&cancel),
             pending_challenge: None,
         };
-        self.records.write().await.insert(operation_id, record);
-        self.publish(operation_id, kind, 1, OperationState::Accepted);
+        {
+            let mut records = self.records.write().await;
+            records.insert(operation_id, record);
+            // See `transition` for why publishing happens before the write
+            // guard is released. Not strictly load-bearing here (a freshly
+            // minted `operation_id` cannot yet race with anything else --
+            // nobody has it until this call returns), but kept consistent
+            // so `begin` does not silently diverge from the rule the rest
+            // of the registry follows.
+            self.publish(operation_id, kind, 1, OperationState::Accepted);
+        }
         (operation_id, cancel)
     }
 
@@ -164,28 +178,42 @@ impl OperationRegistry {
     /// entering any other state clears it. A no-op success once the
     /// operation has already reached a terminal state: additional
     /// transitions never overwrite recorded history.
+    ///
+    /// Mutating the record and publishing its event happen under the same
+    /// write-lock guard, deliberately. `broadcast::Sender::send` never
+    /// awaits, so holding the lock across it costs nothing, and it is what
+    /// actually guarantees the ordering `OperationEvent` documents: without
+    /// it, two concurrent `transition` calls on the same `operation_id`
+    /// could each bump `last_sequence` and release the lock before either
+    /// one published, letting whichever thread reached `send` first
+    /// deliver its (higher- or lower-numbered) event first -- a subscriber
+    /// could then observe sequence 4 before sequence 3 for one operation.
+    /// Holding the lock across the send serializes "bump the sequence" and
+    /// "publish the resulting event" into one atomic step per operation, so
+    /// the order events are sent in always matches the order their
+    /// sequence numbers were assigned in.
     pub(crate) async fn transition(
         &self,
         operation_id: OperationId,
         state: OperationState,
     ) -> Result<(), ApplicationError> {
-        let (kind, sequence, published_state) = {
-            let mut records = self.records.write().await;
-            let Some(record) = records.get_mut(&operation_id) else {
-                return Err(unknown_operation_error(operation_id));
-            };
-            if is_terminal(&record.state) {
-                return Ok(());
-            }
-            record.pending_challenge = match &state {
-                OperationState::Challenge { challenge } => Some(challenge.id()),
-                _ => None,
-            };
-            record.last_sequence += 1;
-            record.state = state.clone();
-            (record.kind.clone(), record.last_sequence, state)
+        let mut records = self.records.write().await;
+        let Some(record) = records.get_mut(&operation_id) else {
+            return Err(unknown_operation_error(operation_id));
         };
-        self.publish(operation_id, kind, sequence, published_state);
+        if is_terminal(&record.state) {
+            return Ok(());
+        }
+        record.pending_challenge = match &state {
+            OperationState::Challenge { challenge } => Some(challenge.id()),
+            _ => None,
+        };
+        record.last_sequence += 1;
+        record.state = state.clone();
+        let kind = record.kind.clone();
+        let sequence = record.last_sequence;
+        self.publish(operation_id, kind, sequence, state);
+        drop(records);
         self.evict_excess_history().await;
         Ok(())
     }
@@ -292,7 +320,7 @@ impl OperationRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::challenge::Challenge;
+    use crate::challenge::{Challenge, ChallengeResponse, SecretInput};
     use crate::event::OperationResult;
 
     #[tokio::test]
@@ -484,6 +512,97 @@ mod tests {
         assert_eq!(err.kind, ApplicationErrorKind::Conflict);
     }
 
+    /// Finding: `serializing_every_operation_state_cannot_contain_the_supplied_password`
+    /// in `tests/operation_registry.rs` defined a marker password but never
+    /// routed it anywhere, so `!json.contains(MARKER)` held unconditionally
+    /// -- the test could not fail regardless of the registry's behavior.
+    /// This is the real replacement: it drives a full flow where a
+    /// `Password` challenge is actually answered with a `ChallengeResponse`
+    /// carrying the marker as its secret, captures every event published
+    /// across the whole flow (subscribing before anything starts), every
+    /// snapshot reachable afterward, and the response's own `Debug`
+    /// rendering, and asserts the marker appears in none of it. A future
+    /// change that echoed the response's secret into a `Challenge` field,
+    /// an `OperationRecord`/`OperationSnapshot`, or a diagnostic would make
+    /// this test fail; the previous version could not have caught that.
+    #[tokio::test]
+    async fn resolving_a_password_challenge_never_leaks_the_secret_into_events_or_snapshots() {
+        const MARKER_PASSWORD: &str = "correct-horse-battery-staple";
+
+        let registry = OperationRegistry::new();
+        let mut subscriber = registry.subscribe(); // subscribed before anything starts
+
+        let (id, _cancel) = registry.begin(OperationKind::OpenArchive).await;
+        let challenge_id = ChallengeId::from_raw(1);
+        let challenge = Challenge::Password {
+            id: challenge_id,
+            archive_name: "archive.zip".to_string(),
+            attempt: 1,
+        };
+        registry
+            .transition(id, OperationState::Challenge { challenge })
+            .await
+            .unwrap();
+
+        // The caller's response carries the real secret. `resolve_challenge`
+        // only checks the response's id against the pending challenge --
+        // it never threads the response's payload into a `Challenge`, an
+        // `OperationEvent`, or an `OperationSnapshot`.
+        let response = ChallengeResponse::Password {
+            id: challenge_id,
+            value: SecretInput::new(MARKER_PASSWORD.to_string()),
+        };
+        let response_debug = format!("{response:?}");
+        registry.resolve_challenge(id, response.id()).await.unwrap();
+
+        registry.transition(id, OperationState::Started).await.unwrap();
+        registry
+            .transition(
+                id,
+                OperationState::Completed {
+                    result: OperationResult::None,
+                },
+            )
+            .await
+            .unwrap();
+
+        // Every event actually published across the whole flow.
+        let mut serialized_events = Vec::new();
+        loop {
+            match subscriber.try_recv() {
+                Ok(event) => serialized_events.push(serde_json::to_string(&event).unwrap()),
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(
+                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
+                ) => break,
+            }
+        }
+        assert_eq!(serialized_events.len(), 4); // Accepted, Challenge, Started, Completed
+
+        // Every snapshot reachable after the flow completes.
+        let serialized_snapshot = serde_json::to_string(&registry.operation(id).await.unwrap()).unwrap();
+        let serialized_recent = serde_json::to_string(&registry.recent(10).await).unwrap();
+
+        for serialized_event in &serialized_events {
+            assert!(
+                !serialized_event.contains(MARKER_PASSWORD),
+                "supplied password leaked into a published event: {serialized_event}"
+            );
+        }
+        assert!(
+            !serialized_snapshot.contains(MARKER_PASSWORD),
+            "supplied password leaked into an operation() snapshot: {serialized_snapshot}"
+        );
+        assert!(
+            !serialized_recent.contains(MARKER_PASSWORD),
+            "supplied password leaked into a recent() snapshot: {serialized_recent}"
+        );
+        assert!(
+            !response_debug.contains(MARKER_PASSWORD),
+            "supplied password leaked into ChallengeResponse's Debug output: {response_debug}"
+        );
+    }
+
     #[tokio::test]
     async fn operation_lookup_before_during_and_after_the_none_terminal_result() {
         let registry = OperationRegistry::new();
@@ -604,23 +723,28 @@ mod tests {
 
     #[tokio::test]
     async fn a_lagging_subscriber_receives_tokios_explicit_lag_error() {
-        // EVENT_CHANNEL_CAPACITY == 2 under cfg(test).
         let registry = OperationRegistry::new();
         let mut subscriber = registry.subscribe();
 
         let (id, _cancel) = registry.begin(OperationKind::Extract).await; // sequence 1
-        registry.transition(id, OperationState::Started).await.unwrap(); // sequence 2
-        registry
-            .transition(
-                id,
-                OperationState::Progress {
-                    completed_units: 1,
-                    total_units: None,
-                    message: None,
-                },
-            )
-            .await
-            .unwrap(); // sequence 3, overflows capacity 2 before the subscriber has read anything
+
+        // Publish enough events, without the subscriber ever reading, to
+        // overflow EVENT_CHANNEL_CAPACITY (600 under cfg(test)) and force a
+        // lag.
+        let overflowing_transitions = EVENT_CHANNEL_CAPACITY + 10;
+        for completed_units in 0..overflowing_transitions {
+            registry
+                .transition(
+                    id,
+                    OperationState::Progress {
+                        completed_units: completed_units as u64,
+                        total_units: None,
+                        message: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
 
         let result = subscriber.recv().await;
         assert!(matches!(result, Err(broadcast::error::RecvError::Lagged(_))));
@@ -629,11 +753,94 @@ mod tests {
         // never touched by channel capacity -- it still reflects the true
         // current state.
         let snapshot = registry.operation(id).await.unwrap();
-        assert_eq!(snapshot.last_sequence, 3);
-        assert_eq!(snapshot.state, OperationState::Progress {
-            completed_units: 1,
-            total_units: None,
-            message: None,
-        });
+        let expected_last_sequence = 1 + overflowing_transitions as u64;
+        assert_eq!(snapshot.last_sequence, expected_last_sequence);
+        assert_eq!(
+            snapshot.state,
+            OperationState::Progress {
+                completed_units: (overflowing_transitions - 1) as u64,
+                total_units: None,
+                message: None,
+            }
+        );
+    }
+
+    /// Finding: concurrent `transition` calls on the *same* `operation_id`
+    /// could previously deliver their broadcasts out of order relative to
+    /// their assigned sequence numbers, because the write-lock guard was
+    /// dropped before `publish` ran -- two transitions could each finish
+    /// mutating the record (and releasing the lock) before either one
+    /// reached `self.events.send`, so whichever thread's `send` happened to
+    /// run first "won", independent of which one actually incremented
+    /// `last_sequence` first. A subscriber could then observe, for example,
+    /// sequence 4 before sequence 3 for one operation, contradicting the
+    /// ordering `OperationEvent` documents.
+    ///
+    /// This test spawns many concurrent tasks hammering `transition` on one
+    /// `operation_id` from a real multi-thread runtime and asserts every
+    /// sequence number the subscriber observes for that operation strictly
+    /// increases. It is deterministic-by-construction post-fix (the write
+    /// lock now serializes "mutate" and "publish" into one atomic step, so
+    /// there is no window left for reordering), not merely probable: see
+    /// the fix report for confirmation this test reliably FAILS against the
+    /// pre-fix code (lock released before `publish`) and reliably PASSES
+    /// against the fixed code, across repeated runs.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_transitions_on_one_operation_never_reorder_sequences_for_subscribers() {
+        const CONCURRENT_TASKS: usize = 8;
+        const TRANSITIONS_PER_TASK: usize = 60;
+
+        let registry = Arc::new(OperationRegistry::new());
+        let mut subscriber = registry.subscribe();
+        let (id, _cancel) = registry.begin(OperationKind::Extract).await;
+
+        let mut handles = Vec::with_capacity(CONCURRENT_TASKS);
+        for task_index in 0..CONCURRENT_TASKS {
+            let registry = Arc::clone(&registry);
+            handles.push(tokio::spawn(async move {
+                for step in 0..TRANSITIONS_PER_TASK {
+                    registry
+                        .transition(
+                            id,
+                            OperationState::Progress {
+                                completed_units: (task_index * TRANSITIONS_PER_TASK + step) as u64,
+                                total_units: None,
+                                message: None,
+                            },
+                        )
+                        .await
+                        .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let mut observed_sequences = Vec::new();
+        loop {
+            match subscriber.try_recv() {
+                Ok(event) => {
+                    assert_eq!(event.operation_id, id);
+                    observed_sequences.push(event.sequence);
+                }
+                Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                Err(
+                    broadcast::error::TryRecvError::Empty | broadcast::error::TryRecvError::Closed,
+                ) => break,
+            }
+        }
+
+        // EVENT_CHANNEL_CAPACITY (600) comfortably covers the 1 + 8*60 = 481
+        // events this test publishes, so no lag is expected here at all --
+        // if this fails, the capacity assumption above needs revisiting.
+        assert_eq!(observed_sequences.len(), 1 + CONCURRENT_TASKS * TRANSITIONS_PER_TASK);
+
+        for pair in observed_sequences.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "sequences observed out of order for one operation_id: {observed_sequences:?}"
+            );
+        }
     }
 }

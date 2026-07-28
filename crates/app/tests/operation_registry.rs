@@ -13,8 +13,19 @@
 //! This file instead exercises everything Task 3 adds that IS public: the
 //! `Challenge`/`ChallengeResponse`/`OperationKind`/`OperationState`/
 //! `OperationEvent`/`OperationSnapshot`/`OperationResult` read models a
-//! frontend or bridge actually receives, plus the regression test proving
-//! a serialized `OperationEvent` cannot carry a supplied password.
+//! frontend or bridge actually receives.
+//!
+//! The "a supplied password cannot leak into the event/snapshot stream"
+//! regression test also lives in `registry.rs`, not here, for the same
+//! reason: proving that end-to-end requires actually driving a
+//! `resolve_challenge` call with a real `ChallengeResponse::Password`, which
+//! needs the `pub(crate)` registry. A version of that test written against
+//! only the types reachable from this file could never fail regardless of
+//! the registry's behavior -- `Challenge` (the only thing that flows
+//! through `OperationEvent`) structurally never carries a secret, so
+//! serializing `every_operation_state()` and checking for a marker string
+//! would hold trivially no matter what the registry does with a response's
+//! actual secret.
 
 use arclain_app::challenge::Challenge;
 use arclain_app::error::{ApplicationError, ApplicationErrorKind, Recoverability};
@@ -91,35 +102,6 @@ fn constructs_every_operation_state_and_wraps_it_in_an_event() {
             state: state.clone(),
         };
         assert_eq!(event.state, state);
-    }
-}
-
-mod no_password_leak {
-    use super::*;
-
-    /// A stand-in for a real secret. If this literal ever shows up in any
-    /// serialized `OperationEvent`, something started threading a
-    /// supplied password into the event stream -- exactly what
-    /// `ChallengeResponse` staying non-`Serialize` (see
-    /// `challenge_response_tests` below) is meant to prevent structurally.
-    /// This test is the runtime backstop for that structural guarantee.
-    const MARKER_PASSWORD: &str = "correct-horse-battery-staple";
-
-    #[test]
-    fn serializing_every_operation_state_cannot_contain_the_supplied_password() {
-        for (index, state) in every_operation_state().into_iter().enumerate() {
-            let event = OperationEvent {
-                operation_id: OperationId::from_raw(1),
-                sequence: index as u64 + 1,
-                kind: OperationKind::Extract,
-                state,
-            };
-            let json = serde_json::to_string(&event).unwrap();
-            assert!(
-                !json.contains(MARKER_PASSWORD),
-                "serialized OperationEvent leaked the supplied password: {json}"
-            );
-        }
     }
 }
 
