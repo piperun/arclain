@@ -72,8 +72,8 @@ impl FileOpsService {
     /// `DeleteEntries` mutation through the application facade at the
     /// resolved listing's own revision. The bridge
     /// (`crate::core::operation_bridge`) refreshes `origin`'s
-    /// entries/browser_entries once the mutation's `SnapshotChanged`
-    /// event arrives -- this method itself never touches those signals.
+    /// entries/browser_entries once the operation reaches `Completed`
+    /// -- this method itself never touches those signals.
     ///
     /// Delete used to call `ArchiveBackend::delete_files` directly here,
     /// synchronously inside `spawn_blocking`, serialized per tab via

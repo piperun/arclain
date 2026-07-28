@@ -96,6 +96,16 @@ struct FakeBackend {
     /// follow-up reindex-driving re-list fails, without needing a
     /// separate "list has been called N times" counter.
     fail_next_list: Mutex<bool>,
+    /// Same rendezvous shape as `add_files_gate`, but for `list()`:
+    /// armed via `gate_next_list_call` (not a constructor, unlike
+    /// `with_add_files_gate`) so a test can open a session first --
+    /// consuming the `list()` call every open needs -- and only then arm
+    /// the gate on the *next* one, which is always the post-mutation
+    /// re-list. Lets a test prove a second mutation is genuinely queued
+    /// on `mutation_lock` while the first is still stuck inside the
+    /// relist that its own `mark_desynced()` call depends on, rather than
+    /// merely submitted after the first's relist already failed.
+    list_gate: Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
 }
 
 impl FakeBackend {
@@ -110,6 +120,7 @@ impl FakeBackend {
             fail_delete_files: Mutex::new(None),
             add_files_gate: Mutex::new(None),
             fail_next_list: Mutex::new(false),
+            list_gate: Mutex::new(None),
         }
     }
 
@@ -147,6 +158,19 @@ impl FakeBackend {
     /// be) to fail -- see `fail_next_list`'s own doc comment.
     fn fail_next_list_call(&self) {
         *self.fail_next_list.lock().unwrap() = true;
+    }
+
+    /// Arms a gate on the *next* `list()` call -- see `list_gate`'s own
+    /// doc comment. Combine with `fail_next_list_call` (armed either
+    /// before or after this) to gate a relist that then fails once
+    /// released, the exact "mutation succeeded, follow-up relist did
+    /// not" scenario, but now with a real, deterministically-proven
+    /// second mutation queued on the lock while the first is blocked.
+    fn gate_next_list_call(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
+        *self.list_gate.lock().unwrap() = Some((started_tx, proceed_rx));
+        (started_rx, proceed_tx)
     }
 
     fn add_files_call_count(&self) -> usize {
@@ -189,6 +213,15 @@ impl arclain_core::ArchiveBackend for FakeBackend {
         _path: &Path,
         _password: Option<&str>,
     ) -> anyhow::Result<arclain_core::ArchiveInfo> {
+        // Drain the gate under its own short-lived lock so the actual
+        // send/block never happens while still holding it -- mirrors
+        // `add_files`'s identical handling of `add_files_gate`.
+        let gate = self.list_gate.lock().unwrap().take();
+        if let Some((started_tx, proceed_rx)) = gate {
+            let _ = started_tx.send(());
+            let _ = proceed_rx.recv();
+        }
+
         {
             let mut should_fail = self.fail_next_list.lock().unwrap();
             if *should_fail {
@@ -1243,5 +1276,116 @@ fn a_relist_failure_after_a_successful_mutation_desyncs_the_session_and_blocks_e
             "a fresh session after close+reopen must not inherit the old session's desync"
         );
         assert_eq!(backend.add_files_call_count(), 2);
+    });
+}
+
+/// The concurrent counterpart to the sequential desync test above: proves
+/// `mark_desynced()` (in `relist_result`'s failure arm) genuinely runs
+/// before `_guard` releases `ArchiveSession::mutation_lock`, not merely
+/// before the *next mutation happens to be submitted*. A second mutation
+/// is started and driven to a genuine `Started`-and-blocked-on-the-lock
+/// state -- proven the same way the cancellation test above proves it --
+/// while the first is still stuck inside its gated, about-to-fail
+/// relist. Only once that is confirmed is the gate released. If
+/// `mutation_lock` were ever dropped before `mark_desynced()` records the
+/// desync (the exact bug this round fixes), the queued second mutation
+/// could win the race for the lock and observe `is_desynced() == false`
+/// and the not-yet-bumped revision, passing both gates against an index
+/// that is, by then, already provably stale.
+#[test]
+fn a_mutation_queued_behind_a_gated_relist_failure_never_observes_the_pre_desync_state() {
+    let runtime = foreign_runtime();
+    let temp = tempfile::tempdir().unwrap();
+    let backend = Arc::new(FakeBackend::new(vec![entry("a.txt", 1)]));
+    let app = bootstrap_app(&temp, backend.clone());
+    let archive_path = temp.path().join("archive.zip");
+    let first_new_file = temp.path().join("first.txt");
+    std::fs::write(&first_new_file, b"1").unwrap();
+    let second_new_file = temp.path().join("second.txt");
+    std::fs::write(&second_new_file, b"2").unwrap();
+
+    runtime.block_on(async {
+        let session_id = open_session(&app, &archive_path).await;
+
+        // Armed *after* `open_session` -- which already consumed its own
+        // `list()` call -- so this gate can only ever catch the first
+        // mutation's post-`add_files` relist, never the initial open.
+        let (list_started_rx, list_proceed_tx) = backend.gate_next_list_call();
+        backend.fail_next_list_call();
+
+        let first_op = app
+            .start_archive_mutation(add_files_request(session_id, 1, vec![first_new_file]))
+            .await
+            .unwrap();
+
+        // Deterministic rendezvous: `add_files` has already returned
+        // successfully and the operation is now genuinely blocked inside
+        // the relist `spawn_blocking` -- still holding `mutation_lock`,
+        // having not yet reached `relist_result`'s match, let alone
+        // `mark_desynced()` or the implicit end-of-function drop.
+        tokio::task::spawn_blocking(move || list_started_rx.recv().unwrap())
+            .await
+            .unwrap();
+
+        // Second mutation on the SAME session. `expected_revision: 1` is
+        // still the true current revision at this exact instant -- the
+        // first mutation succeeded at the backend but has not reindexed,
+        // bumped, or desynced anything yet.
+        let second_op = app
+            .start_archive_mutation(add_files_request(session_id, 1, vec![second_new_file]))
+            .await
+            .unwrap();
+
+        // Prove the second mutation is genuinely queued on the lock (not
+        // merely submitted) before the gate is ever released -- the same
+        // bounded poll the cancellation test above uses.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let snap = app.operation(second_op).await.unwrap();
+            if matches!(snap.state, OperationState::Started) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "second operation never reached Started while queued behind the lock"
+            );
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        // Release the gate: the first mutation's relist now runs -- and,
+        // per `fail_next_list_call`, fails. This is the exact instant a
+        // buggy ordering would drop `_guard` before `mark_desynced()`
+        // runs, handing the lock to the already-queued second mutation
+        // ahead of the desync being recorded.
+        list_proceed_tx.send(()).unwrap();
+
+        match wait_for_terminal(&app, first_op).await {
+            OperationState::Failed { error } => {
+                assert_eq!(error.kind, ApplicationErrorKind::Backend)
+            }
+            other => panic!(
+                "expected the gated relist failure to surface as Failed(Backend), got {other:?}"
+            ),
+        }
+
+        // The second mutation, unblocked only once the first actually
+        // released the lock, must observe the desync -- never a window
+        // where it is still unset -- and therefore never reach the
+        // backend at all.
+        match wait_for_terminal(&app, second_op).await {
+            OperationState::Failed { error } => {
+                assert_eq!(error.kind, ApplicationErrorKind::Conflict)
+            }
+            other => panic!(
+                "expected the lock-queued mutation to be rejected as Failed(Conflict) once it \
+                 acquired the lock and observed the desync, got {other:?}"
+            ),
+        }
+        assert_eq!(
+            backend.add_files_call_count(),
+            1,
+            "the queued second mutation must never reach add_files -- the desync check must \
+             reject it immediately after it acquires the lock"
+        );
     });
 }

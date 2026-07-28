@@ -570,7 +570,7 @@ pub(crate) struct ArchiveSession {
     /// rather than merely sequential for that case.
     ///
     /// That scope is real and narrower than "this archive file cannot be
-    /// concorrently rewritten twice": the lock lives on the `ArchiveSession`
+    /// concurrently rewritten twice": the lock lives on the `ArchiveSession`
     /// value itself, not on the underlying `source_path`. Closing this
     /// session and reopening the same path -- or a second tab
     /// independently opening the identical path -- mints a *different*

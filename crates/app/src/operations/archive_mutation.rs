@@ -496,7 +496,11 @@ pub(crate) async fn run_archive_mutation(
     // mutation queued behind another one on the same session can still
     // be cancelled promptly, without waiting for the one ahead of it to
     // finish.
-    let guard = tokio::select! {
+    // Bound as `_guard`, not read directly anywhere: it is held purely
+    // for its `Drop` -- releasing `ArchiveSession::mutation_lock` -- once
+    // this function returns (see the later comments marking exactly how
+    // far that hold must extend).
+    let _guard = tokio::select! {
         guard = session.mutation_lock().lock() => guard,
         () = inner.operations().wait_until_cancelled(operation_id) => {
             return;
@@ -513,7 +517,7 @@ pub(crate) async fn run_archive_mutation(
         return;
     }
 
-    // Revision check BEFORE any backend work -- and, holding `guard`,
+    // Revision check BEFORE any backend work -- and, holding `_guard`,
     // atomic against a second concurrent mutation on this same session
     // rather than merely sequential.
     let current_revision = session.revision();
@@ -589,7 +593,7 @@ pub(crate) async fn run_archive_mutation(
     }
 
     // The mutation genuinely landed -- re-list and reindex, still under
-    // `guard`, so a second mutation queued behind this one only ever
+    // `_guard`, so a second mutation queued behind this one only ever
     // observes the fully-updated revision, never a half-applied one.
     let password = {
         let archive = session.archive_arc();
@@ -606,8 +610,17 @@ pub(crate) async fn run_archive_mutation(
         })
         .await;
 
-    drop(guard);
-
+    // `_guard` is deliberately still held through the whole match below,
+    // including `mark_desynced()` in the failure arm -- dropped only when
+    // this function returns, implicitly, at the end of its scope.
+    // Releasing it any earlier (a prior version of this function dropped
+    // it here, before the match) would open exactly the race
+    // `mutation_lock` exists to close: a second mutation already queued
+    // on this lock would acquire it in the gap between the release and
+    // `mark_desynced()` actually running, and pass *both* `is_desynced()`
+    // (still false) and its own `expected_revision` check (`revision`
+    // also not yet bumped) against an index this operation already knows
+    // is about to be stale.
     match relist_result {
         Ok(Ok(revision)) => {
             let _ = inner
@@ -634,10 +647,10 @@ pub(crate) async fn run_archive_mutation(
             // The mutation itself already landed on the backend, but we
             // can no longer prove what the archive's contents actually
             // are -- see `ArchiveSession::mark_desynced`'s own doc
-            // comment. Marking this BEFORE `fail` is not load-bearing
-            // for correctness (the operation is about to go terminal
-            // either way), but keeps "the session is desynced" true from
-            // the earliest possible instant for any other reader.
+            // comment. Marking this before releasing `_guard` (see this
+            // match's own leading comment) -- and before `fail`, though
+            // that ordering relative to `fail` specifically is not itself
+            // load-bearing, only relative to the lock release is.
             session.mark_desynced();
             fail(
                 &inner,
