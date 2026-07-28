@@ -909,7 +909,6 @@ impl ArchiveSession {
     pub(crate) fn all_file_paths(&self) -> Vec<String> {
         self.entry_index.read().file_paths()
     }
-
 }
 
 #[cfg(test)]

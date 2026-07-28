@@ -229,7 +229,6 @@ pub fn open_file_from_archive(shared: &SharedState, file_path: &str) {
     let strategy = determine_extraction_strategy(file_path);
     let file_path_owned = file_path.to_string();
     let tab_id = tab.id;
-    let origins = shared.operation_origins.clone();
     let actions = shared.materialization_actions.clone();
     let shared = shared.clone();
 
@@ -261,11 +260,23 @@ pub fn open_file_from_archive(shared: &SharedState, file_path: &str) {
             .await
         {
             Ok(operation_id) => {
-                origins.register(operation_id, tab_id);
+                // The action is registered before the origin (not after):
+                // `register_operation` immediately reconciles against the
+                // operation's current snapshot, and a fast-completing
+                // materialize could already be terminal by the time that
+                // reconciliation runs -- see `start_archive_open`'s
+                // identical ordering comment for `pending_open_operation`.
+                // If the action were registered second, that reconciliation
+                // could invoke `handle_materialize_completed` before this
+                // task's own `MaterializationAction` ever landed, and its
+                // `actions.take(operation_id)` would find nothing to act
+                // on, silently dropping the external-open entirely.
                 actions.register(
                     operation_id,
                     MaterializationAction::ExternalOpen { relative_target },
                 );
+                crate::core::operation_bridge::register_operation(&shared, operation_id, tab_id)
+                    .await;
                 shared.signals().status_bar.update(|s| {
                     s.message = format!("Opening {file_path_owned}...");
                 });
