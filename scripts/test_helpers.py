@@ -44,6 +44,8 @@ class TestOwnedFormatting(unittest.TestCase):
         "cargo",
         "fmt",
         "--package",
+        "arclain_app",
+        "--package",
         "arclain_app_fs",
         "--package",
         "arclain_checksum",
