@@ -4,14 +4,13 @@
 //! handle `crates/ui`'s not-yet-migrated `AppState`/`Services` construction
 //! pulls its legacy-shaped fields from.
 //!
-//! [`LegacyComposition`] is not part of the frontend-neutral operation
-//! surface `contract.md` describes; a Flutter/Dart bridge must never use
-//! it. It exists only because `crates/ui` has ~200 call sites reading
+//! [`LegacyComposition`] is not part of the frontend-neutral application
+//! surface; a Flutter/Dart bridge must never use it. It exists only
+//! because `crates/ui` has ~200 call sites reading
 //! `SharedState.app_state`/`SharedState.services` fields directly, and
-//! migrating every one of them is explicitly out of scope for this task
-//! (later Stage 1 tasks retire them incrementally onto `ArclainApp`'s own
-//! async operation methods). Each retired call site is one field here
-//! that becomes removable.
+//! they migrate onto `ArclainApp`'s own async operation methods
+//! incrementally. Each migrated call site is one field here that
+//! becomes removable.
 
 use std::path::PathBuf;
 use std::sync::Arc;
