@@ -29,3 +29,10 @@ trybuild = "1.0.118"
 # (`tests/archive_sessions.rs`) -- same crate/version `arclain_core`
 # already depends on, so this adds no new crate to the dependency tree.
 zip = "7.0.0"
+# `processing_operations.rs`'s metadata-preview-equality test seeds a
+# `ProductMetadata` row directly through `arclain_core::services::
+# LibraryService::save_metadata` -- the same type/version `arclain_core`
+# itself already depends on (see `crates/core/Cargo.toml`), just not
+# re-exported from there, so this test needs its own path to construct
+# one.
+gameta_core = { path = "../../../../codeberg/gameta/gameta_core", version = "=0.5.0" }

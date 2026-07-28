@@ -170,6 +170,41 @@ impl OutputCollisionPolicyDto {
     }
 }
 
+/// Mirrors `arclain_core::OutputArtifact` exactly: whether an ad-hoc
+/// step list's result is packed into an archive or left as a plain
+/// folder. Defaults to `Archive` on deserialization (a caller/bridge
+/// that omits the field gets the same default the Process page's own
+/// independent "Output as:" dropdown does --
+/// `crates/ui/src/features/process/types.rs:215-220`'s own
+/// `#[default]`), and this is a real default the executor relies on,
+/// not a placeholder: a step list with no `Convert` step still packs
+/// into a zip when `output_artifact` is `Archive` (`execute_pipeline`
+/// falls back to `ConvertFormat::Zip` when no `Convert` step chose a
+/// format) -- documented, intended behavior on the Process page, not a
+/// gap to route around. An earlier draft of [`PipelineSpecDto::Steps`]
+/// had no field for this at all and *derived* the artifact kind
+/// instead (`Archive` iff a `Convert` step was present); review caught
+/// that this silently diverges from the Process page whenever a caller
+/// wants a Flatten-only run packed anyway (or a Convert-bearing run left
+/// as a folder, e.g. for a later manual step) -- an explicit field
+/// expresses both cases the derivation could not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputArtifactDto {
+    #[default]
+    Archive,
+    Folder,
+}
+
+impl OutputArtifactDto {
+    pub(crate) fn to_core(self) -> arclain_core::OutputArtifact {
+        match self {
+            Self::Archive => arclain_core::OutputArtifact::Archive,
+            Self::Folder => arclain_core::OutputArtifact::Folder,
+        }
+    }
+}
+
 /// Which pipeline to run: a saved, named preset, or an ad-hoc step list
 /// assembled the way the Process page's step builder does. See this
 /// module's own doc comment.
@@ -178,11 +213,12 @@ impl OutputCollisionPolicyDto {
 pub enum PipelineSpecDto {
     /// Matches an `arclain_core::SavedPreset::name` (presets have no
     /// numeric id -- see `arclain_core::{builtin_presets, load_presets}`).
-    Preset {
-        id: String,
-    },
+    Preset { id: String },
     Steps {
         steps: Vec<PipelineStepDto>,
+        /// See [`OutputArtifactDto`]'s own doc comment.
+        #[serde(default)]
+        output_artifact: OutputArtifactDto,
     },
 }
 
@@ -203,23 +239,41 @@ pub struct PipelineRequest {
 
 impl PipelineRequest {
     /// The purely-structural, no-I/O checks this request needs: a
-    /// non-empty input list, and (for [`PipelineSpecDto::Steps`]) every
-    /// step's own fields must parse. Whether a [`PipelineSpecDto::Preset`]
-    /// id actually names a known preset requires reading the presets
-    /// file, so [`crate::runtime::ArclainApp::start_pipeline`] resolves
-    /// that separately (see `processing_ops::resolve_pipeline_spec`)
-    /// after this passes.
+    /// non-empty input list, and (for [`PipelineSpecDto::Steps`]) a
+    /// non-empty step list whose every step's own fields parse. Whether
+    /// a [`PipelineSpecDto::Preset`] id actually names a known preset
+    /// requires reading the presets file, so
+    /// [`crate::runtime::ArclainApp::start_pipeline`] resolves that
+    /// separately (see `processing_ops::resolve_pipeline_spec`) after
+    /// this passes.
     pub(crate) fn validate(&self) -> Result<(), ApplicationError> {
         if self.inputs.is_empty() {
             return Err(empty_inputs_error());
         }
-        if let PipelineSpecDto::Steps { steps } = &self.pipeline {
+        if let PipelineSpecDto::Steps { steps, .. } = &self.pipeline {
+            // The Process page itself refuses to run an empty step list
+            // ("No operations added") -- an ad-hoc pipeline with zero
+            // steps is not a degenerate no-op worth silently accepting,
+            // it is a request that forgot to say what to do.
+            if steps.is_empty() {
+                return Err(empty_steps_error());
+            }
             for step in steps {
                 step.validate()?;
             }
         }
         Ok(())
     }
+}
+
+fn empty_steps_error() -> ApplicationError {
+    ApplicationError::new(
+        ApplicationErrorKind::InvalidInput,
+        "an ad-hoc pipeline needs at least one step",
+    )
+    .with_recoverability(Recoverability::UserAction)
+    .with_suggested_action(SuggestedAction::ChooseDestination)
+    .with_field("steps")
 }
 
 #[cfg(test)]
@@ -277,6 +331,7 @@ mod tests {
                         compression: CompressionLevelDto::Normal,
                     },
                 ],
+                output_artifact: OutputArtifactDto::Archive,
             },
         );
         valid.validate().expect("every step is well-formed");
@@ -288,11 +343,27 @@ mod tests {
                     format: "rar".to_string(),
                     compression: CompressionLevelDto::Normal,
                 }],
+                output_artifact: OutputArtifactDto::Archive,
             },
         );
         let err = invalid.validate().unwrap_err();
         assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
         assert_eq!(err.field.as_deref(), Some("format"));
+    }
+
+    #[test]
+    fn steps_spec_rejects_an_empty_step_list() {
+        let err = request(
+            vec![PathBuf::from("a.rar")],
+            PipelineSpecDto::Steps {
+                steps: vec![],
+                output_artifact: OutputArtifactDto::default(),
+            },
+        )
+        .validate()
+        .unwrap_err();
+        assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
+        assert_eq!(err.field.as_deref(), Some("steps"));
     }
 
     #[test]
@@ -303,6 +374,7 @@ mod tests {
                 steps: vec![PipelineStepDto::Organize {
                     rule_id: "not-a-number".to_string(),
                 }],
+                output_artifact: OutputArtifactDto::Archive,
             },
         );
         let err = request.validate().unwrap_err();
@@ -372,5 +444,26 @@ mod tests {
             OutputCollisionPolicyDto::Smart.to_core(),
             arclain_core::OutputCollisionPolicy::Smart
         );
+    }
+
+    #[test]
+    fn output_artifact_dto_translates_to_the_matching_core_artifact() {
+        assert_eq!(
+            OutputArtifactDto::Archive.to_core(),
+            arclain_core::OutputArtifact::Archive
+        );
+        assert_eq!(
+            OutputArtifactDto::Folder.to_core(),
+            arclain_core::OutputArtifact::Folder
+        );
+    }
+
+    #[test]
+    fn output_artifact_dto_defaults_to_archive() {
+        // Pins the claim in `OutputArtifactDto`'s own doc comment: a
+        // caller/bridge that omits the field (or explicitly uses
+        // `Default::default()`) gets `Archive`, matching the Process
+        // page's own "Output as:" dropdown default.
+        assert_eq!(OutputArtifactDto::default(), OutputArtifactDto::Archive);
     }
 }

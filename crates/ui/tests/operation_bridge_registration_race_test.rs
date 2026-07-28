@@ -109,7 +109,6 @@ fn bootstrap_test_app(temp: &tempfile::TempDir) -> ArclainApp {
         worker_threads: None,
         archive_backend_override: Some(backend),
         extract_runner_override: None,
-        presets_path_override: None,
     })
     .expect("bootstrap must succeed against a bare temp-dir AppPaths")
 }

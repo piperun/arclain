@@ -561,8 +561,8 @@ mod archive_path_tests {
 /// matching `serialization_snapshots`'s own per-variant style above.
 mod pipeline_request_dtos {
     use arclain_app::operations::pipeline::{
-        CompressionLevelDto, OutputCollisionPolicyDto, PipelineDestinationDto, PipelineSpecDto,
-        PipelineStepDto,
+        CompressionLevelDto, OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto,
+        PipelineSpecDto, PipelineStepDto,
     };
     use std::path::PathBuf;
 
@@ -600,6 +600,50 @@ mod pipeline_request_dtos {
             serde_json::to_value(OutputCollisionPolicyDto::Smart).unwrap(),
             serde_json::json!("smart")
         );
+    }
+
+    #[test]
+    fn output_artifact_dto_variants_serialize_snake_case() {
+        assert_eq!(
+            serde_json::to_value(OutputArtifactDto::Archive).unwrap(),
+            serde_json::json!("archive")
+        );
+        assert_eq!(
+            serde_json::to_value(OutputArtifactDto::Folder).unwrap(),
+            serde_json::json!("folder")
+        );
+    }
+
+    #[test]
+    fn output_artifact_dto_omitted_from_json_deserializes_to_the_archive_default() {
+        // Pins the "defaulting to Archive" contract at the wire level,
+        // not just in a doc comment: a `Steps` payload from an older
+        // bridge build that never learned about `output_artifact` must
+        // still deserialize, as `Archive` -- matching the Process page's
+        // own dropdown default -- rather than failing to parse.
+        let steps = PipelineSpecDto::Steps {
+            steps: vec![PipelineStepDto::Flatten {
+                strip_common_prefix: false,
+                max_depth: 1,
+            }],
+            output_artifact: OutputArtifactDto::Archive,
+        };
+        let mut value = serde_json::to_value(&steps).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("output_artifact")
+            .expect("output_artifact must be present in a normal serialization");
+        let deserialized: PipelineSpecDto = serde_json::from_value(value)
+            .expect("a Steps payload omitting output_artifact must still deserialize");
+        match deserialized {
+            PipelineSpecDto::Steps {
+                output_artifact, ..
+            } => {
+                assert_eq!(output_artifact, OutputArtifactDto::Archive);
+            }
+            other => panic!("expected Steps, got {other:?}"),
+        }
     }
 
     #[test]
@@ -679,11 +723,15 @@ mod pipeline_request_dtos {
             preset
         );
 
+        // Explicitly non-default (`Folder`), so this round-trip actually
+        // exercises serializing/deserializing the field's real value,
+        // not just its passively-matching default.
         let steps = PipelineSpecDto::Steps {
             steps: vec![PipelineStepDto::Flatten {
                 strip_common_prefix: false,
                 max_depth: 1,
             }],
+            output_artifact: OutputArtifactDto::Folder,
         };
         let value = serde_json::to_value(&steps).unwrap();
         assert_eq!(
@@ -692,7 +740,8 @@ mod pipeline_request_dtos {
                 "type": "steps",
                 "steps": [
                     {"type": "flatten", "strip_common_prefix": false, "max_depth": 1}
-                ]
+                ],
+                "output_artifact": "folder"
             })
         );
         assert_eq!(

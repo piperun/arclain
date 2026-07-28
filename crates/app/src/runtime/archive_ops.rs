@@ -35,13 +35,20 @@ use super::AppRuntime;
 /// Ported verbatim from `crates/ui/src/core/operations/archive.rs::
 /// is_password_error` (which stays in place there for its own remaining
 /// caller, the extraction-progress handler -- extraction is not part of
-/// this task's scope). Cannot be shared via a dependency in either
-/// direction (`arclain_app` must not depend on `arclain_ui`, and the
-/// reverse already holds); duplicated rather than left unreachable from
-/// this crate. A shared `is_password_error`-style classifier in
-/// `arclain_core::utilities` would remove the duplication, but moving it
-/// touches extraction's call site too, which is out of scope here.
-fn is_password_error(err_msg: &str) -> bool {
+/// this task's scope). Cannot be shared with `crates/ui` via a
+/// dependency in either direction (`arclain_app` must not depend on
+/// `arclain_ui`, and the reverse already holds); duplicated from there
+/// rather than left unreachable from this crate. A shared
+/// `is_password_error`-style classifier in `arclain_core::utilities`
+/// would remove that cross-crate duplication, but moving it touches
+/// extraction's call site too, which is out of scope here.
+///
+/// `pub(super)`, reused by `processing_ops::list_attempt_initial`/
+/// `list_attempt_with_password`: unlike the cross-crate case above,
+/// `archive_ops` and `processing_ops` are both `arclain_app` modules, so
+/// there is no reason to *duplicate* this classifier a second time
+/// within one crate -- only to share it.
+pub(super) fn is_password_error(err_msg: &str) -> bool {
     err_msg.contains("Wrong password")
         || err_msg.contains("Incorrect password")
         || err_msg.contains("Password for encrypted archive not specified")

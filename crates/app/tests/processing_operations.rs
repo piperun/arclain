@@ -42,18 +42,20 @@ use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
 
+use arclain_app::challenge::{Challenge, ChallengeResponse, SecretInput};
 use arclain_app::error::ApplicationErrorKind;
 use arclain_app::event::{OperationEvent, OperationKind, OperationState};
 use arclain_app::ids::OperationId;
 use arclain_app::operations::convert::ConvertRequest;
 use arclain_app::operations::organize::OrganizeRequest;
 use arclain_app::operations::pipeline::{
-    CompressionLevelDto, OutputCollisionPolicyDto, PipelineDestinationDto, PipelineRequest,
-    PipelineSpecDto, PipelineStepDto,
+    CompressionLevelDto, OutputArtifactDto, OutputCollisionPolicyDto, PipelineDestinationDto,
+    PipelineRequest, PipelineSpecDto, PipelineStepDto,
 };
 use arclain_app::{AppPaths, ArclainApp, BootstrapConfig};
 
 use arclain_core::{ArchiveBackend, ArchiveInfo, ArchiveKind, BackendCapabilities};
+use gameta_core::{MetadataSource, ProductMetadata};
 
 fn foreign_runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
@@ -266,6 +268,38 @@ fn seed_flatten_only_preset(paths: &AppPaths, preset_name: &str) {
         .expect("saving the test preset must succeed");
 }
 
+/// Saves one custom, hermetic pipeline preset with **zero** steps and a
+/// `Folder` output -- used only by the rollback test below, which needs
+/// `start_pipeline` to run through `execute_pipeline`'s real staging/
+/// verify path (extract -> stage -> `StagedOutput::verify` -> commit)
+/// with nothing in between that could touch the fake backend's planted
+/// symlink in an unintended way (a real pipeline step, e.g. `Flatten`,
+/// might traverse or otherwise interact with a symlinked entry before
+/// `StagedOutput::verify` ever gets a chance to reject it, which would
+/// change the test's actual failure point without saying so).
+/// `PipelineRequest::validate` rejects an empty ad-hoc
+/// `PipelineSpecDto::Steps` list (see its own doc comment), so a
+/// zero-step run can only be expressed as a saved preset here -- presets
+/// are loaded as an already-built `arclain_core::Pipeline`, not
+/// re-validated through `PipelineStepDto`.
+fn seed_zero_step_preset(paths: &AppPaths, preset_name: &str) {
+    use arclain_core::{OutputArtifact, Pipeline, PipelineOutput, SavedPreset};
+    std::fs::create_dir_all(&paths.config_dir).expect("create config dir for the test preset");
+    let presets_path = paths.config_dir.join("pipeline_presets.json");
+    let preset = SavedPreset {
+        name: preset_name.to_string(),
+        pipeline: Pipeline {
+            input: None,
+            steps: vec![],
+            output: PipelineOutput::SameFolder,
+            collision_policy: None,
+            output_artifact: OutputArtifact::Folder,
+        },
+    };
+    arclain_core::save_presets(&presets_path, &[preset])
+        .expect("saving the test preset must succeed");
+}
+
 /// A fake `ArchiveBackend` whose `extract_all` always "succeeds" by
 /// writing one known file (`payload.bin`) into `dest`, regardless of
 /// what `path` actually points at on disk, and whose `create_archive`
@@ -398,6 +432,117 @@ impl ArchiveBackend for FakeExtractBackend {
     }
 }
 
+/// A fake `ArchiveBackend` for Organize's password/challenge tests:
+/// `list`/`extract_all` both require `correct_password` (matching
+/// `archive_sessions.rs`'s own `FakeEncryptedBackend` for the same kind
+/// of test there), combined with a working `extract_all`/`create_archive`
+/// (matching this file's own `FakeExtractBackend`) so a full organize can
+/// actually reach `Completed` -- proving the resolved password gets
+/// threaded all the way through, not just that listing alone succeeds.
+struct FakeEncryptedOrganizeBackend {
+    correct_password: String,
+}
+
+fn fake_organize_info() -> ArchiveInfo {
+    ArchiveInfo {
+        archive_path: PathBuf::new(),
+        archive_kind: ArchiveKind::Zip,
+        entries: vec![arclain_core::ArchiveEntry {
+            path: "payload.bin".to_string(),
+            size: 22,
+            packed_size: 22,
+            is_dir: false,
+            encrypted: true,
+            modified: None,
+            crc32: None,
+        }],
+        encrypted: true,
+        headers_encrypted: false,
+        encryption_method: Some("fake".to_string()),
+    }
+}
+
+impl ArchiveBackend for FakeEncryptedOrganizeBackend {
+    fn name(&self) -> &str {
+        "fake-encrypted-organize"
+    }
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities::read_only()
+    }
+    fn identify(&self, _path: &Path) -> anyhow::Result<ArchiveKind> {
+        Ok(ArchiveKind::Zip)
+    }
+    fn list(&self, _path: &Path, password: Option<&str>) -> anyhow::Result<ArchiveInfo> {
+        match password {
+            Some(candidate) if candidate == self.correct_password => Ok(fake_organize_info()),
+            _ => Err(anyhow::anyhow!("Wrong password for archive")),
+        }
+    }
+    fn extract_all(&self, _path: &Path, dest: &Path, password: Option<&str>) -> anyhow::Result<()> {
+        match password {
+            Some(candidate) if candidate == self.correct_password => {
+                std::fs::create_dir_all(dest)?;
+                std::fs::write(dest.join("payload.bin"), b"fake extracted content")?;
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!("Wrong password for archive")),
+        }
+    }
+    fn extract_files(
+        &self,
+        _p: &Path,
+        _d: &Path,
+        _f: &[String],
+        _pw: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn extract_directory(
+        &self,
+        _p: &Path,
+        _d: &Path,
+        _dp: &str,
+        _pw: Option<&str>,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn recompress_7z(&self, _s: &Path, _d: &Path) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn add_files(&self, _a: &Path, _f: &[PathBuf]) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn create_archive(&self, dest: &Path, files: &[PathBuf], format: &str) -> anyhow::Result<()> {
+        let listing = files
+            .iter()
+            .map(|f| f.display().to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(dest, format!("fake archive ({format}): {listing}"))?;
+        Ok(())
+    }
+    fn read_text_file(&self, _a: &Path, _p: &str, _pw: Option<&str>) -> anyhow::Result<String> {
+        unimplemented!()
+    }
+    fn delete_files(&self, _a: &Path, _f: &[String]) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn add_or_update_file_from_str(&self, _a: &Path, _p: &str, _c: &str) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn convert_to_7z(
+        &self,
+        _s: &arclain_core::Archive,
+        _d: &Path,
+        _t: &Path,
+    ) -> anyhow::Result<()> {
+        unimplemented!()
+    }
+    fn crc32_of_entry(&self, _a: &Path, _p: &str, _pw: Option<&str>) -> anyhow::Result<String> {
+        unimplemented!()
+    }
+}
+
 /// Drains the operation-event stream (filtering to `operation_id`,
 /// ignoring events from any other operation) until a terminal state is
 /// reached, collecting every `Progress` message seen along the way.
@@ -430,6 +575,28 @@ async fn drain_until_terminal(
                 | OperationState::Failed { .. }
         ) {
             return (messages, event.state);
+        }
+    }
+}
+
+/// Drains events until a `Challenge` state is seen, then returns it --
+/// without waiting for a terminal state. Used by the organize password/
+/// challenge tests below, mirroring `archive_sessions.rs`'s own inline
+/// loop for the same purpose.
+async fn wait_for_challenge(
+    receiver: &mut tokio::sync::broadcast::Receiver<OperationEvent>,
+    operation_id: OperationId,
+) -> Challenge {
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(15), receiver.recv())
+            .await
+            .expect("operation event must arrive within 15s")
+            .expect("operation event channel must not close");
+        if event.operation_id != operation_id {
+            continue;
+        }
+        if let OperationState::Challenge { challenge } = event.state {
+            return challenge;
         }
     }
 }
@@ -679,6 +846,10 @@ fn start_pipeline_rejects_unknown_preset_id() {
         .unwrap_err();
 
     assert_eq!(err.kind, ApplicationErrorKind::NotFound);
+    // The field a caller/bridge should highlight is `pipeline` (where
+    // the preset id actually lives, `PipelineSpecDto::Preset { id }`) --
+    // not a nonexistent `preset_id` field on `PipelineRequest` itself.
+    assert_eq!(err.field.as_deref(), Some("pipeline"));
     assert_no_operation_was_registered(&app, &runtime);
 }
 
@@ -697,6 +868,7 @@ fn start_pipeline_rejects_malformed_ad_hoc_step() {
                     format: "rar".to_string(),
                     compression: CompressionLevelDto::Normal,
                 }],
+                output_artifact: OutputArtifactDto::Archive,
             },
             collision_policy: None,
         }))
@@ -704,6 +876,29 @@ fn start_pipeline_rejects_malformed_ad_hoc_step() {
 
     assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
     assert_eq!(err.field.as_deref(), Some("format"));
+    assert_no_operation_was_registered(&app, &runtime);
+}
+
+#[test]
+fn start_pipeline_rejects_an_empty_ad_hoc_step_list() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app(&temp);
+
+    let err = runtime
+        .block_on(app.start_pipeline(PipelineRequest {
+            inputs: vec![temp.path().join("a.rar")],
+            destination: PipelineDestinationDto::SameFolder,
+            pipeline: PipelineSpecDto::Steps {
+                steps: vec![],
+                output_artifact: OutputArtifactDto::default(),
+            },
+            collision_policy: None,
+        }))
+        .unwrap_err();
+
+    assert_eq!(err.kind, ApplicationErrorKind::InvalidInput);
+    assert_eq!(err.field.as_deref(), Some("steps"));
     assert_no_operation_was_registered(&app, &runtime);
 }
 
@@ -872,9 +1067,98 @@ fn start_organize_between_files_cancellation_stops_unstarted_inputs() {
 
 #[test]
 fn start_organize_extraction_failure_leaves_destination_untouched() {
+    // A deterministic fake backend whose `list` always fails with an
+    // unambiguous, non-password-shaped error -- not the real
+    // `BackendSelector` chain (`ZipBackend` -> dummy 7-Zip CLI fallback)
+    // this test used before password handling existed. That chain's
+    // fallback step, when the dummy (non-functional) 7-Zip binary this
+    // suite seeds is invoked against a garbage file, produces a process-
+    // exit-style error that `archive_ops::is_password_error` classifies
+    // as password-shaped (a real, pre-existing ambiguity in that
+    // classifier's exit-code patterns, shared with the open flow, not
+    // introduced here) -- which made this test hang waiting for a
+    // `Challenge::Password` response nobody sends, once Organize started
+    // actually consulting that classifier. This backend sidesteps that
+    // real-subprocess ambiguity entirely so the test asserts what it
+    // always meant to: a genuine, unambiguous listing failure never
+    // touches the destination and never turns the operation `Failed`.
+    struct AlwaysCorruptBackend;
+    impl ArchiveBackend for AlwaysCorruptBackend {
+        fn name(&self) -> &str {
+            "always-corrupt"
+        }
+        fn capabilities(&self) -> BackendCapabilities {
+            BackendCapabilities::read_only()
+        }
+        fn identify(&self, _path: &Path) -> anyhow::Result<ArchiveKind> {
+            Ok(ArchiveKind::Zip)
+        }
+        fn list(&self, _path: &Path, _password: Option<&str>) -> anyhow::Result<ArchiveInfo> {
+            // Deliberately not password-shaped -- matches one of the two
+            // example strings `archive_ops::
+            // is_password_error_rejects_unrelated_backend_errors` tests.
+            Err(anyhow::anyhow!(
+                "archive is corrupt: unexpected end of central directory"
+            ))
+        }
+        fn extract_all(&self, _p: &Path, _d: &Path, _pw: Option<&str>) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn extract_files(
+            &self,
+            _p: &Path,
+            _d: &Path,
+            _f: &[String],
+            _pw: Option<&str>,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn extract_directory(
+            &self,
+            _p: &Path,
+            _d: &Path,
+            _dp: &str,
+            _pw: Option<&str>,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn recompress_7z(&self, _s: &Path, _d: &Path) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn add_files(&self, _a: &Path, _f: &[PathBuf]) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn create_archive(&self, _d: &Path, _f: &[PathBuf], _fmt: &str) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn read_text_file(&self, _a: &Path, _p: &str, _pw: Option<&str>) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+        fn delete_files(&self, _a: &Path, _f: &[String]) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn add_or_update_file_from_str(&self, _a: &Path, _p: &str, _c: &str) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn convert_to_7z(
+            &self,
+            _s: &arclain_core::Archive,
+            _d: &Path,
+            _t: &Path,
+        ) -> anyhow::Result<()> {
+            unimplemented!()
+        }
+        fn crc32_of_entry(&self, _a: &Path, _p: &str, _pw: Option<&str>) -> anyhow::Result<String> {
+            unimplemented!()
+        }
+    }
+
     let runtime = foreign_runtime();
     let temp = scratch_tempdir();
-    let app = bootstrap_app(&temp);
+    let app = bootstrap_app_ex(
+        &temp,
+        Some(std::sync::Arc::new(AlwaysCorruptBackend) as std::sync::Arc<dyn ArchiveBackend>),
+    );
     let (rule_id, profile_id) = seed_rule_and_profile(&app);
 
     let bogus = temp.path().join("bogus.zip");
@@ -909,9 +1193,9 @@ fn start_organize_extraction_failure_leaves_destination_untouched() {
     });
 
     // `execute_organization_plan` extracts first and packs last; a
-    // failure this early (real `ZipBackend::list` rejects the garbage
-    // file) means the pack step -- the only step that would ever touch
-    // `destination` -- is never reached at all.
+    // failure this early (the fake backend's `list` always errors) means
+    // the pack step -- the only step that would ever touch `destination`
+    // -- is never reached at all.
     assert!(
         !destination.exists(),
         "a failed listing must never create a partial destination"
@@ -966,6 +1250,329 @@ fn start_organize_has_no_output_transaction_and_overwrites_an_existing_destinati
     assert_ne!(
         final_content, b"previous unrelated content",
         "organize has no output transaction: the pre-existing destination must have been overwritten"
+    );
+}
+
+// ─── organize: password handling (restores a dropped regression) ──────
+
+#[test]
+fn start_organize_auto_unlocks_an_encrypted_input_via_a_seeded_pass_rule() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let paths = test_paths(&temp);
+    support::seed_pass_rule(
+        &paths,
+        "organize-encrypted.zip",
+        "correct-horse-battery-staple",
+    );
+    let backend: std::sync::Arc<dyn ArchiveBackend> =
+        std::sync::Arc::new(FakeEncryptedOrganizeBackend {
+            correct_password: "correct-horse-battery-staple".to_string(),
+        });
+    let app = bootstrap_with_paths(&temp, paths, Some(backend));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let input = temp.path().join("organize-encrypted.zip");
+    std::fs::write(
+        &input,
+        b"placeholder content, the fake backend ignores real bytes",
+    )
+    .unwrap();
+    let destination = temp.path().join("out");
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![input],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+            })
+            .await
+            .expect("start_organize must be accepted");
+
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(15), receiver.recv())
+                .await
+                .expect("operation event must arrive within 15s")
+                .expect("operation event channel must not close");
+            if event.operation_id != operation_id {
+                continue;
+            }
+            match event.state {
+                OperationState::Challenge { .. } => {
+                    panic!("a seeded matching pass rule must unlock without ever prompting")
+                }
+                OperationState::Completed { .. } => break,
+                OperationState::Failed { error } => panic!("unexpected failure: {error:?}"),
+                _ => {}
+            }
+        }
+    });
+
+    assert!(destination.join("organize-encrypted.zip").exists());
+}
+
+#[test]
+fn start_organize_with_no_matching_pass_rule_raises_a_challenge_the_correct_response_resolves() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let backend: std::sync::Arc<dyn ArchiveBackend> =
+        std::sync::Arc::new(FakeEncryptedOrganizeBackend {
+            correct_password: "correct-horse-battery-staple".to_string(),
+        });
+    let app = bootstrap_app_ex(&temp, Some(backend));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let input = temp.path().join("organize-challenge.zip");
+    std::fs::write(
+        &input,
+        b"placeholder content, the fake backend ignores real bytes",
+    )
+    .unwrap();
+    let destination = temp.path().join("out");
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![input],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+            })
+            .await
+            .expect("start_organize must be accepted");
+
+        let challenge = wait_for_challenge(&mut receiver, operation_id).await;
+        let Challenge::Password { id, attempt, .. } = challenge else {
+            panic!("expected a Password challenge")
+        };
+        assert_eq!(attempt, 1);
+
+        app.respond_to_challenge(
+            operation_id,
+            ChallengeResponse::Password {
+                id,
+                value: SecretInput::new("correct-horse-battery-staple".to_string()),
+            },
+        )
+        .await
+        .expect("responding with the correct password must be accepted");
+
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+        assert!(messages.iter().any(|m| m.contains("1 succeeded")));
+    });
+
+    assert!(destination.join("organize-challenge.zip").exists());
+}
+
+#[test]
+fn start_organize_a_wrong_password_response_raises_another_challenge_then_the_correct_one_proceeds()
+{
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let backend: std::sync::Arc<dyn ArchiveBackend> =
+        std::sync::Arc::new(FakeEncryptedOrganizeBackend {
+            correct_password: "correct-horse-battery-staple".to_string(),
+        });
+    let app = bootstrap_app_ex(&temp, Some(backend));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let input = temp.path().join("organize-retry.zip");
+    std::fs::write(
+        &input,
+        b"placeholder content, the fake backend ignores real bytes",
+    )
+    .unwrap();
+    let destination = temp.path().join("out");
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![input],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+            })
+            .await
+            .expect("start_organize must be accepted");
+
+        let first = wait_for_challenge(&mut receiver, operation_id).await;
+        let Challenge::Password {
+            id: first_id,
+            attempt: first_attempt,
+            ..
+        } = first
+        else {
+            panic!("expected a Password challenge")
+        };
+        assert_eq!(first_attempt, 1);
+
+        app.respond_to_challenge(
+            operation_id,
+            ChallengeResponse::Password {
+                id: first_id,
+                value: SecretInput::new("wrong-guess".to_string()),
+            },
+        )
+        .await
+        .expect("responding to the pending challenge must be accepted");
+
+        let second = wait_for_challenge(&mut receiver, operation_id).await;
+        let Challenge::Password {
+            id: second_id,
+            attempt: second_attempt,
+            ..
+        } = second
+        else {
+            panic!("expected a second Password challenge")
+        };
+        assert_eq!(second_attempt, 2);
+        assert_ne!(second_id, first_id, "each challenge gets its own id");
+
+        app.respond_to_challenge(
+            operation_id,
+            ChallengeResponse::Password {
+                id: second_id,
+                value: SecretInput::new("correct-horse-battery-staple".to_string()),
+            },
+        )
+        .await
+        .expect("responding with the correct password must be accepted");
+
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+        assert!(messages.iter().any(|m| m.contains("1 succeeded")));
+    });
+
+    assert!(destination.join("organize-retry.zip").exists());
+}
+
+/// Pins Important 3's fix (dry-run preview metadata matching the real
+/// run's) on the one code path that actually exercises it: every other
+/// organize test's fixture name carries no DLsite product code, so
+/// `resolve_metadata`'s metadata branch never ran in this suite before.
+/// Seeds a real `ProductMetadata` row (placeholder product code
+/// `RJ123456`, this codebase's established anonymized-fixture
+/// convention -- see e.g. `crates/core/src/utilities/dlsite.rs`'s own
+/// tests) through the app's real `LibraryService`, then asserts the
+/// dry-run preview's reported output path and the real run's actual
+/// produced path are the exact same path, computed independently here
+/// rather than parsed back out of either message. This also pins the
+/// duplicated dest-path computation the reviewer flagged
+/// (`pack_organize_input` vs `preview_organize_input`, the post-review
+/// split of what used to be `organize_one_input`/`preview_one_input`):
+/// if those two ever computed the sanitized stem differently in the
+/// future, this test's independently-computed `expected_dest_path`
+/// would stop matching one of them.
+#[test]
+fn start_organize_dry_run_preview_path_matches_the_real_runs_output_path_when_metadata_exists() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let library_service = app
+        .take_legacy_composition()
+        .expect("take_legacy_composition must succeed for a freshly bootstrapped app")
+        .core_services
+        .library_service
+        .clone()
+        .expect("library_service must be composed for a freshly bootstrapped app");
+    // Chosen deliberately free of any character `sanitize_title` could
+    // plausibly rewrite (no punctuation beyond plain spaces), so the
+    // expected stem below does not depend on guessing the sanitizer's
+    // exact default filter configuration.
+    let title = "Placeholder Test Title";
+    let mut metadata = ProductMetadata::new(MetadataSource::DLSite, "RJ123456");
+    metadata.title = Some(title.to_string());
+    library_service
+        .save_metadata(&metadata)
+        .expect("seeding test metadata must succeed");
+
+    // Filename carries the same placeholder product code the seeded
+    // metadata is keyed by -- `resolve_metadata` detects it via
+    // `detect_dlsite_code`, exactly as the real quick action did.
+    let input = temp.path().join("[RJ123456] Placeholder Game.zip");
+    std::fs::write(&input, b"placeholder content for hashing").unwrap();
+    let destination = temp.path().join("out");
+    let expected_dest_path = destination.join(format!("{title}.zip"));
+
+    let preview_message = runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![input.clone()],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: true,
+            })
+            .await
+            .expect("start_organize (dry_run) must be accepted");
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+        messages
+            .into_iter()
+            .find(|m| m.contains("organize via rule"))
+            .expect("expected a preview message")
+    });
+    assert!(
+        preview_message.contains(&expected_dest_path.display().to_string()),
+        "expected the preview to report {expected_dest_path:?}, got: {preview_message:?}"
+    );
+    assert!(
+        !expected_dest_path.exists(),
+        "dry_run must never create the destination"
+    );
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![input],
+                destination: destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+            })
+            .await
+            .expect("start_organize must be accepted");
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+        assert!(messages.iter().any(|m| m.contains("1 succeeded")));
+    });
+
+    assert!(
+        expected_dest_path.exists(),
+        "the real run must have written its output to the exact path the preview reported"
     );
 }
 
@@ -1107,6 +1714,7 @@ fn start_convert_real_happy_path_and_overwrite_when_7z_is_available_and_unaffect
         paths_override: Some(paths),
         worker_threads: None,
         archive_backend_override: None,
+        extract_runner_override: None,
     })
     .expect("bootstrap must succeed");
 
@@ -1217,7 +1825,7 @@ fn start_pipeline_runs_a_saved_preset_end_to_end() {
 }
 
 #[test]
-fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end() {
+fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end_producing_a_folder() {
     let runtime = foreign_runtime();
     let temp = scratch_tempdir();
     let app = bootstrap_app(&temp);
@@ -1244,6 +1852,11 @@ fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end() {
                         strip_common_prefix: false,
                         max_depth: 1,
                     }],
+                    // Explicit `Folder`: keeps this test off the real,
+                    // un-overridable 7-Zip pack step (see
+                    // `output_artifact_dto`'s own doc comment for why
+                    // this is no longer *derived* from the step list).
+                    output_artifact: OutputArtifactDto::Folder,
                 },
                 collision_policy: Some(OutputCollisionPolicyDto::Fail),
             })
@@ -1266,6 +1879,96 @@ fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end() {
     assert_eq!(
         std::fs::read(destination.join("pipeline-adhoc/data.bin")).unwrap(),
         b"alpha-content"
+    );
+}
+
+/// The other artifact mode Finding 6 restored: an ad-hoc step list with
+/// no `Convert` step, but an explicit `output_artifact: Archive`, must
+/// still pack into a real zip (the Process page's own documented,
+/// intended default) rather than silently landing as a folder. Gated on
+/// a real, unaffected 7-Zip the same way
+/// `start_convert_real_happy_path_and_overwrite_when_7z_is_available_and_unaffected`
+/// is, since `execute_pipeline`'s Archive mode is a hardcoded,
+/// un-overridable `SevenZipCli` call with no fake-backend seam.
+#[test]
+fn start_pipeline_runs_an_ad_hoc_step_list_end_to_end_producing_an_archive_when_7z_is_available_and_unaffected(
+) {
+    let Some(sevenzip_path) = detect_unaffected_sevenzip() else {
+        eprintln!(
+            "skipping start_pipeline_runs_an_ad_hoc_step_list_end_to_end_producing_an_archive_when_7z_is_available_and_unaffected: \
+             no unaffected real 7-Zip CLI found on this machine"
+        );
+        return;
+    };
+
+    let runtime = foreign_runtime();
+    let scratch_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/test-scratch");
+    std::fs::create_dir_all(&scratch_root).expect("create test scratch root");
+    let temp = tempfile::Builder::new()
+        .prefix("pipeline-adhoc-archive-7z-")
+        .tempdir_in(&scratch_root)
+        .expect("create scratch tempdir");
+
+    let paths = test_paths(&temp);
+    support::seed_working_sevenzip_config(&paths, &sevenzip_path);
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+        archive_backend_override: None,
+        extract_runner_override: None,
+    })
+    .expect("bootstrap must succeed");
+
+    // Unique fixture filename -- see the collision comment in
+    // `start_convert_preserves_pre_existing_destination_when_it_is_not_a_recognized_prior_output`.
+    let input = build_zip_fixture(
+        temp.path(),
+        "pipeline-adhoc-archive.zip",
+        &[("data.bin", b"alpha-content")],
+    );
+    let destination = temp.path().join("out");
+    let output_path = destination.join("pipeline-adhoc-archive.zip");
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_pipeline(PipelineRequest {
+                inputs: vec![input],
+                destination: PipelineDestinationDto::Folder {
+                    path: destination.clone(),
+                },
+                pipeline: PipelineSpecDto::Steps {
+                    steps: vec![PipelineStepDto::Flatten {
+                        strip_common_prefix: false,
+                        max_depth: 1,
+                    }],
+                    output_artifact: OutputArtifactDto::Archive,
+                },
+                collision_policy: Some(OutputCollisionPolicyDto::Fail),
+            })
+            .await
+            .expect("start_pipeline must be accepted");
+
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            },
+            "real conversion must complete; messages so far: {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|m| m.contains("1 succeeded")),
+            "expected a summary message reporting 1 success, got: {messages:?}"
+        );
+    });
+
+    let packed = std::fs::metadata(&output_path)
+        .unwrap_or_else(|_| panic!("expected a real archive at {output_path:?}"));
+    assert!(
+        packed.len() > 0,
+        "a Flatten-only ad-hoc pipeline with output_artifact: Archive must still pack a \
+         non-empty archive, not silently fall back to a folder"
     );
 }
 
@@ -1300,6 +2003,7 @@ fn start_pipeline_preserves_pre_existing_destination_when_it_is_not_a_recognized
                         strip_common_prefix: false,
                         max_depth: 1,
                     }],
+                    output_artifact: OutputArtifactDto::Folder,
                 },
                 collision_policy: None,
             })
@@ -1419,8 +2123,16 @@ fn start_pipeline_rollback_removes_partial_output_after_a_genuine_post_write_fai
 
     let runtime = foreign_runtime();
     let temp = scratch_tempdir();
-    let app = bootstrap_app_ex(
+    let paths = test_paths(&temp);
+    // A zero-step preset, not `PipelineSpecDto::Steps { steps: vec![] }`
+    // (which `PipelineRequest::validate` now rejects) -- see
+    // `seed_zero_step_preset`'s own doc comment for why this test needs
+    // a genuinely empty step list rather than a harmless-looking
+    // single step.
+    seed_zero_step_preset(&paths, "test-zero-step-rollback");
+    let app = bootstrap_with_paths(
         &temp,
+        paths,
         Some(std::sync::Arc::new(SymlinkPlantingBackend) as std::sync::Arc<dyn ArchiveBackend>),
     );
 
@@ -1441,7 +2153,9 @@ fn start_pipeline_rollback_removes_partial_output_after_a_genuine_post_write_fai
                 destination: PipelineDestinationDto::Folder {
                     path: destination.clone(),
                 },
-                pipeline: PipelineSpecDto::Steps { steps: vec![] },
+                pipeline: PipelineSpecDto::Preset {
+                    id: "test-zero-step-rollback".to_string(),
+                },
                 collision_policy: Some(OutputCollisionPolicyDto::Overwrite),
             })
             .await

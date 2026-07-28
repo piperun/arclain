@@ -99,6 +99,30 @@
 //!   `"pipeline_presets.json"` filename `default_presets_path()` uses --
 //!   identical in production, correct under `paths_override`, no extra
 //!   side effect.
+//! - **Organize's password handling matches the open flow, not a
+//!   second, divergent implementation.** An undisclosed regression: an
+//!   earlier version of this module's Organize support called
+//!   `backend.list(input, None)` directly with no retry at all, so an
+//!   encrypted input simply failed outright -- unlike the pre-facade
+//!   quick action it replaces (`crates/ui/src/features/organization/
+//!   application/operations.rs`), which fell back to the active tab's
+//!   password, then to `auto_password_for`. [`resolve_organize_listing`]
+//!   restores this, generalized from "the one currently-open archive" to
+//!   "one input inside Organize's own per-file loop": try no password,
+//!   then [`AppRuntime::pass_rules`]'s auto-match, then an interactive
+//!   `Challenge::Password` with an incrementing attempt counter -- the
+//!   exact same shape `archive_ops::run_open_archive` already uses for
+//!   opening an archive: this module reuses `crate::challenge::
+//!   next_challenge_id`, `OperationRegistry::wait_until_cancelled`, and
+//!   `archive_ops::is_password_error` rather than re-deriving them (the
+//!   first two are already centralized -- reused by `start_extract` as
+//!   well, not something this task introduced), but does *not* reuse
+//!   `archive_ops::attempt_initial`/`AttemptOutcome` directly -- see
+//!   [`list_attempt_initial`]'s own doc comment for why. Whichever
+//!   password resolves the listing is threaded into the archive handle
+//!   [`pack_organize_input`] builds afterward (`Archive::with_password`
+//!   instead of `Archive::new`), the same way `archive_ops` carries
+//!   `password_used` into the `ArchiveSession` it builds.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -106,12 +130,14 @@ use std::sync::Arc;
 use anyhow::Context as _;
 use arclain_core::backends::BackendSelector;
 use arclain_core::services::{LibraryService, OrganizationService};
+use arclain_core::utilities::{auto_password_for, PassRule};
 use arclain_core::{
-    execute_pipeline, ArchiveBackend, CompressionLevel, ConvertFormat, GameMetadata,
+    execute_pipeline, ArchiveBackend, ArchiveInfo, CompressionLevel, ConvertFormat, GameMetadata,
     OutputArtifact, OutputCollisionPolicy, Pipeline, PipelineContext, PipelineInput,
     PipelineOutput, PipelineProgress, PipelineStep, COLLISION_POLICY_CONFIG_KEY,
 };
 
+use crate::challenge::{Challenge, ChallengeResponse};
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::event::{OperationResult, OperationState};
 use crate::ids::OperationId;
@@ -119,7 +145,7 @@ use crate::operations::organize::ParsedIds;
 use crate::operations::pipeline::PipelineSpecDto;
 use crate::operations::{ConvertRequest, OrganizeRequest};
 
-use super::AppRuntime;
+use super::{archive_ops, AppRuntime};
 
 // ─── request -> `arclain_core` translation (Convert/Pipeline) ──────────
 
@@ -159,41 +185,34 @@ pub(super) async fn resolve_pipeline_spec(
 ) -> Result<Pipeline, ApplicationError> {
     match spec {
         PipelineSpecDto::Preset { id } => resolve_preset_pipeline(inner, id).await,
-        PipelineSpecDto::Steps { steps } => {
+        PipelineSpecDto::Steps {
+            steps,
+            output_artifact,
+        } => {
             let core_steps = steps
                 .iter()
                 .map(|step| step.to_core())
                 .collect::<Result<Vec<_>, _>>()?;
-            // Named, narrower gap than this DTO's first draft: the
-            // Process page's ad-hoc step builder also has an independent
-            // "Output as:" Archive/Folder dropdown
-            // (`arclain_core::OutputArtifact`) this DTO does not yet
-            // expose as its own field -- see this task's report. Rather
-            // than a fixed default regardless of the step list's own
-            // shape (this DTO's first draft hardcoded `Archive`
-            // unconditionally, which forced even a Flatten-only ad-hoc
-            // pipeline through the real, un-overridable 7-Zip pack step
-            // for no reason -- caught by this task's own test suite),
-            // this derives the artifact kind from whether a `Convert`
-            // step is present: packing only makes sense once something
-            // has chosen a format to pack *into*; a step list with no
-            // `Convert` step has nothing for `execute_pipeline`'s own
-            // Archive-mode fallback-to-zip to be more correct than
-            // simply leaving the result as a folder.
-            let output_artifact = if core_steps
-                .iter()
-                .any(|step| matches!(step, PipelineStep::Convert { .. }))
-            {
-                OutputArtifact::Archive
-            } else {
-                OutputArtifact::Folder
-            };
+            // `output_artifact` is an explicit request field (defaulting
+            // to `Archive`), not derived from the step list -- an
+            // earlier version of this match arm derived it instead
+            // (`Archive` iff a `Convert` step was present, `Folder`
+            // otherwise), reasoning that packing only makes sense once a
+            // format has been chosen. Review caught that this silently
+            // diverges from the Process page's own ad-hoc step builder,
+            // whose independent "Output as:" dropdown defaults to
+            // `Archive` *regardless* of which steps are present
+            // (`crates/ui/src/features/process/types.rs`'s own
+            // `#[default]`) -- a Flatten-only pipeline packed into a zip
+            // is documented, intended behavior there, not something to
+            // "helpfully" avoid. See [`crate::operations::pipeline::
+            // OutputArtifactDto`]'s own doc comment.
             Ok(Pipeline {
                 input: None,
                 steps: core_steps,
                 output: PipelineOutput::SameFolder,
                 collision_policy: None,
-                output_artifact,
+                output_artifact: output_artifact.to_core(),
             })
         }
     }
@@ -597,8 +616,8 @@ fn build_pipeline_context(inner: &Arc<AppRuntime>) -> PipelineContext {
 /// (a test-only seam, see `AppRuntime::archive_backend_override`) wins
 /// unconditionally when set, otherwise real, extension-based
 /// `BackendSelector::select`. Shared by [`build_pipeline_context`]'s
-/// closure and [`organize_one_input`], so Convert/Pipeline and Organize
-/// resolve a backend identically.
+/// closure and [`list_attempt_initial`]/[`list_attempt_with_password`],
+/// so Convert/Pipeline and Organize resolve a backend identically.
 fn resolve_backend(
     path: &Path,
     backend_selector: &BackendSelector,
@@ -610,12 +629,37 @@ fn resolve_backend(
     backend_selector.select(path)
 }
 
-/// Resolves metadata for `archive_name` via the library service,
-/// mirroring `crates/core/src/features/pipeline/executor.rs::
-/// resolve_metadata` exactly (that function is private to `arclain_core`,
-/// so this is a small, deliberate duplication -- the same trade-off
-/// already accepted elsewhere in this facade, e.g. `archive_ops.rs`'s
-/// own `is_password_error`).
+/// Resolves metadata for `archive_name` via the library service. Based
+/// on `crates/core/src/features/pipeline/executor.rs::resolve_metadata`
+/// (private to `arclain_core`, hence duplicated here rather than
+/// shared -- the same trade-off already accepted elsewhere in this
+/// facade, e.g. `archive_ops.rs`'s own `is_password_error`), but with
+/// one deliberate, confirmed bug fix rather than a faithful mirror: that
+/// function (and this one, before this fix) serializes the looked-up
+/// `gameta_core::ProductMetadata` via `serde_json::to_string(&product)`
+/// -- the type's own plain `#[derive(Serialize)]`, which emits
+/// `external_id`/flat top-level fields -- and feeds the result to
+/// `GameMetadata::from_json`, whose own doc comment and tests both show
+/// it expects `ProductMetadata::to_plugin_json()`'s *layered* shape
+/// instead (`product_id` at the top level, `common`/`<source>` nested
+/// objects). `GameMetadata::product_id` has no `#[serde(default)]`, so
+/// that mismatch makes every such deserialization fail outright, and
+/// `.ok()` on the line before it silently swallows the error --
+/// `resolve_metadata` has therefore always returned `None` for *any*
+/// archive with real, matched metadata, regardless of title, falling
+/// back to the plain detected-code stem every time. Confirmed by direct
+/// inspection of both types, not inferred: this is a genuine, pre-
+/// existing `arclain_core` bug, not something introduced by this task,
+/// caught here because this task is the first to test metadata-driven
+/// organize naming against a real seeded `ProductMetadata` row rather
+/// than an empty test database. Fixed in *this* copy by calling
+/// `product.to_plugin_json_string()` -- the method that actually
+/// produces `GameMetadata::from_json`'s expected shape -- instead of the
+/// raw derive; `executor.rs`'s own copy is left untouched (arclain_core
+/// is a different crate, and this task's mandate is Organize's password
+/// handling and the pipeline contract, not an unrelated pre-existing
+/// metadata bug -- surfaced in this task's report rather than fixed
+/// silently there too).
 fn resolve_metadata(
     archive_name: &str,
     library_service: Option<&Arc<LibraryService>>,
@@ -624,8 +668,7 @@ fn resolve_metadata(
     let code = arclain_core::utilities::detect_dlsite_code(archive_name)?;
     let id = format!("dlsite:{code}");
     let product = lib.get_metadata(&id).ok().flatten()?;
-    let json = serde_json::to_string(&product).ok()?;
-    GameMetadata::from_json(&json).ok()
+    GameMetadata::from_json(&product.to_plugin_json_string()).ok()
 }
 
 /// Picks the output stem for one input, mirroring `crates/core/src/
@@ -703,8 +746,9 @@ pub(super) async fn resolve_rule_and_profile(
     Ok(())
 }
 
-/// Everything [`organize_one_input`] needs, resolved once per operation
-/// (not per file) and cheaply cloned per file -- mirrors
+/// Everything [`pack_organize_input`]/[`preview_organize_input`] (and
+/// the listing resolution in front of them) needs, resolved once per
+/// operation (not per file) and cheaply cloned per file -- mirrors
 /// [`build_pipeline_context`]'s own "resolve once, clone per file"
 /// shape.
 #[derive(Clone)]
@@ -727,6 +771,244 @@ fn build_organize_context(inner: &Arc<AppRuntime>) -> OrganizeContext {
             .db_paths
             .as_ref()
             .map(|paths| paths.config_db.clone()),
+    }
+}
+
+// ─── Organize: password-gated listing (restores the dropped retry) ────
+
+/// What one attempt (inside `spawn_blocking`) to list an Organize input
+/// produced. A narrower cousin of `archive_ops::AttemptOutcome`:
+/// deliberately **not** reused directly, for two reasons. First, this
+/// module's existing Organize code (`pack_organize_input`,
+/// `build_plan_and_profile`, ...) is written entirely against
+/// `anyhow::Result` -- forcing it onto `archive_ops`'s
+/// `ApplicationError`-based error model would ripple through already-
+/// correct, already-tested code for no benefit. Second, and more
+/// important: `archive_ops::attempt_initial` special-cases
+/// `ArchiveInfo::headers_encrypted` by tolerating a placeholder listing
+/// when no password unlocks it (matching the open flow's own "browse
+/// what you can" UX) -- Organize has no equivalent tolerance to fall
+/// back to, because `RuleEngine::create_plan` needs the *real* entries
+/// to build a correct plan, and the pre-facade quick action this
+/// replaces never had such a placeholder-listing concept either. A
+/// `headers_encrypted` listing that still returns `Ok` is therefore
+/// treated as a plain success here, not specially retried.
+enum ListAttempt {
+    Success {
+        backend: Arc<dyn ArchiveBackend>,
+        info: ArchiveInfo,
+        password_used: Option<String>,
+    },
+    PasswordRequired,
+    Failed(anyhow::Error),
+}
+
+fn list_attempt_initial(
+    input: &Path,
+    ctx: &OrganizeContext,
+    pass_rules: &[PassRule],
+) -> ListAttempt {
+    let backend = match resolve_backend(input, &ctx.backend_selector, ctx.override_backend.as_ref())
+    {
+        Ok(backend) => backend,
+        Err(error) => return ListAttempt::Failed(error),
+    };
+    let archive_name = input.to_str();
+    match backend.list(input, None) {
+        Ok(info) => ListAttempt::Success {
+            backend,
+            info,
+            password_used: None,
+        },
+        Err(error) => {
+            // No entries to match against yet (listing has not succeeded
+            // even once) -- mirrors `archive_ops::attempt_initial`'s own
+            // initial-attempt call, which passes an empty slice for the
+            // same reason.
+            if let Some(password) = auto_password_for(pass_rules, archive_name, &[]) {
+                match backend.list(input, Some(&password)) {
+                    Ok(info) => ListAttempt::Success {
+                        backend,
+                        info,
+                        password_used: Some(password),
+                    },
+                    Err(retry_error) => {
+                        if archive_ops::is_password_error(&format!("{retry_error:#}")) {
+                            ListAttempt::PasswordRequired
+                        } else {
+                            ListAttempt::Failed(retry_error)
+                        }
+                    }
+                }
+            } else if archive_ops::is_password_error(&format!("{error:#}")) {
+                ListAttempt::PasswordRequired
+            } else {
+                ListAttempt::Failed(error)
+            }
+        }
+    }
+}
+
+/// Tries one explicit password directly (no auto-detection) -- mirrors
+/// `archive_ops::attempt_with_password`'s one-shot semantics: a
+/// password-shaped failure raises another `PasswordRequired` (so the
+/// caller can prompt again with an incremented attempt counter) instead
+/// of looping forever on a non-password backend error.
+fn list_attempt_with_password(input: &Path, ctx: &OrganizeContext, password: &str) -> ListAttempt {
+    let backend = match resolve_backend(input, &ctx.backend_selector, ctx.override_backend.as_ref())
+    {
+        Ok(backend) => backend,
+        Err(error) => return ListAttempt::Failed(error),
+    };
+    match backend.list(input, Some(password)) {
+        Ok(info) => ListAttempt::Success {
+            backend,
+            info,
+            password_used: Some(password.to_string()),
+        },
+        Err(error) => {
+            if archive_ops::is_password_error(&format!("{error:#}")) {
+                ListAttempt::PasswordRequired
+            } else {
+                ListAttempt::Failed(error)
+            }
+        }
+    }
+}
+
+/// What resolving one input's listing (see [`resolve_organize_listing`])
+/// produced: a usable `(backend, entries, password)` triple, an
+/// operation-ending cancellation, or a genuine failure (folded into that
+/// input's own `failed` count by the caller -- never escalated to an
+/// operation-level `Failed`, matching every other per-input failure in
+/// this module).
+enum OrganizeListingOutcome {
+    Resolved {
+        backend: Arc<dyn ArchiveBackend>,
+        info: ArchiveInfo,
+        password_used: Option<String>,
+    },
+    Cancelled,
+    Failed(anyhow::Error),
+}
+
+/// Resolves one input's archive listing, retrying with an auto-matched
+/// password and, failing that, raising an interactive
+/// `Challenge::Password` -- see this module's own doc comment for why,
+/// and [`ListAttempt`]'s doc comment for why this does not simply call
+/// `archive_ops::run_open_archive`'s own attempt loop directly. Structure
+/// mirrors that loop closely: check cancellation, attempt inside
+/// `spawn_blocking`, and on `PasswordRequired`, register a challenge
+/// waiter, transition to `OperationState::Challenge`, and race the
+/// response against cancellation via `tokio::select!` -- exactly
+/// `archive_ops`'s own shape, generalized to run once per input inside
+/// Organize's own per-file loop rather than once for a whole operation.
+async fn resolve_organize_listing(
+    inner: &Arc<AppRuntime>,
+    operation_id: OperationId,
+    input: &Path,
+    ctx: &OrganizeContext,
+) -> OrganizeListingOutcome {
+    let mut current_password: Option<String> = None;
+    let mut attempt: u32 = 1;
+
+    loop {
+        if inner.operations().is_cancelled(operation_id).await {
+            return OrganizeListingOutcome::Cancelled;
+        }
+
+        let ctx_for_blocking = ctx.clone();
+        let pass_rules = inner.pass_rules();
+        let input_for_blocking = input.to_path_buf();
+        let password_for_blocking = current_password.clone();
+
+        let Some(handle) = inner.tokio_handle() else {
+            return OrganizeListingOutcome::Cancelled;
+        };
+        let attempt_outcome = match handle
+            .spawn_blocking(move || match &password_for_blocking {
+                Some(password) => {
+                    list_attempt_with_password(&input_for_blocking, &ctx_for_blocking, password)
+                }
+                None => list_attempt_initial(&input_for_blocking, &ctx_for_blocking, &pass_rules),
+            })
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(join_error) => {
+                return OrganizeListingOutcome::Failed(anyhow::anyhow!(
+                    "organize listing worker failed: {join_error}"
+                ));
+            }
+        };
+
+        match attempt_outcome {
+            ListAttempt::Success {
+                backend,
+                info,
+                password_used,
+            } => {
+                return OrganizeListingOutcome::Resolved {
+                    backend,
+                    info,
+                    password_used,
+                };
+            }
+            ListAttempt::PasswordRequired => {
+                let challenge_id = crate::challenge::next_challenge_id();
+                let archive_name = input
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| input.to_string_lossy().into_owned());
+                let receiver = inner.challenges().register(operation_id);
+                if inner
+                    .operations()
+                    .transition(
+                        operation_id,
+                        OperationState::Challenge {
+                            challenge: Challenge::Password {
+                                id: challenge_id,
+                                archive_name,
+                                attempt,
+                            },
+                        },
+                    )
+                    .await
+                    .is_err()
+                {
+                    inner.challenges().cancel(operation_id);
+                    return OrganizeListingOutcome::Cancelled;
+                }
+
+                let response = tokio::select! {
+                    response = receiver => response,
+                    () = inner.operations().wait_until_cancelled(operation_id) => {
+                        inner.challenges().cancel(operation_id);
+                        return OrganizeListingOutcome::Cancelled;
+                    }
+                };
+
+                match response {
+                    Ok(ChallengeResponse::Password { value, .. }) => {
+                        current_password = Some(value.expose_secret().to_string());
+                        attempt += 1;
+                    }
+                    Ok(_) => {
+                        return OrganizeListingOutcome::Failed(anyhow::anyhow!(
+                            "expected a password response to a password challenge"
+                        ));
+                    }
+                    Err(_) => {
+                        // The sender was dropped without a response (see
+                        // `archive_ops::run_open_archive`'s identical
+                        // comment for why: shutdown, or an unexpected
+                        // internal error tearing down the waiter).
+                        return OrganizeListingOutcome::Cancelled;
+                    }
+                }
+            }
+            ListAttempt::Failed(error) => return OrganizeListingOutcome::Failed(error),
+        }
     }
 }
 
@@ -790,6 +1072,29 @@ async fn run_organize_for_real(
         )
         .await;
 
+        let (backend, info, password_used) =
+            match resolve_organize_listing(inner, operation_id, &input, &ctx).await {
+                OrganizeListingOutcome::Resolved {
+                    backend,
+                    info,
+                    password_used,
+                } => (backend, info, password_used),
+                OrganizeListingOutcome::Cancelled => return,
+                OrganizeListingOutcome::Failed(error) => {
+                    processed += 1;
+                    failed += 1;
+                    emit_progress(
+                        inner,
+                        operation_id,
+                        index as u64,
+                        total,
+                        Some(format!("{name}: failed ({error:#})")),
+                    )
+                    .await;
+                    continue;
+                }
+            };
+
         let Some(handle) = inner.tokio_handle() else {
             return;
         };
@@ -801,13 +1106,16 @@ async fn run_organize_for_real(
 
         let result = handle
             .spawn_blocking(move || {
-                organize_one_input(
+                pack_organize_input(
                     &input_for_blocking,
                     &destination_for_blocking,
                     rule_id,
                     profile_id,
                     &ctx_for_blocking,
                     &temp_root_for_blocking,
+                    backend,
+                    &info,
+                    password_used,
                 )
             })
             .await;
@@ -868,23 +1176,28 @@ async fn run_organize_for_real(
         .await;
 }
 
-/// One input's full organize: list -> resolve metadata -> build the
+/// The rest of one input's organize, given an already-resolved listing
+/// (backend + entries + whichever password, if any, produced them --
+/// see [`resolve_organize_listing`]): resolve metadata -> build the
 /// rule's plan -> resolve the output profile -> pack. Mirrors
 /// `organization_controller.rs::ActionContext::handle`'s `Apply` action
 /// exactly, generalized from "the one currently-open archive" to an
-/// arbitrary input path.
-fn organize_one_input(
+/// arbitrary input path. Split from the single, all-in-one function
+/// this used to be (`organize_one_input`, which called `backend.list`
+/// itself with no password fallback) so the password challenge/retry
+/// loop -- which must run on the async task, not inside
+/// `spawn_blocking` -- can sit in front of it.
+fn pack_organize_input(
     input: &Path,
     destination: &Path,
     rule_id: i64,
     profile_id: i64,
     ctx: &OrganizeContext,
     temp_root: &Path,
+    backend: Arc<dyn ArchiveBackend>,
+    info: &ArchiveInfo,
+    password: Option<String>,
 ) -> anyhow::Result<PathBuf> {
-    let backend = resolve_backend(input, &ctx.backend_selector, ctx.override_backend.as_ref())?;
-    let info = backend
-        .list(input, None)
-        .context("listing archive contents")?;
     let archive_name = input
         .file_name()
         .and_then(|name| name.to_str())
@@ -920,7 +1233,17 @@ fn organize_one_input(
         )
     })?;
 
-    let archive = arclain_core::Archive::new(backend, input.to_path_buf());
+    // Threads whichever password `resolve_organize_listing` resolved
+    // (auto-matched or supplied via an interactive challenge) into the
+    // archive handle -- listing and extraction/packing must agree on the
+    // same password, the same way `archive_ops::run_open_archive` builds
+    // `Archive::with_password` from its own resolved `password_used`.
+    let archive = match password {
+        Some(password) => {
+            arclain_core::Archive::with_password(backend, input.to_path_buf(), password)
+        }
+        None => arclain_core::Archive::new(backend, input.to_path_buf()),
+    };
     arclain_core::features::organization::execute_organization_plan(
         &archive,
         &dest_path,
@@ -933,9 +1256,9 @@ fn organize_one_input(
 }
 
 /// Resolves the rule + builds its plan, and separately resolves the
-/// output profile -- split out from [`organize_one_input`] so
-/// [`run_organize_dry_run`] can reuse the exact same plan-building logic
-/// without also packing anything.
+/// output profile -- shared by [`pack_organize_input`] and
+/// [`preview_organize_input`] so a dry-run preview and a real run build
+/// the identical plan/profile.
 fn build_plan_and_profile(
     archive_name: &str,
     entries: &[arclain_core::ArchiveEntry],
@@ -1006,6 +1329,22 @@ async fn run_organize_dry_run(
             .unwrap_or("<unknown>")
             .to_string();
 
+        let info = match resolve_organize_listing(inner, operation_id, &input, &ctx).await {
+            OrganizeListingOutcome::Resolved { info, .. } => info,
+            OrganizeListingOutcome::Cancelled => return,
+            OrganizeListingOutcome::Failed(error) => {
+                emit_progress(
+                    inner,
+                    operation_id,
+                    index as u64,
+                    total,
+                    Some(format!("{name}: preview failed ({error:#})")),
+                )
+                .await;
+                continue;
+            }
+        };
+
         let Some(handle) = inner.tokio_handle() else {
             return;
         };
@@ -1015,12 +1354,13 @@ async fn run_organize_dry_run(
 
         let preview = handle
             .spawn_blocking(move || {
-                preview_one_input(
+                preview_organize_input(
                     &input_for_blocking,
                     &destination_for_blocking,
                     rule_id,
                     profile_id,
                     &ctx_for_blocking,
+                    &info,
                 )
             })
             .await;
@@ -1055,17 +1395,21 @@ async fn run_organize_dry_run(
         .await;
 }
 
-fn preview_one_input(
+/// Computes the preview message for one input, given the same already-
+/// resolved listing [`resolve_organize_listing`] produced for it (see
+/// [`pack_organize_input`]'s identical split, for the identical reason:
+/// the password challenge/retry loop cannot run inside `spawn_blocking`).
+/// No password/backend parameter is needed here -- unlike a real
+/// organize, a preview never builds an `Archive` handle at all (it never
+/// extracts or packs), only `info.entries`.
+fn preview_organize_input(
     input: &Path,
     destination: &Path,
     rule_id: i64,
     profile_id: i64,
     ctx: &OrganizeContext,
+    info: &ArchiveInfo,
 ) -> anyhow::Result<String> {
-    let backend = resolve_backend(input, &ctx.backend_selector, ctx.override_backend.as_ref())?;
-    let info = backend
-        .list(input, None)
-        .context("listing archive contents")?;
     let archive_name = input
         .file_name()
         .and_then(|name| name.to_str())
@@ -1130,10 +1474,15 @@ fn backend_lookup_error(error: anyhow::Error) -> ApplicationError {
 }
 
 fn preset_not_found_error(preset_id: &str) -> ApplicationError {
+    // `with_field("pipeline")`, not `"preset_id"`: `PipelineRequest` has
+    // no `preset_id` field of its own -- the id lives at
+    // `request.pipeline` (a `PipelineSpecDto::Preset { id }`), so
+    // `pipeline` is the field a caller/bridge would actually need to
+    // highlight.
     ApplicationError::new(ApplicationErrorKind::NotFound, "no such pipeline preset")
         .with_diagnostic(format!("no preset named {preset_id:?}"))
         .with_recoverability(Recoverability::UserAction)
-        .with_field("preset_id")
+        .with_field("pipeline")
 }
 
 fn shutdown_mid_request_error() -> ApplicationError {

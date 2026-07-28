@@ -74,7 +74,6 @@ fn bootstrap_app(
         worker_threads: None,
         archive_backend_override: Some(backend),
         extract_runner_override: Some(runner),
-        presets_path_override: None,
     })
     .expect("bootstrap must succeed")
 }
