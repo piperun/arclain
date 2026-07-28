@@ -25,6 +25,7 @@
 mod archive_ops;
 mod bootstrap;
 mod paths;
+mod processing_ops;
 mod session_store;
 
 pub use bootstrap::BootstrapConfig;
@@ -33,6 +34,7 @@ pub use session_store::{
     AppCapabilities, BackendCapabilityDto, ExternalToolStatusDto, HealthSnapshot, LegacyComposition,
 };
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -47,7 +49,9 @@ use crate::challenge::ChallengeResponse;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::event::{OperationEvent, OperationKind, OperationSnapshot};
 use crate::ids::{ArchiveSessionId, OperationId};
-use crate::operations::{ChallengeWaiters, OperationRegistry};
+use crate::operations::{
+    ChallengeWaiters, ConvertRequest, OperationRegistry, OrganizeRequest, PipelineRequest,
+};
 use session_store::SessionStore;
 
 /// Wraps the application's `Arc<tokio::runtime::Runtime>` so dropping
@@ -207,6 +211,12 @@ pub(crate) struct AppRuntime {
     /// always installs either the configured override or a real
     /// `SevenZipRunner`.
     extract_runner: Arc<dyn crate::operations::extract::ExtractRunner>,
+    /// Test-only seam: when set, `start_pipeline` reads saved presets
+    /// from this path instead of `arclain_core::default_presets_path()`'s
+    /// real, OS-conventional user config directory. See
+    /// `runtime::bootstrap::BootstrapConfig::presets_path_override`'s own
+    /// doc comment. Always `None` outside tests.
+    presets_path_override: Option<PathBuf>,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
@@ -263,6 +273,28 @@ impl AppRuntime {
 
     pub(crate) fn plugin_event_scheduler(&self) -> Option<PluginEventScheduler> {
         self.session.plugin_event_scheduler.clone()
+    }
+
+    // ---- Task 9: processing operations (Convert/Organize/Pipeline) ----
+    // Everything in this section is this task's own addition; kept
+    // together so a concurrent task touching this same shared file has a
+    // small, predictable diff to merge around.
+
+    /// The app's composed headless services (`arclain_core::services::
+    /// Services`) -- `runtime::processing_ops::build_pipeline_context`
+    /// reads `organization_service`/`library_service`/`config_service`/
+    /// `config_db` off this the same way `crates/ui`'s pre-facade
+    /// `process_runner.rs` already did off its own `Arc<Services>`
+    /// handle.
+    pub(crate) fn core_services(&self) -> &Arc<arclain_core::services::Services> {
+        &self.session.core_services
+    }
+
+    /// `None` in every real bootstrap; see this struct's own
+    /// `presets_path_override` field doc comment for the test-only seam
+    /// this exposes.
+    pub(crate) fn presets_path_override(&self) -> Option<PathBuf> {
+        self.presets_path_override.clone()
     }
 }
 
@@ -563,6 +595,100 @@ impl ArclainApp {
             move |inner| async move { inner.operations().recent(limit as usize).await },
         )
         .await
+    }
+
+    // ---- Task 9: processing operations (Convert/Organize/Pipeline) ----
+    // Everything in this section is this task's own addition; kept
+    // together for the same reason as `AppRuntime`'s own Task 9 section
+    // above. See `crate::operations::{convert, organize, pipeline}` for
+    // each request type's own characterization/design notes, and
+    // `runtime::processing_ops` for the shared execution loop and
+    // background workers these three dispatch to.
+
+    /// Starts converting a batch of archives to a target format as a
+    /// cancellable, event-broadcasting operation. Rejects a structurally
+    /// invalid request (empty `inputs`, an unrecognized `format`) before
+    /// registering an operation at all -- see
+    /// [`crate::operations::ConvertRequest::validate`].
+    pub async fn start_convert(
+        &self,
+        request: ConvertRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        let format = request.validate()?;
+        self.dispatch_async(move |inner| async move {
+            let (operation_id, _cancel) = inner.operations().begin(OperationKind::Convert).await;
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(processing_ops::run_convert(
+                    worker_inner,
+                    operation_id,
+                    request,
+                    format,
+                ));
+            }
+            operation_id
+        })
+        .await
+    }
+
+    /// Starts organizing a batch of archives under one rule as a
+    /// cancellable, event-broadcasting operation. Rejects a structurally
+    /// invalid request the same way [`Self::start_convert`] does (see
+    /// [`crate::operations::OrganizeRequest::validate`]), and additionally
+    /// confirms `profile_id` names an existing organization rule before
+    /// registering an operation -- an I/O-requiring check `validate`
+    /// itself cannot perform.
+    pub async fn start_organize(
+        &self,
+        request: OrganizeRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        let rule_id = request.validate()?;
+        self.dispatch_async(move |inner| async move {
+            processing_ops::resolve_rule(&inner, rule_id).await?;
+            let (operation_id, _cancel) = inner.operations().begin(OperationKind::Organize).await;
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(processing_ops::run_organize(
+                    worker_inner,
+                    operation_id,
+                    request,
+                    rule_id,
+                ));
+            }
+            Ok(operation_id)
+        })
+        .await?
+    }
+
+    /// Starts running a saved pipeline preset over a batch of inputs as a
+    /// cancellable, event-broadcasting operation. Rejects an empty
+    /// `inputs` list the same way [`Self::start_convert`] does, and
+    /// resolves `preset_id` against the saved presets file before
+    /// registering an operation -- see
+    /// [`crate::operations::PipelineRequest`]'s own doc comment for why
+    /// presets are looked up by name.
+    pub async fn start_pipeline(
+        &self,
+        request: PipelineRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        request.validate()?;
+        self.dispatch_async(move |inner| async move {
+            let mut pipeline =
+                processing_ops::resolve_preset_pipeline(&inner, &request.preset_id).await?;
+            pipeline.output = arclain_core::PipelineOutput::NewFolder(request.destination.clone());
+            let (operation_id, _cancel) = inner.operations().begin(OperationKind::Pipeline).await;
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(processing_ops::run_pipeline(
+                    worker_inner,
+                    operation_id,
+                    pipeline,
+                    request.inputs,
+                ));
+            }
+            Ok(operation_id)
+        })
+        .await?
     }
 
     /// Runs `work` against the composed session state on this app's own

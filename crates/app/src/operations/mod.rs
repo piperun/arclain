@@ -6,19 +6,28 @@
 //! implementation details behind the application facade: a frontend
 //! never names them directly, only the [`crate::ids::OperationId`],
 //! [`crate::event::OperationEvent`], and [`crate::event::OperationSnapshot`]
-//! values their owning facade methods hand back. [`extract`] is the first
+//! values their owning facade methods hand back. [`extract`] was the first
 //! operation-kind submodule to also contribute genuinely public types --
 //! [`extract::ExtractRequest`]/[`extract::CollisionPolicy`], the argument
 //! `ArclainApp::start_extract` accepts -- and is re-exported here so a
 //! caller can reach them as `arclain_app::operations::ExtractRequest` as
-//! well as the fully-qualified path. Later tasks adding `start_convert`/
-//! `start_organize`/etc. are expected to add their own submodule
-//! following the same shape.
+//! well as the fully-qualified path. `convert`/`organize`/`pipeline`
+//! follow the same shape: one submodule per `start_*` processing
+//! operation, each owning its own request type plus request-shaped
+//! (no-I/O) validation, re-exported the same way.
 
 pub(crate) mod challenge_waiters;
 pub mod extract;
 pub(crate) mod registry;
 
+pub mod convert;
+pub mod organize;
+pub mod pipeline;
+
 pub(crate) use challenge_waiters::ChallengeWaiters;
 pub use extract::{CollisionPolicy, ExtractRequest};
 pub(crate) use registry::OperationRegistry;
+
+pub use convert::ConvertRequest;
+pub use organize::OrganizeRequest;
+pub use pipeline::PipelineRequest;
