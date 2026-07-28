@@ -91,18 +91,46 @@ impl RuntimeOwner {
             .map(|runtime| runtime.handle().clone())
     }
 
-    /// Idempotent: a second call (this wrapper's own `Drop` calls it
-    /// too) is a no-op, since the first call already took the `Option`.
+    /// Attempts an *eager* shutdown, but never gives up this wrapper's
+    /// own protective reference to do it: on `Arc::try_unwrap` failure
+    /// (something else -- typically `SessionStore::core_services`'s own
+    /// bare clone, which is alive for as long as `AppRuntime` itself is
+    /// -- is still using the runtime), the `Arc` is put *back* rather
+    /// than dropped. Getting this wrong is exactly what an earlier
+    /// version of this method did: it took the `Option`, and on
+    /// `try_unwrap` failure just let the returned `Arc` drop at the end
+    /// of the match arm -- a safe *decrement*, but one that permanently
+    /// left this wrapper holding `None`. From that point on, `session`'s
+    /// still-live, still-unwrapped clone became the *only* remaining
+    /// reference, so whichever drop happened to release it next --
+    /// including, after an explicit [`ArclainApp::shutdown`] call
+    /// followed by dropping the app from inside an async context, one
+    /// running on a worker thread -- reached `tokio::runtime::Runtime`'s
+    /// unprotected `Drop` directly and could panic. Putting the `Arc`
+    /// back preserves the invariant `AppRuntime`'s field order exists to
+    /// establish: this wrapper is *always* still in the running to be
+    /// the one whose own eventual `Drop` (guaranteed to run after every
+    /// other runtime-owning field, see `AppRuntime`'s doc comment)
+    /// observes the true last reference, however many times
+    /// `shutdown_now` is called or fails to reclaim sole ownership
+    /// along the way.
+    ///
+    /// Idempotent: once this call (or an earlier one, or `Drop`) *has*
+    /// reclaimed and shut down the runtime, the `Option` is `None` and
+    /// every further call is a no-op.
     fn shutdown_now(&self) {
         let Some(runtime_arc) = self.0.lock().take() else {
             return;
         };
         match Arc::try_unwrap(runtime_arc) {
             Ok(runtime) => runtime.shutdown_background(),
-            Err(_still_shared_with_e_g_a_legacy_services_clone) => {
-                // Not the last reference -- dropping it here is a plain
-                // refcount decrement, never the operation that reaches
-                // `tokio::runtime::Runtime`'s real (blocking) teardown.
+            Err(still_shared) => {
+                // Not the last reference yet -- put it back so this
+                // wrapper remains armed to observe whichever drop
+                // eventually is the last one, rather than relinquishing
+                // its own clone and leaving an unprotected one as the
+                // sole survivor.
+                *self.0.lock() = Some(still_shared);
             }
         }
     }
@@ -123,25 +151,33 @@ impl Drop for RuntimeOwner {
 /// `arclain_core::services::Services::tokio_runtime` -- a second,
 /// *unwrapped* `Arc<tokio::runtime::Runtime>` clone this crate cannot
 /// change the type of. `tokio_runtime` (this struct's own
-/// [`RuntimeOwner`]) is declared *last* so it is always the one to
-/// observe (via `Arc::try_unwrap` in [`RuntimeOwner::shutdown_now`])
-/// whichever reference actually turns out to be the final one, rather
-/// than `session`'s bare clone dropping after it and reaching
-/// `tokio::runtime::Runtime`'s unprotected `Drop` directly. This fully
-/// covers `AppRuntime`'s own lifecycle; see `RuntimeOwner`'s doc
-/// comment for the one further-out case (a `Services` clone that
-/// escapes via `take_legacy_composition` and outlives every
-/// `ArclainApp` clone) this cannot reach.
+/// [`RuntimeOwner`]) is declared *last of all fields, with no exception*
+/// so it is always the one to observe (via `Arc::try_unwrap` in
+/// [`RuntimeOwner::shutdown_now`]) whichever reference actually turns
+/// out to be the final one, rather than `session`'s bare clone dropping
+/// after it and reaching `tokio::runtime::Runtime`'s unprotected `Drop`
+/// directly. `shut_down` holds no runtime reference at all (an
+/// `AtomicBool`), so its own position wouldn't matter for this
+/// invariant either way -- it is placed *before* `tokio_runtime`
+/// anyway, precisely so "declared last" stays literally true of the one
+/// field this invariant is actually about, with nothing to double-check
+/// or explain away when reading the struct top to bottom. This fully
+/// covers `AppRuntime`'s own lifecycle; see `RuntimeOwner`'s doc comment
+/// for the one further-out case (a `Services` clone that escapes via
+/// `take_legacy_composition` and outlives every `ArclainApp` clone)
+/// this cannot reach.
 pub(crate) struct AppRuntime {
     paths: AppPaths,
     session: SessionStore,
-    tokio_runtime: RuntimeOwner,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
     /// gets a structured error instead of silently spawning onto a runtime
-    /// that may already be tearing down.
+    /// that may already be tearing down. Also gates
+    /// [`ArclainApp::take_legacy_composition`], so a post-shutdown caller
+    /// cannot obtain a live `Services` either.
     shut_down: AtomicBool,
+    tokio_runtime: RuntimeOwner,
 }
 
 /// The application facade. Cheap to clone (an `Arc` internally); every
@@ -201,24 +237,31 @@ impl ArclainApp {
 
     /// Explicit, idempotent shutdown. The first call marks this
     /// instance (and every clone of it -- the flag lives in the shared
-    /// `AppRuntime`) shut down and tears down the application's Tokio
-    /// runtime via [`RuntimeOwner::shutdown_now`]. Every subsequent
-    /// facade call on any clone -- including a second `shutdown()` call
-    /// racing this one, and including a clone the caller kept around
-    /// after this one shut the application down -- goes through
-    /// [`Self::dispatch`], which checks the shutdown flag first: a
-    /// second `shutdown()` call is a documented no-op success (returns
-    /// `Ok(())` without doing anything further), while every *other*
-    /// facade method returns a structured `ApplicationError` (`kind:
-    /// Internal`) instead of silently spawning onto a runtime that may
-    /// already be tearing down.
-    ///
-    /// There is nothing to drain yet (no in-flight operations exist
-    /// until a later task wires the operation registry into
-    /// `ArclainApp`), so today this is exactly "mark shut down, tear
-    /// down the runtime" -- but callers adopt the right calling
-    /// convention now, before there is real cancellation/draining work
-    /// for it to do.
+    /// `AppRuntime`) shut down, and *attempts* an eager teardown of the
+    /// application's Tokio runtime via [`RuntimeOwner::shutdown_now`].
+    /// "Attempts" is precise, not "does": a real bootstrapped app always
+    /// has `SessionStore::core_services` (`arclain_core::services::
+    /// Services::tokio_runtime`) holding its own bare clone for as long
+    /// as `AppRuntime` itself is alive, so this call almost never
+    /// actually reaches `shutdown_background` -- and that is by design,
+    /// not a bug: forcing the runtime down while that clone (or a
+    /// `Services` handed out through [`Self::take_legacy_composition`])
+    /// is still in use would be unsound regardless of which drop
+    /// happened to trigger it. The runtime's *real* teardown happens
+    /// whenever the true last reference is actually released, wherever
+    /// that occurs, observed by `RuntimeOwner`'s own `Drop` -- which
+    /// `shutdown_now` never gives up the ability to do (see its doc
+    /// comment). What `shutdown()` *does* unconditionally and
+    /// immediately do is make the application unusable: every
+    /// subsequent facade call on any clone -- including a second
+    /// `shutdown()` call racing this one, and including a clone the
+    /// caller kept around after this one shut the application down --
+    /// goes through [`Self::dispatch`] (or, for
+    /// [`Self::take_legacy_composition`], its own equivalent check),
+    /// which checks the shutdown flag first: a second `shutdown()` call
+    /// is a documented no-op success (returns `Ok(())` without doing
+    /// anything further), while every *other* facade method returns a
+    /// structured `ApplicationError` (`kind: Internal`).
     pub async fn shutdown(&self) -> Result<(), ApplicationError> {
         if self.inner.shut_down.swap(true, Ordering::SeqCst) {
             // Already shut down (by an earlier call on this clone or
@@ -229,7 +272,9 @@ impl ArclainApp {
         // including from within a task on this app's own runtime --
         // see `RuntimeOwner`'s doc comment. No need to route this
         // through `dispatch`/`spawn`: there is nothing left to run on
-        // the runtime once it starts tearing down.
+        // the runtime once it starts tearing down, and `shutdown_now`
+        // itself never blocks regardless of whether it actually
+        // reclaims the runtime this time around.
         self.inner.tokio_runtime.shutdown_now();
         Ok(())
     }
@@ -239,8 +284,17 @@ impl ArclainApp {
     /// construction. See [`LegacyComposition`]'s doc comment -- this is
     /// not part of the frontend-neutral operation surface a Flutter/Dart
     /// bridge would use.
-    pub fn take_legacy_composition(&self) -> LegacyComposition {
-        self.inner.session.take_legacy_composition()
+    ///
+    /// Gated on the same shutdown flag [`Self::dispatch`] checks: once
+    /// [`Self::shutdown`] has been called, this returns a structured
+    /// error instead of handing out a `Services` (and everything else
+    /// `LegacyComposition` bundles) whose backing runtime may already be
+    /// tearing down.
+    pub fn take_legacy_composition(&self) -> Result<LegacyComposition, ApplicationError> {
+        if self.inner.shut_down.load(Ordering::SeqCst) {
+            return Err(shutdown_error());
+        }
+        Ok(self.inner.session.take_legacy_composition())
     }
 
     /// Runs `work` against the composed session state on this app's own
@@ -256,13 +310,25 @@ impl ArclainApp {
         T: Send + 'static,
         F: FnOnce(&AppRuntime) -> T + Send + 'static,
     {
+        // The authoritative "has shutdown() been called" signal. Unlike
+        // an earlier version of this method, this is *not* redundant
+        // with checking `RuntimeOwner::handle()` for `None`: since
+        // `shutdown_now` puts its `Arc` back whenever something else
+        // (in practice, always -- see `RuntimeOwner`'s and
+        // `ArclainApp::shutdown`'s doc comments) is still using the
+        // runtime, `handle()` keeps returning `Some` in the overwhelming
+        // common case even after `shutdown()` has run.
         if self.inner.shut_down.load(Ordering::SeqCst) {
             return Err(shutdown_error());
         }
-        // `shutdown()` may have run concurrently between the check above
-        // and here; `RuntimeOwner::handle` returning `None` (rather than
-        // panicking or spawning onto a torn-down runtime) is exactly the
-        // same "already shut down" outcome, just observed a moment later.
+        // Reached only in the narrow case where the runtime *did*
+        // finish a real teardown (every other reference, including
+        // `session`'s, was already gone) between the flag check above
+        // and here -- `shutdown()` always sets the flag before calling
+        // `shutdown_now`, so this should never observe `None` while the
+        // flag check above observed `false`, but handling it defensively
+        // costs nothing and avoids ever spawning onto a torn-down
+        // runtime.
         let Some(handle) = self.inner.tokio_runtime.handle() else {
             return Err(shutdown_error());
         };

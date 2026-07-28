@@ -398,8 +398,8 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
     Ok(AppRuntime {
         paths,
         session,
-        tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
         shut_down: std::sync::atomic::AtomicBool::new(false),
+        tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })
 }
 

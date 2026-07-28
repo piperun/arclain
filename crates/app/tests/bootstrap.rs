@@ -330,7 +330,9 @@ fn first_run_seeds_ensure_default_rules_payload_not_sync_rules_payload() {
     })
     .expect("first run bootstrap must succeed");
 
-    let legacy = app.take_legacy_composition();
+    let legacy = app
+        .take_legacy_composition()
+        .expect("take_legacy_composition must succeed before shutdown");
     let dbs = legacy
         .dbs
         .expect("databases must have opened successfully on a first run");
@@ -522,6 +524,43 @@ fn a_clone_outliving_shutdown_also_gets_the_error() {
         .block_on(clone.capabilities())
         .expect_err("a clone outliving shutdown must also see the shut-down state");
     assert_eq!(error.kind, ApplicationErrorKind::Internal);
+}
+
+/// The exact convention this crate's own docs prescribe -- await
+/// `shutdown()`, then drop the last clone -- must not panic, even when
+/// both happen from inside the same async context. Distinct from
+/// `dropping_a_facade_future_mid_flight_then_the_app_does_not_panic`
+/// above: that test drops the app *without* ever calling `shutdown()`.
+/// This one calls `shutdown()` first, which in a real bootstrapped app
+/// can (almost) never actually reclaim the runtime yet --
+/// `SessionStore::core_services` is still alive for as long as the app
+/// itself is -- and *that* is exactly the sequence an earlier version
+/// of `RuntimeOwner::shutdown_now` handled unsafely: it gave up its own
+/// protective `Arc` clone on the first (failing) `try_unwrap` and never
+/// got it back, leaving `session`'s bare clone as the sole survivor, so
+/// dropping the app immediately afterward reached `tokio::runtime::
+/// Runtime`'s unprotected `Drop` directly instead of `RuntimeOwner`'s.
+#[test]
+fn shutdown_then_dropping_the_app_in_the_same_async_context_does_not_panic() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .unwrap();
+
+    let foreign = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    foreign.block_on(async {
+        app.shutdown().await.expect("shutdown must succeed");
+        drop(app);
+    });
 }
 
 /// `health()`/`capabilities()` must reflect whether the 7-Zip

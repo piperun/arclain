@@ -28,7 +28,9 @@ impl AppState {
         let facade =
             arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig::system_default())
                 .map_err(|error| anyhow::anyhow!("Failed to bootstrap application: {error:?}"))?;
-        let legacy = facade.take_legacy_composition();
+        let legacy = facade
+            .take_legacy_composition()
+            .map_err(|error| anyhow::anyhow!("Failed to take legacy composition: {error:?}"))?;
 
         let me = Self {
             user_config: legacy.user_config.clone(),
