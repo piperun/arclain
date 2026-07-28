@@ -1056,7 +1056,15 @@ fn start_organize_between_files_cancellation_stops_unstarted_inputs() {
         // event stream from this point on -- poll the filesystem instead
         // of asserting immediately (see `wait_for_path`'s own doc
         // comment).
-        wait_for_path(&destination.join("first.zip"), Duration::from_secs(5)).await;
+        // 15s, matching every other wait budget in this suite
+        // (`drain_until_terminal`, `wait_for_message_containing`,
+        // `wait_for_challenge`) -- 5s here was tighter than all of those
+        // for no reason, and running the full `arclain_app` suite
+        // (competing with Task 6's own additional test binaries for the
+        // same Tokio blocking-pool threads) surfaced it as a genuine,
+        // if rare, flake: the in-flight write occasionally did not land
+        // before this test's own comparatively tight deadline.
+        wait_for_path(&destination.join("first.zip"), Duration::from_secs(15)).await;
     });
 
     assert!(
