@@ -321,6 +321,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "arclain_app"
+version = "2.3.2"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "arclain_app_fs"
 version = "2.3.2"
 dependencies = [
