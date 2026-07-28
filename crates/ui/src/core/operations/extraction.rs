@@ -1,161 +1,168 @@
-use crate::core::tabs::{OpGuard, TabState};
-use crate::core::AppState;
-use crate::shared::components::status_bar;
-use crate::shared::dialogs;
-use arclain_core::backends::sevenz_cli::ProgressUpdate;
-use parking_lot::Mutex;
-use std::sync::mpsc::Receiver;
-use std::sync::Arc;
-use std::time::Instant;
+//! Extraction as an application-facade operation.
+//!
+//! The facade owns process spawning and cancellation for the CLI
+//! extraction this drives (`arclain_app::operations::extract`) --
+//! egui no longer holds a `std::process::Child` directly. Progress,
+//! challenges (a wrong-password retry), and completion all route back
+//! onto `tab.extraction_dialog()` through
+//! `crate::core::operation_bridge`.
 
-/// Extract a set of files identified by archive-root-relative paths from the
-/// active tab's archive.
+use crate::core::tabs::TabState;
+use crate::shared::SharedState;
+use std::sync::Arc;
+
+/// Starts extracting `entry_paths` (empty means the whole archive) from
+/// `tab`'s open archive into a user-picked destination folder.
+/// Fire-and-forget: resolves the archive-relative paths to the
+/// facade's `EntryId`s (via `list_entries` on the tab's current
+/// directory -- selection is always scoped to entries visible in that
+/// directory, matching the pre-facade UI's own selection model), then
+/// dispatches `start_extract` and registers the resulting operation with
+/// the bridge.
+pub fn start_extraction(shared: &SharedState, tab: &Arc<TabState>, entry_paths: Vec<String>) {
+    if tab.extraction_dialog().get().show {
+        shared.signals().status_bar.update(|s| {
+            s.message = "Another extraction is already running".to_string();
+        });
+        return;
+    }
+    let Some(session_id) = tab.archive_session_id.get() else {
+        shared.signals().status_bar.update(|s| {
+            s.message = "No archive open".to_string();
+        });
+        return;
+    };
+    let Some(destination) = rfd::FileDialog::new().pick_folder() else {
+        return;
+    };
+    let Some(app) = shared.facade.clone() else {
+        tracing::error!("[extraction] start_extraction: no application facade available");
+        return;
+    };
+
+    let origins = shared.operation_origins.clone();
+    let runtime = shared.services.tokio_runtime.clone();
+    let shared = shared.clone();
+    let tab_id = tab.id;
+    let tab = tab.clone();
+    let current_directory = tab.navigation.get().current_path.clone();
+
+    {
+        let mut dialog = tab.extraction_dialog().get();
+        dialog.show = true;
+        dialog.title = format!("Extracting to {}", destination.display());
+        dialog.percent = 0;
+        dialog.status = crate::shared::dialogs::ExtractionStatus::Running;
+        // No facade-level pause/minimize primitive exists (only
+        // cancellation) -- disable both rather than leave them silently
+        // non-functional. See `crate::core::arclain_app::dialog_handler`'s
+        // own comment on the now-inert `Minimized`/`Paused`/`Resumed`
+        // dialog results.
+        dialog.can_pause = false;
+        dialog.can_minimize = false;
+        dialog.can_cancel = true;
+        dialog.log_lines.clear();
+        tab.extraction_dialog().set(dialog);
+    }
+
+    runtime.spawn(async move {
+        let entry_ids = if entry_paths.is_empty() {
+            Vec::new()
+        } else {
+            let directory = arclain_app::archive::ArchivePath::parse(current_directory)
+                .unwrap_or_else(|_| arclain_app::archive::ArchivePath::root());
+            let page = match app
+                .list_entries(
+                    session_id,
+                    arclain_app::archive::ListEntriesRequest {
+                        directory,
+                        sort_key: arclain_app::archive::EntrySortKey::Name,
+                        sort_direction: arclain_app::archive::SortDirection::Ascending,
+                        name_filter: None,
+                        offset: 0,
+                        limit: 100_000,
+                    },
+                )
+                .await
+            {
+                Ok(page) => page,
+                Err(error) => {
+                    tracing::error!("[extraction] failed to resolve selected entries: {error:?}");
+                    shared.signals().status_bar.update(|s| {
+                        s.message = format!("Extraction failed: {error:?}");
+                    });
+                    return;
+                }
+            };
+            entry_paths
+                .iter()
+                .filter_map(|selected| {
+                    page.entries
+                        .iter()
+                        .find(|entry| entry.path.as_str() == selected)
+                        .map(|entry| entry.id)
+                })
+                .collect()
+        };
+
+        match app
+            .start_extract(arclain_app::operations::ExtractRequest {
+                session_id,
+                entry_ids,
+                destination,
+                collision_policy: arclain_app::operations::CollisionPolicy::Overwrite,
+            })
+            .await
+        {
+            Ok(operation_id) => {
+                origins.register(operation_id, tab_id);
+                tab.active_extraction_operation.set(Some(operation_id));
+            }
+            Err(error) => {
+                tracing::error!("[extraction] start_extract was rejected: {error:?}");
+                shared.signals().status_bar.update(|s| {
+                    s.message = format!("Failed to start extraction: {error:?}");
+                });
+                let mut dialog = tab.extraction_dialog().get();
+                dialog.show = false;
+                tab.extraction_dialog().set(dialog);
+            }
+        }
+    });
+}
+
+/// Extract a set of files identified by archive-root-relative paths from
+/// the active tab's archive.
 ///
 /// Callers pre-compute the list of paths — either by filtering the
 /// active tab's `browser_entries` against `browser_view_state.selection`
 /// (toolbar "Extract" button), or by passing a single path from a
-/// per-row action (file_ops_service::extract). This function used to
-/// read selection itself, but coupling it to `BrowserViewState.selection`
-/// meant a single-row extract had to mutate global selection — ugly.
-/// Paths-as-parameter keeps the boundary clean and preserves identity across
-/// archive navigation.
-pub fn extract_selected(
-    state: &Arc<Mutex<AppState>>,
-    selected_files: &[String],
-    extraction_dialog: &mut dialogs::ExtractionProgressDialog,
-    extraction_rx: &mut Option<Receiver<ProgressUpdate>>,
-    extraction_child_mut: &mut Option<std::process::Child>,
-    extraction_minimized: &mut bool,
-    extraction_started: &mut Option<Instant>,
-    extraction_op_guard: &mut Option<OpGuard>,
-    extraction_origin_tab: &mut Option<Arc<TabState>>,
-    status_info: &mut status_bar::StatusBarInfo,
-) {
-    if extraction_child_mut.is_some() {
-        status_info.message = "Another extraction is already running".to_string();
+/// per-row action (`file_ops_service::extract`).
+pub fn extract_selected(shared: &SharedState, tab: &Arc<TabState>, selected_files: Vec<String>) {
+    if selected_files.is_empty() {
+        shared.signals().status_bar.update(|s| {
+            s.message = "No files selected".to_string();
+        });
         return;
     }
-
-    let st = state.lock();
-    let tab = st.signals.tabs.get().active().clone();
-    if let Some(archive) = tab.archive_path.get().as_ref() {
-        if selected_files.is_empty() {
-            status_info.message = "No files selected".to_string();
-            return;
-        }
-
-        let full_paths = selected_files.to_vec();
-
-        let archive_clone = archive.clone();
-        let backend = st.fallback_backend.clone();
-        let archive_name = archive.to_str();
-        let auto_pw = arclain_core::utilities::auto_password_for(
-            &st.pass_rules,
-            archive_name,
-            &st.last_entries,
-        );
-        let signal_pw = tab.current_password.get();
-        let pw_opt = signal_pw
-            .as_deref()
-            .or(auto_pw.as_deref())
-            .map(|s| s.to_string());
-        drop(st);
-
-        if let Some(dest) = rfd::FileDialog::new().pick_folder() {
-            match backend.spawn_extract_files_with_progress(
-                &archive_clone,
-                &dest,
-                &full_paths,
-                pw_opt.as_deref(),
-            ) {
-                Ok(handle) => {
-                    *extraction_dialog = dialogs::ExtractionProgressDialog::default();
-                    extraction_dialog.show = true;
-                    extraction_dialog.title = format!("Extracting to {}", dest.display());
-                    extraction_dialog.file_action = "Extracting selected files".to_string();
-                    #[cfg(target_os = "windows")]
-                    {
-                        extraction_dialog.can_pause = true;
-                    }
-                    *extraction_rx = Some(handle.rx);
-                    *extraction_child_mut = Some(handle.child);
-                    *extraction_minimized = false;
-                    *extraction_started = Some(Instant::now());
-                    extraction_dialog.dest_path = Some(dest.clone());
-                    // Wire per-tab in_flight_ops counter and cancel origin.
-                    *extraction_op_guard = Some(OpGuard::new(&tab));
-                    *extraction_origin_tab = Some(tab.clone());
-                    status_info.message = "Extraction started".to_string();
-                }
-                Err(e) => {
-                    status_info.message = format!("Failed to start extraction: {}", e);
-                }
-            }
-        }
-    }
+    start_extraction(shared, tab, selected_files);
 }
 
-/// Extract all files from the archive
-pub fn extract_all(
-    state: &Arc<Mutex<AppState>>,
-    extraction_dialog: &mut dialogs::ExtractionProgressDialog,
-    extraction_rx: &mut Option<Receiver<ProgressUpdate>>,
-    extraction_child_mut: &mut Option<std::process::Child>,
-    extraction_minimized: &mut bool,
-    extraction_started: &mut Option<Instant>,
-    extraction_op_guard: &mut Option<OpGuard>,
-    extraction_origin_tab: &mut Option<Arc<TabState>>,
-    status_info: &mut status_bar::StatusBarInfo,
-) {
-    if extraction_child_mut.is_some() {
-        status_info.message = "Another extraction is already running".to_string();
+/// Extract all files from the archive.
+pub fn extract_all(shared: &SharedState, tab: &Arc<TabState>) {
+    start_extraction(shared, tab, Vec::new());
+}
+
+/// Cancels the extraction currently running for `tab`, if any.
+pub fn cancel_extraction(shared: &SharedState, tab: &Arc<TabState>) {
+    let Some(operation_id) = tab.active_extraction_operation.get() else {
         return;
-    }
-
-    let st = state.lock();
-    let tab = st.signals.tabs.get().active().clone();
-    if let Some(archive) = tab.archive_path.get().as_ref() {
-        let archive_clone = archive.clone();
-        let backend = st.fallback_backend.clone();
-        let archive_name = archive.to_str();
-        let auto_pw = arclain_core::utilities::auto_password_for(
-            &st.pass_rules,
-            archive_name,
-            &st.last_entries,
-        );
-        let signal_pw = tab.current_password.get();
-        let pw_opt = signal_pw
-            .as_deref()
-            .or(auto_pw.as_deref())
-            .map(|s| s.to_string());
-        drop(st);
-
-        if let Some(dest) = rfd::FileDialog::new().pick_folder() {
-            match backend.spawn_extract_all_with_progress(&archive_clone, &dest, pw_opt.as_deref())
-            {
-                Ok(handle) => {
-                    *extraction_dialog = dialogs::ExtractionProgressDialog::default();
-                    extraction_dialog.show = true;
-                    extraction_dialog.title = format!("Extracting all to {}", dest.display());
-                    extraction_dialog.file_action = "Extracting all files".to_string();
-                    #[cfg(target_os = "windows")]
-                    {
-                        extraction_dialog.can_pause = true;
-                    }
-                    *extraction_rx = Some(handle.rx);
-                    *extraction_child_mut = Some(handle.child);
-                    *extraction_minimized = false;
-                    *extraction_started = Some(Instant::now());
-                    extraction_dialog.dest_path = Some(dest.clone());
-                    // Wire per-tab in_flight_ops counter and cancel origin.
-                    *extraction_op_guard = Some(OpGuard::new(&tab));
-                    *extraction_origin_tab = Some(tab.clone());
-                    status_info.message = "Extraction started".to_string();
-                }
-                Err(e) => {
-                    status_info.message = format!("Failed to start extraction: {}", e);
-                }
-            }
-        }
-    }
+    };
+    let Some(app) = shared.facade.clone() else {
+        return;
+    };
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.spawn(async move {
+        let _ = app.cancel_operation(operation_id).await;
+    });
 }

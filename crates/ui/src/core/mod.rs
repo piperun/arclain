@@ -5,6 +5,7 @@ pub mod app_rendering;
 pub mod arclain_app;
 pub mod file_drop;
 pub mod navigation;
+pub mod operation_bridge;
 pub mod operations;
 pub mod services;
 pub mod signals;

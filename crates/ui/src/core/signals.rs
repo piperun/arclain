@@ -383,7 +383,6 @@ impl AppSignals {
         signal_ctx.bind_named(&self.process_run, "process_run");
         // Note: plugin_dialog_state is not bound - it's mutated during render (cache) so would cause repaint loops
         // Plugin dialogs/pages are rendered in render_overlays after the signal is updated anyway
-        // Note: per-tab ui_ready is not bound to repaint — it's a control signal, not display
         // Note: per-tab merge_dialog and lightbox_state are not bound here — they
         // live in TabState (post 2026-05-20 audit B2 follow-up)
         signal_ctx.bind_named(&self.server_status, "server_status");
@@ -471,7 +470,6 @@ mod tests {
         assert!(tab.entries.get().is_empty());
         assert!(tab.metadata.get().is_none());
         assert!(tab.archive_path.get().is_none());
-        assert!(tab.ui_ready.get()); // Starts true
         assert_eq!(tab.active_toolbar.get(), ToolbarContext::Archive);
         assert!(tab.game_metadata.get().is_none());
         assert!(tab.current_password.get().is_none());

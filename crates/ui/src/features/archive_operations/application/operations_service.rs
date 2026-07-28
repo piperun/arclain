@@ -4,7 +4,6 @@ use eframe::egui;
 
 use super::conversion;
 use super::drag_drop;
-use super::extraction;
 
 pub use super::file_opener::open_file_from_archive;
 
@@ -27,26 +26,18 @@ impl ArchiveOperations {
         &mut self.state
     }
 
-    /// Handle extraction progress updates
-    pub fn update_extraction_progress(&mut self, ctx: &egui::Context) {
-        extraction::update_extraction_progress(&mut self.state, &self.shared, ctx);
-    }
-
     /// Handle conversion progress updates
     pub fn update_conversion_progress(&mut self, ctx: &egui::Context) {
         conversion::update_conversion_progress(&mut self.state, &self.shared, ctx);
     }
 
-    pub fn pause_extraction(&mut self) {
-        extraction::pause_extraction(&mut self.state, &self.shared);
-    }
-
-    pub fn resume_extraction(&mut self) {
-        extraction::resume_extraction(&mut self.state, &self.shared);
-    }
-
+    /// Cancels the active tab's currently-running extraction, if any --
+    /// the facade owns the CLI child process, so this asks
+    /// `ArclainApp::cancel_operation` rather than killing a handle egui
+    /// holds directly. See `crate::core::operations::extraction`.
     pub fn cancel_extraction(&mut self) {
-        extraction::cancel_extraction(&mut self.state, &self.shared);
+        let tab = self.shared.signals().tabs.get().active().clone();
+        crate::core::operations::extraction::cancel_extraction(&self.shared, &tab);
     }
 
     /// Handle drag progress updates

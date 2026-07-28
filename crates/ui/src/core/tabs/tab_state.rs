@@ -15,6 +15,14 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+/// One operation's pending challenge, as far as a tab's UI needs to know
+/// to answer it. See [`TabState::pending_challenge`]'s own doc comment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingChallenge {
+    pub operation_id: arclain_app::ids::OperationId,
+    pub challenge: arclain_app::challenge::Challenge,
+}
+
 pub struct TabState {
     pub id: TabId,
 
@@ -35,7 +43,16 @@ pub struct TabState {
     // 2026-05-19 audit. Both were write-only — set by archive load /
     // tab switch but never read by any production code path. The
     // status bar carries the user-visible state instead.
-    pub ui_ready: Signal<bool>,
+    //
+    // `ui_ready` (a "defer this tab's queued plugin event until the next
+    // render frame" gate) was removed when the archive-open flow moved
+    // onto `ArclainApp::start_open_archive`: the facade's own
+    // `archive_ops::dispatch_archive_opened_event` fires the plugin event
+    // directly from the operation worker, unconditionally, with no
+    // frame-boundary gating needed -- the entire pending-queue mechanism
+    // this flag gated (`AppState::pending_plugin_events`,
+    // `Action::DispatchPendingPluginEvent`) became dead weight once
+    // nothing produced it anymore.
     /// Backend-reported non-derivable archive metadata (encryption flags
     /// + encryption method). Source of truth for the encryption fields
     /// of `archive_info`; written once by
@@ -74,11 +91,32 @@ pub struct TabState {
     /// which a tab uses as the stable handle to reach it. `opened_archive`
     /// above still carries the direct backend handle a few not-yet-
     /// migrated call sites need (drag-out extraction in particular reads
-    /// `backend_arc()`/`password_ref()` off it directly) -- moving those
-    /// onto session-id-mediated facade calls is future work covering
-    /// archive mutation/extraction, so both fields coexist for now rather
-    /// than one being silently incomplete.
+    /// `backend_arc()`/`password_ref()` off it directly) -- both fields
+    /// are populated together by `crate::core::operation_bridge` once
+    /// `start_open_archive` completes (see its own doc comment for why
+    /// that means a second, UI-owned `list()` call rather than reaching
+    /// into the facade's own indexed session).
     pub archive_session_id: Signal<Option<arclain_app::ids::ArchiveSessionId>>,
+    /// The operation (if any) currently awaiting a response to a
+    /// challenge it raised, shown via this tab's existing
+    /// `password_dialog`/collision-prompt UI. Set by
+    /// `crate::core::operation_bridge` when a `Challenge` arrives for an
+    /// operation this tab originated (archive-open or extraction alike --
+    /// both share the same password prompt); cleared once answered or the
+    /// operation reaches a terminal state. The render side reads this to
+    /// know which `OperationId`/`ChallengeId` a submitted answer targets,
+    /// rather than assuming "whatever `try_open_with_password` used to
+    /// call" the way the pre-facade UI could.
+    pub pending_challenge: Signal<Option<PendingChallenge>>,
+    /// The extraction operation (if any) currently running for this tab
+    /// -- set by `crate::features::archive_operations::application::
+    /// extraction::start_extraction` right after registering with the
+    /// operation bridge, cleared by the bridge once the operation
+    /// reaches a terminal state. What the extraction dialog's Cancel
+    /// button targets: the facade owns the CLI child process now, so
+    /// cancelling means `ArclainApp::cancel_operation`, not killing a
+    /// handle egui holds directly.
+    pub active_extraction_operation: Signal<Option<arclain_app::ids::OperationId>>,
     /// Worker-owned immutable file-list snapshot. Renderers may clone this
     /// signal value in O(1), but only archive/navigation workers replace it.
     pub browser_entries: Signal<BrowserEntriesSnapshot>,
@@ -212,7 +250,6 @@ impl TabState {
             archive_loaded,
             entries,
             metadata: Signal::new(None).with_name("metadata"),
-            ui_ready: Signal::new(true).with_name("ui_ready"),
             archive_extras,
             archive_info,
             game_metadata: Signal::new(None).with_name("game_metadata"),
@@ -221,6 +258,8 @@ impl TabState {
             selection_count: Signal::new(0).with_name("selection_count"),
             opened_archive: Signal::new(None).with_name("opened_archive"),
             archive_session_id: Signal::new(None).with_name("archive_session_id"),
+            pending_challenge: Signal::new(None).with_name("pending_challenge"),
+            active_extraction_operation: Signal::new(None).with_name("active_extraction_operation"),
             browser_entries: Signal::new(BrowserEntriesSnapshot::default())
                 .with_name("browser_entries"),
             browser_view_state: Signal::new(BrowserViewState::default())
@@ -269,11 +308,10 @@ impl TabState {
     /// then trigger UI repaints automatically, no manual
     /// `ctx.request_repaint()` needed at the write sites.
     ///
-    /// Note: `ui_ready` is intentionally NOT bound (control signal,
-    /// not display). `archive_loaded` / `archive_info` are `Computed`,
-    /// not `Signal`, and recompute lazily on `.get()` — readers pick
-    /// up the new value the next frame because the renderer always
-    /// polls each frame.
+    /// Note: `archive_loaded` / `archive_info` are `Computed`, not
+    /// `Signal`, and recompute lazily on `.get()` — readers pick up the
+    /// new value the next frame because the renderer always polls each
+    /// frame.
     pub fn bind_to_context_once(&self, ctx: &egui::Context) {
         use std::sync::atomic::Ordering;
         if self.signals_bound.swap(true, Ordering::SeqCst) {
@@ -290,6 +328,11 @@ impl TabState {
         sig_ctx.bind_named(&self.selection_count, "tab.selection_count");
         sig_ctx.bind_named(&self.opened_archive, "tab.opened_archive");
         sig_ctx.bind_named(&self.archive_session_id, "tab.archive_session_id");
+        sig_ctx.bind_named(&self.pending_challenge, "tab.pending_challenge");
+        sig_ctx.bind_named(
+            &self.active_extraction_operation,
+            "tab.active_extraction_operation",
+        );
         sig_ctx.bind_named(&self.browser_entries, "tab.browser_entries");
         sig_ctx.bind_named(&self.browser_view_state, "tab.browser_view_state");
         sig_ctx.bind_named(&self.page_display_name, "tab.page_display_name");

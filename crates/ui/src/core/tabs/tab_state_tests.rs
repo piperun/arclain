@@ -10,8 +10,8 @@ fn default_state_signals_are_initialized() {
     assert!(tab.archive_path.get().is_none());
     assert!(tab.entries.get().is_empty());
     assert!(tab.metadata.get().is_none());
-    assert!(tab.ui_ready.get()); // Starts true
     assert!(tab.opened_archive.get().is_none());
+    assert!(tab.pending_challenge.get().is_none());
     assert_eq!(tab.in_flight_ops.load(Ordering::SeqCst), 0);
     assert!(!tab.tab_cancel.load(Ordering::SeqCst));
     // Auto-binding flag must start false so the first bind sweep

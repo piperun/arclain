@@ -556,8 +556,6 @@ mod tests {
                 encrypted_crc_policy: "on_access".to_string(),
                 db_paths: Some(paths),
                 dbs: Some(dbs),
-                plugin_event_scheduler: None,
-                pending_plugin_events: Vec::new(),
                 signals: signals.clone(),
             };
             let services = Arc::new(services);
@@ -578,6 +576,7 @@ mod tests {
                 image_assets,
                 signals,
                 facade: None,
+                operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
             };
 
             Self {

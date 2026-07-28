@@ -110,15 +110,6 @@ pub fn render_archive_browser(
 
     tab.browser_view_state.set_if_changed(view_state);
 
-    // After UI has rendered, dispatch any pending plugin events.
-    // Emit as an Action so the controller is the single chokepoint
-    // for app_state mutation — render shouldn't lock + mutate. If a
-    // user action is already in flight this frame, it wins; the
-    // plugin dispatch fires next frame (ui_ready stays false).
-    if matches!(action, Action::None) && !tab.ui_ready.get() {
-        action = Action::DispatchPendingPluginEvent;
-    }
-
     action
 }
 

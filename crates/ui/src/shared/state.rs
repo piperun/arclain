@@ -37,6 +37,12 @@ pub struct SharedState {
     /// tests fast and isolated. `SharedState::new` (the real egui
     /// startup path) always sets this to `Some`.
     pub facade: Option<arclain_app::ArclainApp>,
+    /// Which tab a given in-flight facade operation (archive-open,
+    /// extraction) belongs to -- populated by whichever call site starts
+    /// one, read by `crate::core::operation_bridge`'s background worker
+    /// on every event. See that module's own doc comment for the full
+    /// bridge design.
+    pub operation_origins: crate::core::operation_bridge::OperationOrigins,
 }
 
 impl SharedState {
@@ -99,7 +105,12 @@ impl SharedState {
             image_assets,
             signals: signals.clone(),
             facade: Some(facade),
+            operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
         };
+        // Spawns the background worker that drives archive-open/
+        // extraction progress, challenges, and completion onto this
+        // `SharedState`'s signals -- see `crate::core::operation_bridge`.
+        crate::core::operation_bridge::spawn(&shared);
 
         // One-shot upgrade of legacy auto-saved password rules.
         //
@@ -140,7 +151,7 @@ impl SharedState {
         }
 
         // Restore previous tab session if the setting is enabled.
-        crate::core::app_lifecycle::restore_tabs_on_launch(&app_state, &signals);
+        crate::core::app_lifecycle::restore_tabs_on_launch(&shared);
 
         shared
     }

@@ -67,8 +67,6 @@ pub fn create_test_shared_state() -> SharedState {
         encrypted_crc_policy: "on_open".to_string(),
         db_paths: None,
         dbs: None,
-        plugin_event_scheduler: None,
-        pending_plugin_events: Vec::new(),
         signals: arclain_ui::core::signals::AppSignals::new(),
     };
 
@@ -89,6 +87,7 @@ pub fn create_test_shared_state() -> SharedState {
         image_assets,
         signals,
         facade: None,
+        operation_origins: arclain_ui::core::operation_bridge::OperationOrigins::new(),
     }
 }
 
@@ -165,8 +164,6 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         encrypted_crc_policy: "on_open".to_string(),
         db_paths: Some(paths),
         dbs: Some(dbs),
-        plugin_event_scheduler: None,
-        pending_plugin_events: Vec::new(),
         signals: arclain_ui::core::signals::AppSignals::new(),
     };
     let signals = app_state.signals.clone();
@@ -201,6 +198,7 @@ pub fn create_test_shared_state_with_dbs() -> (TempDir, SharedState) {
         image_assets,
         signals,
         facade: None,
+        operation_origins: arclain_ui::core::operation_bridge::OperationOrigins::new(),
     };
 
     (temp, shared)

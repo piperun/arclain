@@ -176,25 +176,13 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                     .pick_file()
                 {
                     tracing::info!("Opening archive via hotkey: {}", file.display());
-                    // Open the archive directly
-                    let hk_tab = app.shared_state.signals().tabs.get().active().clone();
-                    let mut password_dialog = hk_tab.password_dialog.get();
-                    let mut status_info = app.shared_state.signals().status_bar.get();
-                    // nav removed
-
-                    // archive_info parameter dropped post 2026-05-20 Tier 2
-                    // item 6 — Computed derives the value automatically.
-                    operations::archive::open_archive_by_path(
-                        &app.shared_state.app_state,
-                        &file,
-                        // current_path removed
-                        &mut password_dialog,
-                        &mut status_info,
+                    let active_id = app.shared_state.signals().tabs.get().active_id();
+                    operations::archive::start_archive_open(
+                        &app.shared_state,
+                        active_id,
+                        file,
+                        None,
                     );
-
-                    // navigation set removed
-                    hk_tab.password_dialog.set(password_dialog);
-                    app.shared_state.signals().status_bar.set(status_info);
                 }
             }
             HotkeyAction::Search => {
@@ -259,8 +247,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
             path.display()
         );
         crate::core::operations::archive::load_archive_into_tab(
-            app.shared_state.app_state.clone(),
-            app.shared_state.signals().clone(),
+            &app.shared_state,
             new_tab_id,
             &path,
         );
@@ -369,8 +356,10 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         ctx,
     );
 
-    // Handle extraction/conversion progress from CLI backends
-    app.archive_operations.update_extraction_progress(ctx);
+    // Handle conversion/drag-out progress from CLI backends. Extraction
+    // progress no longer needs a per-frame poll here: it is an
+    // application-facade operation now, driven reactively onto
+    // `TabState::extraction_dialog()` by `crate::core::operation_bridge`.
     app.archive_operations.update_conversion_progress(ctx);
     app.archive_operations.update_drag_progress(ctx);
 
@@ -392,25 +381,13 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
         {
             app.shared_state.signals().status_bar.set(status_info);
             // It's a nested archive - open it as the current archive
-
-            let nested_tab = app.shared_state.signals().tabs.get().active().clone();
-            let mut password_dialog = nested_tab.password_dialog.get();
-            let mut status_info = app.shared_state.signals().status_bar.get();
-            // nav removed
-
-            // archive_info parameter dropped post 2026-05-20 Tier 2
-            // item 6 — Computed derives the value automatically.
-            operations::archive::open_archive_by_path(
-                &app.shared_state.app_state,
-                &nested_archive_path,
-                // current_path removed
-                &mut password_dialog,
-                &mut status_info,
+            let active_id = app.shared_state.signals().tabs.get().active_id();
+            operations::archive::start_archive_open(
+                &app.shared_state,
+                active_id,
+                nested_archive_path,
+                None,
             );
-
-            // navigation set removed
-            nested_tab.password_dialog.set(password_dialog);
-            app.shared_state.signals().status_bar.set(status_info);
         } else {
             app.shared_state.signals().status_bar.set(status_info);
         }
@@ -659,8 +636,7 @@ pub fn update_app(app: &mut ArclainApp, ctx: &egui::Context, _frame: &mut eframe
                         // `signals.tabs.get().get(tab_id)`.
                         app.shared_state.signals().tabs.set(col.clone());
                         crate::core::operations::archive::load_archive_into_tab(
-                            app.shared_state.app_state.clone(),
-                            app.shared_state.signals().clone(),
+                            &app.shared_state,
                             new_tab_id,
                             &path,
                         );

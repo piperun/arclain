@@ -5,16 +5,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 pub struct ArchiveOperationsState {
-    // Extraction progress state
-    pub extraction_rx: Option<Receiver<ProgressUpdate>>,
-    pub extraction_child: Option<std::process::Child>,
-    pub extraction_minimized: bool,
-    pub extraction_started: Option<Instant>,
-    /// RAII counter: incremented when extraction starts, dropped when it ends.
-    pub extraction_op_guard: Option<OpGuard>,
-    /// The tab that originated this extraction. Checked for `tab_cancel` in
-    /// `update_extraction_progress` to implement cooperative cancellation.
-    pub extraction_origin_tab: Option<Arc<TabState>>,
+    // Note: extraction progress state (extraction_rx/extraction_child/
+    // extraction_op_guard/extraction_origin_tab) is gone -- extraction
+    // is now an application-facade operation (`arclain_app::operations::
+    // extract`); the facade owns the CLI child process, and
+    // `crate::core::operation_bridge` drives progress/completion onto
+    // `TabState::extraction_dialog()`/`active_extraction_operation`
+    // directly. See `crate::core::operations::extraction`.
 
     // Conversion progress state
     pub conversion_rx: Option<Receiver<ProgressUpdate>>,
@@ -42,12 +39,6 @@ pub struct ArchiveOperationsState {
 impl Default for ArchiveOperationsState {
     fn default() -> Self {
         Self {
-            extraction_rx: None,
-            extraction_child: None,
-            extraction_minimized: false,
-            extraction_started: None,
-            extraction_op_guard: None,
-            extraction_origin_tab: None,
             conversion_rx: None,
             conversion_child: None,
             conversion_minimized: false,

@@ -8,7 +8,6 @@ use crate::features::{organization, plugins, settings};
 use crate::shared::components;
 
 use eframe::egui;
-use std::path::PathBuf;
 
 mod content_handler;
 mod dialog_handler;
@@ -46,7 +45,6 @@ pub struct ArclainApp {
     pub(crate) process_state: crate::features::process::ProcessPageState,
 
     // State & Flags
-    pub(crate) _pending_archive_path: Option<PathBuf>,
     pub(crate) _last_window_title: Option<String>,
     pub(crate) _signals_bound: bool,
     pub(crate) _theme_applied: bool,
@@ -89,7 +87,6 @@ impl ArclainApp {
                 log_session,
             ),
             process_state: crate::features::process::ProcessPageState::new(),
-            _pending_archive_path: None,
             _last_window_title: None,
             _signals_bound: false,
             _theme_applied: false,

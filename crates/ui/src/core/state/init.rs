@@ -41,8 +41,6 @@ impl AppState {
             encrypted_crc_policy: legacy.encrypted_crc_policy,
             db_paths: legacy.db_paths,
             dbs: legacy.dbs,
-            plugin_event_scheduler: legacy.plugin_event_scheduler,
-            pending_plugin_events: Vec::new(),
             signals: AppSignals::new(),
         };
 

@@ -45,44 +45,50 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
     // originating tab (it's that tab's dialog they're looking at).
     let shared_state = app.shared_state.clone();
     match password_management::handle_password_dialogs(ctx, &shared_state) {
-        password_management::PasswordFeatureAction::PasswordUnlocked { path, password } => {
-            let t = app.shared_state.signals().tabs.get().active().clone();
-            let mut pass_dialog = t.password_dialog.get();
-            let mut status_bar = app.shared_state.signals().status_bar.get();
-
-            // archive_info parameter dropped post 2026-05-20 Tier 2 item 6
-            // — Computed<ArchiveInfo> derives from entries/path/extras.
-            if operations::archive::try_open_with_password(
-                &app.shared_state.app_state,
-                &path,
-                &password,
-                &mut pass_dialog,
-                &mut app._pending_archive_path,
-                &mut status_bar,
-            ) {
-                pass_dialog.show = false;
-                pass_dialog.target_path = None;
-                app._pending_archive_path = None;
-
-                // Auto-retry: if the unlock was triggered by a file-
-                // extraction password failure, re-fire `pending_open_file`
-                // with the stashed file path so the user's original
-                // click succeeds without them having to click again.
-                // tab.current_password is now set (via list_with_password
-                // inside try_open_with_password), so the next
-                // file_opener spawn will pick it up.
-                if let Some(retry_path) = t.pending_open_after_unlock.get() {
-                    t.pending_open_after_unlock.set(None);
-                    t.pending_open_file.set(Some(retry_path));
+        password_management::PasswordFeatureAction::PasswordSubmitted {
+            operation_id,
+            challenge_id,
+            password,
+        } => {
+            // Optimistically remember the password so a successful open
+            // can re-list for the flat browser signals with it (see
+            // `crate::core::operation_bridge::relist_for_browser_signals`).
+            // If it turns out to be wrong, the operation raises another
+            // `Challenge::Password` and this simply gets overwritten by
+            // the next submission.
+            let tab = shared_state.signals().tabs.get().active().clone();
+            tab.current_password.set(Some(password.clone()));
+            let facade = shared_state.facade.clone();
+            let runtime = shared_state.services.tokio_runtime.clone();
+            runtime.spawn(async move {
+                if let Some(facade) = facade {
+                    let _ = facade
+                        .respond_to_challenge(
+                            operation_id,
+                            arclain_app::challenge::ChallengeResponse::Password {
+                                id: challenge_id,
+                                value: arclain_app::challenge::SecretInput::new(password),
+                            },
+                        )
+                        .await;
                 }
-            } else {
-                pass_dialog.error = "Invalid password".to_string();
-            }
-            t.password_dialog.set_if_changed(pass_dialog);
-            app.shared_state
-                .signals()
-                .status_bar
-                .set_if_changed(status_bar);
+            });
+        }
+        password_management::PasswordFeatureAction::Cancelled { operation_id } => {
+            let facade = shared_state.facade.clone();
+            let runtime = shared_state.services.tokio_runtime.clone();
+            runtime.spawn(async move {
+                if let Some(facade) = facade {
+                    let _ = facade.cancel_operation(operation_id).await;
+                }
+            });
+        }
+        password_management::PasswordFeatureAction::PasswordSubmittedForReopen {
+            tab_id,
+            path,
+            password,
+        } => {
+            operations::archive::start_archive_open(&shared_state, tab_id, path, Some(password));
         }
         password_management::PasswordFeatureAction::None => {}
     }
@@ -130,20 +136,23 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                     .extraction_cancel
                     .store(true, std::sync::atomic::Ordering::SeqCst);
                 app.shared_state.signals().extraction_progress.set(None);
-                // Also cancel CLI extraction if any
+                // Also cancel the facade-driven CLI extraction, if any --
+                // see `crate::core::operations::extraction::cancel_extraction`.
                 app.archive_operations.cancel_extraction();
                 ext_dialog.show = false;
             }
+            // Minimize/Pause/Resume have no facade-level equivalent (the
+            // facade exposes cancellation only) -- `start_extraction`
+            // disables these buttons for a facade-driven extraction, so
+            // these arms are unreached for it; kept as harmless no-ops
+            // rather than removed, since the conversion/drag-out dialogs
+            // still share this same rendering function and may reach
+            // here for their own (unrelated, not-yet-migrated) flows.
             dialogs::progress::ExtractionDialogResult::Minimized => {
-                app.archive_operations.state_mut().extraction_minimized = true;
                 ext_dialog.show = false;
             }
-            dialogs::progress::ExtractionDialogResult::Paused => {
-                app.archive_operations.pause_extraction();
-            }
-            dialogs::progress::ExtractionDialogResult::Resumed => {
-                app.archive_operations.resume_extraction();
-            }
+            dialogs::progress::ExtractionDialogResult::Paused
+            | dialogs::progress::ExtractionDialogResult::Resumed => {}
             dialogs::progress::ExtractionDialogResult::None => {}
         }
     }
@@ -227,12 +236,15 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
                             // user saw "File saved" with stale entries.
                             // Now log + surface so a stale view is at
                             // least visible.
-                            let mut state = app.shared_state.app_state.lock();
-                            let active_id = state.signals.tabs.get().active_id();
-                            match state.list_archive(&archive, active_id) {
-                                Ok(_) => {
+                            let edit_tab = app.shared_state.signals().tabs.get().active().clone();
+                            match operations::archive::refresh_entries_after_edit(
+                                &app.shared_state,
+                                &edit_tab,
+                                &archive,
+                            ) {
+                                Ok(()) => {
                                     crate::core::operations::navigation_view::refresh_view_entries(
-                                        &state.signals,
+                                        app.shared_state.signals(),
                                     );
                                 }
                                 Err(e) => {
@@ -280,6 +292,20 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             .set_if_changed(confirm);
         use crate::shared::dialogs::close_tab_confirm::CloseTabConfirmResult;
         if let CloseTabConfirmResult::Confirmed(id) = result {
+            // If this tab has a facade-driven extraction in flight,
+            // cancel it before the tab goes away -- the facade has no
+            // way to notice `tab_cancel` on its own (that flag is a
+            // pre-facade cooperative-cancellation convention this
+            // operation never polls), so without this the extraction
+            // would keep running orphaned in the background with
+            // nowhere left to route its progress/completion once the
+            // tab (and its `extraction_dialog`) is gone.
+            if let Some(tab) = app.shared_state.signals().tabs.get().get(id) {
+                if tab.active_extraction_operation.get().is_some() {
+                    crate::core::operations::extraction::cancel_extraction(&app.shared_state, tab);
+                }
+            }
+
             let mut col = app.shared_state.signals().tabs.get();
             col.force_close(id);
             app.shared_state.signals().tabs.set(col);
@@ -288,30 +314,19 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             // captured Arc<TabState> at spawn observe the flag on their next
             // periodic check and kill their subprocess.
             //
-            // In addition, if this tab is the origin of the active extraction
-            // or conversion, immediately kill the subprocess here so the
+            // In addition, if this tab is the origin of the active
+            // conversion, immediately kill the subprocess here so the
             // process dies promptly without waiting for the next update tick.
-            //
-            // Post 2026-05-20 B3 reframed slice 2: dialogs live on the tab,
-            // so they die naturally when `force_close` drops the TabState
-            // Arc. We still kill the subprocess + clear the ops bookkeeping
-            // here for prompt cleanup — but no longer need to reach for the
-            // (now-gone) tab's dialog signal to set `show = false`.
+            // (Extraction's own cleanup happened above, before force_close,
+            // since it needs the tab's own signals -- conversion is not yet
+            // migrated onto the facade, so it still uses the pre-facade
+            // captured-Arc pattern.)
             {
                 let ops = app.archive_operations.state_mut();
                 let origin_matches_id =
                     |tab: &Option<std::sync::Arc<crate::core::tabs::TabState>>| {
                         tab.as_ref().map(|t| t.id == id).unwrap_or(false)
                     };
-                if origin_matches_id(&ops.extraction_origin_tab) {
-                    if let Some(mut child) = ops.extraction_child.take() {
-                        let _ = child.kill();
-                    }
-                    ops.extraction_rx = None;
-                    ops.extraction_started = None;
-                    ops.extraction_op_guard = None;
-                    ops.extraction_origin_tab = None;
-                }
                 if origin_matches_id(&ops.conversion_origin_tab) {
                     if let Some(mut child) = ops.conversion_child.take() {
                         let _ = child.kill();
@@ -402,8 +417,7 @@ pub fn render_dialogs(app: &mut ArclainApp, ctx: &egui::Context) {
             app.shared_state.signals().tabs.set(col);
             for (tab_id, path) in tabs_to_load {
                 crate::core::operations::archive::load_archive_into_tab(
-                    app.shared_state.app_state.clone(),
-                    app.shared_state.signals().clone(),
+                    &app.shared_state,
                     tab_id,
                     &path,
                 );
@@ -640,12 +654,9 @@ pub fn render_overlays(app: &mut ArclainApp, ctx: &egui::Context) {
                                 }
                             }
                             app.shared_state.signals().tabs.set(col);
-                            let state = app.shared_state.app_state.clone();
-                            let signals = app.shared_state.signals().clone();
                             for (tab_id, path) in tabs_to_load {
                                 crate::core::operations::archive::load_archive_into_tab(
-                                    state.clone(),
-                                    signals.clone(),
+                                    &app.shared_state,
                                     tab_id,
                                     &path,
                                 );

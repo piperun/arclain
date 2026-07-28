@@ -19,7 +19,7 @@ pub mod view_state;
 pub use op_guard::OpGuard;
 pub use persistence::{load_collection, save_collection, snapshot, TabRestore, TabsSnapshot};
 pub use plugin_instances::TabPluginPool;
-pub use tab_state::TabState;
+pub use tab_state::{PendingChallenge, TabState};
 pub use tabs_collection::{CloseResult, TabsCollection};
 pub use view_state::BrowserViewState;
 

@@ -108,9 +108,6 @@ impl BrowserController {
             Action::NavigateUp => {
                 self.nav_service.navigate_up(shared.signals());
             }
-            Action::DispatchPendingPluginEvent => {
-                shared.app_state.lock().dispatch_pending_plugin_event();
-            }
             Action::None => {}
         }
     }
@@ -125,28 +122,13 @@ impl BrowserController {
             &mut status_info,
         ) {
             shared.signals().status_bar.set(status_info);
-
-            // password_dialog is per-tab now (post 2026-05-20 B3 reframed slice)
-            let bc_tab = shared.signals().tabs.get().active().clone();
-            let mut password_dialog = bc_tab.password_dialog.get();
-            let mut status_info = shared.signals().status_bar.get();
-            // nav removed
-
-            // archive_info is per-tab Computed<ArchiveInfo> (post 2026-05-20
-            // Tier 2 item 6) — no manual sync needed; the derivation
-            // updates automatically once list_archive populates entries
-            // and archive_extras inside open_archive_by_path.
-            crate::core::operations::archive::open_archive_by_path(
-                &shared.app_state,
-                &extracted_path,
-                // current_path removed
-                &mut password_dialog,
-                &mut status_info,
+            let active_id = shared.signals().tabs.get().active_id();
+            crate::core::operations::archive::start_archive_open(
+                shared,
+                active_id,
+                extracted_path,
+                None,
             );
-
-            // navigation set removed
-            bc_tab.password_dialog.set(password_dialog);
-            shared.signals().status_bar.set(status_info);
         } else {
             shared.signals().status_bar.set(status_info);
         }

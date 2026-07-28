@@ -4,13 +4,10 @@
 //! metadata updates, and extraction progress handling.
 
 use crate::core::signals::AppSignals;
-use crate::core::state::AppState;
 use crate::features::organization;
 use crate::shared::{dialogs, SharedState};
 use eframe::egui;
-use parking_lot::Mutex;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 
 /// Process plugin refresh requests
 pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context) {
@@ -288,8 +285,7 @@ fn open_nested_archive_in_tab(shared_state: &SharedState, archive_path: &std::pa
     signals.tabs.set(col);
 
     crate::core::operations::archive::load_archive_into_tab(
-        shared_state.app_state.clone(),
-        signals.clone(),
+        shared_state,
         target_tab_id,
         archive_path,
     );
@@ -333,12 +329,16 @@ fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String)
 
 /// Restore the previous tab session from `tabs.json` in the config dir.
 ///
-/// Called once during `SharedState::new()`. Reads `restore_tabs_on_launch`
-/// from the already-loaded `user_config` signal. If enabled and the file
-/// exists, replaces the default single-tab collection and spawns background
-/// loads for every tab that had an archive open. Missing files surface
-/// through the existing status-bar error path — no special toast in v1.
-pub fn restore_tabs_on_launch(app_state: &Arc<Mutex<AppState>>, signals: &AppSignals) {
+/// Called once during `SharedState::new()`, after `shared` itself is
+/// fully built (so the archive-open operations this spawns can register
+/// with the operation bridge same as any other open). Reads
+/// `restore_tabs_on_launch` from the already-loaded `user_config` signal.
+/// If enabled and the file exists, replaces the default single-tab
+/// collection and spawns background loads for every tab that had an
+/// archive open. Missing files surface through the existing status-bar
+/// error path — no special toast in v1.
+pub fn restore_tabs_on_launch(shared_state: &SharedState) {
+    let signals = shared_state.signals();
     let user_config = signals.user_config.get();
     if !user_config.restore_tabs_on_launch {
         return;
@@ -369,8 +369,7 @@ pub fn restore_tabs_on_launch(app_state: &Arc<Mutex<AppState>>, signals: &AppSig
 
             for (tab_id, path) in tab_ids_to_load {
                 crate::core::operations::archive::load_archive_into_tab(
-                    app_state.clone(),
-                    signals.clone(),
+                    shared_state,
                     tab_id,
                     &path,
                 );

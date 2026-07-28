@@ -18,15 +18,36 @@ pub fn handle_password_dialogs(ctx: &egui::Context, shared: &SharedState) -> Pas
             match result {
                 PasswordDialogResult::Unlock => {
                     let password = dialog.password.clone();
-                    if let Some(path) = &dialog.target_path {
-                        action = PasswordFeatureAction::PasswordUnlocked {
-                            path: path.clone(),
+                    if let Some(pending) = active_tab.pending_challenge.get() {
+                        if let arclain_app::challenge::Challenge::Password { id, .. } =
+                            pending.challenge
+                        {
+                            action = PasswordFeatureAction::PasswordSubmitted {
+                                operation_id: pending.operation_id,
+                                challenge_id: id,
+                                password,
+                            };
+                        }
+                    } else if let Some(path) = dialog.target_path.clone() {
+                        // No in-flight operation challenge -- this prompt
+                        // was raised by the older single-file-extraction
+                        // "needs a password" trigger instead (see
+                        // `PasswordFeatureAction::PasswordSubmittedForReopen`'s
+                        // own doc comment).
+                        action = PasswordFeatureAction::PasswordSubmittedForReopen {
+                            tab_id: active_tab.id,
+                            path,
                             password,
                         };
                     }
                     dialog.show = false;
                 }
                 PasswordDialogResult::Cancel => {
+                    if let Some(pending) = active_tab.pending_challenge.get() {
+                        action = PasswordFeatureAction::Cancelled {
+                            operation_id: pending.operation_id,
+                        };
+                    }
                     dialog.show = false;
                 }
             }

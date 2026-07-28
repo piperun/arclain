@@ -157,37 +157,14 @@ impl FileOpsService {
     pub fn extract(
         &self,
         shared: &SharedState,
-        ops_state: &mut ArchiveOperationsState,
+        _ops_state: &mut ArchiveOperationsState,
         file: &str,
     ) {
         // Per-row extract receives the stable archive-root path and
-        // bypass selection entirely. extract_selected now takes a
-        // list of paths so we just hand it `[file]` — no need to
-        // synthesize a FileEntry or mutate the user's selection.
-        let selected_paths = vec![file.to_string()];
-
-        // extraction_dialog is per-tab now (post 2026-05-20 B3 reframed
-        // slice 2). The extract call here originates from a row in the
-        // active tab's archive list, so the dialog lives on the active
-        // tab.
+        // bypasses selection entirely — extract_selected takes a list
+        // of paths so we just hand it `[file]`.
         let active_tab = shared.signals().tabs.get().active().clone();
-        let mut temp_status = shared.signals().status_bar.get();
-        let mut dialog = active_tab.extraction_dialog().get();
-
-        operations::extraction::extract_selected(
-            &shared.app_state,
-            &selected_paths,
-            &mut dialog,
-            &mut ops_state.extraction_rx,
-            &mut ops_state.extraction_child,
-            &mut ops_state.extraction_minimized,
-            &mut ops_state.extraction_started,
-            &mut ops_state.extraction_op_guard,
-            &mut ops_state.extraction_origin_tab,
-            &mut temp_status,
-        );
-        shared.signals().status_bar.set(temp_status);
-        active_tab.extraction_dialog().set(dialog);
+        operations::extraction::extract_selected(shared, &active_tab, vec![file.to_string()]);
     }
 
     pub fn read_text(&self, shared: &SharedState, origin: Arc<TabState>, path: String) {

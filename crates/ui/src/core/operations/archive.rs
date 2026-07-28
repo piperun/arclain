@@ -1,29 +1,72 @@
-use crate::core::signals::AppSignals;
-use crate::core::tabs::{OpGuard, TabId, TabState};
-use crate::core::AppState;
-use crate::features::password_management::dialogs;
+use crate::core::tabs::TabId;
 use crate::shared::components::status_bar;
 use crate::shared::dialogs::MergeDialogState;
-use arclain_core::archive::{MultiPartArchive, NavigationState};
+use crate::shared::SharedState;
+use arclain_core::archive::MultiPartArchive;
 use arclain_core::ArchiveBackend;
 use crc32fast::Hasher;
-use parking_lot::Mutex;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tracing::{error, info};
+use tracing::info;
 
-/// Handle opening an archive file via file dialog
+/// Starts opening `path` into `tab_id` through the application facade,
+/// optionally with a password already in hand (the file-open retry flow
+/// in `process_extraction_progress` supplies one when a single-file
+/// extraction failed for want of a password -- everything else passes
+/// `None` and lets the operation raise a `Challenge::Password` itself if
+/// one turns out to be needed). Fire-and-forget: this function returns
+/// as soon as the operation is dispatched, registering its id with
+/// `shared`'s operation-bridge origins so that worker (see
+/// `crate::core::operation_bridge`) can route progress/challenges/
+/// completion back to `tab_id`. Every open in this crate funnels through
+/// here now -- the file dialog, hotkey open, drop, tab restore/
+/// duplicate/reopen-closed, and nested-archive-open call sites just
+/// resolve a path and a target tab first.
+pub fn start_archive_open(
+    shared: &SharedState,
+    tab_id: TabId,
+    path: PathBuf,
+    password: Option<String>,
+) {
+    let Some(app) = shared.facade.clone() else {
+        tracing::error!("[archive] start_archive_open: no application facade available");
+        return;
+    };
+    if let Some(tab) = shared.signals().tabs.get().get(tab_id) {
+        // Reset for a fresh open (mirrors the pre-facade `list_archive`'s
+        // own `tab.current_password.set(None)`); reinstated immediately
+        // when `password` is explicitly supplied (the "reopen with a
+        // just-typed password" flow, mirroring `list_with_password`'s
+        // own `set(Some(password))`) so
+        // `crate::core::operation_bridge::relist_for_browser_signals` can
+        // reuse it once the operation completes, without needing to
+        // reach into the facade's own session for the password it used.
+        tab.current_password.set(password.clone());
+    }
+    let origins = shared.operation_origins.clone();
+    let runtime = shared.services.tokio_runtime.clone();
+    runtime.spawn(async move {
+        match app
+            .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                source_path: path,
+                password: password.map(arclain_app::challenge::SecretInput::new),
+            })
+            .await
+        {
+            Ok(operation_id) => origins.register(operation_id, tab_id),
+            Err(error) => {
+                tracing::error!("[archive] start_open_archive was rejected: {error:?}");
+            }
+        }
+    });
+}
+
+/// Handle opening an archive file via file dialog, into the active tab.
 ///
-/// Post 2026-05-20 Tier 2 (item 6) audit: dropped the `archive_info`
-/// mutable parameter — `tab.archive_info` is now a `Computed<ArchiveInfo>`
-/// derived from `entries` + `archive_path` + `archive_extras`, so the
-/// caller no longer needs to maintain a local mirror.
-pub fn open_archive(
-    state: &Arc<Mutex<AppState>>,
-    // current_path removed
-    password_dialog: &mut dialogs::PasswordDialog,
-    pending_archive_path: &mut Option<PathBuf>,
-    status_info: &mut status_bar::StatusBarInfo,
+/// Multi-part detection happens here (before dispatching the open) since
+/// it needs to redirect to the merge dialog instead -- the only call
+/// site that ever did this pre-facade too.
+pub fn open_archive_via_file_dialog(
+    shared: &SharedState,
     merge_dialog: Option<&mut MergeDialogState>,
 ) {
     if let Some(file) = rfd::FileDialog::new()
@@ -32,239 +75,103 @@ pub fn open_archive(
     {
         info!("File selected: {}", file.display());
 
-        // Check if this is a multi-part archive
         if let Some(multipart) = MultiPartArchive::detect(&file) {
             if let Some(md) = merge_dialog {
                 md.open(multipart);
-                status_info.message =
-                    "Multi-part archive detected. Use the dialog to merge.".to_string();
+                shared.signals().status_bar.update(|status| {
+                    status.message =
+                        "Multi-part archive detected. Use the dialog to merge.".to_string();
+                });
                 return;
             }
         }
 
-        // Reset navigation state entirely for new archive
-        state
-            .lock()
-            .signals
-            .tabs
-            .get()
-            .active()
-            .navigation
-            .set(NavigationState::new());
-
-        let mut st = state.lock();
-        let active_id = st.signals.tabs.get().active_id();
-        match st.list_archive(&file, active_id) {
-            Ok(_) => {
-                // list_archive writes its return value into tab signals;
-                // load_archive_data reads from those signals directly,
-                // so we don't need to thread the entries Vec through.
-                drop(st);
-                load_archive_data(state, password_dialog, pending_archive_path, status_info);
-            }
-            Err(e) => {
-                let err_msg = e.to_string();
-                if err_msg.contains("Wrong password")
-                    || err_msg.contains("Cannot open encrypted")
-                    || err_msg.contains("Can not open encrypted")
-                    || err_msg.contains("Enter password")
-                    || err_msg.contains("code Some(2)")
-                    || err_msg.contains("code Some(255)")
-                {
-                    password_dialog.show = true;
-                    *pending_archive_path = Some(file);
-                    password_dialog.password.clear();
-                    password_dialog.error.clear();
-                    status_info.message = "Archive is password-protected".to_string();
-                } else {
-                    error!("Failed to load archive: {}", err_msg);
-                    status_info.message = format!("Failed to load archive: {}", err_msg);
-                }
-            }
-        }
+        let active_id = shared.signals().tabs.get().active_id();
+        start_archive_open(shared, active_id, file, None);
     }
 }
 
-/// Handle opening an archive file from a specific path (for nested archives)
-///
-/// See [`open_archive`] for the post-Tier-2 (item 6) parameter trim.
-pub fn open_archive_by_path(
-    state: &Arc<Mutex<AppState>>,
-    path: &std::path::Path,
-    // current_path removed - handled via signal reset
-    password_dialog: &mut dialogs::PasswordDialog,
-    status_info: &mut status_bar::StatusBarInfo,
-) {
-    info!("Opening archive from path: {}", path.display());
-    // Reset navigation state entirely for new archive
-    state
-        .lock()
-        .signals
-        .tabs
-        .get()
-        .active()
-        .navigation
-        .set(NavigationState::new());
-
-    let mut st = state.lock();
-    let active_id = st.signals.tabs.get().active_id();
-    match st.list_archive(path, active_id) {
-        Ok(_) => {
-            drop(st);
-            load_archive_data(state, password_dialog, &mut None, status_info);
-        }
-        Err(e) => {
-            let err_msg = e.to_string();
-            if err_msg.contains("Wrong password")
-                || err_msg.contains("Cannot open encrypted")
-                || err_msg.contains("Can not open encrypted")
-                || err_msg.contains("Enter password")
-                || err_msg.contains("code Some(2)")
-                || err_msg.contains("code Some(255)")
-            {
-                password_dialog.show = true;
-                password_dialog.password.clear();
-                password_dialog.error.clear();
-                status_info.message = "Archive is password-protected".to_string();
-            } else {
-                error!("Failed to load archive: {}", err_msg);
-                status_info.message = format!("Failed to load archive: {}", err_msg);
-            }
-        }
-    }
+/// Async archive loader for a specific tab -- the entry point for drop /
+/// multi-tab loads, tab restore, tab duplicate, and reopen-closed-tab,
+/// where the target tab is a specific (possibly non-active) `TabId`
+/// rather than "whichever tab is active right now".
+pub fn load_archive_into_tab(shared: &SharedState, tab_id: TabId, path: &std::path::Path) {
+    start_archive_open(shared, tab_id, path.to_path_buf(), None);
 }
 
-/// Try to open an archive with a password
-///
-/// See [`open_archive`] for the post-Tier-2 (item 6) parameter trim.
-pub fn try_open_with_password(
-    state: &Arc<Mutex<AppState>>,
-    path: &PathBuf,
-    password: &str,
-    password_dialog: &mut dialogs::PasswordDialog,
-    pending_archive_path: &mut Option<PathBuf>,
-    status_info: &mut status_bar::StatusBarInfo,
-) -> bool {
-    let mut st = state.lock();
-    let active_id = st.signals.tabs.get().active_id();
-    // Save the current navigation state before re-listing
-    let saved_current_path = st
-        .signals
-        .tabs
-        .get()
-        .active()
-        .navigation
-        .get()
-        .current_path
-        .clone();
-    let saved_path_stack = st
-        .signals
-        .tabs
-        .get()
-        .active()
-        .navigation
-        .get()
-        .path_stack
-        .clone();
-
-    match st.list_with_password(path, password, active_id) {
-        Ok(_) => {
-            // Restore navigation state after re-listing
-            {
-                let tab = st.signals.tabs.get().active().clone();
-                let mut nav = tab.navigation.get();
-                nav.current_path = saved_current_path;
-                nav.path_stack = saved_path_stack;
-                nav.forward_stack.clear();
-                tab.navigation.set(nav);
-            }
-
-            // Save successful password rule. Audit finding H3:
-            // previously the failure was silently dropped via `.ok()`,
-            // so the next archive open would re-prompt without
-            // explanation. Log so the failure is visible to support.
-            if let Err(e) = st.save_password_rule_from_archive(path, password) {
-                tracing::warn!(
-                    "Failed to persist password rule for {}: {}; user will be \
-                     re-prompted next time they open this archive",
-                    path.display(),
-                    e
-                );
-            }
-
-            drop(st);
-            load_archive_data(state, password_dialog, pending_archive_path, status_info);
-            true
-        }
-        Err(_) => false,
-    }
-}
-
-/// Load archive data and update UI state
-///
-/// Post 2026-05-20 Tier 2 (item 6) audit: no longer takes / mutates a
-/// local `ArchiveInfo` — that struct is now a `Computed<ArchiveInfo>`
-/// derived from `entries` + `archive_path` + `archive_extras`. The CRC
-/// recompute below still mutates `tab.entries` (since per-entry CRC
-/// values get filled in from a backend subprocess); the derivation
-/// picks up the new values on the next `archive_info.get()`.
-pub fn load_archive_data(
-    state: &Arc<Mutex<AppState>>,
-    password_dialog: &mut dialogs::PasswordDialog,
-    pending_archive_path: &mut Option<PathBuf>,
-    status_info: &mut status_bar::StatusBarInfo,
-) {
-    // Audit finding R3: the previous version opened `state.lock()` 6-7
-    // times within this single logical operation, with the gaps in
-    // between holding none of the values it had just read. Concurrent
-    // renders could observe a half-updated AppState. Snapshot everything
-    // we need from `AppState` up front, drop the lock, then do all the
-    // work (CRC computation, signal writes, status updates) lock-free.
-    let snapshot = {
-        let st = state.lock();
-        ArchiveSnapshot {
-            signals: st.signals.clone(),
-            policy: st.encrypted_crc_policy.clone(),
-            pass_rules: st.pass_rules.clone(),
-            last_entries: st.last_entries.clone(),
-            fallback_backend: st.fallback_backend.clone(),
-        }
+/// Re-lists `archive` and refreshes `tab`'s `entries` signal -- used
+/// after a mutation (file-edit save) that changes the archive's
+/// contents but doesn't need the full open-operation apparatus: the
+/// archive is already open in this tab with a known-working password
+/// (if any), so this is a direct backend call, not a fresh
+/// `start_open_archive`.
+pub fn refresh_entries_after_edit(
+    shared: &SharedState,
+    tab: &crate::core::tabs::TabState,
+    archive: &std::path::Path,
+) -> anyhow::Result<()> {
+    let (backend, password) = {
+        let state = shared.app_state.lock();
+        (
+            state.backend_selector.select(archive)?,
+            tab.current_password.get(),
+        )
     };
-    let signals = snapshot.signals;
-    let tab = signals.tabs.get().active().clone();
+    let info = backend.list(archive, password.as_deref())?;
+    tab.entries.set(std::sync::Arc::new(info.entries));
+    Ok(())
+}
 
-    let policy = snapshot.policy;
-    let pending_archive = tab.archive_path.get();
-    let archive_name_owned = pending_archive
+/// Finishes an archive load once the facade's `start_open_archive`
+/// operation has completed and `crate::core::operation_bridge` has
+/// already populated the tab's flat `entries`/`archive_path`/
+/// `archive_extras` signals: precomputes CRC-32 for entries whose
+/// content is encrypted (unless the CRC policy is `on_access`), and
+/// proactively shows the password dialog when the policy is
+/// `prompt_on_open` and the archive turned out to hold encrypted
+/// content the open itself didn't need a password for (headers
+/// unencrypted, but individual files are). Ported from the pre-facade
+/// `load_archive_data`, adapted to read/write signals directly instead
+/// of threading `&mut` out-parameters through a render frame -- the
+/// operation bridge that calls this has no render frame to thread them
+/// through.
+pub fn finish_archive_load(shared: &SharedState, tab: &crate::core::tabs::TabState) {
+    let (policy, pass_rules, last_entries, fallback_backend) = {
+        let state = shared.app_state.lock();
+        (
+            state.encrypted_crc_policy.clone(),
+            state.pass_rules.clone(),
+            state.last_entries.clone(),
+            state.fallback_backend.clone(),
+        )
+    };
+
+    let archive_path = tab.archive_path.get();
+    let archive_name_owned = archive_path
         .as_ref()
         .and_then(|p| p.to_str())
         .map(|s| s.to_string());
-
     let auto_pw = arclain_core::utilities::auto_password_for(
-        &snapshot.pass_rules,
+        &pass_rules,
         archive_name_owned.as_deref(),
-        &snapshot.last_entries,
+        &last_entries,
     );
     let have_pw = tab.current_password.read().is_some() || auto_pw.is_some();
 
     if have_pw && policy != "on_access" {
         let password = tab.current_password.get().or_else(|| auto_pw.clone());
-        let archive_path = pending_archive.clone();
-        let backend = snapshot.fallback_backend.clone();
-        let paths_to_compute: Vec<String> = {
-            let entries_arc = tab.entries.get();
-            let headers_encrypted = tab.archive_extras.get().headers_encrypted;
-            entries_arc
-                .iter()
-                .filter(|e| !e.is_dir && (e.encrypted || headers_encrypted) && e.crc32.is_none())
-                .map(|e| e.path.clone())
-                .collect()
-        };
-
-        if let (Some(pw), Some(arc_path)) = (password, archive_path) {
-            // Each entry triggers a 7z subprocess via crc32_of_entry, so
-            // surface the cost up-front rather than letting the user stare
-            // at a frozen UI for minutes on a multi-thousand-entry archive.
+        if let (Some(pw), Some(arc_path)) = (password, archive_path.clone()) {
+            let paths_to_compute: Vec<String> = {
+                let entries_arc = tab.entries.get();
+                let headers_encrypted = tab.archive_extras.get().headers_encrypted;
+                entries_arc
+                    .iter()
+                    .filter(|e| {
+                        !e.is_dir && (e.encrypted || headers_encrypted) && e.crc32.is_none()
+                    })
+                    .map(|e| e.path.clone())
+                    .collect()
+            };
             if !paths_to_compute.is_empty() {
                 tracing::info!(
                     "[archive] Computing CRC-32 for {} encrypted entries (policy={}). \
@@ -275,72 +182,42 @@ pub fn load_archive_data(
             }
             let mut computed: Vec<(String, String)> = Vec::new();
             for p in paths_to_compute {
-                if let Ok(sum) = backend.crc32_of_entry(&arc_path, &p, Some(&pw)) {
+                if let Ok(sum) = fallback_backend.crc32_of_entry(&arc_path, &p, Some(&pw)) {
                     computed.push((p, sum));
                 }
             }
             if !computed.is_empty() {
                 let mut entries_arc = tab.entries.get();
                 for (p, sum) in computed {
-                    if let Some(e) = Arc::make_mut(&mut entries_arc)
+                    if let Some(e) = std::sync::Arc::make_mut(&mut entries_arc)
                         .iter_mut()
                         .find(|e| e.path == p && e.encrypted && e.crc32.is_none())
                     {
                         e.crc32 = Some(sum);
                     }
                 }
-                // Update signal with modified entries. The
-                // archive_info Computed picks up the new CRC values
-                // automatically next time anyone calls .get().
                 tab.entries.set(entries_arc.clone());
             }
         }
     }
 
-    // Auto-prompt if requested
     if policy == "prompt_on_open" && !have_pw {
         let any_encrypted = tab.entries.get().iter().any(|e| e.encrypted);
         if any_encrypted {
-            password_dialog.show = true;
-            password_dialog.password.clear();
-            password_dialog.error.clear();
-            *pending_archive_path = pending_archive;
-            status_info.message = "Password required to access encrypted content".to_string();
+            let mut dialog = tab.password_dialog.get();
+            dialog.show = true;
+            dialog.password.clear();
+            dialog.error.clear();
+            tab.password_dialog.set(dialog);
+            shared.signals().status_bar.update(|status| {
+                status.message = "Password required to access encrypted content".to_string();
+            });
         }
     }
-
-    // Status bar pulls counts/sizes/format from the Computed archive_info
-    // each render — no manual mirror writes (the mirror fields are gone
-    // from StatusBarInfo as of Tier 2 item 7).
-    status_info.message = "Archive loaded successfully".to_string();
-
-    // Populate view entries for the initial file list display
-    crate::core::operations::navigation_view::refresh_view_entries(&signals);
-}
-
-/// Snapshot of AppState fields needed by `load_archive_data`. Built
-/// once under a single `state.lock()` to avoid the relock-window
-/// pattern flagged by audit finding R3.
-struct ArchiveSnapshot {
-    signals: crate::core::signals::AppSignals,
-    policy: String,
-    pass_rules: Vec<arclain_core::utilities::PassRule>,
-    last_entries: Vec<String>,
-    fallback_backend: arclain_core::backends::sevenz_cli::SevenZipCli,
 }
 
 /// Archive information state — output shape of the per-tab
 /// `Computed<ArchiveInfo>` (see `TabState::archive_info`).
-///
-/// Post 2026-05-20 Tier 2 (item 6): this struct is derived data, no
-/// longer a `Signal<T>`. The derivation reads `entries` + `archive_path`
-/// (for counts / sizes / format / total_crc32) and `archive_extras`
-/// (for the encryption fields the backend reports on `list`). The
-/// `archive_loaded` field is gone — callers use `TabState::archive_loaded`
-/// directly. The dead `plugin_metadata: Option<serde_json::Value>` field
-/// (always `None`, never written) was dropped in the 2026-05-20 Tier 2
-/// cleanup; the properties-panel reader uses `TabState::metadata`
-/// directly.
 #[derive(Default, Clone)]
 pub struct ArchiveInfo {
     pub archive_format: String,
@@ -355,8 +232,8 @@ pub struct ArchiveInfo {
 
 /// Non-derivable inputs to `ArchiveInfo` — fields the backend's `list`
 /// call surfaces that can't be re-computed from `entries`/`archive_path`.
-/// Written by `AppState::list_archive` / `list_with_password` and read
-/// by the `Computed<ArchiveInfo>` derivation on `TabState`.
+/// Written by `crate::core::operation_bridge`'s `relist_for_browser_signals`
+/// and read by the `Computed<ArchiveInfo>` derivation on `TabState`.
 #[derive(Default, Clone)]
 pub struct ArchiveExtras {
     pub archive_encrypted: bool,
@@ -420,8 +297,9 @@ pub fn derive_archive_info(
         total_crc32,
     }
 }
+
 pub fn convert_archive(
-    state: &Arc<Mutex<AppState>>,
+    state: &std::sync::Arc<parking_lot::Mutex<crate::core::AppState>>,
     status_info: &mut status_bar::StatusBarInfo,
     conversion_dialog: &mut crate::shared::dialogs::ExtractionProgressDialog,
     conversion_rx: &mut Option<
@@ -429,10 +307,12 @@ pub fn convert_archive(
     >,
     conversion_child: &mut Option<std::process::Child>,
     conversion_started: &mut Option<std::time::Instant>,
-    conversion_op_guard: &mut Option<OpGuard>,
-    conversion_origin_tab: &mut Option<Arc<TabState>>,
+    conversion_op_guard: &mut Option<crate::core::tabs::OpGuard>,
+    conversion_origin_tab: &mut Option<std::sync::Arc<crate::core::tabs::TabState>>,
     options: arclain_core::ConvertOptions,
 ) {
+    use tracing::error;
+
     let signals = state.lock().signals.clone();
     let tab = signals.tabs.get().active().clone();
     let current_archive = tab.archive_path.get();
@@ -586,7 +466,7 @@ pub fn convert_archive(
                 *conversion_child = Some(handle.child);
                 *conversion_started = Some(std::time::Instant::now());
                 // Wire per-tab in_flight_ops counter and cancel origin.
-                *conversion_op_guard = Some(OpGuard::new(&tab));
+                *conversion_op_guard = Some(crate::core::tabs::OpGuard::new(&tab));
                 *conversion_origin_tab = Some(tab.clone());
                 status_info.message = "Converting archive...".to_string();
             }
@@ -597,150 +477,6 @@ pub fn convert_archive(
             }
         }
     }
-}
-
-/// Async archive loader for a specific tab.
-///
-/// Spawns a background thread that lists the archive and writes results
-/// into `tab_id`'s signals. This is the preferred entry point for drop /
-/// multi-tab loads — it targets a known TabId regardless of which tab is
-/// active at completion time.
-///
-/// Per-tab signals (`entries`, `archive_path`, `browser_view_state`,
-/// `password_dialog`, …) are auto-bound to the egui ctx-repaint via
-/// `TabState::bind_to_context_once`, which `AppSignals::bind_to_context`
-/// sweeps over every tab on creation. The bound subscribers each call
-/// `ctx.request_repaint()` on `.set()`, which SHOULD wake the event
-/// loop from a worker thread.
-///
-/// In practice this is flaky depending on the egui/winit version and
-/// the windowing backend (XWayland in particular has missed wakes that
-/// leave the dialog hidden until the next mouse event — symptom: "drop
-/// an archive and nothing happens until I click somewhere"). To close
-/// that gap we also kick a repaint explicitly via `signals.kick_repaint()`
-/// at the end of the worker — cheap, idempotent, and short-circuits
-/// any backend wake-up quirks. The egui ctx is stashed in `AppSignals`
-/// at bind-time so we don't need to thread it through every caller.
-pub fn load_archive_into_tab(
-    state: Arc<Mutex<AppState>>,
-    signals: AppSignals,
-    tab_id: TabId,
-    path: &std::path::Path,
-) {
-    let Some(tab) = signals.tabs.get().get(tab_id).cloned() else {
-        tracing::warn!("[tabs] load_archive_into_tab: tab {:?} not found", tab_id);
-        return;
-    };
-
-    let path_owned = path.to_path_buf();
-    std::thread::spawn(move || {
-        let mut st = state.lock();
-        // Pass the explicit tab_id — without it, list_archive
-        // resolves through `signals.tabs.get().active()`, which for
-        // background batch loads is whichever tab was active when
-        // the mutex was acquired. Multi-drop opens were all writing
-        // entries + queued plugin events into the same (active)
-        // tab. See archive_ops.rs::list_archive for the full
-        // rationale.
-        match st.list_archive(&path_owned, tab_id) {
-            Ok(archive_entries) => {
-                drop(st);
-                tab.entries.set(std::sync::Arc::new(archive_entries));
-                tab.archive_path.set(Some(path_owned.clone()));
-                tab.navigation
-                    .set(arclain_core::archive::NavigationState::new());
-                // Populate this tab's browser snapshot so the file list
-                // renders immediately. Without this, the UI shows an
-                // empty list at root until the user navigates into
-                // a folder (which triggers refresh elsewhere).
-                crate::core::operations::navigation_view::refresh_view_entries_for_tab(
-                    &signals, tab_id,
-                );
-            }
-            Err(e) => {
-                drop(st);
-                // {:#} renders the full anyhow chain joined with ": ".
-                // The fallback_backend wraps the underlying error with
-                // a "Both X and Y backends failed" context, which makes
-                // the top-level message lose the actual cause (the
-                // "Permission denied" / "No such file" / etc text that
-                // the classifier needs). The alternate-display form
-                // includes both the context and the chain, so the
-                // classifier sees the original kernel/CLI error.
-                let err_msg = format!("{:#}", e);
-
-                // Classify first so we can short-circuit OS-level
-                // failures (EACCES, ENOENT, EISDIR, EIO) before the
-                // password classifier runs. The password classifier
-                // matches the 7z exit code `code Some(2)` which is
-                // "fatal error" — also returned for permission
-                // denials. Without this short-circuit, every EACCES
-                // landed on the password dialog. The classifier here
-                // catches them deterministically.
-                use crate::shared::dialogs::{
-                    archive_error_dialog::gather_diagnostic, classify_archive_error,
-                    ArchiveErrorDialogState, ArchiveErrorKind,
-                };
-                let kind = classify_archive_error(&err_msg);
-                let is_os_level_failure = matches!(
-                    kind,
-                    ArchiveErrorKind::PermissionDenied
-                        | ArchiveErrorKind::FileNotFound
-                        | ArchiveErrorKind::IsADirectory
-                        | ArchiveErrorKind::IoError
-                );
-
-                if !is_os_level_failure && is_password_error(&err_msg) {
-                    // password_dialog is per-tab now (post 2026-05-20 B3
-                    // reframed slice). Write to the originating tab's
-                    // signal — multi-drop scenarios where each encrypted
-                    // archive queues a prompt now each land on the
-                    // correct tab without overwriting each other.
-                    let mut pwd = tab.password_dialog.get();
-                    pwd.show = true;
-                    pwd.password.clear();
-                    pwd.error.clear();
-                    pwd.target_path = Some(path_owned.clone());
-                    tab.password_dialog.set(pwd);
-                } else {
-                    tracing::error!("[tabs] load_archive_into_tab failed: {}", err_msg);
-                    let mut bar = signals.status_bar.get();
-                    bar.message = format!("Failed to load archive: {}", err_msg);
-                    signals.status_bar.set(bar);
-
-                    // Surface the failure in a modal so users don't
-                    // stare at an empty entry list wondering what's
-                    // wrong. Permission errors get a specialized
-                    // section with the exact chown/chmod commands;
-                    // everything else gets the raw backend message.
-                    // We also stat the file at error time so the
-                    // dialog can show concrete owner/mode/current-uid
-                    // (the "why") rather than just the symptom ("how").
-                    let diagnostic = if kind == ArchiveErrorKind::PermissionDenied {
-                        gather_diagnostic(&path_owned)
-                    } else {
-                        None
-                    };
-                    signals.archive_error_dialog.set(ArchiveErrorDialogState {
-                        show: true,
-                        archive_path: Some(path_owned.clone()),
-                        kind,
-                        raw_error: err_msg,
-                        diagnostic,
-                    });
-                }
-            }
-        }
-        // Explicit repaint kick — see kick_repaint() docs in signals.rs.
-        // Gated behind ARCLAIN_NO_KICK=1 so we can A/B test whether the
-        // bound signal subscriber alone is enough to wake the loop, or
-        // whether this explicit redundant call is doing real work.
-        if std::env::var_os("ARCLAIN_NO_KICK").is_none() {
-            signals.kick_repaint();
-        } else {
-            tracing::debug!("[experiment] kick_repaint skipped via ARCLAIN_NO_KICK");
-        }
-    });
 }
 
 /// Detect whether a backend error message indicates a password

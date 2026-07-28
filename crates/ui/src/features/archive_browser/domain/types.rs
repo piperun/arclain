@@ -35,15 +35,6 @@ pub enum Action {
     NavigateForward,
     /// Navigate up one level
     NavigateUp,
-    /// Fire any plugin event that was deferred until after the first
-    /// post-archive-open render frame. Emitted by `render_archive_browser`
-    /// when the active tab's `ui_ready` flag is false and no
-    /// user-driven action is firing the same frame; the controller
-    /// flips `ui_ready=true` after dispatching. Specifically NOT a
-    /// user-initiated action — pulled into the enum so the lifecycle
-    /// dispatch goes through the same channel as everything else
-    /// instead of locking app_state directly from inside render.
-    DispatchPendingPluginEvent,
     /// No action
     None,
 }

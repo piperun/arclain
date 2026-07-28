@@ -140,31 +140,20 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     );
                 }
                 if actions.open {
-                    // Sync from signals
-                    let open_tab = shared_state.signals().tabs.get().active().clone();
-                    // password_dialog is per-tab now (post 2026-05-20 B3 reframed slice)
-                    let mut password_dialog = open_tab.password_dialog.get();
-                    let mut status_info = shared_state.signals().status_bar.get();
                     // merge_dialog is per-tab now (post 2026-05-20 audit B2 follow-up)
+                    let open_tab = shared_state.signals().tabs.get().active().clone();
                     let mut merge_dialog = open_tab.merge_dialog.get();
-                    // nav removed
 
-                    // archive_info parameter dropped post 2026-05-20 Tier 2
-                    // item 6 — the Computed derives the value from
-                    // entries + archive_path + archive_extras.
-                    operations::archive::open_archive(
-                        &app.shared_state.app_state,
-                        // current_path removed
-                        &mut password_dialog,
-                        &mut app._pending_archive_path,
-                        &mut status_info,
+                    // Opening itself now goes through the application
+                    // facade (`start_archive_open`), driven by
+                    // `crate::core::operation_bridge` -- see that
+                    // module for how progress/challenges/completion
+                    // route back onto this tab's signals.
+                    operations::archive::open_archive_via_file_dialog(
+                        &shared_state,
                         Some(&mut merge_dialog),
                     );
 
-                    // Sync back to signals
-                    // navigation set removed
-                    open_tab.password_dialog.set(password_dialog);
-                    shared_state.signals().status_bar.set(status_info);
                     open_tab.merge_dialog.set(merge_dialog);
                 }
                 if actions.extract {
@@ -174,9 +163,6 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                     let active_tab = shared_state.signals().tabs.get().active().clone();
                     let view_state = active_tab.browser_view_state.get();
                     let entries = active_tab.browser_entries.get();
-                    let ops_state = app.archive_operations.state_mut();
-                    let mut status_info = shared_state.signals().status_bar.get();
-                    let mut dialog = active_tab.extraction_dialog().get();
 
                     // Compute the archive-root paths to extract from the
                     // active tab's selection. Selection lives in the
@@ -188,39 +174,14 @@ pub fn render_toolbar(app: &mut ArclainApp, ctx: &egui::Context) {
                         .map(|e| e.archive_path.clone())
                         .collect();
                     operations::extraction::extract_selected(
-                        &app.shared_state.app_state,
-                        &selected_paths,
-                        &mut dialog,
-                        &mut ops_state.extraction_rx,
-                        &mut ops_state.extraction_child,
-                        &mut ops_state.extraction_minimized,
-                        &mut ops_state.extraction_started,
-                        &mut ops_state.extraction_op_guard,
-                        &mut ops_state.extraction_origin_tab,
-                        &mut status_info,
+                        &shared_state,
+                        &active_tab,
+                        selected_paths,
                     );
-                    shared_state.signals().status_bar.set(status_info);
-                    active_tab.extraction_dialog().set(dialog);
                 }
                 if actions.extract_all {
                     let active_tab = shared_state.signals().tabs.get().active().clone();
-                    let ops_state = app.archive_operations.state_mut();
-                    let mut status_info = shared_state.signals().status_bar.get();
-                    let mut dialog = active_tab.extraction_dialog().get();
-
-                    operations::extraction::extract_all(
-                        &app.shared_state.app_state,
-                        &mut dialog,
-                        &mut ops_state.extraction_rx,
-                        &mut ops_state.extraction_child,
-                        &mut ops_state.extraction_minimized,
-                        &mut ops_state.extraction_started,
-                        &mut ops_state.extraction_op_guard,
-                        &mut ops_state.extraction_origin_tab,
-                        &mut status_info,
-                    );
-                    shared_state.signals().status_bar.set(status_info);
-                    active_tab.extraction_dialog().set(dialog);
+                    operations::extraction::extract_all(&shared_state, &active_tab);
                 }
                 if actions.add {
                     let mut status_info = shared_state.signals().status_bar.get();
