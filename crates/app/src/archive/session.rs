@@ -465,6 +465,25 @@ impl EntryIndex {
     pub(crate) fn total_uncompressed_size(&self) -> u64 {
         self.total_uncompressed_size
     }
+
+    /// The archive-relative path and kind of one entry, or `None` if
+    /// `entry_id` was never minted into this revision's index (a stale id
+    /// from a superseded revision, or one a caller fabricated).
+    fn get(&self, entry_id: EntryId) -> Option<&ArchiveEntryDto> {
+        self.by_id.get(&entry_id)
+    }
+
+    /// Every `File` entry's archive-relative path, in no particular
+    /// order. What a whole-archive extraction pre-scans for destination
+    /// collisions -- there is no `EntryId` selection to resolve in that
+    /// case, only "every file this archive would write".
+    fn file_paths(&self) -> Vec<String> {
+        self.by_id
+            .values()
+            .filter(|dto| dto.kind == EntryKind::File)
+            .map(|dto| dto.path.as_str().to_string())
+            .collect()
+    }
 }
 
 /// One folder's running aggregate across every descendant file at any
@@ -578,10 +597,10 @@ impl ArchiveSession {
         &self.id_assigner
     }
 
-    /// Not read by anything this task adds: a future extract/mutate
-    /// operation is the intended caller (it needs the archive's original
-    /// source path alongside the backend handle `archive_arc` returns).
-    #[allow(dead_code)]
+    /// The archive's original source path, alongside the backend handle
+    /// [`Self::archive_arc`] returns. Read by the extraction operation
+    /// (`crate::operations::extract`) to resolve what to hand the CLI
+    /// runner.
     pub(crate) fn source_path(&self) -> &Path {
         &self.source_path
     }
@@ -596,12 +615,10 @@ impl ArchiveSession {
     /// backend call through this handle (see the crate's runtime/executor
     /// rules); nothing in this type enforces that itself.
     ///
-    /// Not called by anything this task adds (open/close/list/snapshot are
-    /// all read-only queries that never need the backend handle again
-    /// once the session is indexed); kept as the seam a future extract/
-    /// mutate task reuses rather than re-deriving its own way to reach the
-    /// backend a session already resolved.
-    #[allow(dead_code)]
+    /// Read by the extraction operation (`crate::operations::extract`) to
+    /// reuse the exact password the session was opened with, rather than
+    /// re-deriving its own way to reach the backend a session already
+    /// resolved.
     pub(crate) fn archive_arc(&self) -> Arc<Mutex<arclain_core::Archive>> {
         self.archive.clone()
     }
@@ -691,6 +708,66 @@ impl ArchiveSession {
             total,
             entries,
         }
+    }
+
+    /// Resolves `entry_ids` to the concrete archive-relative file paths
+    /// an extraction hands to the CLI backend: a `File` (or `Symlink`,
+    /// see [`kind_sort_key`]'s own comment on why that variant is treated
+    /// like `File`) entry resolves to its own path; a `Directory` entry
+    /// expands to every descendant file at any depth, matching
+    /// [`EntryIndex::build`]'s own recursive-prefix convention (see
+    /// [`aggregate_folder`]). Paths reached through more than one
+    /// requested id (a file requested directly AND via an ancestor
+    /// directory also in `entry_ids`) are deduplicated.
+    ///
+    /// Every returned path already passed [`ArchivePath::parse`] at index-
+    /// build time (never absolute, never containing a `..` segment) --
+    /// [`EntryIndex::build`] skips any entry that fails that check, so it
+    /// never receives an [`EntryId`] in the first place. A caller can
+    /// therefore never smuggle a path-traversal string into an
+    /// extraction's file list merely by selecting entries through this
+    /// method.
+    ///
+    /// Returns the first entry id not present in this session's current
+    /// index, if any -- a stale id from a superseded revision, or one the
+    /// caller fabricated.
+    pub(crate) fn resolve_extractable_paths(
+        &self,
+        entry_ids: &[EntryId],
+    ) -> Result<Vec<String>, EntryId> {
+        let index = self.entry_index.read();
+        let mut seen = std::collections::HashSet::new();
+        let mut paths = Vec::new();
+        for &id in entry_ids {
+            let dto = index.get(id).ok_or(id)?;
+            match dto.kind {
+                EntryKind::File | EntryKind::Symlink => {
+                    if seen.insert(dto.path.as_str().to_string()) {
+                        paths.push(dto.path.as_str().to_string());
+                    }
+                }
+                EntryKind::Directory => {
+                    let prefix = format!("{}/", dto.path.as_str());
+                    for candidate in index.by_id.values() {
+                        if candidate.kind == EntryKind::File
+                            && candidate.path.as_str().starts_with(&prefix)
+                            && seen.insert(candidate.path.as_str().to_string())
+                        {
+                            paths.push(candidate.path.as_str().to_string());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(paths)
+    }
+
+    /// Every `File` entry's archive-relative path in this session's
+    /// current index. What a whole-archive extraction pre-scans for
+    /// destination collisions -- there is no `EntryId` selection to
+    /// resolve in that case, only "every file this archive would write".
+    pub(crate) fn all_file_paths(&self) -> Vec<String> {
+        self.entry_index.read().file_paths()
     }
 }
 
@@ -1223,6 +1300,67 @@ mod tests {
         let page = session.list_entries(&request("no/such/folder"));
         assert_eq!(page.total, 0);
         assert!(page.entries.is_empty());
+    }
+
+    #[test]
+    fn resolve_extractable_paths_expands_a_directory_id_to_its_descendant_files() {
+        let entries = vec![
+            file("game/Game.exe", 1, 1),
+            file("game/data/save.dat", 1, 1),
+            file("readme.txt", 1, 1),
+        ];
+        let session = session_with(&entries);
+        let root = session.list_entries(&request(""));
+        let game_dir = root.entries.iter().find(|e| e.name == "game").unwrap();
+
+        let resolved = session
+            .resolve_extractable_paths(&[game_dir.id])
+            .expect("a real directory id must resolve");
+
+        let mut resolved = resolved;
+        resolved.sort();
+        assert_eq!(resolved, ["game/Game.exe", "game/data/save.dat"]);
+    }
+
+    #[test]
+    fn resolve_extractable_paths_deduplicates_a_file_reached_two_ways() {
+        let entries = vec![file("game/Game.exe", 1, 1)];
+        let session = session_with(&entries);
+        let root = session.list_entries(&request(""));
+        let game_dir = root.entries.iter().find(|e| e.name == "game").unwrap();
+        let nested = session.list_entries(&request("game"));
+        let game_exe = nested
+            .entries
+            .iter()
+            .find(|e| e.name == "Game.exe")
+            .unwrap();
+
+        // Requesting both the directory AND the file it already contains
+        // must not extract the same file twice.
+        let resolved = session
+            .resolve_extractable_paths(&[game_dir.id, game_exe.id])
+            .unwrap();
+        assert_eq!(resolved, ["game/Game.exe"]);
+    }
+
+    #[test]
+    fn resolve_extractable_paths_rejects_an_unknown_entry_id() {
+        let entries = vec![file("a.txt", 1, 1)];
+        let session = session_with(&entries);
+        let bogus = EntryId::from_raw(999_999);
+
+        let error = session.resolve_extractable_paths(&[bogus]).unwrap_err();
+        assert_eq!(error, bogus);
+    }
+
+    #[test]
+    fn all_file_paths_lists_every_file_but_no_synthesized_folders() {
+        let entries = vec![file("a.txt", 1, 1), file("dir/b.txt", 1, 1)];
+        let session = session_with(&entries);
+
+        let mut paths = session.all_file_paths();
+        paths.sort();
+        assert_eq!(paths, ["a.txt", "dir/b.txt"]);
     }
 
     #[test]

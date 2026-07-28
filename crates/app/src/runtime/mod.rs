@@ -200,6 +200,13 @@ pub(crate) struct AppRuntime {
     /// encrypted archive fixture. Always `None` outside tests: production
     /// `BootstrapConfig::system_default()` never sets it.
     archive_backend_override: Option<Arc<dyn ArchiveBackend>>,
+    /// The extraction operation's CLI-spawning seam (see
+    /// `crate::operations::extract::ExtractRunner`). Always set, unlike
+    /// `archive_backend_override`: there is no separate "real" code path
+    /// to fall back to when no test override is given, so `bootstrap::run`
+    /// always installs either the configured override or a real
+    /// `SevenZipRunner`.
+    extract_runner: Arc<dyn crate::operations::extract::ExtractRunner>,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
@@ -244,6 +251,10 @@ impl AppRuntime {
 
     pub(crate) fn archive_backend_override(&self) -> Option<Arc<dyn ArchiveBackend>> {
         self.archive_backend_override.clone()
+    }
+
+    pub(crate) fn extract_runner(&self) -> Arc<dyn crate::operations::extract::ExtractRunner> {
+        self.extract_runner.clone()
     }
 
     pub(crate) fn pass_rules(&self) -> Vec<PassRule> {
@@ -450,6 +461,43 @@ impl ArclainApp {
         })
         .await?
     }
+
+    // ============= Task 6: extraction operation (start) =============
+    // Kept in its own clearly-delimited section: a concurrent worktree
+    // for a different task also edits this file, and this delimiter
+    // minimizes merge friction between the two.
+
+    /// Starts extracting entries (or, with an empty `entry_ids`, the
+    /// whole archive) from an open session as a cancellable, event-
+    /// broadcasting operation. Returns as soon as the operation is
+    /// recorded `Accepted`; the facade owns process spawning and
+    /// cancellation for the CLI extraction this drives -- egui no longer
+    /// holds a child-process handle directly (see
+    /// `crate::operations::extract`). Subscribe via
+    /// [`Self::subscribe_operations`] to observe `Started` / `Progress` /
+    /// `Challenge` (a password retry or a collision confirmation) /
+    /// `Completed` / `Cancelled` / `Failed`.
+    pub async fn start_extract(
+        &self,
+        request: crate::operations::extract::ExtractRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let (operation_id, cancel) = inner.operations().begin(OperationKind::Extract).await;
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(crate::operations::extract::run_extract(
+                    worker_inner,
+                    operation_id,
+                    cancel,
+                    request,
+                ));
+            }
+            operation_id
+        })
+        .await
+    }
+
+    // ============== Task 6: extraction operation (end) ==============
 
     /// Subscribes to the operation-event stream. See
     /// `OperationRegistry::subscribe`.

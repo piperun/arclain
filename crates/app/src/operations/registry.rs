@@ -290,6 +290,26 @@ impl OperationRegistry {
             .unwrap_or(false)
     }
 
+    /// Awaits until `operation_id` is flagged for cancellation. Polls
+    /// [`Self::is_cancelled`] on a fixed interval rather than a push-based
+    /// notification -- cancellation is rare and not latency-critical, so
+    /// a lightweight poll avoids a second notification primitive per
+    /// operation alongside the broadcast channel and challenge waiter
+    /// this registry already has. Shared by every operation kind that
+    /// raises a challenge and must stop waiting for a response once
+    /// cancelled (`crate::runtime::archive_ops`,
+    /// `crate::operations::extract`) -- both used to keep their own
+    /// private copy of this exact loop before a second challenge-raising
+    /// operation kind existed to justify centralizing it.
+    pub(crate) async fn wait_until_cancelled(&self, operation_id: OperationId) {
+        loop {
+            if self.is_cancelled(operation_id).await {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+
     /// Resolves the pending challenge on `operation_id`, provided
     /// `challenge_id` matches the challenge that operation is actually
     /// waiting on. Rejects a mismatched challenge id, a challenge id

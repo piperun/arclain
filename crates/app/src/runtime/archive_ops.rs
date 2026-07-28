@@ -13,9 +13,8 @@
 //! `current_password` fields could.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use std::time::Duration;
 
 use arclain_core::archive::{ArchiveKind, MultiPartArchive};
 use arclain_core::backends::BackendSelector;
@@ -24,23 +23,12 @@ use arclain_core::{ArchiveBackend, ArchiveInfo};
 use arclain_plugins::PluginEvent;
 
 use crate::archive::OpenArchiveRequest;
-use crate::challenge::{Challenge, ChallengeResponse};
+use crate::challenge::{next_challenge_id, Challenge, ChallengeResponse};
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::event::{OperationResult, OperationState};
-use crate::ids::{ChallengeId, OperationId};
+use crate::ids::OperationId;
 
 use super::AppRuntime;
-
-/// Mints a fresh, process-wide-unique [`ChallengeId`] for a password
-/// challenge this worker raises. Local to this module for now (the only
-/// challenge-raising flow that exists yet); a later task adding more
-/// challenge-raising operation kinds may want to centralize this the same
-/// way `crate::operations::registry::next_operation_id` is the one
-/// minting point for every `OperationId`.
-fn next_challenge_id() -> ChallengeId {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    ChallengeId::from_raw(NEXT.fetch_add(1, Ordering::Relaxed))
-}
 
 /// Detects whether a backend error message indicates a password failure.
 ///
@@ -246,20 +234,6 @@ fn multipart_error(path: &Path, multipart: &MultiPartArchive) -> ApplicationErro
     ))
     .with_recoverability(Recoverability::UserAction)
     .with_path(path.to_path_buf())
-}
-
-/// Polls `operation_id`'s cancellation flag until it is set. Only ever
-/// awaited from inside this worker's own task, which is itself spawned
-/// through the application's owned runtime handle (see
-/// `ArclainApp::start_open_archive`), so this timer is never at the
-/// mercy of a foreign executor.
-async fn wait_until_cancelled(inner: &Arc<AppRuntime>, operation_id: OperationId) {
-    loop {
-        if inner.operations().is_cancelled(operation_id).await {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
 }
 
 async fn fail(inner: &Arc<AppRuntime>, operation_id: OperationId, error: ApplicationError) {
@@ -528,7 +502,7 @@ pub(super) async fn run_open_archive(
 
                 let response = tokio::select! {
                     response = receiver => response,
-                    () = wait_until_cancelled(&inner, operation_id) => {
+                    () = inner.operations().wait_until_cancelled(operation_id) => {
                         inner.challenges().cancel(operation_id);
                         return;
                     }
@@ -575,7 +549,7 @@ pub(super) async fn run_open_archive(
 mod tests {
     use super::*;
     use std::path::PathBuf;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Deterministic fake backend for the password/encryption
     /// characterization tests below: `list`'s behavior for both the

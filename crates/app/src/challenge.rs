@@ -2,7 +2,23 @@
 //! caller's answer to one, and the secret-carrying container that answer
 //! is built from.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::ids::ChallengeId;
+
+/// Mints a fresh, process-wide-unique [`ChallengeId`] for a challenge an
+/// in-flight operation raises. The one minting point for every
+/// `ChallengeId`, shared by every challenge-raising operation kind
+/// (`crate::runtime::archive_ops`, `crate::operations::extract`) --
+/// mirrors `crate::operations::registry::next_operation_id`'s exact
+/// pattern (a function-local atomic counter, not a store), centralized
+/// here once a second challenge-raising operation kind actually existed
+/// to justify it (see `archive_ops::next_challenge_id`'s predecessor
+/// comment, which anticipated exactly this).
+pub(crate) fn next_challenge_id() -> ChallengeId {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    ChallengeId::from_raw(NEXT.fetch_add(1, Ordering::Relaxed))
+}
 
 /// A single secret value (an archive or vault password) supplied by a
 /// caller, held only long enough to hand to the backend that needs it.

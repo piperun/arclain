@@ -67,6 +67,13 @@ pub struct BootstrapConfig {
     /// depending on a real encrypted archive fixture. Always `None` in
     /// `system_default()`.
     pub archive_backend_override: Option<Arc<dyn arclain_core::ArchiveBackend>>,
+    /// Test-only seam: when set, every `start_extract` call spawns
+    /// through this runner instead of the real 7-Zip CLI. Lets a test
+    /// exercise the real `start_extract` operation (progress, collision/
+    /// password challenges, retries, cancellation) deterministically --
+    /// see `crate::operations::extract::ExtractRunner`. Always `None` in
+    /// `system_default()`.
+    pub extract_runner_override: Option<Arc<dyn crate::operations::extract::ExtractRunner>>,
 }
 
 /// Hand-written rather than `#[derive(Debug)]`: `dyn arclain_core::
@@ -82,18 +89,23 @@ impl std::fmt::Debug for BootstrapConfig {
                 "archive_backend_override_is_set",
                 &self.archive_backend_override.is_some(),
             )
+            .field(
+                "extract_runner_override_is_set",
+                &self.extract_runner_override.is_some(),
+            )
             .finish()
     }
 }
 
 impl BootstrapConfig {
     /// The configuration a real, non-test launch uses: OS-conventional
-    /// paths, default worker thread count, no backend override.
+    /// paths, default worker thread count, no backend/runner overrides.
     pub fn system_default() -> Self {
         Self {
             paths_override: None,
             worker_threads: None,
             archive_backend_override: None,
+            extract_runner_override: None,
         }
     }
 }
@@ -403,6 +415,17 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         plugin_manager = Some(Arc::new(SyncMutex::new(manager)));
     }
 
+    // Extraction's CLI-spawning seam: an explicit test override wins;
+    // otherwise the real 7-Zip CLI this same bootstrap just detected
+    // (`fallback_backend`) -- the exact binary every other archive
+    // operation in this application already falls back to.
+    let extract_runner: Arc<dyn crate::operations::extract::ExtractRunner> =
+        config.extract_runner_override.unwrap_or_else(|| {
+            Arc::new(crate::operations::extract::SevenZipRunner::new(
+                fallback_backend.clone(),
+            ))
+        });
+
     let session = SessionStore {
         core_services: Arc::new(core_services),
         plugin_manager,
@@ -428,6 +451,7 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         archive_sessions: crate::archive::ArchiveSessionStore::new(),
         challenges: ChallengeWaiters::new(),
         archive_backend_override: config.archive_backend_override,
+        extract_runner,
         shut_down: std::sync::atomic::AtomicBool::new(false),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })

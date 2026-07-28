@@ -8,18 +8,23 @@
 //! Earlier tasks added the identifier ([`ids`]), error-envelope
 //! ([`error`]), archive read-model ([`archive`]), secret/challenge
 //! ([`challenge`]), and operation-event ([`event`]) types, plus the
-//! [`operations`] registry those events are broadcast through.
-//! `operations` is declared `pub` so the module path is stable per the
-//! facade contract, but everything inside it is `pub(crate)`: the
-//! registry is an implementation detail behind the application facade,
-//! never a type a frontend names directly.
+//! [`operations`] registry those events are broadcast through, and
+//! [`runtime`]: the [`runtime::ArclainApp`] facade itself, which owns the
+//! Tokio runtime and composes every headless service `crates/ui`'s
+//! initialization used to build directly.
 //!
-//! This task adds [`runtime`]: the [`runtime::ArclainApp`] facade itself,
-//! which owns the Tokio runtime and composes every headless service
-//! `crates/ui`'s initialization used to build directly. The remaining
-//! modules from the full facade contract (`materialization`, `plugins`,
-//! `settings`) are added incrementally by later tasks; this crate
-//! declares only the modules it actually implements so far.
+//! `operations`'s own registry/challenge-waiter internals stay
+//! `pub(crate)` -- implementation details behind the application facade,
+//! never named by a frontend directly -- but it also hosts one
+//! submodule per operation *kind* (starting with `operations::extract`),
+//! each contributing its own genuinely public request type
+//! (`operations::ExtractRequest`, and so on as later tasks add
+//! `start_convert`/`start_organize`/etc.).
+//!
+//! The remaining modules from the full facade contract
+//! (`materialization`, `plugins`, `settings`) are added incrementally by
+//! later tasks; this crate declares only the modules it actually
+//! implements so far.
 
 pub mod archive;
 pub mod challenge;

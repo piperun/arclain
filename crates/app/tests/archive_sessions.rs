@@ -81,6 +81,7 @@ fn bootstrap_app(temp: &tempfile::TempDir) -> ArclainApp {
         paths_override: Some(paths),
         worker_threads: None,
         archive_backend_override: None,
+        extract_runner_override: None,
     })
     .expect("bootstrap must succeed")
 }
@@ -529,6 +530,7 @@ fn bootstrap_app_with_fake_backend(temp: &tempfile::TempDir, correct_password: &
         paths_override: Some(paths),
         worker_threads: None,
         archive_backend_override: Some(backend),
+        extract_runner_override: None,
     })
     .expect("bootstrap must succeed")
 }
@@ -922,6 +924,7 @@ fn a_seeded_pass_rule_unlocks_automatically_without_ever_raising_a_challenge() {
         paths_override: Some(paths),
         worker_threads: None,
         archive_backend_override: Some(backend),
+        extract_runner_override: None,
     })
     .expect("bootstrap must succeed");
     let fake_path = temp.path().join("auto-unlock-fixture.zip");
