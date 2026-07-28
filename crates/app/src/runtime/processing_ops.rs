@@ -202,9 +202,10 @@ pub(super) async fn resolve_pipeline_spec(
             // diverges from the Process page's own ad-hoc step builder,
             // whose independent "Output as:" dropdown defaults to
             // `Archive` *regardless* of which steps are present
-            // (`crates/ui/src/features/process/types.rs`'s own
-            // `#[default]`) -- a Flatten-only pipeline packed into a zip
-            // is documented, intended behavior there, not something to
+            // (`arclain_core::OutputArtifact`'s own `#[default]`,
+            // `crates/core/src/features/pipeline/types.rs:215-220`) --
+            // a Flatten-only pipeline packed into a zip is documented,
+            // intended behavior there, not something to
             // "helpfully" avoid. See [`crate::operations::pipeline::
             // OutputArtifactDto`]'s own doc comment.
             Ok(Pipeline {
@@ -633,33 +634,34 @@ fn resolve_backend(
 /// on `crates/core/src/features/pipeline/executor.rs::resolve_metadata`
 /// (private to `arclain_core`, hence duplicated here rather than
 /// shared -- the same trade-off already accepted elsewhere in this
-/// facade, e.g. `archive_ops.rs`'s own `is_password_error`), but with
-/// one deliberate, confirmed bug fix rather than a faithful mirror: that
-/// function (and this one, before this fix) serializes the looked-up
-/// `gameta_core::ProductMetadata` via `serde_json::to_string(&product)`
-/// -- the type's own plain `#[derive(Serialize)]`, which emits
-/// `external_id`/flat top-level fields -- and feeds the result to
-/// `GameMetadata::from_json`, whose own doc comment and tests both show
-/// it expects `ProductMetadata::to_plugin_json()`'s *layered* shape
-/// instead (`product_id` at the top level, `common`/`<source>` nested
-/// objects). `GameMetadata::product_id` has no `#[serde(default)]`, so
-/// that mismatch makes every such deserialization fail outright, and
-/// `.ok()` on the line before it silently swallows the error --
-/// `resolve_metadata` has therefore always returned `None` for *any*
-/// archive with real, matched metadata, regardless of title, falling
-/// back to the plain detected-code stem every time. Confirmed by direct
-/// inspection of both types, not inferred: this is a genuine, pre-
-/// existing `arclain_core` bug, not something introduced by this task,
-/// caught here because this task is the first to test metadata-driven
-/// organize naming against a real seeded `ProductMetadata` row rather
-/// than an empty test database. Fixed in *this* copy by calling
+/// facade, e.g. `archive_ops.rs`'s own `is_password_error`).
+///
+/// Both copies used to serialize the looked-up `gameta_core::
+/// ProductMetadata` via `serde_json::to_string(&product)` -- the type's
+/// own plain `#[derive(Serialize)]`, which emits `external_id`/flat
+/// top-level fields -- and feed the result to `GameMetadata::from_json`,
+/// whose own doc comment and tests both show it expects
+/// `ProductMetadata::to_plugin_json()`'s *layered* shape instead
+/// (`product_id` at the top level, `common`/`<source>` nested objects).
+/// `GameMetadata::product_id` has no `#[serde(default)]`, so that
+/// mismatch made every such deserialization fail outright, and `.ok()`
+/// on the line before it silently swallowed the error -- `resolve_metadata`
+/// had therefore always returned `None` for *any* archive with real,
+/// matched metadata, regardless of title, falling back to the plain
+/// detected-code stem every time, in Convert/Pipeline/Organize alike.
+/// Confirmed by direct inspection of both types, not inferred: a
+/// genuine, pre-existing `arclain_core` bug, not something this task
+/// introduced, caught because this task was the first to test metadata-
+/// driven naming against a real seeded `ProductMetadata` row rather
+/// than an empty test database. Both copies now call
 /// `product.to_plugin_json_string()` -- the method that actually
 /// produces `GameMetadata::from_json`'s expected shape -- instead of the
-/// raw derive; `executor.rs`'s own copy is left untouched (arclain_core
-/// is a different crate, and this task's mandate is Organize's password
-/// handling and the pipeline contract, not an unrelated pre-existing
-/// metadata bug -- surfaced in this task's report rather than fixed
-/// silently there too).
+/// raw derive: this one directly, and `executor.rs`'s own copy fixed
+/// separately, proven by its own regression test
+/// (`executor::tests::resolve_metadata_recovers_the_seeded_title_not_just_the_detected_product_code`).
+/// The duplication between the two copies is itself left alone this
+/// round -- deliberately not deduplicated into one shared function,
+/// flagged as its own follow-up rather than folded into this fix.
 fn resolve_metadata(
     archive_name: &str,
     library_service: Option<&Arc<LibraryService>>,

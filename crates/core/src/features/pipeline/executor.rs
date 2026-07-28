@@ -596,6 +596,19 @@ fn walk_collect(
 
 /// Attempt to find metadata for the archive via LibraryService.
 /// For 1.3 we only try DLSite lookup by filename pattern.
+///
+/// Serializes the looked-up `gameta_core::ProductMetadata` via
+/// `to_plugin_json_string()`, not its own plain `#[derive(Serialize)]`
+/// (which emits a flat shape keyed `external_id`): `GameMetadata::
+/// from_json` expects `to_plugin_json()`'s *layered* shape instead
+/// (`product_id` at the top level, nested `common`/`<source>` objects),
+/// and `GameMetadata::product_id` has no `#[serde(default)]`, so the
+/// wrong shape made deserialization fail outright every time -- silently,
+/// since the `.ok()` this function already had swallowed the error --
+/// and this function always returned `None` for any archive with real,
+/// matched metadata as a result. See
+/// `resolve_metadata_recovers_the_seeded_title_not_just_the_detected_product_code`
+/// below for the regression proof.
 fn resolve_metadata(
     archive_name: &str,
     ctx: &PipelineContext,
@@ -604,8 +617,10 @@ fn resolve_metadata(
     let code = crate::utilities::detect_dlsite_code(archive_name)?;
     let id = format!("dlsite:{}", code);
     let product = lib.get_metadata(&id).ok().flatten()?;
-    let json = serde_json::to_string(&product).ok()?;
-    crate::features::organization::metadata::GameMetadata::from_json(&json).ok()
+    crate::features::organization::metadata::GameMetadata::from_json(
+        &product.to_plugin_json_string(),
+    )
+    .ok()
 }
 
 #[cfg(test)]
@@ -619,6 +634,57 @@ mod tests {
         let ctx = PipelineContext::minimal(|_| anyhow::bail!("no backend"));
         let result = execute_pipeline(&p, tmp.path(), &ctx, |_| {});
         assert!(result.is_err());
+    }
+
+    /// Regression: `resolve_metadata` serializes the looked-up
+    /// `gameta_core::ProductMetadata` via its own plain
+    /// `#[derive(Serialize)]` -- a flat shape keyed `external_id` -- and
+    /// feeds the result to `GameMetadata::from_json`, whose own doc
+    /// comment and test fixtures both show it expects
+    /// `ProductMetadata::to_plugin_json()`'s *layered* shape instead
+    /// (`product_id` at the top level, nested `common`/`<source>`
+    /// objects). `GameMetadata::product_id` has no `#[serde(default)]`,
+    /// so that mismatch makes the deserialization fail outright every
+    /// time, and the `.ok()` on the line before it silently swallows the
+    /// error -- `resolve_metadata` has therefore always returned `None`
+    /// for *any* archive with real, matched metadata, regardless of
+    /// title, falling back to the bare detected product code instead.
+    /// Seeds a real `LibraryService` row (this crate's own established
+    /// anonymized-fixture convention, `RJ123456`) and asserts both that
+    /// `resolve_metadata` resolves the seeded title, and that the actual
+    /// naming outcome (`PipelineOutput::resolve_with_metadata`) is
+    /// title-based, not the raw detected code.
+    #[test]
+    fn resolve_metadata_recovers_the_seeded_title_not_just_the_detected_product_code() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db_path = dir.path().join("metadata.sqlite");
+        let library_service = crate::services::LibraryService::new(&db_path)
+            .expect("constructing a fresh LibraryService must succeed");
+        let mut metadata =
+            gameta_core::ProductMetadata::new(gameta_core::MetadataSource::DLSite, "RJ123456");
+        metadata.title = Some("Placeholder Test Title".to_string());
+        library_service
+            .save_metadata(&metadata)
+            .expect("seeding test metadata must succeed");
+
+        let ctx = PipelineContext {
+            library_service: Some(std::sync::Arc::new(library_service)),
+            ..PipelineContext::minimal(|_| anyhow::bail!("no backend"))
+        };
+
+        let resolved = resolve_metadata("[RJ123456] Placeholder Game.zip", &ctx).expect(
+            "metadata must resolve for an archive whose name carries the seeded product code",
+        );
+        assert_eq!(resolved.title, "Placeholder Test Title");
+
+        let input = Path::new("[RJ123456] Placeholder Game.zip");
+        let output =
+            crate::PipelineOutput::SameFolder.resolve_with_metadata(input, "zip", Some(&resolved));
+        assert_eq!(
+            output.file_name().and_then(|n| n.to_str()),
+            Some("Placeholder Test Title.zip"),
+            "the naming outcome must use the seeded title, not the bare detected product code"
+        );
     }
 
     #[cfg(any(unix, windows))]

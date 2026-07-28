@@ -1576,6 +1576,125 @@ fn start_organize_dry_run_preview_path_matches_the_real_runs_output_path_when_me
     );
 }
 
+/// Facade-wide consistency for the `resolve_metadata` fix: Organize
+/// resolves metadata through this crate's own duplicate
+/// (`processing_ops::resolve_metadata`); Pipeline resolves it through
+/// `arclain_core::execute_pipeline`'s own copy
+/// (`executor.rs::resolve_metadata`, fixed separately -- see that
+/// function's own regression test,
+/// `executor::tests::resolve_metadata_recovers_the_seeded_title_not_just_the_detected_product_code`,
+/// in `arclain_core`). Both copies had the identical JSON-shape bug and
+/// both are now fixed the same way, but they remain two separate
+/// functions in two separate crates (deliberately not deduplicated this
+/// round -- flagged as a follow-up) -- this test is the guard that
+/// proves they still agree on the same title-based stem for the
+/// identical seeded metadata, rather than trusting that two
+/// independently-fixed copies stay in sync by construction. Uses
+/// Pipeline's `Folder` artifact mode (not Convert/Archive mode): both
+/// `OutputArtifact` variants resolve through the exact same
+/// `resolve_metadata`/`stem_from` chain in `arclain_core`
+/// (`run_one`/`PipelineOutput::{resolve_with_metadata,
+/// resolve_folder_with_metadata}` both compute the identical stem), so
+/// `Folder` mode proves the same thing `Convert`'s `Archive` mode would
+/// without needing a real, working 7-Zip installed to observe it.
+#[test]
+fn start_organize_and_start_pipeline_agree_on_the_metadata_driven_stem() {
+    let runtime = foreign_runtime();
+    let temp = scratch_tempdir();
+    let app = bootstrap_app_ex(&temp, Some(FakeExtractBackend::always_succeeds()));
+    let (rule_id, profile_id) = seed_rule_and_profile(&app);
+
+    let library_service = app
+        .take_legacy_composition()
+        .expect("take_legacy_composition must succeed for a freshly bootstrapped app")
+        .core_services
+        .library_service
+        .clone()
+        .expect("library_service must be composed for a freshly bootstrapped app");
+    let title = "Placeholder Test Title";
+    let mut metadata = ProductMetadata::new(MetadataSource::DLSite, "RJ123456");
+    metadata.title = Some(title.to_string());
+    library_service
+        .save_metadata(&metadata)
+        .expect("seeding test metadata must succeed");
+
+    // Two distinct input files (organize and pipeline must not race on
+    // the same source path), both carrying the same seeded product code
+    // so both naming paths detect the identical metadata row.
+    let organize_input = temp.path().join("[RJ123456] Placeholder Game organize.zip");
+    std::fs::write(&organize_input, b"placeholder content for hashing").unwrap();
+    let pipeline_input = build_zip_fixture(
+        temp.path(),
+        "[RJ123456] Placeholder Game pipeline.zip",
+        &[("data.bin", b"alpha-content")],
+    );
+
+    let organize_destination = temp.path().join("organize-out");
+    let pipeline_destination = temp.path().join("pipeline-out");
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_organize(OrganizeRequest {
+                inputs: vec![organize_input],
+                destination: organize_destination.clone(),
+                profile_id: profile_id.to_string(),
+                rule_id: rule_id.to_string(),
+                dry_run: false,
+            })
+            .await
+            .expect("start_organize must be accepted");
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+        assert!(messages.iter().any(|m| m.contains("1 succeeded")));
+    });
+
+    runtime.block_on(async {
+        let mut receiver = app.subscribe_operations();
+        let operation_id = app
+            .start_pipeline(PipelineRequest {
+                inputs: vec![pipeline_input],
+                destination: PipelineDestinationDto::Folder {
+                    path: pipeline_destination.clone(),
+                },
+                pipeline: PipelineSpecDto::Steps {
+                    steps: vec![PipelineStepDto::Flatten {
+                        strip_common_prefix: false,
+                        max_depth: 1,
+                    }],
+                    output_artifact: OutputArtifactDto::Folder,
+                },
+                collision_policy: Some(OutputCollisionPolicyDto::Fail),
+            })
+            .await
+            .expect("start_pipeline must be accepted");
+        let (messages, terminal) = drain_until_terminal(&mut receiver, operation_id).await;
+        assert_eq!(
+            terminal,
+            OperationState::Completed {
+                result: arclain_app::event::OperationResult::None
+            }
+        );
+        assert!(messages.iter().any(|m| m.contains("1 succeeded")));
+    });
+
+    assert!(
+        organize_destination.join(format!("{title}.zip")).exists(),
+        "organize must have named its output after the seeded title"
+    );
+    assert!(
+        pipeline_destination.join(title).exists(),
+        "pipeline must resolve the identical title-based stem for the same seeded metadata -- \
+         if this fails while organize's own file above exists, the two resolve_metadata copies \
+         have drifted out of sync"
+    );
+}
+
 // ─── convert: pre-flight gate + gated real happy-path proof ────────────
 
 #[test]

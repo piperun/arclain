@@ -173,10 +173,12 @@ impl OutputCollisionPolicyDto {
 /// Mirrors `arclain_core::OutputArtifact` exactly: whether an ad-hoc
 /// step list's result is packed into an archive or left as a plain
 /// folder. Defaults to `Archive` on deserialization (a caller/bridge
-/// that omits the field gets the same default the Process page's own
-/// independent "Output as:" dropdown does --
-/// `crates/ui/src/features/process/types.rs:215-220`'s own
-/// `#[default]`), and this is a real default the executor relies on,
+/// that omits the field gets the same default `arclain_core::
+/// OutputArtifact` itself does --
+/// `crates/core/src/features/pipeline/types.rs:215-220`'s own
+/// `#[default]`, which the Process page's "Output as:" dropdown
+/// inherits by using that same type), and this is a real default the
+/// executor relies on,
 /// not a placeholder: a step list with no `Convert` step still packs
 /// into a zip when `output_artifact` is `Archive` (`execute_pipeline`
 /// falls back to `ConvertFormat::Zip` when no `Convert` step chose a
