@@ -81,9 +81,10 @@ egui_kittest = "0.33.3"
 tracing-test = "0.2"
 # In-memory DieselPool construction for dispatcher tests.
 arclain_db = { path = "../db" }
-# Builds real ZIP fixtures in temp dirs for the archive-mutation UI
-# integration test (`tests/archive_mutation_ui_test.rs`) -- the same
-# crate/version `arclain_app`'s own equivalent test fixture helper
-# (`crates/app/tests/archive_sessions.rs::build_zip_fixture`) already
-# uses, so this adds no new crate to the dependency tree.
+# Builds real ZIP fixtures in temp dirs for both the archive-mutation UI
+# integration test (`tests/archive_mutation_ui_test.rs`) and the open-
+# file-from-archive smoke test (`tests/open_file_from_archive_smoke_test.rs`)
+# -- the same crate/version `arclain_app`'s own equivalent test fixture
+# helper (`crates/app/tests/archive_sessions.rs::build_zip_fixture`)
+# already uses, so this adds no new crate to the dependency tree.
 zip = "7.0.0"
