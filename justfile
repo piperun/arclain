@@ -149,3 +149,14 @@ push-release:
     git push github $(git tag --points-at HEAD)
     git push origin master
     git push origin $(git tag --points-at HEAD)
+
+# ─── frontend boundary ────────────────────────────────────────────────────
+# Reports Cargo.toml + source-tree violations of the headless/GUI crate
+# split (scripts/frontend_boundary.py). A nonzero exit is expected until
+# the app-facade migration removes the direct headless deps it flags.
+
+frontend-boundary:
+    {{python}} scripts/frontend_boundary.py
+
+test-frontend-boundary:
+    {{python}} scripts/test_frontend_boundary.py
