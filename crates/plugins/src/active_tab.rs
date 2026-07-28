@@ -62,6 +62,21 @@ pub trait ActiveTabBridge: Send + Sync {
     /// backend and, for 7z, spawn a subprocess each time).
     fn archive_entries(&self) -> Vec<String>;
 
+    /// Number of entries in the active archive without cloning their paths.
+    fn archive_entry_count(&self) -> usize {
+        self.archive_entries().len()
+    }
+
+    /// Clone only the requested entry-path page. Implementations backed by an
+    /// `Arc<Vec<_>>` should override this to avoid cloning the complete list.
+    fn archive_entries_page(&self, offset: usize, limit: usize) -> Vec<String> {
+        self.archive_entries()
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect()
+    }
+
     /// Signal handle for the active tab's metadata. Writes to the
     /// returned signal cause the active tab's `game_metadata` to
     /// update on the next frame. Callers that need write durability

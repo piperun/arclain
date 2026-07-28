@@ -70,6 +70,20 @@ fn dev_plugins_dir() -> Option<PathBuf> {
     }
 }
 
+fn initialize_resource_services(
+    cache_dir: PathBuf,
+    cache_index: Arc<dyn arclain_core::CacheIndex>,
+    resource_config: ResourceConfig,
+) -> Result<(Arc<ContentCache>, Arc<ResourceManager>)> {
+    let cache = Arc::new(ContentCache::new_with_config(
+        cache_dir,
+        cache_index,
+        &resource_config,
+    )?);
+    let manager = Arc::new(ResourceManager::new(cache.clone(), resource_config));
+    Ok((cache, manager))
+}
+
 impl AppState {
     pub fn new() -> Result<(Self, crate::core::services::Services)> {
         info!("Initializing application state");
@@ -136,7 +150,7 @@ impl AppState {
             encrypted_crc_policy: crc_policy.unwrap_or_else(|| "on_access".to_string()),
             db_paths: Some(db_paths.clone()),
             dbs: None,
-            plugin_event_sender: None,
+            plugin_event_scheduler: None,
             pending_plugin_events: Vec::new(),
             signals: AppSignals::new(),
         };
@@ -191,31 +205,28 @@ impl AppState {
                         if let Err(e) = services.init_db_services(&dbs, &current_paths) {
                             warn!("Failed to initialize DB services: {}", e);
                         } else {
-                            // Initialize Content Cache using service from core
+                            // Build the cache and manager from one configuration
+                            // value so disk limits cannot silently diverge.
                             if let Some(cache_svc) = services.cache_service.clone() {
                                 let cache_dir = services.cache_dir.clone();
-                                // Ensure cache directory exists
-                                if let Err(e) = std::fs::create_dir_all(&cache_dir) {
-                                    warn!("Failed to create cache directory: {}", e);
-                                }
-
-                                if let Ok(cache) = ContentCache::new(
-                                    cache_dir,
-                                    cache_svc as Arc<dyn arclain_core::CacheIndex>,
-                                ) {
-                                    content_cache = Some(Arc::new(cache));
-                                    info!("Content cache initialized via Services");
-                                }
-                            }
-
-                            // Initialize ResourceManager
-                            if let Some(ref cache) = content_cache {
-                                let res_config = ResourceConfig {
+                                let resource_config = ResourceConfig {
                                     fallback_dir: Some(services.cache_dir.join("resources")),
                                     ..Default::default()
                                 };
-                                resource_manager =
-                                    Some(Arc::new(ResourceManager::new(cache.clone(), res_config)));
+                                match initialize_resource_services(
+                                    cache_dir,
+                                    cache_svc as Arc<dyn arclain_core::CacheIndex>,
+                                    resource_config,
+                                ) {
+                                    Ok((cache, manager)) => {
+                                        content_cache = Some(cache);
+                                        resource_manager = Some(manager);
+                                        info!("Content cache initialized via Services");
+                                    }
+                                    Err(error) => {
+                                        warn!("Failed to initialize content cache: {error}");
+                                    }
+                                }
                             }
 
                             // Load pass rules and map to Core PassRule
@@ -304,7 +315,7 @@ impl AppState {
                     crate::shared::active_tab_bridge::AppSignalsBridge::new(me.signals.clone()),
                 );
                 manager.set_active_tab_bridge(bridge);
-                me.plugin_event_sender = Some(manager.get_event_sender());
+                me.plugin_event_scheduler = Some(manager.event_scheduler());
                 plugin_manager = Some(Arc::new(Mutex::new(manager)));
 
                 // Sync UI items
@@ -423,9 +434,48 @@ impl AppState {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_plugins_dir_from;
+    use super::{initialize_resource_services, resolve_plugins_dir_from};
+    use anyhow::Result;
+    use arclain_core::{CacheEntry, CacheIndex, CacheType, ResourceConfig};
     use std::fs;
+    use std::sync::Arc;
     use tempfile::TempDir;
+
+    struct EmptyCacheIndex;
+
+    impl CacheIndex for EmptyCacheIndex {
+        fn upsert(
+            &self,
+            _key: &str,
+            _product_id: Option<&str>,
+            _content_hash: &str,
+            _source_url: Option<&str>,
+            _cache_type: CacheType,
+            _size_bytes: Option<i64>,
+        ) -> Result<i64> {
+            Ok(1)
+        }
+
+        fn get(&self, _key: &str) -> Result<Option<CacheEntry>> {
+            Ok(None)
+        }
+
+        fn has(&self, _key: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn delete(&self, _key: &str) -> Result<bool> {
+            Ok(false)
+        }
+
+        fn delete_by_pattern(&self, _pattern: &str) -> Result<usize> {
+            Ok(0)
+        }
+
+        fn update_last_accessed(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn plugin_dir_env_override_wins() {
@@ -475,5 +525,25 @@ mod tests {
         );
 
         assert_eq!(resolved, dev_plugins);
+    }
+
+    #[test]
+    fn startup_uses_one_resource_config_for_cache_and_manager() {
+        let temp = TempDir::new().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let fallback_dir = cache_dir.join("resources");
+        let mut config = ResourceConfig {
+            fallback_dir: Some(fallback_dir.clone()),
+            ..ResourceConfig::default()
+        };
+        config.cache_limits.max_object_bytes = 17;
+        config.cache_limits.min_free_space_bytes = 0;
+
+        let (cache, manager) =
+            initialize_resource_services(cache_dir, Arc::new(EmptyCacheIndex), config).unwrap();
+
+        assert_eq!(cache.limits().max_object_bytes, 17);
+        assert_eq!(manager.config().cache_limits.max_object_bytes, 17);
+        assert_eq!(manager.config().fallback_dir.as_ref(), Some(&fallback_dir));
     }
 }

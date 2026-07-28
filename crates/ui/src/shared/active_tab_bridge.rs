@@ -57,6 +57,24 @@ impl ActiveTabBridge for AppSignalsBridge {
             .collect()
     }
 
+    fn archive_entry_count(&self) -> usize {
+        self.signals.tabs.get().active().entries.get().len()
+    }
+
+    fn archive_entries_page(&self, offset: usize, limit: usize) -> Vec<String> {
+        self.signals
+            .tabs
+            .get()
+            .active()
+            .entries
+            .get()
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(|entry| entry.path.clone())
+            .collect()
+    }
+
     fn metadata_signal(&self) -> Signal<Option<serde_json::Value>> {
         self.signals.tabs.get().active().metadata.clone()
     }

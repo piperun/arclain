@@ -11,8 +11,8 @@ network_domains = ["dlsite.com", "dlsite.jp"]
 archive_metadata_read = true
 archive_metadata_write = true
 archive_modify = true
-file_read = false
-file_write = false
+file_read = true
+file_write = true
 
 [rate_limits]
 http_requests_per_minute = 10

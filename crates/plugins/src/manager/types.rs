@@ -3,6 +3,7 @@
 use crate::runtime::PluginInstance;
 use crate::types::PluginMetadata;
 use parking_lot::Mutex;
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
@@ -35,4 +36,11 @@ pub(crate) struct ManagedPlugin {
     /// `get_all_settings` can probe it without taking
     /// `instance.lock()` (audit P14).
     pub(crate) settings_dirty: Arc<AtomicBool>,
+}
+
+/// Persisted settings indexed internally by a case-folded plugin identity.
+/// The original spelling remains available for persistence/display output.
+pub(crate) struct InitialPluginSettings {
+    pub(crate) original_id: String,
+    pub(crate) values: HashMap<String, String>,
 }

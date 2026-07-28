@@ -15,7 +15,10 @@ mod ui_service;
 
 pub use cache_service::CacheService;
 pub use config_service::ConfigService;
-pub use library_service::LibraryService;
+pub use library_service::{
+    LibraryService, MetadataSummary, METADATA_SUMMARY_MAX_IDS, METADATA_SUMMARY_MAX_ID_BYTES,
+    METADATA_SUMMARY_MAX_STORED_ID_BYTES, METADATA_SUMMARY_TITLE_CHARS,
+};
 pub use manager::Services;
 pub use merge_service::{
     CompressionLevel, MergeOptions, MergePhase, MergePreview, MergeProgress, MergeProgressCallback,

@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct PluginId(String);
 
+/// ASCII-case-folded identity used for registry and filesystem collisions.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct PluginIdentityKey(String);
+
 impl PluginId {
     /// Parse a plugin identity accepted by every supported filesystem.
     pub fn parse(value: impl Into<String>) -> Result<Self> {
@@ -22,6 +26,7 @@ impl PluginId {
                 && (base_name.starts_with("COM") || base_name.starts_with("LPT"))
                 && matches!(base_name.as_bytes()[3], b'1'..=b'9'));
         let portable = !value.is_empty()
+            && value.len() <= 64
             && value != "."
             && value != ".."
             && !reserved
@@ -33,7 +38,7 @@ impl PluginId {
 
         portable.then_some(Self(value)).ok_or_else(|| {
             PluginError::InvalidManifest(
-                "Plugin ID must be one ASCII filename component using [A-Za-z0-9_-] and must not be a Windows reserved name".into(),
+                "Plugin ID must be at most 64 bytes and one ASCII filename component using [A-Za-z0-9_-], and must not be a Windows reserved name".into(),
             )
         })
     }
@@ -44,6 +49,30 @@ impl PluginId {
 
     pub fn join_under(&self, root: &Path) -> PathBuf {
         root.join(&self.0)
+    }
+
+    pub(crate) fn identity_key(&self) -> PluginIdentityKey {
+        PluginIdentityKey(self.0.to_ascii_lowercase())
+    }
+}
+
+impl PluginIdentityKey {
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        PluginId::parse(value.to_owned()).map(|plugin_id| plugin_id.identity_key())
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub(crate) fn join_under(&self, root: &Path) -> PathBuf {
+        root.join(&self.0)
+    }
+}
+
+impl std::fmt::Display for PluginIdentityKey {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -68,7 +97,7 @@ pub struct PluginMetadata {
 pub enum PluginCapability {
     /// Read files from archives
     FileRead,
-    /// Write files to archives
+    /// Create plugin-owned temporary files and delete content-cache entries.
     FileWrite,
     /// Make network requests
     Network,
@@ -79,6 +108,12 @@ pub enum PluginCapability {
     /// Modify archive structure
     ArchiveModify,
 }
+
+/// Capabilities required for a plugin-originated background metadata fetch.
+pub const REQUEST_FETCH_CAPABILITIES: [PluginCapability; 2] = [
+    PluginCapability::Network,
+    PluginCapability::ArchiveMetadataWrite,
+];
 
 /// Events that plugins can subscribe to.
 ///
@@ -654,4 +689,33 @@ mod resource_limit_error_tests {
 
         assert_eq!(error.to_string(), "Plugin unavailable: fuel quota exceeded");
     }
+}
+/// Maximum structured metadata body that a plugin may publish or receive.
+pub const MAX_PLUGIN_METADATA_BYTES: usize = 4 * 1024 * 1024;
+/// Maximum opaque Data API body lifted across the component boundary.
+pub const MAX_PLUGIN_GUEST_DATA_BYTES: usize = 4 * 1024 * 1024;
+
+pub fn metadata_value_within_limit(value: &serde_json::Value) -> bool {
+    struct LimitWriter {
+        written: usize,
+    }
+
+    impl std::io::Write for LimitWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            if self.written.saturating_add(buffer.len()) > MAX_PLUGIN_METADATA_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "metadata publication limit exceeded",
+                ));
+            }
+            self.written += buffer.len();
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    serde_json::to_writer(&mut LimitWriter { written: 0 }, value).is_ok()
 }

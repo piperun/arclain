@@ -251,6 +251,34 @@ mod diesel_crud {
     }
 
     #[test]
+    fn has_content_hash_uses_a_targeted_existence_query() {
+        let mut conn = setup_diesel();
+        upsert_cache_entry(
+            &mut conn,
+            "first",
+            None,
+            "shared-hash",
+            None,
+            CacheType::Other,
+            None,
+        )
+        .unwrap();
+        upsert_cache_entry(
+            &mut conn,
+            "second",
+            None,
+            "other-hash",
+            None,
+            CacheType::Other,
+            None,
+        )
+        .unwrap();
+
+        assert!(has_content_hash(&mut conn, "shared-hash").unwrap());
+        assert!(!has_content_hash(&mut conn, "missing-hash").unwrap());
+    }
+
+    #[test]
     fn test_delete_cache_entry() {
         let mut conn = setup_diesel();
         upsert_cache_entry(&mut conn, "del", None, "h", None, CacheType::Other, None).unwrap();
@@ -342,6 +370,45 @@ mod diesel_crud {
     }
 
     #[test]
+    fn delete_by_pattern_treats_sql_wildcards_and_escape_as_literals() {
+        let mut conn = setup_diesel();
+        for cache_key in [
+            "owner:a_b:item",
+            "owner:axb:item",
+            "percent%literal",
+            "percentXliteral",
+            "under_literal",
+            "underXliteral",
+            "bang!literal",
+            "wild:one",
+            "wild:two",
+        ] {
+            upsert_cache_entry(
+                &mut conn,
+                cache_key,
+                None,
+                "h",
+                None,
+                CacheType::Other,
+                None,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(delete_by_pattern(&mut conn, "owner:a_b:*").unwrap(), 1);
+        assert!(has_cache_entry(&mut conn, "owner:axb:item").unwrap());
+
+        assert_eq!(delete_by_pattern(&mut conn, "percent%literal").unwrap(), 1);
+        assert!(has_cache_entry(&mut conn, "percentXliteral").unwrap());
+
+        assert_eq!(delete_by_pattern(&mut conn, "under_literal").unwrap(), 1);
+        assert!(has_cache_entry(&mut conn, "underXliteral").unwrap());
+
+        assert_eq!(delete_by_pattern(&mut conn, "bang!literal").unwrap(), 1);
+        assert_eq!(delete_by_pattern(&mut conn, "wild:*").unwrap(), 2);
+    }
+
+    #[test]
     fn test_clear_all_entries() {
         let mut conn = setup_diesel();
         upsert_cache_entry(&mut conn, "a", None, "h", None, CacheType::Other, None).unwrap();
@@ -363,6 +430,57 @@ mod diesel_crud {
         touch_cache_entry(&mut conn, "t").unwrap();
         let after = get_cache_entry(&mut conn, "t").unwrap().unwrap();
         assert!(after.last_accessed.is_some());
+    }
+
+    #[test]
+    fn list_entries_lru_orders_by_effective_access_then_id() {
+        let mut conn = setup_diesel();
+        upsert_cache_entry(
+            &mut conn,
+            "old-created",
+            None,
+            "h1",
+            None,
+            CacheType::Other,
+            Some(1),
+        )
+        .unwrap();
+        upsert_cache_entry(
+            &mut conn,
+            "recent-access",
+            None,
+            "h2",
+            None,
+            CacheType::Other,
+            Some(2),
+        )
+        .unwrap();
+        upsert_cache_entry(
+            &mut conn,
+            "old-access",
+            None,
+            "h3",
+            None,
+            CacheType::Other,
+            Some(3),
+        )
+        .unwrap();
+        for statement in [
+            "UPDATE cache_index SET created_at = '2020-01-01 00:00:00' WHERE key = 'old-created'",
+            "UPDATE cache_index SET created_at = '2019-01-01 00:00:00', last_accessed = '2025-01-01 00:00:00' WHERE key = 'recent-access'",
+            "UPDATE cache_index SET created_at = '2024-01-01 00:00:00', last_accessed = '2021-01-01 00:00:00' WHERE key = 'old-access'",
+        ] {
+            diesel::sql_query(statement).execute(&mut conn).unwrap();
+        }
+
+        let entries = list_entries_lru(&mut conn).unwrap();
+        let keys: Vec<_> = entries.iter().map(|entry| entry.key.as_str()).collect();
+
+        assert_eq!(keys, vec!["old-created", "old-access", "recent-access"]);
+        let page = list_entries_lru_page(&mut conn, 1, 1).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].key, "old-access");
+        assert!(list_entries_lru_page(&mut conn, 0, 0).unwrap().is_empty());
     }
 
     #[test]

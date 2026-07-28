@@ -5,9 +5,12 @@
 
 use super::types::{DataRequest, DataResult, DataSource, DataStatus, SourceChain};
 use crate::features::resolver::DataSourceResolver;
+use crate::shared::safe_log_fingerprint;
+use crate::DEFAULT_MAX_RESOURCE_SIZE_BYTES;
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tracing::debug;
 
@@ -17,7 +20,11 @@ use tracing::debug;
 const MAX_PENDING_REQUESTS: usize = 256;
 /// Aggregate body budget for results waiting to cross the request/poll ABI.
 /// Large resources should use the cache-backed streaming API instead.
-const MAX_PENDING_BODY_BYTES: usize = 50 * 1024 * 1024;
+const MAX_PENDING_BODY_BYTES: usize = DEFAULT_MAX_RESOURCE_SIZE_BYTES;
+/// Per-result diagnostic budget. Request keys and lower-layer diagnostics may
+/// contain plugin-controlled text, so abandoned failures must not retain an
+/// arbitrarily large string.
+const MAX_PENDING_ERROR_BYTES: usize = 4 * 1024;
 
 /// The main Data Service
 ///
@@ -32,6 +39,8 @@ pub struct DataService {
     state: Arc<DataApiState>,
     /// Service ID for logging context
     id: String,
+    /// Ceiling applied by every resolver before a body can cross this API.
+    materialization_limit: Arc<AtomicUsize>,
 }
 
 /// Internal state for pending requests
@@ -47,10 +56,21 @@ struct PendingRequests {
 }
 
 struct PendingRequest {
-    #[allow(dead_code)] // Kept for debugging/logging
-    request: DataRequest,
     result: Option<DataResult>,
 }
+
+#[derive(Clone, Copy)]
+struct PendingLimits {
+    max_requests: usize,
+    max_body_bytes: usize,
+    max_error_bytes: usize,
+}
+
+const DEFAULT_PENDING_LIMITS: PendingLimits = PendingLimits {
+    max_requests: MAX_PENDING_REQUESTS,
+    max_body_bytes: MAX_PENDING_BODY_BYTES,
+    max_error_bytes: MAX_PENDING_ERROR_BYTES,
+};
 
 impl PendingRequest {
     fn body_bytes(&self) -> usize {
@@ -62,18 +82,33 @@ impl PendingRequest {
 }
 
 impl PendingRequests {
-    fn insert(&mut self, id: String, mut request: PendingRequest) {
-        let mut body_bytes = request.body_bytes();
-        if body_bytes > MAX_PENDING_BODY_BYTES {
-            request.result = Some(DataResult::failed(format!(
-                "Data response exceeds pending body budget of {MAX_PENDING_BODY_BYTES} bytes"
-            )));
-            body_bytes = 0;
+    fn insert_with_limits(&mut self, id: String, mut result: DataResult, limits: PendingLimits) {
+        if limits.max_requests == 0 {
+            return;
         }
 
+        if result
+            .data
+            .as_ref()
+            .is_some_and(|body| body.len() > limits.max_body_bytes)
+        {
+            result = DataResult::failed(format!(
+                "Data response exceeds pending body budget of {} bytes",
+                limits.max_body_bytes
+            ));
+        }
+        if let Some(error) = result.error.as_mut() {
+            truncate_utf8_with_ellipsis(error, limits.max_error_bytes);
+        }
+
+        let request = PendingRequest {
+            result: Some(result),
+        };
+        let body_bytes = request.body_bytes();
+
         while !self.entries.is_empty()
-            && (self.entries.len() >= MAX_PENDING_REQUESTS
-                || self.retained_body_bytes.saturating_add(body_bytes) > MAX_PENDING_BODY_BYTES)
+            && (self.entries.len() >= limits.max_requests
+                || self.retained_body_bytes.saturating_add(body_bytes) > limits.max_body_bytes)
         {
             let (evicted_id, evicted) = self
                 .entries
@@ -82,7 +117,10 @@ impl PendingRequests {
             self.retained_body_bytes = self
                 .retained_body_bytes
                 .saturating_sub(evicted.body_bytes());
-            debug!("Evicted abandoned data request '{evicted_id}'");
+            debug!(
+                "Evicted abandoned data request '{}'",
+                safe_log_fingerprint(&evicted_id)
+            );
         }
 
         self.retained_body_bytes = self.retained_body_bytes.saturating_add(body_bytes);
@@ -114,6 +152,32 @@ impl PendingRequests {
     }
 }
 
+fn truncate_utf8_with_ellipsis(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes && value.capacity() <= max_bytes {
+        return;
+    }
+
+    const ELLIPSIS: &str = "…";
+    let truncated = value.len() > max_bytes;
+    let suffix = if truncated && max_bytes >= ELLIPSIS.len() {
+        ELLIPSIS
+    } else {
+        ""
+    };
+    let mut end = if truncated {
+        max_bytes.saturating_sub(suffix.len()).min(value.len())
+    } else {
+        value.len()
+    };
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut bounded = String::with_capacity(end + suffix.len());
+    bounded.push_str(&value[..end]);
+    bounded.push_str(suffix);
+    *value = bounded;
+}
+
 type ResolverSnapshot = Vec<(DataSource, Arc<dyn DataSourceResolver>)>;
 
 impl DataApiState {
@@ -143,6 +207,7 @@ impl DataService {
             default_chain,
             state: Arc::new(DataApiState::new()),
             id: "global".to_string(),
+            materialization_limit: Arc::new(AtomicUsize::new(DEFAULT_MAX_RESOURCE_SIZE_BYTES)),
         }
     }
 
@@ -152,11 +217,22 @@ impl DataService {
         self
     }
 
+    /// Set the maximum body this service may materialize or retain.
+    pub fn set_materialization_limit(&self, limit: usize) {
+        self.materialization_limit.store(limit, Ordering::Relaxed);
+    }
+
+    /// Return the current materialized-body ceiling.
+    pub fn materialization_limit(&self) -> usize {
+        self.materialization_limit.load(Ordering::Relaxed)
+    }
+
     /// Register a resolver for a data source
     pub fn register_resolver(&self, source: DataSource, resolver: Arc<dyn DataSourceResolver>) {
         debug!(
             "[DataService:{}] Registered resolver for {:?}",
-            self.id, source
+            safe_log_fingerprint(&self.id),
+            source
         );
         self.resolvers.write().insert(source, resolver);
     }
@@ -209,10 +285,16 @@ impl DataService {
 
         debug!(
             "[DataService] Resolving '{}' using sources: {:?}",
-            request.key, sources
+            safe_log_fingerprint(&request.key),
+            sources
         );
 
         let resolvers = self.snapshot_resolvers(sources);
+        let store_resolvers = request
+            .store_sources
+            .as_ref()
+            .map(|sources| self.snapshot_resolvers(sources))
+            .unwrap_or_else(|| resolvers.clone());
 
         // Track real (non-NotFound) failures so they can be surfaced to
         // callers. Cache misses are uninteresting, but I/O errors from
@@ -221,19 +303,20 @@ impl DataService {
         // the generic "No source could provide data" message.
         let mut io_errors: Vec<(DataSource, String)> = Vec::new();
 
+        let materialization_limit = self.materialization_limit();
         for (source, resolver) in &resolvers {
-            match resolver.try_resolve(&request.key, request) {
+            match resolver.try_resolve_with_limit(&request.key, request, materialization_limit) {
                 Ok(data) => {
                     debug!(
                         "[DataService] Resolved '{}' from {:?} ({} bytes)",
-                        request.key,
+                        safe_log_fingerprint(&request.key),
                         source,
                         data.len()
                     );
 
                     // If data came from network, try to store to earlier sources
                     if *source == DataSource::Network {
-                        self.store_to_caches(&request.key, &data, request, &resolvers);
+                        self.store_to_caches(&request.key, &data, request, &store_resolvers);
                     }
 
                     return DataResult::ready(data);
@@ -241,7 +324,9 @@ impl DataService {
                 Err(e) => {
                     debug!(
                         "[DataService] Source {:?} failed for '{}': {}",
-                        source, request.key, e
+                        source,
+                        safe_log_fingerprint(&request.key),
+                        safe_log_fingerprint(e.to_string())
                     );
                     if let crate::features::resolver::ResolveError::IoError(msg) = &e {
                         io_errors.push((*source, msg.clone()));
@@ -277,23 +362,32 @@ impl DataService {
     ) {
         // Don't cache search results - they're ephemeral and change over time
         if key.contains(":search:") {
-            debug!("[DataService] Skipping cache for search key: {}", key);
+            debug!(
+                "[DataService] Skipping cache for search key: {}",
+                safe_log_fingerprint(key)
+            );
             return;
         }
 
         for (source, resolver) in resolvers {
             // Only store to cache sources, not network
-            if *source == DataSource::Network {
+            if *source == DataSource::Network || !request.allows_store_to(*source) {
                 continue;
             }
 
             if let Err(e) = resolver.try_store(key, data, request) {
                 debug!(
                     "[DataService] Failed to store '{}' to {:?}: {}",
-                    key, source, e
+                    safe_log_fingerprint(key),
+                    source,
+                    safe_log_fingerprint(e.to_string())
                 );
             } else {
-                debug!("[DataService] Stored '{}' to {:?}", key, source);
+                debug!(
+                    "[DataService] Stored '{}' to {:?}",
+                    safe_log_fingerprint(key),
+                    source
+                );
             }
         }
     }
@@ -308,11 +402,12 @@ impl DataService {
         // Resolve immediately (we're sync for now)
         let result = self.resolve(&request);
 
-        self.state.pending.write().insert(
+        self.state.pending.write().insert_with_limits(
             id.clone(),
-            PendingRequest {
-                request,
-                result: Some(result),
+            result,
+            PendingLimits {
+                max_body_bytes: self.materialization_limit(),
+                ..DEFAULT_PENDING_LIMITS
             },
         );
 
@@ -330,17 +425,38 @@ impl DataService {
 
     /// Check if data exists in any registered cache
     pub fn has_data(&self, key: &str) -> bool {
-        let sources = [
-            DataSource::MetadataStore,
-            DataSource::ContentCache,
-            DataSource::Memory,
-        ];
-        let resolvers = self.snapshot_resolvers(&sources);
+        self.has_data_from_sources(
+            key,
+            [
+                DataSource::MetadataStore,
+                DataSource::ContentCache,
+                DataSource::Memory,
+            ],
+        )
+    }
+
+    /// Check only the caller-approved sources for a key.
+    pub fn has_data_from_sources(
+        &self,
+        key: &str,
+        sources: impl IntoIterator<Item = DataSource>,
+    ) -> bool {
+        let request = DataRequest::new(key).with_sources(sources);
+        self.has_data_for_request(&request)
+    }
+
+    /// Check the request's exact source set while preserving its owner
+    /// context (notably `plugin_id`) for resolver isolation.
+    pub fn has_data_for_request(&self, request: &DataRequest) -> bool {
+        let sources = &request.sources;
+        if sources.is_empty() {
+            return false;
+        }
+        let resolvers = self.snapshot_resolvers(sources);
 
         // Check cache sources only
         for (_, resolver) in resolvers {
-            let dummy_request = DataRequest::new(key);
-            if resolver.has(key, &dummy_request) {
+            if resolver.has_with_limit(&request.key, request, self.materialization_limit()) {
                 return true;
             }
         }
@@ -350,7 +466,30 @@ impl DataService {
 
     /// Get data directly (sync)
     pub fn get_data(&self, key: &str) -> Option<Vec<u8>> {
-        let request = DataRequest::cache_only(key);
+        self.get_data_from_sources(key, [DataSource::MetadataStore, DataSource::ContentCache])
+    }
+
+    /// Resolve a key only through the caller-approved source set.
+    pub fn get_data_from_sources(
+        &self,
+        key: &str,
+        sources: impl IntoIterator<Item = DataSource>,
+    ) -> Option<Vec<u8>> {
+        let sources: SourceChain = sources.into_iter().collect();
+        let request = DataRequest::new(key)
+            .with_sources(sources)
+            .with_store_sources([]);
+        self.get_data_for_request(&request)
+    }
+
+    /// Resolve the request's exact source set while preserving its owner
+    /// context and prohibiting write-back.
+    pub fn get_data_for_request(&self, request: &DataRequest) -> Option<Vec<u8>> {
+        if request.sources.is_empty() {
+            return None;
+        }
+        let mut request = request.clone();
+        request.store_sources = Some(SourceChain::new());
         let result = self.resolve(&request);
 
         if result.status == DataStatus::Ready || result.status == DataStatus::Cached {
@@ -371,6 +510,7 @@ impl Default for DataService {
 mod tests {
     use super::*;
     use crate::features::resolver::ResolveError;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::Barrier;
     use std::thread;
 
@@ -385,6 +525,42 @@ mod tests {
     impl DataSourceResolver for FixedBodyResolver {
         fn try_resolve(&self, _key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
             Ok(vec![0xA5; self.body_bytes])
+        }
+    }
+
+    struct MetadataReadStoreSpy {
+        body: Option<Vec<u8>>,
+        store_calls: Arc<AtomicUsize>,
+    }
+
+    struct LimitAwareHasSpy {
+        observed_limit: Arc<AtomicUsize>,
+    }
+
+    impl DataSourceResolver for LimitAwareHasSpy {
+        fn try_resolve(&self, _key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
+            panic!("limit-aware existence check must not materialize data")
+        }
+
+        fn has_with_limit(&self, _key: &str, _request: &DataRequest, limit: usize) -> bool {
+            self.observed_limit.store(limit, AtomicOrdering::SeqCst);
+            true
+        }
+    }
+
+    impl DataSourceResolver for MetadataReadStoreSpy {
+        fn try_resolve(&self, _key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
+            self.body.clone().ok_or(ResolveError::NotFound)
+        }
+
+        fn try_store(
+            &self,
+            _key: &str,
+            _data: &[u8],
+            _request: &DataRequest,
+        ) -> Result<(), ResolveError> {
+            self.store_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            Ok(())
         }
     }
 
@@ -536,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn body_larger_than_aggregate_budget_is_not_retained() {
+    fn body_larger_than_materialization_budget_is_not_retained() {
         let service = service_with_body_size(EXPECTED_MAX_PENDING_BODY_BYTES + 1);
         let request_id = service.request_data(network_request("oversized"));
 
@@ -550,6 +726,208 @@ mod tests {
         assert!(result
             .error
             .as_deref()
-            .is_some_and(|error| error.contains("pending body budget")));
+            .is_some_and(|error| error.contains("materialized read limit")));
+    }
+
+    #[test]
+    fn pending_failure_errors_are_utf8_safely_bounded() {
+        const ERROR_LIMIT: usize = 17;
+        let mut pending = PendingRequests::default();
+        pending.insert_with_limits(
+            "failure".to_string(),
+            DataResult::failed("秘密".repeat(32)),
+            PendingLimits {
+                max_requests: 2,
+                max_body_bytes: 128,
+                max_error_bytes: ERROR_LIMIT,
+            },
+        );
+
+        let result = pending.poll("failure").expect("poll bounded failure");
+        let error = result.error.expect("failure should retain an error");
+        assert!(error.len() <= ERROR_LIMIT);
+        assert!(
+            error.capacity() <= ERROR_LIMIT,
+            "truncation must release the attacker-controlled backing allocation"
+        );
+        assert!(error.ends_with('…'));
+        assert!(pending.entries.is_empty());
+    }
+
+    #[test]
+    fn pending_failure_rebuilds_short_errors_with_oversized_capacity() {
+        const ERROR_LIMIT: usize = 17;
+        let mut attacker_error = String::with_capacity(1024 * 1024);
+        attacker_error.push_str("秘密");
+        assert!(attacker_error.capacity() > ERROR_LIMIT);
+
+        let mut pending = PendingRequests::default();
+        pending.insert_with_limits(
+            "failure".to_string(),
+            DataResult::failed(attacker_error),
+            PendingLimits {
+                max_requests: 2,
+                max_body_bytes: 128,
+                max_error_bytes: ERROR_LIMIT,
+            },
+        );
+
+        let error = pending
+            .poll("failure")
+            .expect("poll bounded failure")
+            .error
+            .expect("failure should retain an error");
+        assert_eq!(error, "秘密");
+        assert!(error.capacity() <= ERROR_LIMIT);
+    }
+
+    #[test]
+    fn configured_materialization_limit_rejects_resolver_results_and_bounds_pending_state() {
+        const LIMIT: usize = 8;
+        let service = service_with_body_size(LIMIT + 1);
+        service.set_materialization_limit(LIMIT);
+
+        let request_id = service.request_data(network_request("custom-limit"));
+        let pending = service.state.pending.read();
+        assert_eq!(pending.retained_body_bytes, 0);
+        drop(pending);
+
+        let result = service.poll_data(&request_id);
+        assert_eq!(result.status, DataStatus::Failed);
+        assert!(result.data.is_none());
+        assert!(result
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("8-byte materialized read limit")));
+    }
+
+    #[test]
+    fn read_allowed_write_denied_request_can_resolve_metadata() {
+        let service = DataService::new();
+        let store_calls = Arc::new(AtomicUsize::new(0));
+        service.register_resolver(
+            DataSource::MetadataStore,
+            Arc::new(MetadataReadStoreSpy {
+                body: Some(b"metadata".to_vec()),
+                store_calls: store_calls.clone(),
+            }),
+        );
+        let request = DataRequest::new("metadata")
+            .with_sources([DataSource::MetadataStore])
+            .with_store_sources([]);
+
+        let result = service.resolve(&request);
+
+        assert_eq!(result.data.as_deref(), Some(b"metadata".as_slice()));
+        assert_eq!(store_calls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn network_success_does_not_write_to_a_disallowed_metadata_store() {
+        let service = DataService::new();
+        let store_calls = Arc::new(AtomicUsize::new(0));
+        service.register_resolver(
+            DataSource::MetadataStore,
+            Arc::new(MetadataReadStoreSpy {
+                body: None,
+                store_calls: store_calls.clone(),
+            }),
+        );
+        service.register_resolver(
+            DataSource::Network,
+            Arc::new(FixedBodyResolver { body_bytes: 8 }),
+        );
+        let request = DataRequest::new("network")
+            .with_sources([DataSource::MetadataStore, DataSource::Network])
+            .with_store_sources([]);
+
+        let result = service.resolve(&request);
+
+        assert_eq!(result.status, DataStatus::Ready);
+        assert_eq!(store_calls.load(AtomicOrdering::SeqCst), 0);
+    }
+
+    #[test]
+    fn unrestricted_requests_preserve_legacy_network_write_back() {
+        let service = DataService::new();
+        let store_calls = Arc::new(AtomicUsize::new(0));
+        service.register_resolver(
+            DataSource::MetadataStore,
+            Arc::new(MetadataReadStoreSpy {
+                body: None,
+                store_calls: store_calls.clone(),
+            }),
+        );
+        service.register_resolver(
+            DataSource::Network,
+            Arc::new(FixedBodyResolver { body_bytes: 8 }),
+        );
+        let request = DataRequest::new("network")
+            .with_sources([DataSource::MetadataStore, DataSource::Network]);
+
+        assert_eq!(service.resolve(&request).status, DataStatus::Ready);
+        assert_eq!(store_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn explicit_store_sources_are_snapshotted_independently_from_read_sources() {
+        let service = DataService::new();
+        let store_calls = Arc::new(AtomicUsize::new(0));
+        service.register_resolver(
+            DataSource::ContentCache,
+            Arc::new(MetadataReadStoreSpy {
+                body: None,
+                store_calls: store_calls.clone(),
+            }),
+        );
+        service.register_resolver(
+            DataSource::Network,
+            Arc::new(FixedBodyResolver { body_bytes: 8 }),
+        );
+        let request = DataRequest::new("network")
+            .with_sources([DataSource::Network])
+            .with_store_sources([DataSource::ContentCache]);
+
+        let result = service.resolve(&request);
+
+        assert_eq!(result.status, DataStatus::Ready);
+        assert_eq!(store_calls.load(AtomicOrdering::SeqCst), 1);
+    }
+
+    #[test]
+    fn source_specific_get_and_has_do_not_fall_back_to_disallowed_sources() {
+        let service = DataService::new();
+        service.register_resolver(
+            DataSource::MetadataStore,
+            Arc::new(MetadataReadStoreSpy {
+                body: Some(b"private metadata".to_vec()),
+                store_calls: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+
+        assert!(!service.has_data_from_sources("key", [DataSource::ContentCache]));
+        assert_eq!(
+            service.get_data_from_sources("key", [DataSource::ContentCache]),
+            None
+        );
+        assert!(!service.has_data_from_sources("key", []));
+        assert_eq!(service.get_data_from_sources("key", []), None);
+    }
+
+    #[test]
+    fn source_specific_has_propagates_the_service_materialization_limit() {
+        const LIMIT: usize = 37;
+        let service = DataService::new();
+        service.set_materialization_limit(LIMIT);
+        let observed_limit = Arc::new(AtomicUsize::new(0));
+        service.register_resolver(
+            DataSource::MetadataStore,
+            Arc::new(LimitAwareHasSpy {
+                observed_limit: observed_limit.clone(),
+            }),
+        );
+
+        assert!(service.has_data_from_sources("key", [DataSource::MetadataStore]));
+        assert_eq!(observed_limit.load(AtomicOrdering::SeqCst), LIMIT);
     }
 }

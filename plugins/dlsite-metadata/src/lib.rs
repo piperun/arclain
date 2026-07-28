@@ -1,6 +1,10 @@
 use archust_plugin_sdk::info;
 use std::cell::RefCell;
 
+pub(crate) const CACHED_METADATA_PAGE_SIZE: u32 = 100;
+const ARCHIVE_SCAN_PAGE_SIZE: u32 = 256;
+const MAX_ARCHIVE_SCAN_ENTRIES: u32 = 4096;
+
 mod events;
 mod views;
 
@@ -47,6 +51,7 @@ pub(crate) struct PluginState {
     // Cached metadata summaries to avoid DB queries every frame
     // (filtered_ids, summaries) - rebuilt when filter changes
     pub(crate) cached_summaries: Option<(Vec<String>, Vec<(String, Option<String>, bool)>)>,
+    pub(crate) cached_page_offset: u32,
 }
 
 // Global state (thread-local for WASM component)
@@ -71,7 +76,32 @@ thread_local! {
         rename_with_code: false, // Default: don't rename
         cached_carousel_images: std::collections::HashMap::new(),
         cached_summaries: None,
+        cached_page_offset: 0,
     });
+}
+
+pub(crate) fn emit_dlsite_metadata(metadata_json: &str) -> bool {
+    archust_plugin_sdk::emit_metadata_for_source("dlsite", metadata_json)
+}
+
+pub(crate) fn raw_metadata_cache_keys(product_id: &str) -> [String; 2] {
+    [
+        gameta_lib::providers::dlsite::cache_keys::json_key(product_id),
+        gameta_lib::providers::dlsite::cache_keys::html_key(product_id),
+    ]
+}
+
+pub(crate) fn next_cache_page_offset(offset: u32, total: u64, page_size: u32) -> u32 {
+    let next = offset.saturating_add(page_size);
+    if u64::from(next) < total {
+        next
+    } else {
+        offset
+    }
+}
+
+pub(crate) fn previous_cache_page_offset(offset: u32, page_size: u32) -> u32 {
+    offset.saturating_sub(page_size)
 }
 
 struct Component;
@@ -227,13 +257,9 @@ impl archust_plugin_sdk::Guest for Component {
     fn get_top_tabs() -> Vec<archust_plugin_sdk::arclain::plugin::ui::TopTabConfig> {
         use archust_plugin_sdk::arclain::plugin::ui::{BadgeConfig, TopTabConfig};
 
-        // Cache count for the badge. `list_cached_entries` is now
-        // host-cached (LibraryService caches the SQLite result and
-        // invalidates on writes), so calling it per get_top_tabs is
-        // cheap — no need for a WASM-side memo.
-        let cache_count: Option<u32> = archust_plugin_sdk::list_cached_entries()
+        let cache_count = archust_plugin_sdk::cached_metadata_count("dlsite")
             .ok()
-            .map(|v| v.len() as u32);
+            .map(|count| count.min(u64::from(u32::MAX)) as u32);
 
         vec![TopTabConfig {
             id: "dlsite_browser".to_string(),
@@ -268,7 +294,7 @@ pub(crate) fn detect_code_from_archive() -> Option<String> {
 /// Used during archive_opened to avoid blocking the UI.
 pub(crate) fn perform_scan_cached_only(
 ) -> Result<Option<(String, serde_json::Value, Option<ScrapedData>)>, String> {
-    use archust_plugin_sdk::{current_archive_info, info, list_archive_files};
+    use archust_plugin_sdk::{current_archive_info, info, list_archive_files_page};
 
     let info_data = current_archive_info().ok_or("No archive open")?;
     info(&format!(
@@ -307,8 +333,15 @@ pub(crate) fn perform_scan_cached_only(
         }
     }
 
-    // 2. Check archive contents
-    if let Ok(files) = list_archive_files() {
+    // 2. Check a bounded sequence of archive-content pages. This never asks
+    // the host to clone the entire entry list and stops as soon as a code is
+    // found. Very large archives are capped to keep the plugin callback fast.
+    let mut offset = 0;
+    while offset < MAX_ARCHIVE_SCAN_ENTRIES {
+        let Ok(files) = list_archive_files_page(offset, ARCHIVE_SCAN_PAGE_SIZE) else {
+            break;
+        };
+        let page_len = files.len();
         for file in files {
             if let Some(code) = detect_dlsite_code(&file) {
                 if let Some(result) = check_cached(code) {
@@ -316,6 +349,10 @@ pub(crate) fn perform_scan_cached_only(
                 }
             }
         }
+        if page_len < ARCHIVE_SCAN_PAGE_SIZE as usize {
+            break;
+        }
+        offset = offset.saturating_add(ARCHIVE_SCAN_PAGE_SIZE);
     }
 
     Ok(None)
@@ -558,7 +595,7 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
     // Cover image
     if let Some(ref cover_url) = scraped.cover_image {
         let cover_key = gameta_lib::providers::dlsite::cache_keys::cover_key(product_id);
-        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+        info(&format!(
             "[{}] Downloading cover ({}/{})",
             product_id,
             done + 1,
@@ -577,7 +614,7 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
     // Screenshots
     for (idx, url) in scraped.screenshots.iter().enumerate() {
         let key = gameta_lib::providers::dlsite::cache_keys::screenshot_key(product_id, idx);
-        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+        info(&format!(
             "[{}] Downloading screenshot {}/{}",
             product_id,
             done + 1,
@@ -591,10 +628,7 @@ pub(crate) fn fetch_images_with_progress(product_id: &str, scraped: &ScrapedData
         done += 1;
     }
 
-    archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
-        "[{}] Downloaded {} images",
-        product_id, done
-    ));
+    info(&format!("[{}] Downloaded {} images", product_id, done));
 }
 
 /// Walk `scraped.description_structure` for chobit-embed videos, fetch
@@ -650,7 +684,7 @@ pub(crate) fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData
 
     let total = videos.len();
     for (idx, (video_id, embed_url)) in videos.iter().enumerate() {
-        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+        info(&format!(
             "[{}] Resolving video {}/{}",
             product_id,
             idx + 1,
@@ -668,7 +702,7 @@ pub(crate) fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData
             }
         };
 
-        let info: ChobitVideoInfo = match parse_chobit_embed(&embed_html) {
+        let video_info: ChobitVideoInfo = match parse_chobit_embed(&embed_html) {
             Some(info) => info,
             None => {
                 log_network_activity(&format!(
@@ -679,21 +713,21 @@ pub(crate) fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData
             }
         };
 
-        let chosen: &VideoSource = match select_video_source(&info, &quality_pref) {
+        let chosen: &VideoSource = match select_video_source(&video_info, &quality_pref) {
             Some(s) => s,
             None => {
                 log_network_activity(&format!(
                     "No matching quality '{}' for {} (have {})",
                     quality_pref,
                     video_id,
-                    info.sources.len(),
+                    video_info.sources.len(),
                 ));
                 continue;
             }
         };
 
         let video_key = cache_keys::video_key(product_id, video_id, chosen.resolution);
-        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
+        info(&format!(
             "[{}] Downloading video {}/{} ({})",
             product_id,
             idx + 1,
@@ -718,10 +752,7 @@ pub(crate) fn fetch_videos_with_progress(product_id: &str, scraped: &ScrapedData
         }
     }
 
-    archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
-        "[{}] Video downloads complete",
-        product_id,
-    ));
+    info(&format!("[{}] Video downloads complete", product_id,));
 }
 
 /// Pick a `VideoSource` according to the user's `video_quality`
@@ -787,17 +818,21 @@ pub(crate) fn generate_metadata_json(
         (None, None)
     };
 
-    // Debug logging
-    if let Some(s) = scraped {
-        info(&format!(
-            "[DLSite Plugin] Generating JSON: screenshots={}, voice_actors={}, genres={}, cover={}",
-            s.screenshots.len(),
-            s.voice_actors.len(),
-            s.genres.len(),
-            s.cover_image.is_some()
-        ));
-    } else {
-        info("[DLSite Plugin] No scraped data available");
+    // Native unit tests have no component host to receive imported logging
+    // calls. Production WASM keeps the diagnostics in the bounded plugin log.
+    #[cfg(not(test))]
+    {
+        if let Some(s) = scraped {
+            info(&format!(
+                "[DLSite Plugin] Generating JSON: screenshots={}, voice_actors={}, genres={}, cover={}",
+                s.screenshots.len(),
+                s.voice_actors.len(),
+                s.genres.len(),
+                s.cover_image.is_some()
+            ));
+        } else {
+            info("[DLSite Plugin] No scraped data available");
+        }
     }
 
     gameta_lib::providers::dlsite::build_plugin_json_string(product_id, api_json, scraped)
@@ -912,6 +947,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn external_trailer_playback_is_hidden_without_a_host_ui_broker() {
+        for source in [include_str!("views.rs"), include_str!("events.rs")] {
+            assert!(
+                !source.contains("play_video:"),
+                "the official plugin must not expose guaranteed-failure playback actions"
+            );
+        }
+    }
+
+    #[test]
+    fn official_plugin_does_not_call_deprecated_message_hostcalls() {
+        let status_hostcall = concat!("set_status_", "message");
+        let dialog_hostcall = concat!("show_", "message");
+        for source in [
+            include_str!("lib.rs"),
+            include_str!("events.rs"),
+            include_str!("views.rs"),
+        ] {
+            assert!(!source.contains(status_hostcall));
+            assert!(!source.contains(dialog_hostcall));
+        }
+    }
+
+    #[test]
     fn test_detect_dlsite_code() {
         // Standard codes
         assert_eq!(
@@ -986,5 +1045,24 @@ mod tests {
         let parsed_time: serde_json::Value = serde_json::from_str(&output_time).unwrap();
 
         assert_eq!(parsed_time["release_date"], "2026-03-06");
+    }
+
+    #[test]
+    fn prune_maps_product_ids_to_the_actual_raw_cache_keys() {
+        assert_eq!(
+            raw_metadata_cache_keys("RJ123456"),
+            [
+                "dlsite:json:RJ123456".to_string(),
+                "dlsite:html:RJ123456".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn cache_page_offsets_are_clamped_to_available_pages() {
+        assert_eq!(next_cache_page_offset(0, 250, 100), 100);
+        assert_eq!(next_cache_page_offset(200, 250, 100), 200);
+        assert_eq!(previous_cache_page_offset(0, 100), 0);
+        assert_eq!(previous_cache_page_offset(200, 100), 100);
     }
 }

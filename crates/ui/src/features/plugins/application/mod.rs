@@ -7,7 +7,7 @@ pub use ui_jobs::{
 
 use crate::features::plugins::domain::types::{PluginsListState, SnapshotStatus};
 use crate::features::plugins::presentation::controllers::plugin_controller::{
-    process_action, ActionContext,
+    process_plugin_actions_with_limit_status, ActionContext,
 };
 use crate::features::plugins::PluginsFeature;
 use crate::shared::SharedState;
@@ -47,6 +47,7 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                 page_id,
                 origin_tab,
                 actions,
+                actions_limited,
             } => {
                 let dialog_signal = shared.signals().plugin_dialog_state.clone();
                 let mut dialog_state = dialog_signal.get();
@@ -86,16 +87,15 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                     shared_state: Some(shared),
                     origin_tab: Some(origin_tab),
                 };
-                for action in actions {
-                    process_action(
-                        action,
-                        &plugin_id,
-                        &mut dialog_state,
-                        &mut toaster,
-                        Some(&shared.refresh_requests),
-                        &context,
-                    );
-                }
+                process_plugin_actions_with_limit_status(
+                    actions,
+                    actions_limited,
+                    &plugin_id,
+                    &mut dialog_state,
+                    &mut toaster,
+                    Some(&shared.refresh_requests),
+                    &context,
+                );
                 dialog_signal.set(dialog_state);
             }
             PluginUiResult::SnapshotLoaded {
@@ -157,7 +157,13 @@ pub fn process_plugin_ui_results(shared: &SharedState, plugins: &mut PluginsFeat
                     if let Some(settings) = completion.settings {
                         persist_plugin_settings(shared, &plugin_id, settings);
                     }
-                    process_actions_for_origin(shared, &plugin_id, origin_tab, completion.actions);
+                    process_actions_for_origin(
+                        shared,
+                        &plugin_id,
+                        origin_tab,
+                        completion.actions,
+                        completion.actions_limited,
+                    );
                 }
                 Err(error) => shared.toaster.lock().error(error),
             },
@@ -215,6 +221,7 @@ fn process_actions_for_origin(
     plugin_id: &str,
     origin_tab: crate::core::tabs::TabId,
     actions: Vec<arclain_plugins::types::PluginAction>,
+    actions_limited: bool,
 ) {
     let tabs = shared.signals().tabs.get();
     let Some(origin) = tabs.get(origin_tab).cloned() else {
@@ -232,15 +239,14 @@ fn process_actions_for_origin(
         shared_state: Some(shared),
         origin_tab: Some(origin_tab),
     };
-    for action in actions {
-        process_action(
-            action,
-            plugin_id,
-            &mut dialog_state,
-            &mut toaster,
-            Some(&shared.refresh_requests),
-            &context,
-        );
-    }
+    process_plugin_actions_with_limit_status(
+        actions,
+        actions_limited,
+        plugin_id,
+        &mut dialog_state,
+        &mut toaster,
+        Some(&shared.refresh_requests),
+        &context,
+    );
     dialog_signal.set(dialog_state);
 }

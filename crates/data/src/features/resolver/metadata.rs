@@ -10,9 +10,10 @@
 //! `arclain_core::LibraryService` — see `crate::traits` and the audit
 //! note about the data→core cycle.
 
-use super::{DataSourceResolver, ResolveError};
+use super::{default_materialization_limit, DataSourceResolver, ResolveError};
 use crate::features::api::DataRequest;
 use crate::features::resource_manager::ResourceManager;
+use crate::shared::{safe_log_fingerprint, serialize_json_with_limit};
 use crate::traits::MetadataReader;
 use arclain_db::ProductMetadata;
 use std::sync::Arc;
@@ -59,12 +60,21 @@ impl MetadataStoreResolver {
 
 impl DataSourceResolver for MetadataStoreResolver {
     fn try_resolve(&self, key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
+        self.try_resolve_with_limit(key, _request, default_materialization_limit())
+    }
+
+    fn try_resolve_with_limit(
+        &self,
+        key: &str,
+        _request: &DataRequest,
+        limit: usize,
+    ) -> Result<Vec<u8>, ResolveError> {
         let is_html_key = key.starts_with("dlsite:html:");
 
         // For HTML, go to ContentCache
         if is_html_key {
             if let Some(rm) = &self.resource_manager {
-                if let Some(data) = rm.get(key) {
+                if let Some(data) = rm.get_with_limit(key, limit) {
                     return Ok(data.data);
                 }
             }
@@ -76,15 +86,15 @@ impl DataSourceResolver for MetadataStoreResolver {
             let id = Self::key_to_id(key);
             if let Ok(Some(meta)) = lib_svc.get_metadata(&id) {
                 // Return the ProductMetadata struct serialized as JSON
-                let json =
-                    serde_json::to_vec(&meta).map_err(|e| ResolveError::IoError(e.to_string()))?;
+                let json = serialize_json_with_limit(&meta, limit, "metadata response")
+                    .map_err(|error| ResolveError::IoError(error.to_string()))?;
                 return Ok(json);
             }
         }
 
         // Fallback to ContentCache if not in Store (e.g. raw JSON files)
         if let Some(rm) = &self.resource_manager {
-            if let Some(data) = rm.get(key) {
+            if let Some(data) = rm.get_with_limit(key, limit) {
                 return Ok(data.data);
             }
         }
@@ -98,14 +108,17 @@ impl DataSourceResolver for MetadataStoreResolver {
         data: &[u8],
         _request: &DataRequest,
     ) -> Result<(), ResolveError> {
-        tracing::debug!("[MetadataStoreResolver] try_store called for key: {}", key);
+        tracing::debug!(
+            "[MetadataStoreResolver] try_store called for key: {}",
+            safe_log_fingerprint(key)
+        );
 
         // Skip raw API responses - these are not ProductMetadata structs
         // They come from network fetches and have prefixes like dlsite:json: or dlsite:html:
         if key.starts_with("dlsite:json:") || key.starts_with("dlsite:html:") {
             tracing::debug!(
                 "[MetadataStoreResolver] Skipping raw API data for key: {} (not ProductMetadata)",
-                key
+                safe_log_fingerprint(key)
             );
             return Ok(());
         }
@@ -118,32 +131,44 @@ impl DataSourceResolver for MetadataStoreResolver {
         let meta: ProductMetadata = serde_json::from_slice(data).map_err(|e| {
             tracing::error!(
                 "[MetadataStoreResolver] Failed to parse metadata JSON: {}",
-                e
+                safe_log_fingerprint(e.to_string())
             );
             ResolveError::IoError(format!("Invalid metadata JSON: {}", e))
         })?;
 
         tracing::debug!(
             "[MetadataStoreResolver] Saving metadata id={} source={}",
-            meta.id,
-            meta.source.as_str()
+            safe_log_fingerprint(&meta.id),
+            safe_log_fingerprint(meta.source.as_str())
         );
 
         lib_svc.save_metadata(&meta).map_err(|e| {
-            tracing::error!("[MetadataStoreResolver] Save failed: {}", e);
+            tracing::error!(
+                "[MetadataStoreResolver] Save failed: {}",
+                safe_log_fingerprint(e.to_string())
+            );
             ResolveError::IoError(e.to_string())
         })?;
 
-        tracing::debug!("[MetadataStoreResolver] Saved successfully: {}", meta.id);
+        tracing::debug!(
+            "[MetadataStoreResolver] Saved successfully: {}",
+            safe_log_fingerprint(&meta.id)
+        );
         Ok(())
     }
 
     fn has(&self, key: &str, _request: &DataRequest) -> bool {
+        self.has_with_limit(key, _request, default_materialization_limit())
+    }
+
+    fn has_with_limit(&self, key: &str, _request: &DataRequest, _limit: usize) -> bool {
         let id = Self::key_to_id(key);
 
-        if let Some(lib_svc) = &self.library_service {
-            if let Ok(Some(_)) = lib_svc.get_metadata(&id) {
-                return true;
+        if !key.starts_with("dlsite:html:") {
+            if let Some(lib_svc) = &self.library_service {
+                if lib_svc.has_metadata(&id).unwrap_or(false) {
+                    return true;
+                }
             }
         }
 
@@ -154,5 +179,101 @@ impl DataSourceResolver for MetadataStoreResolver {
         }
 
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+    use arclain_db::{MetadataSource, ProductMetadata};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FixedMetadataReader {
+        metadata: ProductMetadata,
+    }
+
+    impl MetadataReader for FixedMetadataReader {
+        fn get_metadata(&self, _id: &str) -> Result<Option<ProductMetadata>> {
+            Ok(Some(self.metadata.clone()))
+        }
+
+        fn has_metadata(&self, _id: &str) -> Result<bool> {
+            Ok(true)
+        }
+
+        fn save_metadata(&self, _meta: &ProductMetadata) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn resolver_with_large_metadata() -> MetadataStoreResolver {
+        let mut metadata = ProductMetadata::new(MetadataSource::DLSite, "RJ000001");
+        metadata.description = Some("x".repeat(256));
+        MetadataStoreResolver::new(Arc::new(FixedMetadataReader { metadata }))
+    }
+
+    #[test]
+    fn metadata_serialization_stops_at_the_caller_limit() {
+        let resolver = resolver_with_large_metadata();
+        let request = DataRequest::new("dlsite:RJ000001");
+
+        let error = resolver
+            .try_resolve_with_limit("dlsite:RJ000001", &request, 64)
+            .expect_err("oversized metadata must fail during bounded serialization");
+
+        assert!(error
+            .to_string()
+            .contains("64-byte materialized read limit"));
+    }
+
+    #[test]
+    fn metadata_serialization_accepts_its_exact_boundary() {
+        let resolver = resolver_with_large_metadata();
+        let request = DataRequest::new("dlsite:RJ000001");
+        let expected = resolver
+            .try_resolve("dlsite:RJ000001", &request)
+            .expect("default limit should accept test metadata");
+
+        let actual = resolver
+            .try_resolve_with_limit("dlsite:RJ000001", &request, expected.len())
+            .expect("exact serialization boundary should be accepted");
+
+        assert_eq!(actual, expected);
+    }
+
+    struct ExistenceOnlyMetadataReader {
+        get_calls: AtomicUsize,
+        has_calls: AtomicUsize,
+    }
+
+    impl MetadataReader for ExistenceOnlyMetadataReader {
+        fn get_metadata(&self, _id: &str) -> Result<Option<ProductMetadata>> {
+            self.get_calls.fetch_add(1, Ordering::SeqCst);
+            panic!("metadata existence must not load the row")
+        }
+
+        fn has_metadata(&self, id: &str) -> Result<bool> {
+            self.has_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(id == "dlsite:RJ000001")
+        }
+
+        fn save_metadata(&self, _meta: &ProductMetadata) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn metadata_has_uses_the_cheap_existence_query_without_loading_the_row() {
+        let reader = Arc::new(ExistenceOnlyMetadataReader {
+            get_calls: AtomicUsize::new(0),
+            has_calls: AtomicUsize::new(0),
+        });
+        let resolver = MetadataStoreResolver::new(reader.clone());
+        let request = DataRequest::new("dlsite:RJ000001");
+
+        assert!(resolver.has_with_limit("dlsite:RJ000001", &request, 1));
+        assert_eq!(reader.has_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(reader.get_calls.load(Ordering::SeqCst), 0);
     }
 }

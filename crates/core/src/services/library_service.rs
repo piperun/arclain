@@ -7,6 +7,20 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub const METADATA_SUMMARY_MAX_IDS: usize = gameta_database::MAX_METADATA_SUMMARY_IDS;
+pub const METADATA_SUMMARY_MAX_ID_BYTES: usize = gameta_database::MAX_METADATA_SUMMARY_ID_BYTES;
+pub const METADATA_SUMMARY_MAX_STORED_ID_BYTES: usize =
+    gameta_database::MAX_METADATA_SUMMARY_STORED_ID_BYTES;
+pub const METADATA_SUMMARY_TITLE_CHARS: usize = gameta_database::MAX_METADATA_SUMMARY_TITLE_CHARS;
+
+/// Small, bounded projection for metadata-list views.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetadataSummary {
+    pub id: String,
+    pub title: Option<String>,
+    pub geo_blocked: bool,
+}
+
 pub struct LibraryService {
     backend: DieselBackend,
     /// Per-source cache of `list_by_source` results so the dlsite-metadata
@@ -150,6 +164,30 @@ impl LibraryService {
             .map_err(|e| anyhow::anyhow!("{}", e))
     }
 
+    /// Fetch only the fields required by metadata-list summaries.
+    ///
+    /// Both the ID count and result count are capped at 256. The backend
+    /// projects `id`, a SQL-truncated title, and `geo_blocked`; it does not
+    /// materialize full metadata rows or raw response columns.
+    pub fn get_summaries_limited(
+        &self,
+        ids: &[&str],
+        limit: usize,
+    ) -> Result<Vec<MetadataSummary>> {
+        self.backend
+            .sync_get_summaries_limited(ids, limit)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|row| MetadataSummary {
+                        id: row.id,
+                        title: row.title,
+                        geo_blocked: row.geo_blocked,
+                    })
+                    .collect()
+            })
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
     pub fn delete_metadata(&self, id: &str) -> Result<()> {
         let result = self
             .backend
@@ -198,6 +236,40 @@ impl LibraryService {
         Ok(fresh)
     }
 
+    /// Return at most `limit` IDs for a source in deterministic ID order.
+    ///
+    /// This deliberately bypasses `list_cache`: callers asking for a bounded
+    /// page should neither populate nor clone the unbounded per-source list.
+    /// The backend applies the limit in SQL.
+    pub fn list_by_source_limited(
+        &self,
+        source: MetadataSource,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        self.backend
+            .sync_list_ids_by_source_limited(source, limit)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Count rows for a metadata source without loading their IDs.
+    pub fn count_by_source(&self, source: MetadataSource) -> Result<u64> {
+        self.backend
+            .sync_count_ids_by_source(source)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
+    /// Return one stable, SQL-bounded page of metadata IDs for a source.
+    pub fn list_by_source_page(
+        &self,
+        source: MetadataSource,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        self.backend
+            .sync_list_ids_by_source_page(source, offset, limit)
+            .map_err(|error| anyhow::anyhow!("{error}"))
+    }
+
     pub fn get_by_external_id(
         &self,
         source: MetadataSource,
@@ -215,6 +287,10 @@ impl LibraryService {
 impl arclain_data::MetadataReader for LibraryService {
     fn get_metadata(&self, id: &str) -> Result<Option<ProductMetadata>> {
         LibraryService::get_metadata(self, id)
+    }
+
+    fn has_metadata(&self, id: &str) -> Result<bool> {
+        LibraryService::exists(self, id)
     }
 
     fn save_metadata(&self, meta: &ProductMetadata) -> Result<()> {
@@ -333,6 +409,55 @@ mod tests {
     }
 
     #[test]
+    fn projected_summaries_are_bounded_and_stably_ordered() {
+        let (_dir, svc) = temp_service();
+        let mut second = make_meta("RJ_SUMMARY_B");
+        second.title = Some("z".repeat(METADATA_SUMMARY_TITLE_CHARS + 100));
+        second.raw_api_response = Some("unused raw response".repeat(100_000));
+        svc.save_metadata(&second).unwrap();
+        let mut first = make_meta("RJ_SUMMARY_A");
+        first.title = Some("first".into());
+        first.geo_blocked = true;
+        svc.save_metadata(&first).unwrap();
+
+        let rows = svc
+            .get_summaries_limited(&["dlsite:RJ_SUMMARY_B", "dlsite:RJ_SUMMARY_A"], 2)
+            .unwrap();
+
+        assert_eq!(
+            rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            vec!["dlsite:RJ_SUMMARY_A", "dlsite:RJ_SUMMARY_B"]
+        );
+        assert_eq!(rows[0].title.as_deref(), Some("first"));
+        assert!(rows[0].geo_blocked);
+        assert_eq!(
+            rows[1].title.as_ref().unwrap().chars().count(),
+            METADATA_SUMMARY_TITLE_CHARS
+        );
+    }
+
+    #[test]
+    fn projected_summaries_accept_prefixed_max_external_id_and_reject_oversized_stored_id() {
+        let (_dir, svc) = temp_service();
+        let external_id = "X".repeat(METADATA_SUMMARY_MAX_ID_BYTES);
+        let stored_id = format!("dlsite:{external_id}");
+        let mut metadata = make_meta(&external_id);
+        metadata.id = stored_id.clone();
+        svc.save_metadata(&metadata).unwrap();
+
+        let rows = svc
+            .get_summaries_limited(&[stored_id.as_str()], 1)
+            .expect("prefixed max external ID must fit the stored-ID limit");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, stored_id);
+
+        let oversized_stored_id = "x".repeat(METADATA_SUMMARY_MAX_STORED_ID_BYTES + 1);
+        assert!(svc
+            .get_summaries_limited(&[oversized_stored_id.as_str()], 1)
+            .is_err());
+    }
+
+    #[test]
     fn test_exists() {
         let (_dir, svc) = temp_service();
         assert!(!svc.exists("dlsite:RJ300").unwrap());
@@ -356,6 +481,44 @@ mod tests {
 
         let steam_ids = svc.list_by_source(MetadataSource::Steam).unwrap();
         assert_eq!(steam_ids.len(), 1);
+    }
+
+    #[test]
+    fn list_by_source_limited_handles_zero_exact_limit_and_stable_order() {
+        let (_dir, svc) = temp_service();
+        for external_id in ["RJ003", "RJ001", "RJ002"] {
+            svc.save_metadata(&make_meta(external_id)).unwrap();
+        }
+
+        assert!(svc
+            .list_by_source_limited(MetadataSource::DLSite, 0)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            svc.list_by_source_limited(MetadataSource::DLSite, 2)
+                .unwrap(),
+            vec!["dlsite:RJ001", "dlsite:RJ002"]
+        );
+        assert_eq!(
+            svc.list_by_source_limited(MetadataSource::DLSite, 3)
+                .unwrap(),
+            vec!["dlsite:RJ001", "dlsite:RJ002", "dlsite:RJ003"]
+        );
+    }
+
+    #[test]
+    fn metadata_source_count_and_page_do_not_materialize_the_full_source() {
+        let (_dir, svc) = temp_service();
+        for external_id in ["RJ004", "RJ002", "RJ001", "RJ003"] {
+            svc.save_metadata(&make_meta(external_id)).unwrap();
+        }
+
+        assert_eq!(svc.count_by_source(MetadataSource::DLSite).unwrap(), 4);
+        assert_eq!(
+            svc.list_by_source_page(MetadataSource::DLSite, 1, 2)
+                .unwrap(),
+            vec!["dlsite:RJ002", "dlsite:RJ003"]
+        );
     }
 
     #[test]

@@ -11,6 +11,39 @@ use tracing::{error, info};
 #[path = "archive_tests.rs"]
 mod tests;
 
+pub(super) const MAX_ARCHIVE_PAGE_ITEMS: usize = 256;
+const MAX_ARCHIVE_PAGE_BYTES: usize = 1024 * 1024;
+
+pub(super) fn archive_entry_count(entries: &[arclain_core::ArchiveEntry]) -> u64 {
+    u64::try_from(entries.len()).unwrap_or(u64::MAX)
+}
+
+pub(super) fn archive_entry_page(
+    entries: &[arclain_core::ArchiveEntry],
+    offset: u32,
+    limit: u32,
+) -> std::result::Result<Vec<String>, String> {
+    let limit = usize::try_from(limit).map_err(|_| "archive page limit is invalid")?;
+    if limit > MAX_ARCHIVE_PAGE_ITEMS {
+        return Err(format!(
+            "archive page limit exceeds {MAX_ARCHIVE_PAGE_ITEMS} entries"
+        ));
+    }
+    let offset = usize::try_from(offset).map_err(|_| "archive page offset is invalid")?;
+    let mut retained_bytes = 0usize;
+    let mut page = Vec::with_capacity(limit.min(entries.len().saturating_sub(offset)));
+    for entry in entries.iter().skip(offset).take(limit) {
+        retained_bytes = retained_bytes
+            .checked_add(entry.path.len())
+            .ok_or("archive page text budget overflowed")?;
+        if retained_bytes > MAX_ARCHIVE_PAGE_BYTES {
+            return Err("archive page exceeds the 1 MiB text budget".to_string());
+        }
+        page.push(entry.path.clone());
+    }
+    Ok(page)
+}
+
 impl HostFunctions {
     pub(super) fn impl_current_archive_info(
         &mut self,
@@ -35,8 +68,32 @@ impl HostFunctions {
     }
 
     pub(super) fn impl_list_archive_files(&mut self) -> std::result::Result<Vec<String>, String> {
-        if !self.check_capability(PluginCapability::ArchiveMetadataRead) {
-            return Err("ArchiveMetadataRead capability not granted".to_string());
+        self.impl_list_archive_files_page(0, MAX_ARCHIVE_PAGE_ITEMS as u32)
+    }
+
+    pub(super) fn impl_archive_file_count(&self) -> std::result::Result<u64, String> {
+        if let Some(ref ctx) = self.event_context {
+            return Ok(archive_entry_count(&ctx.entries));
+        }
+        let bridge = self
+            .active_tab
+            .as_ref()
+            .ok_or("Active-tab bridge not configured")?;
+        if bridge.archive_path().is_none() {
+            return Err("No archive currently open".to_string());
+        }
+        Ok(u64::try_from(bridge.archive_entry_count()).unwrap_or(u64::MAX))
+    }
+
+    pub(super) fn impl_list_archive_files_page(
+        &self,
+        offset: u32,
+        limit: u32,
+    ) -> std::result::Result<Vec<String>, String> {
+        if usize::try_from(limit).unwrap_or(usize::MAX) > MAX_ARCHIVE_PAGE_ITEMS {
+            return Err(format!(
+                "archive page limit exceeds {MAX_ARCHIVE_PAGE_ITEMS} entries"
+            ));
         }
 
         // Per-event context wins (see `impl_current_archive_info`).
@@ -45,7 +102,7 @@ impl HostFunctions {
         // a queued event sees that tab's files even when the user
         // has switched tabs in the meantime.
         if let Some(ref ctx) = self.event_context {
-            return Ok(ctx.entries.iter().map(|e| e.path.clone()).collect());
+            return archive_entry_page(&ctx.entries, offset, limit);
         }
 
         // Non-event path (panel render, etc.): read the host's
@@ -56,11 +113,10 @@ impl HostFunctions {
             .active_tab
             .as_ref()
             .ok_or("Active-tab bridge not configured")?;
-        let entries = bridge.archive_entries();
-        if entries.is_empty() && bridge.archive_path().is_none() {
+        if bridge.archive_path().is_none() {
             return Err("No archive currently open".to_string());
         }
-        Ok(entries)
+        Ok(bridge.archive_entries_page(offset as usize, limit as usize))
     }
 
     /// Rename the currently open archive file
@@ -101,8 +157,6 @@ impl HostFunctions {
         if let Err(rename_error) = rename_no_replace(path, &new_path) {
             error!(
                 error = %rename_error,
-                source = %path.display(),
-                destination = %new_path.display(),
                 "Failed to rename archive without replacing the destination"
             );
             return if rename_error.kind() == io::ErrorKind::AlreadyExists {
@@ -119,10 +173,7 @@ impl HostFunctions {
         let new_path_str = new_path.to_string_lossy().into_owned();
         bridge.set_archive_path(Some(new_path_str.clone()));
 
-        info!(
-            "[HostFunctions] Renamed archive from '{}' to '{}'",
-            current_path, new_path_str
-        );
+        info!("[HostFunctions] Renamed archive");
 
         Ok(new_path_str)
     }

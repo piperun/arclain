@@ -309,6 +309,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -399,6 +400,7 @@ dependencies = [
  "cacache",
  "indexmap",
  "parking_lot",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2",
@@ -407,6 +409,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -444,12 +447,14 @@ dependencies = [
  "arclain_data",
  "arclain_db",
  "arclain_signals",
+ "cap-fs-ext",
+ "cap-std",
  "chrono",
  "dirs",
  "gameta_lib",
- "open",
  "parking_lot",
  "rfd 0.16.0",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "tempfile",
@@ -460,6 +465,7 @@ dependencies = [
  "tracing-test",
  "wasmtime",
  "wasmtime-wasi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

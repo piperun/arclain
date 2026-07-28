@@ -12,7 +12,8 @@ pub mod bindings {
 // Re-export everything from bindings so they are available at crate root
 pub use bindings::*;
 
-// Helper logging functions
+// Helper logging functions. All levels are subject to host entry/rate/daily
+// byte caps; admitted Warn/Error messages also reach application tracing.
 pub fn info(msg: &str) {
     arclain::plugin::host::log(arclain::plugin::host::LogLevel::Info, msg);
 }
@@ -29,19 +30,38 @@ pub fn debug(msg: &str) {
     arclain::plugin::host::log(arclain::plugin::host::LogLevel::Debug, msg);
 }
 
-// Archive context helpers
+// Archive context helpers (`archive_metadata_read` required)
 pub fn current_archive_info() -> Option<arclain::plugin::host::ArchiveInfo> {
     arclain::plugin::host::current_archive_info()
 }
 
-// Metadata helpers
+/// Publish metadata under `archive_metadata_write` using the payload's source.
+/// Prefer [`emit_metadata_for_source`] for new plugins.
 pub fn emit_metadata(metadata_json: &str) {
     arclain::plugin::host::emit_metadata(metadata_json);
 }
 
-// Archive helpers
+/// Publish metadata for an explicit source.
+///
+/// The host rejects mismatched payload sources, oversized input, or writes
+/// beyond its per-plugin rate, distinct-ID, and session-byte quotas.
+pub fn emit_metadata_for_source(source: &str, metadata_json: &str) -> bool {
+    arclain::plugin::host::emit_metadata_for_source(source, metadata_json)
+}
+
+// Archive helpers (`archive_metadata_read` required for listing). The legacy
+// helper returns only the first bounded page.
 pub fn list_archive_files() -> Result<Vec<String>, String> {
     arclain::plugin::host::list_archive_files()
+}
+
+pub fn archive_file_count() -> Result<u64, String> {
+    arclain::plugin::host::archive_file_count()
+}
+
+/// List at most 256 archive paths and 1 MiB of path text.
+pub fn list_archive_files_page(offset: u32, limit: u32) -> Result<Vec<String>, String> {
+    arclain::plugin::host::list_archive_files_page(offset, limit)
 }
 
 /// Rename the currently open archive file
@@ -51,7 +71,9 @@ pub fn rename_archive(new_name: &str) -> Result<String, String> {
     arclain::plugin::host::rename_archive(new_name)
 }
 
-// UI helpers
+/// Deprecated compatibility helper that writes an admitted message only to
+/// the bounded plugin log. It does not open a dialog or retain UI state.
+#[deprecated(note = "use returned UI actions or bounded plugin logging")]
 pub fn show_message(title: &str, message: &str) {
     arclain::plugin::host::show_message(title, message);
 }
@@ -60,7 +82,13 @@ pub fn log_network_activity(msg: &str) {
     arclain::plugin::host::log_network_activity(msg);
 }
 
-/// Invalidate a cache entry to force a refetch from network
+/// Delete a content-cache entry (or a trailing-`*` pattern).
+///
+/// Requires the plugin manifest's `file_write` capability and affects only
+/// entries owned by the calling plugin. Every trailing-`*` pattern and every
+/// exact raw metadata key also requires `archive_metadata_write`. Denial and
+/// cache backend failures return `false`. Product metadata records are
+/// unaffected.
 pub fn invalidate_cache(key: &str) -> bool {
     arclain::plugin::host::invalidate_cache(key)
 }
@@ -70,8 +98,12 @@ pub fn invalidate_cache(key: &str) -> bool {
 // Only expose what plugins need - NOT cache internals
 pub use arclain::plugin::host::{DataRequest, DataResult, DataStatus, ResourceType};
 
-/// Request data from a URL using the Data API
-/// The host handles caching transparently.
+/// Request data from a URL using the capability-filtered Data API.
+///
+/// `network` is required for HTTP. Cache/database reads and network-result
+/// write-back require their corresponding `file_*` / `archive_metadata_*`
+/// capabilities. Content-cache keys resolve only in the calling plugin's
+/// private namespace. Guest-returned bodies are capped at 4 MiB.
 pub fn request_data(key: &str, url: &str, resource_type: ResourceType) -> String {
     let req = DataRequest {
         key: key.to_string(),
@@ -81,6 +113,14 @@ pub fn request_data(key: &str, url: &str, resource_type: ResourceType) -> String
         sources: vec![], // Host decides the best sources
     };
     arclain::plugin::host::request_data(&req)
+}
+
+/// Set a plugin setting within the host's retained-state quotas.
+///
+/// The host ignores writes beyond 128 entries, 128-byte keys, 64-KiB values,
+/// or 1 MiB aggregate text.
+pub fn set_setting(key: &str, value: &str) {
+    arclain::plugin::host::set_setting(key, value);
 }
 
 /// Poll for the status of a request
@@ -157,7 +197,10 @@ pub fn fetch_string_blocking(key: &str, url: &str) -> Result<String, String> {
 /// (host vec → ABI copy → plugin vec). Subsequent
 /// `arclain::plugin::host::has_data(key)` /
 /// `arclain::plugin::host::get_data(key)` see the cached entry the
-/// same way they would after a `fetch_blocking`.
+/// same way they would after a `fetch_blocking`, within the calling plugin's
+/// private cache namespace.
+/// Requires `network` + `file_write`; metadata resources and raw metadata
+/// cache keys additionally require `archive_metadata_write`.
 pub fn fetch_to_cache(key: &str, url: &str, resource_type: ResourceType) -> Result<(), String> {
     let req = DataRequest {
         key: key.to_string(),
@@ -173,44 +216,66 @@ pub fn fetch_to_cache(key: &str, url: &str, resource_type: ResourceType) -> Resu
     }
 }
 
-/// Hand a cached blob to the OS default application. The host writes
-/// the bytes to a temp file with `extension` (no leading dot — e.g.
-/// `"mp4"`, `"webm"`) and shells out via the system file-association
-/// handler (mpv / VLC / whatever the user has registered).
+/// Reserved ABI for a future host-UI-authorized cached-blob launch.
 ///
-/// The bytes never re-enter the WASM sandbox; the plugin only needs
-/// to know the cache key. Returns `Err` if the cache entry is
-/// missing, the temp write fails, or the OS launcher fails.
+/// Background plugin calls currently fail closed with
+/// `external launch disabled: host UI authorization required`; no blob is
+/// written or launched. The manifest must still grant `file_read` before the
+/// stable denial is returned. `extension` is retained for ABI compatibility.
 pub fn play_cached_blob(key: &str, extension: &str) -> Result<(), String> {
     arclain::plugin::host::play_cached_blob(key, extension)
 }
 
-// Cache helpers (for cache management UI, not data access)
+/// Legacy DLSite-only compatibility listing of the first bounded page.
 pub fn list_cached_entries() -> Result<Vec<String>, String> {
     Ok(arclain::plugin::host::list_cached_entries())
+}
+
+pub fn cached_metadata_count(source: &str) -> Result<u64, String> {
+    arclain::plugin::host::cached_metadata_count(source)
+}
+
+/// List one source-explicit metadata page. `limit` must be at most 256.
+pub fn list_cached_metadata(source: &str, offset: u32, limit: u32) -> Result<Vec<String>, String> {
+    arclain::plugin::host::list_cached_metadata(source, offset, limit)
 }
 
 /// Re-export MetadataSummary for use in plugins
 pub use arclain::plugin::host::MetadataSummary;
 
-/// Batch query for metadata summaries (id, title, geo_blocked)
-/// Much faster than individual lookups for list rendering
+/// Batch query for metadata summaries (id, title, geo_blocked).
+///
+/// Accepts at most 256 ids, each at most 256 bytes, and enforces a 1 MiB
+/// aggregate input/output budget before returning guest-owned strings. The
+/// database projects only id, bounded title, and geo-blocked fields.
 pub fn get_metadata_summaries(ids: Vec<String>) -> Vec<MetadataSummary> {
     arclain::plugin::host::get_metadata_summaries(&ids)
 }
 
-/// Get full product metadata from database with fallback chain:
-/// 1. metadata.sqlite (instant - already parsed)
-/// 2. JSON cache (host parses + saves to DB)
-/// 3. HTML cache (host parses + saves to DB)
-/// Returns ProductMetadata as JSON string, ready to deserialize.
-/// This is the preferred way to get metadata - no WASM-side parsing needed.
+pub fn get_metadata_summaries_for_source(
+    source: &str,
+    ids: Vec<String>,
+) -> Result<Vec<MetadataSummary>, String> {
+    arclain::plugin::host::get_metadata_summaries_for_source(source, &ids)
+}
+
+/// Get full product metadata (maximum 4 MiB).
+///
+/// `product_id` and `source` are capped at 256 bytes. Resolution order is the
+/// local database, calling plugin's JSON/HTML cache, then Gameta. Database
+/// reads require `archive_metadata_read`; cached JSON/HTML also requires
+/// `file_read`; Gameta additionally requires `network` and consumes one
+/// request-budget permit per actual HTTP request. Cache repair/migration
+/// persists only with `archive_metadata_write`.
 pub fn get_product_metadata(product_id: &str, source: &str) -> Option<String> {
     arclain::plugin::host::get_product_metadata(product_id, source)
 }
 
-/// Create a file in the host's temp directory
-/// Returns the full path to the created file
+/// Create a file in private temporary storage owned by this plugin instance.
+///
+/// Requires `file_write`. `filename` is a sanitized hint; the host selects a
+/// collision-safe name. Each instance is limited to 128 files and 64 MiB
+/// cumulatively, and its storage is removed on unload. Returns the full path.
 pub fn create_file(filename: &str, content: &[u8]) -> Result<String, String> {
     arclain::plugin::host::create_file(filename, content)
 }

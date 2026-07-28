@@ -177,6 +177,20 @@ pub fn has_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -> 
     Ok(cnt > 0)
 }
 
+/// Check whether any index row still references one physical content hash.
+pub fn has_content_hash(
+    conn: &mut diesel::SqliteConnection,
+    content_hash_param: &str,
+) -> Result<bool> {
+    use crate::diesel_schema::cache_index::dsl::*;
+
+    diesel::select(diesel::dsl::exists(
+        cache_index.filter(content_hash.eq(content_hash_param)),
+    ))
+    .get_result(conn)
+    .map_err(diesel_err("has_content_hash"))
+}
+
 /// Delete a cache entry by key
 pub fn delete_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -> Result<bool> {
     use crate::diesel_schema::cache_index::dsl::*;
@@ -192,11 +206,20 @@ pub fn delete_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) 
 pub fn delete_by_pattern(conn: &mut diesel::SqliteConnection, pattern: &str) -> Result<usize> {
     use crate::diesel_schema::cache_index::dsl::*;
 
-    // Replace '*' with '%' for SQL LIKE if it's a glob pattern
-    // The plugin sends "dlsite:*", we want "dlsite:%" for SQL
-    let sql_pattern = pattern.replace('*', "%");
+    // SQLite has no default LIKE escape character. Escape every literal SQL
+    // wildcard first, then translate only our public `*` glob operator.
+    let mut sql_pattern = String::with_capacity(pattern.len());
+    for character in pattern.chars() {
+        match character {
+            '!' => sql_pattern.push_str("!!"),
+            '%' => sql_pattern.push_str("!%"),
+            '_' => sql_pattern.push_str("!_"),
+            '*' => sql_pattern.push('%'),
+            character => sql_pattern.push(character),
+        }
+    }
 
-    let affected = diesel::delete(cache_index.filter(key.like(sql_pattern)))
+    let affected = diesel::delete(cache_index.filter(key.like(sql_pattern).escape('!')))
         .execute(conn)
         .map_err(diesel_err("delete_by_pattern"))?;
 
@@ -213,6 +236,63 @@ pub fn touch_cache_entry(conn: &mut diesel::SqliteConnection, key_param: &str) -
         .map_err(diesel_err("touch"))?;
 
     Ok(())
+}
+
+/// List indexed entries from least to most recently used.
+///
+/// Entries that have never been read use their creation time. The stable ID
+/// tie-break makes quota eviction deterministic when timestamps are equal.
+pub fn list_entries_lru(conn: &mut diesel::SqliteConnection) -> Result<Vec<CacheEntry>> {
+    use crate::diesel_schema::cache_index::dsl::*;
+
+    let entries = cache_index
+        .order((
+            diesel::dsl::sql::<diesel::sql_types::Text>("COALESCE(last_accessed, created_at)")
+                .asc(),
+            id.asc(),
+        ))
+        .select(DbCacheEntry::as_select())
+        .load::<DbCacheEntry>(conn)
+        .map_err(diesel_err("list_entries_lru"))?;
+
+    Ok(entries
+        .into_iter()
+        .map(DbCacheEntry::to_cache_entry)
+        .collect())
+}
+
+/// List one bounded LRU page using the same deterministic ordering as
+/// [`list_entries_lru`].
+pub fn list_entries_lru_page(
+    conn: &mut diesel::SqliteConnection,
+    offset_param: usize,
+    limit_param: usize,
+) -> Result<Vec<CacheEntry>> {
+    use crate::diesel_schema::cache_index::dsl::*;
+
+    if limit_param == 0 {
+        return Ok(Vec::new());
+    }
+    let sql_offset = i64::try_from(offset_param)
+        .map_err(|_| anyhow::anyhow!("cache LRU page offset does not fit SQLite"))?;
+    let sql_limit = i64::try_from(limit_param)
+        .map_err(|_| anyhow::anyhow!("cache LRU page limit does not fit SQLite"))?;
+    let entries = cache_index
+        .order((
+            diesel::dsl::sql::<diesel::sql_types::Text>("COALESCE(last_accessed, created_at)")
+                .asc(),
+            id.asc(),
+        ))
+        .offset(sql_offset)
+        .limit(sql_limit)
+        .select(DbCacheEntry::as_select())
+        .load::<DbCacheEntry>(conn)
+        .map_err(diesel_err("list_entries_lru_page"))?;
+
+    Ok(entries
+        .into_iter()
+        .map(DbCacheEntry::to_cache_entry)
+        .collect())
 }
 
 /// Remove all cache entries

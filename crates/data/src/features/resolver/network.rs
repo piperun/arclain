@@ -2,8 +2,9 @@
 //!
 //! Fetches data from HTTP endpoints.
 
-use super::{DataSourceResolver, ResolveError};
+use super::{default_materialization_limit, DataSourceResolver, ResolveError};
 use crate::features::api::DataRequest;
+use crate::shared::safe_log_fingerprint;
 use arclain_network::AsyncHttpClient;
 use std::sync::Arc;
 
@@ -31,42 +32,53 @@ impl NetworkResolver {
 
 impl DataSourceResolver for NetworkResolver {
     fn try_resolve(&self, _key: &str, request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
+        self.try_resolve_with_limit(_key, request, default_materialization_limit())
+    }
+
+    fn try_resolve_with_limit(
+        &self,
+        _key: &str,
+        request: &DataRequest,
+        limit: usize,
+    ) -> Result<Vec<u8>, ResolveError> {
         let url = request.url.as_ref().ok_or(ResolveError::NotConfigured)?;
 
         let result = if let Some(plugin_id) = self.plugin_id.as_deref() {
             tracing::debug!(
                 "[NetworkResolver] fetching key='{}' through checked plugin '{}' route",
-                _key,
-                plugin_id
+                safe_log_fingerprint(_key),
+                safe_log_fingerprint(plugin_id)
             );
             self.client
-                .blocking_get_for_plugin(plugin_id, url)
+                .blocking_get_for_plugin_with_limit(plugin_id, url, limit)
                 .map_err(|error| error.to_string())
         } else {
             tracing::debug!(
                 "[NetworkResolver] fetching host key='{}' through direct route",
-                _key
+                safe_log_fingerprint(_key)
             );
-            self.client.blocking_get(url, false)
+            self.client.blocking_get_with_limit(url, false, limit)
         };
 
         match result {
             Ok(data) => {
                 tracing::debug!("[NetworkResolver] Fetched {} bytes", data.len());
-                // DEBUG: Log small responses to diagnose API issues
+                // Keep small-response diagnostics without exposing bodies,
+                // which may contain credentials or private metadata.
                 if data.len() < 500 {
-                    if let Ok(text) = String::from_utf8(data.clone()) {
-                        tracing::debug!(
-                            "[NetworkResolver] SHORT RESPONSE ({} bytes): {}",
-                            data.len(),
-                            text
-                        );
-                    }
+                    tracing::debug!(
+                        "[NetworkResolver] SHORT RESPONSE ({} bytes, fingerprint {})",
+                        data.len(),
+                        safe_log_fingerprint(&data)
+                    );
                 }
                 Ok(data)
             }
             Err(e) => {
-                tracing::warn!("[NetworkResolver] Fetch failed: {}", e);
+                tracing::warn!(
+                    "[NetworkResolver] Fetch failed: {}",
+                    safe_log_fingerprint(e.to_string())
+                );
                 Err(ResolveError::IoError(e.to_string()))
             }
         }

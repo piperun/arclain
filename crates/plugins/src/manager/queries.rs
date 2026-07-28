@@ -3,7 +3,7 @@
 use super::types::PluginListItem;
 use super::{EnabledPluginSnapshot, PluginManager};
 use crate::runtime::PluginInstance;
-use crate::types::{PluginError, PluginMetadata, Result};
+use crate::types::{PluginError, PluginIdentityKey, PluginMetadata, Result};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,12 +12,12 @@ use tracing::info;
 impl PluginManager {
     /// Enable a plugin (interior mutability safe)
     pub fn enable_plugin(&self, plugin_id: &str) -> Result<()> {
+        let identity_key = PluginIdentityKey::parse(plugin_id)
+            .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
         let plugins = self.plugins.read();
 
-        if plugins.contains_key(plugin_id) {
-            self.enabled_plugins
-                .write()
-                .insert(plugin_id.to_string(), true);
+        if plugins.contains_key(&identity_key) {
+            self.enabled_plugins.write().insert(identity_key, true);
             drop(plugins);
             self.invalidate_top_tabs_cache();
             info!("Plugin enabled: {}", plugin_id);
@@ -29,12 +29,12 @@ impl PluginManager {
 
     /// Disable a plugin (interior mutability safe)
     pub fn disable_plugin(&self, plugin_id: &str) -> Result<()> {
+        let identity_key = PluginIdentityKey::parse(plugin_id)
+            .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
         let plugins = self.plugins.read();
 
-        if plugins.contains_key(plugin_id) {
-            self.enabled_plugins
-                .write()
-                .insert(plugin_id.to_string(), false);
+        if plugins.contains_key(&identity_key) {
+            self.enabled_plugins.write().insert(identity_key, false);
             drop(plugins);
             self.invalidate_top_tabs_cache();
             info!("Plugin disabled: {}", plugin_id);
@@ -46,9 +46,12 @@ impl PluginManager {
 
     /// Check if a plugin is enabled
     pub fn is_plugin_enabled(&self, plugin_id: &str) -> bool {
+        let Ok(identity_key) = PluginIdentityKey::parse(plugin_id) else {
+            return false;
+        };
         self.enabled_plugins
             .read()
-            .get(plugin_id)
+            .get(&identity_key)
             .copied()
             .unwrap_or(false)
     }
@@ -60,10 +63,10 @@ impl PluginManager {
 
         plugins
             .iter()
-            .map(|(id, p)| PluginListItem {
-                id: id.clone(),
+            .map(|(identity_key, p)| PluginListItem {
+                id: p.metadata.id.clone(),
                 manifest: p.manifest.clone(),
-                enabled: enabled.get(id).copied().unwrap_or(false),
+                enabled: enabled.get(identity_key).copied().unwrap_or(false),
                 instance: if p.enabled { Some(()) } else { None },
             })
             .collect()
@@ -82,7 +85,7 @@ impl PluginManager {
         let total = plugins.len();
         let enabled_count = plugins
             .keys()
-            .filter(|id| enabled.get(id.as_str()).copied().unwrap_or(false))
+            .filter(|id| enabled.get(*id).copied().unwrap_or(false))
             .count();
         super::types::PluginStatusSummary {
             total,
@@ -92,9 +95,10 @@ impl PluginManager {
 
     /// Get plugin metadata
     pub fn get_plugin_metadata(&self, plugin_id: &str) -> Option<PluginMetadata> {
+        let identity_key = PluginIdentityKey::parse(plugin_id).ok()?;
         self.plugins
             .read()
-            .get(plugin_id)
+            .get(&identity_key)
             .map(|p| p.metadata.clone())
     }
 
@@ -127,8 +131,14 @@ impl PluginManager {
         let enabled = self.enabled_plugins.read();
         let snapshot = plugins
             .iter()
-            .filter(|(plugin_id, _)| enabled.get(plugin_id.as_str()).copied().unwrap_or(false))
-            .map(|(plugin_id, plugin)| (plugin_id.clone(), plugin.instance.clone()))
+            .filter(|(identity_key, _)| enabled.get(*identity_key).copied().unwrap_or(false))
+            .map(|(identity_key, plugin)| {
+                (
+                    identity_key.clone(),
+                    plugin.metadata.id.clone(),
+                    plugin.instance.clone(),
+                )
+            })
             .collect();
 
         EnabledPluginSnapshot::new(snapshot)
@@ -138,10 +148,24 @@ impl PluginManager {
     /// Returns None if the plugin is not found.
     /// This allows the caller to manage locking strategies (blocking vs try_lock).
     pub fn get_plugin_instance(&self, plugin_id: &str) -> Option<Arc<Mutex<PluginInstance>>> {
+        let identity_key = PluginIdentityKey::parse(plugin_id).ok()?;
         self.plugins
             .read()
-            .get(plugin_id)
+            .get(&identity_key)
             .map(|p| p.instance.clone())
+    }
+
+    /// Check a loaded plugin instance's immutable manifest capabilities.
+    pub fn plugin_has_capabilities(
+        &self,
+        plugin_id: &str,
+        required: &[crate::types::PluginCapability],
+    ) -> bool {
+        let Some(instance) = self.get_plugin_instance(plugin_id) else {
+            return false;
+        };
+        let authorized = instance.lock().has_capabilities(required);
+        authorized
     }
 
     /// Access a plugin instance mutably (e.g. for UI interaction)
@@ -226,14 +250,23 @@ impl PluginManager {
         // resurrect stale entries after a plugin is unloaded.
         cache.retain(|id, _| plugins.contains_key(id));
 
-        let mut all_settings: HashMap<String, HashMap<String, String>> = cache.clone();
+        let mut all_settings = HashMap::with_capacity(cache.len() + self.initial_settings.len());
+        for (identity_key, settings) in cache.iter() {
+            if let Some(plugin) = plugins.get(identity_key) {
+                all_settings.insert(plugin.metadata.id.clone(), settings.clone());
+            }
+        }
 
         // Merge with initial settings to preserve settings for plugins
         // that failed to load or aren't active.
-        for (id, settings) in &self.initial_settings {
+        for (identity_key, initial) in &self.initial_settings {
+            let output_id = plugins
+                .get(identity_key)
+                .map(|plugin| plugin.metadata.id.clone())
+                .unwrap_or_else(|| initial.original_id.clone());
             all_settings
-                .entry(id.clone())
-                .or_insert_with(|| settings.clone());
+                .entry(output_id)
+                .or_insert_with(|| initial.values.clone());
         }
 
         all_settings
@@ -250,21 +283,24 @@ impl PluginManager {
     pub fn get_settings_for(&self, plugin_id: &str) -> Option<HashMap<String, String>> {
         use std::sync::atomic::Ordering;
 
+        let identity_key = PluginIdentityKey::parse(plugin_id).ok()?;
         let plugins = self.plugins.read();
-        if let Some(plugin) = plugins.get(plugin_id) {
+        if let Some(plugin) = plugins.get(&identity_key) {
             let was_dirty = plugin.settings_dirty.swap(false, Ordering::AcqRel);
             if was_dirty {
                 let instance = plugin.instance.lock();
                 if let Some(settings) = instance.get_settings() {
                     self.settings_cache
                         .lock()
-                        .insert(plugin_id.to_string(), settings.clone());
+                        .insert(identity_key.clone(), settings.clone());
                     return Some(settings);
                 }
-            } else if let Some(cached) = self.settings_cache.lock().get(plugin_id) {
+            } else if let Some(cached) = self.settings_cache.lock().get(&identity_key) {
                 return Some(cached.clone());
             }
         }
-        self.initial_settings.get(plugin_id).cloned()
+        self.initial_settings
+            .get(&identity_key)
+            .map(|entry| entry.values.clone())
     }
 }

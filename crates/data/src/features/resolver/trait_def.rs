@@ -1,6 +1,7 @@
 //! DataSourceResolver trait definition
 
 use crate::features::api::DataRequest;
+use crate::DEFAULT_MAX_RESOURCE_SIZE_BYTES;
 
 /// Error when a source can't resolve data
 #[derive(Debug)]
@@ -56,6 +57,26 @@ pub trait DataSourceResolver: Send + Sync {
     /// Returns the data bytes if found, or an error if not available.
     fn try_resolve(&self, key: &str, request: &DataRequest) -> Result<Vec<u8>, ResolveError>;
 
+    /// Resolve data under a caller-supplied materialization ceiling.
+    ///
+    /// Implementations that read, clone, fetch, or serialize a potentially
+    /// large body must override this method and enforce `limit` while doing
+    /// that work. The default keeps third-party resolver implementations
+    /// source-compatible, but can only reject after their legacy method has
+    /// returned.
+    fn try_resolve_with_limit(
+        &self,
+        key: &str,
+        request: &DataRequest,
+        limit: usize,
+    ) -> Result<Vec<u8>, ResolveError> {
+        let data = self.try_resolve(key, request)?;
+        if data.len() > limit {
+            return Err(materialized_limit_error(limit));
+        }
+        Ok(data)
+    }
+
     /// Try to store data to this source (optional)
     ///
     /// Default implementation returns NotConfigured (read-only source).
@@ -74,4 +95,23 @@ pub trait DataSourceResolver: Send + Sync {
     fn has(&self, key: &str, request: &DataRequest) -> bool {
         self.try_resolve(key, request).is_ok()
     }
+
+    /// Check for a key without allowing a fallback implementation to
+    /// materialize more than `limit` bytes.
+    ///
+    /// Resolvers with a metadata/index lookup should override this method so
+    /// existence checks do not read or clone the body at all.
+    fn has_with_limit(&self, key: &str, request: &DataRequest, limit: usize) -> bool {
+        self.try_resolve_with_limit(key, request, limit).is_ok()
+    }
+}
+
+pub(crate) fn materialized_limit_error(limit: usize) -> ResolveError {
+    ResolveError::IoError(format!(
+        "resource exceeds the {limit}-byte materialized read limit"
+    ))
+}
+
+pub(crate) fn default_materialization_limit() -> usize {
+    DEFAULT_MAX_RESOURCE_SIZE_BYTES
 }

@@ -43,6 +43,10 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// availability tests).
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Default ceiling for network APIs that retain a complete response body.
+/// Larger resources must use a streaming API.
+pub const DEFAULT_MAX_BUFFERED_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
+
 // Re-export main types at crate root
 pub use features::rate_limiting::RateLimiter;
 pub use features::request::{

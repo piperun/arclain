@@ -13,30 +13,65 @@ mod snapshot;
 mod types;
 
 pub use snapshot::EnabledPluginSnapshot;
-use types::ManagedPlugin;
+use types::{InitialPluginSettings, ManagedPlugin};
 pub use types::{PluginListItem, PluginStatusSummary};
 
 use crate::loader::PluginLoader;
-use crate::types::{PluginEvent, Result};
+use crate::types::{PluginError, PluginEvent, PluginIdentityKey, Result};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+const PLUGIN_EVENT_QUEUE_CAPACITY: usize = 8;
+
+/// Cloneable, bounded admission handle for background plugin events.
+///
+/// Scheduling is deliberately non-blocking: callers retain or coalesce an
+/// event when [`try_schedule`](Self::try_schedule) reports a full queue.
+#[derive(Clone)]
+pub struct PluginEventScheduler {
+    sender: std::sync::mpsc::SyncSender<PluginEvent>,
+}
+
+impl PluginEventScheduler {
+    fn new(sender: std::sync::mpsc::SyncSender<PluginEvent>) -> Self {
+        Self { sender }
+    }
+
+    /// Admit one event without waiting for worker capacity.
+    pub fn try_schedule(
+        &self,
+        event: PluginEvent,
+    ) -> std::result::Result<(), std::sync::mpsc::TrySendError<PluginEvent>> {
+        self.sender.try_send(event)
+    }
+}
+
+fn bounded_event_channel(
+    capacity: usize,
+) -> (
+    std::sync::mpsc::SyncSender<PluginEvent>,
+    std::sync::mpsc::Receiver<PluginEvent>,
+) {
+    std::sync::mpsc::sync_channel(capacity)
+}
+
 /// Manages all loaded plugins and dispatches events
 pub struct PluginManager {
     pub(crate) loader: PluginLoader,
-    pub(crate) plugins: Arc<RwLock<HashMap<String, ManagedPlugin>>>,
-    pub(crate) enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
+    pub(crate) plugins: Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
+    pub(crate) enabled_plugins: Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
     pub(crate) library_service: Option<Arc<arclain_core::LibraryService>>,
     pub(crate) content_cache: Option<Arc<arclain_data::ContentCache>>,
     pub(crate) resource_manager: Option<Arc<arclain_data::ResourceManager>>,
     pub(crate) async_http_client: Option<Arc<arclain_network::AsyncHttpClient>>,
     pub(crate) gameta_client: Option<Arc<arclain_network::features::gameta_client::GametaClient>>,
-    pub(crate) initial_settings: HashMap<String, HashMap<String, String>>,
+    pub(crate) initial_settings: HashMap<PluginIdentityKey, InitialPluginSettings>,
     pub(crate) plugin_log_dir: PathBuf,
-    /// Channel sender for async event dispatch (non-blocking)
-    pub(crate) event_sender: std::sync::mpsc::Sender<PluginEvent>,
+    /// Bounded scheduler for async event dispatch. Admission never waits for
+    /// a busy plugin worker.
+    pub(crate) event_scheduler: PluginEventScheduler,
     /// Handle to the event worker thread
     _event_worker_handle: Option<std::thread::JoinHandle<()>>,
     /// Bridge to the host's per-tab signal tree. Plugins read the
@@ -54,7 +89,8 @@ pub struct PluginManager {
     /// `settings_dirty` flag is still `false` (audit P14). Populated on
     /// first read; refreshed only for the plugins that flipped dirty
     /// since.
-    pub(crate) settings_cache: parking_lot::Mutex<HashMap<String, HashMap<String, String>>>,
+    pub(crate) settings_cache:
+        parking_lot::Mutex<HashMap<PluginIdentityKey, HashMap<String, String>>>,
 }
 
 impl PluginManager {
@@ -75,12 +111,29 @@ impl PluginManager {
         initial_settings: HashMap<String, HashMap<String, String>>,
         plugin_log_dir: PathBuf,
     ) -> Result<Self> {
+        let mut normalized_initial_settings = HashMap::with_capacity(initial_settings.len());
+        for (plugin_id, settings) in initial_settings {
+            let identity_key = PluginIdentityKey::parse(&plugin_id)?;
+            let entry = InitialPluginSettings {
+                original_id: plugin_id.clone(),
+                values: crate::host_functions::bounded_plugin_settings(settings),
+            };
+            if normalized_initial_settings
+                .insert(identity_key, entry)
+                .is_some()
+            {
+                return Err(PluginError::InvalidManifest(format!(
+                    "Duplicate persisted settings identity: {plugin_id}"
+                )));
+            }
+        }
         let loader = PluginLoader::new(plugins_dir)?;
         let plugins = Arc::new(RwLock::new(HashMap::new()));
         let enabled_plugins = Arc::new(RwLock::new(HashMap::new()));
 
         // Create channel for async event dispatch
-        let (event_sender, event_receiver) = std::sync::mpsc::channel::<PluginEvent>();
+        let (event_sender, event_receiver) = bounded_event_channel(PLUGIN_EVENT_QUEUE_CAPACITY);
+        let event_scheduler = PluginEventScheduler::new(event_sender);
 
         // Spawn worker thread to process events
         let plugins_clone = plugins.clone();
@@ -98,9 +151,9 @@ impl PluginManager {
             resource_manager: None,
             async_http_client: None,
             gameta_client: None,
-            initial_settings,
+            initial_settings: normalized_initial_settings,
             plugin_log_dir,
-            event_sender,
+            event_scheduler,
             _event_worker_handle: Some(worker_handle),
             active_tab_bridge: None,
             cached_top_tabs: parking_lot::Mutex::new(None),
@@ -180,9 +233,9 @@ impl PluginManager {
             let plugins = self.plugins.read();
             plugins
                 .iter()
-                .map(|(id, p)| {
+                .map(|(_, p)| {
                     (
-                        id.clone(),
+                        p.metadata.id.clone(),
                         p.instance.clone(),
                         p.manifest.capabilities.network_domains.clone(),
                         p.manifest.capabilities.network,

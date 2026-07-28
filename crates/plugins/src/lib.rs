@@ -24,15 +24,15 @@
 //! let mut manager = PluginManager::new(plugins_dir, initial_settings).unwrap();
 //! manager.init().unwrap();
 //!
-//! // Grab a sender once at startup; events flow through the
+//! // Grab a scheduler once at startup; events flow through the
 //! // background worker without locking the manager.
-//! let tx = manager.get_event_sender();
+//! let scheduler = manager.event_scheduler();
 //!
 //! // The per-tab handles (`entries`, `metadata_signal`) pin the
 //! // event to a specific tab so the worker can route the plugin
 //! // handler's reads/writes to that tab even if events queue up
 //! // and the user has switched tabs by the time processing happens.
-//! tx.send(PluginEvent::OnArchiveOpen {
+//! scheduler.try_schedule(PluginEvent::OnArchiveOpen {
 //!     path: "test.zip".to_string(),
 //!     kind: arclain_core::ArchiveKind::Zip,
 //!     password: None,
@@ -41,6 +41,7 @@
 //! }).unwrap();
 //! ```
 
+pub mod action_policy;
 pub mod active_tab;
 mod conversions;
 pub mod host_functions;
@@ -68,7 +69,7 @@ pub(crate) use bindings::PluginWorld;
 pub use active_tab::ActiveTabBridge;
 pub use host_functions::HostFunctions;
 pub use loader::{DiscoveredPlugin, PluginLoader};
-pub use manager::{PluginListItem, PluginManager};
+pub use manager::{PluginEventScheduler, PluginListItem, PluginManager};
 pub use runtime::{LoadedPlugin, PluginInstance, WasmRuntime};
 pub use types::{
     BadgeConfig, PluginCapability, PluginError, PluginEvent, PluginInfo, PluginManifest,

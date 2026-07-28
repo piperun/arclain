@@ -32,12 +32,14 @@
 //! interrupted strong-ETag response can resume without redownloading its
 //! verified prefix.
 
-use crate::features::content_cache::ContentCache;
+use crate::features::content_cache::{CacheOwner, ContentCache};
+use crate::shared::safe_log_fingerprint;
 use anyhow::{Context, Result};
 use arclain_db::CacheType;
 use arclain_network::{AsyncHttpClient, StreamingDownload, StreamingResponseMetadata};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -47,6 +49,90 @@ use std::sync::{Arc, OnceLock, Weak};
 use tracing::{debug, info, warn};
 
 use parking_lot::Mutex;
+
+struct QuotaFile<'a> {
+    file: &'a mut File,
+    cache: &'a ContentCache,
+    owner: &'a CacheOwner,
+    scoped_key: &'a str,
+    reservation_path: &'a Path,
+    bytes_on_disk: u64,
+    reservation_floor: &'a Cell<u64>,
+    reserved_bytes: &'a Cell<u64>,
+    quota_failed: &'a Cell<bool>,
+}
+
+impl Write for QuotaFile<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let required = u64::try_from(buf.len())
+            .ok()
+            .and_then(|length| self.bytes_on_disk.checked_add(length))
+            .map(|requested| requested.max(self.reservation_floor.get()))
+            .ok_or_else(|| {
+                self.quota_failed.set(true);
+                std::io::Error::other("cache per-object quota exceeded")
+            })?;
+        if required > self.reserved_bytes.get() {
+            let requested = next_reservation_target(
+                self.reserved_bytes.get(),
+                required,
+                self.cache.limits().reservation_chunk_bytes,
+                self.cache.limits().max_object_bytes,
+            )
+            .ok_or_else(|| {
+                self.quota_failed.set(true);
+                std::io::Error::other("cache per-object quota exceeded")
+            })?;
+            if let Err(error) = self.cache.quota().reserve(
+                self.cache.base_dir(),
+                self.cache.cache_index(),
+                self.owner,
+                self.scoped_key,
+                self.reservation_path,
+                requested,
+            ) {
+                self.quota_failed.set(true);
+                return Err(std::io::Error::other(error.to_string()));
+            }
+            self.reserved_bytes.set(requested);
+        }
+
+        match self.file.write(buf) {
+            Ok(written) => {
+                self.bytes_on_disk = self.bytes_on_disk.saturating_add(written as u64);
+                Ok(written)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.file.flush()
+    }
+}
+
+fn next_reservation_target(
+    current: u64,
+    required: u64,
+    configured_chunk: u64,
+    max_object_bytes: u64,
+) -> Option<u64> {
+    if required > max_object_bytes {
+        return None;
+    }
+    let chunk = configured_chunk.max(1);
+    let rounded_required = required
+        .checked_add(chunk.saturating_sub(1))?
+        .checked_div(chunk)?
+        .checked_mul(chunk)?;
+    let geometric = if current == 0 {
+        chunk
+    } else {
+        current.saturating_mul(2)
+    };
+    let target = rounded_required.max(geometric).min(max_object_bytes);
+    (target >= required).then_some(target)
+}
 
 /// Sidecar metadata stored next to `<keyhash>.partial`.
 ///
@@ -86,6 +172,15 @@ struct DownloadRequestDescriptor {
     product_id: Option<String>,
     use_proxy: bool,
     plugin_id: Option<String>,
+}
+
+impl DownloadRequestDescriptor {
+    fn owner(&self) -> CacheOwner {
+        self.plugin_id
+            .as_deref()
+            .map(CacheOwner::plugin)
+            .unwrap_or_else(CacheOwner::host)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,9 +276,18 @@ fn partial_dir(cache: &ContentCache) -> PathBuf {
     cache.base_dir().join(".partial")
 }
 
+#[cfg(test)]
 fn partial_paths(cache: &ContentCache, key: &str) -> (PathBuf, PathBuf) {
+    partial_paths_for_owner(cache, &CacheOwner::host(), key)
+}
+
+fn partial_paths_for_owner(
+    cache: &ContentCache,
+    owner: &CacheOwner,
+    key: &str,
+) -> (PathBuf, PathBuf) {
     let dir = partial_dir(cache);
-    let name = key_to_sidecar_name(key);
+    let name = key_to_sidecar_name(&owner.scoped_key(key));
     let data = dir.join(format!("{}.partial", name));
     let meta = dir.join(format!("{}.meta", name));
     (data, meta)
@@ -419,7 +523,7 @@ fn fetch_url_to_cache_with_metadata<F>(
 ) -> Result<u64, String>
 where
     F: FnMut(
-        &mut File,
+        &mut QuotaFile<'_>,
         Option<u64>,
         Option<&str>,
         &mut dyn FnMut(&StreamingResponseMetadata) -> Result<(), String>,
@@ -453,7 +557,7 @@ fn fetch_url_to_cache_with<F>(
     fetch: F,
 ) -> Result<u64, String>
 where
-    F: FnMut(&mut File, Option<u64>, Option<&str>) -> Result<StreamingDownload, String>,
+    F: FnMut(&mut QuotaFile<'_>, Option<u64>, Option<&str>) -> Result<StreamingDownload, String>,
 {
     let request = DownloadRequestDescriptor {
         url: url.to_string(),
@@ -474,7 +578,7 @@ fn fetch_url_to_cache_with_file_ops<F, R>(
     remove_file: R,
 ) -> Result<u64, String>
 where
-    F: FnMut(&mut File, Option<u64>, Option<&str>) -> Result<StreamingDownload, String>,
+    F: FnMut(&mut QuotaFile<'_>, Option<u64>, Option<&str>) -> Result<StreamingDownload, String>,
     R: FnMut(&Path) -> std::io::Result<()>,
 {
     let requested_url = request_descriptor.url.clone();
@@ -543,28 +647,66 @@ fn execute_fetch_attempt<F>(
     meta_path: &Path,
     requested_url: &str,
     resume: Option<&ResumeRecord>,
-) -> Result<StreamingDownload, String>
+    cache: &ContentCache,
+    owner: &CacheOwner,
+    scoped_key: &str,
+    reservation_path: &Path,
+) -> (Result<StreamingDownload, String>, bool)
 where
     F: FnMut(
-        &mut File,
+        &mut QuotaFile<'_>,
         Option<u64>,
         Option<&str>,
         &mut dyn FnMut(&StreamingResponseMetadata) -> Result<(), String>,
     ) -> Result<StreamingDownload, String>,
 {
+    let quota_failed = Cell::new(false);
+    let reservation_floor = Cell::new(0_u64);
+    let initial_bytes = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let reserved_bytes = Cell::new(initial_bytes);
     let mut callback_count = 0_usize;
     let mut bind_metadata = |metadata: &StreamingResponseMetadata| {
         callback_count += 1;
         if callback_count != 1 {
             return Err("streaming metadata callback ran more than once".to_string());
         }
+        if let Some(total_size) = metadata.total_size {
+            if total_size != reserved_bytes.get() {
+                if let Err(error) = cache.quota().reserve(
+                    cache.base_dir(),
+                    cache.cache_index(),
+                    owner,
+                    scoped_key,
+                    reservation_path,
+                    total_size,
+                ) {
+                    quota_failed.set(true);
+                    return Err(error.to_string());
+                }
+                reserved_bytes.set(total_size);
+            }
+            reservation_floor.set(total_size);
+        }
         bind_response_metadata(meta_path, requested_url, resume, metadata)
     };
-    let result = fetch(file, range_start, if_match, &mut bind_metadata)?;
-    if callback_count != 1 {
-        return Err("streaming transport completed without response metadata".to_string());
-    }
-    Ok(result)
+    let mut quota_file = QuotaFile {
+        file,
+        cache,
+        owner,
+        scoped_key,
+        reservation_path,
+        bytes_on_disk: initial_bytes,
+        reservation_floor: &reservation_floor,
+        reserved_bytes: &reserved_bytes,
+        quota_failed: &quota_failed,
+    };
+    let result = fetch(&mut quota_file, range_start, if_match, &mut bind_metadata);
+    let result = match result {
+        Ok(result) if callback_count == 1 => Ok(result),
+        Ok(_) => Err("streaming transport completed without response metadata".to_string()),
+        Err(error) => Err(error),
+    };
+    (result, quota_failed.get())
 }
 
 fn fetch_url_to_cache_with_metadata_file_ops<F, R>(
@@ -577,20 +719,27 @@ fn fetch_url_to_cache_with_metadata_file_ops<F, R>(
 ) -> Result<u64, String>
 where
     F: FnMut(
-        &mut File,
+        &mut QuotaFile<'_>,
         Option<u64>,
         Option<&str>,
         &mut dyn FnMut(&StreamingResponseMetadata) -> Result<(), String>,
     ) -> Result<StreamingDownload, String>,
     R: FnMut(&Path) -> std::io::Result<()>,
 {
-    let (partial_path, meta_path) = partial_paths(cache, key);
+    let owner = request_descriptor.owner();
+    let scoped_key = owner.scoped_key(key);
+    let (partial_path, meta_path) = partial_paths_for_owner(cache, &owner, key);
+    let reservation_path = partial_path.with_extension("reservation");
     fs::create_dir_all(partial_dir(cache).as_path())
         .map_err(|e| format!("creating partial dir: {}", e))?;
 
-    let identity_lock = download_identity_lock(cache.base_dir(), key)
+    let identity_lock = download_identity_lock(cache.base_dir(), &scoped_key)
         .map_err(|error| format!("locking streaming download identity: {error:#}"))?;
     let _identity_guard = identity_lock.state.gate.lock();
+    let cache_key_lock = cache
+        .key_lock(&scoped_key)
+        .map_err(|error| format!("locking scoped cache key: {error:#}"))?;
+    let _cache_key_guard = cache_key_lock.lock();
     // Callers that overlapped the successful owner share its committed
     // result. Once the last participant drops, the weak registry entry and
     // this outcome disappear, so a later independent call still refetches.
@@ -608,12 +757,27 @@ where
     )
     .map_err(|error| format!("validating partial download: {error:#}"))?;
 
+    if let Err(error) = cache.quota().reserve(
+        cache.base_dir(),
+        cache.cache_index(),
+        &owner,
+        &scoped_key,
+        &reservation_path,
+        resume.as_ref().map_or(0, |record| record.offset),
+    ) {
+        let _ = discard_partial_record_with(&partial_path, &meta_path, &mut remove_file);
+        let _ = cache.quota().release(&reservation_path);
+        return Err(error.to_string());
+    }
+
     if let Some(record) = resume.as_ref() {
         remove_record_file_with(&meta_path, &mut remove_file)
             .map_err(|error| format!("revoking resume metadata before append: {error:#}"))?;
         info!(
             "[streaming] resuming {} from byte {} (etag: {})",
-            key, record.offset, record.etag
+            safe_log_fingerprint(key),
+            record.offset,
+            safe_log_fingerprint(&record.etag)
         );
     }
 
@@ -639,14 +803,19 @@ where
         &meta_path,
         &request_descriptor.url,
         resume.as_ref(),
+        cache,
+        &owner,
+        &scoped_key,
+        &reservation_path,
     );
     let mut did_restart = false;
+    let (initial_result, initial_quota_failed) = initial_result;
     let mut result = match initial_result {
         Ok(result) => result,
-        Err(error) if resume.is_some() && retry_resume_errors => {
+        Err(error) if resume.is_some() && retry_resume_errors && !initial_quota_failed => {
             warn!(
                 "[streaming] resume stream failed for {}; discarding appended bytes before restart",
-                key
+                safe_log_fingerprint(key)
             );
             drop(file);
             discard_partial_record_with(&partial_path, &meta_path, &mut remove_file).map_err(
@@ -656,6 +825,23 @@ where
                     )
                 },
             )?;
+            cache
+                .quota()
+                .release(&reservation_path)
+                .map_err(|release_error| format!("releasing failed resume: {release_error:#}"))?;
+            cache
+                .quota()
+                .reserve(
+                    cache.base_dir(),
+                    cache.cache_index(),
+                    &owner,
+                    &scoped_key,
+                    &reservation_path,
+                    0,
+                )
+                .map_err(|reserve_error| {
+                    format!("reserving clean restart capacity: {reserve_error:#}")
+                })?;
             file = OpenOptions::new()
                 .create(true)
                 .write(true)
@@ -663,7 +849,7 @@ where
                 .open(&partial_path)
                 .map_err(|open_error| format!("opening clean restart file: {open_error}"))?;
             did_restart = true;
-            execute_fetch_attempt(
+            let (restart_result, restart_quota_failed) = execute_fetch_attempt(
                 &mut fetch,
                 &mut file,
                 None,
@@ -671,12 +857,55 @@ where
                 &meta_path,
                 &request_descriptor.url,
                 None,
-            )
-            .map_err(|restart_error| {
-                format!("resume failed ({error}); clean restart failed: {restart_error}")
-            })?
+                cache,
+                &owner,
+                &scoped_key,
+                &reservation_path,
+            );
+            match restart_result {
+                Ok(result) => result,
+                Err(restart_error) => {
+                    drop(file);
+                    if restart_quota_failed {
+                        let _ = discard_partial_record_with(
+                            &partial_path,
+                            &meta_path,
+                            &mut remove_file,
+                        );
+                        let _ = cache.quota().release(&reservation_path);
+                    } else if let Ok(metadata) = fs::metadata(&partial_path) {
+                        let _ = cache.quota().reserve(
+                            cache.base_dir(),
+                            cache.cache_index(),
+                            &owner,
+                            &scoped_key,
+                            &reservation_path,
+                            metadata.len(),
+                        );
+                    }
+                    return Err(format!(
+                        "resume failed ({error}); clean restart failed: {restart_error}"
+                    ));
+                }
+            }
         }
-        Err(error) => return Err(error),
+        Err(error) => {
+            drop(file);
+            if initial_quota_failed {
+                let _ = discard_partial_record_with(&partial_path, &meta_path, &mut remove_file);
+                let _ = cache.quota().release(&reservation_path);
+            } else if let Ok(metadata) = fs::metadata(&partial_path) {
+                let _ = cache.quota().reserve(
+                    cache.base_dir(),
+                    cache.cache_index(),
+                    &owner,
+                    &scoped_key,
+                    &reservation_path,
+                    metadata.len(),
+                );
+            }
+            return Err(error);
+        }
     };
 
     let resume_was_validated = !did_restart
@@ -690,7 +919,7 @@ where
     if resume.is_some() && !did_restart && !resume_was_validated {
         warn!(
             "[streaming] resume response did not match bound metadata for {}; restarting",
-            key
+            safe_log_fingerprint(key)
         );
         drop(file);
         discard_partial_record_with(&partial_path, &meta_path, &mut remove_file)
@@ -701,7 +930,22 @@ where
             .truncate(true)
             .open(&partial_path)
             .map_err(|e| format!("opening clean restart file: {e}"))?;
-        result = execute_fetch_attempt(
+        cache
+            .quota()
+            .release(&reservation_path)
+            .map_err(|error| format!("releasing mismatched resume reservation: {error:#}"))?;
+        cache
+            .quota()
+            .reserve(
+                cache.base_dir(),
+                cache.cache_index(),
+                &owner,
+                &scoped_key,
+                &reservation_path,
+                0,
+            )
+            .map_err(|error| format!("reserving clean restart capacity: {error:#}"))?;
+        let (restart_result, restart_quota_failed) = execute_fetch_attempt(
             &mut fetch,
             &mut file,
             None,
@@ -709,10 +953,29 @@ where
             &meta_path,
             &request_descriptor.url,
             None,
-        )?;
+            cache,
+            &owner,
+            &scoped_key,
+            &reservation_path,
+        );
+        result = match restart_result {
+            Ok(result) => result,
+            Err(error) => {
+                drop(file);
+                if restart_quota_failed {
+                    let _ =
+                        discard_partial_record_with(&partial_path, &meta_path, &mut remove_file);
+                    let _ = cache.quota().release(&reservation_path);
+                }
+                return Err(error);
+            }
+        };
         did_restart = true;
     }
     if (resume.is_none() || did_restart) && result.was_partial {
+        drop(file);
+        let _ = discard_partial_record_with(&partial_path, &meta_path, &mut remove_file);
+        let _ = cache.quota().release(&reservation_path);
         return Err("fresh streaming request unexpectedly returned partial content".to_string());
     }
 
@@ -728,12 +991,35 @@ where
         .map(|record| record.total_size)
         .unwrap_or_else(|| result.total_size.unwrap_or(partial_size));
     if partial_size != total_size {
+        let _ = cache.quota().reserve(
+            cache.base_dir(),
+            cache.cache_index(),
+            &owner,
+            &scoped_key,
+            &reservation_path,
+            partial_size,
+        );
         return Err(format!(
             "completed partial size {partial_size} does not match resource total {total_size}"
         ));
     }
 
     drop(file);
+
+    let commit_admission = match cache.quota().prepare_commit(
+        cache.base_dir(),
+        cache.cache_index(),
+        &owner,
+        &scoped_key,
+        partial_size,
+    ) {
+        Ok(admission) => admission,
+        Err(error) => {
+            let _ = discard_partial_record_with(&partial_path, &meta_path, &mut remove_file);
+            let _ = cache.quota().release(&reservation_path);
+            return Err(error.to_string());
+        }
+    };
 
     // Collapse the .partial file into cacache. We stream the partial's
     // contents through cacache::SyncWriter so we don't load it into
@@ -759,29 +1045,38 @@ where
             .write_all(&buf[..n])
             .map_err(|e| format!("writing to cache: {}", e))?;
     }
-    let (sri, bytes_committed) = writer
-        .commit()
-        .map_err(|e| format!("committing cache write: {}", e))?;
-
-    cache
-        .upsert_sri(
-            key,
-            &sri,
-            bytes_committed,
-            request_descriptor.cache_type,
-            request_descriptor.product_id.as_deref(),
-            Some(&request_descriptor.url),
-        )
-        .map_err(|e| format!("upserting cache index: {}", e))?;
+    let (sri, bytes_committed) = match cache.commit_streaming_for_owner_locked(
+        &owner,
+        key,
+        writer,
+        request_descriptor.cache_type,
+        request_descriptor.product_id.as_deref(),
+        Some(&request_descriptor.url),
+    ) {
+        Ok(committed) => committed,
+        Err(error) => {
+            let _ = discard_partial_record_with(&partial_path, &meta_path, &mut remove_file);
+            let _ = cache.quota().release(&reservation_path);
+            return Err(format!("committing cache blob and index: {error}"));
+        }
+    };
+    drop(commit_admission);
 
     // Cleanup partial sidecars on success. Best-effort — orphans get
     // GC'd by `.partial` directory cleanup on next run if removal
     // fails (e.g. on Windows when antivirus is mid-scan).
     let _ = discard_partial_record_with(&partial_path, &meta_path, &mut remove_file);
+    cache
+        .quota()
+        .release(&reservation_path)
+        .map_err(|error| format!("releasing completed cache reservation: {error:#}"))?;
 
     debug!(
         "[streaming] cached {} bytes for key {} (partial was {}, sri {})",
-        bytes_committed, key, partial_size, sri
+        bytes_committed,
+        safe_log_fingerprint(key),
+        partial_size,
+        safe_log_fingerprint(&sri)
     );
     *identity_lock.state.completed.lock() = Some(CompletedDownload {
         request: request_descriptor,
@@ -793,6 +1088,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::content_cache::{CacheLimits, CacheOwner};
     use crate::traits::CacheIndex;
     use arclain_db::CacheEntry;
     use arclain_network::features::proxy::ProxyConfig;
@@ -807,6 +1103,42 @@ mod tests {
         upserts: AtomicUsize,
         first_upsert_started: Mutex<Option<std::sync::mpsc::Sender<()>>>,
         first_upsert_release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    }
+
+    struct FailingCommitIndex;
+
+    impl CacheIndex for FailingCommitIndex {
+        fn upsert(
+            &self,
+            _key: &str,
+            _product_id: Option<&str>,
+            _content_hash: &str,
+            _source_url: Option<&str>,
+            _cache_type: CacheType,
+            _size_bytes: Option<i64>,
+        ) -> Result<i64> {
+            anyhow::bail!("injected index failure")
+        }
+
+        fn get(&self, _key: &str) -> Result<Option<CacheEntry>> {
+            Ok(None)
+        }
+        fn has(&self, _key: &str) -> Result<bool> {
+            Ok(false)
+        }
+        fn delete(&self, _key: &str) -> Result<bool> {
+            Ok(false)
+        }
+        fn delete_by_pattern(&self, _pattern: &str) -> Result<usize> {
+            Ok(0)
+        }
+        fn update_last_accessed(&self, _key: &str) -> Result<()> {
+            Ok(())
+        }
+
+        fn has_complete_lru_view(&self) -> bool {
+            true
+        }
     }
 
     impl CacheIndex for RecordingIndex {
@@ -878,7 +1210,27 @@ mod tests {
         let base = dir.path().join("cache");
         fs::create_dir_all(&base).unwrap();
         let index = Arc::new(RecordingIndex::default());
-        let cache = ContentCache::new(base, index.clone()).unwrap();
+        let cache = ContentCache::new_with_limits(
+            base,
+            index.clone(),
+            CacheLimits {
+                min_free_space_bytes: 0,
+                ..CacheLimits::default()
+            },
+        )
+        .unwrap();
+        (dir, cache, index)
+    }
+
+    fn test_cache_with_limits(
+        mut limits: CacheLimits,
+    ) -> (tempfile::TempDir, ContentCache, Arc<RecordingIndex>) {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let index = Arc::new(RecordingIndex::default());
+        limits.min_free_space_bytes = 0;
+        let cache = ContentCache::new_with_limits(base, index.clone(), limits).unwrap();
         (dir, cache, index)
     }
 
@@ -1019,6 +1371,277 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("absent.meta");
         assert!(read_meta(&path).is_none());
+    }
+
+    fn four_byte_object_limits() -> CacheLimits {
+        CacheLimits {
+            max_object_bytes: 4,
+            max_owner_partial_bytes: 8,
+            max_owner_committed_bytes: 8,
+            max_global_bytes: 16,
+            partial_ttl: Duration::from_secs(60),
+            ..CacheLimits::default()
+        }
+    }
+
+    #[test]
+    fn declared_oversize_is_rejected_before_body_and_cleans_all_sidecars() {
+        let (_dir, cache, index) = test_cache_with_limits(four_byte_object_limits());
+        let key = "declared-oversize";
+        let url = "https://example.test/declared";
+        let (partial_path, meta_path) = partial_paths(&cache, key);
+        let reservation_path = partial_path.with_extension("reservation");
+        let body_writes = Arc::new(AtomicUsize::new(0));
+        let writes = body_writes.clone();
+
+        let error = fetch_url_to_cache_with_metadata(
+            &cache,
+            key,
+            url,
+            CacheType::Other,
+            None,
+            false,
+            move |writer, _range_start, _if_match, bind_metadata| {
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: url.to_string(),
+                    was_partial: false,
+                    etag: Some("\"v1\"".to_string()),
+                    last_modified: None,
+                    range_start: None,
+                    total_size: Some(5),
+                    expected_body_length: Some(5),
+                })?;
+                writes.fetch_add(1, Ordering::SeqCst);
+                writer
+                    .write_all(b"12345")
+                    .map_err(|error| error.to_string())?;
+                Ok(streaming_result(5, false, Some("\"v1\""), Some(5)))
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("per-object quota"));
+        assert_eq!(body_writes.load(Ordering::SeqCst), 0);
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 0);
+        assert!(!partial_path.exists());
+        assert!(!meta_path.exists());
+        assert!(!reservation_path.exists());
+    }
+
+    #[test]
+    fn chunked_oversize_is_stopped_during_write_and_cleans_all_sidecars() {
+        let (_dir, cache, index) = test_cache_with_limits(four_byte_object_limits());
+        let key = "chunked-oversize";
+        let url = "https://example.test/chunked";
+        let (partial_path, meta_path) = partial_paths(&cache, key);
+        let reservation_path = partial_path.with_extension("reservation");
+
+        let error = fetch_url_to_cache_with_metadata(
+            &cache,
+            key,
+            url,
+            CacheType::Other,
+            None,
+            false,
+            move |writer, _range_start, _if_match, bind_metadata| {
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: url.to_string(),
+                    was_partial: false,
+                    etag: Some("\"v1\"".to_string()),
+                    last_modified: None,
+                    range_start: None,
+                    total_size: None,
+                    expected_body_length: None,
+                })?;
+                writer
+                    .write_all(b"12345")
+                    .map_err(|error| error.to_string())?;
+                Ok(streaming_result(5, false, Some("\"v1\""), None))
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("per-object quota"));
+        assert_eq!(index.upserts.load(Ordering::SeqCst), 0);
+        assert!(!partial_path.exists());
+        assert!(!meta_path.exists());
+        assert!(!reservation_path.exists());
+    }
+
+    #[test]
+    fn unknown_length_stream_amortizes_persistent_reservation_updates() {
+        let limits = CacheLimits {
+            max_object_bytes: 8 * 1024,
+            max_owner_partial_bytes: 16 * 1024,
+            max_owner_committed_bytes: 16 * 1024,
+            max_global_bytes: 32 * 1024,
+            reservation_chunk_bytes: 256,
+            min_free_space_bytes: 0,
+            ..CacheLimits::default()
+        };
+        let (_dir, cache, _index) = test_cache_with_limits(limits);
+        let writes_before = cache.quota().reservation_write_count();
+
+        fetch_url_to_cache_with_metadata(
+            &cache,
+            "amortized",
+            "https://example.test/amortized",
+            CacheType::Other,
+            None,
+            false,
+            |writer, _range_start, _if_match, bind_metadata| {
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: "https://example.test/amortized".to_string(),
+                    was_partial: false,
+                    etag: Some("\"v1\"".to_string()),
+                    last_modified: None,
+                    range_start: None,
+                    total_size: None,
+                    expected_body_length: None,
+                })?;
+                for _ in 0..4096 {
+                    writer.write_all(b"x").map_err(|error| error.to_string())?;
+                }
+                Ok(streaming_result(4096, false, Some("\"v1\""), None))
+            },
+        )
+        .unwrap();
+
+        let reservation_writes = cache.quota().reservation_write_count() - writes_before;
+        assert!(
+            reservation_writes <= 16,
+            "reservation persistence was not amortized: {reservation_writes} writes"
+        );
+    }
+
+    #[test]
+    fn concurrent_declared_streams_keep_full_aggregate_reservations_while_writing() {
+        let limits = CacheLimits {
+            max_object_bytes: 8,
+            max_owner_partial_bytes: 10,
+            max_owner_committed_bytes: 32,
+            max_global_bytes: 64,
+            partial_ttl: Duration::from_secs(60),
+            ..CacheLimits::default()
+        };
+        let (_dir, cache, _index) = test_cache_with_limits(limits);
+        let (first_reserved_tx, first_reserved_rx) = std::sync::mpsc::channel();
+        let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+        let first_cache = cache.clone();
+        let first = std::thread::spawn(move || {
+            fetch_url_to_cache_with_metadata(
+                &first_cache,
+                "first",
+                "https://example.test/first",
+                CacheType::Other,
+                None,
+                false,
+                |writer, _range_start, _if_match, bind_metadata| {
+                    bind_metadata(&StreamingResponseMetadata {
+                        validated_url: "https://example.test/first".to_string(),
+                        was_partial: false,
+                        etag: Some("\"first\"".to_string()),
+                        last_modified: None,
+                        range_start: None,
+                        total_size: Some(6),
+                        expected_body_length: Some(6),
+                    })?;
+                    writer.write_all(b"1").unwrap();
+                    first_reserved_tx.send(()).unwrap();
+                    release_first_rx.recv().unwrap();
+                    Ok(streaming_result(1, false, Some("\"first\""), Some(6)))
+                },
+            )
+        });
+        first_reserved_rx.recv().unwrap();
+
+        let second = fetch_url_to_cache_with_metadata(
+            &cache,
+            "second",
+            "https://example.test/second",
+            CacheType::Other,
+            None,
+            false,
+            |writer, _range_start, _if_match, bind_metadata| {
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: "https://example.test/second".to_string(),
+                    was_partial: false,
+                    etag: Some("\"second\"".to_string()),
+                    last_modified: None,
+                    range_start: None,
+                    total_size: Some(5),
+                    expected_body_length: Some(5),
+                })?;
+                writer.write_all(b"12345").unwrap();
+                Ok(streaming_result(5, false, Some("\"second\""), Some(5)))
+            },
+        );
+        release_first_tx.send(()).unwrap();
+        let _ = first.join().unwrap();
+
+        assert!(second
+            .expect_err("aggregate reservation should reject the second stream")
+            .contains("owner partial quota"));
+    }
+
+    #[test]
+    fn index_commit_failure_releases_reservation_partial_and_unreferenced_blob() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path().join("cache");
+        fs::create_dir_all(&base).unwrap();
+        let cache = ContentCache::new_with_limits(
+            base.clone(),
+            Arc::new(FailingCommitIndex),
+            CacheLimits {
+                min_free_space_bytes: 0,
+                ..CacheLimits::default()
+            },
+        )
+        .unwrap();
+        let key = "commit-failure";
+        let url = "https://example.test/failure";
+        let (partial_path, meta_path) = partial_paths(&cache, key);
+        let reservation_path = partial_path.with_extension("reservation");
+
+        let error = fetch_url_to_cache_with(
+            &cache,
+            key,
+            url,
+            CacheType::Other,
+            None,
+            false,
+            |writer, _range_start, _if_match| {
+                writer.write_all(b"abc").unwrap();
+                Ok(streaming_result(3, false, Some("\"v1\""), Some(3)))
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("injected index failure"));
+        assert!(!partial_path.exists());
+        assert!(!meta_path.exists());
+        assert!(!reservation_path.exists());
+        let content_files = walk_files(&base.join("content-v2"));
+        assert!(
+            content_files.is_empty(),
+            "orphaned blobs: {content_files:?}"
+        );
+    }
+
+    fn walk_files(root: &Path) -> Vec<PathBuf> {
+        let mut files = Vec::new();
+        let Ok(entries) = fs::read_dir(root) else {
+            return files;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(walk_files(&path));
+            } else {
+                files.push(path);
+            }
+        }
+        files
     }
 
     fn write_partial_record(
@@ -1365,12 +1988,108 @@ mod tests {
     }
 
     #[test]
+    fn resumable_streaming_accepts_a_body_above_the_materialization_limit() {
+        const TOTAL: u64 = 50 * 1024 * 1024 + 1;
+        const PREFIX: u64 = 1024 * 1024;
+        let (_dir, cache, index) = test_cache();
+        let key = "large-resumable-video";
+        let url = "https://example.test/large-video";
+
+        let first = fetch_url_to_cache_with_metadata(
+            &cache,
+            key,
+            url,
+            CacheType::Other,
+            None,
+            false,
+            |writer, range_start, if_match, bind_metadata| {
+                assert_eq!(range_start, None);
+                assert_eq!(if_match, None);
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: url.to_string(),
+                    was_partial: false,
+                    etag: Some("\"large-v1\"".to_string()),
+                    last_modified: None,
+                    range_start: None,
+                    total_size: Some(TOTAL),
+                    expected_body_length: Some(TOTAL),
+                })?;
+                let chunk = [0xA5; 64 * 1024];
+                for _ in 0..PREFIX / chunk.len() as u64 {
+                    writer.write_all(&chunk).unwrap();
+                }
+                Err("injected interruption".to_string())
+            },
+        );
+        assert!(first.is_err());
+
+        let bytes = fetch_url_to_cache_with_metadata(
+            &cache,
+            key,
+            url,
+            CacheType::Other,
+            None,
+            false,
+            |writer, range_start, if_match, bind_metadata| {
+                assert_eq!(range_start, Some(PREFIX));
+                assert_eq!(if_match, Some("\"large-v1\""));
+                bind_metadata(&StreamingResponseMetadata {
+                    validated_url: url.to_string(),
+                    was_partial: true,
+                    etag: Some("\"large-v1\"".to_string()),
+                    last_modified: None,
+                    range_start: Some(PREFIX),
+                    total_size: Some(TOTAL),
+                    expected_body_length: Some(TOTAL - PREFIX),
+                })?;
+                let chunk = [0xA5; 64 * 1024];
+                let mut remaining = TOTAL - PREFIX;
+                while remaining > 0 {
+                    let length = usize::try_from(remaining.min(chunk.len() as u64)).unwrap();
+                    writer.write_all(&chunk[..length]).unwrap();
+                    remaining -= length as u64;
+                }
+                Ok(streaming_result(
+                    TOTAL - PREFIX,
+                    true,
+                    Some("\"large-v1\""),
+                    Some(TOTAL),
+                ))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(bytes, TOTAL);
+        assert!(
+            cache.get(key).is_err(),
+            "large body must remain streaming-only"
+        );
+        let entry = index.entry.lock().clone().unwrap();
+        assert_eq!(entry.size_bytes, Some(TOTAL as i64));
+        let sri: ssri::Integrity = entry.content_hash.parse().unwrap();
+        let mut reader = cacache::SyncReader::open_hash(cache.base_dir(), sri).unwrap();
+        let mut observed = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            let read = reader.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            assert!(buffer[..read].iter().all(|byte| *byte == 0xA5));
+            observed += read as u64;
+        }
+        reader.check().unwrap();
+        assert_eq!(observed, TOTAL);
+    }
+
+    #[test]
     fn checked_plugin_interrupted_stream_resumes_end_to_end() {
         let (_dir, cache, index) = test_cache();
         let key = "checked-loopback-resume";
         let plugin_id = "checked-resume-plugin";
         let requested_url = "http://1.1.1.1/resume";
-        let (data_path, meta_path) = partial_paths(&cache, key);
+        let owner = CacheOwner::plugin(plugin_id);
+        let (data_path, meta_path) = partial_paths_for_owner(&cache, &owner, key);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind local SOCKS5 server");
         let proxy_address = listener.local_addr().expect("local SOCKS5 address");
         let server_meta_path = meta_path.clone();
@@ -1468,7 +2187,11 @@ mod tests {
         .expect("checked fetch did not resume its validated suffix");
 
         assert_eq!(bytes, 6);
-        assert_eq!(cache.get(key).unwrap().unwrap(), b"abcdef");
+        assert_eq!(
+            cache.get_for_owner(&owner, key).unwrap().unwrap(),
+            b"abcdef"
+        );
+        assert!(cache.get(key).unwrap().is_none());
         assert_eq!(index.upserts.load(Ordering::SeqCst), 1);
         assert!(!data_path.exists());
         assert!(!meta_path.exists());
@@ -1480,7 +2203,8 @@ mod tests {
         let (_dir, cache, index) = test_cache();
         let key = "checked-policy-rejection";
         let plugin_id = "disabled-network-plugin";
-        let (partial_path, meta_path) = partial_paths(&cache, key);
+        let owner = CacheOwner::plugin(plugin_id);
+        let (partial_path, meta_path) = partial_paths_for_owner(&cache, &owner, key);
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind host-fallback sentinel");
         listener
             .set_nonblocking(true)
@@ -1932,7 +2656,15 @@ mod tests {
         let (upsert_release_tx, upsert_release_rx) = std::sync::mpsc::channel();
         *index.first_upsert_started.lock() = Some(upsert_started_tx);
         *index.first_upsert_release.lock() = Some(upsert_release_rx);
-        let cache = ContentCache::new(base.clone(), index.clone()).unwrap();
+        let cache = ContentCache::new_with_limits(
+            base.clone(),
+            index.clone(),
+            CacheLimits {
+                min_free_space_bytes: 0,
+                ..CacheLimits::default()
+            },
+        )
+        .unwrap();
         let key = "concurrent-key";
         let url = "https://example.test/file";
         let fetch_calls = Arc::new(AtomicUsize::new(0));
@@ -1979,7 +2711,7 @@ mod tests {
 
         let identity = DownloadIdentity {
             cache_base_dir: fs::canonicalize(&base).unwrap(),
-            cache_key: key.to_string(),
+            cache_key: CacheOwner::host().scoped_key(key),
         };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
@@ -2078,7 +2810,15 @@ mod tests {
             let (upsert_release_tx, upsert_release_rx) = std::sync::mpsc::channel();
             *index.first_upsert_started.lock() = Some(upsert_started_tx);
             *index.first_upsert_release.lock() = Some(upsert_release_rx);
-            let cache = ContentCache::new(base.clone(), index.clone()).unwrap();
+            let cache = ContentCache::new_with_limits(
+                base.clone(),
+                index.clone(),
+                CacheLimits {
+                    min_free_space_bytes: 0,
+                    ..CacheLimits::default()
+                },
+            )
+            .unwrap();
             let key = "descriptor-key";
             let fetch_calls = Arc::new(AtomicUsize::new(0));
 
@@ -2126,7 +2866,7 @@ mod tests {
 
             let identity = DownloadIdentity {
                 cache_base_dir: fs::canonicalize(&base).unwrap(),
-                cache_key: key.to_string(),
+                cache_key: CacheOwner::host().scoped_key(key),
             };
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             loop {

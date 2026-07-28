@@ -9,24 +9,19 @@ use crate::features::organization;
 use crate::shared::{dialogs, SharedState};
 use eframe::egui;
 use parking_lot::Mutex;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Process plugin refresh requests
 pub fn process_refresh_requests(shared_state: &SharedState, ctx: &egui::Context) {
-    let mut requests = shared_state.refresh_requests.lock();
-    if !requests.is_empty() {
-        tracing::debug!(
-            "Processing {} refresh requests: {:?}",
-            requests.len(),
-            requests
-        );
+    if shared_state.refresh_requests.swap(false, Ordering::AcqRel) {
+        tracing::debug!("Processing plugin layout refresh request");
         shared_state.plugin_ui_jobs.invalidate_all_layouts();
         let dialog_signal = shared_state.signals().plugin_dialog_state.clone();
         let mut dialog_state = dialog_signal.get();
         dialog_state.invalidate_dialog_layout();
         dialog_state.invalidate_page_layout();
         dialog_signal.set(dialog_state);
-        requests.clear();
         ctx.request_repaint();
     }
 }

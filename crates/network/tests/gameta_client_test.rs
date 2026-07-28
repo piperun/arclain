@@ -395,3 +395,124 @@ async fn test_no_auth_header_when_api_key_absent() {
 
     assert!(result.is_ok(), "expected Ok, got: {:?}", result);
 }
+
+#[tokio::test]
+async fn explicit_limit_bounds_health_response_materialization() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/health"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(r#"{"status":"ok","version":"1.0.0"}"#, "application/json"),
+        )
+        .mount(&server)
+        .await;
+
+    let url = server.uri();
+    let result = tokio::task::spawn_blocking(move || {
+        GametaClient::new(ServerConfig { url, api_key: None }).health_with_limit(8)
+    })
+    .await
+    .expect("spawn_blocking panicked");
+
+    assert!(result
+        .expect_err("oversized health response must fail")
+        .contains("8-byte materialized read limit"));
+}
+
+#[tokio::test]
+async fn explicit_limit_bounds_get_metadata_response_materialization() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/metadata/dlsite/RJ1"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"id":"RJ1","source":"dlsite","title":null,"creator":null,"description":null,"release_date":null,"tags":[],"extras":null}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let url = server.uri();
+    let result = tokio::task::spawn_blocking(move || {
+        GametaClient::new(ServerConfig { url, api_key: None })
+            .get_metadata_with_limit("dlsite", "RJ1", 8)
+    })
+    .await
+    .expect("spawn_blocking panicked");
+
+    assert!(result
+        .expect_err("oversized metadata response must fail")
+        .contains("8-byte materialized read limit"));
+}
+
+#[tokio::test]
+async fn explicit_limit_bounds_fetch_response_materialization() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/fetch"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"status":"ok","source":"dlsite","id":"RJ1","metadata":null}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let url = server.uri();
+    let result = tokio::task::spawn_blocking(move || {
+        GametaClient::new(ServerConfig { url, api_key: None })
+            .fetch_metadata_with_limit("dlsite", "RJ1", false, 8)
+    })
+    .await
+    .expect("spawn_blocking panicked");
+
+    assert!(result
+        .expect_err("oversized fetch response must fail")
+        .contains("8-byte materialized read limit"));
+}
+
+#[tokio::test]
+async fn explicit_limit_accepts_an_exact_fetch_response_boundary() {
+    let server = MockServer::start().await;
+    let body = r#"{"status":"ok","source":"dlsite","id":"RJ1","metadata":null}"#;
+    let body_limit = body.len();
+    Mock::given(method("POST"))
+        .and(path("/api/v1/fetch"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "application/json"))
+        .mount(&server)
+        .await;
+
+    let url = server.uri();
+    let result = tokio::task::spawn_blocking(move || {
+        GametaClient::new(ServerConfig { url, api_key: None })
+            .fetch_metadata_with_limit("dlsite", "RJ1", false, body_limit)
+    })
+    .await
+    .expect("spawn_blocking panicked")
+    .expect("exact response boundary should be accepted");
+
+    assert_eq!(result.id, "RJ1");
+}
+
+#[tokio::test]
+async fn explicit_limit_bounds_search_response_materialization() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            r#"{"query":"q","source":null,"results":[]}"#,
+            "application/json",
+        ))
+        .mount(&server)
+        .await;
+
+    let url = server.uri();
+    let result = tokio::task::spawn_blocking(move || {
+        GametaClient::new(ServerConfig { url, api_key: None }).search_with_limit("q", None, None, 8)
+    })
+    .await
+    .expect("spawn_blocking panicked");
+
+    assert!(result
+        .expect_err("oversized search response must fail")
+        .contains("8-byte materialized read limit"));
+}

@@ -3,15 +3,19 @@
 //! Processes `PluginAction` values returned from plugin UI events
 //! and dispatches them to the appropriate subsystems.
 
+use arclain_plugins::action_policy::bound_plugin_actions_with_status;
 use arclain_plugins::types::{PluginAction, ToastLevel as PluginToastLevel};
 use arclain_signals::Signal;
 use arclain_widgets::{Toast, ToastLevel, Toaster};
-use parking_lot::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::features::plugins::domain::state::PluginDialogState;
 use crate::shared::dialogs::LightboxState;
 use crate::shared::image_assets::ImageOwner;
+
+const PLUGIN_ACTIONS_LIMITED_WARNING: &str =
+    "Plugin actions were limited because host safety limits were exceeded";
 
 /// Context for processing plugin actions that need signal access
 pub struct ActionContext<'a> {
@@ -20,6 +24,65 @@ pub struct ActionContext<'a> {
     pub metadata_signal: Option<&'a Signal<Option<serde_json::Value>>>,
     pub shared_state: Option<&'a crate::shared::SharedState>,
     pub origin_tab: Option<crate::core::tabs::TabId>,
+}
+
+fn trace_request_fetch_requested(plugin_id: &str, key: &str) {
+    let _ = key;
+    tracing::info!(plugin_id, "Plugin requested background metadata fetch");
+}
+
+fn trace_refresh_panel_requested(plugin_id: &str, extension_point: &str) {
+    let _ = extension_point;
+    tracing::debug!(plugin_id, "Plugin requested panel refresh");
+}
+
+fn trace_clipboard_copy_requested(plugin_id: &str, text: &str) {
+    let _ = text;
+    tracing::debug!(plugin_id, "Plugin requested clipboard copy");
+}
+
+fn trace_page_display_name_changed(plugin_id: &str, name: &str) {
+    let _ = name;
+    tracing::debug!(plugin_id, "Plugin changed page display name");
+}
+
+/// Execute the UI RequestFetch route only when the loaded instance has both
+/// capabilities required to perform a network request and write its result.
+/// The closure is the entire effectful route, so denial cannot start Gameta
+/// work or mutate an archive metadata signal.
+fn process_ui_request_fetch<Authorize, Fetch>(
+    authorize: Authorize,
+    plugin_id: &str,
+    start_fetch: Fetch,
+) -> bool
+where
+    Authorize: FnOnce() -> Result<(), String>,
+    Fetch: FnOnce(),
+{
+    if let Err(error) = authorize() {
+        tracing::warn!(
+            plugin_id,
+            %error,
+            "Denied RequestFetch without Network and ArchiveMetadataWrite capabilities"
+        );
+        return false;
+    }
+
+    start_fetch();
+    true
+}
+
+fn run_gameta_request_sequence<T>(
+    mut acquire_permit: impl FnMut() -> Result<(), String>,
+    get_metadata: impl FnOnce() -> Result<Option<T>, String>,
+    fetch_metadata: impl FnOnce() -> Result<Option<T>, String>,
+) -> Result<Option<T>, String> {
+    acquire_permit()?;
+    if let Some(metadata) = get_metadata()? {
+        return Ok(Some(metadata));
+    }
+    acquire_permit()?;
+    fetch_metadata()
 }
 
 /// Process a list of plugin actions.
@@ -34,7 +97,7 @@ pub fn process_plugin_actions(
     plugin_id: &str,
     dialog_state: &mut PluginDialogState,
     toaster: &mut Toaster,
-    refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
+    refresh_requests: Option<&Arc<AtomicBool>>,
     lightbox_signal: Option<&Signal<LightboxState>>,
     shared_state: Option<&crate::shared::SharedState>,
 ) {
@@ -45,14 +108,56 @@ pub fn process_plugin_actions(
         shared_state,
         origin_tab: shared_state.map(|shared| shared.signals().tabs.get().active_id()),
     };
-    for action in actions {
-        process_action(
+    process_plugin_actions_with_context(
+        actions,
+        plugin_id,
+        dialog_state,
+        toaster,
+        refresh_requests,
+        &ctx,
+    );
+}
+
+pub fn process_plugin_actions_with_context(
+    actions: Vec<PluginAction>,
+    plugin_id: &str,
+    dialog_state: &mut PluginDialogState,
+    toaster: &mut Toaster,
+    refresh_requests: Option<&Arc<AtomicBool>>,
+    ctx: &ActionContext,
+) {
+    process_plugin_actions_with_limit_status(
+        actions,
+        false,
+        plugin_id,
+        dialog_state,
+        toaster,
+        refresh_requests,
+        ctx,
+    );
+}
+
+pub(crate) fn process_plugin_actions_with_limit_status(
+    actions: Vec<PluginAction>,
+    actions_were_limited: bool,
+    plugin_id: &str,
+    dialog_state: &mut PluginDialogState,
+    toaster: &mut Toaster,
+    refresh_requests: Option<&Arc<AtomicBool>>,
+    ctx: &ActionContext,
+) {
+    let bounded = bound_plugin_actions_with_status(actions);
+    if actions_were_limited || bounded.limited {
+        toaster.warning(PLUGIN_ACTIONS_LIMITED_WARNING);
+    }
+    for action in bounded.actions {
+        process_bounded_action(
             action,
             plugin_id,
             dialog_state,
             toaster,
             refresh_requests,
-            &ctx,
+            ctx,
         );
     }
 }
@@ -63,7 +168,31 @@ pub fn process_action(
     plugin_id: &str,
     dialog_state: &mut PluginDialogState,
     toaster: &mut Toaster,
-    refresh_requests: Option<&Arc<Mutex<Vec<String>>>>,
+    refresh_requests: Option<&Arc<AtomicBool>>,
+    ctx: &ActionContext,
+) {
+    let bounded = bound_plugin_actions_with_status(vec![action]);
+    if bounded.limited {
+        toaster.warning(PLUGIN_ACTIONS_LIMITED_WARNING);
+    }
+    for action in bounded.actions {
+        process_bounded_action(
+            action,
+            plugin_id,
+            dialog_state,
+            toaster,
+            refresh_requests,
+            ctx,
+        );
+    }
+}
+
+fn process_bounded_action(
+    action: PluginAction,
+    plugin_id: &str,
+    dialog_state: &mut PluginDialogState,
+    toaster: &mut Toaster,
+    refresh_requests: Option<&Arc<AtomicBool>>,
     ctx: &ActionContext,
 ) {
     match action {
@@ -81,14 +210,9 @@ pub fn process_action(
         }
 
         PluginAction::RefreshPanel { extension_point } => {
-            // Queue panel for refresh - UI components check this list
-            tracing::debug!(
-                "Plugin {} requested refresh of panel '{}'",
-                plugin_id,
-                extension_point
-            );
+            trace_refresh_panel_requested(plugin_id, &extension_point);
             if let Some(requests) = refresh_requests {
-                requests.lock().push(extension_point);
+                requests.store(true, Ordering::Release);
             }
         }
 
@@ -110,7 +234,7 @@ pub fn process_action(
 
         PluginAction::CopyToClipboard { text } => {
             // Copy text to system clipboard
-            tracing::debug!("Plugin {} requested clipboard copy: {}", plugin_id, text);
+            trace_clipboard_copy_requested(plugin_id, &text);
             match arboard::Clipboard::new() {
                 Ok(mut clipboard) => {
                     if let Err(e) = clipboard.set_text(&text) {
@@ -147,7 +271,7 @@ pub fn process_action(
 
         PluginAction::SetPageDisplayName { name } => {
             // Set the display name for the current plugin page
-            tracing::debug!("Plugin {} set page display name to '{}'", plugin_id, name);
+            trace_page_display_name_changed(plugin_id, &name);
             if let Some(signal) = ctx.page_display_name_signal {
                 signal.set(Some(name));
             }
@@ -155,17 +279,39 @@ pub fn process_action(
 
         PluginAction::RequestFetch { key } => {
             // Async background fetch — host handles on tokio runtime
-            tracing::info!("Plugin {} requested background fetch: {}", plugin_id, key);
+            trace_request_fetch_requested(plugin_id, &key);
             if let Some(shared) = ctx.shared_state {
                 let origin_tab = ctx
                     .origin_tab
                     .unwrap_or_else(|| shared.signals().tabs.get().active_id());
-                spawn_background_fetch(
-                    shared,
-                    &plugin_id,
-                    &key,
-                    origin_tab,
-                    ctx.metadata_signal.cloned(),
+                process_ui_request_fetch(
+                    || {
+                        let manager = shared
+                            .services
+                            .plugin_manager
+                            .as_ref()
+                            .ok_or_else(|| "plugin manager unavailable".to_string())?;
+                        if !manager.lock().plugin_has_capabilities(
+                            plugin_id,
+                            &arclain_plugins::types::REQUEST_FETCH_CAPABILITIES,
+                        ) {
+                            return Err(
+                                "Network and ArchiveMetadataWrite capabilities are required"
+                                    .to_string(),
+                            );
+                        }
+                        Ok(())
+                    },
+                    plugin_id,
+                    || {
+                        spawn_background_fetch(
+                            shared,
+                            plugin_id,
+                            &key,
+                            origin_tab,
+                            ctx.metadata_signal.cloned(),
+                        );
+                    },
                 );
             }
         }
@@ -292,6 +438,15 @@ fn spawn_background_fetch(
     origin_tab: crate::core::tabs::TabId,
     origin_metadata: Option<Signal<Option<serde_json::Value>>>,
 ) {
+    let materialization_limit = shared
+        .services
+        .resource_manager
+        .as_ref()
+        .map_or(
+            arclain_plugins::types::MAX_PLUGIN_METADATA_BYTES,
+            |manager| manager.materialization_limit(),
+        )
+        .min(arclain_plugins::types::MAX_PLUGIN_METADATA_BYTES);
     // Parse "source:id" format
     let parts: Vec<&str> = key.splitn(2, ':').collect();
     let (source, id) = if parts.len() == 2 {
@@ -326,7 +481,7 @@ fn spawn_background_fetch(
                 format!("background_fetch_failed:{}", key)
             };
             jobs.request(
-                crate::features::plugins::application::PluginUiRequest::UiEvent {
+                crate::features::plugins::application::PluginUiRequest::ReactiveUiEvent {
                     plugin_id: pid,
                     event_id: event,
                     value: None,
@@ -348,7 +503,7 @@ fn spawn_background_fetch(
         let key = key.to_string();
         move || {
             jobs.request(
-                crate::features::plugins::application::PluginUiRequest::UiEvent {
+                crate::features::plugins::application::PluginUiRequest::ReactiveUiEvent {
                     plugin_id: pid,
                     event_id: format!("do_native_fetch:{}", key),
                     value: None,
@@ -364,6 +519,8 @@ fn spawn_background_fetch(
     // gameta_server isn't configured or doesn't have this entry.
     if let Some(ref client) = shared.services.gameta_client {
         let client = client.clone();
+        let policy_client = shared.services.async_http_client.clone();
+        let permit_plugin_id = plugin_id_owned.clone();
         let id_for_log = id.clone();
         let source_clone = source.clone();
         let id_clone = id.clone();
@@ -380,27 +537,47 @@ fn spawn_background_fetch(
 
         shared.services.tokio_runtime.spawn(async move {
             let result = tokio::task::spawn_blocking(move || {
-                match client.get_metadata(&source_clone, &id_clone) {
-                    Ok(Some(meta)) => Ok(Some(meta)),
-                    Ok(None) => client
-                        .fetch_metadata(&source_clone, &id_clone, false)
-                        .map(|r| r.metadata),
-                    Err(e) => Err(e),
-                }
+                run_gameta_request_sequence(
+                    || {
+                        policy_client
+                            .try_acquire_plugin_host_service(&permit_plugin_id, "gameta")
+                            .map_err(|error| error.to_string())
+                    },
+                    || {
+                        client
+                            .get_metadata_with_limit(
+                                &source_clone,
+                                &id_clone,
+                                materialization_limit,
+                            )
+                            .map_err(|error| error.to_string())
+                    },
+                    || {
+                        client
+                            .fetch_metadata_with_limit(
+                                &source_clone,
+                                &id_clone,
+                                false,
+                                materialization_limit,
+                            )
+                            .map(|response| response.metadata)
+                            .map_err(|error| error.to_string())
+                    },
+                )
             })
             .await;
 
             match result {
                 Ok(Ok(Some(meta))) => match serde_json::to_value(&meta) {
-                    Ok(json_val) => {
-                        tracing::info!("[BackgroundFetch] Got {} from server", id_for_log);
+                    Ok(json_val)
+                        if arclain_plugins::types::metadata_value_within_limit(&json_val) => {
+                        tracing::info!("[BackgroundFetch] Received metadata from server");
                         metadata_signal.set(Some(json_val));
                         notify_complete(true);
                     }
-                    Err(_) => {
+                    Ok(_) | Err(_) => {
                         tracing::warn!(
-                            "[BackgroundFetch] {} fetched but JSON serialization failed — falling back to native fetch",
-                            id_for_log
+                            "[BackgroundFetch] Metadata serialization failed; falling back to native fetch"
                         );
                         spawn_native_dispatch(dispatch_native, &id_for_log, notifier_json_fail)
                             .await;
@@ -408,26 +585,19 @@ fn spawn_background_fetch(
                 },
                 Ok(Ok(None)) => {
                     tracing::info!(
-                        "[BackgroundFetch] {} not on gameta server — falling back to native fetch",
-                        id_for_log
+                        "[BackgroundFetch] Metadata not on Gameta server; falling back to native fetch"
                     );
                     spawn_native_dispatch(dispatch_native, &id_for_log, notifier_no_meta).await;
                 }
-                Ok(Err(e)) => {
+                Ok(Err(_)) => {
                     tracing::warn!(
-                        "[BackgroundFetch] gameta server fetch failed for {}: {} — falling back to native fetch",
-                        id_for_log,
-                        e
+                        "[BackgroundFetch] Gameta server fetch failed; falling back to native fetch"
                     );
                     spawn_native_dispatch(dispatch_native, &id_for_log, notifier_server_err)
                         .await;
                 }
-                Err(join_err) => {
-                    tracing::error!(
-                        "[BackgroundFetch] blocking task panicked for {}: {}",
-                        id_for_log,
-                        join_err
-                    );
+                Err(_) => {
+                    tracing::error!("[BackgroundFetch] blocking task panicked");
                     notify_complete(false);
                 }
             }
@@ -464,7 +634,7 @@ fn spawn_background_fetch(
 /// already cleared its flag. On panic or other JoinError we log and
 /// call `notify_on_failure(false)` so the flag clears via the
 /// `background_fetch_failed:` event path.
-async fn spawn_native_dispatch<F, N>(dispatch: F, id_for_log: &str, notify_on_failure: N)
+async fn spawn_native_dispatch<F, N>(dispatch: F, _id_for_log: &str, notify_on_failure: N)
 where
     F: FnOnce() + Send + 'static,
     N: FnOnce(bool) + Send + 'static,
@@ -472,19 +642,11 @@ where
     match tokio::task::spawn_blocking(dispatch).await {
         Ok(()) => {}
         Err(e) if e.is_panic() => {
-            tracing::error!(
-                "[BackgroundFetch] native dispatch panicked for {}: {}",
-                id_for_log,
-                e
-            );
+            tracing::error!("[BackgroundFetch] native dispatch panicked");
             notify_on_failure(false);
         }
-        Err(e) => {
-            tracing::error!(
-                "[BackgroundFetch] native dispatch task error for {}: {}",
-                id_for_log,
-                e
-            );
+        Err(_) => {
+            tracing::error!("[BackgroundFetch] native dispatch task error");
             notify_on_failure(false);
         }
     }
@@ -493,8 +655,366 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arclain_plugins::action_policy::{
+        bound_plugin_actions, MAX_LIGHTBOX_IMAGES, MAX_LIGHTBOX_TITLE_BYTES,
+        MAX_REQUEST_FETCH_ACTIONS, MAX_TOAST_ACTIONS, MAX_TOAST_MESSAGE_BYTES,
+    };
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn plugin_action_batch_is_bounded_coalesced_and_caps_guest_fields() {
+        let mut actions = Vec::new();
+        for index in 0..20 {
+            actions.push(PluginAction::ShowToast {
+                message: format!("toast-{index}-{}", "x".repeat(MAX_TOAST_MESSAGE_BYTES - 20)),
+                level: PluginToastLevel::Info,
+            });
+            actions.push(PluginAction::RequestFetch {
+                key: format!("fetch-{index}"),
+            });
+            actions.push(PluginAction::RefreshPanel {
+                extension_point: format!("panel-{index}"),
+            });
+            actions.push(PluginAction::CopyToClipboard {
+                text: format!("clipboard-{index}"),
+            });
+            actions.push(PluginAction::SetPageDisplayName {
+                name: format!("page-{index}"),
+            });
+        }
+        actions.push(PluginAction::OpenLightbox {
+            images: (0..MAX_LIGHTBOX_IMAGES + 5)
+                .map(|index| (format!("image-{index}"), None))
+                .collect(),
+            start_index: usize::MAX,
+            title: Some("t".repeat(MAX_LIGHTBOX_TITLE_BYTES + 20)),
+        });
+
+        let bounded = bound_plugin_actions(actions);
+
+        assert_eq!(
+            bounded
+                .iter()
+                .filter(|action| matches!(action, PluginAction::ShowToast { .. }))
+                .count(),
+            MAX_TOAST_ACTIONS
+        );
+        assert_eq!(
+            bounded
+                .iter()
+                .filter(|action| matches!(action, PluginAction::RequestFetch { .. }))
+                .count(),
+            MAX_REQUEST_FETCH_ACTIONS
+        );
+        assert_eq!(
+            bounded
+                .iter()
+                .filter(|action| matches!(action, PluginAction::RefreshPanel { .. }))
+                .count(),
+            1
+        );
+        assert!(bounded.iter().any(|action| matches!(
+            action,
+            PluginAction::CopyToClipboard { text } if text == "clipboard-19"
+        )));
+        assert!(bounded.iter().any(|action| matches!(
+            action,
+            PluginAction::SetPageDisplayName { name } if name == "page-19"
+        )));
+        let lightbox = bounded.iter().find_map(|action| match action {
+            PluginAction::OpenLightbox {
+                images,
+                start_index,
+                title,
+            } => Some((images, start_index, title)),
+            _ => None,
+        });
+        let (images, start_index, title) = lightbox.expect("lightbox retained");
+        assert_eq!(images.len(), MAX_LIGHTBOX_IMAGES);
+        assert_eq!(*start_index, MAX_LIGHTBOX_IMAGES - 1);
+        assert!(title.is_none());
+        assert!(bounded.iter().all(|action| match action {
+            PluginAction::ShowToast { message, .. } => message.len() <= MAX_TOAST_MESSAGE_BYTES,
+            _ => true,
+        }));
+    }
+
+    #[test]
+    fn repeated_refresh_actions_retain_only_a_dirty_bit() {
+        let refresh_pending = AtomicBool::new(false);
+        let bounded = bound_plugin_actions(
+            (0..100)
+                .map(|index| PluginAction::RefreshPanel {
+                    extension_point: format!("panel-{index}"),
+                })
+                .collect(),
+        );
+
+        for action in bounded {
+            if matches!(action, PluginAction::RefreshPanel { .. }) {
+                refresh_pending.store(true, Ordering::Release);
+            }
+        }
+
+        assert!(refresh_pending.swap(false, Ordering::AcqRel));
+        assert!(!refresh_pending.swap(false, Ordering::AcqRel));
+    }
+
+    #[test]
+    fn denied_action_overflow_surfaces_one_host_warning() {
+        let mut dialog = PluginDialogState::default();
+        let mut toaster = Toaster::new();
+        let context = ActionContext {
+            lightbox_signal: None,
+            page_display_name_signal: None,
+            metadata_signal: None,
+            shared_state: None,
+            origin_tab: None,
+        };
+
+        process_plugin_actions_with_context(
+            (0..20)
+                .map(|_| PluginAction::ShowToast {
+                    message: "x".repeat(MAX_TOAST_MESSAGE_BYTES + 1),
+                    level: PluginToastLevel::Error,
+                })
+                .collect(),
+            "ui-demo",
+            &mut dialog,
+            &mut toaster,
+            None,
+            &context,
+        );
+
+        assert_eq!(toaster.len(), 1);
+        assert!(PLUGIN_ACTIONS_LIMITED_WARNING.contains("limited"));
+    }
+
+    #[test]
+    fn field_capping_surfaces_one_limited_warning() {
+        let mut dialog = PluginDialogState::default();
+        let mut toaster = Toaster::new();
+        let context = ActionContext {
+            lightbox_signal: None,
+            page_display_name_signal: None,
+            metadata_signal: None,
+            shared_state: None,
+            origin_tab: None,
+        };
+
+        process_plugin_actions_with_context(
+            vec![PluginAction::OpenLightbox {
+                images: (0..MAX_LIGHTBOX_IMAGES + 1)
+                    .map(|index| (format!("image-{index}"), None))
+                    .collect(),
+                start_index: usize::MAX,
+                title: None,
+            }],
+            "ui-demo",
+            &mut dialog,
+            &mut toaster,
+            None,
+            &context,
+        );
+
+        assert_eq!(toaster.len(), 1);
+    }
+
+    #[test]
+    fn prebounded_batch_preserves_its_limited_warning() {
+        let mut dialog = PluginDialogState::default();
+        let mut toaster = Toaster::new();
+        let context = ActionContext {
+            lightbox_signal: None,
+            page_display_name_signal: None,
+            metadata_signal: None,
+            shared_state: None,
+            origin_tab: None,
+        };
+
+        process_plugin_actions_with_limit_status(
+            Vec::new(),
+            true,
+            "ui-demo",
+            &mut dialog,
+            &mut toaster,
+            None,
+            &context,
+        );
+
+        assert_eq!(toaster.len(), 1);
+    }
+
+    #[test]
+    fn no_op_action_does_not_surface_a_limit_warning() {
+        let mut dialog = PluginDialogState::default();
+        let mut toaster = Toaster::new();
+        let context = ActionContext {
+            lightbox_signal: None,
+            page_display_name_signal: None,
+            metadata_signal: None,
+            shared_state: None,
+            origin_tab: None,
+        };
+
+        process_plugin_actions_with_context(
+            vec![PluginAction::None],
+            "ui-demo",
+            &mut dialog,
+            &mut toaster,
+            None,
+            &context,
+        );
+
+        assert!(toaster.is_empty());
+    }
+
+    #[test]
+    fn refresh_actions_set_one_bounded_dirty_bit() {
+        let dirty = Arc::new(AtomicBool::new(false));
+        let mut dialog = PluginDialogState::default();
+        let mut toaster = Toaster::new();
+        let context = ActionContext {
+            lightbox_signal: None,
+            page_display_name_signal: None,
+            metadata_signal: None,
+            shared_state: None,
+            origin_tab: None,
+        };
+
+        process_action(
+            PluginAction::RefreshPanel {
+                extension_point: "guest-value".repeat(100_000),
+            },
+            "ui-demo",
+            &mut dialog,
+            &mut toaster,
+            Some(&dirty),
+            &context,
+        );
+
+        assert!(dirty.load(Ordering::Acquire));
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn request_fetch_trace_redacts_guest_key() {
+        let marker = "plugin-request-key-must-not-reach-global-tracing";
+
+        trace_request_fetch_requested("ui-demo", marker);
+
+        assert!(!logs_contain(marker));
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn plugin_action_traces_redact_guest_values() {
+        let refresh_marker = "refresh-panel-value-must-not-reach-global-tracing";
+        let clipboard_marker = "clipboard-text-must-not-reach-global-tracing";
+        let display_name_marker = "page-display-name-must-not-reach-global-tracing";
+
+        trace_refresh_panel_requested("ui-demo", refresh_marker);
+        trace_clipboard_copy_requested("ui-demo", clipboard_marker);
+        trace_page_display_name_changed("ui-demo", display_name_marker);
+
+        assert!(!logs_contain(refresh_marker));
+        assert!(!logs_contain(clipboard_marker));
+        assert!(!logs_contain(display_name_marker));
+    }
+
+    #[test]
+    fn ui_route_denies_request_fetch_without_both_capabilities() {
+        for (network, metadata_write) in [(true, false), (false, true)] {
+            let fetch_started = AtomicBool::new(false);
+            let metadata = Signal::new(None);
+
+            let authorized = process_ui_request_fetch(
+                || {
+                    if network && metadata_write {
+                        Ok(())
+                    } else {
+                        Err("capability denied".to_string())
+                    }
+                },
+                "ui-demo",
+                || {
+                    fetch_started.store(true, Ordering::SeqCst);
+                    metadata.set(Some(serde_json::json!({"product_id": "RJ000001"})));
+                },
+            );
+
+            assert!(!authorized);
+            assert!(!fetch_started.load(Ordering::SeqCst));
+            assert!(metadata.get().is_none());
+        }
+    }
+
+    #[test]
+    fn ui_route_allows_request_fetch_with_both_capabilities() {
+        let fetch_started = AtomicBool::new(false);
+        let metadata = Signal::new(None);
+
+        let authorized = process_ui_request_fetch(
+            || Ok(()),
+            "ui-demo",
+            || {
+                fetch_started.store(true, Ordering::SeqCst);
+                metadata.set(Some(serde_json::json!({"product_id": "RJ000001"})));
+            },
+        );
+
+        assert!(authorized);
+        assert!(fetch_started.load(Ordering::SeqCst));
+        assert_eq!(
+            metadata
+                .get()
+                .and_then(|value| value["product_id"].as_str().map(str::to_owned))
+                .as_deref(),
+            Some("RJ000001")
+        );
+    }
+
+    #[test]
+    fn ui_route_denies_request_fetch_when_host_service_budget_is_exhausted() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let client = arclain_network::AsyncHttpClient::new(
+            runtime.handle().clone(),
+            Arc::new(parking_lot::RwLock::new(
+                arclain_network::DomainWhitelist::default(),
+            )),
+            None,
+        );
+        client.configure_plugin(
+            "ui-demo",
+            arclain_network::PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 1,
+            },
+        );
+        let get_started = AtomicBool::new(false);
+        let fetch_started = AtomicBool::new(false);
+
+        let result = run_gameta_request_sequence(
+            || {
+                client
+                    .try_acquire_plugin_host_service("ui-demo", "gameta")
+                    .map_err(|error| error.to_string())
+            },
+            || {
+                get_started.store(true, Ordering::SeqCst);
+                Ok::<_, String>(None::<()>)
+            },
+            || {
+                fetch_started.store(true, Ordering::SeqCst);
+                Ok::<_, String>(None::<()>)
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(get_started.load(Ordering::SeqCst));
+        assert!(!fetch_started.load(Ordering::SeqCst));
+    }
 
     /// Regression test for M5 from `docs/AUDIT_2026-05-03.md`.
     ///
@@ -510,12 +1030,14 @@ mod tests {
     /// Post-fix, `spawn_native_dispatch` matches on the JoinError and
     /// calls the supplied notifier with `false` so the plugin clears
     /// its flag via the `background_fetch_failed:` path.
+    #[tracing_test::traced_test]
     #[tokio::test]
     async fn m5_panic_in_dispatch_calls_notify_with_false() {
+        let panic_marker = "plugin-panic-payload-must-not-reach-global-tracing";
         let notified_with = Arc::new(AtomicU8::new(0)); // 0 = not called
         let n = notified_with.clone();
         spawn_native_dispatch(
-            || panic!("simulated plugin panic"),
+            move || panic!("{panic_marker}"),
             "test_id",
             move |success| {
                 n.store(if success { 1 } else { 2 }, Ordering::SeqCst);
@@ -527,6 +1049,7 @@ mod tests {
             2,
             "M5 fix regressed: notifier should have been called with false on panic",
         );
+        assert!(!logs_contain(panic_marker));
     }
 
     /// Clean completion: notifier is NOT called (plugin handler clears

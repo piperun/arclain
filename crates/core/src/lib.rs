@@ -34,7 +34,11 @@ pub use features::pipeline::{
     PipelinePreview, PipelineProgress, PipelineStep, PresetsFile, PreviewEntry, ProcessPreset,
     SavedPreset, COLLISION_POLICY_CONFIG_KEY,
 };
-pub use services::{CacheService, ConfigService, LibraryService, OrganizationService, UiService};
+pub use services::{
+    CacheService, ConfigService, LibraryService, MetadataSummary, OrganizationService, UiService,
+    METADATA_SUMMARY_MAX_IDS, METADATA_SUMMARY_MAX_ID_BYTES, METADATA_SUMMARY_MAX_STORED_ID_BYTES,
+    METADATA_SUMMARY_TITLE_CHARS,
+};
 pub use utilities::{init_logging, FileOpener, OpenStrategy};
 
 // Re-export UI/DB types so consumers don't need to import arclain_db directly
@@ -58,6 +62,6 @@ pub use arclain_db::{
 // and `services::cache_service`). UI consumers reach this surface
 // through us — no direct `arclain_data` dep needed.
 pub use arclain_data::{
-    CacheIndex, ContentCache, DataRequest, DataService, DataSource, DataSourceResolver,
-    MetadataReader, ResolveError, ResourceConfig, ResourceManager,
+    CacheIndex, CacheLimits, ContentCache, DataRequest, DataService, DataSource,
+    DataSourceResolver, MetadataReader, ResolveError, ResourceConfig, ResourceManager,
 };

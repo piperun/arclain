@@ -7,12 +7,33 @@ use anyhow::Result;
 use arclain_core::archive::ArchiveKind;
 use arclain_core::utilities::auto_password_for;
 use arclain_core::ArchiveEntry;
-use arclain_plugins::PluginEvent;
+use arclain_plugins::{PluginEvent, PluginEventScheduler};
 use parking_lot::RwLock;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::TrySendError;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
+
+const MAX_PENDING_PLUGIN_EVENTS: usize = 32;
+const MAX_PLUGIN_EVENT_PATH_BYTES: usize = 32 * 1024;
+const MAX_PLUGIN_EVENT_PASSWORD_BYTES: usize = 4 * 1024;
+
+trait PluginEventAdmission {
+    fn try_schedule(&self, event: PluginEvent) -> Result<(), TrySendError<PluginEvent>>;
+}
+
+impl PluginEventAdmission for PluginEventScheduler {
+    fn try_schedule(&self, event: PluginEvent) -> Result<(), TrySendError<PluginEvent>> {
+        PluginEventScheduler::try_schedule(self, event)
+    }
+}
+
+#[cfg(test)]
+impl PluginEventAdmission for std::sync::mpsc::SyncSender<PluginEvent> {
+    fn try_schedule(&self, event: PluginEvent) -> Result<(), TrySendError<PluginEvent>> {
+        self.try_send(event)
+    }
+}
 
 fn clear_archive_selection(tab: &TabState) {
     let mut view_state = tab.browser_view_state.get();
@@ -44,23 +65,69 @@ fn archive_open_event(
     }
 }
 
-fn dispatch_pending_plugin_events(
+fn dispatch_pending_plugin_events<S: PluginEventAdmission>(
     pending: &mut Vec<PendingPluginEvent>,
-    sender: Option<&Sender<PluginEvent>>,
+    scheduler: Option<&S>,
     signals: &AppSignals,
 ) {
     let tabs = signals.tabs.get();
-    for pending_event in pending.drain(..) {
-        if let Some(sender) = sender {
-            if let Err(error) = sender.send(pending_event.event) {
-                warn!("Failed to send deferred event to plugin worker: {}", error);
+    let mut queued = std::mem::take(pending).into_iter();
+    while let Some(pending_event) = queued.next() {
+        let origin_tab_id = pending_event.origin_tab_id;
+        if let Some(scheduler) = scheduler {
+            match scheduler.try_schedule(pending_event.event) {
+                Ok(()) => {}
+                Err(TrySendError::Full(event)) => {
+                    pending.push(PendingPluginEvent::new(origin_tab_id, event));
+                    pending.extend(queued);
+                    break;
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    warn!("Plugin event worker is unavailable; dropping deferred event");
+                }
             }
         }
 
-        if let Some(tab) = tabs.get(pending_event.origin_tab_id) {
+        if let Some(tab) = tabs.get(origin_tab_id) {
             tab.ui_ready.set(true);
         }
     }
+}
+
+fn queue_pending_plugin_event(
+    pending: &mut Vec<PendingPluginEvent>,
+    event: PendingPluginEvent,
+    signals: &AppSignals,
+) -> bool {
+    let valid = match &event.event {
+        PluginEvent::OnArchiveOpen { path, password, .. } => {
+            path.len() <= MAX_PLUGIN_EVENT_PATH_BYTES
+                && password
+                    .as_deref()
+                    .is_none_or(|value| value.len() <= MAX_PLUGIN_EVENT_PASSWORD_BYTES)
+        }
+    };
+    if !valid {
+        if let Some(tab) = signals.tabs.get().get(event.origin_tab_id) {
+            tab.ui_ready.set(true);
+        }
+        warn!("Dropping oversized deferred plugin event");
+        return false;
+    }
+
+    if let Some(index) = pending
+        .iter()
+        .position(|queued| queued.origin_tab_id == event.origin_tab_id)
+    {
+        pending.remove(index);
+    } else if pending.len() == MAX_PENDING_PLUGIN_EVENTS {
+        let evicted = pending.remove(0);
+        if let Some(tab) = signals.tabs.get().get(evicted.origin_tab_id) {
+            tab.ui_ready.set(true);
+        }
+    }
+    pending.push(event);
+    true
 }
 
 impl AppState {
@@ -209,7 +276,7 @@ impl AppState {
         // onto the queue and the user switches tabs by the time
         // the worker processes us.
         tab.metadata.set(None);
-        if self.plugin_event_sender.is_some() {
+        if self.plugin_event_scheduler.is_some() {
             let event = archive_open_event(
                 path,
                 info.archive_kind,
@@ -218,9 +285,13 @@ impl AppState {
                 &tab,
             );
 
-            self.pending_plugin_events
-                .push(PendingPluginEvent::new(target_tab_id, event));
-            tab.ui_ready.set(false);
+            if queue_pending_plugin_event(
+                &mut self.pending_plugin_events,
+                PendingPluginEvent::new(target_tab_id, event),
+                &self.signals,
+            ) {
+                tab.ui_ready.set(false);
+            }
 
             info!(
                 "Archive opened successfully with {} entries (plugin event pending, queue depth {})",
@@ -229,7 +300,7 @@ impl AppState {
             );
         }
 
-        if self.plugin_event_sender.is_none() {
+        if self.plugin_event_scheduler.is_none() {
             info!(
                 "Archive opened successfully with {} entries",
                 tab.entries.get().len()
@@ -297,7 +368,7 @@ impl AppState {
         // sibling `list_archive` site above for why the payload
         // carries per-tab snapshots of entries + the metadata
         // signal handle.
-        if self.plugin_event_sender.is_some() {
+        if self.plugin_event_scheduler.is_some() {
             let event = archive_open_event(
                 path,
                 info.archive_kind.clone(),
@@ -306,9 +377,13 @@ impl AppState {
                 &tab,
             );
 
-            self.pending_plugin_events
-                .push(PendingPluginEvent::new(target_tab_id, event));
-            tab.ui_ready.set(false);
+            if queue_pending_plugin_event(
+                &mut self.pending_plugin_events,
+                PendingPluginEvent::new(target_tab_id, event),
+                &self.signals,
+            ) {
+                tab.ui_ready.set(false);
+            }
         }
 
         // Create Archive handle with password and store in signal for session operations
@@ -321,10 +396,9 @@ impl AppState {
 
     /// Drain queued plugin events into the worker channel.
     ///
-    /// Pre-queue this took a single `Option<PluginEvent>` and sent
-    /// at most one event per call — multi-archive drag-drops lost
-    /// all but the last open silently. Now we drain the whole Vec
-    /// each call so every queued open reaches the worker.
+    /// Accepted events release their tab's readiness gate. If the bounded
+    /// worker queue is full, this returns immediately and keeps the unsent
+    /// tail for a later frame.
     pub fn dispatch_pending_plugin_event(&mut self) {
         if self.pending_plugin_events.is_empty() {
             return;
@@ -336,7 +410,7 @@ impl AppState {
 
         dispatch_pending_plugin_events(
             &mut self.pending_plugin_events,
-            self.plugin_event_sender.as_ref(),
+            self.plugin_event_scheduler.as_ref(),
             &self.signals,
         );
     }
@@ -469,7 +543,7 @@ mod tests {
             PendingPluginEvent::new(second_id, event("second.zip", &second)),
             PendingPluginEvent::new(first_id, event("third.zip", &first)),
         ];
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(3);
 
         dispatch_pending_plugin_events(&mut pending, Some(&sender), &signals);
 
@@ -483,5 +557,122 @@ mod tests {
         assert!(pending.is_empty());
         assert!(first.ui_ready.get());
         assert!(second.ui_ready.get());
+    }
+
+    #[test]
+    fn newest_pending_archive_replaces_the_same_tabs_retained_payload() {
+        let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
+        let mut pending = Vec::new();
+
+        queue_pending_plugin_event(
+            &mut pending,
+            PendingPluginEvent::new(tab.id, event("old.zip", &tab)),
+            &signals,
+        );
+        queue_pending_plugin_event(
+            &mut pending,
+            PendingPluginEvent::new(tab.id, event("new.zip", &tab)),
+            &signals,
+        );
+
+        assert_eq!(pending.len(), 1);
+        let PluginEvent::OnArchiveOpen { path, .. } = &pending[0].event;
+        assert_eq!(path, "new.zip");
+    }
+
+    #[test]
+    fn full_plugin_worker_queue_keeps_unsent_event_and_tab_not_ready() {
+        let signals = AppSignals::new();
+        let first = signals.tabs.get().active().clone();
+        let second_id = {
+            let mut tabs = signals.tabs.get();
+            let id = tabs.open(None);
+            signals.tabs.set(tabs);
+            id
+        };
+        let second = signals.tabs.get().get(second_id).unwrap().clone();
+        first.ui_ready.set(false);
+        second.ui_ready.set(false);
+        let mut pending = vec![
+            PendingPluginEvent::new(first.id, event("first.zip", &first)),
+            PendingPluginEvent::new(second.id, event("second.zip", &second)),
+        ];
+        let (sender, receiver) = mpsc::sync_channel(1);
+
+        dispatch_pending_plugin_events(&mut pending, Some(&sender), &signals);
+
+        assert!(first.ui_ready.get());
+        assert!(!second.ui_ready.get());
+        assert_eq!(pending.len(), 1);
+        let PluginEvent::OnArchiveOpen { path, .. } = receiver.try_recv().unwrap();
+        assert_eq!(path, "first.zip");
+    }
+
+    #[test]
+    fn pending_archive_retention_is_bounded_and_releases_evicted_snapshot() {
+        let signals = AppSignals::new();
+        let mut tabs = signals.tabs.get();
+        while tabs.tabs().len() < MAX_PENDING_PLUGIN_EVENTS + 1 {
+            tabs.open(None);
+        }
+        signals.tabs.set(tabs);
+        let tabs = signals.tabs.get();
+        let first = tabs.tabs().iter().next().unwrap().clone();
+        let first_entries = Arc::new(vec![entry("first.txt")]);
+        let mut pending = Vec::new();
+
+        for (index, tab) in tabs
+            .tabs()
+            .iter()
+            .take(MAX_PENDING_PLUGIN_EVENTS + 1)
+            .enumerate()
+        {
+            tab.ui_ready.set(false);
+            let entries = if index == 0 {
+                first_entries.clone()
+            } else {
+                Arc::new(vec![entry(&format!("entry-{index}.txt"))])
+            };
+            let event = PluginEvent::OnArchiveOpen {
+                path: format!("archive-{index}.zip"),
+                kind: ArchiveKind::Zip,
+                password: Some(format!("password-{index}")),
+                entries,
+                metadata_signal: tab.metadata.clone(),
+            };
+            assert!(queue_pending_plugin_event(
+                &mut pending,
+                PendingPluginEvent::new(tab.id, event),
+                &signals,
+            ));
+        }
+
+        assert_eq!(pending.len(), MAX_PENDING_PLUGIN_EVENTS);
+        assert_eq!(Arc::strong_count(&first_entries), 1);
+        assert!(first.ui_ready.get());
+    }
+
+    #[test]
+    fn oversized_password_is_rejected_before_pending_retention() {
+        let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
+        tab.ui_ready.set(false);
+        let event = PluginEvent::OnArchiveOpen {
+            path: "archive.zip".to_string(),
+            kind: ArchiveKind::Zip,
+            password: Some("p".repeat(MAX_PLUGIN_EVENT_PASSWORD_BYTES + 1)),
+            entries: Arc::new(Vec::new()),
+            metadata_signal: tab.metadata.clone(),
+        };
+        let mut pending = Vec::new();
+
+        assert!(!queue_pending_plugin_event(
+            &mut pending,
+            PendingPluginEvent::new(tab.id, event),
+            &signals,
+        ));
+        assert!(pending.is_empty());
+        assert!(tab.ui_ready.get());
     }
 }

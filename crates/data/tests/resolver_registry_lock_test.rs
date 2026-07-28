@@ -105,6 +105,10 @@ impl DataSourceResolver for BlockingHasResolver {
         self.0.wait();
         false
     }
+
+    fn has_with_limit(&self, key: &str, request: &DataRequest, _limit: usize) -> bool {
+        self.has(key, request)
+    }
 }
 
 fn registration_worker(

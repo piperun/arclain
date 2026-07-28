@@ -8,7 +8,9 @@
 //! in-memory backing store. Production code uses the disk- and
 //! cache-backed resolvers instead.
 
-use super::{DataSourceResolver, ResolveError};
+use super::{
+    default_materialization_limit, materialized_limit_error, DataSourceResolver, ResolveError,
+};
 use crate::features::api::DataRequest;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -36,11 +38,21 @@ impl Default for MemoryResolver {
 
 impl DataSourceResolver for MemoryResolver {
     fn try_resolve(&self, key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
-        self.store
-            .read()
-            .get(key)
-            .cloned()
-            .ok_or(ResolveError::NotFound)
+        self.try_resolve_with_limit(key, _request, default_materialization_limit())
+    }
+
+    fn try_resolve_with_limit(
+        &self,
+        key: &str,
+        _request: &DataRequest,
+        limit: usize,
+    ) -> Result<Vec<u8>, ResolveError> {
+        let store = self.store.read();
+        let data = store.get(key).ok_or(ResolveError::NotFound)?;
+        if data.len() > limit {
+            return Err(materialized_limit_error(limit));
+        }
+        Ok(data.clone())
     }
 
     fn try_store(
@@ -55,6 +67,10 @@ impl DataSourceResolver for MemoryResolver {
 
     fn has(&self, key: &str, _request: &DataRequest) -> bool {
         self.store.read().contains_key(key)
+    }
+
+    fn has_with_limit(&self, key: &str, request: &DataRequest, _limit: usize) -> bool {
+        self.has(key, request)
     }
 }
 
@@ -115,5 +131,18 @@ mod tests {
         resolver.try_store("k", b"old", &req).unwrap();
         resolver.try_store("k", b"new", &req).unwrap();
         assert_eq!(resolver.try_resolve("k", &req).unwrap(), b"new");
+    }
+
+    #[test]
+    fn bounded_resolve_checks_length_before_cloning() {
+        let resolver = MemoryResolver::new();
+        let req = dummy_request();
+        resolver.try_store("large", b"123456789", &req).unwrap();
+
+        let error = resolver
+            .try_resolve_with_limit("large", &req, 8)
+            .expect_err("oversized memory entry must be rejected");
+
+        assert!(error.to_string().contains("8-byte materialized read limit"));
     }
 }

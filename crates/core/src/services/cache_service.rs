@@ -58,6 +58,24 @@ impl CacheService {
             .with_conn(|conn| cache_index::touch_cache_entry(conn, key))
     }
 
+    pub fn entries_lru(&self) -> Result<Vec<CacheEntry>> {
+        self.pool.with_conn(cache_index::list_entries_lru)
+    }
+
+    pub fn has_content_hash(&self, content_hash: &str) -> Result<bool> {
+        self.pool
+            .with_conn(|conn| cache_index::has_content_hash(conn, content_hash))
+    }
+
+    pub fn entries_lru_page(&self, offset: usize, limit: usize) -> Result<Vec<CacheEntry>> {
+        self.pool
+            .with_conn(|conn| cache_index::list_entries_lru_page(conn, offset, limit))
+    }
+
+    pub fn content_hashes(&self) -> Result<Vec<String>> {
+        self.pool.with_conn(cache_index::get_all_content_hashes)
+    }
+
     pub fn clear_all(&self) -> Result<()> {
         self.pool
             .with_conn(|conn| cache_index::clear_all_entries(conn))
@@ -106,5 +124,29 @@ impl arclain_data::CacheIndex for CacheService {
 
     fn update_last_accessed(&self, key: &str) -> Result<()> {
         CacheService::update_last_accessed(self, key)
+    }
+
+    fn entries_lru(&self) -> Result<Vec<CacheEntry>> {
+        CacheService::entries_lru(self)
+    }
+
+    fn has_content_hash(&self, content_hash: &str) -> Result<bool> {
+        CacheService::has_content_hash(self, content_hash)
+    }
+
+    fn entries_lru_page(&self, offset: usize, limit: usize) -> Result<Vec<CacheEntry>> {
+        CacheService::entries_lru_page(self, offset, limit)
+    }
+
+    fn supports_lru_paging(&self) -> bool {
+        true
+    }
+
+    fn content_hashes(&self) -> Result<Vec<String>> {
+        CacheService::content_hashes(self)
+    }
+
+    fn has_complete_lru_view(&self) -> bool {
+        true
     }
 }

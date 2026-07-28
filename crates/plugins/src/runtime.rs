@@ -752,6 +752,11 @@ impl PluginInstance {
         self.store.data_mut().set_event_context(ctx);
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_event_context_for_test(&self) -> bool {
+        self.store.data().event_context.is_some()
+    }
+
     /// Set the async HTTP client for host functions
     pub fn set_async_http_client(&mut self, client: Option<Arc<arclain_network::AsyncHttpClient>>) {
         let host = self.store.data_mut();
@@ -788,6 +793,29 @@ impl PluginInstance {
     ) -> Option<Arc<arclain_network::features::gameta_client::GametaClient>> {
         let data = self.store.data();
         data.gameta_client.clone()
+    }
+
+    pub fn try_acquire_network_host_service(
+        &self,
+        service_scope: &str,
+    ) -> std::result::Result<(), String> {
+        let data = self.store.data();
+        let client = data
+            .async_http_client
+            .as_ref()
+            .ok_or_else(|| "plugin network policy client unavailable".to_string())?;
+        client
+            .try_acquire_plugin_host_service(data.plugin_id.as_str(), service_scope)
+            .map_err(|error| error.to_string())
+    }
+
+    pub fn data_materialization_limit(&self) -> usize {
+        self.store.data().data_service.materialization_limit()
+    }
+
+    /// Check the immutable manifest capabilities attached to this instance.
+    pub fn has_capabilities(&self, required: &[PluginCapability]) -> bool {
+        self.store.data().has_capabilities(required)
     }
 
     /// Get a handle to the active-tab bridge if one has been
@@ -1141,6 +1169,10 @@ mod resource_limit_tests {
         };
 
         const DOCUMENTED_HOSTCALL_FUEL_BYTES: usize = 8 * 1024 * 1024;
+        assert!(
+            crate::types::MAX_PLUGIN_GUEST_DATA_BYTES <= HOSTCALL_FUEL_BYTES / 2,
+            "guest-return body cap must leave at least half of actual hostcall fuel for WIT lifting overhead"
+        );
 
         fn max_serialized_list_len<T: Serialize>(minimum_item: &T) -> usize {
             let item_bytes = serde_json::to_vec(minimum_item).unwrap().len();

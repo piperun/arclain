@@ -1,9 +1,27 @@
 use super::*;
+use std::fs;
 
 #[test]
-fn test_logging_init() {
-    // This may fail if already initialized, which is fine for tests
-    let _ = init_logging();
+fn file_appender_initialization_uses_the_injected_directory() {
+    let temp = tempfile::tempdir().unwrap();
+    let log_dir = temp.path().join("logs");
+
+    let appender = prepare_file_appender(&log_dir, "test.log").unwrap();
+
+    assert!(log_dir.join("test.log").is_file());
+    drop(appender);
+}
+
+#[test]
+fn file_appender_initialization_returns_invalid_directory_errors_without_panicking() {
+    let temp = tempfile::tempdir().unwrap();
+    let file = temp.path().join("not-a-directory");
+    fs::write(&file, b"occupied").unwrap();
+
+    let result = std::panic::catch_unwind(|| prepare_file_appender(&file.join("logs"), "test.log"));
+
+    assert!(result.is_ok(), "log initialization must not panic");
+    assert!(result.unwrap().is_err());
 }
 
 #[test]

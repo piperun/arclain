@@ -1,9 +1,9 @@
 //! Event dispatching for plugin manager
 
 use super::types::ManagedPlugin;
-use super::PluginManager;
+use super::{PluginEventScheduler, PluginManager};
 use crate::runtime::PluginInstance;
-use crate::types::{PluginError, PluginEvent, PluginResponse, Result};
+use crate::types::{PluginError, PluginEvent, PluginIdentityKey, PluginResponse, Result};
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,15 +16,166 @@ use tracing::{debug, error, info};
 /// (`dispatch_event_async`, `event_worker`, `dispatch_event`) — keeps
 /// the lock-acquire-drop semantics consistent (audit finding D4).
 fn enabled_plugin_snapshot(
-    plugins: &Arc<RwLock<HashMap<String, ManagedPlugin>>>,
-    enabled_plugins: &Arc<RwLock<HashMap<String, bool>>>,
+    plugins: &Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
+    enabled_plugins: &Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
 ) -> Vec<(String, Arc<Mutex<PluginInstance>>)> {
     let enabled = enabled_plugins.read();
     let map = plugins.read();
     map.iter()
-        .filter(|(id, _)| enabled.get(id.as_str()).copied().unwrap_or(false))
-        .map(|(id, p)| (id.clone(), p.instance.clone()))
+        .filter(|(identity_key, _)| enabled.get(*identity_key).copied().unwrap_or(false))
+        .map(|(_, plugin)| (plugin.metadata.id.clone(), plugin.instance.clone()))
         .collect()
+}
+
+fn trace_event_received(event: &PluginEvent) {
+    match event {
+        PluginEvent::OnArchiveOpen { kind, entries, .. } => {
+            debug!(
+                archive_kind = ?kind,
+                entry_count = entries.len(),
+                "Event worker processing archive-opened event"
+            );
+        }
+    }
+}
+
+fn trace_event_dispatch_failure(plugin_id: &str, _error: &PluginError) {
+    error!(plugin_id, "Plugin event dispatch failed");
+}
+
+fn trace_native_fetch_dispatch_failure(_error: &PluginError) {
+    error!("Plugin native fetch dispatch failed");
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RequestFetchOutcome {
+    Denied,
+    ServerHandled,
+    NativeFallback,
+}
+
+fn with_event_context<T>(
+    instance: &mut PluginInstance,
+    event_ctx: crate::host_functions::EventContext,
+    operation: impl FnOnce(&mut PluginInstance) -> T,
+) -> T {
+    instance.set_event_context(Some(event_ctx));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(instance)));
+    instance.set_event_context(None);
+    match result {
+        Ok(value) => value,
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
+}
+
+fn dispatch_archive_opened_event<Dispatch>(
+    instance: &Arc<Mutex<PluginInstance>>,
+    plugin_id: &str,
+    event_ctx: &crate::host_functions::EventContext,
+    dispatch: Dispatch,
+) -> Option<Result<Vec<crate::types::PluginAction>>>
+where
+    Dispatch: FnOnce(
+        &mut PluginInstance,
+        &str,
+        Option<String>,
+    ) -> Result<Vec<crate::types::PluginAction>>,
+{
+    let mut instance = instance.lock();
+    if !instance.has_capabilities(&[crate::types::PluginCapability::ArchiveMetadataRead]) {
+        tracing::warn!(
+            plugin_id,
+            "Skipped archive-opened event without ArchiveMetadataRead capability"
+        );
+        return None;
+    }
+
+    let result = with_event_context(&mut instance, event_ctx.clone(), |instance| {
+        dispatch(
+            instance,
+            "event:archive_opened",
+            Some(event_ctx.archive_path.clone()),
+        )
+    });
+    Some(result)
+}
+
+/// Execute the event-worker RequestFetch route behind the instance's
+/// immutable manifest capabilities. The injected operations keep the exact
+/// production route testable without making a real network request.
+fn process_event_worker_request_fetch<Permit, Get, Fetch, Fallback>(
+    instance: &Arc<Mutex<PluginInstance>>,
+    plugin_id: &str,
+    key: &str,
+    metadata_signal: &arclain_signals::Signal<Option<serde_json::Value>>,
+    gameta_available: bool,
+    mut acquire_host_service_permit: Permit,
+    get_from_server: Get,
+    fetch_from_server: Fetch,
+    native_fallback: Fallback,
+) -> RequestFetchOutcome
+where
+    Permit: FnMut() -> std::result::Result<(), String>,
+    Get: FnOnce(&str, &str) -> std::result::Result<Option<serde_json::Value>, String>,
+    Fetch: FnOnce(&str, &str) -> std::result::Result<Option<serde_json::Value>, String>,
+    Fallback: FnOnce(&str),
+{
+    let authorized = instance
+        .lock()
+        .has_capabilities(&crate::types::REQUEST_FETCH_CAPABILITIES);
+    if !authorized {
+        tracing::warn!(
+            plugin_id,
+            "Denied RequestFetch without Network and ArchiveMetadataWrite capabilities"
+        );
+        return RequestFetchOutcome::Denied;
+    }
+    if !gameta_available {
+        native_fallback(key);
+        return RequestFetchOutcome::NativeFallback;
+    }
+    if let Err(error) = acquire_host_service_permit() {
+        tracing::warn!(
+            plugin_id,
+            %error,
+            "Denied RequestFetch by plugin host-service network policy"
+        );
+        return RequestFetchOutcome::Denied;
+    }
+
+    let (source, product_id) = key.split_once(':').unwrap_or(("dlsite", key));
+    match get_from_server(source, product_id) {
+        Ok(Some(metadata)) => {
+            if !crate::types::metadata_value_within_limit(&metadata) {
+                return RequestFetchOutcome::Denied;
+            }
+            metadata_signal.set(Some(metadata));
+            info!("[EventWorker] Set metadata signal via gameta server");
+            RequestFetchOutcome::ServerHandled
+        }
+        Ok(None) => {
+            if acquire_host_service_permit().is_err() {
+                return RequestFetchOutcome::Denied;
+            }
+            match fetch_from_server(source, product_id) {
+                Ok(Some(metadata)) => {
+                    if !crate::types::metadata_value_within_limit(&metadata) {
+                        return RequestFetchOutcome::Denied;
+                    }
+                    metadata_signal.set(Some(metadata));
+                    RequestFetchOutcome::ServerHandled
+                }
+                Ok(None) | Err(_) => {
+                    native_fallback(key);
+                    RequestFetchOutcome::NativeFallback
+                }
+            }
+        }
+        Err(_) => {
+            native_fallback(key);
+            RequestFetchOutcome::NativeFallback
+        }
+    }
 }
 
 impl PluginManager {
@@ -32,13 +183,13 @@ impl PluginManager {
     /// Runs on a dedicated thread and never blocks the caller.
     pub(crate) fn event_worker(
         receiver: std::sync::mpsc::Receiver<PluginEvent>,
-        plugins: Arc<RwLock<HashMap<String, ManagedPlugin>>>,
-        enabled_plugins: Arc<RwLock<HashMap<String, bool>>>,
+        plugins: Arc<RwLock<HashMap<PluginIdentityKey, ManagedPlugin>>>,
+        enabled_plugins: Arc<RwLock<HashMap<PluginIdentityKey, bool>>>,
     ) {
         info!("Plugin event worker started");
 
         while let Ok(event) = receiver.recv() {
-            debug!("Event worker processing: {:?}", event);
+            trace_event_received(&event);
 
             // Build the per-event context once per event — the same
             // context goes into every enabled plugin's instance for
@@ -72,23 +223,19 @@ impl PluginManager {
                 // This is what makes queued events (5 archives drag-
                 // dropped at once) each land their metadata on the
                 // right tab instead of all stomping the active tab.
-                let actions = {
-                    let PluginEvent::OnArchiveOpen { path, .. } = &event;
-                    let mut instance = instance_arc.lock();
-                    instance.set_event_context(Some(event_ctx.clone()));
-
-                    let id = "event:archive_opened".to_string();
-                    let value = Some(path.clone());
-
-                    let result = instance.send_ui_event(&id, value);
-                    instance.set_event_context(None);
-
-                    match result {
-                        Ok(actions) => actions,
-                        Err(e) => {
-                            error!("Event worker error for {}: {}", plugin_id, e);
-                            continue;
-                        }
+                let Some(result) = dispatch_archive_opened_event(
+                    &instance_arc,
+                    &plugin_id,
+                    &event_ctx,
+                    |instance, id, value| instance.send_ui_event(id, value),
+                ) else {
+                    continue;
+                };
+                let actions = match result {
+                    Ok(actions) => actions,
+                    Err(e) => {
+                        trace_event_dispatch_failure(&plugin_id, &e);
+                        continue;
                     }
                 };
 
@@ -102,83 +249,80 @@ impl PluginManager {
                 // metadata still lands on the originally-targeted tab
                 // because we never went through the bridge for this
                 // write.
-                for action in actions {
+                for action in crate::action_policy::bound_plugin_actions(actions) {
                     let crate::types::PluginAction::RequestFetch { key } = action else {
                         continue;
                     };
-                    info!("[EventWorker] Processing RequestFetch: {}", key);
-
-                    let parts: Vec<&str> = key.splitn(2, ':').collect();
-                    let (source, product_id) = if parts.len() == 2 {
-                        (parts[0], parts[1])
-                    } else {
-                        ("dlsite", key.as_str())
-                    };
-
-                    let gameta_client = {
-                        let instance = instance_arc.lock();
-                        instance.get_gameta_client()
-                    };
-                    let metadata_signal = Some(event_ctx.metadata_signal.clone());
-
-                    let mut handled_by_server = false;
-                    if let Some(client) = gameta_client {
-                        let meta = client
-                            .get_metadata(source, product_id)
-                            .ok()
-                            .flatten()
-                            .or_else(|| {
-                                client
-                                    .fetch_metadata(source, product_id, false)
-                                    .ok()
-                                    .and_then(|r| r.metadata)
-                            });
-                        if let Some(meta) = meta {
-                            if let Ok(json_val) = serde_json::to_value(&meta) {
-                                if let Some(signal) = metadata_signal {
-                                    signal.set(Some(json_val));
-                                    info!(
-                                        "[EventWorker] Set metadata signal for {} via gameta server",
-                                        product_id
-                                    );
-                                    handled_by_server = true;
-                                }
+                    info!("[EventWorker] Processing plugin RequestFetch");
+                    let gameta_available = instance_arc.lock().get_gameta_client().is_some();
+                    process_event_worker_request_fetch(
+                        &instance_arc,
+                        &plugin_id,
+                        &key,
+                        &event_ctx.metadata_signal,
+                        gameta_available,
+                        || {
+                            instance_arc
+                                .lock()
+                                .try_acquire_network_host_service("gameta")
+                        },
+                        |source, product_id| {
+                            let (gameta_client, materialization_limit) = {
+                                let instance = instance_arc.lock();
+                                (
+                                    instance.get_gameta_client(),
+                                    instance.data_materialization_limit(),
+                                )
+                            };
+                            let client = gameta_client
+                                .ok_or_else(|| "gameta client unavailable".to_string())?;
+                            let metadata = client
+                                .get_metadata_with_limit(source, product_id, materialization_limit)
+                                .map_err(|error| error.to_string())?;
+                            metadata
+                                .map(serde_json::to_value)
+                                .transpose()
+                                .map_err(|error| error.to_string())
+                        },
+                        |source, product_id| {
+                            let (gameta_client, materialization_limit) = {
+                                let instance = instance_arc.lock();
+                                (
+                                    instance.get_gameta_client(),
+                                    instance.data_materialization_limit(),
+                                )
+                            };
+                            let client = gameta_client
+                                .ok_or_else(|| "gameta client unavailable".to_string())?;
+                            let metadata = client
+                                .fetch_metadata_with_limit(
+                                    source,
+                                    product_id,
+                                    false,
+                                    materialization_limit,
+                                )
+                                .map_err(|error| error.to_string())?
+                                .metadata;
+                            metadata
+                                .map(serde_json::to_value)
+                                .transpose()
+                                .map_err(|error| error.to_string())
+                        },
+                        |key| {
+                            // Re-install the originating event context while
+                            // the plugin's native HTTP fallback runs.
+                            let event_name = format!("do_native_fetch:{}", key);
+                            info!("[EventWorker] Dispatching native fetch");
+                            let mut instance = instance_arc.lock();
+                            let result =
+                                with_event_context(&mut instance, event_ctx.clone(), |instance| {
+                                    instance.send_ui_event(&event_name, None)
+                                });
+                            if let Err(e) = result {
+                                trace_native_fetch_dispatch_failure(&e);
                             }
-                        } else {
-                            info!(
-                                "[EventWorker] gameta server returned no metadata for {}, falling back to native fetch",
-                                product_id
-                            );
-                        }
-                    }
-
-                    if !handled_by_server {
-                        // Native fallback. The plugin still holds the
-                        // lock during its own HTTP call inside
-                        // send_ui_event — releasing the lock there would
-                        // require plugin-host architecture changes.
-                        // This auto-fetch path only fires once per
-                        // archive open.
-                        //
-                        // Re-install the event context for this nested
-                        // dispatch so the native-fetch handler also sees
-                        // the originating tab. Without it, host-fn calls
-                        // inside the fetch handler would fall through to
-                        // the bridge and resolve to the currently active
-                        // tab.
-                        let event_name = format!("do_native_fetch:{}", key);
-                        info!("[EventWorker] Dispatching native fetch: {}", event_name);
-                        let mut instance = instance_arc.lock();
-                        instance.set_event_context(Some(event_ctx.clone()));
-                        let result = instance.send_ui_event(&event_name, None);
-                        instance.set_event_context(None);
-                        if let Err(e) = result {
-                            error!(
-                                "[EventWorker] Native fetch dispatch failed for {}: {:?}",
-                                key, e
-                            );
-                        }
-                    }
+                        },
+                    );
                 }
             }
         }
@@ -186,21 +330,20 @@ impl PluginManager {
         info!("Plugin event worker stopped");
     }
 
-    /// Canonical event-dispatch API: hand callers a cloned channel
-    /// sender so they can fire events without locking the manager.
-    /// Events land in the background worker started in
-    /// [`PluginManager::new`] and never block the caller.
+    /// Canonical event-dispatch API. `Full` from
+    /// [`PluginEventScheduler::try_schedule`] means retain/coalesce the event
+    /// for a later frame instead of blocking the UI.
     ///
     /// The synchronous `dispatch_event` / `dispatch_event_to_plugin`
     /// below are test fixtures — production should always go through
     /// the channel.
-    pub fn get_event_sender(&self) -> std::sync::mpsc::Sender<PluginEvent> {
-        self.event_sender.clone()
+    pub fn event_scheduler(&self) -> PluginEventScheduler {
+        self.event_scheduler.clone()
     }
 
     /// Synchronously dispatch an event to every enabled plugin and
     /// collect their responses. **Test fixture only** — production
-    /// should use [`PluginManager::get_event_sender`] so events go
+    /// should use [`PluginManager::event_scheduler`] so events go
     /// through the background worker. Kept `pub` because the
     /// integration tests in `crates/plugins/tests` need it.
     pub fn dispatch_event(&mut self, event: &PluginEvent) -> Vec<PluginResponse> {
@@ -208,10 +351,11 @@ impl PluginManager {
         // which always returned `Ok(PluginResponse::None)`. That helper
         // was deleted in the 2026-05-19 audit. The synchronous test-only
         // path now mirrors the production worker's behavior: real events
-        // flow through `get_event_sender` -> event_worker; sync callers
+        // flow through `event_scheduler` -> event_worker; sync callers
         // observe "zero responses from the enabled plugin set" which is
         // what the integration tests were always asserting on anyway.
-        debug!("Dispatching event (test fixture): {:?}", event);
+        let _ = event;
+        debug!("Dispatching plugin event through test fixture");
         Vec::new()
     }
 
@@ -222,7 +366,8 @@ impl PluginManager {
         plugin_id: &str,
         event: &PluginEvent,
     ) -> Result<PluginResponse> {
-        debug!("Dispatching event to plugin '{}': {:?}", plugin_id, event);
+        let _ = event;
+        debug!("Dispatching plugin event to plugin '{}'", plugin_id);
 
         if !self.is_plugin_enabled(plugin_id) {
             return Err(PluginError::ExecutionError(format!(
@@ -234,11 +379,472 @@ impl PluginManager {
         // Verify the plugin is loaded (preserves the prior error contract)
         // and return `None` — see `dispatch_event` above for why.
         {
+            let identity_key = PluginIdentityKey::parse(plugin_id)
+                .map_err(|_| PluginError::NotFound(plugin_id.to_string()))?;
             let plugins = self.plugins.read();
             plugins
-                .get(plugin_id)
+                .get(&identity_key)
                 .ok_or_else(|| PluginError::NotFound(plugin_id.to_string()))?;
         }
         Ok(PluginResponse::None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    fn manager_with_capabilities(
+        network: bool,
+        archive_metadata_write: bool,
+        archive_metadata_read: bool,
+    ) -> (tempfile::TempDir, PluginManager) {
+        let plugin_id = "ui-demo";
+        let root = tempfile::tempdir().expect("create plugin fixture directory");
+        let plugins_dir = root.path().join("plugins");
+        let plugin_dir = plugins_dir.join(plugin_id);
+        std::fs::create_dir_all(&plugin_dir).expect("create plugin manifest directory");
+
+        let fixture_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins")
+            .join(plugin_id);
+        std::fs::copy(
+            fixture_dir.join(format!("{plugin_id}.wasm")),
+            plugin_dir.join(format!("{plugin_id}.wasm")),
+        )
+        .expect("copy plugin fixture");
+        let manifest = std::fs::read_to_string(fixture_dir.join(format!("{plugin_id}.toml")))
+            .expect("read plugin manifest")
+            .replace("network = false", &format!("network = {network}"))
+            .replace(
+                "archive_metadata_write = false",
+                &format!("archive_metadata_write = {archive_metadata_write}"),
+            )
+            .replace(
+                "archive_metadata_read = false",
+                &format!("archive_metadata_read = {archive_metadata_read}"),
+            );
+        std::fs::write(plugin_dir.join(format!("{plugin_id}.toml")), manifest)
+            .expect("write tailored plugin manifest");
+
+        let mut manager = PluginManager::new_with_plugin_log_dir(
+            plugins_dir,
+            HashMap::new(),
+            root.path().join("logs"),
+        )
+        .expect("create plugin manager");
+        manager.init().expect("load plugin fixture");
+        (root, manager)
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn event_trace_redacts_archive_path_and_password() {
+        let path_marker = "archive-path-must-not-reach-global-tracing";
+        let password_marker = "archive-password-must-not-reach-global-tracing";
+        let event = PluginEvent::OnArchiveOpen {
+            path: format!("C:/private/{path_marker}.zip"),
+            kind: arclain_core::ArchiveKind::Zip,
+            password: Some(password_marker.to_string()),
+            entries: Arc::new(Vec::new()),
+            metadata_signal: arclain_signals::Signal::new(None),
+        };
+
+        trace_event_received(&event);
+
+        assert!(!logs_contain(path_marker));
+        assert!(!logs_contain(password_marker));
+    }
+
+    #[tracing_test::traced_test]
+    #[test]
+    fn dispatch_failure_traces_redact_guest_context() {
+        let archive_marker = "archive-context-must-not-reach-dispatch-errors";
+        let key_marker = "guest-key-must-not-reach-native-dispatch-errors";
+
+        trace_event_dispatch_failure(
+            "ui-demo",
+            &PluginError::ExecutionError(archive_marker.to_string()),
+        );
+        trace_native_fetch_dispatch_failure(&PluginError::ExecutionError(key_marker.to_string()));
+
+        assert!(!logs_contain(archive_marker));
+        assert!(!logs_contain(key_marker));
+    }
+
+    #[test]
+    fn event_worker_denies_request_fetch_without_both_capabilities() {
+        for (network, metadata_write) in [(true, false), (false, true)] {
+            let (_root, manager) = manager_with_capabilities(network, metadata_write, false);
+            let instance = manager
+                .get_plugin_instance("ui-demo")
+                .expect("loaded plugin instance");
+            let metadata = arclain_signals::Signal::new(None);
+            let fetch_called = AtomicBool::new(false);
+            let fallback_called = AtomicBool::new(false);
+
+            let outcome = process_event_worker_request_fetch(
+                &instance,
+                "ui-demo",
+                "dlsite:RJ000001",
+                &metadata,
+                true,
+                || Ok(()),
+                |_, _| {
+                    fetch_called.store(true, Ordering::SeqCst);
+                    Ok(Some(serde_json::json!({"product_id": "RJ000001"})))
+                },
+                |_, _| Ok(None),
+                |_| fallback_called.store(true, Ordering::SeqCst),
+            );
+
+            assert_eq!(outcome, RequestFetchOutcome::Denied);
+            assert!(!fetch_called.load(Ordering::SeqCst));
+            assert!(!fallback_called.load(Ordering::SeqCst));
+            assert!(metadata.get().is_none());
+        }
+    }
+
+    #[test]
+    fn event_worker_allows_request_fetch_with_both_capabilities() {
+        let (_root, manager) = manager_with_capabilities(true, true, false);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let metadata = arclain_signals::Signal::new(None);
+        let fetch_called = AtomicBool::new(false);
+        let fallback_called = AtomicBool::new(false);
+
+        let outcome = process_event_worker_request_fetch(
+            &instance,
+            "ui-demo",
+            "dlsite:RJ000001",
+            &metadata,
+            true,
+            || Ok(()),
+            |source, product_id| {
+                assert_eq!(source, "dlsite");
+                assert_eq!(product_id, "RJ000001");
+                fetch_called.store(true, Ordering::SeqCst);
+                Ok(Some(serde_json::json!({"product_id": product_id})))
+            },
+            |_, _| Ok(None),
+            |_| fallback_called.store(true, Ordering::SeqCst),
+        );
+
+        assert_eq!(outcome, RequestFetchOutcome::ServerHandled);
+        assert!(fetch_called.load(Ordering::SeqCst));
+        assert!(!fallback_called.load(Ordering::SeqCst));
+        assert_eq!(
+            metadata
+                .get()
+                .and_then(|value| value["product_id"].as_str().map(str::to_owned))
+                .as_deref(),
+            Some("RJ000001")
+        );
+    }
+
+    #[test]
+    fn event_worker_denies_request_fetch_when_host_service_budget_is_exhausted() {
+        let (_root, manager) = manager_with_capabilities(true, true, false);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let client = arclain_network::AsyncHttpClient::new(
+            runtime.handle().clone(),
+            Arc::new(parking_lot::RwLock::new(
+                arclain_network::DomainWhitelist::default(),
+            )),
+            None,
+        );
+        client.configure_plugin(
+            "ui-demo",
+            arclain_network::PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 1,
+            },
+        );
+        client
+            .try_acquire_plugin_host_service("ui-demo", "gameta")
+            .expect("first host-service request is within policy");
+        let metadata = arclain_signals::Signal::new(None);
+        let fetch_called = AtomicBool::new(false);
+        let fallback_called = AtomicBool::new(false);
+
+        let outcome = process_event_worker_request_fetch(
+            &instance,
+            "ui-demo",
+            "dlsite:RJ000001",
+            &metadata,
+            true,
+            || {
+                client
+                    .try_acquire_plugin_host_service("ui-demo", "gameta")
+                    .map_err(|error| error.to_string())
+            },
+            |_, _| {
+                fetch_called.store(true, Ordering::SeqCst);
+                Ok(Some(serde_json::json!({"product_id": "RJ000001"})))
+            },
+            |_, _| Ok(None),
+            |_| fallback_called.store(true, Ordering::SeqCst),
+        );
+
+        assert_eq!(outcome, RequestFetchOutcome::Denied);
+        assert!(!fetch_called.load(Ordering::SeqCst));
+        assert!(!fallback_called.load(Ordering::SeqCst));
+        assert!(metadata.get().is_none());
+    }
+
+    #[test]
+    fn event_worker_requires_a_second_permit_before_server_fetch_fallback() {
+        let (_root, manager) = manager_with_capabilities(true, true, false);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let client = arclain_network::AsyncHttpClient::new(
+            runtime.handle().clone(),
+            Arc::new(parking_lot::RwLock::new(
+                arclain_network::DomainWhitelist::default(),
+            )),
+            None,
+        );
+        client.configure_plugin(
+            "ui-demo",
+            arclain_network::PluginNetworkPolicy {
+                network_enabled: true,
+                requests_per_minute: 1,
+            },
+        );
+        let metadata = arclain_signals::Signal::new(None);
+        let get_called = AtomicBool::new(false);
+        let fetch_called = AtomicBool::new(false);
+        let native_called = AtomicBool::new(false);
+
+        let outcome = process_event_worker_request_fetch(
+            &instance,
+            "ui-demo",
+            "dlsite:RJ000001",
+            &metadata,
+            true,
+            || {
+                client
+                    .try_acquire_plugin_host_service("ui-demo", "gameta")
+                    .map_err(|error| error.to_string())
+            },
+            |_, _| {
+                get_called.store(true, Ordering::SeqCst);
+                Ok(None)
+            },
+            |_, _| {
+                fetch_called.store(true, Ordering::SeqCst);
+                Ok(None)
+            },
+            |_| native_called.store(true, Ordering::SeqCst),
+        );
+
+        assert_eq!(outcome, RequestFetchOutcome::Denied);
+        assert!(get_called.load(Ordering::SeqCst));
+        assert!(!fetch_called.load(Ordering::SeqCst));
+        assert!(!native_called.load(Ordering::SeqCst));
+        assert!(metadata.get().is_none());
+    }
+
+    #[test]
+    fn event_worker_rejects_oversized_server_metadata_before_signal_publication() {
+        let (_root, manager) = manager_with_capabilities(true, true, false);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let metadata = arclain_signals::Signal::new(None);
+        let native_called = AtomicBool::new(false);
+
+        let outcome = process_event_worker_request_fetch(
+            &instance,
+            "ui-demo",
+            "dlsite:RJ000001",
+            &metadata,
+            true,
+            || Ok(()),
+            |_, _| {
+                Ok(Some(serde_json::json!({
+                    "product_id": "RJ000001",
+                    "description": "x".repeat(crate::types::MAX_PLUGIN_METADATA_BYTES),
+                })))
+            },
+            |_, _| Ok(None),
+            |_| native_called.store(true, Ordering::SeqCst),
+        );
+
+        assert_eq!(outcome, RequestFetchOutcome::Denied);
+        assert!(metadata.get().is_none());
+        assert!(!native_called.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn event_worker_without_gameta_client_uses_no_permits_and_one_native_fallback() {
+        let (_root, manager) = manager_with_capabilities(true, true, false);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let metadata = arclain_signals::Signal::new(None);
+        let permits = AtomicUsize::new(0);
+        let get_calls = AtomicUsize::new(0);
+        let fetch_calls = AtomicUsize::new(0);
+        let fallback_calls = AtomicUsize::new(0);
+
+        let outcome = process_event_worker_request_fetch(
+            &instance,
+            "ui-demo",
+            "dlsite:RJ000001",
+            &metadata,
+            false,
+            || {
+                permits.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            |_, _| {
+                get_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            },
+            |_, _| {
+                fetch_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            },
+            |_| {
+                fallback_calls.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        assert_eq!(outcome, RequestFetchOutcome::NativeFallback);
+        assert_eq!(permits.load(Ordering::SeqCst), 0);
+        assert_eq!(get_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn event_worker_get_error_uses_one_permit_then_falls_back_without_server_fetch() {
+        let (_root, manager) = manager_with_capabilities(true, true, false);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let metadata = arclain_signals::Signal::new(None);
+        let permits = AtomicUsize::new(0);
+        let fetch_calls = AtomicUsize::new(0);
+        let fallback_calls = AtomicUsize::new(0);
+
+        let outcome = process_event_worker_request_fetch(
+            &instance,
+            "ui-demo",
+            "dlsite:RJ000001",
+            &metadata,
+            true,
+            || {
+                permits.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            |_, _| Err("server unavailable".to_string()),
+            |_, _| {
+                fetch_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(None)
+            },
+            |_| {
+                fallback_calls.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        assert_eq!(outcome, RequestFetchOutcome::NativeFallback);
+        assert_eq!(permits.load(Ordering::SeqCst), 1);
+        assert_eq!(fetch_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(fallback_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn event_worker_hides_archive_opened_event_without_read_capability() {
+        let (_root, manager) = manager_with_capabilities(false, false, false);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let invoked = AtomicBool::new(false);
+        let observed_path = parking_lot::Mutex::new(None);
+        let event_ctx = crate::host_functions::EventContext {
+            archive_path: "C:/private/library/secret.zip".to_string(),
+            password: Some("private-password".to_string()),
+            entries: Arc::new(Vec::new()),
+            metadata_signal: arclain_signals::Signal::new(None),
+        };
+
+        let result =
+            dispatch_archive_opened_event(&instance, "ui-demo", &event_ctx, |_, id, value| {
+                invoked.store(true, Ordering::SeqCst);
+                assert_eq!(id, "event:archive_opened");
+                *observed_path.lock() = value;
+                Ok(Vec::new())
+            });
+
+        assert!(result.is_none(), "unauthorized event was not skipped");
+        assert!(!invoked.load(Ordering::SeqCst));
+        assert!(
+            observed_path.lock().is_none(),
+            "unauthorized plugin observed the archive path"
+        );
+    }
+
+    #[test]
+    fn event_worker_dispatches_archive_opened_event_with_read_capability() {
+        let (_root, manager) = manager_with_capabilities(false, false, true);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let invoked = AtomicBool::new(false);
+        let event_ctx = crate::host_functions::EventContext {
+            archive_path: "C:/library/allowed.zip".to_string(),
+            password: None,
+            entries: Arc::new(Vec::new()),
+            metadata_signal: arclain_signals::Signal::new(None),
+        };
+
+        let result =
+            dispatch_archive_opened_event(&instance, "ui-demo", &event_ctx, |_, id, value| {
+                invoked.store(true, Ordering::SeqCst);
+                assert_eq!(id, "event:archive_opened");
+                assert_eq!(value.as_deref(), Some("C:/library/allowed.zip"));
+                Ok(Vec::new())
+            });
+
+        assert!(matches!(result, Some(Ok(actions)) if actions.is_empty()));
+        assert!(invoked.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn archive_event_context_is_cleared_when_guest_dispatch_panics() {
+        let (_root, manager) = manager_with_capabilities(false, false, true);
+        let instance = manager
+            .get_plugin_instance("ui-demo")
+            .expect("loaded plugin instance");
+        let event_ctx = crate::host_functions::EventContext {
+            archive_path: "C:/library/panic.zip".to_string(),
+            password: None,
+            entries: Arc::new(Vec::new()),
+            metadata_signal: arclain_signals::Signal::new(None),
+        };
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = dispatch_archive_opened_event(
+                &instance,
+                "ui-demo",
+                &event_ctx,
+                |_, _, _| -> Result<Vec<crate::types::PluginAction>> {
+                    panic!("simulated guest dispatch panic")
+                },
+            );
+        }));
+
+        assert!(panic.is_err());
+        assert!(!instance.lock().has_event_context_for_test());
     }
 }

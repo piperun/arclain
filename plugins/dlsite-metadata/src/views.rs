@@ -236,7 +236,7 @@ pub(crate) fn dispatch(
                         // Emit to signal so Panel reads from it
                         let metadata_json =
                             generate_metadata_json(code, Some(&(api_data, scraped)));
-                        archust_plugin_sdk::arclain::plugin::host::emit_metadata(&metadata_json);
+                        crate::emit_dlsite_metadata(&metadata_json);
                     }
                 }
             }
@@ -353,7 +353,6 @@ pub(crate) fn dispatch(
                         action: None,
                     }));
 
-                    push_cached_video_buttons(&mut elements, id);
                 } else {
                     // No metadata yet
                     if let Some(code) = &detected_code {
@@ -653,7 +652,7 @@ pub(crate) fn dispatch(
 
             // Cache viewer dialog
             } else if dialog_id == "dlsite_cache" {
-                use archust_plugin_sdk::list_cached_entries;
+                use archust_plugin_sdk::list_cached_metadata;
                 let mut elements = vec![];
 
                 // Check if we have a selected entry to show details for
@@ -772,8 +771,9 @@ pub(crate) fn dispatch(
 
                     elements.push(UiElement::Separator);
 
-                    // Always fetch fresh from host to see latest data
-                    let entries = list_cached_entries().unwrap_or_else(|e| {
+                    // Dialog stays intentionally bounded; the full browser has
+                    // explicit pagination controls.
+                    let entries = list_cached_metadata("dlsite", 0, 50).unwrap_or_else(|e| {
                         info(&format!("Failed to list cache: {}", e));
                         vec![]
                     });
@@ -1401,52 +1401,5 @@ pub(crate) fn dispatch(
         }
 
         _ => PluginLayout::Single(vec![]),
-    }
-}
-
-/// Append a "Cached videos" section to `elements` if the host's
-/// content cache has any entries keyed under `dlsite:<product_id>:video:`.
-///
-/// Was inline inside the Panel arm at 8 levels of nesting (audit's
-/// "8-level offender"). Pulled into a free fn so the caller's
-/// `STATE.with` closure stays under 5 levels.
-fn push_cached_video_buttons(
-    elements: &mut Vec<archust_plugin_sdk::arclain::plugin::ui::UiElement>,
-    product_id: &str,
-) {
-    use archust_plugin_sdk::arclain::plugin::ui::{ButtonConfig, LabelConfig, UiElement};
-
-    let video_prefix = format!("dlsite:{}:video:", product_id);
-    let cached_video_keys: Vec<String> =
-        archust_plugin_sdk::arclain::plugin::host::list_cached_entries()
-            .into_iter()
-            .filter(|k| k.starts_with(&video_prefix))
-            .collect();
-
-    if cached_video_keys.is_empty() {
-        return;
-    }
-
-    elements.push(UiElement::Separator);
-    elements.push(UiElement::Label(LabelConfig {
-        text: format!("Cached videos ({})", cached_video_keys.len()),
-        bold: true,
-        size: Some(12.0),
-    }));
-
-    for vk in &cached_video_keys {
-        // Build a friendly button label from the key tail. Examples:
-        //   "dlsite:RJ001:video:abc"      -> "▶ abc"
-        //   "dlsite:RJ001:video:abc:720p" -> "▶ abc · 720p"
-        let tail = vk.strip_prefix(&video_prefix).unwrap_or(vk);
-        let label = match tail.split_once(':') {
-            Some((vid, q)) => format!("▶ {} · {}", vid, q),
-            None => format!("▶ {}", tail),
-        };
-        elements.push(UiElement::Button(ButtonConfig {
-            id: format!("play_video:{}", vk),
-            label,
-            action: None,
-        }));
     }
 }

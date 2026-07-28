@@ -215,9 +215,7 @@ fn render_card(
     }
 
     // ── Context menu (same as list view) ────────────────────────
-    let entry_name = entry.name.clone();
     let entry_path = entry.path.clone();
-    let archive_path = entry.archive_path.clone();
     let is_folder = entry.is_folder;
 
     response.context_menu(|ui| {

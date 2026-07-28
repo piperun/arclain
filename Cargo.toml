@@ -73,3 +73,14 @@ rand = "0.9"
 opt-level = "z"
 lto = true
 codegen-units = 1
+
+
+[profile.dev]
+# Routine builds prioritize iteration speed and disk use. Override one-off with
+# CARGO_PROFILE_DEV_DEBUG=2 when full debugger symbols are actually needed.
+debug = 0
+
+[profile.test]
+# Tests and cargo-mutants generate many duplicate artifacts; keep their default
+# symbol payload off. Override one-off with CARGO_PROFILE_TEST_DEBUG=2.
+debug = 0

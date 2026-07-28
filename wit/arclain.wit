@@ -10,11 +10,17 @@ interface host {
         error
     }
     
+    // Per-entry, rate, and retained-byte limits are enforced by the host.
+    // Admitted warn/error entries also reach application tracing; lower levels
+    // remain in the per-plugin file log.
     log: func(level: log-level, message: string);
     log-network-activity: func(message: string);
     
     // Settings
     get-setting: func(key: string) -> option<string>;
+    // Settings are limited per plugin to 128 entries, 128-byte keys,
+    // 64-KiB values, and 1 MiB aggregate retained text. Over-limit writes
+    // are ignored; updates that remain within the limits are accepted.
     set-setting: func(key: string, value: string);
 
     // === Data API (unified) ===
@@ -23,11 +29,11 @@ interface host {
 
     // Data source types
     enum data-source {
-        metadata-cache,  // Structured metadata (SQLite)
-        content-cache,   // Binary blobs (cacache)
-        local-file,      // File system
+        metadata-cache,  // Structured metadata; archive_metadata_read
+        content-cache,   // Cached blobs; file_read (metadata also needs archive_metadata_read)
+        local-file,      // File reads; file_read
         memory,          // In-memory ephemeral
-        network,         // HTTP fetch
+        network,         // HTTP fetch; network
     }
 
     record data-request {
@@ -59,16 +65,24 @@ interface host {
     }
 
 
-    // Request data - host downloads async, caches transparently
+    // Request data under the source capabilities above. Disallowed sources
+    // are omitted; a request with no authorized source fails closed. Network
+    // write-back requires archive_metadata_write for MetadataCache and
+    // file_write for ContentCache. ContentCache entries are namespaced to the
+    // calling plugin id and are invisible to the host and other plugins.
+    // Guest-returned bodies are capped at 4 MiB.
     request-data: func(request: data-request) -> string;  // returns request-id
 
     // Poll for data status/result
     poll-data: func(request-id: string) -> data-result;
 
-    // Check if data exists (in cache/storage)
+    // Check if data exists. ContentCache requires file_read; structured and
+    // raw :json:/:html:/:metadata: metadata keys also require
+    // archive_metadata_read regardless of the declared resource type. Marker
+    // matching is ASCII-case-insensitive and does not percent-decode keys.
     has-data: func(key: string) -> bool;
 
-    // Get data from storage (no fetch, returns None if not cached)
+    // Get data from storage under the same read policy; maximum 4 MiB.
     get-data: func(key: string) -> option<list<u8>>;
 
     // Fetch a URL through the host's data service and store it in
@@ -76,7 +90,9 @@ interface host {
     // plugin. Designed for large blobs (videos, full archives) where
     // shipping the body across the WASM ABI boundary would waste
     // memory and copy work — the bytes never enter the plugin's
-    // sandbox. Returns true on success, false on any failure.
+    // sandbox. Requires network + file_write. Metadata JSON or raw metadata
+    // cache keys additionally require archive_metadata_write. Returns true on
+    // success, false on denial or any failure.
     //
     // Equivalent to `request-data` + a discarded `poll-data`, but the
     // plugin doesn't pay for the cross-boundary copy. Storage is keyed
@@ -84,19 +100,20 @@ interface host {
     // cached entry the same way they would for `request-data`.
     fetch-to-cache: func(request: data-request) -> bool;
 
-    // Read a cached blob and hand it to the OS default application.
-    // Host writes the bytes to a temp file with the supplied
-    // extension (e.g. "mp4", "webm"), then `open::that(path)` —
-    // shells out to whatever the OS has registered for that file
-    // type (mpv / VLC / system player on the user's setup).
-    //
-    // The bytes never enter the plugin's sandbox; the plugin only
-    // needs to know the cache key and the desired extension.
-    // Returns Err on missing cache entry, write failure, or shell
-    // failure.
+    // Reserved ABI for a future host-UI-authorized cached-blob launch.
+    // Background plugin calls currently fail closed with
+    // "external launch disabled: host UI authorization required";
+    // the host never writes or launches the blob. `file_read` is still
+    // required before this stable denial is returned. `extension` is
+    // retained for ABI compatibility and is not acted upon.
     play-cached-blob: func(key: string, extension: string) -> result<_, string>;
 
-    // Invalidate cache entry (to force refetch from network)
+    // Delete a content-cache entry, or entries matching a trailing '*'
+    // pattern in the calling plugin's private cache namespace. Exact ordinary
+    // keys require `file_write`; every wildcard and every exact raw metadata
+    // key additionally requires `archive_metadata_write`. Denied calls return
+    // false. Host-owned and other-plugin entries, and product metadata
+    // records, are unaffected.
     invalidate-cache: func(key: string) -> bool;
 
 
@@ -106,8 +123,14 @@ interface host {
         path: string,
         filename: string,
     }
+    // All archive-context reads require archive_metadata_read. The legacy
+    // list returns only the first bounded page; use count + page for complete
+    // traversal without one unbounded guest allocation.
     current-archive-info: func() -> option<archive-info>;
     list-archive-files: func() -> result<list<string>, string>;
+    archive-file-count: func() -> result<u64, string>;
+    // `limit` must be at most 256; returned path text is capped at 1 MiB.
+    list-archive-files-page: func(offset: u32, limit: u32) -> result<list<string>, string>;
 
     /// Rename the currently open archive file
     /// Takes a new filename (not full path) and returns the new full path on success
@@ -115,16 +138,31 @@ interface host {
     rename-archive: func(new-name: string) -> result<string, string>;
 
     // Metadata
+    // Legacy compatibility import. The source is read from the JSON payload;
+    // payloads without a source retain the historical DLSite default. New
+    // plugins should use emit-metadata-for-source.
     emit-metadata: func(metadata-json: string);
+    // Requires archive_metadata_write. Source and product-id are each capped
+    // at 256 bytes, JSON at 4 MiB. The payload source must match `source`.
+    // Per-plugin rate, distinct-ID and session-byte quotas are enforced, and
+    // the host records plugin provenance in the persisted metadata extras.
+    emit-metadata-for-source: func(source: string, metadata-json: string) -> bool;
 
-    // UI Feedback
+    // Deprecated compatibility ABI. Admitted messages are written only to the
+    // bounded plugin log; no host dialog is opened or retained.
     show-message: func(title: string, message: string);
 
-    // Status bar message (for plugin to display selected entry, etc.)
+    // Deprecated compatibility ABI. This is a no-op; the host retains no
+    // guest string. Plugins should return UI actions or use bounded logging.
     set-status-message: func(message: string);
 
-    // Metadata Cache Management (for UI, not plugin data access)
+    // Legacy DLSite-only compatibility listing. Returns only the first
+    // bounded page. New plugins should use the source-explicit APIs below.
     list-cached-entries: func() -> list<string>;
+    cached-metadata-count: func(source: string) -> result<u64, string>;
+    // `limit` must be at most 256. The database applies offset and limit;
+    // returned external IDs share a 1 MiB text budget.
+    list-cached-metadata: func(source: string, offset: u32, limit: u32) -> result<list<string>, string>;
     
     // Batch metadata summary for fast list rendering
     record metadata-summary {
@@ -132,16 +170,28 @@ interface host {
         title: option<string>,
         geo-blocked: bool,
     }
+    // Accepts at most 256 ids, each at most 256 bytes. Oversized batches are
+    // rejected before database access. The query projects only id, a bounded
+    // title, and geo-blocked; returned strings share a 1 MiB budget.
     get-metadata-summaries: func(ids: list<string>) -> list<metadata-summary>;
+    // Source-explicit summary lookup. The source and every ID are bounded;
+    // invalid inputs return an error before database access.
+    get-metadata-summaries-for-source: func(source: string, ids: list<string>) -> result<list<metadata-summary>, string>;
 
-    // Get full product metadata from database
-    // Priority: metadata.sqlite -> JSON cache -> HTML cache (host parses)
-    // Returns ProductMetadata as JSON string, or None if not found anywhere
+    // Get full product metadata (maximum 4 MiB). product-id and source are each
+    // capped at 256 bytes. Resolution order is local database, calling
+    // plugin's JSON/HTML cache, then Gameta. Local database reads require
+    // archive_metadata_read; cached JSON/HTML additionally require file_read;
+    // Gameta additionally requires network and consumes one manifest request
+    // budget permit per actual HTTP request. Cache repair/migration persists
+    // only with archive_metadata_write.
     get-product-metadata: func(product-id: string, source: string) -> option<string>;
 
-    // File operations
-    // Create a file in the host's temp directory
-    // Returns the full path to the created file, or an error message
+    // Create a file in private temporary storage owned by this plugin
+    // instance. Requires `file_write`. `filename` is a sanitized hint;
+    // the host chooses a collision-safe name with create-new semantics.
+    // Storage is created lazily, limited to 128 files and 64 MiB total,
+    // and removed when the plugin instance unloads. Returns the full path.
     create-file: func(filename: string, content: list<u8>) -> result<string, string>;
 }
 

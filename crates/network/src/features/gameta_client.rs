@@ -1,11 +1,73 @@
 //! HTTP client for the gameta metadata server API.
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 
 const PATH_HEALTH: &str = "/api/v1/health";
 const PATH_FETCH: &str = "/api/v1/fetch";
 const PATH_SEARCH: &str = "/api/v1/search";
 const PATH_METADATA_PREFIX: &str = "/api/v1/metadata";
+
+fn read_json_with_limit<R: Read, T: DeserializeOwned>(
+    reader: &mut R,
+    limit: usize,
+    description: &str,
+) -> Result<T, String> {
+    let mut body = Vec::new();
+    let mut chunk = [0_u8; 8 * 1024];
+    loop {
+        let remaining = limit - body.len();
+        if remaining == 0 {
+            let mut overflow = [0_u8; 1];
+            if reader
+                .read(&mut overflow)
+                .map_err(|error| format!("Failed reading {description}: {error}"))?
+                != 0
+            {
+                return Err(format!(
+                    "{description} exceeds the {limit}-byte materialized read limit"
+                ));
+            }
+            break;
+        }
+        let read_length = remaining.min(chunk.len());
+        let bytes_read = reader
+            .read(&mut chunk[..read_length])
+            .map_err(|error| format!("Failed reading {description}: {error}"))?;
+        if bytes_read == 0 {
+            break;
+        }
+        let next_length = body
+            .len()
+            .checked_add(bytes_read)
+            .ok_or_else(|| format!("{description} byte count overflowed"))?;
+        if next_length > body.capacity() {
+            let doubled = body.capacity().saturating_mul(2).min(limit);
+            let target = doubled.max(next_length);
+            body.try_reserve_exact(target - body.len())
+                .map_err(|_| format!("Failed to allocate bounded {description}"))?;
+        }
+        body.extend_from_slice(&chunk[..bytes_read]);
+    }
+    serde_json::from_slice(&body).map_err(|error| format!("Failed to parse {description}: {error}"))
+}
+
+fn read_response_json_with_limit<T: DeserializeOwned>(
+    mut response: reqwest::blocking::Response,
+    limit: usize,
+    description: &str,
+) -> Result<T, String> {
+    if response
+        .content_length()
+        .is_some_and(|length| usize::try_from(length).map_or(true, |length| length > limit))
+    {
+        return Err(format!(
+            "{description} exceeds the {limit}-byte materialized read limit"
+        ));
+    }
+    read_json_with_limit(&mut response, limit, description)
+}
 
 /// Connection configuration for a gameta server instance.
 #[derive(Debug, Clone)]
@@ -133,6 +195,11 @@ impl GametaClient {
     /// On success the server's version string is cached and retrievable via
     /// [`GametaClient::last_known_version`].
     pub fn health(&self) -> Result<HealthResponse, String> {
+        self.health_with_limit(crate::DEFAULT_MAX_BUFFERED_RESPONSE_BYTES)
+    }
+
+    /// Health check with a caller-supplied response materialization ceiling.
+    pub fn health_with_limit(&self, limit: usize) -> Result<HealthResponse, String> {
         let url = self.endpoint(PATH_HEALTH);
         let resp = self
             .client
@@ -144,9 +211,8 @@ impl GametaClient {
             return Err(format!("Health check returned HTTP {}", resp.status()));
         }
 
-        let health = resp
-            .json::<HealthResponse>()
-            .map_err(|e| format!("Failed to parse health response: {}", e))?;
+        let health =
+            read_response_json_with_limit::<HealthResponse>(resp, limit, "health response")?;
 
         // Cache the version for callers that don't have access to this response.
         *self.server_version.write() = Some(health.version.clone());
@@ -156,6 +222,17 @@ impl GametaClient {
 
     /// `GET /api/v1/metadata/{source}/{id}` — returns `None` on 404.
     pub fn get_metadata(&self, source: &str, id: &str) -> Result<Option<MetadataResponse>, String> {
+        self.get_metadata_with_limit(source, id, crate::DEFAULT_MAX_BUFFERED_RESPONSE_BYTES)
+    }
+
+    /// Fetch one metadata record while bounding both response buffering and
+    /// JSON deserialization under `limit`.
+    pub fn get_metadata_with_limit(
+        &self,
+        source: &str,
+        id: &str,
+        limit: usize,
+    ) -> Result<Option<MetadataResponse>, String> {
         let url = self.endpoint(&format!(
             "{}/{}/{}",
             PATH_METADATA_PREFIX,
@@ -174,16 +251,18 @@ impl GametaClient {
 
         if !resp.status().is_success() {
             let code = resp.status();
-            let body = resp
-                .json::<ErrorResponse>()
-                .map(|e| e.error)
-                .unwrap_or_else(|_| format!("HTTP {}", code));
+            let body = read_response_json_with_limit::<ErrorResponse>(
+                resp,
+                limit,
+                "metadata error response",
+            )
+            .map(|e| e.error)
+            .unwrap_or_else(|_| format!("HTTP {}", code));
             return Err(body);
         }
 
-        resp.json::<MetadataResponse>()
+        read_response_json_with_limit::<MetadataResponse>(resp, limit, "metadata response")
             .map(Some)
-            .map_err(|e| format!("Failed to parse metadata response: {}", e))
     }
 
     /// `POST /api/v1/fetch` — ask the server to fetch/refresh metadata.
@@ -192,6 +271,22 @@ impl GametaClient {
         source: &str,
         id: &str,
         force: bool,
+    ) -> Result<FetchResponse, String> {
+        self.fetch_metadata_with_limit(
+            source,
+            id,
+            force,
+            crate::DEFAULT_MAX_BUFFERED_RESPONSE_BYTES,
+        )
+    }
+
+    /// Fetch/refresh metadata with a bounded response body.
+    pub fn fetch_metadata_with_limit(
+        &self,
+        source: &str,
+        id: &str,
+        force: bool,
+        limit: usize,
     ) -> Result<FetchResponse, String> {
         let url = self.endpoint(PATH_FETCH);
         let body = FetchRequest {
@@ -208,15 +303,14 @@ impl GametaClient {
 
         if !resp.status().is_success() {
             let code = resp.status();
-            let msg = resp
-                .json::<ErrorResponse>()
-                .map(|e| e.error)
-                .unwrap_or_else(|_| format!("HTTP {}", code));
+            let msg =
+                read_response_json_with_limit::<ErrorResponse>(resp, limit, "fetch error response")
+                    .map(|e| e.error)
+                    .unwrap_or_else(|_| format!("HTTP {}", code));
             return Err(msg);
         }
 
-        resp.json::<FetchResponse>()
-            .map_err(|e| format!("Failed to parse fetch response: {}", e))
+        read_response_json_with_limit::<FetchResponse>(resp, limit, "fetch response")
     }
 
     /// `GET /api/v1/search?q=...&source=...&limit=...`
@@ -226,13 +320,29 @@ impl GametaClient {
         source: Option<&str>,
         limit: Option<u32>,
     ) -> Result<SearchResponse, String> {
+        self.search_with_limit(
+            query,
+            source,
+            limit,
+            crate::DEFAULT_MAX_BUFFERED_RESPONSE_BYTES,
+        )
+    }
+
+    /// Search with separate server-result and materialized-body limits.
+    pub fn search_with_limit(
+        &self,
+        query: &str,
+        source: Option<&str>,
+        result_limit: Option<u32>,
+        materialization_limit: usize,
+    ) -> Result<SearchResponse, String> {
         let url = self.endpoint(PATH_SEARCH);
         let mut req = self.auth(self.client.get(&url)).query(&[("q", query)]);
 
         if let Some(src) = source {
             req = req.query(&[("source", src)]);
         }
-        if let Some(lim) = limit {
+        if let Some(lim) = result_limit {
             req = req.query(&[("limit", lim.to_string().as_str())]);
         }
 
@@ -242,15 +352,21 @@ impl GametaClient {
 
         if !resp.status().is_success() {
             let code = resp.status();
-            let msg = resp
-                .json::<ErrorResponse>()
-                .map(|e| e.error)
-                .unwrap_or_else(|_| format!("HTTP {}", code));
+            let msg = read_response_json_with_limit::<ErrorResponse>(
+                resp,
+                materialization_limit,
+                "search error response",
+            )
+            .map(|e| e.error)
+            .unwrap_or_else(|_| format!("HTTP {}", code));
             return Err(msg);
         }
 
-        resp.json::<SearchResponse>()
-            .map_err(|e| format!("Failed to parse search response: {}", e))
+        read_response_json_with_limit::<SearchResponse>(
+            resp,
+            materialization_limit,
+            "search response",
+        )
     }
 }
 
@@ -260,6 +376,7 @@ impl GametaClient {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::io::Cursor;
 
     #[test]
     fn test_health_response_parsing() {
@@ -328,5 +445,40 @@ mod tests {
             serde_json::from_value(raw2).expect("should parse ErrorResponse without code");
         assert_eq!(parsed2.error, "internal error");
         assert!(parsed2.code.is_none());
+    }
+
+    #[test]
+    fn bounded_gameta_json_reader_accepts_exact_boundary() {
+        let body = serde_json::to_vec(&json!({
+            "id": "RJ1",
+            "source": "dlsite",
+            "title": null,
+            "creator": null,
+            "description": null,
+            "release_date": null,
+            "tags": [],
+            "extras": null
+        }))
+        .unwrap();
+
+        let response: MetadataResponse =
+            read_json_with_limit(&mut Cursor::new(&body), body.len(), "metadata response")
+                .expect("exact-limit metadata response should parse");
+
+        assert_eq!(response.id, "RJ1");
+    }
+
+    #[test]
+    fn bounded_gameta_json_reader_rejects_the_next_byte() {
+        let body = br#"{"id":"RJ1","source":"dlsite","title":null,"creator":null,"description":null,"release_date":null,"tags":[],"extras":null}"#;
+
+        let error = read_json_with_limit::<_, MetadataResponse>(
+            &mut Cursor::new(body),
+            body.len() - 1,
+            "metadata response",
+        )
+        .expect_err("oversized metadata response must stop at the limit");
+
+        assert!(error.contains("materialized read limit"));
     }
 }

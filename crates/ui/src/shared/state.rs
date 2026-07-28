@@ -5,6 +5,7 @@ use crate::shared::image_assets::ImageAssetStore;
 use crate::shared::theme::{load_cjk_fonts, AppTheme};
 use arclain_widgets::Toaster;
 use parking_lot::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -14,8 +15,8 @@ pub struct SharedState {
     pub services: Arc<crate::core::services::Services>,
     pub theme: AppTheme,
     pub toaster: Arc<Mutex<Toaster>>,
-    /// Panel refresh requests from plugins (extension point names to refresh)
-    pub refresh_requests: Arc<Mutex<Vec<String>>>,
+    /// Whether a plugin requested layout invalidation since the last frame.
+    pub refresh_requests: Arc<AtomicBool>,
     pub plugin_ui_jobs: crate::features::plugins::application::PluginUiJobs,
     /// Shared cached-image state machine used by every image renderer.
     pub image_assets: ImageAssetStore,
@@ -70,7 +71,7 @@ impl SharedState {
             services,
             theme,
             toaster: Arc::new(Mutex::new(Toaster::new())),
-            refresh_requests: Arc::new(Mutex::new(Vec::new())),
+            refresh_requests: Arc::new(AtomicBool::new(false)),
             plugin_ui_jobs,
             image_assets,
             signals: signals.clone(),

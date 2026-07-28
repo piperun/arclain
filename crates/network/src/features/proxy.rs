@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::shared::safe_log_fingerprint;
+
 /// Result of a single test step
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectionTestStep {
@@ -168,18 +170,27 @@ impl ProxyConfig {
     /// distinction matters (e.g. saving user-entered settings).
     pub fn to_proxy(&self) -> Option<reqwest::Proxy> {
         if !self.enabled || self.address.trim().is_empty() {
-            tracing::debug!("[ProxyConfig] Skipping {}", self.log_summary());
+            tracing::debug!(
+                "[ProxyConfig] Skipping {}",
+                safe_log_fingerprint(self.log_summary())
+            );
             return None;
         }
 
-        tracing::info!("[ProxyConfig] Creating {}", self.log_summary());
+        tracing::info!(
+            "[ProxyConfig] Creating {}",
+            safe_log_fingerprint(self.log_summary())
+        );
         match self.create_proxy() {
             Ok(proxy) => {
-                tracing::info!("[ProxyConfig] Created {}", self.log_summary());
+                tracing::info!(
+                    "[ProxyConfig] Created {}",
+                    safe_log_fingerprint(self.log_summary())
+                );
                 Some(proxy)
             }
             Err(error) => {
-                tracing::error!("[ProxyConfig] {}", error);
+                tracing::error!("[ProxyConfig] {}", safe_log_fingerprint(error));
                 None
             }
         }
@@ -219,7 +230,7 @@ impl ProxyConfig {
 
         tracing::info!(
             "[test_connection] Starting test using {}",
-            self.log_summary()
+            safe_log_fingerprint(self.log_summary())
         );
 
         // Try to resolve the proxy hostname to see if DNS works
@@ -228,7 +239,7 @@ impl ProxyConfig {
                 Ok(parsed) => parsed.authority,
                 Err(reason) => {
                     let message = format!("Invalid {}: {reason}", self.log_summary());
-                    tracing::warn!("[test_connection] {}", message);
+                    tracing::warn!("[test_connection] {}", safe_log_fingerprint(&message));
                     result.steps.push(ConnectionTestStep {
                         name: test_name.to_string(),
                         passed: false,
@@ -245,7 +256,10 @@ impl ProxyConfig {
                         .first()
                         .map(|a| a.ip().to_string())
                         .unwrap_or_else(|| "unknown".to_string());
-                    tracing::info!("[test_connection] Proxy DNS resolved to: {:?}", addrs);
+                    tracing::info!(
+                        "[test_connection] Proxy DNS resolved to: {}",
+                        safe_log_fingerprint(format!("{addrs:?}"))
+                    );
                     result.steps.push(ConnectionTestStep {
                         name: "DNS".to_string(),
                         passed: true,
@@ -253,7 +267,10 @@ impl ProxyConfig {
                     });
                 }
                 Err(e) => {
-                    tracing::error!("[test_connection] Failed to resolve proxy hostname: {}", e);
+                    tracing::error!(
+                        "[test_connection] Failed to resolve proxy hostname: {}",
+                        safe_log_fingerprint(e.to_string())
+                    );
                     result.steps.push(ConnectionTestStep {
                         name: "DNS".to_string(),
                         passed: false,
@@ -268,9 +285,9 @@ impl ProxyConfig {
             match tokio::net::TcpStream::connect(&authority).await {
                 Ok(stream) => {
                     tracing::info!(
-                        "[test_connection] Direct TCP connection succeeded! Local: {:?}, Peer: {:?}",
-                        stream.local_addr(),
-                        stream.peer_addr()
+                        "[test_connection] Direct TCP connection succeeded! Local: {}, Peer: {}",
+                        safe_log_fingerprint(format!("{:?}", stream.local_addr())),
+                        safe_log_fingerprint(format!("{:?}", stream.peer_addr()))
                     );
                     result.steps.push(ConnectionTestStep {
                         name: "TCP".to_string(),
@@ -282,7 +299,7 @@ impl ProxyConfig {
                 Err(e) => {
                     tracing::error!(
                         "[test_connection] Direct TCP connection failed: {} (kind: {:?})",
-                        e,
+                        safe_log_fingerprint(e.to_string()),
                         e.kind()
                     );
                     result.steps.push(ConnectionTestStep {
@@ -305,7 +322,7 @@ impl ProxyConfig {
             builder = builder.proxy(proxy);
         } else if self.enabled {
             let message = format!("Invalid {}", self.log_summary());
-            tracing::warn!("[test_connection] {}", message);
+            tracing::warn!("[test_connection] {}", safe_log_fingerprint(&message));
             result.steps.push(ConnectionTestStep {
                 name: test_name.to_string(),
                 passed: false,
@@ -321,7 +338,7 @@ impl ProxyConfig {
             }
             Err(_) => {
                 let message = format!("Failed to build client using {}", self.log_summary());
-                tracing::error!("[test_connection] {}", message);
+                tracing::error!("[test_connection] {}", safe_log_fingerprint(&message));
                 result.steps.push(ConnectionTestStep {
                     name: test_name.to_string(),
                     passed: false,
@@ -343,7 +360,7 @@ impl ProxyConfig {
             }
             Err(_) => {
                 let message = format!("Request failed using {}", self.log_summary());
-                tracing::error!("[test_connection] {}", message);
+                tracing::error!("[test_connection] {}", safe_log_fingerprint(&message));
                 result.steps.push(ConnectionTestStep {
                     name: test_name.to_string(),
                     passed: false,
@@ -541,28 +558,30 @@ mod tests {
     }
 
     #[test]
-    fn proxy_creation_success_tracing_redacts_credentials() {
+    fn proxy_creation_success_tracing_fingerprints_the_complete_diagnostic() {
         let config = authenticated_config("proxy.example:1080");
         let events = capture_events(|| {
             assert!(config.to_proxy().is_some());
         });
 
         assert_credentials_redacted(&events);
-        assert!(events.contains("proxy.example:1080"));
-        assert!(events.contains("authenticated"));
+        assert!(events.contains("sha256:"));
+        assert!(!events.contains("proxy.example:1080"));
+        assert!(!events.contains("authenticated"));
     }
 
     #[test]
-    fn proxy_creation_error_tracing_redacts_credentials() {
+    fn proxy_creation_error_tracing_fingerprints_the_complete_diagnostic() {
         let config = authenticated_config("not a valid host:1080");
         let events = capture_events(|| {
             assert!(config.to_proxy().is_none());
         });
 
         assert_credentials_redacted(&events);
-        assert!(events.contains("<invalid address>"));
+        assert!(events.contains("sha256:"));
+        assert!(!events.contains("<invalid address>"));
         assert!(!events.contains("not a valid host:1080"));
-        assert!(events.contains("authenticated"));
+        assert!(!events.contains("authenticated"));
     }
 
     #[test]
@@ -610,14 +629,16 @@ mod tests {
     }
 
     #[test]
-    fn proxy_address_userinfo_is_redacted_from_captured_tracing() {
+    fn proxy_address_userinfo_is_fingerprinted_in_captured_tracing() {
         let config = embedded_userinfo_config();
         let capture = EventCapture::default();
         let proxy = tracing::subscriber::with_default(capture.clone(), || config.to_proxy());
         let events = capture.output();
 
         assert_credentials_redacted(&events);
-        assert!(events.contains("<invalid address>"));
+        assert!(events.contains("sha256:"));
+        assert!(!events.contains("<invalid address>"));
+        assert!(!events.contains("authenticated"));
         assert!(proxy.is_none());
     }
 

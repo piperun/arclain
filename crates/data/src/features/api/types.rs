@@ -98,6 +98,10 @@ pub struct DataRequest {
     /// Resolution chain - sources to try in order
     /// Empty = use default chain
     pub sources: SourceChain,
+    /// Sources eligible for network write-back. `None` preserves the legacy
+    /// behavior of writing to every non-network resolver earlier in the chain;
+    /// `Some(empty)` makes the request read-only.
+    pub store_sources: Option<SourceChain>,
 }
 
 impl DataRequest {
@@ -111,6 +115,7 @@ impl DataRequest {
             product_id: None,
             plugin_id: None,
             sources: IndexSet::new(),
+            store_sources: None,
         }
     }
 
@@ -144,6 +149,19 @@ impl DataRequest {
         self
     }
 
+    /// Restrict network-result write-back to the listed sources.
+    pub fn with_store_sources(mut self, sources: impl IntoIterator<Item = DataSource>) -> Self {
+        self.store_sources = Some(sources.into_iter().collect());
+        self
+    }
+
+    /// Whether this request permits write-back to `source`.
+    pub fn allows_store_to(&self, source: DataSource) -> bool {
+        self.store_sources
+            .as_ref()
+            .is_none_or(|sources| sources.contains(&source))
+    }
+
     // === Common presets ===
 
     /// Cache only - for viewing cached entries (never fetches)
@@ -160,6 +178,7 @@ impl DataRequest {
             product_id: None,
             plugin_id: None,
             sources,
+            store_sources: None,
         }
     }
 
@@ -176,6 +195,7 @@ impl DataRequest {
             product_id: None,
             plugin_id: None,
             sources,
+            store_sources: None,
         }
     }
 
@@ -193,6 +213,7 @@ impl DataRequest {
             product_id: None,
             plugin_id: None,
             sources,
+            store_sources: None,
         }
     }
 
@@ -210,6 +231,7 @@ impl DataRequest {
             product_id: None,
             plugin_id: None,
             sources,
+            store_sources: None,
         }
     }
 
@@ -327,5 +349,17 @@ mod tests {
             DataRequest::new("k").with_sources([DataSource::Memory, DataSource::ContentCache]);
         assert_eq!(req.sources.len(), 2);
         assert!(req.sources.contains(&DataSource::Memory));
+    }
+
+    #[test]
+    fn data_request_store_sources_are_unrestricted_by_default_and_explicit_when_set() {
+        let default_request = DataRequest::new("default");
+        assert!(default_request.allows_store_to(DataSource::MetadataStore));
+        assert!(default_request.allows_store_to(DataSource::ContentCache));
+
+        let restricted =
+            DataRequest::new("restricted").with_store_sources([DataSource::ContentCache]);
+        assert!(!restricted.allows_store_to(DataSource::MetadataStore));
+        assert!(restricted.allows_store_to(DataSource::ContentCache));
     }
 }

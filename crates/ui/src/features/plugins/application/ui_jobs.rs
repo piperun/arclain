@@ -8,13 +8,26 @@ use arclain_plugins::manager::PluginStatusSummary;
 use arclain_plugins::types::{PluginAction, PluginExtensionPoint, PluginLayout, TopTabConfig};
 use arclain_plugins::PluginManager;
 use arclain_signals::Signal;
-use parking_lot::Mutex;
-use std::collections::HashMap;
+use parking_lot::{Condvar, Mutex};
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 const NETWORK_LOG_TTL: Duration = Duration::from_secs(1);
+const ORDERED_JOB_CAPACITY: usize = 32;
+const MAX_PENDING_JOBS: usize = 96;
+// One coalesced admission failure for each PluginUiFailureContext variant.
+const REJECTED_RESULT_CAPACITY: usize = 8;
+const COMPLETED_JOB_CAPACITY: usize = MAX_PENDING_JOBS + REJECTED_RESULT_CAPACITY;
+const MAX_UI_PLUGIN_ID_BYTES: usize = 64;
+const MAX_UI_EVENT_ID_BYTES: usize = 512;
+const MAX_UI_EVENT_VALUE_BYTES: usize = 64 * 1024;
+const MAX_UI_PAGE_ID_BYTES: usize = 512;
+const MAX_UI_INSTALL_PATH_BYTES: usize = 32 * 1024;
+const MAX_ORIGIN_ARCHIVE_PATH_BYTES: usize = 32 * 1024;
+const MAX_ORIGIN_PASSWORD_BYTES: usize = 4 * 1024;
 type OriginContextProvider = Arc<dyn Fn(TabId) -> Option<EventContext> + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -68,11 +81,20 @@ pub enum PluginUiRequest {
         value: Option<String>,
         origin_tab: TabId,
     },
+    /// Host-generated state notification. Newer queued values replace older
+    /// values for the same plugin/event/tab, unlike direct user actions.
+    ReactiveUiEvent {
+        plugin_id: String,
+        event_id: String,
+        value: Option<String>,
+        origin_tab: TabId,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub struct PluginUiEventCompletion {
     pub actions: Vec<PluginAction>,
+    pub actions_limited: bool,
     pub settings: Option<HashMap<String, String>>,
 }
 
@@ -115,6 +137,7 @@ pub enum PluginUiResult {
         page_id: String,
         origin_tab: TabId,
         actions: std::result::Result<Vec<PluginAction>, String>,
+        actions_limited: bool,
     },
     LayoutLoaded {
         request_id: RequestId,
@@ -161,6 +184,8 @@ enum RequestKey {
     SetEnabled(RequestId, String, bool),
     Install(RequestId, PathBuf),
     UiEvent(RequestId, String, String, TabId),
+    ReactiveUiEvent(String, String, TabId),
+    Rejected(RequestId),
 }
 
 impl PluginUiRequest {
@@ -191,6 +216,12 @@ impl PluginUiRequest {
                 origin_tab,
                 ..
             } => RequestKey::UiEvent(request_id, plugin_id.clone(), event_id.clone(), *origin_tab),
+            Self::ReactiveUiEvent {
+                plugin_id,
+                event_id,
+                origin_tab,
+                ..
+            } => RequestKey::ReactiveUiEvent(plugin_id.clone(), event_id.clone(), *origin_tab),
         }
     }
 }
@@ -225,6 +256,18 @@ impl RequestKey {
                 event_id: event_id.clone(),
                 origin_tab: *origin_tab,
             },
+            Self::ReactiveUiEvent(plugin_id, event_id, origin_tab) => {
+                PluginUiFailureContext::UiEvent {
+                    plugin_id: plugin_id.clone(),
+                    event_id: event_id.clone(),
+                    origin_tab: *origin_tab,
+                }
+            }
+            Self::Rejected(_) => PluginUiFailureContext::UiEvent {
+                plugin_id: "<rejected>".to_string(),
+                event_id: "<rejected>".to_string(),
+                origin_tab: TabId(0),
+            },
         }
     }
 }
@@ -247,6 +290,115 @@ impl PluginUiFailureContext {
 struct Completed {
     key: RequestKey,
     result: PluginUiResult,
+    tracked: bool,
+}
+
+#[derive(Clone)]
+struct CompletedQueue {
+    results: Arc<Mutex<VecDeque<Completed>>>,
+    capacity: usize,
+}
+
+enum CompletionQueueAdmission {
+    Inserted,
+    Replaced(Completed),
+    Full(Completed),
+}
+
+impl CompletedQueue {
+    fn new(capacity: usize) -> Self {
+        assert!(
+            capacity > 0,
+            "plugin UI completion queue must have capacity"
+        );
+        Self {
+            results: Arc::new(Mutex::new(VecDeque::with_capacity(capacity))),
+            capacity,
+        }
+    }
+
+    fn try_push_or_replace(&self, completed: Completed) -> CompletionQueueAdmission {
+        let mut results = self.results.lock();
+        if let Some(index) = results
+            .iter()
+            .position(|queued| completed_results_coalesce(queued, &completed))
+        {
+            if result_request_id(&completed.result).0 < result_request_id(&results[index].result).0
+            {
+                return CompletionQueueAdmission::Replaced(completed);
+            }
+            let replaced = std::mem::replace(&mut results[index], completed);
+            return CompletionQueueAdmission::Replaced(replaced);
+        }
+        if results.len() == self.capacity {
+            return CompletionQueueAdmission::Full(completed);
+        }
+        results.push_back(completed);
+        CompletionQueueAdmission::Inserted
+    }
+
+    fn drain(&self) -> Vec<Completed> {
+        self.results.lock().drain(..).collect()
+    }
+}
+
+fn completed_results_coalesce(queued: &Completed, incoming: &Completed) -> bool {
+    match (&queued.key, &incoming.key) {
+        (RequestKey::Rejected(_), RequestKey::Rejected(_)) => {
+            rejected_failure_contexts_match(&queued.result, &incoming.result)
+        }
+        _ if queued.key != incoming.key => false,
+        _ => matches!(
+            &queued.key,
+            RequestKey::Layout(..)
+                | RequestKey::Snapshot(..)
+                | RequestKey::ChromeSnapshot
+                | RequestKey::NetworkLog
+                | RequestKey::ReactiveUiEvent(..)
+        ),
+    }
+}
+
+fn rejected_failure_contexts_match(queued: &PluginUiResult, incoming: &PluginUiResult) -> bool {
+    let (
+        PluginUiResult::Failed {
+            context: queued, ..
+        },
+        PluginUiResult::Failed {
+            context: incoming, ..
+        },
+    ) = (queued, incoming)
+    else {
+        return false;
+    };
+    matches!(
+        (queued, incoming),
+        (
+            PluginUiFailureContext::PageInit { .. },
+            PluginUiFailureContext::PageInit { .. }
+        ) | (
+            PluginUiFailureContext::Layout { .. },
+            PluginUiFailureContext::Layout { .. }
+        ) | (
+            PluginUiFailureContext::Snapshot { .. },
+            PluginUiFailureContext::Snapshot { .. }
+        ) | (
+            PluginUiFailureContext::ChromeSnapshot,
+            PluginUiFailureContext::ChromeSnapshot
+        ) | (
+            PluginUiFailureContext::NetworkLog,
+            PluginUiFailureContext::NetworkLog
+        ) | (
+            PluginUiFailureContext::SetEnabled { .. },
+            PluginUiFailureContext::SetEnabled { .. }
+        ) | (
+            PluginUiFailureContext::Install { .. },
+            PluginUiFailureContext::Install { .. }
+        ) | (
+            PluginUiFailureContext::UiEvent { .. },
+            PluginUiFailureContext::UiEvent { .. }
+        )
+    )
 }
 
 struct QueuedJob {
@@ -254,6 +406,82 @@ struct QueuedJob {
     request_id: RequestId,
     request: PluginUiRequest,
     origin_context: Option<EventContext>,
+}
+
+struct OrderedQueueState {
+    jobs: VecDeque<QueuedJob>,
+    closed: bool,
+}
+
+#[derive(Clone)]
+struct OrderedJobQueue {
+    shared: Arc<(Mutex<OrderedQueueState>, Condvar)>,
+    capacity: usize,
+}
+
+enum OrderedQueueError {
+    Full(QueuedJob),
+    Closed(QueuedJob),
+}
+
+impl OrderedJobQueue {
+    fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "ordered plugin UI queue must have capacity");
+        Self {
+            shared: Arc::new((
+                Mutex::new(OrderedQueueState {
+                    jobs: VecDeque::with_capacity(capacity),
+                    closed: false,
+                }),
+                Condvar::new(),
+            )),
+            capacity,
+        }
+    }
+
+    fn try_push_or_replace(&self, job: QueuedJob) -> Result<Option<QueuedJob>, OrderedQueueError> {
+        let (state_lock, ready) = self.shared.as_ref();
+        let mut state = state_lock.lock();
+        if state.closed {
+            return Err(OrderedQueueError::Closed(job));
+        }
+        if matches!(job.key, RequestKey::ReactiveUiEvent(..)) {
+            if let Some(index) = state.jobs.iter().position(|queued| queued.key == job.key) {
+                if state.jobs[index].request_id.0 > job.request_id.0 {
+                    return Ok(Some(job));
+                }
+                let replaced = std::mem::replace(&mut state.jobs[index], job);
+                ready.notify_one();
+                return Ok(Some(replaced));
+            }
+        }
+        if state.jobs.len() == self.capacity {
+            return Err(OrderedQueueError::Full(job));
+        }
+        state.jobs.push_back(job);
+        ready.notify_one();
+        Ok(None)
+    }
+
+    fn recv(&self) -> Option<QueuedJob> {
+        let (state_lock, ready) = self.shared.as_ref();
+        let mut state = state_lock.lock();
+        loop {
+            if let Some(job) = state.jobs.pop_front() {
+                return Some(job);
+            }
+            if state.closed {
+                return None;
+            }
+            ready.wait(&mut state);
+        }
+    }
+
+    fn close(&self) {
+        let (state_lock, ready) = self.shared.as_ref();
+        state_lock.lock().closed = true;
+        ready.notify_all();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -277,17 +505,150 @@ struct PluginUiCache {
     completed_mutations: HashMap<RequestId, PluginUiMutation>,
 }
 
-#[derive(Clone)]
+fn field_within(value: &str, limit: usize) -> bool {
+    value.len() <= limit
+}
+
+fn path_within(value: &std::path::Path, limit: usize) -> bool {
+    value.as_os_str().as_encoded_bytes().len() <= limit
+}
+
+fn safe_failure_field(value: &str, limit: usize) -> String {
+    if field_within(value, limit) {
+        value.to_string()
+    } else {
+        "<oversized>".to_string()
+    }
+}
+
+fn safe_failure_target(target: &PluginUiTarget) -> PluginUiTarget {
+    match target {
+        PluginUiTarget::Dialog(id) => {
+            PluginUiTarget::Dialog(safe_failure_field(id, MAX_UI_PAGE_ID_BYTES))
+        }
+        PluginUiTarget::Page(id) => {
+            PluginUiTarget::Page(safe_failure_field(id, MAX_UI_PAGE_ID_BYTES))
+        }
+        other => other.clone(),
+    }
+}
+
+fn invalid_request_context(request: &PluginUiRequest) -> Option<PluginUiFailureContext> {
+    match request {
+        PluginUiRequest::PageInit {
+            plugin_id,
+            page_id,
+            origin_tab,
+        } if !field_within(plugin_id, MAX_UI_PLUGIN_ID_BYTES)
+            || !field_within(page_id, MAX_UI_PAGE_ID_BYTES) =>
+        {
+            Some(PluginUiFailureContext::PageInit {
+                plugin_id: safe_failure_field(plugin_id, MAX_UI_PLUGIN_ID_BYTES),
+                page_id: safe_failure_field(page_id, MAX_UI_PAGE_ID_BYTES),
+                origin_tab: *origin_tab,
+            })
+        }
+        PluginUiRequest::Layout {
+            plugin_id,
+            target,
+            origin_tab,
+        } if !field_within(plugin_id, MAX_UI_PLUGIN_ID_BYTES)
+            || matches!(target, PluginUiTarget::Dialog(id) | PluginUiTarget::Page(id)
+                if !field_within(id, MAX_UI_PAGE_ID_BYTES)) =>
+        {
+            Some(PluginUiFailureContext::Layout {
+                plugin_id: safe_failure_field(plugin_id, MAX_UI_PLUGIN_ID_BYTES),
+                target: safe_failure_target(target),
+                origin_tab: *origin_tab,
+            })
+        }
+        PluginUiRequest::SetEnabled { plugin_id, enabled }
+            if !field_within(plugin_id, MAX_UI_PLUGIN_ID_BYTES) =>
+        {
+            Some(PluginUiFailureContext::SetEnabled {
+                plugin_id: safe_failure_field(plugin_id, MAX_UI_PLUGIN_ID_BYTES),
+                enabled: *enabled,
+            })
+        }
+        PluginUiRequest::Install { wasm_path }
+            if !path_within(wasm_path, MAX_UI_INSTALL_PATH_BYTES) =>
+        {
+            Some(PluginUiFailureContext::Install {
+                wasm_path: PathBuf::from("<oversized>"),
+            })
+        }
+        PluginUiRequest::UiEvent {
+            plugin_id,
+            event_id,
+            value,
+            origin_tab,
+        }
+        | PluginUiRequest::ReactiveUiEvent {
+            plugin_id,
+            event_id,
+            value,
+            origin_tab,
+        } if !field_within(plugin_id, MAX_UI_PLUGIN_ID_BYTES)
+            || !field_within(event_id, MAX_UI_EVENT_ID_BYTES)
+            || value
+                .as_deref()
+                .is_some_and(|value| !field_within(value, MAX_UI_EVENT_VALUE_BYTES)) =>
+        {
+            Some(PluginUiFailureContext::UiEvent {
+                plugin_id: safe_failure_field(plugin_id, MAX_UI_PLUGIN_ID_BYTES),
+                event_id: safe_failure_field(event_id, MAX_UI_EVENT_ID_BYTES),
+                origin_tab: *origin_tab,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn origin_context_within_limits(context: &EventContext) -> bool {
+    field_within(&context.archive_path, MAX_ORIGIN_ARCHIVE_PATH_BYTES)
+        && context
+            .password
+            .as_deref()
+            .is_none_or(|password| field_within(password, MAX_ORIGIN_PASSWORD_BYTES))
+}
+
 pub struct PluginUiJobs {
     manager: Option<Arc<Mutex<PluginManager>>>,
     runtime: Arc<tokio::runtime::Runtime>,
     pending: Arc<Mutex<HashMap<RequestKey, RequestId>>>,
-    sender: mpsc::Sender<Completed>,
-    receiver: Arc<Mutex<mpsc::Receiver<Completed>>>,
+    completed: CompletedQueue,
+    outstanding: Arc<AtomicUsize>,
     cache: Arc<Mutex<PluginUiCache>>,
     completion_epoch: Signal<u64>,
-    ordered_sender: mpsc::Sender<QueuedJob>,
+    ordered_queue: OrderedJobQueue,
     origin_context_provider: Option<OriginContextProvider>,
+    owners: Arc<AtomicUsize>,
+}
+
+impl Clone for PluginUiJobs {
+    fn clone(&self) -> Self {
+        self.owners.fetch_add(1, AtomicOrdering::Relaxed);
+        Self {
+            manager: self.manager.clone(),
+            runtime: self.runtime.clone(),
+            pending: self.pending.clone(),
+            completed: self.completed.clone(),
+            outstanding: self.outstanding.clone(),
+            cache: self.cache.clone(),
+            completion_epoch: self.completion_epoch.clone(),
+            ordered_queue: self.ordered_queue.clone(),
+            origin_context_provider: self.origin_context_provider.clone(),
+            owners: self.owners.clone(),
+        }
+    }
+}
+
+impl Drop for PluginUiJobs {
+    fn drop(&mut self) {
+        if self.owners.fetch_sub(1, AtomicOrdering::AcqRel) == 1 {
+            self.ordered_queue.close();
+        }
+    }
 }
 
 impl PluginUiJobs {
@@ -295,18 +656,43 @@ impl PluginUiJobs {
         manager: Option<Arc<Mutex<PluginManager>>>,
         runtime: Arc<tokio::runtime::Runtime>,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel();
-        let (ordered_sender, ordered_receiver) = mpsc::channel::<QueuedJob>();
+        Self::new_with_capacities(
+            manager,
+            runtime,
+            ORDERED_JOB_CAPACITY,
+            COMPLETED_JOB_CAPACITY,
+        )
+    }
+
+    fn new_with_capacities(
+        manager: Option<Arc<Mutex<PluginManager>>>,
+        runtime: Arc<tokio::runtime::Runtime>,
+        ordered_capacity: usize,
+        completed_capacity: usize,
+    ) -> Self {
+        let completed = CompletedQueue::new(completed_capacity);
+        let ordered_queue = OrderedJobQueue::new(ordered_capacity);
         let ordered_manager = manager.clone();
-        let ordered_result_sender = sender.clone();
+        let worker_completed = completed.clone();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let worker_pending = pending.clone();
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let worker_outstanding = outstanding.clone();
         let ordered_epoch = Signal::new(0).with_name("plugin_ui_completion_epoch");
         let worker_epoch = ordered_epoch.clone();
+        let worker_queue = ordered_queue.clone();
         std::thread::Builder::new()
             .name("plugin-ui-ordered-jobs".to_string())
             .spawn(move || {
-                while let Ok(job) = ordered_receiver.recv() {
+                while let Some(job) = worker_queue.recv() {
                     let completed = execute_job(ordered_manager.clone(), job);
-                    publish_completed(&ordered_result_sender, &worker_epoch, completed);
+                    publish_completed(
+                        &worker_completed,
+                        &worker_pending,
+                        &worker_outstanding,
+                        &worker_epoch,
+                        completed,
+                    );
                 }
             })
             .expect("failed to start plugin UI ordered worker");
@@ -314,13 +700,14 @@ impl PluginUiJobs {
         Self {
             manager,
             runtime,
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            sender,
-            receiver: Arc::new(Mutex::new(receiver)),
+            pending,
+            completed,
+            outstanding,
             cache: Arc::new(Mutex::new(PluginUiCache::default())),
             completion_epoch: ordered_epoch,
-            ordered_sender,
+            ordered_queue,
             origin_context_provider: None,
+            owners: Arc::new(AtomicUsize::new(1)),
         }
     }
 
@@ -344,11 +731,61 @@ impl PluginUiJobs {
         request_id: RequestId,
         request: PluginUiRequest,
     ) -> RequestId {
+        if let Some(context) = invalid_request_context(&request) {
+            let completed = Completed {
+                key: RequestKey::Rejected(request_id),
+                result: PluginUiResult::Failed {
+                    request_id,
+                    context,
+                    error: "plugin UI request exceeded a host field limit".to_string(),
+                },
+                tracked: false,
+            };
+            publish_completed(
+                &self.completed,
+                &self.pending,
+                &self.outstanding,
+                &self.completion_epoch,
+                completed,
+            );
+            return request_id;
+        }
+
         let key = request.key(request_id);
+        let reactive = matches!(key, RequestKey::ReactiveUiEvent(..));
         {
             let mut pending = self.pending.lock();
-            if let Some(existing) = pending.get(&key) {
-                return *existing;
+            if !reactive {
+                if let Some(existing) = pending.get(&key) {
+                    return *existing;
+                }
+            } else if let Some(existing) = pending.get(&key) {
+                if existing.0 >= request_id.0 {
+                    return *existing;
+                }
+            }
+            if (!pending.contains_key(&key) && pending.len() == MAX_PENDING_JOBS)
+                || !try_reserve_outstanding(&self.outstanding)
+            {
+                drop(pending);
+                let context = key.failure_context();
+                let completed = Completed {
+                    key: RequestKey::Rejected(request_id),
+                    result: PluginUiResult::Failed {
+                        request_id,
+                        context,
+                        error: "plugin UI pending-job capacity reached".to_string(),
+                    },
+                    tracked: false,
+                };
+                publish_completed(
+                    &self.completed,
+                    &self.pending,
+                    &self.outstanding,
+                    &self.completion_epoch,
+                    completed,
+                );
+                return request_id;
             }
             pending.insert(key.clone(), request_id);
         }
@@ -356,7 +793,8 @@ impl PluginUiJobs {
         let origin_tab = match &request {
             PluginUiRequest::PageInit { origin_tab, .. } => Some(*origin_tab),
             PluginUiRequest::Layout { origin_tab, .. } => *origin_tab,
-            PluginUiRequest::UiEvent { origin_tab, .. } => Some(*origin_tab),
+            PluginUiRequest::UiEvent { origin_tab, .. }
+            | PluginUiRequest::ReactiveUiEvent { origin_tab, .. } => Some(*origin_tab),
             _ => None,
         };
         let origin_context = origin_tab.and_then(|tab_id| {
@@ -364,6 +802,26 @@ impl PluginUiJobs {
                 .as_ref()
                 .and_then(|provider| provider(tab_id))
         });
+        if origin_context
+            .as_ref()
+            .is_some_and(|context| !origin_context_within_limits(context))
+        {
+            let completed = rejected_completed_parts(
+                key.clone(),
+                request_id,
+                "origin context exceeded a host field limit".to_string(),
+            );
+            remove_pending_if_current(&self.pending, &key, request_id);
+            release_outstanding(&self.outstanding);
+            publish_completed(
+                &self.completed,
+                &self.pending,
+                &self.outstanding,
+                &self.completion_epoch,
+                completed,
+            );
+            return request_id;
+        }
         let job = QueuedJob {
             key,
             request_id,
@@ -377,19 +835,43 @@ impl PluginUiJobs {
                 | PluginUiRequest::SetEnabled { .. }
                 | PluginUiRequest::Install { .. }
                 | PluginUiRequest::UiEvent { .. }
+                | PluginUiRequest::ReactiveUiEvent { .. }
         ) {
-            if let Err(mpsc::SendError(job)) = self.ordered_sender.send(job) {
-                let completed = failed_completed(
-                    job,
-                    "plugin UI ordered worker channel is unavailable".to_string(),
-                );
-                publish_completed(&self.sender, &self.completion_epoch, completed);
+            match self.ordered_queue.try_push_or_replace(job) {
+                Ok(Some(_replaced)) => {
+                    release_outstanding(&self.outstanding);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let (job, reason) = match error {
+                        OrderedQueueError::Full(job) => {
+                            (job, "plugin UI ordered-job capacity reached")
+                        }
+                        OrderedQueueError::Closed(job) => {
+                            (job, "plugin UI ordered worker is unavailable")
+                        }
+                    };
+                    let rejected_key = job.key.clone();
+                    let rejected_id = job.request_id;
+                    let completed = rejected_completed(job, reason.to_string());
+                    remove_pending_if_current(&self.pending, &rejected_key, rejected_id);
+                    release_outstanding(&self.outstanding);
+                    publish_completed(
+                        &self.completed,
+                        &self.pending,
+                        &self.outstanding,
+                        &self.completion_epoch,
+                        completed,
+                    );
+                }
             }
             return request_id;
         }
 
         let manager = self.manager.clone();
-        let sender = self.sender.clone();
+        let completed_queue = self.completed.clone();
+        let pending = self.pending.clone();
+        let outstanding = self.outstanding.clone();
         let completion_epoch = self.completion_epoch.clone();
         self.runtime.spawn(async move {
             let fallback_key = job.key.clone();
@@ -402,7 +884,13 @@ impl PluginUiJobs {
                     format!("plugin UI worker failed: {error}"),
                 )
             });
-            publish_completed(&sender, &completion_epoch, completed);
+            publish_completed(
+                &completed_queue,
+                &pending,
+                &outstanding,
+                &completion_epoch,
+                completed,
+            );
         });
         request_id
     }
@@ -413,12 +901,17 @@ impl PluginUiJobs {
 
     pub fn drain(&self) -> Vec<PluginUiResult> {
         let mut results = Vec::new();
-        let receiver = self.receiver.lock();
-        while let Ok(completed) = receiver.try_recv() {
+        for completed in self.completed.drain() {
             let request_id = result_request_id(&completed.result);
             let mut pending = self.pending.lock();
-            if pending.get(&completed.key) == Some(&request_id) {
+            let current = pending.get(&completed.key) == Some(&request_id);
+            if current {
                 pending.remove(&completed.key);
+            }
+            if completed.tracked {
+                release_outstanding(&self.outstanding);
+            }
+            if current || !completed.tracked {
                 drop(pending);
                 self.cache_completed(&completed);
                 results.push(completed.result);
@@ -634,13 +1127,54 @@ fn result_request_id(result: &PluginUiResult) -> RequestId {
     }
 }
 
+fn try_reserve_outstanding(outstanding: &AtomicUsize) -> bool {
+    outstanding
+        .fetch_update(AtomicOrdering::AcqRel, AtomicOrdering::Acquire, |current| {
+            (current < MAX_PENDING_JOBS).then_some(current + 1)
+        })
+        .is_ok()
+}
+
+fn release_outstanding(outstanding: &AtomicUsize) {
+    let previous = outstanding.fetch_sub(1, AtomicOrdering::AcqRel);
+    debug_assert!(previous > 0, "plugin UI outstanding count underflowed");
+}
+
+fn remove_pending_if_current(
+    pending: &Arc<Mutex<HashMap<RequestKey, RequestId>>>,
+    key: &RequestKey,
+    request_id: RequestId,
+) {
+    let mut pending = pending.lock();
+    if pending.get(key) == Some(&request_id) {
+        pending.remove(key);
+    }
+}
+
 fn publish_completed(
-    sender: &mpsc::Sender<Completed>,
+    completed_queue: &CompletedQueue,
+    pending: &Arc<Mutex<HashMap<RequestKey, RequestId>>>,
+    outstanding: &Arc<AtomicUsize>,
     completion_epoch: &Signal<u64>,
     completed: Completed,
 ) {
-    if sender.send(completed).is_ok() {
-        completion_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+    match completed_queue.try_push_or_replace(completed) {
+        CompletionQueueAdmission::Inserted => {
+            completion_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+        }
+        CompletionQueueAdmission::Replaced(replaced) => {
+            if replaced.tracked {
+                release_outstanding(outstanding);
+            }
+            completion_epoch.update(|epoch| *epoch = epoch.wrapping_add(1));
+        }
+        CompletionQueueAdmission::Full(completed) => {
+            if completed.tracked {
+                let request_id = result_request_id(&completed.result);
+                remove_pending_if_current(pending, &completed.key, request_id);
+                release_outstanding(outstanding);
+            }
+        }
     }
 }
 
@@ -655,7 +1189,11 @@ fn execute_job(manager: Option<Arc<Mutex<PluginManager>>>, job: QueuedJob) -> Co
     let result = catch_worker_failure(request_id, context, || {
         execute(manager, request_id, request, origin_context)
     });
-    Completed { key, result }
+    Completed {
+        key,
+        result,
+        tracked: true,
+    }
 }
 
 fn catch_worker_failure(
@@ -672,8 +1210,15 @@ fn catch_worker_failure(
     })
 }
 
-fn failed_completed(job: QueuedJob, error: String) -> Completed {
-    failed_completed_parts(job.key, job.request_id, error)
+fn rejected_completed(job: QueuedJob, error: String) -> Completed {
+    rejected_completed_parts(job.key, job.request_id, error)
+}
+
+fn rejected_completed_parts(key: RequestKey, request_id: RequestId, error: String) -> Completed {
+    let mut completed = failed_completed_parts(key, request_id, error);
+    completed.key = RequestKey::Rejected(request_id);
+    completed.tracked = false;
+    completed
 }
 
 fn failed_completed_parts(key: RequestKey, request_id: RequestId, error: String) -> Completed {
@@ -686,6 +1231,7 @@ fn failed_completed_parts(key: RequestKey, request_id: RequestId, error: String)
             context,
             error,
         },
+        tracked: true,
     }
 }
 
@@ -738,12 +1284,21 @@ fn execute(
                             .map_err(|error| error.to_string())
                     })
                 });
+            let (actions, actions_limited) = match actions {
+                Ok(actions) => {
+                    let bounded =
+                        arclain_plugins::action_policy::bound_plugin_actions_with_status(actions);
+                    (Ok(bounded.actions), bounded.limited)
+                }
+                Err(error) => (Err(error), false),
+            };
             PluginUiResult::PageInitialized {
                 request_id,
                 plugin_id,
                 page_id,
                 origin_tab,
                 actions,
+                actions_limited,
             }
         }
         PluginUiRequest::Layout {
@@ -858,6 +1413,12 @@ fn execute(
             event_id,
             value,
             origin_tab,
+        }
+        | PluginUiRequest::ReactiveUiEvent {
+            plugin_id,
+            event_id,
+            value,
+            origin_tab,
         } => {
             let result = manager
                 .ok_or_else(|| "plugin manager unavailable".to_string())
@@ -868,16 +1429,21 @@ fn execute(
                     };
                     let instance =
                         instance.ok_or_else(|| format!("plugin not found: {plugin_id}"))?;
-                    let actions = {
-                        let mut instance = instance.lock();
-                        with_event_context(&mut instance, origin_context, |instance| {
-                            instance
-                                .send_ui_event(&event_id, value)
-                                .map_err(|error| error.to_string())
-                        })?
-                    };
+                    let actions =
+                        arclain_plugins::action_policy::bound_plugin_actions_with_status({
+                            let mut instance = instance.lock();
+                            with_event_context(&mut instance, origin_context, |instance| {
+                                instance
+                                    .send_ui_event(&event_id, value)
+                                    .map_err(|error| error.to_string())
+                            })?
+                        });
                     let settings = manager.lock().get_settings_for(&plugin_id);
-                    Ok(PluginUiEventCompletion { actions, settings })
+                    Ok(PluginUiEventCompletion {
+                        actions: actions.actions,
+                        actions_limited: actions.limited,
+                        settings,
+                    })
                 });
             PluginUiResult::UiEventFinished {
                 request_id,
@@ -893,6 +1459,448 @@ fn execute(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn reactive_job(request_id: u64, value: &str) -> QueuedJob {
+        let request_id = RequestId(request_id);
+        let request = PluginUiRequest::ReactiveUiEvent {
+            plugin_id: "plugin".to_string(),
+            event_id: "changed".to_string(),
+            value: Some(value.to_string()),
+            origin_tab: TabId(7),
+        };
+        QueuedJob {
+            key: request.key(request_id),
+            request_id,
+            request,
+            origin_context: None,
+        }
+    }
+
+    fn direct_job(request_id: u64) -> QueuedJob {
+        let request_id = RequestId(request_id);
+        let request = PluginUiRequest::UiEvent {
+            plugin_id: "plugin".to_string(),
+            event_id: format!("clicked-{request_id:?}"),
+            value: None,
+            origin_tab: TabId(7),
+        };
+        QueuedJob {
+            key: request.key(request_id),
+            request_id,
+            request,
+            origin_context: None,
+        }
+    }
+
+    fn origin_context(entries: Arc<Vec<arclain_core::ArchiveEntry>>) -> EventContext {
+        EventContext {
+            archive_path: "archive.zip".to_string(),
+            password: Some("secret".to_string()),
+            entries,
+            metadata_signal: Signal::new(None),
+        }
+    }
+
+    fn completed_ui_event(request_id: u64, reactive: bool) -> Completed {
+        let request_id = RequestId(request_id);
+        Completed {
+            key: if reactive {
+                RequestKey::ReactiveUiEvent("plugin".into(), "changed".into(), TabId(7))
+            } else {
+                RequestKey::UiEvent(
+                    request_id,
+                    "plugin".into(),
+                    format!("clicked-{request_id:?}"),
+                    TabId(7),
+                )
+            },
+            result: PluginUiResult::UiEventFinished {
+                request_id,
+                plugin_id: "plugin".into(),
+                origin_tab: TabId(7),
+                result: Ok(PluginUiEventCompletion {
+                    actions: Vec::new(),
+                    actions_limited: false,
+                    settings: None,
+                }),
+            },
+            tracked: true,
+        }
+    }
+
+    #[test]
+    fn completion_queue_keeps_direct_results_and_coalesces_reactive_results() {
+        let queue = CompletedQueue::new(2);
+        assert!(matches!(
+            queue.try_push_or_replace(completed_ui_event(1, true)),
+            CompletionQueueAdmission::Inserted
+        ));
+        let replaced = queue.try_push_or_replace(completed_ui_event(2, true));
+        assert!(matches!(
+            replaced,
+            CompletionQueueAdmission::Replaced(Completed {
+                result: PluginUiResult::UiEventFinished {
+                    request_id: RequestId(1),
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(matches!(
+            queue.try_push_or_replace(completed_ui_event(3, false)),
+            CompletionQueueAdmission::Inserted
+        ));
+        assert!(matches!(
+            queue.try_push_or_replace(completed_ui_event(4, false)),
+            CompletionQueueAdmission::Full(_)
+        ));
+
+        let results = queue.drain();
+        assert_eq!(results.len(), 2);
+        assert_eq!(result_request_id(&results[0].result), RequestId(2));
+        assert_eq!(result_request_id(&results[1].result), RequestId(3));
+    }
+
+    #[test]
+    fn completion_queue_coalesces_overload_failures_but_keeps_one_visible() {
+        let queue = CompletedQueue::new(2);
+        assert!(matches!(
+            queue.try_push_or_replace(completed_ui_event(1, false)),
+            CompletionQueueAdmission::Inserted
+        ));
+        assert!(matches!(
+            queue.try_push_or_replace(rejected_completed_parts(
+                RequestKey::NetworkLog,
+                RequestId(2),
+                "first overload".to_string(),
+            )),
+            CompletionQueueAdmission::Inserted
+        ));
+        assert!(matches!(
+            queue.try_push_or_replace(rejected_completed_parts(
+                RequestKey::NetworkLog,
+                RequestId(3),
+                "latest overload".to_string(),
+            )),
+            CompletionQueueAdmission::Replaced(_)
+        ));
+
+        let results = queue.drain();
+        assert!(results.iter().any(|completed| matches!(
+            &completed.result,
+            PluginUiResult::Failed { error, .. } if error.contains("latest overload")
+        )));
+    }
+
+    #[test]
+    fn late_stale_completion_cannot_replace_a_newer_result() {
+        let queue = CompletedQueue::new(1);
+        assert!(matches!(
+            queue.try_push_or_replace(completed_ui_event(2, true)),
+            CompletionQueueAdmission::Inserted
+        ));
+        assert!(matches!(
+            queue.try_push_or_replace(completed_ui_event(1, true)),
+            CompletionQueueAdmission::Replaced(Completed {
+                result: PluginUiResult::UiEventFinished {
+                    request_id: RequestId(1),
+                    ..
+                },
+                ..
+            })
+        ));
+
+        let results = queue.drain();
+        assert_eq!(result_request_id(&results[0].result), RequestId(2));
+    }
+
+    #[test]
+    fn ordered_queue_is_bounded_and_replaces_queued_reactive_event_with_newest() {
+        let queue = OrderedJobQueue::new(2);
+        assert!(queue.try_push_or_replace(reactive_job(1, "old")).is_ok());
+        assert!(queue.try_push_or_replace(reactive_job(2, "new")).is_ok());
+        assert!(queue
+            .try_push_or_replace(QueuedJob {
+                key: RequestKey::PageInit(RequestId(3), "plugin".into(), "page".into(), TabId(7)),
+                request_id: RequestId(3),
+                request: PluginUiRequest::PageInit {
+                    plugin_id: "plugin".into(),
+                    page_id: "page".into(),
+                    origin_tab: TabId(7),
+                },
+                origin_context: None,
+            })
+            .is_ok());
+        assert!(matches!(
+            queue.try_push_or_replace(QueuedJob {
+                key: RequestKey::PageInit(RequestId(4), "plugin".into(), "other".into(), TabId(7)),
+                request_id: RequestId(4),
+                request: PluginUiRequest::PageInit {
+                    plugin_id: "plugin".into(),
+                    page_id: "other".into(),
+                    origin_tab: TabId(7),
+                },
+                origin_context: None,
+            }),
+            Err(OrderedQueueError::Full(_))
+        ));
+
+        let newest = queue.recv().expect("reactive event queued");
+        assert_eq!(newest.request_id, RequestId(2));
+        assert!(matches!(
+            newest.request,
+            PluginUiRequest::ReactiveUiEvent { value: Some(value), .. } if value == "new"
+        ));
+        assert!(matches!(
+            queue.recv().expect("direct event queued").request,
+            PluginUiRequest::PageInit { .. }
+        ));
+    }
+
+    #[test]
+    fn ordered_queue_preserves_direct_actions_in_admission_order() {
+        let queue = OrderedJobQueue::new(2);
+        assert!(queue.try_push_or_replace(direct_job(1)).is_ok());
+        assert!(queue.try_push_or_replace(direct_job(2)).is_ok());
+
+        assert_eq!(queue.recv().unwrap().request_id, RequestId(1));
+        assert_eq!(queue.recv().unwrap().request_id, RequestId(2));
+    }
+
+    #[test]
+    fn older_reactive_admission_cannot_replace_a_newer_queued_value() {
+        let queue = OrderedJobQueue::new(1);
+        assert!(queue.try_push_or_replace(reactive_job(2, "new")).is_ok());
+        let dropped = match queue.try_push_or_replace(reactive_job(1, "old")) {
+            Ok(Some(job)) => job,
+            _ => panic!("reactive event should be coalesced"),
+        };
+
+        assert_eq!(dropped.request_id, RequestId(1));
+        assert_eq!(queue.recv().unwrap().request_id, RequestId(2));
+    }
+
+    #[test]
+    fn oversized_ui_event_is_rejected_before_origin_context_is_snapshotted() {
+        let provider_calls = Arc::new(AtomicU64::new(0));
+        let calls = provider_calls.clone();
+        let jobs = test_jobs().with_origin_context_provider(move |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+
+        jobs.request(PluginUiRequest::UiEvent {
+            plugin_id: "plugin".to_string(),
+            event_id: "x".repeat(MAX_UI_EVENT_ID_BYTES + 1),
+            value: None,
+            origin_tab: TabId(5),
+        });
+
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            jobs.drain().as_slice(),
+            [PluginUiResult::Failed { error, .. }] if error.contains("field limit")
+        ));
+    }
+
+    #[test]
+    fn oversized_install_path_is_rejected_without_retaining_the_path() {
+        let jobs = test_jobs();
+
+        jobs.request(PluginUiRequest::Install {
+            wasm_path: PathBuf::from("x".repeat(MAX_UI_INSTALL_PATH_BYTES + 1)),
+        });
+
+        assert!(matches!(
+            jobs.drain().as_slice(),
+            [PluginUiResult::Failed {
+                context: PluginUiFailureContext::Install { wasm_path },
+                error,
+                ..
+            }] if wasm_path == std::path::Path::new("<oversized>")
+                && error.contains("field limit")
+        ));
+    }
+
+    #[test]
+    fn full_completion_queue_releases_the_dropped_pending_request() {
+        let completed_queue = CompletedQueue::new(1);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let outstanding = Arc::new(AtomicUsize::new(2));
+        let epoch = Signal::new(0);
+        let first_key = RequestKey::ChromeSnapshot;
+        let second_key = RequestKey::NetworkLog;
+        pending.lock().insert(first_key.clone(), RequestId(1));
+        pending.lock().insert(second_key.clone(), RequestId(2));
+
+        publish_completed(
+            &completed_queue,
+            &pending,
+            &outstanding,
+            &epoch,
+            Completed {
+                key: first_key.clone(),
+                result: PluginUiResult::ChromeSnapshotLoaded {
+                    request_id: RequestId(1),
+                    summary: PluginStatusSummary::default(),
+                    top_tabs: Vec::new(),
+                },
+                tracked: true,
+            },
+        );
+        publish_completed(
+            &completed_queue,
+            &pending,
+            &outstanding,
+            &epoch,
+            Completed {
+                key: second_key.clone(),
+                result: PluginUiResult::NetworkLogLoaded {
+                    request_id: RequestId(2),
+                    entries: Vec::new(),
+                },
+                tracked: true,
+            },
+        );
+
+        assert!(pending.lock().contains_key(&first_key));
+        assert!(!pending.lock().contains_key(&second_key));
+        assert_eq!(outstanding.load(AtomicOrdering::Acquire), 1);
+        assert_eq!(epoch.get(), 1);
+    }
+
+    #[test]
+    fn replacing_reactive_job_releases_old_origin_context() {
+        let queue = OrderedJobQueue::new(1);
+        let old_entries = Arc::new(Vec::new());
+        let new_entries = Arc::new(Vec::new());
+        let context = |entries: Arc<Vec<arclain_core::ArchiveEntry>>| EventContext {
+            archive_path: "archive.zip".to_string(),
+            password: None,
+            entries,
+            metadata_signal: Signal::new(None),
+        };
+        let mut old = reactive_job(1, "old");
+        old.origin_context = Some(context(old_entries.clone()));
+        assert!(queue.try_push_or_replace(old).is_ok());
+        assert_eq!(Arc::strong_count(&old_entries), 2);
+
+        let mut new = reactive_job(2, "new");
+        new.origin_context = Some(context(new_entries.clone()));
+        assert!(queue.try_push_or_replace(new).is_ok());
+
+        assert_eq!(Arc::strong_count(&old_entries), 1);
+        assert_eq!(Arc::strong_count(&new_entries), 2);
+    }
+
+    #[test]
+    fn rejecting_a_job_releases_its_sensitive_origin_snapshot() {
+        let entries = Arc::new(Vec::new());
+        let mut job = direct_job(1);
+        job.origin_context = Some(origin_context(entries.clone()));
+        assert_eq!(Arc::strong_count(&entries), 2);
+
+        let _failure = rejected_completed(job, "queue full".to_string());
+
+        assert_eq!(Arc::strong_count(&entries), 1);
+    }
+
+    #[test]
+    fn finishing_a_job_releases_its_sensitive_origin_snapshot() {
+        let entries = Arc::new(Vec::new());
+        let mut job = direct_job(1);
+        job.origin_context = Some(origin_context(entries.clone()));
+        assert_eq!(Arc::strong_count(&entries), 2);
+
+        let _completed = execute_job(None, job);
+
+        assert_eq!(Arc::strong_count(&entries), 1);
+    }
+
+    #[test]
+    fn pending_capacity_rejects_without_snapshotting_origin_context() {
+        let provider_calls = Arc::new(AtomicU64::new(0));
+        let calls = provider_calls.clone();
+        let jobs = test_jobs().with_origin_context_provider(move |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+        {
+            let mut pending = jobs.pending.lock();
+            for index in 0..MAX_PENDING_JOBS {
+                pending.insert(
+                    RequestKey::Rejected(RequestId(index as u64)),
+                    RequestId(index as u64),
+                );
+            }
+        }
+
+        jobs.request(PluginUiRequest::UiEvent {
+            plugin_id: "plugin".to_string(),
+            event_id: "clicked".to_string(),
+            value: None,
+            origin_tab: TabId(9),
+        });
+
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+        assert!(matches!(
+            jobs.drain().as_slice(),
+            [PluginUiResult::Failed { error, .. }] if error.contains("pending-job capacity")
+        ));
+    }
+
+    #[test]
+    fn outstanding_capacity_remains_bounded_after_pending_keys_are_invalidated() {
+        let provider_calls = Arc::new(AtomicU64::new(0));
+        let calls = provider_calls.clone();
+        let jobs = test_jobs().with_origin_context_provider(move |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            None
+        });
+        jobs.outstanding
+            .store(MAX_PENDING_JOBS, AtomicOrdering::Release);
+
+        jobs.request(PluginUiRequest::UiEvent {
+            plugin_id: "plugin".to_string(),
+            event_id: "clicked".to_string(),
+            value: None,
+            origin_tab: TabId(9),
+        });
+
+        assert_eq!(provider_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            jobs.outstanding.load(AtomicOrdering::Acquire),
+            MAX_PENDING_JOBS
+        );
+        assert!(matches!(
+            jobs.drain().as_slice(),
+            [PluginUiResult::Failed { error, .. }] if error.contains("pending-job capacity")
+        ));
+    }
+
+    #[test]
+    fn oversized_origin_context_is_not_retained_by_ordered_queue() {
+        let jobs = test_jobs().with_origin_context_provider(|_| {
+            Some(EventContext {
+                archive_path: "archive.zip".to_string(),
+                password: Some("p".repeat(MAX_ORIGIN_PASSWORD_BYTES + 1)),
+                entries: Arc::new(Vec::new()),
+                metadata_signal: Signal::new(None),
+            })
+        });
+
+        jobs.request(PluginUiRequest::UiEvent {
+            plugin_id: "plugin".to_string(),
+            event_id: "clicked".to_string(),
+            value: None,
+            origin_tab: TabId(9),
+        });
+
+        assert!(matches!(
+            jobs.drain().as_slice(),
+            [PluginUiResult::Failed { error, .. }] if error.contains("origin context")
+        ));
+    }
 
     fn test_jobs() -> PluginUiJobs {
         PluginUiJobs::new(
@@ -975,10 +1983,8 @@ mod tests {
 
     #[test]
     fn disconnected_ordered_worker_publishes_a_contextual_page_init_failure() {
-        let mut jobs = test_jobs();
-        let (disconnected_sender, disconnected_receiver) = mpsc::channel();
-        drop(disconnected_receiver);
-        jobs.ordered_sender = disconnected_sender;
+        let jobs = test_jobs();
+        jobs.ordered_queue.close();
         let mut page_state = crate::features::plugins::domain::state::PluginDialogState::default();
         let request_id = page_state.open_page("plugin", "page", TabId(7));
 

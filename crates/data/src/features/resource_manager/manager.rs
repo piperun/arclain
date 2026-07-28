@@ -3,13 +3,15 @@
 //! Provides a unified interface for getting data from network, disk, or cache
 //! without exposing storage details to consumers.
 
-use crate::features::content_cache::ContentCache;
+use crate::features::content_cache::{CacheOwner, ContentCache};
 use crate::shared::{
-    ResourceConfig, ResourceData, ResourceRequest, ResourceSource, ResourceType, StorageStrategy,
+    read_to_end_with_limit, safe_log_fingerprint, ResourceConfig, ResourceData, ResourceRequest,
+    ResourceSource, ResourceType, StorageStrategy, DEFAULT_MAX_RESOURCE_SIZE_BYTES,
 };
 use arclain_db::CacheType;
 use parking_lot::RwLock;
 use std::collections::HashMap;
+use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -90,22 +92,33 @@ impl ResourceManager {
 
     /// Check if a resource exists (in any storage)
     pub fn has(&self, key: &str) -> bool {
+        self.has_for_owner(&CacheOwner::host(), key)
+    }
+
+    pub fn has_for_owner(&self, owner: &CacheOwner, key: &str) -> bool {
+        let scoped_key = owner.scoped_key(key);
         // Check memory first
-        if self.memory_store.read().contains_key(key) {
+        let memory = self.memory_store.read();
+        if memory.contains_key(&scoped_key)
+            || (matches!(owner, CacheOwner::Host) && memory.contains_key(key))
+        {
             return true;
         }
+        drop(memory);
 
         // Check cache
         if let Some(cache) = &self.cache {
-            if cache.has(key).unwrap_or(false) {
+            if cache.has_for_owner(owner, key).unwrap_or(false) {
                 return true;
             }
         }
 
         // Check disk fallback
         if let Some(dir) = &self.fallback_dir {
-            let path = dir.join(sanitize_key(key));
-            if path.exists() {
+            let scoped_path = dir.join(sanitize_key(&scoped_key));
+            if scoped_path.exists()
+                || (matches!(owner, CacheOwner::Host) && dir.join(sanitize_key(key)).exists())
+            {
                 return true;
             }
         }
@@ -115,35 +128,99 @@ impl ResourceManager {
 
     /// Get a resource synchronously (from storage only, no fetch)
     pub fn get(&self, key: &str) -> Option<ResourceData> {
+        let limit = self.materialization_limit();
+        self.get_with_limit(key, limit)
+    }
+
+    /// Get a resource without materializing more than `limit` bytes.
+    pub fn get_with_limit(&self, key: &str, limit: usize) -> Option<ResourceData> {
+        self.get_with_limit_for_owner(&CacheOwner::host(), key, limit)
+    }
+
+    pub fn get_with_limit_for_owner(
+        &self,
+        owner: &CacheOwner,
+        key: &str,
+        limit: usize,
+    ) -> Option<ResourceData> {
+        let limit = limit.min(self.materialization_limit());
+        let scoped_key = owner.scoped_key(key);
         // Try memory first
-        if let Some(data) = self.memory_store.read().get(key).cloned() {
-            return Some(ResourceData {
-                data,
-                content_type: None,
-                source: ResourceSource::Memory,
-            });
+        let memory = self.memory_store.read();
+        let memory_data = memory.get(&scoped_key).or_else(|| {
+            matches!(owner, CacheOwner::Host)
+                .then(|| memory.get(key))
+                .flatten()
+        });
+        if let Some(data) = memory_data {
+            if data.len() <= limit {
+                return Some(ResourceData {
+                    data: data.clone(),
+                    content_type: None,
+                    source: ResourceSource::Memory,
+                });
+            }
+            warn!(
+                "[ResourceManager] Memory entry '{}' exceeds the {}-byte materialized read limit",
+                safe_log_fingerprint(key),
+                limit
+            );
         }
+        drop(memory);
 
         // Try cache
         if let Some(cache) = &self.cache {
-            if let Ok(Some(data)) = cache.get(key) {
-                return Some(ResourceData {
-                    data,
-                    content_type: None,
-                    source: ResourceSource::Cache,
-                });
+            match cache.get_with_limit_for_owner(owner, key, limit) {
+                Ok(Some(data)) => {
+                    return Some(ResourceData {
+                        data,
+                        content_type: None,
+                        source: ResourceSource::Cache,
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(
+                        "[ResourceManager] Bounded cache read failed: {}",
+                        safe_log_fingerprint(error.to_string())
+                    );
+                }
             }
         }
 
         // Try disk fallback
         if let Some(dir) = &self.fallback_dir {
-            let path = dir.join(sanitize_key(key));
-            if let Ok(data) = std::fs::read(&path) {
-                return Some(ResourceData {
-                    data,
-                    content_type: None,
-                    source: ResourceSource::Disk,
-                });
+            let scoped_path = dir.join(sanitize_key(&scoped_key));
+            let path = if scoped_path.exists() || !matches!(owner, CacheOwner::Host) {
+                scoped_path
+            } else {
+                dir.join(sanitize_key(key))
+            };
+            let declared_oversize = path.metadata().ok().is_some_and(|metadata| {
+                usize::try_from(metadata.len()).map_or(true, |length| length > limit)
+            });
+            if declared_oversize {
+                warn!(
+                    "[ResourceManager] Fallback entry '{}' exceeds the {}-byte materialized read limit",
+                    safe_log_fingerprint(key),
+                    limit
+                );
+            } else if let Ok(mut file) = File::open(&path) {
+                match read_to_end_with_limit(&mut file, limit, "fallback resource") {
+                    Ok(data) => {
+                        return Some(ResourceData {
+                            data,
+                            content_type: None,
+                            source: ResourceSource::Disk,
+                        });
+                    }
+                    Err(error) => {
+                        warn!(
+                            "[ResourceManager] Bounded fallback read failed: {}",
+                            safe_log_fingerprint(error.to_string())
+                        );
+                    }
+                }
             }
         }
 
@@ -152,6 +229,16 @@ impl ResourceManager {
 
     /// Store a resource directly (without fetching)
     pub fn put(&self, key: &str, data: &[u8], request: &ResourceRequest) -> Result<(), String> {
+        self.put_for_owner(&CacheOwner::host(), key, data, request)
+    }
+
+    pub fn put_for_owner(
+        &self,
+        owner: &CacheOwner,
+        key: &str,
+        data: &[u8],
+        request: &ResourceRequest,
+    ) -> Result<(), String> {
         let strategy = request
             .storage_override
             .unwrap_or(self.config.default_strategy);
@@ -174,21 +261,23 @@ impl ResourceManager {
                 ImageValidation::TooSmall(size) => {
                     warn!(
                         "[ResourceManager] Rejecting image '{}': too small ({} bytes, min: {})",
-                        key, size, MIN_IMAGE_SIZE
+                        safe_log_fingerprint(key),
+                        size,
+                        MIN_IMAGE_SIZE
                     );
                     return Err(format!("Image too small: {} bytes", size));
                 }
                 ImageValidation::InvalidFormat => {
                     warn!(
                         "[ResourceManager] Rejecting image '{}': invalid format (unknown magic bytes)",
-                        key
+                        safe_log_fingerprint(key)
                     );
                     return Err("Invalid image format".to_string());
                 }
                 ImageValidation::NotAnImage => {
                     warn!(
                         "[ResourceManager] Rejecting image '{}': not an image (looks like HTML/text)",
-                        key
+                        safe_log_fingerprint(key)
                     );
                     return Err("Data is not an image (received HTML/text instead)".to_string());
                 }
@@ -219,7 +308,8 @@ impl ResourceManager {
                         .or_else(|| CacheType::extract_product_id(key));
 
                     cache
-                        .put(
+                        .put_for_owner(
+                            owner,
                             key,
                             data,
                             cache_type,
@@ -227,31 +317,46 @@ impl ResourceManager {
                             request.url.as_deref(), // source_url
                         )
                         .map_err(|e| e.to_string())?;
-                    debug!("Stored {} bytes to cache: {}", data.len(), key);
+                    debug!(
+                        "Stored {} bytes to cache: {}",
+                        data.len(),
+                        safe_log_fingerprint(key)
+                    );
                 } else {
                     // Fallback to disk if cache disabled
-                    self.store_to_disk(key, data)?;
+                    self.store_to_disk_for_owner(owner, key, data)?;
                 }
             }
             StorageStrategy::Disk => {
-                self.store_to_disk(key, data)?;
+                self.store_to_disk_for_owner(owner, key, data)?;
             }
             StorageStrategy::Memory => {
                 self.memory_store
                     .write()
-                    .insert(key.to_string(), data.to_vec());
-                debug!("Stored {} bytes to memory: {}", data.len(), key);
+                    .insert(owner.scoped_key(key), data.to_vec());
+                debug!(
+                    "Stored {} bytes to memory: {}",
+                    data.len(),
+                    safe_log_fingerprint(key)
+                );
             }
             StorageStrategy::NoStore => {
-                debug!("NoStore strategy - not storing: {}", key);
+                debug!(
+                    "NoStore strategy - not storing: {}",
+                    safe_log_fingerprint(key)
+                );
             }
         }
 
         Ok(())
     }
 
-    /// Store to disk fallback
-    fn store_to_disk(&self, key: &str, data: &[u8]) -> Result<(), String> {
+    fn store_to_disk_for_owner(
+        &self,
+        owner: &CacheOwner,
+        key: &str,
+        data: &[u8],
+    ) -> Result<(), String> {
         let dir = self
             .fallback_dir
             .as_ref()
@@ -259,36 +364,57 @@ impl ResourceManager {
 
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
 
-        let path = dir.join(sanitize_key(key));
+        let path = dir.join(sanitize_key(&owner.scoped_key(key)));
         std::fs::write(&path, data).map_err(|e| e.to_string())?;
 
-        debug!("Stored {} bytes to disk: {}", data.len(), path.display());
+        debug!(
+            "Stored {} bytes to disk: {}",
+            data.len(),
+            safe_log_fingerprint(path.as_os_str().to_string_lossy().as_bytes())
+        );
         Ok(())
     }
 
     /// Fetch and store a resource (blocking)
     ///
     /// Note: For async fetching, use request_async + poll_status pattern
-    pub fn fetch_sync(
+    pub fn fetch_sync<R: std::io::Read>(
         &self,
         request: &ResourceRequest,
-        http_get: impl Fn(&str) -> Result<Vec<u8>, String>,
+        http_get: impl FnOnce(&str) -> Result<R, String>,
     ) -> Result<ResourceData, String> {
         let key = &request.key;
 
         // Check if already cached
         if let Some(data) = self.get(key) {
-            info!("Resource found in storage: {}", key);
+            info!("Resource found in storage: {}", safe_log_fingerprint(key));
             return Ok(data);
         }
 
         // Fetch from source
-        let data = if let Some(url) = &request.url {
-            info!("Fetching resource from network: {}", url);
-            http_get(url)?
+        let limit = self.materialization_limit();
+        let (data, source) = if let Some(url) = &request.url {
+            info!(
+                "Fetching resource from network: {}",
+                safe_log_fingerprint(url)
+            );
+            let mut reader = http_get(url)?;
+            (
+                read_to_end_with_limit(&mut reader, limit, "fetched resource")
+                    .map_err(|error| error.to_string())?,
+                ResourceSource::Network,
+            )
         } else if let Some(path) = &request.path {
-            info!("Reading resource from disk: {}", path.display());
-            std::fs::read(path).map_err(|e| e.to_string())?
+            info!(
+                "Reading resource from disk: {}",
+                safe_log_fingerprint(path.as_os_str().to_string_lossy().as_bytes())
+            );
+            let mut file = File::open(path).map_err(|error| error.to_string())?;
+            (
+                read_to_end_with_limit(&mut file, limit, "local resource")
+                    .map_err(|error| error.to_string())?,
+                ResourceSource::Disk,
+            )
         } else {
             return Err("No URL or path provided for resource".to_string());
         };
@@ -299,7 +425,7 @@ impl ResourceManager {
         Ok(ResourceData {
             data,
             content_type: None,
-            source: ResourceSource::Network,
+            source,
         })
     }
 
@@ -328,6 +454,13 @@ impl ResourceManager {
         &self.config
     }
 
+    /// Effective ceiling for APIs that return a fully materialized body.
+    pub fn materialization_limit(&self) -> usize {
+        self.config
+            .max_resource_size
+            .unwrap_or(DEFAULT_MAX_RESOURCE_SIZE_BYTES)
+    }
+
     /// Update config
     pub fn set_config(&mut self, config: ResourceConfig) {
         self.fallback_dir = config.fallback_dir.clone();
@@ -353,6 +486,7 @@ fn sanitize_key(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     // =========================================================================
     // validate_image
@@ -481,5 +615,22 @@ mod tests {
     #[test]
     fn sanitize_key_empty() {
         assert_eq!(sanitize_key(""), "");
+    }
+
+    #[test]
+    fn fetch_sync_reads_callback_body_through_the_configured_limit() {
+        const LIMIT: usize = 8;
+        let manager = ResourceManager::without_cache(ResourceConfig {
+            default_strategy: StorageStrategy::NoStore,
+            max_resource_size: Some(LIMIT),
+            ..ResourceConfig::default()
+        });
+        let request = ResourceRequest::from_url("bounded", "https://example.invalid/body");
+
+        let error = manager
+            .fetch_sync(&request, |_| Ok(Cursor::new(vec![0_u8; LIMIT + 1])))
+            .expect_err("oversized callback reader must be rejected while reading");
+
+        assert!(error.contains("8-byte materialized read limit"));
     }
 }

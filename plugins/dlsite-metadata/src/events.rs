@@ -2,7 +2,7 @@
 //!
 //! Was the body of `Component::on_ui_event` — a series of system-event
 //! prefix checks (`__page_init`, `event:archive_opened`,
-//! `background_fetch_complete:`, `play_video:`, `do_native_fetch:`)
+//! `background_fetch_complete:`, `do_native_fetch:`)
 //! followed by a 22-arm match on the UI element id, plus another set
 //! of prefix-guarded ids (`view_cache_entry_`, `select_entry_`,
 //! `refresh_view_`, `refetch_entry_`, the `RJ`/`VJ`/`BJ`-prefix list
@@ -16,11 +16,31 @@
 //! resolve through `crate::` since we're outside the impl block now.
 
 use crate::{
-    detect_code_from_archive, fetch_dlsite_metadata, fetch_images_with_progress,
-    fetch_videos_with_progress, generate_metadata_json, get_cached_dlsite_metadata,
-    get_total_image_count, perform_scan_cached_only, sanitize_filename, search_dlsite, STATE,
+    detect_code_from_archive, emit_dlsite_metadata, fetch_dlsite_metadata,
+    fetch_images_with_progress, fetch_videos_with_progress, generate_metadata_json,
+    get_cached_dlsite_metadata, get_total_image_count, perform_scan_cached_only,
+    raw_metadata_cache_keys, sanitize_filename, search_dlsite, STATE,
 };
 use archust_plugin_sdk::info;
+
+const MAX_RETURNED_TOAST_BYTES: usize = 1024;
+
+fn toast(
+    message: impl Into<String>,
+    level: archust_plugin_sdk::arclain::plugin::ui::ToastLevel,
+) -> archust_plugin_sdk::arclain::plugin::ui::PluginAction {
+    use archust_plugin_sdk::arclain::plugin::ui::{PluginAction, ToastConfig};
+    let mut message = message.into();
+    if message.len() > MAX_RETURNED_TOAST_BYTES {
+        let mut end = MAX_RETURNED_TOAST_BYTES;
+        while !message.is_char_boundary(end) {
+            end -= 1;
+        }
+        message.truncate(end);
+    }
+    message.shrink_to_fit();
+    PluginAction::ShowToast(ToastConfig { message, level })
+}
 
 pub(crate) fn dispatch(
     id: String,
@@ -79,7 +99,7 @@ pub(crate) fn dispatch(
                 ));
                 let metadata_json =
                     generate_metadata_json(code, Some(&(json.clone(), scraped.clone())));
-                archust_plugin_sdk::emit_metadata(&metadata_json);
+                emit_dlsite_metadata(&metadata_json);
                 STATE.with(|s| {
                     s.borrow_mut().found_metadata = Some((code.to_string(), json, scraped));
                 });
@@ -95,33 +115,6 @@ pub(crate) fn dispatch(
     if let Some(key) = id.strip_prefix("background_fetch_failed:") {
         info(&format!("[DLSite Plugin] Background fetch FAILED: {}", key));
         STATE.with(|s| s.borrow_mut().fetch_in_progress = false);
-        return vec![];
-    }
-
-    // "Play in external player" button — the panel emits
-    // `play_video:<cache_key>` when the user clicks. Hand off
-    // the cache key to the host, which writes the bytes to a
-    // temp file and shells out to the OS default app for `.mp4`
-    // (mpv / VLC / etc.). Bytes never enter the WASM heap; the
-    // plugin doesn't even read them.
-    if let Some(cache_key) = id.strip_prefix("play_video:") {
-        info(&format!("[DLSite Plugin] Play requested for {}", cache_key));
-        // chobit always serves mp4; if that ever stops being
-        // true we'd need to track per-key extension at fetch
-        // time. For now, mp4 is the right guess.
-        if let Err(e) = archust_plugin_sdk::play_cached_blob(cache_key, "mp4") {
-            archust_plugin_sdk::log_network_activity(&format!(
-                "Failed to play {}: {}",
-                cache_key, e,
-            ));
-            archust_plugin_sdk::show_message(
-                "Playback failed",
-                &format!(
-                    "Could not launch external player for the cached video:\n\n{}",
-                    e
-                ),
-            );
-        }
         return vec![];
     }
 
@@ -146,7 +139,7 @@ pub(crate) fn dispatch(
                 ));
                 let metadata_json =
                     generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
-                archust_plugin_sdk::emit_metadata(&metadata_json);
+                emit_dlsite_metadata(&metadata_json);
 
                 // Mirror the select_result_ / refetch_entry_ paths: kick off
                 // image + video downloads after metadata so the new entry
@@ -205,7 +198,7 @@ pub(crate) fn dispatch(
         if let Some((json, scraped)) = fetch_dlsite_metadata(&code) {
             let metadata_json =
                 generate_metadata_json(&code, Some(&(json.clone(), scraped.clone())));
-            archust_plugin_sdk::emit_metadata(&metadata_json);
+            emit_dlsite_metadata(&metadata_json);
 
             // Download images + videos with progress
             if let Some(ref s) = scraped {
@@ -495,63 +488,73 @@ pub(crate) fn dispatch(
             }
         }
         "do_clear_all_cache" => {
-            info("[DLSite Plugin] Clearing ALL cache...");
-            archust_plugin_sdk::invalidate_cache("dlsite:*");
-            archust_plugin_sdk::show_message(
-                "Cache Cleared",
-                "All DLSite cache entries have been removed.",
-            );
-            // Dialog closing is handled by the button's ButtonAction::CloseDialog
-            return vec![];
+            use archust_plugin_sdk::arclain::plugin::ui::ToastLevel;
+            info("[DLSite Plugin] Clearing plugin-owned DLSite cached files...");
+            let cleared = archust_plugin_sdk::invalidate_cache("dlsite:*");
+            return vec![if cleared {
+                toast(
+                    "DLSite cached files were removed; saved product metadata remains.",
+                    ToastLevel::Success,
+                )
+            } else {
+                toast(
+                    "DLSite cached files could not be cleared.",
+                    ToastLevel::Error,
+                )
+            }];
         }
         "prune_cache" => {
             use archust_plugin_sdk::arclain::plugin::host::get_data;
-            use archust_plugin_sdk::{invalidate_cache, list_cached_entries};
+            use archust_plugin_sdk::arclain::plugin::ui::ToastLevel;
+            use archust_plugin_sdk::{invalidate_cache, list_cached_metadata};
+
+            const PRUNE_PAGE_SIZE: u32 = 128;
+            const MAX_PRUNE_METADATA_ENTRIES: u32 = 1024;
 
             info("[DLSite Plugin] Starting cache prune...");
-            let entries = list_cached_entries().unwrap_or_default();
             let mut scanned = 0;
             let mut removed = 0;
-
-            for key in entries {
-                if !key.starts_with("dlsite:") {
-                    continue;
-                }
-                scanned += 1;
-
-                // Read direct from host (no network)
-                if let Some(data_bytes) = get_data(&key) {
-                    let data_str = String::from_utf8_lossy(&data_bytes);
-
-                    // Check based on key type
-                    let is_valid = if key.contains(":json:") {
-                        gameta_lib::providers::dlsite::parse_api_response("", &data_str).is_ok()
-                    } else if key.contains(":html:") {
-                        gameta_lib::providers::dlsite::parse_html_response(&data_str).is_some()
-                    } else {
-                        true // Skip other types (images etc)
-                    };
-
-                    if !is_valid {
-                        info(&format!("[DLSite Plugin] Pruning invalid entry: {}", key));
-                        if invalidate_cache(&key) {
+            let mut offset = 0;
+            while offset < MAX_PRUNE_METADATA_ENTRIES {
+                let Ok(entries) = list_cached_metadata("dlsite", offset, PRUNE_PAGE_SIZE) else {
+                    break;
+                };
+                let page_len = entries.len();
+                for product_id in entries {
+                    for key in raw_metadata_cache_keys(&product_id) {
+                        let Some(data_bytes) = get_data(&key) else {
+                            continue;
+                        };
+                        scanned += 1;
+                        let data_str = String::from_utf8_lossy(&data_bytes);
+                        let is_valid = if key.contains(":json:") {
+                            gameta_lib::providers::dlsite::parse_api_response(
+                                &product_id,
+                                &data_str,
+                            )
+                            .is_ok()
+                        } else {
+                            gameta_lib::providers::dlsite::parse_html_response(&data_str).is_some()
+                        };
+                        if !is_valid && invalidate_cache(&key) {
                             removed += 1;
                         }
                     }
                 }
+                if page_len < PRUNE_PAGE_SIZE as usize {
+                    break;
+                }
+                offset = offset.saturating_add(PRUNE_PAGE_SIZE);
             }
 
             info(&format!(
                 "[DLSite Plugin] Prune finished. Scanned {}, Removed {}.",
                 scanned, removed
             ));
-            archust_plugin_sdk::show_message(
-                "Prune Complete",
-                &format!(
-                    "Scanned {} DLSite entries.\nRemoved {} invalid/corrupted items.",
-                    scanned, removed
-                ),
-            );
+            return vec![toast(
+                format!("Scanned {scanned} cached files; removed {removed} invalid files."),
+                ToastLevel::Success,
+            )];
         }
         "fetch_metadata" => {
             // Debounce - prevent spam clicking
@@ -573,7 +576,7 @@ pub(crate) fn dispatch(
                     info("[DLSite Plugin] Found cached metadata");
                     let metadata_json =
                         generate_metadata_json(&product_id, Some(&(json.clone(), scraped.clone())));
-                    archust_plugin_sdk::emit_metadata(&metadata_json);
+                    emit_dlsite_metadata(&metadata_json);
 
                     STATE.with(|state| {
                         let mut s = state.borrow_mut();
@@ -590,10 +593,7 @@ pub(crate) fn dispatch(
                         STATE.with(|state| {
                             state.borrow_mut().fetch_in_progress = true;
                         });
-                        archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
-                            "Fetching metadata for {}...",
-                            code
-                        ));
+                        info(&format!("[DLSite Plugin] Fetching metadata for {code}..."));
                         return vec![PluginAction::RequestFetch(format!("dlsite:{}", code))];
                     }
                     info("[DLSite Plugin] No DLSite code detected");
@@ -606,7 +606,8 @@ pub(crate) fn dispatch(
             }
         }
         "show_details" => {
-            STATE.with(|state| {
+            use archust_plugin_sdk::arclain::plugin::ui::ToastLevel;
+            let message = STATE.with(|state| {
                 if let Some((id, json, scraped)) = &state.borrow().found_metadata {
                     let title = json["title"].as_str().unwrap_or("Unknown");
                     let maker = json["creator"].as_str().unwrap_or("Unknown");
@@ -624,9 +625,14 @@ pub(crate) fn dispatch(
                         "Title: {}\nCircle: {}\nPrice: {} JPY\nCode: {}\nDescription Length: {}\nScreenshots: {}",
                         title, maker, price, id, desc_len, screenshots_count
                     );
-                    archust_plugin_sdk::show_message("DLSite Metadata Details", &msg);
+                    Some(msg)
+                } else {
+                    None
                 }
             });
+            if let Some(message) = message {
+                return vec![toast(message, ToastLevel::Info)];
+            }
         }
         "refresh_cache" => {
             // The per-filter summary memo stays in WASM heap (it's
@@ -710,25 +716,16 @@ pub(crate) fn dispatch(
             });
 
             if let Some(json) = meta_json {
-                use archust_plugin_sdk::arclain::plugin::ui::{
-                    PluginAction, ToastConfig, ToastLevel,
-                };
-                use archust_plugin_sdk::emit_metadata;
+                use archust_plugin_sdk::arclain::plugin::ui::ToastLevel;
+                emit_dlsite_metadata(&json);
 
-                emit_metadata(&json);
-
-                return vec![PluginAction::ShowToast(ToastConfig {
-                    message: format!("Selected for Use: {}", entry_id),
-                    level: ToastLevel::Success,
-                })];
+                return vec![toast(
+                    format!("Selected for Use: {entry_id}"),
+                    ToastLevel::Success,
+                )];
             } else {
-                use archust_plugin_sdk::arclain::plugin::ui::{
-                    PluginAction, ToastConfig, ToastLevel,
-                };
-                return vec![PluginAction::ShowToast(ToastConfig {
-                    message: "Could not find cached details".to_string(),
-                    level: ToastLevel::Error,
-                })];
+                use archust_plugin_sdk::arclain::plugin::ui::ToastLevel;
+                return vec![toast("Could not find cached details", ToastLevel::Error)];
             }
         }
 
@@ -795,11 +792,10 @@ pub(crate) fn dispatch(
                             Some(data) => data,
                             None => {
                                 STATE.with(|s| s.borrow_mut().browser_loading = false);
-                                archust_plugin_sdk::show_message(
-                                    "Not Found",
-                                    &format!("Could not find product: {}", trimmed),
-                                );
-                                return vec![];
+                                return vec![toast(
+                                    format!("Could not find product: {trimmed}"),
+                                    archust_plugin_sdk::arclain::plugin::ui::ToastLevel::Error,
+                                )];
                             }
                         }
                     };
@@ -830,7 +826,7 @@ pub(crate) fn dispatch(
             }
         }
         "copy_archive_filename" => {
-            use archust_plugin_sdk::arclain::plugin::ui::{ToastConfig, ToastLevel};
+            use archust_plugin_sdk::arclain::plugin::ui::ToastLevel;
             if let Some(archive_info) = archust_plugin_sdk::current_archive_info() {
                 // Copy the filename without extension to clipboard
                 let filename = &archive_info.filename;
@@ -850,10 +846,7 @@ pub(crate) fn dispatch(
                 };
                 return vec![
                     PluginAction::CopyToClipboard(copy_name),
-                    PluginAction::ShowToast(ToastConfig {
-                        message: "Filename copied to clipboard".to_string(),
-                        level: ToastLevel::Success,
-                    }),
+                    toast("Filename copied to clipboard", ToastLevel::Success),
                 ];
             }
         }
@@ -899,11 +892,11 @@ pub(crate) fn dispatch(
                 });
 
                 let metadata_json = generate_metadata_json(&code, Some(&(json, scraped)));
-                archust_plugin_sdk::emit_metadata(&metadata_json);
-                archust_plugin_sdk::show_message(
-                    "Success",
-                    &format!("Applied metadata for {}", code),
-                );
+                emit_dlsite_metadata(&metadata_json);
+                return vec![toast(
+                    format!("Applied metadata for {code}"),
+                    archust_plugin_sdk::arclain::plugin::ui::ToastLevel::Success,
+                )];
             }
         }
         "close_browser" => {
@@ -962,12 +955,12 @@ pub(crate) fn dispatch(
             ));
 
             // Fetch from network (updates cache)
-            match fetch_dlsite_metadata(&entry_id) {
+            let notice = match fetch_dlsite_metadata(&entry_id) {
                 Some((json, scraped)) => {
                     // Emit metadata immediately
                     let metadata_json =
                         generate_metadata_json(&entry_id, Some(&(json.clone(), scraped.clone())));
-                    archust_plugin_sdk::emit_metadata(&metadata_json);
+                    emit_dlsite_metadata(&metadata_json);
 
                     // Download images + videos with progress
                     if let Some(ref s) = scraped {
@@ -985,7 +978,10 @@ pub(crate) fn dispatch(
                         "[DLSite Plugin] Refetched and cached: {}",
                         entry_id
                     ));
-                    archust_plugin_sdk::show_message("Success", &format!("Refetched {}", entry_id));
+                    toast(
+                        format!("Refetched {entry_id}"),
+                        archust_plugin_sdk::arclain::plugin::ui::ToastLevel::Success,
+                    )
                 }
                 None => {
                     info(&format!("[DLSite Plugin] Refetch FAILED for: {}", entry_id));
@@ -1001,63 +997,51 @@ pub(crate) fn dispatch(
                             &entry_id,
                             Some(&(json.clone(), scraped.clone())),
                         );
-                        archust_plugin_sdk::emit_metadata(&metadata_json);
+                        emit_dlsite_metadata(&metadata_json);
 
                         STATE.with(|state| {
                             state.borrow_mut().browser_detail_cache =
                                 Some((entry_id.clone(), json, scraped));
                         });
-                        archust_plugin_sdk::show_message(
-                            "Warning",
-                            &format!("Refetch failed for {}. Restored previous data.", entry_id),
-                        );
+                        toast(
+                            format!("Refetch failed for {entry_id}; restored previous data."),
+                            archust_plugin_sdk::arclain::plugin::ui::ToastLevel::Warning,
+                        )
                     } else {
-                        archust_plugin_sdk::show_message(
-                            "Error",
-                            &format!("Failed to refetch {}. Entry may be deleted.", entry_id),
-                        );
+                        toast(
+                            format!("Failed to refetch {entry_id}; no backup was available."),
+                            archust_plugin_sdk::arclain::plugin::ui::ToastLevel::Error,
+                        )
                     }
                 }
-            }
+            };
 
-            return vec![PluginAction::RefreshPanel(
-                "Page:dlsite_browser".to_string(),
-            )];
-        }
-        // Select for use - emit metadata and set status message
-        id if id.starts_with("select_entry_") => {
-            let entry_id = id.trim_start_matches("select_entry_").to_string();
-            info(&format!("[DLSite Plugin] Selected entry: {}", entry_id));
-
-            // Get cached data and emit metadata
-            if let Some((json, scraped)) = get_cached_dlsite_metadata(&entry_id) {
-                STATE.with(|state| {
-                    state.borrow_mut().found_metadata =
-                        Some((entry_id.clone(), json.clone(), scraped.clone()));
-                });
-
-                let metadata_json = generate_metadata_json(&entry_id, Some(&(json, scraped)));
-                archust_plugin_sdk::emit_metadata(&metadata_json);
-
-                // Set status message via host
-                archust_plugin_sdk::arclain::plugin::host::set_status_message(&format!(
-                    "Entry selected: {}",
-                    entry_id
-                ));
-
-                archust_plugin_sdk::show_message(
-                    "Selected",
-                    &format!("Entry {} selected for use", entry_id),
-                );
-            } else {
-                archust_plugin_sdk::show_message(
-                    "Error",
-                    &format!("Could not load data for {}", entry_id),
-                );
-            }
+            return vec![
+                PluginAction::RefreshPanel("Page:dlsite_browser".to_string()),
+                notice,
+            ];
         }
         _ => {}
     }
 
     vec![]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn returned_toast_messages_are_utf8_safely_bounded() {
+        use archust_plugin_sdk::arclain::plugin::ui::{PluginAction, ToastLevel};
+
+        let PluginAction::ShowToast(config) =
+            toast("é".repeat(MAX_RETURNED_TOAST_BYTES), ToastLevel::Info)
+        else {
+            panic!("toast helper returned the wrong action")
+        };
+
+        assert!(config.message.len() <= MAX_RETURNED_TOAST_BYTES);
+        assert!(config.message.is_char_boundary(config.message.len()));
+    }
 }

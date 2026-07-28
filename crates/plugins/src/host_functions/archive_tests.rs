@@ -1,9 +1,34 @@
-use super::HostFunctions;
+use super::{archive_entry_count, archive_entry_page, HostFunctions, MAX_ARCHIVE_PAGE_ITEMS};
 use crate::active_tab::ActiveTabBridge;
 use crate::arclain::plugin::host::Host;
 use crate::types::PluginCapability;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+
+#[test]
+fn archive_page_is_bounded_and_uses_stable_offsets() {
+    let entries = (0..600)
+        .map(|index| arclain_core::ArchiveEntry {
+            path: format!("folder/file-{index:04}.bin"),
+            size: index as u64,
+            packed_size: index as u64,
+            is_dir: false,
+            encrypted: false,
+            modified: None,
+            crc32: None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(archive_entry_count(&entries), 600);
+    assert_eq!(
+        archive_entry_page(&entries, 255, 2).unwrap(),
+        vec![
+            "folder/file-0255.bin".to_string(),
+            "folder/file-0256.bin".to_string(),
+        ]
+    );
+    assert!(archive_entry_page(&entries, 0, (MAX_ARCHIVE_PAGE_ITEMS + 1) as u32).is_err());
+}
 
 #[test]
 fn rename_does_not_replace_an_existing_destination() {

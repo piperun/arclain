@@ -57,15 +57,11 @@ pub struct AppState {
     // DB-backed settings and secrets (optional; falls back to JSON if unavailable)
     pub db_paths: Option<DbPaths>,
     pub dbs: Option<ConfigDbs>,
-    // Plugin system - event sender stays for dispatch, manager moved to Services
-    /// Event sender for non-blocking plugin dispatch (no mutex lock needed)
-    pub plugin_event_sender: Option<std::sync::mpsc::Sender<arclain_plugins::PluginEvent>>,
-    /// Plugin events queued for dispatch after the UI has rendered.
-    /// Each archive open pushes one event; the deferred dispatcher
-    /// drains the entire queue. Pre-queue this was a single
-    /// `Option<PluginEvent>` slot — opening 5 archives in one frame
-    /// (e.g. multi-file drag-drop) silently lost the first 4 because
-    /// each push overwrote the slot. Vec preserves them all.
+    // Plugin system - scheduler stays for dispatch, manager moved to Services
+    /// Cloneable bounded scheduler used non-blockingly on the UI path.
+    pub plugin_event_scheduler: Option<arclain_plugins::PluginEventScheduler>,
+    /// Bounded/coalesced archive events awaiting non-blocking worker admission.
+    /// At most the newest event for each tab is retained.
     pub pending_plugin_events: Vec<PendingPluginEvent>,
     /// Reactive signals for async state updates
     pub signals: AppSignals,

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use arclain_core::{CacheIndex, ContentCache};
+use arclain_core::{CacheIndex, CacheLimits, ContentCache};
 use arclain_db::{CacheEntry, CacheType};
 use arclain_ui::core::tabs::TabId;
 use arclain_ui::shared::image_assets::{ImageAssetState, ImageAssetStore, ImageOwner};
@@ -170,11 +170,25 @@ struct StoreFixture {
     _temp: tempfile::TempDir,
 }
 
+// Tempdirs may sit on a small ramdisk; tests must not depend on the
+// machine's free-space headroom.
+fn test_cache_limits() -> CacheLimits {
+    CacheLimits {
+        min_free_space_bytes: 0,
+        ..Default::default()
+    }
+}
+
 fn fixture() -> StoreFixture {
     let temp = tempfile::tempdir().expect("create cache directory");
     let source = Arc::new(CountingCacheIndex::default());
     let cache = Arc::new(
-        ContentCache::new(temp.path().to_path_buf(), source.clone()).expect("create content cache"),
+        ContentCache::new_with_limits(
+            temp.path().to_path_buf(),
+            source.clone(),
+            test_cache_limits(),
+        )
+        .expect("create content cache"),
     );
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
     let store = ImageAssetStore::new(cache.clone(), runtime);
@@ -430,7 +444,12 @@ fn cache_ready_during_loading_serializes_a_restart_after_the_stale_miss() {
         release_first_get: Mutex::new(release_rx),
     });
     let cache = Arc::new(
-        ContentCache::new(temp.path().to_path_buf(), source.clone()).expect("create content cache"),
+        ContentCache::new_with_limits(
+            temp.path().to_path_buf(),
+            source.clone(),
+            test_cache_limits(),
+        )
+        .expect("create content cache"),
     );
     let runtime = Arc::new(tokio::runtime::Runtime::new().expect("create runtime"));
     let store = ImageAssetStore::new(cache.clone(), runtime);

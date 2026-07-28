@@ -3,6 +3,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::features::content_cache::CacheLimits;
+
+/// Default ceiling for APIs that materialize a resource into one `Vec<u8>`.
+/// Larger resources must use a streaming API.
+pub const DEFAULT_MAX_RESOURCE_SIZE_BYTES: usize =
+    arclain_network::DEFAULT_MAX_BUFFERED_RESPONSE_BYTES;
+
 /// How data should be stored
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StorageStrategy {
@@ -46,6 +53,8 @@ pub struct ResourceConfig {
     pub caching_enabled: bool,
     /// Maximum cached resource size (bytes)
     pub max_resource_size: Option<usize>,
+    /// Persistent cache containment, queue, and free-space limits.
+    pub cache_limits: CacheLimits,
 }
 
 impl Default for ResourceConfig {
@@ -54,7 +63,8 @@ impl Default for ResourceConfig {
             default_strategy: StorageStrategy::Cache,
             fallback_dir: None,
             caching_enabled: true,
-            max_resource_size: Some(50 * 1024 * 1024), // 50MB default
+            max_resource_size: Some(DEFAULT_MAX_RESOURCE_SIZE_BYTES),
+            cache_limits: CacheLimits::default(),
         }
     }
 }
@@ -187,6 +197,10 @@ mod tests {
         assert!(cfg.caching_enabled);
         assert_eq!(cfg.max_resource_size, Some(50 * 1024 * 1024));
         assert!(cfg.fallback_dir.is_none());
+        assert_eq!(
+            cfg.cache_limits.max_global_bytes,
+            crate::CacheLimits::default().max_global_bytes
+        );
     }
 
     // =========================================================================

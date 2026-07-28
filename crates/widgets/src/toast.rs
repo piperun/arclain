@@ -15,6 +15,12 @@ const DEFAULT_TOAST_DURATION: Duration = Duration::from_millis(3000);
 /// Length of the fade-out animation at the end of a toast's lifetime.
 const TOAST_FADE_DURATION: Duration = Duration::from_millis(300);
 
+/// Maximum number of live notifications retained between frames.
+const MAX_TOASTS: usize = 16;
+
+/// Maximum UTF-8 bytes retained for one notification.
+const MAX_TOAST_MESSAGE_BYTES: usize = 4 * 1024;
+
 /// Toast severity level
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastLevel {
@@ -120,8 +126,35 @@ impl Toaster {
     }
 
     /// Add a toast to the queue
-    pub fn add(&mut self, toast: Toast) {
+    pub fn add(&mut self, mut toast: Toast) {
+        self.toasts.retain(|existing| !existing.is_expired());
+
+        truncate_utf8(&mut toast.message, MAX_TOAST_MESSAGE_BYTES);
+        toast.message.shrink_to_fit();
+
+        // Treat a repeated notification as a refresh, not another retained item.
+        self.toasts
+            .retain(|existing| existing.level != toast.level || existing.message != toast.message);
+
+        if self.toasts.len() == MAX_TOASTS {
+            self.toasts.remove(0);
+        }
         self.toasts.push(toast);
+    }
+
+    /// Number of notifications currently retained.
+    pub fn len(&self) -> usize {
+        self.toasts.len()
+    }
+
+    /// Whether there are no retained notifications.
+    pub fn is_empty(&self) -> bool {
+        self.toasts.is_empty()
+    }
+
+    #[cfg(test)]
+    fn messages(&self) -> impl DoubleEndedIterator<Item = &str> {
+        self.toasts.iter().map(|toast| toast.message.as_str())
     }
 
     /// Add an info toast
@@ -226,5 +259,43 @@ impl Toaster {
                     }
                 }
             });
+    }
+}
+
+fn truncate_utf8(value: &mut String, max_bytes: usize) {
+    if value.len() <= max_bytes {
+        return;
+    }
+
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toaster_bounds_messages_deduplicates_and_evicts_the_oldest() {
+        let mut toaster = Toaster::new();
+        toaster.info("duplicate");
+        toaster.info("duplicate");
+        for index in 0..MAX_TOASTS {
+            toaster.info(format!("message-{index}"));
+        }
+        toaster.error("x".repeat(MAX_TOAST_MESSAGE_BYTES + 50));
+
+        assert_eq!(toaster.len(), MAX_TOASTS);
+        assert!(!toaster.messages().any(|message| message == "duplicate"));
+        assert!(toaster
+            .messages()
+            .all(|message| message.len() <= MAX_TOAST_MESSAGE_BYTES));
+        assert_eq!(
+            toaster.messages().last().map(str::len),
+            Some(MAX_TOAST_MESSAGE_BYTES)
+        );
     }
 }

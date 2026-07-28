@@ -16,7 +16,7 @@ pub use traits::{CacheIndex, MetadataReader};
 pub use features::api::{
     DataRequest, DataResult, DataService, DataSource, DataStatus, SourceChain,
 };
-pub use features::content_cache::{ContentCache, StreamingWriter};
+pub use features::content_cache::{CacheLimits, CacheOwner, ContentCache};
 pub use features::resolver::{
     ContentCacheResolver, DataSourceResolver, MetadataStoreResolver, NetworkResolver, ResolveError,
     ServerResolver,
@@ -27,7 +27,7 @@ pub use features::streaming_download::fetch_url_to_cache;
 pub use features::resource_manager::ResourceManager;
 pub use shared::{
     ResourceConfig, ResourceData, ResourceRequest, ResourceSource, ResourceStatus, ResourceType,
-    StorageStrategy,
+    StorageStrategy, DEFAULT_MAX_RESOURCE_SIZE_BYTES,
 };
 
 // `IndexSet` is exposed by `SourceChain` in our public API; re-export

@@ -17,4 +17,5 @@ pub use content::ContentCacheResolver;
 pub use metadata::MetadataStoreResolver;
 pub use network::NetworkResolver;
 pub use server::ServerResolver;
+pub(crate) use trait_def::{default_materialization_limit, materialized_limit_error};
 pub use trait_def::{DataSourceResolver, ResolveError};

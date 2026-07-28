@@ -71,8 +71,8 @@ network = true                  # HTTP requests
 archive_metadata_read = true    # Read archive metadata
 archive_metadata_write = true   # Write archive metadata
 archive_modify = false          # Modify archive contents
-file_read = false               # Read files from disk
-file_write = false              # Write files to disk
+file_read = false               # Read cached blobs / approved local files
+file_write = false              # Create private temp files / delete cache entries
 
 [rate_limits]
 http_requests_per_minute = 10   # HTTP rate limit
@@ -231,6 +231,10 @@ log(LogLevel::Info, "Message");
 log(LogLevel::Error, "Error message");
 ```
 
+All plugin log levels are subject to host entry, rate, and daily-byte caps.
+Admitted warning/error entries also reach application tracing; lower levels
+remain in the per-plugin file log.
+
 **HTTP Requests:**
 ```rust
 // GET request
@@ -247,20 +251,40 @@ match http_post("https://api.example.com/endpoint", &body) {
 }
 ```
 
-**File Operations:**
+**File Operations (`file_write` capability):**
 ```rust
-// Read file
-match file_read("/path/to/file") {
-    Ok(contents) => { /* process file */ }
-    Err(code) => { /* handle error */ }
-}
+// Creates a collision-safe file in per-plugin temporary storage.
+// The filename is a hint, not an arbitrary host path.
+let path = create_file("export.json", br#"{"ok":true}"#)?;
 
-// Write file
-match file_write("/path/to/file", "content") {
-    Ok(()) => { /* success */ }
-    Err(code) => { /* handle error */ }
-}
+// Deletes only this plugin's exact ordinary content-cache key.
+let removed = invalidate_cache("my-plugin:stale-entry");
+
+// Every trailing-* pattern and every exact raw metadata key additionally
+// requires archive_metadata_write.
+let removed_group = invalidate_cache("my-plugin:stale-prefix:*");
 ```
+
+**Data API capabilities:** MetadataStore reads require
+`archive_metadata_read`; ContentCache and LocalFile reads require `file_read`;
+Network requires `network`. MetadataStore write-back requires
+`archive_metadata_write`, while ContentCache write-back requires `file_write`.
+Raw `:json:`/`:html:` metadata cache access also requires the corresponding
+archive metadata capability. `:metadata:` is treated the same way; markers are
+matched structurally and ASCII-case-insensitively without percent-decoding.
+Every content-cache read, write, and invalidation is confined to the calling
+plugin's namespace. Guest-returned bodies are limited to 4 MiB.
+
+Metadata APIs are bounded: cached-entry listing returns at most 1024 ids and
+1 MiB from a limited query; summary queries accept at most 256 ids of 256 bytes
+each, project only id/bounded title/status, and enforce a 1 MiB aggregate
+budget; product ids and sources are capped at 256 bytes. Product lookup order
+is local database, the calling plugin's JSON/HTML cache, then Gameta, with one
+network permit per actual HTTP request.
+
+The legacy `show_message` import writes only to the bounded plugin log, and
+`set_status_message` is a deprecated no-op. Plugins should return UI actions
+or use bounded logging instead.
 
 ### Plugin Events
 

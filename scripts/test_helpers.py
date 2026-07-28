@@ -812,8 +812,9 @@ class TestPluginFetchRouting(unittest.TestCase):
         self.assertIn("pub fn for_plugin", resolver)
         self.assertIn("blocking_get_for_plugin", resolver)
         self.assertNotIn("should_use_proxy_for_plugin", resolver)
-        self.assertIn(".blocking_get(url, false)", resolver)
+        self.assertIn(".blocking_get_with_limit(url, false, limit)", resolver)
         self.assertNotIn(".blocking_get(url, use_proxy)", resolver)
+        self.assertNotIn(".blocking_get_with_limit(url, use_proxy", resolver)
 
         self.assertIn("blocking_get_streaming_for_plugin_with_metadata", streaming)
         self.assertIn("blocking_get_streaming_with_metadata", streaming)

@@ -11,7 +11,7 @@ use super::PluginNetworkPolicy;
 use crate::features::rate_limiting::RateLimiter;
 use crate::features::security::{analyze_url, DomainInfo};
 use crate::features::whitelist::{AccessCheck, DomainWhitelist};
-use crate::shared::{HttpError, HttpMethod, HttpResponse};
+use crate::shared::{safe_log_fingerprint, HttpError, HttpMethod, HttpResponse};
 
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
@@ -32,7 +32,8 @@ use tracing::{debug, info, warn};
 /// Larger resources must use the checked streaming API. This matches the
 /// resource manager's default 50 MiB ceiling without coupling the network
 /// crate back to its downstream data consumer.
-pub(super) const MAX_PLUGIN_BUFFERED_RESPONSE_BYTES: usize = 50 * 1024 * 1024;
+pub(super) const MAX_PLUGIN_BUFFERED_RESPONSE_BYTES: usize =
+    crate::DEFAULT_MAX_BUFFERED_RESPONSE_BYTES;
 
 /// Result of a streaming download.
 ///
@@ -250,16 +251,7 @@ struct PluginRequestContext {
 }
 
 impl PluginRequestContext {
-    fn registered_policy(&self, plugin_id: &str) -> Result<PluginNetworkPolicy, HttpError> {
-        if self
-            .proxy_runtime
-            .try_read()
-            .is_some_and(|runtime| !runtime.plugin_routing_available)
-        {
-            return Err(HttpError::RequestFailed {
-                message: "plugin network routing is unavailable".to_string(),
-            });
-        }
+    fn enabled_policy(&self, plugin_id: &str) -> Result<PluginNetworkPolicy, HttpError> {
         let policy = self
             .plugin_policies
             .read()
@@ -274,6 +266,19 @@ impl PluginRequestContext {
             });
         }
         Ok(policy)
+    }
+
+    fn registered_policy(&self, plugin_id: &str) -> Result<PluginNetworkPolicy, HttpError> {
+        if self
+            .proxy_runtime
+            .try_read()
+            .is_some_and(|runtime| !runtime.plugin_routing_available)
+        {
+            return Err(HttpError::RequestFailed {
+                message: "plugin network routing is unavailable".to_string(),
+            });
+        }
+        self.enabled_policy(plugin_id)
     }
 
     async fn resolve_host(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, HttpError> {
@@ -631,6 +636,33 @@ impl AsyncHttpClient {
             .copied()
     }
 
+    /// Consume one manifest-derived network request from a trusted host
+    /// service budget without applying plugin-selected domain authorization.
+    ///
+    /// `service_scope` must be a stable host-owned identifier such as
+    /// `"gameta"`, never text supplied by the plugin. The actual service URL
+    /// remains entirely host configured; this gate only enforces the plugin's
+    /// Network capability and requests-per-minute policy.
+    pub fn try_acquire_plugin_host_service(
+        &self,
+        plugin_id: &str,
+        service_scope: &str,
+    ) -> Result<(), HttpError> {
+        let policy = self.plugin_context.enabled_policy(plugin_id)?;
+        let rate_scope = format!("{plugin_id}\0host-service:{service_scope}");
+        if self
+            .plugin_context
+            .rate_limiter
+            .read()
+            .try_acquire_with_limit(&rate_scope, policy.requests_per_minute)
+        {
+            return Ok(());
+        }
+        Err(HttpError::RateLimited {
+            domain: format!("host-service:{service_scope}"),
+        })
+    }
+
     #[cfg(test)]
     pub(super) fn allow_special_plugin_addresses_for_test(&self) {
         self.plugin_context
@@ -723,7 +755,8 @@ impl AsyncHttpClient {
             .approve(plugin_id, domain);
         info!(
             "Auto-approved domain '{}' for plugin '{}'",
-            domain, plugin_id
+            safe_log_fingerprint(domain),
+            safe_log_fingerprint(plugin_id)
         );
     }
 
@@ -797,7 +830,10 @@ impl AsyncHttpClient {
         if let Ok(domain_info) = analyze_url(&request.url) {
             let rate_limiter = self.plugin_context.rate_limiter.read();
             if !rate_limiter.try_acquire(&domain_info.effective_domain) {
-                warn!("Rate limit exceeded for {}", domain_info.effective_domain);
+                warn!(
+                    "Rate limit exceeded for {}",
+                    safe_log_fingerprint(&domain_info.effective_domain)
+                );
             }
         }
 
@@ -833,7 +869,9 @@ impl AsyncHttpClient {
 
         debug!(
             "Starting request {} to {} (proxy: {})",
-            request_id.0, request.url, use_proxy
+            request_id.0,
+            safe_log_fingerprint(&request.url),
+            use_proxy
         );
 
         // Spawn async task
@@ -855,7 +893,10 @@ impl AsyncHttpClient {
 
             // Global/Domain specific headers injection - mimic Firefox exactly
             if is_dlsite_url(&request.url) {
-                info!("Injecting DLSite headers for {}", request.url);
+                info!(
+                    "Injecting DLSite headers for {}",
+                    safe_log_fingerprint(&request.url)
+                );
                 req_builder = inject_dlsite_browser_headers(req_builder);
             }
 
@@ -898,13 +939,21 @@ impl AsyncHttpClient {
                             })
                         }
                         Err(e) => {
-                            warn!("Request {} body error: {}", request_id.0, e);
+                            warn!(
+                                "Request {} body error: {}",
+                                request_id.0,
+                                safe_log_fingerprint(e.to_string())
+                            );
                             RequestStatus::Failed(format!("Failed to read body: {}", e))
                         }
                     }
                 }
                 Err(e) => {
-                    warn!("Request {} failed: {}", request_id.0, e);
+                    warn!(
+                        "Request {} failed: {}",
+                        request_id.0,
+                        safe_log_fingerprint(e.to_string())
+                    );
                     if e.is_timeout() {
                         RequestStatus::Failed("Request timed out".to_string())
                     } else {
@@ -1085,7 +1134,10 @@ impl AsyncHttpClient {
         self.runtime.block_on(async move {
             let mut req = client.get(&url_owned);
             if is_dlsite_url(&url_owned) {
-                info!("Injecting DLSite headers (streaming) for {}", url_owned);
+                info!(
+                    "Injecting DLSite headers (streaming) for {}",
+                    safe_log_fingerprint(&url_owned)
+                );
                 req = inject_dlsite_browser_headers(req);
             }
             if let Some(byte) = start {
@@ -1162,6 +1214,16 @@ impl AsyncHttpClient {
         plugin_id: &str,
         url: &str,
     ) -> Result<Vec<u8>, HttpError> {
+        self.blocking_get_for_plugin_with_limit(plugin_id, url, MAX_PLUGIN_BUFFERED_RESPONSE_BYTES)
+    }
+
+    /// Checked buffered GET for a plugin using a caller-supplied body limit.
+    pub fn blocking_get_for_plugin_with_limit(
+        &self,
+        plugin_id: &str,
+        url: &str,
+        limit: usize,
+    ) -> Result<Vec<u8>, HttpError> {
         self.runtime.block_on(async {
             let response = self
                 .plugin_context
@@ -1172,13 +1234,23 @@ impl AsyncHttpClient {
                     message: format!("HTTP error: {}", response.status()),
                 });
             }
-            read_buffered_response_with_limit(response, MAX_PLUGIN_BUFFERED_RESPONSE_BYTES).await
+            read_buffered_response_with_limit(response, limit).await
         })
     }
 
     /// Blocking GET request (for use from background threads, NOT main thread)
     /// This uses block_on to wait for the async request to complete.
     pub fn blocking_get(&self, url: &str, use_proxy: bool) -> Result<Vec<u8>, String> {
+        self.blocking_get_with_limit(url, use_proxy, MAX_PLUGIN_BUFFERED_RESPONSE_BYTES)
+    }
+
+    /// Blocking GET with a caller-supplied materialized response ceiling.
+    pub fn blocking_get_with_limit(
+        &self,
+        url: &str,
+        use_proxy: bool,
+        limit: usize,
+    ) -> Result<Vec<u8>, String> {
         let client = if use_proxy {
             self.plugin_context
                 .proxy_runtime
@@ -1196,7 +1268,10 @@ impl AsyncHttpClient {
 
             // Domain specific headers - mimic Firefox exactly
             if is_dlsite_url(&url) {
-                info!("Injecting DLSite headers (blocking) for {}", url);
+                info!(
+                    "Injecting DLSite headers (blocking) for {}",
+                    safe_log_fingerprint(&url)
+                );
                 req = inject_dlsite_browser_headers(req);
             }
 
@@ -1228,11 +1303,9 @@ impl AsyncHttpClient {
                 content_length
             );
 
-            response
-                .bytes()
+            read_buffered_response_with_limit(response, limit)
                 .await
-                .map(|b| b.to_vec())
-                .map_err(|e| format!("Failed to read body: {}", e))
+                .map_err(|error| error.to_string())
         })
     }
 }
@@ -1461,7 +1534,11 @@ async fn response_to_status(response: reqwest::Response, request_id: &RequestId)
             })
         }
         Err(error) => {
-            warn!("Request {} body error: {}", request_id.0, error);
+            warn!(
+                "Request {} body error: {}",
+                request_id.0,
+                safe_log_fingerprint(error.to_string())
+            );
             RequestStatus::Failed(error.to_string())
         }
     }
@@ -1519,7 +1596,11 @@ fn fix_dlsite_cdn_folder(url: &str) -> String {
 
                             if old_folder != new_folder {
                                 let fixed_url = url.replacen(&old_folder, &new_folder, 1);
-                                debug!("Fixed DLSite CDN folder: {} -> {}", old_folder, new_folder);
+                                debug!(
+                                    "Fixed DLSite CDN folder: {} -> {}",
+                                    safe_log_fingerprint(&old_folder),
+                                    safe_log_fingerprint(&new_folder)
+                                );
                                 return fixed_url;
                             }
                         }

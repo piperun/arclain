@@ -1,7 +1,8 @@
 //! ServerResolver — routes metadata requests through a gameta server API.
 
-use super::{DataSourceResolver, ResolveError};
+use super::{default_materialization_limit, DataSourceResolver, ResolveError};
 use crate::features::api::DataRequest;
+use crate::shared::{safe_log_fingerprint, serialize_json_with_limit};
 use arclain_network::features::gameta_client::GametaClient;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -81,6 +82,15 @@ impl Default for ServerResolver {
 
 impl DataSourceResolver for ServerResolver {
     fn try_resolve(&self, key: &str, _request: &DataRequest) -> Result<Vec<u8>, ResolveError> {
+        self.try_resolve_with_limit(key, _request, default_materialization_limit())
+    }
+
+    fn try_resolve_with_limit(
+        &self,
+        key: &str,
+        _request: &DataRequest,
+        limit: usize,
+    ) -> Result<Vec<u8>, ResolveError> {
         let (source, id) = Self::parse_key(key).ok_or(ResolveError::NotConfigured)?;
 
         // Snapshot the client Arc under a brief read guard, then drop
@@ -96,22 +106,32 @@ impl DataSourceResolver for ServerResolver {
 
         tracing::debug!(
             "[ServerResolver] Fetching metadata source='{}' id='{}'",
-            source,
-            id
+            safe_log_fingerprint(&source),
+            safe_log_fingerprint(&id)
         );
 
-        match client.get_metadata(&source, &id) {
+        match client.get_metadata_with_limit(&source, &id, limit) {
             Ok(Some(meta)) => {
-                tracing::debug!("[ServerResolver] Got metadata for '{}'", id);
-                serde_json::to_vec(&meta)
-                    .map_err(|e| ResolveError::IoError(format!("Serialize error: {}", e)))
+                tracing::debug!(
+                    "[ServerResolver] Got metadata for '{}'",
+                    safe_log_fingerprint(&id)
+                );
+                serialize_json_with_limit(&meta, limit, "server metadata response")
+                    .map_err(|error| ResolveError::IoError(error.to_string()))
             }
             Ok(None) => {
-                tracing::debug!("[ServerResolver] Metadata not found for '{}'", id);
+                tracing::debug!(
+                    "[ServerResolver] Metadata not found for '{}'",
+                    safe_log_fingerprint(&id)
+                );
                 Err(ResolveError::NotFound)
             }
             Err(e) => {
-                tracing::warn!("[ServerResolver] Request failed for '{}': {}", id, e);
+                tracing::warn!(
+                    "[ServerResolver] Request failed for '{}': {}",
+                    safe_log_fingerprint(&id),
+                    safe_log_fingerprint(e.to_string())
+                );
                 Err(ResolveError::IoError(e))
             }
         }
@@ -121,7 +141,12 @@ impl DataSourceResolver for ServerResolver {
     /// bytes (re-uses `try_resolve` since the server has no cheap HEAD-like
     /// existence check in its current API).
     fn has(&self, key: &str, request: &DataRequest) -> bool {
-        self.try_resolve(key, request).is_ok()
+        self.try_resolve_with_limit(key, request, default_materialization_limit())
+            .is_ok()
+    }
+
+    fn has_with_limit(&self, key: &str, request: &DataRequest, limit: usize) -> bool {
+        self.try_resolve_with_limit(key, request, limit).is_ok()
     }
 
     // `try_store` intentionally inherits the default no-op: the server is

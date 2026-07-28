@@ -24,6 +24,7 @@ parking_lot.workspace = true
 
 # Logging
 tracing.workspace = true
+sha2.workspace = true
 
 # Error handling
 thiserror.workspace = true

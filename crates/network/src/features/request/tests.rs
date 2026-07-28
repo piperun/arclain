@@ -635,6 +635,47 @@ fn configure_enabled_plugin(client: &AsyncHttpClient, plugin_id: &str, rpm: u32)
 }
 
 #[tokio::test]
+async fn trusted_host_service_budget_rejects_disabled_plugin_network_policy() {
+    let client = AsyncHttpClient::new(
+        Handle::current(),
+        Arc::new(parking_lot::RwLock::new(DomainWhitelist::default())),
+        None,
+    );
+    client.configure_plugin(
+        "plugin-a",
+        PluginNetworkPolicy {
+            network_enabled: false,
+            requests_per_minute: 60,
+        },
+    );
+
+    let error = client
+        .try_acquire_plugin_host_service("plugin-a", "gameta")
+        .expect_err("disabled plugin network policy must deny trusted host service access");
+
+    assert!(matches!(error, HttpError::PluginNetworkDisabled { .. }));
+}
+
+#[tokio::test]
+async fn trusted_host_service_budget_uses_the_manifest_request_limit() {
+    let client = AsyncHttpClient::new(
+        Handle::current(),
+        Arc::new(parking_lot::RwLock::new(DomainWhitelist::default())),
+        None,
+    );
+    configure_enabled_plugin(&client, "plugin-a", 1);
+
+    client
+        .try_acquire_plugin_host_service("plugin-a", "gameta")
+        .expect("first trusted service request should consume the budget");
+    let error = client
+        .try_acquire_plugin_host_service("plugin-a", "gameta")
+        .expect_err("second trusted service request must be rate-limited");
+
+    assert!(matches!(error, HttpError::RateLimited { .. }));
+}
+
+#[tokio::test]
 async fn pinned_plugin_client_rejects_proxy_address_userinfo_without_leaking_secrets() {
     const ADDRESS_USER: &str = "pinned-address-user-secret-91f4";
     const ADDRESS_PASSWORD: &str = "pinned-address-password-secret-27ab";
@@ -1123,6 +1164,54 @@ async fn checked_blocking_plugin_request_rejects_oversized_content_length_before
         error.to_string().contains("buffered response limit"),
         "oversized declared response failed for the wrong reason: {error}"
     );
+}
+
+#[tokio::test]
+async fn checked_blocking_plugin_request_honors_an_explicit_smaller_limit() {
+    const LIMIT: usize = 8;
+    let (address, server) = spawn_chunked_response_server(LIMIT + 1).await;
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist.write().approve("plugin-a", "custom-limit.test");
+    let client = Arc::new(AsyncHttpClient::new(Handle::current(), whitelist, None));
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("custom-limit.test", vec![vec![address]]);
+    let url = format!("http://custom-limit.test:{}/chunked", address.port());
+
+    let result = tokio::task::spawn_blocking(move || {
+        client.blocking_get_for_plugin_with_limit("plugin-a", &url, LIMIT)
+    })
+    .await
+    .expect("checked buffered worker panicked");
+    server.await.expect("chunked response server panicked");
+
+    let error = result.expect_err("explicit limit must reject the oversized body");
+    assert!(error.to_string().contains("8-byte buffered response limit"));
+}
+
+#[tokio::test]
+async fn checked_blocking_plugin_request_accepts_an_explicit_exact_limit() {
+    const LIMIT: usize = 8;
+    let (address, server) = spawn_chunked_response_server(LIMIT).await;
+    let whitelist = Arc::new(parking_lot::RwLock::new(DomainWhitelist::default()));
+    whitelist
+        .write()
+        .approve("plugin-a", "custom-boundary.test");
+    let client = Arc::new(AsyncHttpClient::new(Handle::current(), whitelist, None));
+    configure_enabled_plugin(&client, "plugin-a", 60);
+    client.allow_special_plugin_addresses_for_test();
+    client.set_plugin_dns_answers_for_test("custom-boundary.test", vec![vec![address]]);
+    let url = format!("http://custom-boundary.test:{}/chunked", address.port());
+
+    let body = tokio::task::spawn_blocking(move || {
+        client.blocking_get_for_plugin_with_limit("plugin-a", &url, LIMIT)
+    })
+    .await
+    .expect("checked buffered worker panicked")
+    .expect("exact custom limit should be accepted");
+    server.await.expect("chunked response server panicked");
+
+    assert_eq!(body, vec![b'x'; LIMIT]);
 }
 
 #[tokio::test]

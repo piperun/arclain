@@ -556,7 +556,7 @@ mod tests {
                 encrypted_crc_policy: "on_access".to_string(),
                 db_paths: Some(paths),
                 dbs: Some(dbs),
-                plugin_event_sender: None,
+                plugin_event_scheduler: None,
                 pending_plugin_events: Vec::new(),
                 signals: signals.clone(),
             };
@@ -573,7 +573,7 @@ mod tests {
                 services,
                 theme: AppTheme::new(false),
                 toaster: Arc::new(Mutex::new(Toaster::new())),
-                refresh_requests: Arc::new(Mutex::new(Vec::new())),
+                refresh_requests: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 plugin_ui_jobs,
                 image_assets,
                 signals,
