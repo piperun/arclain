@@ -262,27 +262,36 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
                                 })
                                 .collect();
                         }
-
-                        if let Err(error) =
-                            arclain_core::config::sync::sync_rules(&opened_dbs.config_pool)
-                        {
-                            warn!("Failed to sync organization rules: {}", error);
-                        }
-                        // Title filters: seeds system replacements and
-                        // primes the in-memory cache -- ported from
-                        // `AppState::sync_configuration`, this crate's
-                        // now-sole caller.
-                        if let Err(error) =
-                            arclain_core::utilities::title_filter::init(&opened_dbs.config_pool)
-                        {
-                            warn!("Failed to initialize title filters: {}", error);
-                        }
                     }
 
+                    // `ensure_default_rules` and `sync_rules` both seed the
+                    // *same* organization_rules table when it is empty, with
+                    // DIFFERENT payloads ("DLsite Standard" vs "DLSite
+                    // Archive") -- whichever runs first wins, so the order
+                    // here is load-bearing and must match the original
+                    // `AppState::new`/`sync_configuration` order exactly:
+                    // `ensure_default_rules` first, then `sync_rules`. Both
+                    // run whenever `open_databases` succeeded, regardless of
+                    // whether `init_db_services` (above) did -- matching the
+                    // original code, which called them unconditionally in
+                    // this same position, outside that branch.
                     if let Err(error) = arclain_core::config::database::ensure_default_rules(
                         &opened_dbs.config_pool,
                     ) {
                         warn!("Failed to organize default rules: {}", error);
+                    }
+                    if let Err(error) =
+                        arclain_core::config::sync::sync_rules(&opened_dbs.config_pool)
+                    {
+                        warn!("Failed to sync organization rules: {}", error);
+                    }
+                    // Title filters: seeds system replacements and primes
+                    // the in-memory cache -- ported from `AppState::
+                    // sync_configuration`, this crate's now-sole caller.
+                    if let Err(error) =
+                        arclain_core::utilities::title_filter::init(&opened_dbs.config_pool)
+                    {
+                        warn!("Failed to initialize title filters: {}", error);
                     }
 
                     dbs = Some(opened_dbs);
@@ -388,8 +397,9 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
 
     Ok(AppRuntime {
         paths,
-        tokio_runtime,
         session,
+        tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
+        shut_down: std::sync::atomic::AtomicBool::new(false),
     })
 }
 

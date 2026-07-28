@@ -143,10 +143,26 @@ pub(crate) fn compute_capabilities(
 }
 
 /// Builds a [`HealthSnapshot`] from already-known component state. Pure,
-/// for the same reason [`compute_capabilities`] is. `ready` is exactly
-/// "nothing is listed as degraded" -- every optional component that is
-/// unavailable is named in `degraded_components` so a frontend doesn't
-/// need to re-derive the same reasoning from raw booleans.
+/// for the same reason [`compute_capabilities`] is.
+///
+/// `degraded_components` names every unavailable component, required or
+/// not, so a frontend doesn't need to re-derive the same reasoning from
+/// raw booleans -- but `ready` reflects only the **required** ones:
+/// `database`, `plugins` (the plugin *runtime*/engine constructing
+/// successfully -- not whether any individual plugin is installed;
+/// `PluginManager::new`+`init()` succeeds with zero plugins loaded just
+/// as often as with several), and `sevenzip` (every archive format's
+/// backend chain ultimately falls back to the 7-Zip CLI, so nothing
+/// archive-related works without it -- see `bootstrap::run`'s own doc
+/// comment on why a missing 7-Zip fails bootstrap outright rather than
+/// reaching `health()` at all in that state).
+///
+/// `unrar` is the one **optional** component: its absence is reported
+/// in `degraded_components` (a frontend may still want to warn the user
+/// that some RAR operations are unavailable), but never clears `ready`
+/// -- unlike 7-Zip, there is no scenario where unrar's absence prevents
+/// the application from doing useful archive work at all (RAR read
+/// access still works through the native backend).
 pub(crate) fn compute_health(
     sevenzip_available: bool,
     unrar_available: bool,
@@ -154,21 +170,27 @@ pub(crate) fn compute_health(
     database_ready: bool,
 ) -> HealthSnapshot {
     let mut degraded_components = Vec::new();
+    let mut required_degraded = false;
+
     if !sevenzip_available {
         degraded_components.push("sevenzip".to_string());
-    }
-    if !unrar_available {
-        degraded_components.push("unrar".to_string());
+        required_degraded = true;
     }
     if !plugins_available {
         degraded_components.push("plugins".to_string());
+        required_degraded = true;
     }
     if !database_ready {
         degraded_components.push("database".to_string());
+        required_degraded = true;
+    }
+    // Optional: reported, but does not by itself clear readiness.
+    if !unrar_available {
+        degraded_components.push("unrar".to_string());
     }
 
     HealthSnapshot {
-        ready: degraded_components.is_empty(),
+        ready: !required_degraded,
         degraded_components,
     }
 }
@@ -230,11 +252,26 @@ pub(crate) struct SessionStore {
 }
 
 impl SessionStore {
+    /// Whether the 7-Zip executable this instance detected at bootstrap
+    /// is still there. A live filesystem check, not a cached flag:
+    /// bootstrap requires 7-Zip to succeed (see `bootstrap::run`), so a
+    /// freshly-composed `SessionStore` always starts out `true`, but the
+    /// executable could be deleted or moved *after* bootstrap and
+    /// *before* a later `capabilities()`/`health()` call -- exactly the
+    /// scenario the "missing 7z" integration test in
+    /// `tests/bootstrap.rs` exercises, since forcing this false at
+    /// bootstrap time itself is not reachable (a missing 7-Zip fails
+    /// bootstrap outright).
+    fn sevenzip_still_available(&self) -> bool {
+        self.fallback_backend.exe_path().exists()
+    }
+
     pub(crate) fn capabilities(&self) -> AppCapabilities {
+        let sevenzip_path = self
+            .sevenzip_still_available()
+            .then(|| self.fallback_backend.exe_path());
         compute_capabilities(
-            // A live SessionStore always has a `fallback_backend`:
-            // bootstrap fails otherwise.
-            Some(self.fallback_backend.exe_path()),
+            sevenzip_path,
             self.unrar_available,
             self.plugin_manager.is_some(),
         )
@@ -242,7 +279,7 @@ impl SessionStore {
 
     pub(crate) fn health(&self) -> HealthSnapshot {
         compute_health(
-            true,
+            self.sevenzip_still_available(),
             self.unrar_available,
             self.plugin_manager.is_some(),
             self.database_ready,
@@ -331,7 +368,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_unrar_leaves_capabilities_full_when_7z_present_but_flags_health() {
+    fn missing_unrar_leaves_capabilities_full_when_7z_present_and_does_not_clear_readiness() {
         let sevenzip_path = std::path::Path::new(SEVENZIP_PATH);
         let capabilities = compute_capabilities(Some(sevenzip_path), false, true);
         let unrar_tool = capabilities
@@ -351,8 +388,13 @@ mod tests {
             "7z CLI fallback present -> capability model reports full_featured"
         );
 
+        // unrar is the one *optional* component (see `compute_health`'s
+        // doc comment): its absence is still surfaced in
+        // `degraded_components` for a frontend that wants to mention
+        // it, but does not by itself make the application "not ready"
+        // -- unlike a missing database, plugin runtime, or 7-Zip.
         let health = compute_health(true, false, true, true);
-        assert!(!health.ready);
+        assert!(health.ready);
         assert_eq!(health.degraded_components, vec!["unrar"]);
     }
 

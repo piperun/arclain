@@ -97,20 +97,52 @@ impl AppPaths {
     /// permissions, via the same [`arclain_app_fs::ensure_owner_dir`]
     /// primitive `AppDirectories::init` uses. Idempotent -- safe to call
     /// against an already-initialized profile.
+    ///
+    /// `plugins_dir` is deliberately handled separately, outside this
+    /// fatal loop -- see [`Self::prepare_plugins_dir`].
     pub(crate) fn ensure_created(&self) -> Result<(), ApplicationError> {
         for dir in [
             &self.config_dir,
             &self.data_dir,
             &self.cache_dir,
             &self.log_dir,
-            &self.plugins_dir,
             &self.databases_dir(),
             &self.secrets_dir(),
         ] {
             arclain_app_fs::ensure_owner_dir(dir)
                 .map_err(|error| directory_error(&format!("creating {}", dir.display()), error))?;
         }
+        self.prepare_plugins_dir();
         Ok(())
+    }
+
+    /// Best-effort creation of `plugins_dir`: attempts `create_dir_all`
+    /// and warns (never fails bootstrap) if that doesn't work. Two
+    /// deliberate differences from the other five directories above:
+    ///
+    /// - **Non-fatal.** Under a system install, `plugins_dir` can
+    ///   legitimately be a directory this process does not own or
+    ///   cannot write to (`/usr/lib/arclain/plugins`, `Program Files\
+    ///   Arclain\plugins`) -- the directory already exists with real
+    ///   plugin binaries in it, just not writable by whatever user
+    ///   account is running the app. Bootstrap must still succeed with
+    ///   plugin loading degraded, matching the behavior before this
+    ///   directory was folded into `AppDirectories`-style fatal
+    ///   creation.
+    /// - **No `chmod`.** `ensure_owner_dir` also restricts a directory
+    ///   to `0o700` (owner-only). Plugin `.wasm`/`.toml` files are not
+    ///   secret material the way databases/keys are, and a system
+    ///   install's plugins directory is typically meant to be
+    ///   world-readable; forcing it owner-only would fight the
+    ///   installer, not protect anything.
+    fn prepare_plugins_dir(&self) {
+        if let Err(error) = std::fs::create_dir_all(&self.plugins_dir) {
+            tracing::warn!(
+                "Failed to prepare plugins directory {}: {} -- plugin loading will be degraded",
+                self.plugins_dir.display(),
+                error
+            );
+        }
     }
 
     /// Where `config.sqlite` and `metadata.sqlite` live.

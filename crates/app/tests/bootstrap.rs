@@ -310,3 +310,308 @@ fn shutdown_succeeds_from_a_foreign_runtime() {
         .block_on(app.shutdown())
         .expect("shutdown must succeed");
 }
+
+/// `ensure_default_rules` and `sync_rules` both seed the organization
+/// rules table only when it is empty, with *different* default rules
+/// ("DLsite Standard" vs. "DLSite Archive") -- whichever runs first
+/// wins. The original `AppState::new`/`sync_configuration` always ran
+/// `ensure_default_rules` first; this proves `bootstrap()` still does,
+/// so a fresh install always gets "DLsite Standard", never
+/// `sync_rules`'s "DLSite Archive" payload, ever again by accident.
+#[test]
+fn first_run_seeds_ensure_default_rules_payload_not_sync_rules_payload() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .expect("first run bootstrap must succeed");
+
+    let legacy = app.take_legacy_composition();
+    let dbs = legacy
+        .dbs
+        .expect("databases must have opened successfully on a first run");
+    let rules = arclain_core::config::database::list_org_rules(&dbs.config_pool)
+        .expect("list organization rules");
+
+    assert_eq!(
+        rules.len(),
+        1,
+        "exactly one seed rule, from whichever seeder ran first"
+    );
+    assert_eq!(
+        rules[0].name, "DLsite Standard",
+        "ensure_default_rules's payload must win -- it must run before sync_rules"
+    );
+    assert_eq!(
+        rules[0].trigger.filename_pattern.as_deref(),
+        Some(r"(RJ|VJ|BJ)\d+"),
+        "this is ensure_default_rules's pattern, not sync_rules's \\[(RJ|BJ|VJ)\\d+\\]"
+    );
+    assert_eq!(rules[0].actions.root_folder.as_deref(), Some("Game"));
+}
+
+/// A plugins directory that cannot be created must not fail bootstrap,
+/// only degrade plugin loading. Simulated by planting a regular file
+/// where the plugins directory would go (`create_dir_all` then fails
+/// outright) -- the same class of failure a root-owned system-install
+/// plugins directory (`/usr/lib/arclain/plugins`, `Program Files\
+/// Arclain\plugins`) produces for a non-root process, but reproducible
+/// hermetically on any platform without real permission manipulation.
+#[test]
+fn uncreatable_plugins_dir_still_bootstraps_with_plugins_degraded() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    std::fs::write(&paths.plugins_dir, b"not a directory").unwrap();
+
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .expect("an uncreatable plugins dir must not fail bootstrap");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let capabilities = runtime
+        .block_on(app.capabilities())
+        .expect("capabilities() must succeed");
+    assert!(
+        !capabilities.plugins_available,
+        "plugin manager construction should have failed gracefully against a non-directory path"
+    );
+    let health = runtime
+        .block_on(app.health())
+        .expect("health() must succeed");
+    assert!(health.degraded_components.iter().any(|c| c == "plugins"));
+}
+
+/// End-to-end companion to the deterministic `RuntimeOwner`-focused
+/// regression tests in `arclain_app::runtime`'s own test module (which
+/// directly prove the underlying mechanism, including checking the
+/// background task's `JoinHandle` result -- something not possible
+/// through the public API alone, since a panic inside a detached
+/// spawned task is caught by Tokio and would not otherwise be observed
+/// here). This test exercises the same shape through the public API:
+/// dropping a facade future before it resolves, then dropping the
+/// app's last clone from within an async context, must not hang or
+/// bring down the test process.
+#[test]
+fn dropping_a_facade_future_mid_flight_then_the_app_does_not_panic() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .unwrap();
+
+    let foreign = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+
+    foreign.block_on(async {
+        // At least one poll happens before a timeout this short can
+        // possibly fire, which is enough to reach `ArclainApp::
+        // dispatch`'s internal `spawn` onto the app's own runtime (the
+        // spawn happens synchronously, before the first await point).
+        // Timing out drops the future without ever seeing the result
+        // -- "mid-flight" -- while the already-spawned background task
+        // keeps running independently to completion regardless.
+        let _ = tokio::time::timeout(std::time::Duration::from_micros(1), app.capabilities()).await;
+
+        // Drop this test's own `ArclainApp` clone now -- possibly
+        // before the detached background task has finished, leaving
+        // it holding what may become the very last `Arc<AppRuntime>`
+        // reference.
+        drop(app);
+
+        // Give the detached background task time to finish and drop
+        // its own clone, from within one of the app's own runtime's
+        // worker threads.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    });
+}
+
+/// After `shutdown()`, every other facade call must return a structured
+/// error rather than silently spawning onto a runtime that may already
+/// be tearing down.
+#[test]
+fn calling_a_facade_method_after_shutdown_returns_an_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .unwrap();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime
+        .block_on(app.shutdown())
+        .expect("shutdown must succeed");
+
+    let error = runtime
+        .block_on(app.capabilities())
+        .expect_err("calling capabilities() after shutdown must fail");
+    assert_eq!(error.kind, ApplicationErrorKind::Internal);
+}
+
+/// A second `shutdown()` call is a documented idempotent no-op, not an
+/// error.
+#[test]
+fn shutting_down_twice_is_an_idempotent_no_op() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .unwrap();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime
+        .block_on(app.shutdown())
+        .expect("first shutdown must succeed");
+    runtime
+        .block_on(app.shutdown())
+        .expect("second shutdown must also succeed (idempotent no-op)");
+}
+
+/// A clone of `ArclainApp` obtained before `shutdown()` is called on a
+/// *different* clone must also observe the shut-down state -- the flag
+/// lives in the shared `AppRuntime`, not per-clone.
+#[test]
+fn a_clone_outliving_shutdown_also_gets_the_error() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    support::seed_working_sevenzip_config(&paths, &dummy_sevenzip(&temp));
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .unwrap();
+    let clone = app.clone();
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime
+        .block_on(app.shutdown())
+        .expect("shutdown on the original clone must succeed");
+    drop(app);
+
+    let error = runtime
+        .block_on(clone.capabilities())
+        .expect_err("a clone outliving shutdown must also see the shut-down state");
+    assert_eq!(error.kind, ApplicationErrorKind::Internal);
+}
+
+/// `health()`/`capabilities()` must reflect whether the 7-Zip
+/// executable this instance detected at bootstrap is *still* there,
+/// not a value frozen at bootstrap time. Reachable, unlike forcing
+/// 7-Zip absent *at bootstrap* (which fails bootstrap outright -- see
+/// `missing_external_tools_fails_bootstrap_cleanly`), by deleting the
+/// detected executable *after* a successful bootstrap. Also proves
+/// 7-Zip is a *required* component (unlike unrar): its removal clears
+/// `ready`.
+#[test]
+fn health_reflects_sevenzip_removed_after_bootstrap() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let sevenzip_path = dummy_sevenzip(&temp);
+    support::seed_working_sevenzip_config(&paths, &sevenzip_path);
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .expect("bootstrap must succeed with the seeded dummy 7-Zip present");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let health_before = runtime.block_on(app.health()).unwrap();
+    assert!(
+        health_before.ready,
+        "must be ready while the detected 7-Zip executable still exists"
+    );
+
+    std::fs::remove_file(&sevenzip_path).unwrap();
+
+    let health_after = runtime.block_on(app.health()).unwrap();
+    assert!(
+        !health_after.ready,
+        "7-Zip is a required component: its removal must clear readiness"
+    );
+    assert!(health_after
+        .degraded_components
+        .iter()
+        .any(|c| c == "sevenzip"));
+
+    let capabilities_after = runtime.block_on(app.capabilities()).unwrap();
+    let sevenzip_tool = capabilities_after
+        .external_tools
+        .iter()
+        .find(|t| t.tool == "7z")
+        .unwrap();
+    assert!(!sevenzip_tool.available);
+}
+
+/// Guards `support::databases_dir`'s doc comment, which claims it
+/// mirrors `AppPaths::databases_dir`'s (crate-private, unreachable from
+/// this external test crate) convention exactly. If the two ever
+/// drifted apart, `seed_working_sevenzip_config` (which writes into
+/// `support::databases_dir`) would be seeding a `config.sqlite`
+/// bootstrap never actually reads, and 7-Zip detection would fall
+/// through to a real `PATH` search instead of finding the seeded dummy
+/// executable -- visible here as `capabilities()` reporting a
+/// *different* resolved path (or bootstrap failing outright, on a
+/// machine with no real 7-Zip on `PATH`) instead of the exact dummy
+/// path this test seeded.
+#[test]
+fn paths_documented_layout_matches_test_support() {
+    let temp = tempfile::tempdir().unwrap();
+    let paths = support::temp_paths(temp.path());
+    let sevenzip_path = dummy_sevenzip(&temp);
+    support::seed_working_sevenzip_config(&paths, &sevenzip_path);
+
+    let app = ArclainApp::bootstrap(BootstrapConfig {
+        paths_override: Some(paths),
+        worker_threads: None,
+    })
+    .expect("bootstrap must succeed");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let capabilities = runtime.block_on(app.capabilities()).unwrap();
+    let sevenzip_tool = capabilities
+        .external_tools
+        .iter()
+        .find(|t| t.tool == "7z")
+        .unwrap();
+    assert_eq!(
+        sevenzip_tool.resolved_path.as_deref(),
+        Some(sevenzip_path.as_path()),
+        "bootstrap must have read sevenzip_path from support::databases_dir()'s exact location"
+    );
+}
