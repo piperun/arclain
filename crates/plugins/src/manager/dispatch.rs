@@ -420,12 +420,20 @@ mod tests {
 
     /// Minimal `ActiveTabBridge` test double for
     /// `process_event_worker_request_fetch`'s own tests: only
-    /// `metadata_signal`/`set_session_metadata` matter here (the tests
-    /// assert on what was -- or was not -- written), so every other
-    /// method is a harmless stub.
+    /// `metadata()`/`set_session_metadata` matter here (the tests assert
+    /// on what was -- or was not -- written), so every other method is a
+    /// harmless stub. A plain `Mutex` cell, not `arclain_signals::Signal`
+    /// -- this crate's `ActiveTabBridge` trait no longer exposes a signal
+    /// type in its public API, and its test doubles follow suit.
     #[derive(Default)]
     struct TestBridge {
-        metadata: arclain_signals::Signal<Option<serde_json::Value>>,
+        metadata: Mutex<Option<serde_json::Value>>,
+    }
+
+    impl TestBridge {
+        fn metadata(&self) -> Option<serde_json::Value> {
+            self.metadata.lock().clone()
+        }
     }
 
     impl crate::ActiveTabBridge for TestBridge {
@@ -438,15 +446,15 @@ mod tests {
         fn archive_entries(&self) -> Vec<String> {
             Vec::new()
         }
-        fn metadata_signal(&self) -> arclain_signals::Signal<Option<serde_json::Value>> {
-            self.metadata.clone()
+        fn active_archive_session_id(&self) -> Option<u64> {
+            None
         }
         fn set_session_metadata(
             &self,
             _archive_session_id: u64,
             metadata: Option<serde_json::Value>,
         ) {
-            self.metadata.set(metadata);
+            *self.metadata.lock() = metadata;
         }
         fn set_archive_path(&self, _path: Option<String>) {}
     }
@@ -536,7 +544,8 @@ mod tests {
             let instance = manager
                 .get_plugin_instance("ui-demo")
                 .expect("loaded plugin instance");
-            let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
+            let concrete_bridge = Arc::new(TestBridge::default());
+            let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
             let fetch_called = AtomicBool::new(false);
             let fallback_called = AtomicBool::new(false);
 
@@ -559,7 +568,7 @@ mod tests {
             assert_eq!(outcome, RequestFetchOutcome::Denied);
             assert!(!fetch_called.load(Ordering::SeqCst));
             assert!(!fallback_called.load(Ordering::SeqCst));
-            assert!(bridge.metadata_signal().get().is_none());
+            assert!(concrete_bridge.metadata().is_none());
         }
     }
 
@@ -569,7 +578,8 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
-        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
+        let concrete_bridge = Arc::new(TestBridge::default());
+        let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
         let fetch_called = AtomicBool::new(false);
         let fallback_called = AtomicBool::new(false);
 
@@ -595,9 +605,8 @@ mod tests {
         assert!(fetch_called.load(Ordering::SeqCst));
         assert!(!fallback_called.load(Ordering::SeqCst));
         assert_eq!(
-            bridge
-                .metadata_signal()
-                .get()
+            concrete_bridge
+                .metadata()
                 .and_then(|value| value["product_id"].as_str().map(str::to_owned))
                 .as_deref(),
             Some("RJ000001")
@@ -628,7 +637,8 @@ mod tests {
         client
             .try_acquire_plugin_host_service("ui-demo", "gameta")
             .expect("first host-service request is within policy");
-        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
+        let concrete_bridge = Arc::new(TestBridge::default());
+        let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
         let fetch_called = AtomicBool::new(false);
         let fallback_called = AtomicBool::new(false);
 
@@ -655,7 +665,7 @@ mod tests {
         assert_eq!(outcome, RequestFetchOutcome::Denied);
         assert!(!fetch_called.load(Ordering::SeqCst));
         assert!(!fallback_called.load(Ordering::SeqCst));
-        assert!(bridge.metadata_signal().get().is_none());
+        assert!(concrete_bridge.metadata().is_none());
     }
 
     #[test]
@@ -679,7 +689,8 @@ mod tests {
                 requests_per_minute: 1,
             },
         );
-        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
+        let concrete_bridge = Arc::new(TestBridge::default());
+        let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
         let get_called = AtomicBool::new(false);
         let fetch_called = AtomicBool::new(false);
         let native_called = AtomicBool::new(false);
@@ -711,7 +722,7 @@ mod tests {
         assert!(get_called.load(Ordering::SeqCst));
         assert!(!fetch_called.load(Ordering::SeqCst));
         assert!(!native_called.load(Ordering::SeqCst));
-        assert!(bridge.metadata_signal().get().is_none());
+        assert!(concrete_bridge.metadata().is_none());
     }
 
     #[test]
@@ -720,7 +731,8 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
-        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
+        let concrete_bridge = Arc::new(TestBridge::default());
+        let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
         let native_called = AtomicBool::new(false);
 
         let outcome = process_event_worker_request_fetch(
@@ -742,7 +754,7 @@ mod tests {
         );
 
         assert_eq!(outcome, RequestFetchOutcome::Denied);
-        assert!(bridge.metadata_signal().get().is_none());
+        assert!(concrete_bridge.metadata().is_none());
         assert!(!native_called.load(Ordering::SeqCst));
     }
 
@@ -752,7 +764,8 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
-        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
+        let concrete_bridge = Arc::new(TestBridge::default());
+        let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
         let permits = AtomicUsize::new(0);
         let get_calls = AtomicUsize::new(0);
         let fetch_calls = AtomicUsize::new(0);
@@ -795,7 +808,8 @@ mod tests {
         let instance = manager
             .get_plugin_instance("ui-demo")
             .expect("loaded plugin instance");
-        let bridge: Arc<dyn crate::ActiveTabBridge> = Arc::new(TestBridge::default());
+        let concrete_bridge = Arc::new(TestBridge::default());
+        let bridge: Arc<dyn crate::ActiveTabBridge> = concrete_bridge.clone();
         let permits = AtomicUsize::new(0);
         let fetch_calls = AtomicUsize::new(0);
         let fallback_calls = AtomicUsize::new(0);

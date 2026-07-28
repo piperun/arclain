@@ -543,8 +543,10 @@ impl HostFunctions {
                         );
                     }
                 } else if let Some(ref bridge) = self.active_tab {
-                    bridge.metadata_signal().set(Some(parsed.clone()));
-                    debug!("[Cache SAVE] Triggered metadata signal via bridge");
+                    if let Some(session_id) = bridge.active_archive_session_id() {
+                        bridge.set_session_metadata(session_id, Some(parsed.clone()));
+                        debug!("[Cache SAVE] Triggered metadata signal via active session id");
+                    }
                 }
             }
             Err(e) => {

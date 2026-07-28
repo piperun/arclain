@@ -9,7 +9,6 @@
 
 use crate::core::signals::AppSignals;
 use arclain_plugins::ActiveTabBridge;
-use arclain_signals::Signal;
 use std::path::PathBuf;
 
 /// Upper bound on how many sessions' worth of metadata
@@ -91,8 +90,14 @@ impl ActiveTabBridge for AppSignalsBridge {
             .collect()
     }
 
-    fn metadata_signal(&self) -> Signal<Option<serde_json::Value>> {
-        self.signals.tabs.get().active().metadata.clone()
+    fn active_archive_session_id(&self) -> Option<u64> {
+        self.signals
+            .tabs
+            .get()
+            .active()
+            .archive_session_id
+            .get()
+            .map(arclain_app::ids::ArchiveSessionId::into_raw)
     }
 
     fn set_session_metadata(&self, archive_session_id: u64, metadata: Option<serde_json::Value>) {

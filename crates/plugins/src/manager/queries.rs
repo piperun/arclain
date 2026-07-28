@@ -72,6 +72,16 @@ impl PluginManager {
             .collect()
     }
 
+    /// Every plugin discovered on disk that failed to load during
+    /// [`PluginManager::init`] (or a later [`PluginManager::install_plugin`]
+    /// / [`PluginManager::reload_plugin`] retry), most-recent first. Used
+    /// by the application facade to report a plugin's `load_error`
+    /// alongside the plugins that *did* load successfully -- see
+    /// `super::types::FailedPlugin`'s own doc comment.
+    pub fn failed_plugins(&self) -> Vec<super::types::FailedPlugin> {
+        self.failed_plugins.lock().iter().rev().cloned().collect()
+    }
+
     /// Cheap counts-only summary suitable for status-bar style usage
     /// where the caller only needs `(total, enabled)` and does NOT need
     /// each plugin's manifest. The status bar previously called

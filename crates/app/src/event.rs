@@ -1,19 +1,18 @@
 //! The event stream every asynchronous application operation reports its
 //! progress through, and the point-in-time snapshot read back from it.
 //!
-//! `OperationResult::ArchiveOpened` was added when `start_open_archive`
-//! first needed a terminal payload. `OperationResult::Materialized` is this
-//! task's addition: the terminal payload `start_materialization`'s spawned
-//! operation produces on success. `PluginUiUpdated` is added by the later
-//! task that implements the facade method able to actually produce it;
-//! adding a variant is additive and does not change anything defined
-//! earlier.
+//! first needed a terminal payload. `Materialized` is the terminal payload
+//! `start_materialization`'s spawned operation produces on success.
+//! `PluginUiUpdated` is the terminal payload `start_plugin_action`'s
+//! spawned operation produces on success. Adding a variant is additive
+//! and does not change anything defined earlier.
 
 use crate::archive::ArchiveSnapshot;
 use crate::challenge::Challenge;
 use crate::error::ApplicationError;
 use crate::ids::{ArchiveSessionId, OperationId};
 use crate::materialization::MaterializationLease;
+use crate::plugins::PluginUiUpdate;
 
 /// Which kind of long-running, cancellable action an operation performs.
 /// A frontend uses this to choose an icon/label without inspecting the
@@ -33,7 +32,6 @@ pub enum OperationKind {
 
 /// The payload an operation's terminal `Completed` state carries.
 ///
-/// `PluginUiUpdated` is added by a later task (see the module doc comment).
 /// Deliberately not `Eq`: `ArchiveSnapshot` carries a `serde_json::Value`
 /// (`metadata`), which has no total order, so `Eq` is left off
 /// `OperationResult` from the start rather than removed later as a
@@ -45,6 +43,7 @@ pub enum OperationResult {
     None,
     ArchiveOpened { snapshot: ArchiveSnapshot },
     Materialized { lease: MaterializationLease },
+    PluginUiUpdated { update: PluginUiUpdate },
 }
 
 /// The lifecycle state of one in-flight (or finished) operation. Carried,

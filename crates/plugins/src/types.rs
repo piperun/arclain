@@ -702,6 +702,66 @@ pub const MAX_PLUGIN_METADATA_BYTES: usize = 4 * 1024 * 1024;
 /// Maximum opaque Data API body lifted across the component boundary.
 pub const MAX_PLUGIN_GUEST_DATA_BYTES: usize = 4 * 1024 * 1024;
 
+/// Opaque handle naming one archive an application-layer session has
+/// made available to plugin host functions. Deliberately *not*
+/// `arclain_app::ids::ArchiveSessionId` reused directly: `arclain_app`
+/// depends on `arclain_plugins`, not the other way around, so a type
+/// this crate's own public API names must be minted here -- an
+/// `arclain_app`-side adapter is expected to construct one per
+/// `ArchiveSessionId` it owns (typically by round-tripping the same raw
+/// `u64`, the same way `PluginEvent::OnArchiveOpen::archive_session_id`
+/// already does) rather than this crate depending on that id type
+/// itself.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PluginArchiveContextId(u64);
+
+impl PluginArchiveContextId {
+    pub const fn from_raw(value: u64) -> Self {
+        Self(value)
+    }
+
+    pub const fn into_raw(self) -> u64 {
+        self.0
+    }
+}
+
+/// What one [`PluginArchiveContextId`] identifies: an archive's on-disk
+/// path and kind, for a host function that needs to describe (rather
+/// than read from) the archive a context id names.
+pub struct PluginArchiveContext {
+    pub context_id: PluginArchiveContextId,
+    pub path: std::path::PathBuf,
+    pub kind: ArchiveKind,
+}
+
+/// Application-owned, session-scoped archive access for plugin host
+/// functions: list an archive's entries, read one entry's bytes, and
+/// write back structured metadata -- everything a host function needs
+/// to serve an archive-context WIT import without this crate holding
+/// (or this crate's event payloads embedding) the archive's password or
+/// its full entry collection directly. An `arclain_app`-side adapter
+/// implements this over its own `ArchiveSessionStore`, resolving a
+/// [`PluginArchiveContextId`] back to the concrete open session the same
+/// way it already resolves an `ArchiveSessionId`.
+///
+/// Defined here (not in `arclain_app`) specifically to avoid an
+/// `arclain_app`/`arclain_plugins` dependency cycle: `arclain_app`
+/// depends on `arclain_plugins`, so a trait this crate's own host
+/// functions are meant to call through must be declared on this side of
+/// that edge, with `arclain_app` providing the implementation.
+pub trait PluginArchiveAccess: Send + Sync {
+    fn list_entries(
+        &self,
+        context_id: PluginArchiveContextId,
+    ) -> Result<Vec<arclain_core::ArchiveEntry>>;
+    fn read_entry(&self, context_id: PluginArchiveContextId, path: &str) -> Result<Vec<u8>>;
+    fn write_metadata(
+        &self,
+        context_id: PluginArchiveContextId,
+        value: serde_json::Value,
+    ) -> Result<()>;
+}
+
 pub fn metadata_value_within_limit(value: &serde_json::Value) -> bool {
     struct LimitWriter {
         written: usize,

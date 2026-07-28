@@ -779,7 +779,13 @@ impl PluginManager {
         for plugin in plugins {
             match self.load_plugin(&plugin) {
                 Ok(_) => debug!("Loaded plugin: {}", plugin.manifest.plugin.id),
-                Err(e) => error!("Failed to load plugin {}: {}", plugin.manifest.plugin.id, e),
+                Err(e) => {
+                    error!("Failed to load plugin {}: {}", plugin.manifest.plugin.id, e);
+                    self.failed_plugins.lock().push(super::types::FailedPlugin {
+                        original_id: plugin.manifest.plugin.id.clone(),
+                        error: e.to_string(),
+                    });
+                }
             }
         }
         Ok(())

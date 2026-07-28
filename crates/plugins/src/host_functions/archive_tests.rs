@@ -74,7 +74,7 @@ fn rename_does_not_replace_an_existing_destination() {
 #[derive(Default)]
 struct TestActiveTabBridge {
     archive_path: parking_lot::Mutex<Option<String>>,
-    metadata: arclain_signals::Signal<Option<serde_json::Value>>,
+    metadata: parking_lot::Mutex<Option<serde_json::Value>>,
 }
 
 impl ActiveTabBridge for TestActiveTabBridge {
@@ -90,12 +90,12 @@ impl ActiveTabBridge for TestActiveTabBridge {
         Vec::new()
     }
 
-    fn metadata_signal(&self) -> arclain_signals::Signal<Option<serde_json::Value>> {
-        self.metadata.clone()
+    fn active_archive_session_id(&self) -> Option<u64> {
+        None
     }
 
     fn set_session_metadata(&self, _archive_session_id: u64, metadata: Option<serde_json::Value>) {
-        self.metadata.set(metadata);
+        *self.metadata.lock() = metadata;
     }
 
     fn set_archive_path(&self, path: Option<String>) {

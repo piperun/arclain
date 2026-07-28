@@ -44,3 +44,23 @@ pub(crate) struct InitialPluginSettings {
     pub(crate) original_id: String,
     pub(crate) values: HashMap<String, String>,
 }
+
+/// One plugin discovered on disk that failed to load, recorded so
+/// [`super::PluginManager::failed_plugins`] can report it -- the
+/// application-facade `PluginSummary.load_error` field this backs did
+/// not previously have any host-side source: `PluginManager::init`
+/// logged a load failure and otherwise discarded it, so an install that
+/// silently failed (a stale manifest, a corrupted `.wasm`) was invisible
+/// to anything but the log file.
+#[derive(Clone, Debug)]
+pub struct FailedPlugin {
+    /// The plugin id as it appeared in the manifest that failed to load
+    /// -- not necessarily a validated [`crate::types::PluginId`], since
+    /// an invalid id is itself one of the ways loading can fail.
+    pub original_id: String,
+    /// The host-generated failure reason. Never a guest-controlled
+    /// string: `load_plugin`'s own error paths (manifest parsing,
+    /// capability validation, WASM instantiation) only ever produce
+    /// `PluginError`'s own `Display` text.
+    pub error: String,
+}

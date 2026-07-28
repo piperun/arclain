@@ -13,8 +13,8 @@ mod snapshot;
 mod types;
 
 pub use snapshot::EnabledPluginSnapshot;
+pub use types::{FailedPlugin, PluginListItem, PluginStatusSummary};
 use types::{InitialPluginSettings, ManagedPlugin};
-pub use types::{PluginListItem, PluginStatusSummary};
 
 use crate::loader::PluginLoader;
 use crate::types::{PluginError, PluginEvent, PluginIdentityKey, Result};
@@ -91,6 +91,10 @@ pub struct PluginManager {
     /// since.
     pub(crate) settings_cache:
         parking_lot::Mutex<HashMap<PluginIdentityKey, HashMap<String, String>>>,
+    /// Every plugin discovered on disk that failed to load during
+    /// [`PluginManager::init`], with its host-generated failure reason.
+    /// See [`types::FailedPlugin`]'s own doc comment for why this exists.
+    pub(crate) failed_plugins: parking_lot::Mutex<Vec<types::FailedPlugin>>,
 }
 
 impl PluginManager {
@@ -158,6 +162,7 @@ impl PluginManager {
             active_tab_bridge: None,
             cached_top_tabs: parking_lot::Mutex::new(None),
             settings_cache: parking_lot::Mutex::new(HashMap::new()),
+            failed_plugins: parking_lot::Mutex::new(Vec::new()),
         })
     }
 

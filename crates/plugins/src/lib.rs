@@ -49,6 +49,7 @@ pub mod loader;
 pub mod manager;
 pub mod runtime;
 pub mod types;
+pub mod ui_model;
 
 // Generate bindings from WIT
 pub mod bindings {

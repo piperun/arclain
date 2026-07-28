@@ -144,6 +144,53 @@ fn test_list_plugins_empty() {
 }
 
 #[test]
+fn init_records_a_discovered_but_uninstantiable_plugin_as_a_failed_plugin() {
+    let temp_dir = TempDir::new().unwrap();
+    let plugins_dir = temp_dir.path().join("plugins");
+    let plugin_dir = plugins_dir.join("broken-plugin");
+    std::fs::create_dir_all(&plugin_dir).unwrap();
+    std::fs::write(
+        plugin_dir.join("broken-plugin.toml"),
+        r#"
+[plugin]
+id = "broken-plugin"
+name = "Broken Plugin"
+version = "0.1.0"
+author = "test"
+description = "a manifest with an unparsable component body"
+
+[capabilities]
+"#,
+    )
+    .unwrap();
+    // A manifest that discovers cleanly, paired with bytes that are not
+    // a valid WASM component -- `load_plugin` fails during
+    // instantiation, well after discovery already returned this plugin.
+    std::fs::write(
+        plugin_dir.join("broken-plugin.wasm"),
+        b"not a real component",
+    )
+    .unwrap();
+
+    let mut manager = PluginManager::new_with_plugin_log_dir(
+        plugins_dir,
+        HashMap::new(),
+        temp_dir.path().join("logs"),
+    )
+    .unwrap();
+    manager.init().unwrap();
+
+    assert!(
+        manager.list_plugins().is_empty(),
+        "a failed load must not register a plugin"
+    );
+    let failed = manager.failed_plugins();
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].original_id, "broken-plugin");
+    assert!(!failed[0].error.is_empty());
+}
+
+#[test]
 fn manager_does_not_retain_unbounded_persisted_plugin_settings() {
     let temp_dir = TempDir::new().unwrap();
     let mut plugin_settings = HashMap::new();

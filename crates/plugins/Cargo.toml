@@ -21,7 +21,6 @@ tokio = { workspace = true, features = ["rt", "sync"] }
 rfd = "0.16.0"
 tempfile.workspace = true
 arclain-network = { path = "../network" }
-arclain_signals = { path = "../signals" }
 chrono.workspace = true
 cap-std = "=4.0.2"
 cap-fs-ext = "=4.0.2"

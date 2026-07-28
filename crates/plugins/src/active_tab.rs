@@ -29,14 +29,30 @@
 //!
 //! ## In-flight write semantics
 //!
-//! `EventWorker`'s async fallback snapshots `metadata_signal()` at
-//! the start of its async fetch, then writes to that snapshot when
-//! the fetch completes. Because `Signal<T>` is `Arc`-internal, the
-//! snapshot pins the write to *whichever tab was active when the
-//! fetch started* — even if the user switches tabs while the HTTP
-//! call is in flight, the metadata still lands on the original tab.
-
-use arclain_signals::Signal;
+//! `EventWorker`'s async fallback snapshots [`ActiveTabBridge::
+//! active_archive_session_id`] at the start of its async fetch, then
+//! writes to that snapshotted session id (via
+//! [`ActiveTabBridge::set_session_metadata`]) when the fetch completes.
+//! Resolving by session id rather than "whichever tab is active *now*"
+//! is what pins the write to *whichever tab was active when the fetch
+//! started* — even if the user switches tabs while the HTTP call is in
+//! flight, the metadata still lands on the original tab.
+//!
+//! ## Decoupled from UI signal types
+//!
+//! This trait used to expose a `metadata_signal() -> arclain_signals::
+//! Signal<Option<serde_json::Value>>` method: a panel-driven (non-event)
+//! `emit_metadata` call wrote directly into whatever signal that method
+//! handed back. That was the one place a UI-toolkit-adjacent type
+//! (`arclain_signals::Signal`) appeared in this crate's public API.
+//! [`Self::active_archive_session_id`] replaces it: the panel-driven
+//! path now resolves "which session is active right now" the same way
+//! the event-driven path already resolved "which session did this event
+//! fire for", and both funnel through the one write sink,
+//! [`Self::set_session_metadata`]. `arclain_plugins` no longer depends on
+//! `arclain_signals` at all (not even as a dev-dependency): every test
+//! double that previously used `Signal` as a convenient interior-mutable
+//! cell now uses a plain `Mutex` instead.
 
 /// Host-side bridge giving the plugin system a live view of the
 /// currently active tab's per-tab signals.
@@ -77,23 +93,21 @@ pub trait ActiveTabBridge: Send + Sync {
             .collect()
     }
 
-    /// Signal handle for the active tab's metadata. Writes to the
-    /// returned signal cause the active tab's `game_metadata` to
-    /// update on the next frame. Callers that need write durability
-    /// across tab switches should snapshot the returned `Signal`
-    /// (cheap — internal `Arc` clone) before the write, so the
-    /// write lands on the originally-targeted tab even if the user
-    /// switches in the meantime.
-    ///
-    /// This is the right sink for a *user-initiated* emit (a plugin
-    /// panel action with no event context) — "whichever tab I'm
-    /// looking at right now" is the correct semantic there. An
-    /// event-context emit (one fired while dispatching a queued
-    /// `PluginEvent::OnArchiveOpen`) must instead route through
-    /// [`Self::set_session_metadata`], since the tab that requested
-    /// the event may no longer be the active one by the time it's
-    /// processed.
-    fn metadata_signal(&self) -> Signal<Option<serde_json::Value>>;
+    /// The opaque archive session id (an application-facade
+    /// `ArchiveSessionId::into_raw()` value) of whichever tab is
+    /// currently active, or `None` if the active tab has no archive
+    /// open. Read by the non-event-context path of `emit_metadata` to
+    /// resolve which session a *user-initiated* emit (a plugin panel
+    /// action with no event context) belongs to — "whichever tab I'm
+    /// looking at right now" is the correct semantic there — before
+    /// writing through [`Self::set_session_metadata`]. An event-context
+    /// emit (one fired while dispatching a queued
+    /// `PluginEvent::OnArchiveOpen`) never calls this: it already has
+    /// its own originating session id and routes through
+    /// [`Self::set_session_metadata`] directly, since the tab that
+    /// requested the event may no longer be the active one by the time
+    /// it's processed.
+    fn active_archive_session_id(&self) -> Option<u64>;
 
     /// Writes `metadata` for the tab (if any) currently holding
     /// `archive_session_id` open — resolved by session id, independent

@@ -28,9 +28,11 @@
 //! organization-profile summaries, and the `ArclainApp` methods declared
 //! in `crate::runtime`'s own delimited "Task 10" section.
 //!
-//! The remaining module from the full facade contract (`plugins`) is
-//! added incrementally by a later task; this crate declares only the
-//! modules it actually implements so far.
+//! [`plugins`] exposes renderer-neutral plugin sessions: see
+//! [`plugins::PluginUiDocument`] and the facade methods
+//! `ArclainApp::{plugins, set_plugin_enabled, open_plugin_session,
+//! plugin_ui_document, close_plugin_session, start_plugin_action,
+//! set_active_archive_session, read_plugin_image}`.
 
 pub mod archive;
 pub mod challenge;
@@ -39,6 +41,7 @@ pub mod event;
 pub mod ids;
 pub mod materialization;
 pub mod operations;
+pub mod plugins;
 pub mod runtime;
 pub mod settings;
 

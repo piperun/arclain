@@ -499,6 +499,8 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         cleanup_task_handle: parking_lot::Mutex::new(None),
         settings_write_lock: tokio::sync::Mutex::new(()),
         shut_down: std::sync::atomic::AtomicBool::new(false),
+        plugin_sessions: crate::plugins::PluginSessionStore::new(),
+        active_archive_session: crate::plugins::ActiveArchiveSession::new(),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })
 }

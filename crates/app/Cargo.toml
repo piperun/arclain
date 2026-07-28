@@ -19,7 +19,7 @@ tracing.workspace = true
 zeroize.workspace = true
 
 # Runtime composition (Task 4) pulls in the headless crates whose
-# construction it now owns. All three are HEADLESS_CRATES per
+# construction it now owns. All are HEADLESS_CRATES per
 # scripts/frontend_boundary.py -- headless-to-headless dependencies are
 # unrestricted, so this does not create a boundary violation.
 arclain_app_fs = { path = "../app_fs" }
@@ -30,10 +30,19 @@ arclain_plugins = { path = "../plugins" }
 # userinfo-rejection logic a second time. Headless-to-headless, so this
 # adds no frontend_boundary violation (see that script's HEADLESS_CRATES).
 arclain-network = { path = "../network" }
+# `read_plugin_image` (Task 11) resolves a plugin-scoped cache_key
+# through `arclain_data::CacheOwner`, which `arclain_core` does not
+# re-export.
+arclain_data = { path = "../data" }
 
 [dev-dependencies]
 tempfile.workspace = true
 trybuild = "1.0.118"
+# `crates/src/plugins.rs`'s own tests build a real `arclain_data::
+# ContentCache` against an in-memory `CacheIndex`, which needs
+# `arclain_db`'s `CacheEntry`/`CacheType` directly -- `arclain_data`
+# does not re-export either from its own crate root.
+arclain_db = { path = "../db" }
 # Builds real ZIP fixtures in temp dirs for the archive-session tests
 # (`tests/archive_sessions.rs`) -- same crate/version `arclain_core`
 # already depends on, so this adds no new crate to the dependency tree.

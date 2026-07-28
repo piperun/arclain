@@ -47,8 +47,10 @@ use crate::archive::ArchiveSnapshot;
 use crate::archive::{ArchiveSessionStore, EntryPage, ListEntriesRequest, OpenArchiveRequest};
 use crate::challenge::{ChallengeResponse, SecretInput};
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
-use crate::event::{OperationEvent, OperationKind, OperationSnapshot};
-use crate::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId};
+use crate::event::{
+    OperationEvent, OperationKind, OperationResult, OperationSnapshot, OperationState,
+};
+use crate::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId, PluginSessionId};
 use crate::materialization::{MaterializationLease, MaterializationStore, MaterializeRequest};
 use crate::operations::{
     ArchiveMutationRequest, ChallengeWaiters, ConvertRequest, OperationRegistry, OrganizeRequest,
@@ -249,6 +251,17 @@ pub(crate) struct AppRuntime {
     /// [`ArclainApp::take_legacy_composition`], so a post-shutdown caller
     /// cannot obtain a live `Services` either.
     shut_down: AtomicBool,
+
+    // ==================== Task 11: plugin sessions (start) ====================
+    // Kept in its own clearly-delimited section for the same reason as the
+    // Task 9 sections elsewhere in this file: a concurrent worktree may be
+    // touching this same shared file for an unrelated task.
+    /// Every open renderer-neutral plugin session.
+    plugin_sessions: crate::plugins::PluginSessionStore,
+    /// Which archive session the frontend last reported as active, via
+    /// [`ArclainApp::set_active_archive_session`].
+    active_archive_session: crate::plugins::ActiveArchiveSession,
+    // ==================== Task 11: plugin sessions (end) ====================
     tokio_runtime: RuntimeOwner,
 }
 
@@ -328,6 +341,28 @@ impl AppRuntime {
     pub(crate) fn paths(&self) -> &AppPaths {
         &self.paths
     }
+
+    // ==================== Task 11: plugin sessions (start) ====================
+
+    pub(crate) fn plugin_manager(
+        &self,
+    ) -> Option<Arc<parking_lot::Mutex<arclain_plugins::PluginManager>>> {
+        self.session.plugin_manager.clone()
+    }
+
+    pub(crate) fn content_cache(&self) -> Option<&Arc<arclain_core::ContentCache>> {
+        self.session.content_cache.as_ref()
+    }
+
+    pub(crate) fn plugin_sessions(&self) -> &crate::plugins::PluginSessionStore {
+        &self.plugin_sessions
+    }
+
+    pub(crate) fn active_archive_session(&self) -> &crate::plugins::ActiveArchiveSession {
+        &self.active_archive_session
+    }
+
+    // ==================== Task 11: plugin sessions (end) ====================
 }
 
 /// The application facade. Cheap to clone (an `Arc` internally); every
@@ -946,6 +981,9 @@ impl ArclainApp {
     // `crate::settings` (pure DTOs/validation) and
     // `runtime::settings_ops` (the `AppRuntime`-touching execution
     // layer) -- see both modules' own doc comments.
+    //
+    // The plugins section immediately below this one is Task 11's own
+    // equally delimited block, kept separate for the same reason.
 
     /// A full, point-in-time view of every non-secret application
     /// setting. Always succeeds, even if the encrypted vault never
@@ -1077,6 +1115,180 @@ impl ArclainApp {
     }
 
     // ============== Task 10: settings, secrets, vault (end) ==============
+
+    // ==================== Task 11: plugin sessions (start) ====================
+    // Kept in its own clearly-delimited section for the same reason as the
+    // Task 9 sections above: a concurrent worktree may be touching this
+    // same shared file for an unrelated task. See `crate::plugins`'s own
+    // module doc comment for what this section does and does not port
+    // from the pre-facade `crates/ui` plugin-UI machinery.
+
+    /// Every plugin the application's plugin runtime knows about,
+    /// successfully loaded or not (see `arclain_plugins::manager::
+    /// FailedPlugin`). Empty if the plugin runtime itself is unavailable
+    /// (no `ApplicationError` -- an application with no working plugin
+    /// runtime simply reports zero plugins, matching `capabilities()`'s
+    /// own `plugins_available` flag rather than failing every plugin
+    /// call outright).
+    pub async fn plugins(&self) -> Result<Vec<crate::plugins::PluginSummary>, ApplicationError> {
+        self.dispatch(|inner| match inner.plugin_manager() {
+            Some(manager) => crate::plugins::PluginSessionStore::plugins(&manager),
+            None => Vec::new(),
+        })
+        .await
+    }
+
+    /// Enables or disables one plugin. `NotFound` for an unknown
+    /// `plugin_id`.
+    pub async fn set_plugin_enabled(
+        &self,
+        plugin_id: String,
+        enabled: bool,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch(move |inner| {
+            let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+            crate::plugins::PluginSessionStore::set_plugin_enabled(&manager, &plugin_id, enabled)
+        })
+        .await?
+    }
+
+    /// Opens a fresh renderer-neutral session with `plugin_id`'s
+    /// `MainPage` extension point (see `arclain_plugins::ui_model::
+    /// PluginExtensionPointDto::region_slug`'s doc comment for why this
+    /// single-argument call always addresses `MainPage`), fetching and
+    /// normalizing its first document. Runs the plugin's `get-ui-layout`
+    /// WASM call on this app's own runtime, never the caller's.
+    pub async fn open_plugin_session(
+        &self,
+        plugin_id: String,
+    ) -> Result<crate::plugins::PluginSessionSnapshot, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let manager = crate::plugins::require_manager(inner.plugin_manager())?;
+            let Some(handle) = inner.tokio_handle() else {
+                return Err(shutdown_error());
+            };
+            inner
+                .plugin_sessions()
+                .open(manager, plugin_id, &handle)
+                .await
+        })
+        .await?
+    }
+
+    /// Immediate, in-memory query of the last document revision
+    /// retained for `session_id` -- no plugin call. `NotFound` for an
+    /// unknown or already-closed session id.
+    pub async fn plugin_ui_document(
+        &self,
+        session_id: PluginSessionId,
+    ) -> Result<crate::plugins::PluginUiDocument, ApplicationError> {
+        self.dispatch(move |inner| inner.plugin_sessions().document(session_id))
+            .await?
+    }
+
+    /// Closes an open plugin session. `NotFound` if `session_id` is
+    /// unknown or already closed.
+    pub async fn close_plugin_session(
+        &self,
+        session_id: PluginSessionId,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch(move |inner| inner.plugin_sessions().close(session_id))
+            .await?
+    }
+
+    /// Starts dispatching one plugin interaction as a cancellable,
+    /// event-broadcasting operation. Returns as soon as the operation is
+    /// recorded `Accepted`; the WASM call, any bounded-action
+    /// resolution, and re-normalization all happen on a task spawned
+    /// through this app's own runtime. Subscribe via
+    /// [`Self::subscribe_operations`] to observe `Started` /
+    /// `Completed { PluginUiUpdated }` / `Failed`. See `crate::plugins`'s
+    /// module doc comment for per-plugin action serialization and the
+    /// hidden/disabled node rejection this performs before ever reaching
+    /// the WASM guest.
+    pub async fn start_plugin_action(
+        &self,
+        request: crate::plugins::PluginActionRequest,
+    ) -> Result<OperationId, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            let (operation_id, _cancel) =
+                inner.operations().begin(OperationKind::PluginAction).await;
+            if let Some(handle) = inner.tokio_handle() {
+                let worker_inner = inner.clone();
+                handle.spawn(async move {
+                    let manager =
+                        match crate::plugins::require_manager(worker_inner.plugin_manager()) {
+                            Ok(manager) => manager,
+                            Err(error) => {
+                                let _ = worker_inner
+                                    .operations()
+                                    .transition(operation_id, OperationState::Failed { error })
+                                    .await;
+                                return;
+                            }
+                        };
+                    let Some(worker_handle) = worker_inner.tokio_handle() else {
+                        return;
+                    };
+                    let _ = worker_inner
+                        .operations()
+                        .transition(operation_id, OperationState::Started)
+                        .await;
+                    let outcome = worker_inner
+                        .plugin_sessions()
+                        .dispatch_action(manager, request, &worker_handle)
+                        .await;
+                    let state = match outcome {
+                        Ok(update) => OperationState::Completed {
+                            result: OperationResult::PluginUiUpdated { update },
+                        },
+                        Err(error) => OperationState::Failed { error },
+                    };
+                    let _ = worker_inner
+                        .operations()
+                        .transition(operation_id, state)
+                        .await;
+                });
+            }
+            operation_id
+        })
+        .await
+    }
+
+    /// Reports which archive session (if any) is currently active, so
+    /// plugin host functions resolve `current_archive_info`/
+    /// `list_archive_files`/panel-driven `emit_metadata` against it
+    /// instead of a UI-owned notion of "the active tab". A frontend calls
+    /// this on every tab-activation change (including "no tab has an
+    /// archive open", `None`).
+    pub async fn set_active_archive_session(
+        &self,
+        session_id: Option<ArchiveSessionId>,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch(move |inner| inner.active_archive_session().set(session_id))
+            .await
+    }
+
+    /// Resolves a [`crate::plugins::PluginUiDocument`] node's encoded
+    /// image `cache_key`/`image_key` value into its cached bytes, capped
+    /// at [`crate::plugins::MAX_PLUGIN_IMAGE_BYTES`]. `NotFound` for an
+    /// unrecognized or uncached key; `Internal` for a cached entry that
+    /// exceeds the cap or any other cache read failure.
+    pub async fn read_plugin_image(&self, cache_key: String) -> Result<Vec<u8>, ApplicationError> {
+        self.dispatch(move |inner| {
+            let cache = inner.content_cache().ok_or_else(|| {
+                ApplicationError::new(
+                    ApplicationErrorKind::Unsupported,
+                    "content cache is unavailable",
+                )
+                .with_recoverability(Recoverability::Fatal)
+            })?;
+            crate::plugins::read_plugin_image(cache, &cache_key)
+        })
+        .await?
+    }
+
+    // ==================== Task 11: plugin sessions (end) ====================
 
     /// Runs `work` against the composed session state on this app's own
     /// Tokio runtime, then awaits the result -- so the computation

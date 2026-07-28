@@ -1135,7 +1135,7 @@ fn emit_metadata_requires_archive_metadata_write_capability() {
     );
 
     assert!(
-        bridge.metadata_signal().get().is_none(),
+        bridge.metadata().is_none(),
         "unauthorized metadata write reached the host signal"
     );
 }
@@ -1171,7 +1171,7 @@ fn emit_metadata_rejects_oversized_json_and_product_ids_without_side_effects() {
         serde_json::json!({"product_id": "R".repeat(257), "title": "oversized id"}).to_string(),
     );
 
-    assert!(bridge.metadata_signal().get().is_none());
+    assert!(bridge.metadata().is_none());
     assert!(library
         .list_by_source(arclain_core::MetadataSource::DLSite)
         .unwrap()
@@ -1476,8 +1476,7 @@ fn granted_archive_metadata_capabilities_reach_read_and_write_hostcalls() {
     );
     assert_eq!(
         bridge
-            .metadata_signal()
-            .get()
+            .metadata()
             .and_then(|value| value["product_id"].as_str().map(str::to_owned))
             .as_deref(),
         Some("RJ000002")
@@ -1580,7 +1579,13 @@ fn source_explicit_metadata_write_rejects_a_spoofed_payload_source() {
 #[derive(Default)]
 struct TestActiveTabBridge {
     archive_path: parking_lot::Mutex<Option<String>>,
-    metadata: arclain_signals::Signal<Option<serde_json::Value>>,
+    metadata: parking_lot::Mutex<Option<serde_json::Value>>,
+}
+
+impl TestActiveTabBridge {
+    fn metadata(&self) -> Option<serde_json::Value> {
+        self.metadata.lock().clone()
+    }
 }
 
 impl ActiveTabBridge for TestActiveTabBridge {
@@ -1596,12 +1601,12 @@ impl ActiveTabBridge for TestActiveTabBridge {
         Vec::new()
     }
 
-    fn metadata_signal(&self) -> arclain_signals::Signal<Option<serde_json::Value>> {
-        self.metadata.clone()
+    fn active_archive_session_id(&self) -> Option<u64> {
+        None
     }
 
     fn set_session_metadata(&self, _archive_session_id: u64, metadata: Option<serde_json::Value>) {
-        self.metadata.set(metadata);
+        *self.metadata.lock() = metadata;
     }
 
     fn set_archive_path(&self, path: Option<String>) {
