@@ -1,9 +1,11 @@
 //! The store every open [`ArchiveSession`] lives in for the duration of
 //! its session id's validity.
 //!
-//! Mints [`ArchiveSessionId`]s itself (mirroring `OperationRegistry`'s
-//! `next_operation_id` pattern in `crate::operations::registry`), and is
-//! the one place a reconstructed id (round-tripped through
+//! Mints [`ArchiveSessionId`]s itself, from a counter owned by each store
+//! instance (not a process-wide `static`, unlike `OperationRegistry`'s
+//! `next_operation_id` -- see [`ArchiveSessionStore::next_id`]'s own doc
+//! comment for why this store's id namespace does not follow that
+//! pattern). Is the one place a reconstructed id (round-tripped through
 //! `ArchiveSessionId::from_raw`, e.g. from a bridge payload or persisted
 //! UI state) gets validated: [`ArchiveSessionStore::get`] and
 //! [`ArchiveSessionStore::close`] both reject an id this store never
@@ -15,20 +17,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 
 use crate::archive::ArchiveSession;
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::ids::ArchiveSessionId;
-
-/// Mints a fresh, process-wide-unique [`ArchiveSessionId`]. Mirrors
-/// `crate::operations::registry::next_operation_id`'s exact pattern: a
-/// function-local atomic counter, not a store method, kept next to the
-/// store that owns the id namespace.
-fn next_archive_session_id() -> ArchiveSessionId {
-    static NEXT: AtomicU64 = AtomicU64::new(1);
-    ArchiveSessionId::from_raw(NEXT.fetch_add(1, Ordering::Relaxed))
-}
 
 fn unknown_session_error(session_id: ArchiveSessionId) -> ApplicationError {
     ApplicationError::new(ApplicationErrorKind::NotFound, "no such archive session")
@@ -40,12 +34,28 @@ fn unknown_session_error(session_id: ArchiveSessionId) -> ApplicationError {
 /// lifetime of its id's validity.
 pub(crate) struct ArchiveSessionStore {
     sessions: RwLock<HashMap<ArchiveSessionId, Arc<ArchiveSession>>>,
+    /// Per-store, not `crate::operations::registry::next_operation_id`'s
+    /// process-wide `static` pattern: a `static` counter is shared by
+    /// *every* `ArchiveSessionStore` instance that ever exists in the
+    /// process, including one from an unrelated bootstrap in the same
+    /// test binary (`cargo test` runs many tests, each with its own
+    /// store, concurrently in one process). That cross-instance sharing
+    /// is itself a latent smell independent of any one test -- two
+    /// unrelated stores should not draw from the same id sequence -- and
+    /// it also made an id-probing test's premise ("id 1 is the first
+    /// this store would ever mint") false in practice, since another
+    /// test's store could easily have already consumed id 1 before this
+    /// one ran. A field, seeded fresh at `new()`, makes "the first id
+    /// this store instance mints is 1" a true, deterministic statement
+    /// again.
+    next_id: AtomicU64,
 }
 
 impl ArchiveSessionStore {
     pub(crate) fn new() -> Self {
         Self {
             sessions: RwLock::new(HashMap::new()),
+            next_id: AtomicU64::new(1),
         }
     }
 
@@ -57,49 +67,48 @@ impl ArchiveSessionStore {
     /// method itself briefly takes the store's write lock, so it must
     /// never be called while holding a lock across blocking archive I/O.
     ///
-    /// `ArchiveSession::new` runs inside `tokio::task::spawn_blocking`
-    /// rather than directly on this call's own async task: indexing walks
-    /// every entry, synthesizes ancestor directories, and aggregates each
+    /// `ArchiveSession::new` runs inside `handle.spawn_blocking` rather
+    /// than directly on this call's own async task: indexing walks every
+    /// entry, synthesizes ancestor directories, and aggregates each
     /// folder's totals, which for a large archive is real, potentially
     /// slow CPU work that has no business running on an async executor's
     /// worker thread (it would otherwise starve every other task sharing
-    /// that thread for the duration). Using the *ambient* `tokio::task::
-    /// spawn_blocking` here (rather than threading an explicit `Handle`
-    /// through this method, as `crate::runtime::archive_ops` does for its
-    /// own `spawn_blocking` calls) is deliberately safe, not an exception
-    /// to the crate's "never the caller's ambient runtime" rule: `open`'s
-    /// one production call site (`archive_ops::run_open_archive`) always
-    /// runs as a task already spawned through the application's own
-    /// stored runtime handle, so the ambient runtime *is* that same
-    /// handle by construction -- exactly the reasoning
-    /// `archive_ops::wait_until_cancelled`'s own doc comment gives for
-    /// the same pattern. This module's own `#[cfg(test)]` callers each
-    /// provide their own `#[tokio::test]` runtime, which is likewise the
-    /// correct ambient target for those tests.
+    /// that thread for the duration). `handle` is the caller's own
+    /// application-owned runtime handle, threaded through explicitly
+    /// rather than reached for via the ambient `tokio::task::
+    /// spawn_blocking` -- this crate's runtime rules are "never the
+    /// caller's ambient runtime", full stop, not "unless it happens to
+    /// already be the right one": `archive_ops::run_open_archive` (this
+    /// method's one production call site) already holds exactly this
+    /// handle in scope for its own `spawn_blocking` call just above, so
+    /// threading it one call further costs nothing and removes the
+    /// implicit assumption entirely.
     pub(crate) async fn open(
         &self,
         source_path: PathBuf,
         archive_type: String,
         archive: arclain_core::Archive,
         entries: Arc<Vec<arclain_core::ArchiveEntry>>,
+        handle: &Handle,
     ) -> Result<Arc<ArchiveSession>, ApplicationError> {
-        let id = next_archive_session_id();
-        let session = tokio::task::spawn_blocking(move || {
-            Arc::new(ArchiveSession::new(
-                id,
-                source_path,
-                archive_type,
-                archive,
-                entries.as_slice(),
-            ))
-        })
-        .await
-        .map_err(|join_error| {
-            ApplicationError::new(ApplicationErrorKind::Internal, "failed to index archive")
-                .with_diagnostic(join_error.to_string())
-                .with_recoverability(Recoverability::Fatal)
-                .with_archive_session_id(id)
-        })?;
+        let id = ArchiveSessionId::from_raw(self.next_id.fetch_add(1, Ordering::Relaxed));
+        let session = handle
+            .spawn_blocking(move || {
+                Arc::new(ArchiveSession::new(
+                    id,
+                    source_path,
+                    archive_type,
+                    archive,
+                    entries.as_slice(),
+                ))
+            })
+            .await
+            .map_err(|join_error| {
+                ApplicationError::new(ApplicationErrorKind::Internal, "failed to index archive")
+                    .with_diagnostic(join_error.to_string())
+                    .with_recoverability(Recoverability::Fatal)
+                    .with_archive_session_id(id)
+            })?;
         self.sessions.write().await.insert(id, session.clone());
         Ok(session)
     }
@@ -248,6 +257,7 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                &Handle::current(),
             )
             .await
             .unwrap();
@@ -265,6 +275,7 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                &Handle::current(),
             )
             .await
             .unwrap();
@@ -274,10 +285,32 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                &Handle::current(),
             )
             .await
             .unwrap();
         assert_ne!(a.id(), b.id());
+    }
+
+    #[tokio::test]
+    async fn a_fresh_store_always_mints_id_1_first_regardless_of_other_stores_in_the_process() {
+        // Regression guard for the bug a per-store counter fixes: with a
+        // process-wide `static` counter, this would be flaky/false
+        // depending on how many *other* stores' `open()` calls happened
+        // to run first in the same test binary. A fresh field-backed
+        // counter makes it a deterministic fact about this store alone.
+        let store = ArchiveSessionStore::new();
+        let session = store
+            .open(
+                PathBuf::from("a.zip"),
+                "zip".to_string(),
+                dummy_archive(),
+                Arc::new(Vec::new()),
+                &Handle::current(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(session.id(), ArchiveSessionId::from_raw(1));
     }
 
     #[tokio::test]
@@ -305,6 +338,7 @@ mod tests {
                 "zip".to_string(),
                 dummy_archive(),
                 Arc::new(Vec::new()),
+                &Handle::current(),
             )
             .await
             .unwrap();

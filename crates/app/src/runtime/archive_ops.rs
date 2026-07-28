@@ -430,7 +430,13 @@ pub(super) async fn run_open_archive(
                 let entries = Arc::new(info.entries);
                 let session = match inner
                     .archive_sessions()
-                    .open(source_path.clone(), archive_type, archive, entries.clone())
+                    .open(
+                        source_path.clone(),
+                        archive_type,
+                        archive,
+                        entries.clone(),
+                        &handle,
+                    )
                     .await
                 {
                     Ok(session) => session,

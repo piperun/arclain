@@ -88,7 +88,12 @@ impl ArchivePath {
 }
 
 /// What kind of filesystem object an archive entry represents.
-#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+///
+/// `Hash` (alongside the existing `Eq`) is needed so `EntryKind` can be
+/// part of `crate::archive::session::EntryIdAssigner`'s map key -- see
+/// its own doc comment for why an entry's identity is keyed on kind as
+/// well as path.
+#[derive(Clone, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EntryKind {
     Directory,

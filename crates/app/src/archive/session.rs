@@ -22,21 +22,36 @@ use crate::archive::{
 };
 use crate::ids::{ArchiveSessionId, EntryId};
 
-/// Session-scoped id assignment, keyed by `(canonical path, collision
-/// ordinal)` and carried across every [`EntryIndex::build`] a session
-/// performs -- the initial open, and any future reindex after a mutation
-/// (see the module doc comment). An unchanged path is handed back the
-/// same [`EntryId`] every time, so a caller that cached an id across a
-/// refresh (selection, expanded-folder state) keeps pointing at the same
-/// logical entry for as long as that entry itself did not change. A path
-/// new to this session mints a fresh id from the per-session counter; a
-/// path that stops appearing simply stops being handed out again --
-/// nothing ever removes it from `assigned`, so its id is never
-/// reassigned to a different path.
+/// Session-scoped id assignment, keyed by `(entry kind, canonical path,
+/// collision ordinal)` and carried across every [`EntryIndex::build`] a
+/// session performs -- the initial open, and any future reindex after a
+/// mutation (see the module doc comment). An unchanged path is handed
+/// back the same [`EntryId`] every time, so a caller that cached an id
+/// across a refresh (selection, expanded-folder state) keeps pointing at
+/// the same logical entry for as long as that entry itself did not
+/// change. A path new to this session mints a fresh id from the
+/// per-session counter; a path that stops appearing simply stops being
+/// handed out again -- nothing ever removes it from `assigned`, so its
+/// id is never reassigned to a different path.
+///
+/// `kind` is part of the key, not just `(path, ordinal)`: a canonical
+/// path can legitimately name both a real file *and* a directory this
+/// session synthesizes as the parent of some deeper file (ordinary
+/// content -- entries `foo` and `foo/bar` both present makes `ancestors`
+/// synthesize a directory literally named `foo`). Both are assigned
+/// under ordinal 0 for that identical path string; without `kind` in the
+/// key they would collide onto the same [`EntryId`], and the second
+/// assignment (in practice always the directory, built after every file)
+/// would silently overwrite the file's row in `EntryIndex::by_id` --
+/// breaking this module's own documented "duplicate paths preserved as
+/// distinct entries" invariant. Keying on kind too keeps the file and the
+/// directory permanently distinct, exactly like any other pair of
+/// entries that happen to share a canonical path.
 ///
 /// The "collision ordinal" is which occurrence (0, 1, 2, ...) of a
-/// duplicate path this is, in stable, deterministic encounter order (see
-/// `EntryIndex::build`); every non-duplicate path is always ordinal 0.
+/// duplicate path *of the same kind* this is, in stable, deterministic
+/// encounter order (see `EntryIndex::build`); every non-duplicate path is
+/// always ordinal 0.
 ///
 /// Ids are unique only within the owning session (see the module doc
 /// comment): two different sessions may (and eventually will) hand out
@@ -45,20 +60,21 @@ use crate::ids::{ArchiveSessionId, EntryId};
 /// this is not a correctness gap.
 #[derive(Debug, Default)]
 pub(crate) struct EntryIdAssigner {
-    assigned: HashMap<(String, u64), EntryId>,
+    assigned: HashMap<(EntryKind, String, u64), EntryId>,
     next: u64,
 }
 
 impl EntryIdAssigner {
-    /// Returns the id already assigned to `(path, ordinal)`, or mints and
-    /// remembers a fresh one the first time this key is seen.
-    fn assign(&mut self, path: &str, ordinal: u64) -> EntryId {
-        if let Some(id) = self.assigned.get(&(path.to_string(), ordinal)) {
+    /// Returns the id already assigned to `(kind, path, ordinal)`, or
+    /// mints and remembers a fresh one the first time this key is seen.
+    fn assign(&mut self, kind: EntryKind, path: &str, ordinal: u64) -> EntryId {
+        let key = (kind, path.to_string(), ordinal);
+        if let Some(id) = self.assigned.get(&key) {
             return *id;
         }
         self.next += 1;
         let id = EntryId::from_raw(self.next);
-        self.assigned.insert((path.to_string(), ordinal), id);
+        self.assigned.insert(key, id);
         id
     }
 }
@@ -336,7 +352,10 @@ impl EntryIndex {
         // position, which `ordinal_for_path` below turns into each
         // duplicate's "collision ordinal" -- the second component of the
         // key `EntryIdAssigner` mints/remembers each entry's id under
-        // (see its own doc comment).
+        // (see its own doc comment; the first component is the entry's
+        // kind, so a file and a directory that happen to share a
+        // canonical path -- see `EntryIdAssigner`'s doc comment -- never
+        // collide onto the same ordinal-0 key).
         let mut ordered_files = files;
         ordered_files.sort_by(|a, b| a.0.cmp(&b.0));
 
@@ -348,12 +367,22 @@ impl EntryIndex {
                 *counter += 1;
                 this_ordinal
             };
-            let id = assigner.assign(&path, ordinal);
+            let id = assigner.assign(EntryKind::File, &path, ordinal);
             let name = basename(&path).to_string();
             let parent = ArchivePath::parse(parent_of(&path).to_string())
                 .unwrap_or_else(|_| ArchivePath::root());
             entry_count += 1;
             total_uncompressed_size = total_uncompressed_size.saturating_add(raw.uncompressed_size);
+
+            // Shared once per file rather than cloned into every ancestor
+            // below: a file at depth N would otherwise heap-allocate and
+            // copy its own path string N times (once per ancestor), which
+            // for a large, deeply nested archive is real transient memory
+            // (`O(files * depth * path_len)`). `Arc<str>::clone` is a
+            // refcount bump, not a byte copy. Skipped entirely when there
+            // is no crc32 to record, since that is this value's only use.
+            let shared_path: Option<Arc<str>> =
+                raw.crc32.is_some().then(|| Arc::from(path.as_str()));
 
             for ancestor in ancestors(&path) {
                 let totals = folder_totals.entry(ancestor).or_default();
@@ -361,8 +390,10 @@ impl EntryIndex {
                     .uncompressed_size
                     .saturating_add(raw.uncompressed_size);
                 totals.compressed_size = totals.compressed_size.saturating_add(raw.compressed_size);
-                if let Some(crc) = &raw.crc32 {
-                    totals.crc_pairs.push((path.clone(), crc.to_uppercase()));
+                if let (Some(crc), Some(shared_path)) = (&raw.crc32, &shared_path) {
+                    totals
+                        .crc_pairs
+                        .push((shared_path.clone(), crc.to_uppercase()));
                 }
             }
 
@@ -383,7 +414,7 @@ impl EntryIndex {
 
         for (path, raw) in dirs {
             let totals = folder_totals.remove(&path).unwrap_or_default();
-            let id = assigner.assign(&path, 0);
+            let id = assigner.assign(EntryKind::Directory, &path, 0);
             let name = basename(&path).to_string();
             let parent = ArchivePath::parse(parent_of(&path).to_string())
                 .unwrap_or_else(|_| ArchivePath::root());
@@ -462,8 +493,12 @@ struct FolderTotals {
     uncompressed_size: u64,
     compressed_size: u64,
     /// `(file path, uppercased crc32)` pairs, one per descendant file
-    /// that reported a crc32, accumulated in file-processing order.
-    crc_pairs: Vec<(String, String)>,
+    /// that reported a crc32, accumulated in file-processing order. The
+    /// path is `Arc<str>` rather than `String`: a file at depth N is
+    /// pushed into N ancestors' totals, and the caller hands us the same
+    /// shared `Arc` for every one of those pushes (see its construction
+    /// in `EntryIndex::build`) rather than a fresh clone per ancestor.
+    crc_pairs: Vec<(Arc<str>, String)>,
 }
 
 impl FolderTotals {
@@ -471,7 +506,10 @@ impl FolderTotals {
     /// CRC-32, sorting by path first so the combined digest is
     /// independent of backend listing order. Mirrors the old
     /// `aggregate_folder`'s exact hash construction (and
-    /// `NavigationState::compute_folder_crc`'s before it).
+    /// `NavigationState::compute_folder_crc`'s before it). Comparing and
+    /// hashing `Arc<str>` compares/hashes the referenced string content
+    /// (via `Deref`), not the pointer, so this is byte-for-byte identical
+    /// to the `String`-keyed version it replaces.
     fn finalize_crc(mut self) -> Option<String> {
         if self.crc_pairs.is_empty() {
             return None;
@@ -809,6 +847,60 @@ mod tests {
             sizes,
             [1, 2],
             "encounter order preserved for colliding paths"
+        );
+    }
+
+    #[test]
+    fn a_path_that_is_both_a_real_file_and_a_synthesized_directory_prefix_keeps_two_distinct_entries(
+    ) {
+        // "foo" is listed as an explicit file AND, because "foo/bar" also
+        // exists, implied as the parent directory of "foo/bar" -- an
+        // ordinary (if unusual) archive shape, not an adversarial one.
+        // Both must survive as distinct rows: the id assigner's key must
+        // include entry kind, or the file and the synthesized directory
+        // (both minted under ordinal 0 for the identical path "foo")
+        // collide onto the same EntryId, and the second one built (always
+        // the directory, since directories are processed after files)
+        // silently overwrites the file's row in `by_id`.
+        let entries = vec![file("foo", 1, 1), file("foo/bar", 2, 2)];
+        let session = session_with(&entries);
+
+        let root_page = session.list_entries(&request(""));
+        let foo_rows: Vec<_> = root_page
+            .entries
+            .iter()
+            .filter(|e| e.name == "foo")
+            .collect();
+        assert_eq!(
+            foo_rows.len(),
+            2,
+            "both the file 'foo' and the synthesized directory 'foo' must appear as separate rows"
+        );
+        assert_eq!(
+            root_page.total, 2,
+            "the root listing must show both rows exactly once each"
+        );
+        assert_ne!(
+            foo_rows[0].id, foo_rows[1].id,
+            "a file and a directory at the same canonical path must never collide onto one id"
+        );
+        assert!(foo_rows.iter().any(|e| e.kind == EntryKind::File));
+        assert!(foo_rows.iter().any(|e| e.kind == EntryKind::Directory));
+
+        // Both ids must actually resolve in `by_id`, not just appear once
+        // and silently share a row with the other's content overwritten.
+        let file_row = foo_rows.iter().find(|e| e.kind == EntryKind::File).unwrap();
+        let dir_row = foo_rows
+            .iter()
+            .find(|e| e.kind == EntryKind::Directory)
+            .unwrap();
+        assert_eq!(
+            file_row.uncompressed_size, 1,
+            "the file's own size, not overwritten"
+        );
+        assert_eq!(
+            dir_row.uncompressed_size, 2,
+            "the directory's aggregate (foo/bar's size), not the file's"
         );
     }
 

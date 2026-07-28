@@ -856,18 +856,51 @@ fn cancelling_while_the_blocking_list_call_is_still_running_leaves_no_session_be
             }
         }
 
-        // A fresh `ArclainApp`'s archive-session store mints ids
-        // sequentially starting at 1; this test never opens any other
-        // archive, so id 1 is the very first one this store would ever
-        // mint. If the fix holds, it was never minted at all -- proving
-        // no session (and so no plugin dispatch either, which only ever
-        // happens after a session exists) was left behind by the race.
-        let leaked = app.archive_snapshot(ArchiveSessionId::from_raw(1)).await;
-        assert_eq!(
-            leaked.unwrap_err().kind,
-            ApplicationErrorKind::NotFound,
-            "cancelling during the blocking list() call must not leave a reachable session behind"
-        );
+        // `ArchiveSessionStore::next_id` is a field seeded fresh at
+        // construction (not a process-wide `static` shared with every
+        // other test's own store -- see that field's own doc comment for
+        // why that distinction matters here specifically), so this
+        // bootstrap's store mints ids starting at 1, and this test opens
+        // nothing else before or during the race. A store-size
+        // introspection is not reachable through the public facade at
+        // all (this file only sees what `ArclainApp` exports), so a
+        // small range of the first few ids is probed instead of just id
+        // 1, hedging against any single-id assumption about exactly
+        // where the counter starts.
+        //
+        // The operation reaching `Cancelled` (checked above) does NOT by
+        // itself prove the worker task has finished running its own
+        // post-`list()` logic: `cancel_operation` records that state
+        // synchronously, well before `proceed_tx.send(())` even runs
+        // above, so a single probe taken right after seeing `Cancelled`
+        // would race the worker's own remaining work rather than actually
+        // wait for it -- exactly the failure mode that made an earlier
+        // version of this test pass even with the fix reverted. Instead,
+        // poll for the session's *absence* across a bounded window: with
+        // the fix, absence is permanent (a correctly cancelled open never
+        // creates a session at all), so polling longer only increases
+        // confidence and can never flip a true negative into a false one;
+        // a regression that leaks a session finishes creating it within
+        // low milliseconds of the release above (indexing an empty entry
+        // list is not real work), so a one-second window polled every
+        // 20ms reliably observes it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        loop {
+            for candidate in 1..=3u64 {
+                let probe = app
+                    .archive_snapshot(ArchiveSessionId::from_raw(candidate))
+                    .await;
+                assert_eq!(
+                    probe.unwrap_err().kind,
+                    ApplicationErrorKind::NotFound,
+                    "cancelling during the blocking list() call must not leave session {candidate} reachable"
+                );
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
     });
 }
 
