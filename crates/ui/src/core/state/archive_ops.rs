@@ -4,6 +4,7 @@ use super::{AppState, PendingPluginEvent};
 use crate::core::signals::AppSignals;
 use crate::core::tabs::{TabId, TabState};
 use anyhow::Result;
+use arclain_app::ids::ArchiveSessionId;
 use arclain_core::archive::ArchiveKind;
 use arclain_core::utilities::auto_password_for;
 use arclain_core::ArchiveEntry;
@@ -15,18 +16,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 const MAX_PENDING_PLUGIN_EVENTS: usize = 32;
-// `queue_pending_plugin_event` (and these two bounds it enforces) has no
-// production caller right now: `list_archive`/`list_with_password` no
-// longer build an `OnArchiveOpen` event to queue (see their own doc
-// comments -- minting a valid, routable `archive_session_id` requires
-// `ArclainApp::start_open_archive`'s asynchronous, interactive-challenge-
-// aware flow, which this synchronous legacy path cannot drive). Kept
-// (rather than deleted) with its own test coverage intact: the queueing
-// mechanics themselves are unchanged and become live again the moment a
-// follow-up task migrates the open path onto the facade.
-#[allow(dead_code)]
 const MAX_PLUGIN_EVENT_PATH_BYTES: usize = 32 * 1024;
-#[allow(dead_code)]
 const MAX_PLUGIN_EVENT_PASSWORD_BYTES: usize = 4 * 1024;
 
 trait PluginEventAdmission {
@@ -60,6 +50,50 @@ fn publish_archive_entries(tab: &TabState, entries: Vec<ArchiveEntry>) -> Arc<Ve
     entries
 }
 
+/// Builds the `OnArchiveOpen` plugin event for `tab`, restoring the
+/// dispatch this legacy (not yet facade-backed) open path always fired
+/// before `PluginEvent::OnArchiveOpen` moved to carrying an application-
+/// owned `archive_session_id` instead of a captured UI signal.
+///
+/// **Transitional.** This path never calls `ArclainApp::start_open_archive`
+/// (see `list_archive`/`list_with_password`'s own doc comments for why:
+/// that operation's interactive password-challenge step needs a
+/// background-worker bridge this synchronous method cannot drive without
+/// freezing the render loop), so it has no real, facade-minted
+/// `ArchiveSessionId` to give the event. It borrows the tab's own stable
+/// [`TabId`] as a same-process routing key instead, and sets
+/// `tab.archive_session_id` to match, so `AppSignalsBridge::
+/// set_session_metadata` can still resolve a plugin's metadata write-back
+/// to the right tab.
+///
+/// This borrowing is sound only as long as `start_open_archive` is never
+/// also invoked from the egui frontend: nothing else ever writes a *real*
+/// facade session id onto `tab.archive_session_id` for this borrowed value
+/// to collide with, and only one of the two open paths can produce this
+/// event for a given tab as a result -- never both. Both the borrowing and
+/// this function are removed the moment this open path itself migrates
+/// onto `start_open_archive` (the application-layer dispatch already
+/// exists for facade-opened sessions, in
+/// `arclain_app::runtime::archive_ops::dispatch_archive_opened_event`).
+fn archive_open_event(
+    path: &Path,
+    kind: ArchiveKind,
+    password: Option<String>,
+    entries: Arc<Vec<ArchiveEntry>>,
+    tab: &TabState,
+) -> PluginEvent {
+    let archive_session_id = tab.id.0;
+    tab.archive_session_id
+        .set(Some(ArchiveSessionId::from_raw(archive_session_id)));
+    PluginEvent::OnArchiveOpen {
+        path: path.to_string_lossy().into_owned(),
+        kind,
+        password,
+        entries,
+        archive_session_id,
+    }
+}
+
 fn dispatch_pending_plugin_events<S: PluginEventAdmission>(
     pending: &mut Vec<PendingPluginEvent>,
     scheduler: Option<&S>,
@@ -89,9 +123,6 @@ fn dispatch_pending_plugin_events<S: PluginEventAdmission>(
     }
 }
 
-// See the doc comment on `MAX_PLUGIN_EVENT_PATH_BYTES` above for why this
-// has no production caller today.
-#[allow(dead_code)]
 fn queue_pending_plugin_event(
     pending: &mut Vec<PendingPluginEvent>,
     event: PendingPluginEvent,
@@ -263,25 +294,51 @@ impl AppState {
             );
         }
 
-        // The `OnArchiveOpen` plugin event used to be queued for deferred
-        // dispatch from right here. It no longer is: `PluginEvent::
-        // OnArchiveOpen` now carries an application-owned
-        // `archive_session_id` instead of a captured UI signal (see that
-        // type's doc comment) -- a session id this legacy, not-yet-
-        // facade-backed open path has no way to mint (`ArclainApp::
-        // start_open_archive` is the only session-minting entry point,
-        // and it is asynchronous with an interactive password-challenge
-        // step this synchronous method cannot drive without either
-        // freezing the UI thread or deadlocking against a dialog the
-        // frozen render loop could no longer draw). Archives opened here
-        // do not fire `OnArchiveOpen` until this open path itself moves
-        // onto `start_open_archive` -- a known, temporary gap, not a
-        // silent regression.
+        // Queue OnArchiveOpen for deferred dispatch.
+        //
+        // Transitional (see `archive_open_event`'s own doc comment): this
+        // legacy path fires the event directly, with an
+        // `archive_session_id` borrowed from the tab's own `TabId` rather
+        // than a real facade session id -- safe only because this path,
+        // not `ArclainApp::start_open_archive`, is the sole thing egui
+        // calls to open an archive today. The event carries per-tab
+        // snapshots (entries list, session id) captured RIGHT NOW from
+        // this tab, so the worker can route the plugin handler's host-
+        // function reads (`current_archive_info`, `list_archive_files`)
+        // and emit_metadata writes to *this* tab even if subsequent
+        // archive opens push more events onto the queue and the user
+        // switches tabs by the time the worker processes us.
         tab.metadata.set(None);
-        info!(
-            "Archive opened successfully with {} entries",
-            tab.entries.get().len()
-        );
+        if self.plugin_event_scheduler.is_some() {
+            let event = archive_open_event(
+                path,
+                info.archive_kind,
+                tab.current_password.get(),
+                published_entries.clone(),
+                &tab,
+            );
+
+            if queue_pending_plugin_event(
+                &mut self.pending_plugin_events,
+                PendingPluginEvent::new(target_tab_id, event),
+                &self.signals,
+            ) {
+                tab.ui_ready.set(false);
+            }
+
+            info!(
+                "Archive opened successfully with {} entries (plugin event pending, queue depth {})",
+                tab.entries.get().len(),
+                self.pending_plugin_events.len()
+            );
+        }
+
+        if self.plugin_event_scheduler.is_none() {
+            info!(
+                "Archive opened successfully with {} entries",
+                tab.entries.get().len()
+            );
+        }
 
         // Create Archive handle and store in signal for session operations
         // Re-select backend since the one from earlier was consumed
@@ -340,8 +397,27 @@ impl AppState {
         clear_archive_selection(&tab);
         let published_entries = publish_archive_entries(&tab, info.entries.clone());
 
-        // No `OnArchiveOpen` dispatch here either — see the sibling
-        // `list_archive` site above for why.
+        // Queue OnArchiveOpen for deferred dispatch — see the sibling
+        // `list_archive` site above for why the payload's
+        // `archive_session_id` is a transitional value borrowed from the
+        // tab's own `TabId`.
+        if self.plugin_event_scheduler.is_some() {
+            let event = archive_open_event(
+                path,
+                info.archive_kind.clone(),
+                Some(password.to_string()),
+                published_entries.clone(),
+                &tab,
+            );
+
+            if queue_pending_plugin_event(
+                &mut self.pending_plugin_events,
+                PendingPluginEvent::new(target_tab_id, event),
+                &self.signals,
+            ) {
+                tab.ui_ready.set(false);
+            }
+        }
 
         // Create Archive handle with password and store in signal for session operations
         let archive =
@@ -414,7 +490,7 @@ mod tests {
     use crate::core::state::PendingPluginEvent;
     use arclain_core::archive::ArchiveKind;
     use arclain_core::ArchiveEntry;
-    use arclain_plugins::PluginEvent;
+    use arclain_plugins::{ActiveTabBridge, PluginEvent};
     use std::sync::mpsc;
 
     fn entry(path: &str) -> ArchiveEntry {
@@ -427,6 +503,61 @@ mod tests {
             encrypted: false,
             crc32: None,
         }
+    }
+
+    #[test]
+    fn archive_open_event_borrows_the_tabs_own_id_as_its_session_id() {
+        let tab = crate::core::tabs::TabState::new(TabId(42));
+        assert_eq!(tab.archive_session_id.get(), None);
+
+        let event = archive_open_event(
+            Path::new("archive.zip"),
+            ArchiveKind::Zip,
+            None,
+            Arc::new(Vec::new()),
+            &tab,
+        );
+
+        let PluginEvent::OnArchiveOpen {
+            archive_session_id, ..
+        } = event;
+        assert_eq!(archive_session_id, 42);
+        assert_eq!(
+            tab.archive_session_id.get(),
+            Some(ArchiveSessionId::from_raw(42)),
+            "archive_open_event must also stamp the tab so set_session_metadata can find it"
+        );
+    }
+
+    #[test]
+    fn set_session_metadata_resolves_the_transitional_id_back_to_the_firing_tab() {
+        // End-to-end proof that the transitional borrowing in
+        // `archive_open_event` actually round-trips through
+        // `AppSignalsBridge::set_session_metadata` (the same bridge method
+        // a queued `OnArchiveOpen` event's plugin handler ultimately calls
+        // through `emit_metadata`), not just that the two pieces look
+        // consistent in isolation.
+        let signals = AppSignals::new();
+        let tab = signals.tabs.get().active().clone();
+
+        let event = archive_open_event(
+            Path::new("archive.zip"),
+            ArchiveKind::Zip,
+            None,
+            Arc::new(Vec::new()),
+            &tab,
+        );
+        let PluginEvent::OnArchiveOpen {
+            archive_session_id, ..
+        } = event;
+
+        let bridge = crate::shared::active_tab_bridge::AppSignalsBridge::new(signals.clone());
+        bridge.set_session_metadata(
+            archive_session_id,
+            Some(serde_json::json!({"title": "found the right tab"})),
+        );
+
+        assert_eq!(tab.metadata.get().unwrap()["title"], "found the right tab");
     }
 
     fn event(path: &str, tab: &crate::core::tabs::TabState) -> PluginEvent {
