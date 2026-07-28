@@ -302,8 +302,13 @@ pub(crate) fn open_nested_archive_in_tab(
     );
 }
 
-/// Open an extracted file with the system default handler
-fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String) {
+/// Open an extracted file with the system default handler. Returns
+/// whether the OS spawn itself succeeded -- `crate::core::operation_bridge`'s
+/// materialize-completion handler needs this to decide whether the
+/// resulting lease is actually backing a launched application worth
+/// renewing, or should just be released immediately since nothing is
+/// going to read it (see [`open_extracted_file_via_signals`]).
+fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String) -> bool {
     #[cfg(target_os = "windows")]
     {
         if let Err(e) = std::process::Command::new("explorer")
@@ -312,12 +317,14 @@ fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String)
         {
             tracing::warn!("Failed to open file: {}", e);
             *status_message = format!("Failed to open file: {}", e);
+            false
         } else {
             tracing::info!("Opened extracted file: {}", file_path.display());
             *status_message = format!(
                 "Opened: {}",
                 file_path.file_name().unwrap_or_default().to_string_lossy()
             );
+            true
         }
     }
 
@@ -329,11 +336,13 @@ fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String)
         {
             tracing::warn!("Failed to open file: {}", e);
             *status_message = format!("Failed to open file: {}", e);
+            false
         } else {
             *status_message = format!(
                 "Opened: {}",
                 file_path.file_name().unwrap_or_default().to_string_lossy()
             );
+            true
         }
     }
 }
@@ -343,16 +352,18 @@ fn open_extracted_file(file_path: &std::path::Path, status_message: &mut String)
 /// materialize-completion handler runs on the bridge's background worker,
 /// not inside a frame, so it writes `shared_state.signals().status_bar`
 /// directly instead. Reuses [`open_extracted_file`] verbatim rather than
-/// duplicating its platform-conditional spawn logic.
+/// duplicating its platform-conditional spawn logic. Returns the same
+/// success/failure the underlying spawn reported.
 pub(crate) fn open_extracted_file_via_signals(
     shared_state: &SharedState,
     file_path: &std::path::Path,
-) {
+) -> bool {
     let mut message = String::new();
-    open_extracted_file(file_path, &mut message);
+    let spawned = open_extracted_file(file_path, &mut message);
     shared_state.signals().status_bar.update(|s| {
         s.message = message.clone();
     });
+    spawned
 }
 
 /// Restore the previous tab session from `tabs.json` in the config dir.
@@ -433,6 +444,62 @@ pub fn save_tabs_on_exit(signals: &AppSignals) {
         tracing::warn!("[tabs] failed to save {}: {}", tabs_path.display(), e);
     } else {
         tracing::info!("[tabs] session saved to {}", tabs_path.display());
+    }
+}
+
+/// Explicit, real shutdown of the application facade -- reclaims every
+/// outstanding materialization lease directory (`ArclainApp::shutdown`'s
+/// own `clear_all()`) and aborts the materialization cleanup task. Called
+/// from `crate::core::arclain_app::ArclainApp::on_exit`, after
+/// [`save_tabs_on_exit`]; a no-op if `shared_state.facade` is `None` (test
+/// fixtures that skip a full bootstrap -- see `SharedState::facade`'s own
+/// doc comment).
+///
+/// Before this was wired in anywhere, `on_exit` only saved tabs -- meaning
+/// `ArclainApp::shutdown` never ran in the shipped application at all, no
+/// matter how many times a user quit and relaunched: every doc comment
+/// describing what `shutdown()` does was describing dead code as far as
+/// the real binary was concerned.
+///
+/// `on_exit` is a synchronous eframe callback with no ambient async
+/// runtime to `.await` on, so this drives the async `shutdown()` future to
+/// completion on a freshly spawned, plain OS thread with its own
+/// temporary single-threaded runtime -- matching `arclain_app`'s own
+/// documented "await from any foreign runtime" contract rather than
+/// assuming `shared_state.services.tokio_runtime`'s own internal state is
+/// still in a known-good condition this late in the exit sequence. A real
+/// OS thread (not just a new runtime *value* on the calling thread) also
+/// guarantees this can never panic with "cannot start a runtime from
+/// within a runtime", even if some future caller of this function ever
+/// ran it from a context this crate does not control.
+pub fn shutdown_facade_on_exit(shared_state: &SharedState) {
+    let Some(app) = shared_state.facade.clone() else {
+        return;
+    };
+    let outcome = std::thread::spawn(move || {
+        match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => Some(runtime.block_on(app.shutdown())),
+            Err(error) => {
+                tracing::error!(
+                    "[on_exit] failed to build a temporary runtime for shutdown: {error}"
+                );
+                None
+            }
+        }
+    })
+    .join();
+    match outcome {
+        Ok(Some(Ok(()))) => {}
+        Ok(Some(Err(error))) => {
+            tracing::error!("[on_exit] ArclainApp::shutdown reported an error: {error:?}");
+        }
+        Ok(None) => {} // already logged above
+        Err(_) => {
+            tracing::error!("[on_exit] the shutdown thread panicked");
+        }
     }
 }
 

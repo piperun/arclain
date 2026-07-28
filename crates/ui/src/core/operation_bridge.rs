@@ -239,11 +239,26 @@ pub fn renew_due_external_open_leases(shared: &SharedState) {
         return;
     }
     let leases = shared.external_open_leases.clone();
+    // Marks every due id renewed *now*, optimistically, before the actual
+    // (async) renewal call below even starts -- not after it completes.
+    // This call runs once per frame; without this, a lease found "due"
+    // here would still read as due on every subsequent frame until the
+    // spawned task below actually finishes and calls `mark_renewed`
+    // itself, so a slow frame cadence relative to the renewal round trip
+    // could spawn a duplicate renewal for the same lease many times over
+    // for what is logically one "it's due" event. If the real renewal
+    // call fails, the `Err` arm below still calls `forget`, so an
+    // optimistic mark here never masks a genuine failure -- it only
+    // widens the window during which this same lease is treated as
+    // "already handled" for this round.
+    for &lease_id in &due {
+        leases.mark_renewed(lease_id);
+    }
     let runtime = shared.services.tokio_runtime.clone();
     runtime.spawn(async move {
         for lease_id in due {
             match app.renew_materialization(lease_id).await {
-                Ok(_) => leases.mark_renewed(lease_id),
+                Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(
                         "[operation_bridge] failed to renew external-open lease {lease_id:?}, \
@@ -967,13 +982,22 @@ fn handle_materialize_completed(
                 // release immediately rather than track this lease for
                 // ongoing renewal.
                 release_now(shared, lease.id);
-            } else {
-                crate::core::app_lifecycle::open_extracted_file_via_signals(shared, &target_path);
+            } else if crate::core::app_lifecycle::open_extracted_file_via_signals(
+                shared,
+                &target_path,
+            ) {
                 // Unlike the nested-archive case, an external, OS-launched
                 // application's own read timing is unknowable from here --
                 // see `ExternalOpenLeases`'s own doc comment for why this
                 // keeps renewing instead of releasing.
                 shared.external_open_leases.track(lease.id);
+            } else {
+                // The OS spawn itself failed (missing handler, permission
+                // issue, etc.) -- nothing was ever launched to read this
+                // lease, so there is nothing to keep it alive for. Release
+                // it now rather than track-and-renew it forever on a
+                // swallowed error.
+                release_now(shared, lease.id);
             }
         }
     }
@@ -1981,5 +2005,63 @@ mod tests {
         .expect("an already-known correct password must succeed with no pass rules needed");
 
         assert_eq!(resolved.resolved_password.as_deref(), Some("already-known"));
+    }
+}
+
+#[cfg(test)]
+mod external_open_leases_tests {
+    use super::ExternalOpenLeases;
+    use arclain_app::ids::MaterializationLeaseId;
+    use std::time::Duration;
+
+    /// Regression test for the fix in `renew_due_external_open_leases`
+    /// that marks every due lease renewed *before* spawning its actual
+    /// (async) renewal call, not after that call completes: without
+    /// that ordering, a lease found "due" by one per-frame call would
+    /// still read as due on every subsequent frame until the previously
+    /// spawned renewal task actually finished -- spawning a duplicate,
+    /// redundant renewal call for the same lease on every intervening
+    /// frame, for what is logically one "it's due" event. Uses small
+    /// millisecond thresholds rather than the real 60-second production
+    /// interval (`due_for_renewal` takes its threshold as a parameter,
+    /// so this needs no clock injection and no real wait).
+    #[test]
+    fn a_lease_marked_renewed_is_not_immediately_due_again_at_the_same_threshold() {
+        let leases = ExternalOpenLeases::new();
+        let id = MaterializationLeaseId::from_raw(1);
+        leases.track(id);
+
+        std::thread::sleep(Duration::from_millis(15));
+        assert_eq!(
+            leases.due_for_renewal(Duration::from_millis(10)),
+            vec![id],
+            "sanity: the lease is due once the threshold elapses"
+        );
+
+        // Mirrors `renew_due_external_open_leases`'s fix: mark renewed
+        // synchronously, before the (here, simulated) async renewal
+        // call would even start.
+        leases.mark_renewed(id);
+
+        assert!(
+            leases.due_for_renewal(Duration::from_millis(10)).is_empty(),
+            "a lease just marked renewed must not immediately read as due again at the \
+             same threshold -- this is exactly the gap the old mark-after-completion \
+             ordering left open for a duplicate per-frame renewal spawn"
+        );
+    }
+
+    #[test]
+    fn forgetting_a_lease_stops_it_from_ever_being_reported_as_due() {
+        let leases = ExternalOpenLeases::new();
+        let id = MaterializationLeaseId::from_raw(7);
+        leases.track(id);
+        leases.forget(id);
+
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(
+            leases.due_for_renewal(Duration::from_millis(1)).is_empty(),
+            "a forgotten lease must never be reported as due"
+        );
     }
 }

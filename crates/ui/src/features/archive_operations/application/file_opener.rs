@@ -33,21 +33,26 @@ use arclain_app::ArclainApp;
 /// Whether opening `file_path` should materialize only that one file, or
 /// its whole containing directory too (bringing sibling files along --
 /// a game executable's co-located DLLs, a save file's neighboring config).
-/// Ported from the pre-facade implementation's exact extension list.
+/// Ported from the pre-facade implementation's exact extension list. A
+/// root-level target under `SameDirectory` widens further still, to the
+/// whole archive -- see [`needs_whole_archive_fallback`]'s own doc comment
+/// for why "same directory" and "root-level" don't compose the way they
+/// do for a nested target.
 ///
 /// Not reproduced: the pre-facade `WithDependencies` strategy additionally
-/// scanned the *whole* archive for `.dll`/`.config` files outside the
-/// target's own directory. That cross-directory heuristic has no
-/// equivalent under the facade's per-entry materialization lease (a lease
-/// always resolves to one entry's own extracted subtree -- its containing
-/// directory, at most -- never an arbitrary scattered file set from
-/// elsewhere in the archive); folding it in would mean either a second,
-/// separate materialization call per stray dependency file (defeating the
-/// point of co-locating them for the launched process to find) or growing
-/// the facade's request shape well beyond what this task's contract
-/// defines. Materializing the target's own directory still covers the
-/// overwhelmingly common real layout (an executable and its DLLs sitting
-/// side by side).
+/// scanned the *whole* archive for `.dll`/`.config` files outside a
+/// *nested* target's own directory (a target sitting in some subfolder,
+/// with dependencies elsewhere entirely). That specific cross-directory
+/// heuristic has no equivalent under the facade's per-entry
+/// materialization lease (a lease always resolves to one entry's own
+/// extracted subtree -- a directory, or now the whole archive, but never
+/// an arbitrary combination of the two); folding it in would mean either
+/// a second, separate materialization call per stray dependency file
+/// (defeating the point of co-locating them for the launched process to
+/// find) or growing the facade's request shape well beyond what this
+/// task's contract defines. Materializing the target's own directory
+/// (nested case) or the whole archive (root-level case) still covers the
+/// overwhelmingly common real layouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OpenStrategy {
     FileOnly,
@@ -135,17 +140,44 @@ async fn resolve_directory_entry_id(
         .map(|entry| entry.id)
 }
 
-/// What to materialize for one `open_file_from_archive` call: the target
-/// file's own `EntryId` (opened directly), or its containing directory's
-/// `EntryId` alongside the target's own basename within it (the directory
-/// is what gets materialized; the basename locates the specific file to
-/// actually launch inside the resulting lease).
+/// Whether a target file at `directory` (its own containing directory,
+/// empty for a root-level file) opened under `strategy` needs the
+/// whole-archive fallback rather than materializing a specific directory
+/// entry.
+///
+/// There is no `EntryId` for the archive root itself (the root is never a
+/// listed entry -- see `arclain_app::archive::session`'s own doc comment),
+/// so a root-level target under `OpenStrategy::SameDirectory` has no
+/// specific directory to materialize *as an entry*. The pre-facade
+/// implementation's own `get_same_directory_files` filter degenerated to
+/// "match every entry in the archive" for exactly this case (its `dir`
+/// was the empty string, and its filter short-circuited to `true`
+/// unconditionally whenever `dir.is_empty()`) -- meaning a root-level game
+/// executable, say, extracted the *entire* archive (itself plus every
+/// sibling DLL, whatever directory they happened to sit in). Falling back
+/// to just the one target file here instead -- as an earlier version of
+/// this module did -- silently dropped every one of those siblings,
+/// regressing a real, common layout (an executable and its DLLs sitting
+/// together at an archive's root) back down to "the exe alone, and the
+/// process fails to find its DLLs." Reproducing the old behavior's actual
+/// breadth (not just its narrower, common-case "same directory" framing)
+/// is what this function's `true` case exists to trigger.
+fn needs_whole_archive_fallback(strategy: OpenStrategy, directory: &str) -> bool {
+    strategy == OpenStrategy::SameDirectory && directory.is_empty()
+}
+
+/// What to materialize for one `open_file_from_archive` call: empty
+/// `entry_ids` for the whole archive (see [`needs_whole_archive_fallback`]),
+/// or exactly one id naming either the target file itself, or its
+/// containing directory (bringing sibling files along -- the directory is
+/// what gets materialized; the returned name locates the specific file to
+/// actually launch inside the resulting lease either way).
 async fn resolve_materialization_target(
     app: &ArclainApp,
     session_id: ArchiveSessionId,
     file_path: &str,
     strategy: OpenStrategy,
-) -> Result<(EntryId, Option<String>), String> {
+) -> Result<(Vec<EntryId>, Option<String>), String> {
     let directory =
         ArchivePath::parse(parent_directory(file_path)).unwrap_or_else(|_| ArchivePath::root());
     let name = basename(file_path);
@@ -157,20 +189,20 @@ async fn resolve_materialization_target(
         return Err(format!("{file_path} not found in the archive"));
     };
 
-    if strategy == OpenStrategy::FileOnly || directory.as_str().is_empty() {
-        // Either the file's own extension says "just this one file", or
-        // there is no containing directory of its own to materialize (the
-        // target already sits at the archive root) -- fall back to the
-        // file itself either way.
-        return Ok((target_entry.id, None));
+    if strategy == OpenStrategy::FileOnly {
+        return Ok((vec![target_entry.id], None));
+    }
+
+    if needs_whole_archive_fallback(strategy, directory.as_str()) {
+        return Ok((Vec::new(), Some(name)));
     }
 
     let grandparent = ArchivePath::parse(parent_directory(directory.as_str()))
         .unwrap_or_else(|_| ArchivePath::root());
     let directory_name = basename(directory.as_str());
     match resolve_directory_entry_id(app, session_id, grandparent, &directory_name).await {
-        Some(directory_entry_id) => Ok((directory_entry_id, Some(name))),
-        None => Ok((target_entry.id, None)),
+        Some(directory_entry_id) => Ok((vec![directory_entry_id], Some(name))),
+        None => Ok((vec![target_entry.id], None)),
     }
 }
 
@@ -202,7 +234,7 @@ pub fn open_file_from_archive(shared: &SharedState, file_path: &str) {
     let shared = shared.clone();
 
     shared.services.tokio_runtime.clone().spawn(async move {
-        let (entry_id, relative_target) = match resolve_materialization_target(
+        let (entry_ids, relative_target) = match resolve_materialization_target(
             &app,
             session_id,
             &file_path_owned,
@@ -223,7 +255,7 @@ pub fn open_file_from_archive(shared: &SharedState, file_path: &str) {
         match app
             .start_materialization(MaterializeRequest {
                 session_id,
-                entry_id,
+                entry_ids,
                 purpose: MaterializationPurpose::ExternalOpen,
             })
             .await
@@ -348,6 +380,33 @@ mod tests {
             determine_extraction_strategy("game/Game.exe"),
             OpenStrategy::SameDirectory
         );
+    }
+
+    /// Regression coverage for the root-level "same directory" narrowing
+    /// this module's own report flags as a real bug an earlier version
+    /// introduced: the pre-facade implementation's directory filter
+    /// degenerated to "match every entry in the archive" for a root-level
+    /// target (its `dir.is_empty()` branch was unconditionally `true`), so
+    /// a root-level executable extracted everything, DLLs included,
+    /// wherever they happened to sit. A version of this module that
+    /// instead fell back to materializing just the target file alone
+    /// would silently leave those siblings behind. This test pins the
+    /// *decision* (pure, no facade needed) that
+    /// `resolve_materialization_target` widens to the whole archive
+    /// specifically for a root-level `SameDirectory` target, and only
+    /// that case.
+    #[test]
+    fn root_level_same_directory_targets_need_the_whole_archive_fallback() {
+        use super::{needs_whole_archive_fallback, OpenStrategy};
+        assert!(needs_whole_archive_fallback(
+            OpenStrategy::SameDirectory,
+            ""
+        ));
+        assert!(!needs_whole_archive_fallback(
+            OpenStrategy::SameDirectory,
+            "game"
+        ));
+        assert!(!needs_whole_archive_fallback(OpenStrategy::FileOnly, ""));
     }
 
     #[test]

@@ -101,6 +101,15 @@ impl eframe::App for ArclainApp {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // Tab state first, then facade teardown: nothing about shutdown
+        // affects what gets saved, but "capture state, then tear down" is
+        // the natural ordering for an exit path, and it means a failure
+        // in the (best-effort) shutdown step below can never prevent the
+        // tab save from having already happened. See
+        // `shutdown_facade_on_exit`'s own doc comment for why this call
+        // exists at all and how it drives the async `shutdown()` future
+        // to completion from this synchronous callback.
         crate::core::app_lifecycle::save_tabs_on_exit(self.shared_state.signals());
+        crate::core::app_lifecycle::shutdown_facade_on_exit(&self.shared_state);
     }
 }
