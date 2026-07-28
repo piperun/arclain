@@ -43,7 +43,17 @@ impl DbPaths {
     }
 }
 
-/// Holds open connections to both databases
+/// Holds open connections to both databases.
+///
+/// `Clone`: every field is already a cheap, `Arc`-backed handle
+/// (`SqliteDb`, `SecretsDb`, `MetadataStore` each wrap an `Arc<Mutex<_>>`
+/// or pool internally; `DieselPool` is itself `Clone`), so cloning this
+/// struct never opens a second physical connection -- every clone
+/// observes the same writes as every other. `arclain_app`'s settings
+/// facade relies on this: it retains one authoritative live clone
+/// alongside the one handed to `crates/ui`'s legacy `AppState`, so a
+/// mutation through either is immediately visible through the other.
+#[derive(Clone)]
 pub struct ConfigDbs {
     pub config: SqliteDb,
     pub secrets: SecretsDb,

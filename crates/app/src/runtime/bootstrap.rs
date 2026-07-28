@@ -468,16 +468,18 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         content_cache,
         resource_manager,
         checksum_service,
-        user_config,
-        pass_rules,
         backend_selector,
         fallback_backend,
         unrar_available,
-        encrypted_crc_policy,
-        db_paths: Some(db_paths),
-        dbs: SyncMutex::new(dbs),
         plugin_event_scheduler,
         database_ready,
+        mutable: parking_lot::RwLock::new(crate::settings::MutableSettings::new(
+            user_config,
+            pass_rules,
+            encrypted_crc_policy,
+            Some(db_paths),
+            dbs,
+        )),
     };
 
     Ok(AppRuntime {
@@ -495,6 +497,7 @@ pub(crate) fn run(config: BootstrapConfig) -> Result<AppRuntime, ApplicationErro
         // Set moments later by `ArclainApp::bootstrap`, once the cleanup
         // task is actually spawned -- see the field's own doc comment.
         cleanup_task_handle: parking_lot::Mutex::new(None),
+        settings_write_lock: tokio::sync::Mutex::new(()),
         shut_down: std::sync::atomic::AtomicBool::new(false),
         tokio_runtime: super::RuntimeOwner::new(tokio_runtime),
     })

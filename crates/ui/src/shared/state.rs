@@ -136,7 +136,7 @@ impl SharedState {
         // Runs before tab restore so any archive reopened below benefits
         // from the broadened patterns immediately. Idempotent — a no-op
         // on every launch after the first.
-        {
+        if let Some(ref facade) = shared.facade {
             let mut st = app_state.lock();
             if let Some(upgraded) =
                 arclain_core::utilities::password_matcher::upgrade_auto_saved_rules(&st.pass_rules)
@@ -146,12 +146,11 @@ impl SharedState {
                     .zip(&st.pass_rules)
                     .filter(|(new, old)| new.pattern != old.pattern)
                     .count();
-                // Persists (re-encrypts the whole set into the secrets
-                // DB) and updates the in-memory cache; refresh the
-                // lock-free signal mirror to match.
-                let _ = st.save_password_rules(upgraded);
-                let mirror = st.pass_rules.clone();
-                st.signals.pass_rules.set(mirror);
+                // Persists through the facade (re-encrypts the whole set
+                // into the secrets DB) and updates the in-memory cache;
+                // `save_password_rules` itself refreshes the signal
+                // mirror via `refresh_settings_from_facade`.
+                let _ = st.save_password_rules(facade, &shared.services.tokio_runtime, upgraded);
                 drop(st);
                 if changed > 0 {
                     shared.toaster.lock().success(format!(

@@ -325,6 +325,7 @@ name = "arclain_app"
 version = "2.3.2"
 dependencies = [
  "anyhow",
+ "arclain-network",
  "arclain_app_fs",
  "arclain_core",
  "arclain_plugins",
@@ -332,6 +333,7 @@ dependencies = [
  "dirs",
  "gameta_core",
  "parking_lot",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

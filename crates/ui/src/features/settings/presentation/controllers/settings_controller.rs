@@ -8,8 +8,6 @@ use crate::features::plugins::domain::types::PluginsListState;
 use crate::features::settings::domain::types::{
     ArchivesSettingsState, SecuritySettingsState, ServerSettingsState, SettingsAction,
 };
-use arclain_core::services::{NetworkProxyPersistenceService, ProxySaveOutcome};
-use arclain_core::utilities::effective_plugin_proxy_map;
 use arclain_network::features::proxy::ProxyConfig;
 
 use crate::shared::SharedState;
@@ -49,15 +47,17 @@ pub fn handle_action(
             secrets_db_path,
             encrypted_crc_policy,
         } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                *security_state.error.write() = "Settings are unavailable right now".to_string();
+                return;
+            };
             let mut state = shared.app_state.lock();
-            let key_file_str = key_file_path;
-            let secrets_db_str = secrets_db_path;
-
             if let Err(e) = state.apply_preferences(
-                key_file_str,
-                secrets_db_str,
+                facade,
+                &shared.services.tokio_runtime,
+                key_file_path,
+                secrets_db_path,
                 encrypted_crc_policy,
-                shared.services.plugin_manager.as_ref(),
             ) {
                 *security_state.error.write() = format!("Failed to save settings: {}", e);
             } else {
@@ -65,15 +65,36 @@ pub fn handle_action(
             }
         }
         SettingsAction::SaveArchives { temp_dir } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("Cannot save archive settings: settings facade is unavailable");
+                return;
+            };
             let mut state = shared.app_state.lock();
-            state.user_config.temp_dir = temp_dir;
-            state.signals.user_config.set(state.user_config.clone());
-            // Save via ConfigService if available
-            if let Some(ref config_svc) = shared.services.config_service {
-                let res: anyhow::Result<()> = config_svc.save_user_config(&state.user_config);
-                if let Err(e) = res {
-                    tracing::error!("Failed to save user config: {}", e);
-                }
+            let patch_result = state.submit_settings_patch(
+                facade,
+                &shared.services.tokio_runtime,
+                |expected_revision| arclain_app::settings::SettingsPatch {
+                    expected_revision,
+                    archive: Some(arclain_app::settings::ArchiveSettingsPatch {
+                        backend_mode: arclain_app::settings::PatchValue::Keep,
+                        cache_directory: arclain_app::settings::PatchValue::Keep,
+                        temp_directory: match temp_dir {
+                            Some(ref value) if !value.is_empty() => {
+                                arclain_app::settings::PatchValue::Set(std::path::PathBuf::from(
+                                    value,
+                                ))
+                            }
+                            _ => arclain_app::settings::PatchValue::Clear,
+                        },
+                        transfer_directory: arclain_app::settings::PatchValue::Keep,
+                        sevenzip_path: arclain_app::settings::PatchValue::Keep,
+                    }),
+                    network: None,
+                    security: None,
+                },
+            );
+            if let Err(e) = patch_result {
+                tracing::error!("Failed to save user config: {}", e);
             }
         }
         SettingsAction::SaveKeyboardMouse { bindings } => {
@@ -95,17 +116,25 @@ pub fn handle_action(
             state.signals.hotkeys_updated.set(true);
         }
         SettingsAction::MoveVault { dest_path } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                *security_state.error.write() = "Settings are unavailable right now".to_string();
+                return;
+            };
             let mut state = shared.app_state.lock();
-            if let Err(e) = state.move_vault(&dest_path, shared.services.plugin_manager.as_ref()) {
+            if let Err(e) = state.move_vault(facade, &shared.services.tokio_runtime, &dest_path) {
                 *security_state.error.write() = format!("Failed to move vault: {}", e);
             } else {
                 *security_state.info.write() = "Vault moved successfully".to_string();
             }
         }
         SettingsAction::RekeyVault { new_key_file_path } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                *security_state.error.write() = "Settings are unavailable right now".to_string();
+                return;
+            };
             let mut state = shared.app_state.lock();
             if let Err(e) =
-                state.rekey_vault(&new_key_file_path, shared.services.plugin_manager.as_ref())
+                state.rekey_vault(facade, &shared.services.tokio_runtime, &new_key_file_path)
             {
                 *security_state.error.write() = format!("Failed to rekey vault: {}", e);
             } else {
@@ -113,6 +142,10 @@ pub fn handle_action(
             }
         }
         SettingsAction::SavePasswordRules { rules } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("Cannot save password rules: settings facade is unavailable");
+                return;
+            };
             let mut state = shared.app_state.lock();
             let core_rules = rules
                 .into_iter()
@@ -124,7 +157,9 @@ pub fn handle_action(
                     enabled: r.enabled,
                 })
                 .collect();
-            if let Err(e) = state.save_password_rules(core_rules) {
+            if let Err(e) =
+                state.save_password_rules(facade, &shared.services.tokio_runtime, core_rules)
+            {
                 tracing::error!("Failed to save password rules: {}", e);
             }
         }
@@ -238,77 +273,99 @@ pub fn handle_action(
             socks5_username,
             socks5_password,
         } => {
-            let config = ProxyConfig {
-                enabled: socks5_enabled,
-                address: socks5_address.clone().unwrap_or_default(),
-                username: socks5_username.clone(),
-                password: socks5_password.filter(|password| !password.is_empty()),
-            };
-            if let Err(message) = config.validate_for_storage() {
-                tracing::warn!(
-                    "[SaveNetwork] Refusing to save invalid proxy configuration: {}",
-                    message
-                );
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("[SaveNetwork] settings facade is unavailable");
                 shared
                     .toaster
                     .lock()
-                    .error(format!("Network settings were not saved: {message}"));
-                return;
-            }
-
-            let Some(config_svc) = shared.services.config_service.as_ref() else {
-                tracing::error!("[SaveNetwork] ConfigService is unavailable");
-                shared
-                    .toaster
-                    .lock()
-                    .error("Network settings were not saved: configuration storage is unavailable");
+                    .error("Network settings were not saved: application facade is unavailable");
                 return;
             };
 
+            // Validation (no embedded userinfo in the address, etc.) and
+            // atomic persistence -- including preserving whatever SOCKS5
+            // password is already stored -- now happen inside
+            // `update_settings` itself (see `arclain_app::runtime::
+            // settings_ops::validate_proxy_for_storage`); a rejected
+            // patch here means nothing was written, matching this
+            // handler's pre-facade "validate before any mutation"
+            // guarantee.
             let mut state = shared.app_state.lock();
-            let mut candidate = state.user_config.clone();
-            candidate.socks5_enabled = socks5_enabled;
-            candidate.socks5_address = socks5_address;
-            candidate.socks5_username = socks5_username;
+            let patch_result = state.submit_settings_patch(
+                facade,
+                &shared.services.tokio_runtime,
+                |expected_revision| arclain_app::settings::SettingsPatch {
+                    expected_revision,
+                    archive: None,
+                    network: Some(arclain_app::settings::NetworkSettingsPatch {
+                        socks5_enabled: arclain_app::settings::PatchValue::Set(socks5_enabled),
+                        socks5_address: match socks5_address.clone() {
+                            Some(value) => arclain_app::settings::PatchValue::Set(value),
+                            None => arclain_app::settings::PatchValue::Clear,
+                        },
+                        socks5_username: match socks5_username.clone() {
+                            Some(value) => arclain_app::settings::PatchValue::Set(value),
+                            None => arclain_app::settings::PatchValue::Clear,
+                        },
+                        plugin_proxy_enabled: arclain_app::settings::PatchValue::Keep,
+                        gameta_server_enabled: arclain_app::settings::PatchValue::Keep,
+                        gameta_server_url: arclain_app::settings::PatchValue::Keep,
+                    }),
+                    security: None,
+                },
+            );
+            drop(state);
 
-            let save_result = {
-                let Some(dbs) = state.dbs.as_ref() else {
-                    tracing::error!("[SaveNetwork] SecretsDb is unavailable");
-                    shared.toaster.lock().error(
-                        "Network settings were not saved: encrypted secrets storage is unavailable",
-                    );
-                    return;
-                };
-                NetworkProxyPersistenceService::new(config_svc, &dbs.secrets)
-                    .save(&candidate, config.password.as_deref())
-            };
-            let outcome = match save_result {
-                Ok(outcome) => outcome,
+            let snapshot = match patch_result {
+                Ok(snapshot) => snapshot,
                 Err(error) => {
+                    // `error`'s message is already the short, safe-to-show
+                    // `ApplicationError::summary` (see `submit_settings_patch`'s
+                    // own doc comment) -- covers both an invalid address
+                    // (rejected before any write) and a persistence
+                    // failure with one consistent, specific message.
                     tracing::error!("[SaveNetwork] Failed to save network settings: {error}");
                     shared
                         .toaster
                         .lock()
-                        .error("Network settings were not saved: configuration persistence failed");
+                        .error(format!("Network settings were not saved: {error}"));
                     return;
                 }
             };
 
-            if outcome == ProxySaveOutcome::CommittedPendingFinalize {
-                tracing::warn!(
-                    "[SaveNetwork] Network settings committed; journal cleanup will retry at startup"
-                );
-            }
-
-            let plugin_proxy_map = effective_plugin_proxy_map(&candidate);
-            state.user_config = candidate;
-            state.signals.user_config.set(state.user_config.clone());
-            drop(state);
-
-            shared
+            // The password is a dedicated secret write, deliberately
+            // separate from the patch above (see `ArclainApp::
+            // set_socks5_password`'s own doc comment). This page has no
+            // "leave the password unchanged" affordance: a blank field
+            // has always meant "no password" here.
+            let password = socks5_password
+                .filter(|password| !password.is_empty())
+                .map(arclain_app::challenge::SecretInput::new);
+            if let Err(error) = shared
                 .services
-                .async_http_client
-                .apply_proxy_routing(Some(config.clone()), plugin_proxy_map);
+                .tokio_runtime
+                .block_on(facade.set_socks5_password(password))
+            {
+                tracing::error!("[SaveNetwork] Failed to save the SOCKS5 password: {error:?}");
+                shared
+                    .toaster
+                    .lock()
+                    .error("Network settings were not saved: password persistence failed");
+                return;
+            }
+            let _ = shared.app_state.lock().refresh_settings_from_facade(facade);
+
+            // Live routing (`shared.services.async_http_client`, the
+            // same `Arc` `update_settings` already applied it to -- see
+            // `runtime::settings_ops::apply_live_proxy_routing`) is
+            // already in effect by this point; only the log line is
+            // this handler's own remaining job.
+            let config = ProxyConfig {
+                enabled: snapshot.network.socks5_enabled,
+                address: snapshot.network.socks5_address.unwrap_or_default(),
+                username: snapshot.network.socks5_username,
+                password: None,
+            };
             log_saved_proxy_configuration(&config);
             tracing::info!("Network settings saved");
         }
@@ -372,31 +429,57 @@ pub fn handle_action(
             url,
             api_key,
         } => {
+            let Some(facade) = shared.facade.as_ref() else {
+                tracing::error!("[SaveServer] settings facade is unavailable");
+                return;
+            };
             let mut state = shared.app_state.lock();
-            state.user_config.gameta_server_enabled = enabled;
-            state.user_config.gameta_server_url = url.clone();
-            state.signals.user_config.set(state.user_config.clone());
-
-            if let Some(ref config_svc) = shared.services.config_service {
-                match config_svc.save_user_config(&state.user_config) {
-                    Ok(_) => {
-                        tracing::info!(
-                            "[SaveServer] Server settings saved: enabled={}, url={:?}",
-                            enabled,
-                            url
-                        );
-                    }
-                    Err(e) => {
-                        tracing::error!("[SaveServer] Failed to save server settings: {}", e);
-                    }
+            let patch_result = state.submit_settings_patch(
+                facade,
+                &shared.services.tokio_runtime,
+                |expected_revision| arclain_app::settings::SettingsPatch {
+                    expected_revision,
+                    archive: None,
+                    network: Some(arclain_app::settings::NetworkSettingsPatch {
+                        socks5_enabled: arclain_app::settings::PatchValue::Keep,
+                        socks5_address: arclain_app::settings::PatchValue::Keep,
+                        socks5_username: arclain_app::settings::PatchValue::Keep,
+                        plugin_proxy_enabled: arclain_app::settings::PatchValue::Keep,
+                        gameta_server_enabled: arclain_app::settings::PatchValue::Set(enabled),
+                        gameta_server_url: match url.clone() {
+                            Some(value) => arclain_app::settings::PatchValue::Set(value),
+                            None => arclain_app::settings::PatchValue::Clear,
+                        },
+                    }),
+                    security: None,
+                },
+            );
+            drop(state);
+            match patch_result {
+                Ok(_) => tracing::info!(
+                    "[SaveServer] Server settings saved: enabled={}, url={:?}",
+                    enabled,
+                    url
+                ),
+                Err(error) => {
+                    tracing::error!("[SaveServer] Failed to save server settings: {error}")
                 }
             }
 
-            // Persist API key in secrets DB
-            if let Some(ref dbs) = state.dbs {
-                if let Some(key) = &api_key {
-                    if let Err(e) = dbs.secrets.set_secret("gameta:api_key", key) {
-                        tracing::error!("[SaveServer] Failed to save API key: {}", e);
+            // The API key is a dedicated secret write, kept separate
+            // from the patch above -- see `ArclainApp::
+            // set_gameta_api_key`'s own doc comment on why it has no
+            // "clear" affordance (unlike the SOCKS5 password).
+            if let Some(key) = api_key {
+                let result = shared.services.tokio_runtime.block_on(
+                    facade.set_gameta_api_key(arclain_app::challenge::SecretInput::new(key)),
+                );
+                match result {
+                    Ok(()) => {
+                        let _ = shared.app_state.lock().refresh_settings_from_facade(facade);
+                    }
+                    Err(error) => {
+                        tracing::error!("[SaveServer] Failed to save API key: {error:?}");
                     }
                 }
             }
@@ -446,10 +529,9 @@ mod tests {
     use crate::core::signals::AppSignals;
     use crate::core::state::AppState;
     use crate::shared::theme::AppTheme;
-    use arclain_core::backends::sevenz_cli::SevenZipCli;
-    use arclain_core::backends::BackendSelector;
+    use arclain_app::ArclainApp;
     use arclain_core::services::ConfigService;
-    use arclain_core::{open_databases, DbConnection, DbPaths, SecretsKey, UserConfig};
+    use arclain_core::UserConfig;
     use arclain_network::features::proxy::ProxyConfig;
     use arclain_widgets::Toaster;
     use parking_lot::Mutex;
@@ -485,6 +567,68 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    fn sevenzip_exe_name() -> &'static str {
+        "7zz.exe"
+    }
+
+    #[cfg(not(windows))]
+    fn sevenzip_exe_name() -> &'static str {
+        "7zz"
+    }
+
+    /// Bootstraps a real `ArclainApp` for settings-page tests that
+    /// exercise the actual facade-backed save path -- `SaveNetwork`/
+    /// `SaveServer`/`SaveSecurity`/etc. now build a patch and submit it
+    /// through `shared.facade`, so a fixture with `facade: None` (this
+    /// module's own pre-facade convention, still used by
+    /// `crates/ui/tests/common/mod.rs` for unrelated dispatcher tests)
+    /// would never exercise them at all. Seeds a dummy 7-Zip the same
+    /// way `arclain_app`'s own `tests/support::seed_working_sevenzip_config`
+    /// does -- that module is test-private to the `arclain_app` package
+    /// and unreachable from here, so this reimplements just the one seam
+    /// these tests need.
+    fn bootstrap_test_facade(temp: &TempDir) -> ArclainApp {
+        let paths = arclain_app::AppPaths {
+            config_dir: temp.path().join("config"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            log_dir: temp.path().join("logs"),
+            plugins_dir: temp.path().join("plugins"),
+        };
+
+        let sevenzip_path = temp.path().join(sevenzip_exe_name());
+        std::fs::write(
+            &sevenzip_path,
+            b"not a real binary, only its path is checked",
+        )
+        .expect("write dummy 7-Zip executable");
+
+        let databases_dir = paths.data_dir.join("databases");
+        std::fs::create_dir_all(&databases_dir).expect("create databases dir");
+        let config_db_path = databases_dir.join("config.sqlite");
+        let db = arclain_core::config::ConfigDb::open(&config_db_path).expect("open config db");
+        let conn = db.into_sqlite_db();
+        conn.with_connection(|conn| {
+            UserConfig::ensure_table(conn)?;
+            let mut config = UserConfig::new();
+            config.sevenzip_path = Some(sevenzip_path.to_string_lossy().into_owned());
+            config.save(conn)?;
+            Ok(())
+        })
+        .expect("seed sevenzip_path into test config db");
+
+        arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
+            paths_override: Some(paths),
+            worker_threads: None,
+            archive_backend_override: None,
+            extract_runner_override: None,
+            materialization_lease_ttl_override: None,
+            materialization_cleanup_interval_override: None,
+        })
+        .expect("bootstrap the settings-page test facade")
+    }
+
     struct ProxySaveFixture {
         shared: SharedState,
         config_service: Arc<ConfigService>,
@@ -497,21 +641,7 @@ mod tests {
     impl ProxySaveFixture {
         fn new() -> Self {
             let temp = tempfile::tempdir().expect("create proxy settings test directory");
-            let paths = DbPaths {
-                config_db: temp.path().join("config.sqlite"),
-                cache_db: temp.path().join("metadata.sqlite"),
-                secrets_db: temp.path().join("pass.redb"),
-                key_file: None,
-            };
-            let dbs = open_databases(&paths, &SecretsKey::generate())
-                .expect("open proxy settings test databases");
-            let config_connection =
-                DbConnection::open(&paths.config_db).expect("open config connection");
-            UserConfig::ensure_table(&config_connection).expect("migrate user config schema");
-            let config_service = Arc::new(ConfigService::from_connection(
-                dbs.config_pool.clone(),
-                config_connection,
-            ));
+            let facade = bootstrap_test_facade(&temp);
 
             let proxy_listener =
                 TcpListener::bind("127.0.0.1:0").expect("reserve previous proxy address");
@@ -524,41 +654,76 @@ mod tests {
             previous.socks5_address = Some(proxy_address.to_string());
             previous.socks5_username = Some("previous-proxy-user-2c8f".to_string());
             previous.set_plugin_proxy_enabled(PROXY_PLUGIN_ID, true);
-            config_service
-                .save_user_config(&previous)
-                .expect("persist previous proxy settings");
-            dbs.secrets
-                .set_secret("proxy:socks5", &previous_password)
-                .expect("persist previous proxy password");
 
-            let runtime = tokio::runtime::Runtime::new().expect("create test runtime");
-            let mut services = Services::new(runtime);
-            services.core.config_service = Some(config_service.clone());
-            services.async_http_client.apply_proxy_routing(
-                Some(ProxyConfig {
-                    enabled: previous.socks5_enabled,
-                    address: previous.socks5_address.clone().unwrap(),
-                    username: previous.socks5_username.clone(),
-                    password: Some(previous_password.clone()),
-                }),
-                previous.get_plugin_proxy_settings(),
-            );
+            // Seed the "previous" settings through the facade itself
+            // (the same public surface a real prior session would have
+            // used), not by reaching into its databases directly.
+            let mut plugin_proxy_map = std::collections::BTreeMap::new();
+            plugin_proxy_map.insert(PROXY_PLUGIN_ID.to_string(), true);
+            let seed_runtime = tokio::runtime::Runtime::new().expect("create seeding runtime");
+            seed_runtime.block_on(async {
+                let current = facade.settings().await.expect("read first-run settings");
+                facade
+                    .update_settings(arclain_app::settings::SettingsPatch {
+                        expected_revision: current.revision,
+                        archive: None,
+                        network: Some(arclain_app::settings::NetworkSettingsPatch {
+                            socks5_enabled: arclain_app::settings::PatchValue::Set(true),
+                            socks5_address: arclain_app::settings::PatchValue::Set(
+                                proxy_address.to_string(),
+                            ),
+                            socks5_username: arclain_app::settings::PatchValue::Set(
+                                "previous-proxy-user-2c8f".to_string(),
+                            ),
+                            plugin_proxy_enabled: arclain_app::settings::PatchValue::Set(
+                                plugin_proxy_map,
+                            ),
+                            gameta_server_enabled: arclain_app::settings::PatchValue::Keep,
+                            gameta_server_url: arclain_app::settings::PatchValue::Keep,
+                        }),
+                        security: None,
+                    })
+                    .await
+                    .expect("persist previous proxy settings");
+                facade
+                    .set_socks5_password(Some(arclain_app::challenge::SecretInput::new(
+                        previous_password.clone(),
+                    )))
+                    .await
+                    .expect("persist previous proxy password");
+            });
 
-            let signals = AppSignals::new();
-            signals.user_config.set(previous.clone());
-            let app_state = AppState {
-                user_config: previous.clone(),
-                pass_rules: vec![],
-                backend_selector: BackendSelector::new_native(),
-                fallback_backend: SevenZipCli::detect(None)
-                    .expect("7z executable not found for proxy settings test"),
-                last_entries: vec![],
-                encrypted_crc_policy: "on_access".to_string(),
-                db_paths: Some(paths),
-                dbs: Some(dbs),
-                signals: signals.clone(),
+            let legacy = facade
+                .take_legacy_composition()
+                .expect("take legacy composition for the test fixture");
+            let config_service = legacy
+                .core_services
+                .config_service
+                .clone()
+                .expect("config service must be available after a real bootstrap");
+
+            let services = Services {
+                core: (*legacy.core_services).clone(),
+                plugin_manager: legacy.plugin_manager,
+                content_cache: legacy.content_cache,
+                resource_manager: legacy.resource_manager,
             };
             let services = Arc::new(services);
+
+            let signals = AppSignals::new();
+            signals.user_config.set(legacy.user_config.clone());
+            let app_state = AppState {
+                user_config: legacy.user_config,
+                pass_rules: legacy.pass_rules,
+                backend_selector: legacy.backend_selector,
+                fallback_backend: legacy.fallback_backend,
+                last_entries: vec![],
+                encrypted_crc_policy: legacy.encrypted_crc_policy,
+                db_paths: legacy.db_paths,
+                dbs: legacy.dbs,
+                signals: signals.clone(),
+            };
+
             let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
                 services.plugin_manager.clone(),
                 services.tokio_runtime.clone(),
@@ -575,7 +740,7 @@ mod tests {
                 plugin_ui_jobs,
                 image_assets,
                 signals,
-                facade: None,
+                facade: Some(facade),
                 operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
                 materialization_actions: crate::core::operation_bridge::MaterializationActions::new(
                 ),
@@ -924,12 +1089,40 @@ mod tests {
     #[test]
     fn save_network_reenable_matches_startup_proxy_defaults_and_explicit_overrides() {
         let fixture = ProxySaveFixture::new();
-        {
-            let mut state = fixture.shared.app_state.lock();
-            state
-                .user_config
-                .set_plugin_proxy_enabled("dlsite-api", false);
-        }
+        // Seed the explicit per-plugin opt-out through the facade
+        // itself -- it, not `AppState.user_config`, is what
+        // `SaveNetwork` now reads its starting point from (see
+        // `submit_settings_patch`), so mutating the legacy mirror
+        // directly would no longer have any effect on the save this
+        // test is about to trigger.
+        let facade = fixture
+            .shared
+            .facade
+            .as_ref()
+            .expect("fixture must have a real facade");
+        fixture.shared.services.tokio_runtime.block_on(async {
+            let current = facade.settings().await.expect("read current settings");
+            let mut plugin_proxy_enabled = current.network.plugin_proxy_enabled.clone();
+            plugin_proxy_enabled.insert("dlsite-api".to_string(), false);
+            facade
+                .update_settings(arclain_app::settings::SettingsPatch {
+                    expected_revision: current.revision,
+                    archive: None,
+                    network: Some(arclain_app::settings::NetworkSettingsPatch {
+                        socks5_enabled: arclain_app::settings::PatchValue::Keep,
+                        socks5_address: arclain_app::settings::PatchValue::Keep,
+                        socks5_username: arclain_app::settings::PatchValue::Keep,
+                        plugin_proxy_enabled: arclain_app::settings::PatchValue::Set(
+                            plugin_proxy_enabled,
+                        ),
+                        gameta_server_enabled: arclain_app::settings::PatchValue::Keep,
+                        gameta_server_url: arclain_app::settings::PatchValue::Keep,
+                    }),
+                    security: None,
+                })
+                .await
+                .expect("seed the dlsite-api opt-out");
+        });
 
         handle_action(
             SettingsAction::SaveNetwork {
@@ -1012,14 +1205,105 @@ mod tests {
     #[traced_test]
     #[test]
     fn unavailable_secrets_db_does_not_persist_or_apply_proxy() {
+        // Reproduces "the vault genuinely never opened" by corrupting
+        // `config.sqlite` before bootstrap -- the same technique
+        // `arclain_app`'s own `tests/bootstrap.rs::
+        // corrupt_configuration_database_is_tolerated` test uses
+        // (`open_databases` composes config+secrets+metadata as one
+        // atomic unit; a failure in any one part leaves `dbs: None`
+        // overall -- see `arclain_app::tests::settings_facade::
+        // secret_writing_methods_fail_cleanly_and_leak_nothing_when_the_
+        // vault_never_opened` for the equivalent facade-level coverage
+        // this mirrors at the UI layer). Unlike `ProxySaveFixture`, this
+        // cannot seed any "previous" proxy settings first -- there is no
+        // open vault to write them into -- so the meaningful assertion
+        // here is "still at first-run defaults, nothing leaked", not
+        // "the prior custom config survived".
         const NEW_PASSWORD: &str = "unavailable-db-password-8f32";
-        let fixture = ProxySaveFixture::new();
-        fixture.shared.app_state.lock().dbs = None;
+        let temp = tempfile::tempdir().expect("create test directory");
+        let paths = arclain_app::AppPaths {
+            config_dir: temp.path().join("config"),
+            data_dir: temp.path().join("data"),
+            cache_dir: temp.path().join("cache"),
+            log_dir: temp.path().join("logs"),
+            plugins_dir: temp.path().join("plugins"),
+        };
+        let databases_dir = paths.data_dir.join("databases");
+        std::fs::create_dir_all(&databases_dir).expect("create databases dir");
+        std::fs::write(
+            databases_dir.join("config.sqlite"),
+            b"this is not a sqlite database, just noise to corrupt the file",
+        )
+        .expect("write corrupt config.sqlite");
+        // No dummy 7-Zip seeded: the corrupt file wipes any seeded
+        // `sevenzip_path` override, so this relies on this project's
+        // documented test-environment assumption that 7-Zip is on
+        // `PATH` (see `arclain_app`'s own `tests/bootstrap.rs` module
+        // doc comment).
+        let facade = arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
+            paths_override: Some(paths),
+            worker_threads: None,
+            archive_backend_override: None,
+            extract_runner_override: None,
+            materialization_lease_ttl_override: None,
+            materialization_cleanup_interval_override: None,
+        })
+        .expect("corrupt config.sqlite must not fail bootstrap");
+
+        let legacy = facade
+            .take_legacy_composition()
+            .expect("take legacy composition");
+        assert!(
+            legacy.dbs.is_none(),
+            "test setup must reproduce a genuinely unavailable vault"
+        );
+
+        let services = Services {
+            core: (*legacy.core_services).clone(),
+            plugin_manager: legacy.plugin_manager,
+            content_cache: legacy.content_cache,
+            resource_manager: legacy.resource_manager,
+        };
+        let services = Arc::new(services);
+        let signals = AppSignals::new();
+        signals.user_config.set(legacy.user_config.clone());
+        let app_state = AppState {
+            user_config: legacy.user_config,
+            pass_rules: legacy.pass_rules,
+            backend_selector: legacy.backend_selector,
+            fallback_backend: legacy.fallback_backend,
+            last_entries: vec![],
+            encrypted_crc_policy: legacy.encrypted_crc_policy,
+            db_paths: legacy.db_paths,
+            dbs: legacy.dbs,
+            signals: signals.clone(),
+        };
+        let plugin_ui_jobs = crate::features::plugins::application::PluginUiJobs::new(
+            services.plugin_manager.clone(),
+            services.tokio_runtime.clone(),
+        );
+        let image_assets = crate::shared::image_assets::ImageAssetStore::without_cache(
+            services.tokio_runtime.clone(),
+        );
+        let shared = SharedState {
+            app_state: Arc::new(Mutex::new(app_state)),
+            services,
+            theme: AppTheme::new(false),
+            toaster: Arc::new(Mutex::new(Toaster::new())),
+            refresh_requests: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            plugin_ui_jobs,
+            image_assets,
+            signals,
+            facade: Some(facade),
+            operation_origins: crate::core::operation_bridge::OperationOrigins::new(),
+            materialization_actions: crate::core::operation_bridge::MaterializationActions::new(),
+            external_open_leases: crate::core::operation_bridge::ExternalOpenLeases::new(),
+        };
 
         handle_action(
             SettingsAction::SaveNetwork {
-                socks5_enabled: false,
-                socks5_address: Some(String::new()),
+                socks5_enabled: true,
+                socks5_address: Some("127.0.0.1:1080".to_string()),
                 socks5_username: None,
                 socks5_password: Some(NEW_PASSWORD.to_string()),
             },
@@ -1028,12 +1312,18 @@ mod tests {
             None,
             &mut crate::features::settings::domain::types::NetworkSettingsState::default(),
             &mut ServerSettingsState::default(),
-            &fixture.shared,
+            &shared,
         );
 
-        fixture.assert_previous_non_secret_settings_unchanged();
-        fixture.assert_previous_runtime_proxy_unchanged();
-        let diagnostics = format!("{:?}", fixture.shared.toaster.lock());
+        // Nothing persisted: still at first-run defaults.
+        let state = shared.app_state.lock();
+        assert!(
+            !state.user_config.socks5_enabled,
+            "no vault available -- the save must not have applied"
+        );
+        drop(state);
+
+        let diagnostics = format!("{:?}", shared.toaster.lock());
         assert!(diagnostics.contains("Network settings were not saved"));
         assert!(!diagnostics.contains(NEW_PASSWORD));
         assert!(!logs_contain(NEW_PASSWORD));

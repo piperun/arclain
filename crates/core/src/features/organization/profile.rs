@@ -168,3 +168,18 @@ pub fn load_archive_profile(
         .with_context(|| format!("looking up archive profile {profile_id}"))?;
     Ok(db_profile.map(|profile| ArchiveProfile::from_db(&profile)))
 }
+
+/// Lists every archive profile directly against the config database at
+/// `config_db_path`, the same short-lived, unpooled-connection pattern
+/// [`load_archive_profile`] uses (see its own doc comment for why) --
+/// `arclain_app::ArclainApp::organization_profiles` is this function's
+/// one caller.
+pub fn list_archive_profiles(
+    config_db_path: &std::path::Path,
+) -> anyhow::Result<Vec<ArchiveProfile>> {
+    let mut conn = diesel::SqliteConnection::establish(&config_db_path.to_string_lossy())
+        .with_context(|| format!("opening config database at {}", config_db_path.display()))?;
+    let db_profiles =
+        arclain_db::list_profiles(&mut conn).with_context(|| "listing archive profiles")?;
+    Ok(db_profiles.iter().map(ArchiveProfile::from_db).collect())
+}

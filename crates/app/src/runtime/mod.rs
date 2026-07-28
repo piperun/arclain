@@ -27,6 +27,7 @@ mod bootstrap;
 mod paths;
 mod processing_ops;
 mod session_store;
+mod settings_ops;
 
 pub use bootstrap::BootstrapConfig;
 pub use paths::AppPaths;
@@ -44,7 +45,7 @@ use arclain_plugins::PluginEventScheduler;
 
 use crate::archive::ArchiveSnapshot;
 use crate::archive::{ArchiveSessionStore, EntryPage, ListEntriesRequest, OpenArchiveRequest};
-use crate::challenge::ChallengeResponse;
+use crate::challenge::{ChallengeResponse, SecretInput};
 use crate::error::{ApplicationError, ApplicationErrorKind, Recoverability};
 use crate::event::{OperationEvent, OperationKind, OperationSnapshot};
 use crate::ids::{ArchiveSessionId, MaterializationLeaseId, OperationId};
@@ -231,6 +232,15 @@ pub(crate) struct AppRuntime {
     /// own doc comment on `SessionStore::core_services`) keeps `AppRuntime`
     /// itself alive past `shutdown()`.
     cleanup_task_handle: parking_lot::Mutex<Option<tokio::task::AbortHandle>>,
+    /// Serializes every settings/secrets/vault *mutation* (`update_settings`,
+    /// `set_gameta_api_key`, `set_socks5_password`, `move_vault`,
+    /// `rekey_vault`, `upsert_password_rule`, `delete_password_rule`) end
+    /// to end -- see `runtime::settings_ops`'s own module doc comment for
+    /// why this, rather than just `SessionStore::mutable`'s fast
+    /// `RwLock`, is what makes `update_settings`'s optimistic-revision
+    /// check actually race-free. Read-only settings methods never take
+    /// this.
+    settings_write_lock: tokio::sync::Mutex<()>,
     /// Set once by [`ArclainApp::shutdown`]. Every [`ArclainApp::dispatch`]
     /// call checks this first so a clone that outlives shutdown (held by
     /// another part of the program, or racing a concurrent shutdown call)
@@ -286,7 +296,7 @@ impl AppRuntime {
     }
 
     pub(crate) fn pass_rules(&self) -> Vec<PassRule> {
-        self.session.pass_rules.clone()
+        self.session.mutable.read().pass_rules.clone()
     }
 
     pub(crate) fn plugin_event_scheduler(&self) -> Option<PluginEventScheduler> {
@@ -927,6 +937,146 @@ impl ArclainApp {
         })
         .await?
     }
+
+    // ============= Task 10: settings, secrets, vault (start) ============
+    // Kept in its own clearly-delimited section for the same reason as
+    // Task 9's own section above: a concurrent worktree (Task 11,
+    // plugins) also edits this file. Every method here is a thin
+    // dispatch wrapper; the actual logic lives in
+    // `crate::settings` (pure DTOs/validation) and
+    // `runtime::settings_ops` (the `AppRuntime`-touching execution
+    // layer) -- see both modules' own doc comments.
+
+    /// A full, point-in-time view of every non-secret application
+    /// setting. Always succeeds, even if the encrypted vault never
+    /// opened (`security.vault_available` reports that; the archive/
+    /// network settings reflect whatever `arclain_core::UserConfig` this
+    /// instance loaded regardless).
+    pub async fn settings(&self) -> Result<crate::settings::SettingsSnapshot, ApplicationError> {
+        self.dispatch_async(|inner| async move { settings_ops::run_settings(&inner).await })
+            .await?
+    }
+
+    /// Applies `patch` if `patch.expected_revision` still matches the
+    /// current revision (`ApplicationErrorKind::Conflict` otherwise),
+    /// validates every patched field before any write
+    /// (`ApplicationErrorKind::InvalidInput` on the first invalid one),
+    /// and persists atomically in the sense that a failure at any point
+    /// leaves both disk and this instance's in-memory settings exactly
+    /// as they were before the call -- see `runtime::settings_ops::
+    /// run_update_settings`'s own doc comment for the precise ordering
+    /// this guarantees.
+    pub async fn update_settings(
+        &self,
+        patch: crate::settings::SettingsPatch,
+    ) -> Result<crate::settings::SettingsSnapshot, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_update_settings(&inner, patch).await
+        })
+        .await?
+    }
+
+    /// Every configured archive-output profile (format/compression
+    /// preset), for a settings/organize UI to list. Empty (not an error)
+    /// if the config database never opened.
+    pub async fn organization_profiles(
+        &self,
+    ) -> Result<Vec<crate::settings::OrganizationProfileSummary>, ApplicationError> {
+        self.dispatch_async(
+            |inner| async move { settings_ops::run_organization_profiles(&inner).await },
+        )
+        .await?
+    }
+
+    /// Sets (always overwrites; there is no "clear" -- disable gameta
+    /// server integration via [`Self::update_settings`]'s
+    /// `network.gameta_server_enabled` instead) the gameta server API
+    /// key.
+    pub async fn set_gameta_api_key(&self, value: SecretInput) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_set_gameta_api_key(&inner, value).await
+        })
+        .await?
+    }
+
+    /// Sets (`Some`) or clears (`None`) the SOCKS5 proxy password. `None`
+    /// is a real, meaningful choice here (an unauthenticated proxy)
+    /// unlike the gameta API key -- see [`Self::set_gameta_api_key`]'s
+    /// doc comment for the contrast.
+    pub async fn set_socks5_password(
+        &self,
+        value: Option<SecretInput>,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_set_socks5_password(&inner, value).await
+        })
+        .await?
+    }
+
+    /// Copies the encrypted vault to `destination` and switches this
+    /// instance to using the copy, re-opening it in place. Unlike
+    /// [`Self::update_settings`]'s `security.secrets_database_path`
+    /// field (which repoints to a path the caller asserts already holds
+    /// a usable vault), this physically moves the *current* vault's
+    /// contents.
+    pub async fn move_vault(
+        &self,
+        destination: std::path::PathBuf,
+    ) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_move_vault(&inner, destination).await
+        })
+        .await?
+    }
+
+    /// Re-encrypts the vault under a new key file and switches this
+    /// instance to using it.
+    pub async fn rekey_vault(&self, key_file: std::path::PathBuf) -> Result<(), ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_rekey_vault(&inner, key_file).await
+        })
+        .await?
+    }
+
+    /// Every configured password rule's non-secret shape -- never the
+    /// stored passwords themselves (see [`crate::settings::
+    /// PasswordRuleSummary`]'s own doc comment).
+    pub async fn password_rules(
+        &self,
+    ) -> Result<Vec<crate::settings::PasswordRuleSummary>, ApplicationError> {
+        self.dispatch_async(|inner| async move { settings_ops::run_password_rules(&inner).await })
+            .await?
+    }
+
+    /// Creates a new password rule, or updates the existing one with the
+    /// same `rule.name` -- see [`crate::settings::PasswordRuleInput`]'s
+    /// own doc comment for exactly what `password: None` means in each
+    /// case. Returns the full, updated rule list (matching
+    /// [`Self::password_rules`]'s shape) so a caller does not need a
+    /// separate round trip to refresh its view.
+    pub async fn upsert_password_rule(
+        &self,
+        rule: crate::settings::PasswordRuleInput,
+    ) -> Result<Vec<crate::settings::PasswordRuleSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_upsert_password_rule(&inner, rule).await
+        })
+        .await?
+    }
+
+    /// Deletes the password rule named `name`.
+    /// `ApplicationErrorKind::NotFound` if no rule has that name.
+    pub async fn delete_password_rule(
+        &self,
+        name: String,
+    ) -> Result<Vec<crate::settings::PasswordRuleSummary>, ApplicationError> {
+        self.dispatch_async(move |inner| async move {
+            settings_ops::run_delete_password_rule(&inner, name).await
+        })
+        .await?
+    }
+
+    // ============== Task 10: settings, secrets, vault (end) ==============
 
     /// Runs `work` against the composed session state on this app's own
     /// Tokio runtime, then awaits the result -- so the computation

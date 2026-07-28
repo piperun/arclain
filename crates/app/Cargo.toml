@@ -8,6 +8,10 @@ anyhow.workspace = true
 crc32fast = "1"
 dirs.workspace = true
 parking_lot.workspace = true
+# Validates a password-rule pattern actually compiles (the same engine
+# `arclain_core::utilities::PassRule::to_regex` uses) before it is
+# accepted -- see `settings::validate_password_rule_input`.
+regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync"] }
@@ -21,6 +25,11 @@ zeroize.workspace = true
 arclain_app_fs = { path = "../app_fs" }
 arclain_core = { path = "../core" }
 arclain_plugins = { path = "../plugins" }
+# Task 10 (settings facade) reuses `ProxyConfig::validate_for_storage` for
+# `update_settings`'s SOCKS5 validation instead of re-deriving the same
+# userinfo-rejection logic a second time. Headless-to-headless, so this
+# adds no frontend_boundary violation (see that script's HEADLESS_CRATES).
+arclain-network = { path = "../network" }
 
 [dev-dependencies]
 tempfile.workspace = true

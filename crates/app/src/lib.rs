@@ -23,9 +23,14 @@
 //! (`operations::ExtractRequest`, and so on as later tasks add
 //! `start_convert`/`start_organize`/etc.).
 //!
-//! The remaining modules from the full facade contract (`plugins`,
-//! `settings`) are added incrementally by later tasks; this crate declares
-//! only the modules it actually implements so far.
+//! [`settings`] adds the settings/secrets/vault surface: the
+//! `SettingsSnapshot`/`SettingsPatch` DTOs, password-rule and
+//! organization-profile summaries, and the `ArclainApp` methods declared
+//! in `crate::runtime`'s own delimited "Task 10" section.
+//!
+//! The remaining module from the full facade contract (`plugins`) is
+//! added incrementally by a later task; this crate declares only the
+//! modules it actually implements so far.
 
 pub mod archive;
 pub mod challenge;
@@ -35,6 +40,7 @@ pub mod ids;
 pub mod materialization;
 pub mod operations;
 pub mod runtime;
+pub mod settings;
 
 pub use runtime::{AppPaths, ArclainApp, BootstrapConfig};
 

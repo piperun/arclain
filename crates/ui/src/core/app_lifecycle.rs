@@ -376,6 +376,15 @@ pub(crate) fn open_extracted_file_via_signals(
 /// collection and spawns background loads for every tab that had an
 /// archive open. Missing files surface through the existing status-bar
 /// error path — no special toast in v1.
+///
+/// `tabs.json` (visual tab shape: id/pinned/active/order, entirely a
+/// GUI concern) remains the actual restore driver here, unchanged. This
+/// also reads back `session.json` (the application-owned, frontend-
+/// neutral `Vec<arclain_app::settings::SessionArchiveEntry>` `save_tabs_
+/// on_exit` writes alongside it) purely to cross-check: a mismatch would
+/// mean the two files drifted out of sync, which is worth a log warning
+/// even though `tabs.json`'s own embedded paths are what this function
+/// actually opens.
 pub fn restore_tabs_on_launch(shared_state: &SharedState) {
     let signals = shared_state.signals();
     let user_config = signals.user_config.get();
@@ -383,13 +392,14 @@ pub fn restore_tabs_on_launch(shared_state: &SharedState) {
         return;
     }
 
-    let tabs_path = match arclain_app_fs::AppDirectories::init("arclain", None) {
-        Ok(dirs) => dirs.config_dir.join("tabs.json"),
+    let config_dir = match arclain_app_fs::AppDirectories::init("arclain", None) {
+        Ok(dirs) => dirs.config_dir,
         Err(e) => {
             tracing::warn!("[tabs] restore: could not resolve config dir: {}", e);
             return;
         }
     };
+    let tabs_path = config_dir.join("tabs.json");
 
     if !tabs_path.exists() {
         return;
@@ -403,6 +413,8 @@ pub fn restore_tabs_on_launch(shared_state: &SharedState) {
                 .iter()
                 .filter_map(|t| t.archive_path.get().map(|p| (t.id, p)))
                 .collect();
+
+            check_session_restore_list_matches(&config_dir, &tab_ids_to_load);
 
             signals.tabs.set(restored);
 
@@ -426,13 +438,52 @@ pub fn restore_tabs_on_launch(shared_state: &SharedState) {
     }
 }
 
+/// Logs a warning if `session.json` (the application-owned session DTO)
+/// disagrees with what `tabs.json` is about to restore. Never blocks or
+/// alters the restore itself -- see `restore_tabs_on_launch`'s own doc
+/// comment for why `tabs.json` stays the actual driver.
+fn check_session_restore_list_matches(
+    config_dir: &std::path::Path,
+    tab_ids_to_load: &[(crate::core::tabs::TabId, std::path::PathBuf)],
+) {
+    let session_path = config_dir.join("session.json");
+    match arclain_app::settings::load_session_restore_list(&session_path) {
+        Ok(entries) => {
+            let expected: Vec<_> = tab_ids_to_load
+                .iter()
+                .map(|(_, path)| path.clone())
+                .collect();
+            let actual: Vec<_> = entries.into_iter().map(|entry| entry.source_path).collect();
+            if actual != expected {
+                tracing::warn!(
+                    "[tabs] session.json ({} entries) disagrees with tabs.json ({} entries); \
+                     restoring from tabs.json as usual",
+                    actual.len(),
+                    expected.len()
+                );
+            }
+        }
+        Err(error) => {
+            tracing::debug!(
+                "[tabs] session.json unavailable ({error:?}); restoring from tabs.json as usual"
+            );
+        }
+    }
+}
+
 /// Save the current tab session to `tabs.json` in the config dir.
 ///
 /// Called from `ArclainApp::on_exit`. Failures are logged as warnings
 /// — a quit-time save failure should not block the shutdown.
+///
+/// Also writes `session.json`: the same open-archive list, expressed as
+/// `arclain_app::settings::SessionArchiveEntry` (source paths only, no
+/// tab id/pinned/order — see that type's own doc comment). `tabs.json`
+/// keeps the full visual arrangement; this is the one non-visual slice
+/// of it in an application-owned, frontend-neutral shape.
 pub fn save_tabs_on_exit(signals: &AppSignals) {
-    let tabs_path = match arclain_app_fs::AppDirectories::init("arclain", None) {
-        Ok(dirs) => dirs.config_dir.join("tabs.json"),
+    let config_dir = match arclain_app_fs::AppDirectories::init("arclain", None) {
+        Ok(dirs) => dirs.config_dir,
         Err(e) => {
             tracing::warn!("[tabs] on_exit: could not resolve config dir: {}", e);
             return;
@@ -440,10 +491,30 @@ pub fn save_tabs_on_exit(signals: &AppSignals) {
     };
 
     let col = signals.tabs.get();
+    let tabs_path = config_dir.join("tabs.json");
     if let Err(e) = crate::core::tabs::save_collection(&col, &tabs_path) {
         tracing::warn!("[tabs] failed to save {}: {}", tabs_path.display(), e);
     } else {
         tracing::info!("[tabs] session saved to {}", tabs_path.display());
+    }
+
+    let session_entries: Vec<arclain_app::settings::SessionArchiveEntry> = col
+        .tabs()
+        .iter()
+        .filter_map(|tab| {
+            tab.archive_path
+                .get()
+                .map(|source_path| arclain_app::settings::SessionArchiveEntry { source_path })
+        })
+        .collect();
+    let session_path = config_dir.join("session.json");
+    if let Err(error) =
+        arclain_app::settings::save_session_restore_list(&session_path, &session_entries)
+    {
+        tracing::warn!(
+            "[tabs] failed to save {}: {error:?}",
+            session_path.display()
+        );
     }
 }
 
