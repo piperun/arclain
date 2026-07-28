@@ -906,6 +906,10 @@ pub(crate) async fn run_extract(
 
     for (chunk_index, chunk_selection) in chunks.into_iter().enumerate() {
         let chunk_index = chunk_index as u64;
+        // Resets for every chunk: a wrong password against chunk 2
+        // does not inherit chunk 1's attempt count, so
+        // `await_password_retry`'s own retry-limit applies per chunk,
+        // not once for the whole multi-chunk sequence.
         let mut attempt: u32 = 1;
 
         'retry: loop {
@@ -988,6 +992,14 @@ pub(crate) async fn run_extract(
                     }
                 }
                 Err(error) => {
+                    // A mid-sequence chunk failure aborts the whole
+                    // operation here rather than continuing to the
+                    // remaining chunks -- there is no rollback of
+                    // whatever earlier chunks already wrote, so a
+                    // failure on (for example) chunk 3 of 5 leaves
+                    // chunks 1-2's files extracted on disk with the
+                    // operation reporting `Failed`, not a clean "nothing
+                    // was extracted" state.
                     fail(&inner, operation_id, error).await;
                     return;
                 }

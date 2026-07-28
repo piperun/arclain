@@ -151,13 +151,11 @@ impl arclain_core::ArchiveBackend for AlwaysSucceedsBackend {
     }
 }
 
-/// End-to-end: `close_archive_session` against a real bootstrapped
-/// facade actually releases the session -- it does not just fire an
-/// operation the facade silently drops. Mirrors `arclain_app`'s own
-/// `archive_sessions.rs` "close then probe for NotFound" pattern.
-#[test]
-fn close_archive_session_actually_releases_the_session_through_a_real_facade() {
-    let temp = tempfile::tempdir().unwrap();
+/// Bootstraps a real `ArclainApp` against a bare temp-dir `AppPaths`,
+/// backed by `AlwaysSucceedsBackend` so `start_open_archive` reaches
+/// `Completed` and mints a real session -- shared by every test below
+/// that needs a real facade rather than a `facade: None` fixture.
+fn bootstrap_always_succeeds_app(temp: &tempfile::TempDir) -> arclain_app::ArclainApp {
     let paths = arclain_app::AppPaths {
         config_dir: temp.path().join("config"),
         data_dir: temp.path().join("data"),
@@ -166,13 +164,64 @@ fn close_archive_session_actually_releases_the_session_through_a_real_facade() {
         plugins_dir: temp.path().join("plugins"),
     };
     let backend: Arc<dyn arclain_core::ArchiveBackend> = Arc::new(AlwaysSucceedsBackend);
-    let app = arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
+    arclain_app::ArclainApp::bootstrap(arclain_app::BootstrapConfig {
         paths_override: Some(paths),
         worker_threads: None,
         archive_backend_override: Some(backend),
         extract_runner_override: None,
     })
-    .expect("bootstrap must succeed against a bare temp-dir AppPaths");
+    .expect("bootstrap must succeed against a bare temp-dir AppPaths")
+}
+
+async fn wait_for_open_completion(
+    app: &arclain_app::ArclainApp,
+    operation_id: arclain_app::ids::OperationId,
+) -> arclain_app::archive::ArchiveSnapshot {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let snapshot = app.operation(operation_id).await.unwrap();
+        if let arclain_app::event::OperationState::Completed {
+            result: arclain_app::event::OperationResult::ArchiveOpened { snapshot },
+        } = snapshot.state
+        {
+            return snapshot;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "open did not complete within the test deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+async fn assert_session_eventually_closed(
+    app: &arclain_app::ArclainApp,
+    session_id: arclain_app::ids::ArchiveSessionId,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match app.archive_snapshot(session_id).await {
+            Err(error) if error.kind == arclain_app::error::ApplicationErrorKind::NotFound => {
+                return
+            }
+            _ if std::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            other => panic!(
+                "session {session_id:?} was not released within the test deadline: {other:?}"
+            ),
+        }
+    }
+}
+
+/// End-to-end: `close_archive_session` against a real bootstrapped
+/// facade actually releases the session -- it does not just fire an
+/// operation the facade silently drops. Mirrors `arclain_app`'s own
+/// `archive_sessions.rs` "close then probe for NotFound" pattern.
+#[test]
+fn close_archive_session_actually_releases_the_session_through_a_real_facade() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_always_succeeds_app(&temp);
 
     let mut shared = create_test_shared_state();
     shared.facade = Some(app.clone());
@@ -186,22 +235,9 @@ fn close_archive_session_actually_releases_the_session_through_a_real_facade() {
             })
             .await
             .expect("start_open_archive must be accepted");
-
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let snapshot = app.operation(operation_id).await.unwrap();
-            if let arclain_app::event::OperationState::Completed {
-                result: arclain_app::event::OperationResult::ArchiveOpened { snapshot },
-            } = snapshot.state
-            {
-                break snapshot.session_id;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "open did not complete within the test deadline"
-            );
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        wait_for_open_completion(&app, operation_id)
+            .await
+            .session_id
     });
 
     // Sanity check: the session is really open before the close.
@@ -213,21 +249,134 @@ fn close_archive_session_actually_releases_the_session_through_a_real_facade() {
 
     arclain_ui::core::operations::archive::close_archive_session(&shared, Some(session_id));
 
-    runtime.block_on(async {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            match app.archive_snapshot(session_id).await {
-                Err(error) if error.kind == arclain_app::error::ApplicationErrorKind::NotFound => {
-                    break
-                }
-                _ if std::time::Instant::now() < deadline => {
-                    tokio::time::sleep(Duration::from_millis(20)).await;
-                }
-                other => panic!(
-                    "close_archive_session did not release the session within the test \
-                     deadline: {other:?}"
-                ),
-            }
-        }
+    runtime.block_on(assert_session_eventually_closed(&app, session_id));
+}
+
+/// Reproduces the content-password-retry reopen (and, identically,
+/// toolbar Open / Ctrl+O / a nested-archive open / an extracted
+/// nested-archive open): `start_archive_open` called directly on a tab
+/// that already holds a real session, with no `replace_active` in
+/// between to have already discarded the old session along with a
+/// fresh `TabState`. The choke point inside `handle_open_archive_
+/// completed` must close the superseded session the moment the new one
+/// is stamped, rather than leaking it.
+#[test]
+fn a_second_open_on_the_same_tab_releases_the_prior_session() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_always_succeeds_app(&temp);
+
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+
+    let tab = shared.signals().tabs.get().active().clone();
+    let tab_id = tab.id;
+
+    let (session_a, session_b) = runtime.block_on(async {
+        let operation_a = app
+            .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                source_path: temp.path().join("first.zip"),
+                password: None,
+            })
+            .await
+            .expect("first start_open_archive must be accepted");
+        // Wait for the operation to actually finish before registering
+        // (mirroring `operation_bridge_registration_race_test.rs`'s own
+        // pattern) -- `register_operation` reconciles against a single
+        // point-in-time snapshot, so registering before the worker has
+        // even reached the archive listing would see `Accepted`/
+        // `Started`, not `Completed`, and never stamp the tab at all.
+        wait_for_open_completion(&app, operation_a).await;
+        arclain_ui::core::operation_bridge::register_operation(&shared, operation_a, tab_id).await;
+        let session_a = tab
+            .archive_session_id
+            .get()
+            .expect("the choke point's own completion handling must have stamped the tab");
+
+        // Same tab id, no `replace_active` -- exactly what the content-
+        // password retry reopen (and the other four named call sites)
+        // do.
+        let operation_b = app
+            .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                source_path: temp.path().join("second.zip"),
+                password: None,
+            })
+            .await
+            .expect("second start_open_archive must be accepted");
+        wait_for_open_completion(&app, operation_b).await;
+        arclain_ui::core::operation_bridge::register_operation(&shared, operation_b, tab_id).await;
+        let session_b = tab
+            .archive_session_id
+            .get()
+            .expect("the tab must be stamped with the second session");
+        assert_ne!(
+            session_a, session_b,
+            "the two opens must mint distinct sessions"
+        );
+
+        (session_a, session_b)
     });
+
+    // The superseded session must be released...
+    runtime.block_on(assert_session_eventually_closed(&app, session_a));
+    // ...while the current one stays open.
+    runtime.block_on(async {
+        app.archive_snapshot(session_b)
+            .await
+            .expect("the tab's current session must still be reachable");
+    });
+}
+
+/// Reproduces a cancel racing completion: the tab is gone (force-
+/// closed) by the time `handle_open_archive_completed` runs for an
+/// operation that had already reached `Completed` and minted a real
+/// session. Nothing will ever read that session id off any tab; the
+/// choke point must close it rather than returning with it leaked.
+#[test]
+fn a_session_minted_for_a_tab_that_is_already_gone_is_closed_not_leaked() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = bootstrap_always_succeeds_app(&temp);
+
+    let mut shared = create_test_shared_state();
+    shared.facade = Some(app.clone());
+    let runtime = shared.services.tokio_runtime.clone();
+
+    let tab_id = shared.signals().tabs.get().active_id();
+    // A second, unrelated tab so closing `tab_id` doesn't leave the
+    // collection empty (`TabsCollection::active()` requires at least
+    // one tab to always exist).
+    {
+        let mut col = shared.signals().tabs.get();
+        col.open(None);
+        shared.signals().tabs.set(col);
+    }
+
+    let session_id = runtime.block_on(async {
+        let operation_id = app
+            .start_open_archive(arclain_app::archive::OpenArchiveRequest {
+                source_path: temp.path().join("fixture.zip"),
+                password: None,
+            })
+            .await
+            .expect("start_open_archive must be accepted");
+
+        // Let the operation actually complete and mint its session
+        // *before* the tab is closed and *before* registration ever
+        // runs -- reconciliation is what discovers the already-
+        // completed, now-tabless operation, mirroring the registration-
+        // race tests in `operation_bridge_registration_race_test.rs`.
+        let snapshot = wait_for_open_completion(&app, operation_id).await;
+
+        {
+            let mut col = shared.signals().tabs.get();
+            col.force_close(tab_id);
+            shared.signals().tabs.set(col);
+        }
+
+        arclain_ui::core::operation_bridge::register_operation(&shared, operation_id, tab_id).await;
+
+        snapshot.session_id
+    });
+
+    runtime.block_on(assert_session_eventually_closed(&app, session_id));
 }

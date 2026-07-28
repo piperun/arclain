@@ -149,11 +149,19 @@ pub fn render_extraction_progress_dialog(
 
             // Details row
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("Processed: {}", dlg.processed_text))
-                        .color(theme.colors.on_surface_variant),
-                );
-                ui.add_space(12.0);
+                // `processed_text` is deliberately left blank for
+                // facade-driven extraction (see `operation_bridge::
+                // handle_extract_progress`'s own comment on why) -- a
+                // blank *value* is fine, but the bare "Processed:"
+                // label with nothing after it is not, so hide the
+                // whole label rather than showing a dangling prefix.
+                if !dlg.processed_text.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("Processed: {}", dlg.processed_text))
+                            .color(theme.colors.on_surface_variant),
+                    );
+                    ui.add_space(12.0);
+                }
                 ui.label(
                     egui::RichText::new(format!("Elapsed: {}", dlg.elapsed_text))
                         .color(theme.colors.on_surface_variant),

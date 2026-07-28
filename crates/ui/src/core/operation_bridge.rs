@@ -308,10 +308,26 @@ pub(crate) fn dequeue_and_present_next(
     tab: &crate::core::tabs::TabState,
     operation_id: OperationId,
 ) {
-    let mut queue = tab.pending_challenge.get();
-    queue.retain(|pending| pending.operation_id != operation_id);
+    // `Signal::update` holds its write lock for the whole closure, so
+    // the retain-then-inspect-front sequence below is atomic against
+    // any other concurrent reader/writer of this same queue -- unlike
+    // a `get()` snapshot, local mutation, then `set()`, which lets two
+    // concurrent callers each read the same stale snapshot and one
+    // silently clobber the other's write. This queue now has more than
+    // one caller that can run concurrently on different threads/tasks:
+    // the bridge's own event loop, the render thread (this function is
+    // also called from `password_management::presentation::ui`'s
+    // Unlock/Cancel handling), and -- since `register_operation`/
+    // `reconcile_after_lag` can run `handle_event` (and therefore this)
+    // directly on a caller's own task rather than only the bridge's
+    // dedicated one -- potentially a third concurrent task as well.
+    let mut next_challenge = None;
+    tab.pending_challenge.update(|queue| {
+        queue.retain(|pending| pending.operation_id != operation_id);
+        next_challenge = queue.first().cloned();
+    });
     let mut dialog = tab.password_dialog.get();
-    match queue.first() {
+    match next_challenge {
         Some(next) => {
             dialog.show = true;
             dialog.password.clear();
@@ -328,7 +344,6 @@ pub(crate) fn dequeue_and_present_next(
         }
     }
     tab.password_dialog.set(dialog);
-    tab.pending_challenge.set(queue);
 }
 
 /// Drains any metadata a plugin's `set_session_metadata` host function
@@ -380,8 +395,33 @@ async fn handle_open_archive_completed(
     let tab = shared.signals().tabs.get().get(tab_id).cloned();
     apply_buffered_session_metadata(shared.signals(), tab.as_deref(), snapshot.session_id);
     let Some(tab) = tab else {
+        // The tab is gone -- most likely a cancel racing this very
+        // completion (the tab was force-closed, which cancels any
+        // in-flight open, but this operation had already reached
+        // `Completed` and minted a session by the time that cancel was
+        // recorded). Nothing will ever read `snapshot.session_id` off
+        // any tab now; close it here rather than returning with it
+        // leaked in the facade's session store forever.
+        crate::core::operations::archive::close_archive_session(shared, Some(snapshot.session_id));
         return;
     };
+
+    // Close whatever session this tab held *before* this one, if any --
+    // the single choke point every successful open funnels through,
+    // regardless of which call site triggered it. `start_archive_open`
+    // is called directly on a tab that may already have an archive open
+    // from several places with no `replace_active` in between to have
+    // already discarded the old session along with its tab (toolbar
+    // Open, Ctrl+O, opening a nested archive as the current one, opening
+    // an extracted nested archive, and a content-password retry reopen
+    // all reuse the same tab id) -- reading the old id here, at the one
+    // place every open completion passes through, means no future call
+    // site can reintroduce this leak by forgetting to close it first.
+    let previous_session_id = tab.archive_session_id.get();
+    if previous_session_id != Some(snapshot.session_id) {
+        crate::core::operations::archive::close_archive_session(shared, previous_session_id);
+    }
+
     tab.archive_session_id.set(Some(snapshot.session_id));
     tab.pending_open_operation.set(None);
     dequeue_and_present_next(&tab, operation_id);
@@ -571,19 +611,25 @@ fn handle_password_challenge(
         return;
     };
     let attempt = *attempt;
-    let mut queue = tab.pending_challenge.get();
-    // If the queue is already non-empty, some other operation's
-    // challenge is currently being shown -- this one waits its turn
-    // rather than clobbering the visible dialog (see `TabState::
-    // pending_challenge`'s own doc comment). It gets presented once
-    // that earlier challenge is answered/cancelled/terminalized, via
-    // `dequeue_and_present_next`.
-    let already_showing = !queue.is_empty();
-    queue.push(super::tabs::PendingChallenge {
-        operation_id,
-        challenge,
+    // `Signal::update` makes the is-empty check and the push atomic
+    // against any other concurrent reader/writer of this queue -- see
+    // `dequeue_and_present_next`'s own doc comment on why this queue in
+    // particular now has more than one thread/task that can touch it
+    // concurrently.
+    let mut already_showing = false;
+    tab.pending_challenge.update(|queue| {
+        // If the queue is already non-empty, some other operation's
+        // challenge is currently being shown -- this one waits its turn
+        // rather than clobbering the visible dialog (see `TabState::
+        // pending_challenge`'s own doc comment). It gets presented once
+        // that earlier challenge is answered/cancelled/terminalized, via
+        // `dequeue_and_present_next`.
+        already_showing = !queue.is_empty();
+        queue.push(super::tabs::PendingChallenge {
+            operation_id,
+            challenge,
+        });
     });
-    tab.pending_challenge.set(queue);
     if !already_showing {
         let mut dialog = tab.password_dialog.get();
         dialog.show = true;
@@ -1181,6 +1227,97 @@ mod tests {
         // raised a challenge at all.
         dequeue_and_present_next(&tab, op_a);
         assert!(tab.pending_challenge.get().is_empty());
+    }
+
+    #[test]
+    fn concurrent_pending_challenge_mutations_never_lose_an_update() {
+        // Regression test for the lost-update race a non-atomic
+        // get()-modify-set() pair would exhibit: `pending_challenge` is
+        // mutated from more than one thread/task in production now --
+        // the bridge's own event loop, the render thread (`password_
+        // management::presentation::ui`'s Unlock/Cancel handling calls
+        // `dequeue_and_present_next` directly), and, since
+        // `register_operation`/`reconcile_after_lag` can run
+        // `handle_event` (and therefore `handle_password_challenge`/
+        // `dequeue_and_present_next`) on a caller's own task rather than
+        // only the bridge's dedicated one, potentially a third
+        // concurrent task as well. `Signal::update` holding its write
+        // lock across the whole closure is what makes the race
+        // structurally unexpressible: this test drives real OS threads
+        // hammering the same queue with no artificial delays, which
+        // would make a get()-then-set() version of either mutation
+        // reliably drop entries under this volume (2,000+ pushes across
+        // 8 threads), not just occasionally.
+        // Mirrors `handle_password_challenge`'s own push -- an `update`
+        // closure, not a `get()`/`set()` pair. A plain nested `fn`
+        // (rather than a closure) so it can be freely shared across the
+        // `'static` thread closures below with no capture to worry about.
+        fn push(tab: &Arc<TabState>, operation_id: OperationId) {
+            tab.pending_challenge.update(|queue| {
+                queue.push(PendingChallenge {
+                    operation_id,
+                    challenge: password_challenge(operation_id.into_raw(), 1),
+                });
+            });
+        }
+
+        let tab = Arc::new(TabState::new(crate::core::tabs::TabId(1)));
+        const THREADS: u64 = 8;
+        const PUSHES_PER_THREAD: u64 = 250;
+
+        let pushers: Vec<_> = (0..THREADS)
+            .map(|thread_index| {
+                let tab = tab.clone();
+                std::thread::spawn(move || {
+                    for i in 0..PUSHES_PER_THREAD {
+                        push(&tab, OperationId::from_raw(thread_index * 10_000 + i));
+                    }
+                })
+            })
+            .collect();
+        for pusher in pushers {
+            pusher.join().unwrap();
+        }
+
+        let total_pushed = (THREADS * PUSHES_PER_THREAD) as usize;
+        assert_eq!(
+            tab.pending_challenge.get().len(),
+            total_pushed,
+            "every concurrent push must survive -- a lost update would shrink this count"
+        );
+
+        // Now race real dequeues (the actual `dequeue_and_present_next`,
+        // which needs no `SharedState`) against more concurrent pushes.
+        const DEQUEUED: usize = 500;
+        let dequeue_targets: Vec<OperationId> = tab
+            .pending_challenge
+            .get()
+            .iter()
+            .take(DEQUEUED)
+            .map(|p| p.operation_id)
+            .collect();
+        let tab_for_dequeue = tab.clone();
+        let dequeuer = std::thread::spawn(move || {
+            for operation_id in dequeue_targets {
+                dequeue_and_present_next(&tab_for_dequeue, operation_id);
+            }
+        });
+        let tab_for_more_pushes = tab.clone();
+        let more_pusher = std::thread::spawn(move || {
+            for i in 0..PUSHES_PER_THREAD {
+                push(&tab_for_more_pushes, OperationId::from_raw(999_000 + i));
+            }
+        });
+        dequeuer.join().unwrap();
+        more_pusher.join().unwrap();
+
+        let expected = total_pushed - DEQUEUED + PUSHES_PER_THREAD as usize;
+        assert_eq!(
+            tab.pending_challenge.get().len(),
+            expected,
+            "concurrent dequeues and pushes must account for exactly what was removed and \
+             added -- a lost update would leave stray entries or drop legitimate ones"
+        );
     }
 
     // -- OperationOrigins::tracked_ids ----------------------------------
